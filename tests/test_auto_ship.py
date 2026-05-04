@@ -376,6 +376,65 @@ class TestDiffContent:
         )
 
 
+# ── §6.3 self-regression checks ───────────────────────────────────────────
+
+
+class TestDiffSelfRegression:
+    def test_deleting_test_assertion_blocks_auto_ship(self):
+        d = validate_ship_request(_valid_packet(
+            diff="""diff --git a/tests/test_auto_ship.py b/tests/test_auto_ship.py
+--- a/tests/test_auto_ship.py
++++ b/tests/test_auto_ship.py
+@@ -1,3 +1,2 @@
+-    assert decision["would_open_pr"] is False
+     assert decision["dry_run"] is True
+""",
+        ))
+
+        assert d["validation_result"] == "blocked"
+        assert any(
+            v["rule_id"] == "diff_removes_test_coverage"
+            for v in d["violations"]
+        )
+
+    def test_deleting_test_file_blocks_auto_ship(self):
+        d = validate_ship_request(_valid_packet(
+            diff="""diff --git a/tests/test_canary.py b/tests/test_canary.py
+deleted file mode 100644
+--- a/tests/test_canary.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-def test_canary_guard():
+-    assert True
+""",
+        ))
+
+        assert d["validation_result"] == "blocked"
+        assert any(
+            v["rule_id"] == "diff_removes_test_coverage"
+            for v in d["violations"]
+        )
+
+    def test_deleting_capability_registration_blocks_auto_ship(self):
+        d = validate_ship_request(_valid_packet(
+            diff="""diff --git a/workflow/api/extensions.py b/workflow/api/extensions.py
+--- a/workflow/api/extensions.py
++++ b/workflow/api/extensions.py
+@@ -1,4 +1,3 @@
+ _AUTO_SHIP_ACTIONS = {
+-    "validate_ship_packet": _action_validate_ship_packet,
+     "open_auto_ship_pr": _action_open_auto_ship_pr,
+ }
+""",
+        ))
+
+        assert d["validation_result"] == "blocked"
+        assert any(
+            v["rule_id"] == "diff_removes_capability_surface"
+            for v in d["violations"]
+        )
+
+
 # ── Rollback handle composition ───────────────────────────────────────────
 
 

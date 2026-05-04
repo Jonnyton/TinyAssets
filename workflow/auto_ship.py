@@ -111,6 +111,27 @@ SECRET_REGEX_PATTERNS: tuple[str, ...] = (
     r"AKIA[0-9A-Z]{16}",               # AWS access key id
 )
 
+TEST_COVERAGE_REMOVAL_PATTERNS: tuple[str, ...] = (
+    r"^\s*(async\s+)?def\s+test_[A-Za-z0-9_]*\b",
+    r"^\s*class\s+Test[A-Za-z0-9_]*\b",
+    r"^\s*assert\b",
+    r"^\s*self\.assert[A-Za-z_]*\(",
+    r"^\s*@pytest\.",
+    r"\bpytest\.(raises|mark|fixture)\b",
+    r"\bunittest\.",
+)
+
+CAPABILITY_REMOVAL_PATTERNS: tuple[str, ...] = (
+    r"^\s*(async\s+)?def\s+_action_[A-Za-z0-9_]*\b",
+    r"^\s*\"[A-Za-z0-9_:-]+\"\s*:\s*_action_[A-Za-z0-9_]*\b",
+    r"\b_AUTO_[A-Z0-9_]*ACTIONS\b",
+    r"\bcapability_id\b",
+    r"\bensure_capability\b",
+    r"\bactor_has_capability\b",
+    r"\bregister(?:ed|ing)?\s+(?:tool|action|capability)\b",
+    r"\b(exposes?|routes?)\s+(?:the\s+)?(?:tool|action|capability)\b",
+)
+
 
 def _normalize_path(path: str) -> str:
     """Cheap path normalization — strip literal leading ``./``, collapse ``//``,
@@ -132,6 +153,15 @@ def _normalize_path(path: str) -> str:
     while "//" in p:
         p = p.replace("//", "/")
     return p
+
+
+def _diff_path(raw_path: str) -> str | None:
+    if raw_path == "/dev/null":
+        return None
+    path = raw_path
+    if path.startswith("a/") or path.startswith("b/"):
+        path = path[2:]
+    return _normalize_path(path)
 
 
 def _path_violations(changed_paths: list[str]) -> list[dict[str, Any]]:
@@ -242,6 +272,93 @@ def _diff_violations(diff: str) -> list[dict[str, Any]]:
                 ),
             })
             # Don't break — we want all matches recorded for audit.
+    return out
+
+
+def _regression_diff_violations(diff: str) -> list[dict[str, Any]]:
+    """Block self-regressive diffs that delete tests or capability surfaces.
+
+    Auto-ship v0 is intentionally conservative. A packet that removes its own
+    safety evidence or public capability should go through human review even if
+    every prose gate says KEEP.
+    """
+    if not isinstance(diff, str):
+        return []
+
+    out: list[dict[str, Any]] = []
+    current_path: str | None = None
+    deleted_file_mode = False
+    seen_test_coverage = False
+    seen_capability = False
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            current_path = _diff_path(parts[-1]) if len(parts) >= 4 else None
+            deleted_file_mode = False
+            continue
+        if line.startswith("--- "):
+            old_path = line[4:].split("\t", 1)[0].strip()
+            if old_path != "/dev/null":
+                current_path = _diff_path(old_path)
+            continue
+        if line.startswith("+++ "):
+            new_path = line[4:].split("\t", 1)[0].strip()
+            if new_path == "/dev/null":
+                deleted_file_mode = True
+            elif current_path is None:
+                current_path = _diff_path(new_path)
+            continue
+        if line.startswith("deleted file mode"):
+            deleted_file_mode = True
+            continue
+        if not line.startswith("-") or line.startswith("---"):
+            continue
+
+        removed = line[1:]
+        path = current_path or ""
+        path_is_test = (
+            path.startswith("tests/")
+            or "/tests/" in path
+            or path.rsplit("/", 1)[-1].startswith("test_")
+        )
+        if not seen_test_coverage and (
+            deleted_file_mode and path_is_test
+            or path_is_test and removed.strip()
+            or any(
+                re.search(pattern, removed)
+                for pattern in TEST_COVERAGE_REMOVAL_PATTERNS
+            )
+        ):
+            out.append({
+                "rule_id": "diff_removes_test_coverage",
+                "field": "diff",
+                "severity": "block",
+                "message": (
+                    "diff removes test coverage or test assertions — auto-ship "
+                    "requires human review for coverage-reducing changes"
+                ),
+            })
+            seen_test_coverage = True
+
+        if not seen_capability and any(
+            re.search(pattern, removed, flags=re.IGNORECASE)
+            for pattern in CAPABILITY_REMOVAL_PATTERNS
+        ):
+            out.append({
+                "rule_id": "diff_removes_capability_surface",
+                "field": "diff",
+                "severity": "block",
+                "message": (
+                    "diff removes a capability, action, or capability guard — "
+                    "auto-ship requires human review for capability-reducing changes"
+                ),
+            })
+            seen_capability = True
+
+        if seen_test_coverage and seen_capability:
+            break
+
     return out
 
 
@@ -444,6 +561,7 @@ def validate_ship_request(packet: dict[str, Any]) -> dict[str, Any]:
 
     # §6.3 — diff-content checks
     violations.extend(_diff_violations(packet.get("diff", "")))
+    violations.extend(_regression_diff_violations(packet.get("diff", "")))
 
     # Decision
     if violations:
