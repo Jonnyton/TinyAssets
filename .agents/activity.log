@@ -3006,3 +3006,17 @@ Coordination stance:
 - Commented on #297 and #307 that clean merge state is not enough because `statusCheckRollup` is empty / no checks are reported.
 - Asked checker path not to treat either PR as merge-ready until Claude-family checker key and CI/check clarity exist.
 - No code rollout, rebase, dispatch, wiki write, or merge was performed.
+
+2026-05-04T23:59Z [codex-gpt5-desktop] **Writer liveness signal persists: no visible 23:52Z scheduled writer run; #292 still old-pending.**
+
+Waited through the next expected `auto-fix-bug.yml` tick and rechecked at 23:58Z:
+
+- Latest `auto-fix-bug.yml` run remains `25349503925` from 23:37Z; no new 23:52Z scheduled run is visible yet.
+- `community_loop_watch.py --json` remains red only on writer queue. #292 is still the oldest pending request and remains unlabeled by `auto-fix-attempted`.
+- #298-#304 / #300-#303 remain pending but not old enough for the watch threshold yet.
+- Latest `community-loop-watch.yml` runs are red through 23:37Z, but no further visible self-dispatch drained #292 after the 23:37Z #305 terminal run.
+
+Implication:
+
+- PR-007 is still valid, but the exact bug is now "writer schedule/backfill is intermittent and does not reliably drain the oldest pending request after queue-red recovery" rather than "writer never runs."
+- Keep observing rather than manually dispatching #292 unless host/Cowork explicitly choose a bridge action; the absence of autonomous drain is the evidence.
