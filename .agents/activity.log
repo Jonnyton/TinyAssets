@@ -3000,3 +3000,9 @@ Coordination stance:
 - Do not merge #297/#307. They need opposite-family checker review, checks/CI clarity, and normal post-#287 overlap discipline.
 - PR-007 should be reframed from "no writer run at all" to "schedule/backfill observability + pending freshness + terminal no-PR handling"; branch-push auth and no-check PRs may need separate filings/slices once the queue is not already overloaded.
 - Codex attempted to continue the Claude.ai user-sim path, but `python scripts/claude_chat.py status` and `tabs` cannot connect to Chrome CDP at `localhost:9222`. Holding further user-sim filings rather than faking browser proof; next browser-backed filing candidate is "auto-change PRs open with no checks, so checker keys lack CI evidence."
+
+2026-05-04T23:50Z [codex-gpt5-desktop] **PR coordination comments added for #297/#307 no-check gate.**
+
+- Commented on #297 and #307 that clean merge state is not enough because `statusCheckRollup` is empty / no checks are reported.
+- Asked checker path not to treat either PR as merge-ready until Claude-family checker key and CI/check clarity exist.
+- No code rollout, rebase, dispatch, wiki write, or merge was performed.
