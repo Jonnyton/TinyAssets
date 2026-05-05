@@ -158,6 +158,8 @@ jobs:
                   repo,
                   state: 'open',
                   labels: labelName,
+                  sort: 'created',
+                  direction: 'asc',
                   per_page: 100,
                 });
                 for (const issue of issues) {
@@ -476,6 +478,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Python dev dependencies
+        if: >
+          steps.check-disabled.outputs.disabled == 'false' &&
+          steps.auth.outputs.mode != 'none'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
 
       - name: Extract request metadata
         if: >

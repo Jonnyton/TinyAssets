@@ -112,6 +112,13 @@ def test_discover_retries_unreviewed_attempted_needs_human_with_auth(wf):
     assert "retryAttempted" in script
 
 
+def test_discover_scheduled_backfill_reads_oldest_pending_first(wf):
+    discover_step = wf["jobs"]["discover"]["steps"][0]
+    script = str(discover_step.get("with", {}).get("script", ""))
+    assert "sort: 'created'" in script
+    assert "direction: 'asc'" in script
+
+
 # ---------------------------------------------------------------------------
 # Disable toggle
 # ---------------------------------------------------------------------------
@@ -399,6 +406,34 @@ def test_codex_step_enforces_post_generation_verification(wf):
     assert "verification_status" in run_script
     assert "Post-Codex verification failed; leaving request retryable" in run_script
     assert "exit \"$verification_status\"" in run_script
+
+
+def test_python_dev_dependencies_are_installed_before_subscription_writers(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    install_index = next(
+        (
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Install Python dev dependencies"
+        ),
+        None,
+    )
+    claude_index = next(
+        index for index, step in enumerate(steps) if step.get("id") == "claude-oauth"
+    )
+    codex_index = next(
+        index for index, step in enumerate(steps) if step.get("id") == "codex-subscription"
+    )
+    assert install_index is not None, "Must install ruff/pytest before writer verification"
+    assert install_index < claude_index
+    assert install_index < codex_index
+
+    install_step = steps[install_index]
+    run_script = str(install_step.get("run", ""))
+    assert "python -m pip install --upgrade pip" in run_script
+    assert 'python -m pip install -e ".[dev]"' in run_script
+    assert "steps.check-disabled.outputs.disabled == 'false'" in str(install_step.get("if", ""))
+    assert "steps.auth.outputs.mode != 'none'" in str(install_step.get("if", ""))
 
 
 def test_no_pr_step_marks_review_without_failing_workflow(wf):
