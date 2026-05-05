@@ -198,7 +198,7 @@ jobs:
                     ) {
                       continue;
                     }
-                    pushIfPending(issue);
+                    pushIfPending(issue, { ignoreSkip: onlyPermissionBlocked });
                     if (rows.length >= maxIssues) {
                       return true;
                     }

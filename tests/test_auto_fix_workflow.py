@@ -131,6 +131,7 @@ def test_discover_prioritizes_permission_blocked_before_normal_queue(wf):
     assert "onlyPermissionBlocked" in script
     assert "!hasLabel(issue, 'auto-fix-branch-push-blocked')" in script
     assert "!hasLabel(issue, 'auto-fix-pr-blocked')" in script
+    assert "ignoreSkip: onlyPermissionBlocked" in script
     assert script.index(permission_blocked_pass) < script.index(normal_pass)
 
 
