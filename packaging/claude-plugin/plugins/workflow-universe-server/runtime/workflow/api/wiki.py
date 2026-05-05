@@ -192,6 +192,15 @@ def _resolve_page(name: str) -> Path | None:
     return None
 
 
+def _wiki_builtin_link_targets() -> set[str]:
+    """Return built-in wiki pages that are valid wikilink targets."""
+    targets: set[str] = set()
+    for slug in ("index", "log", "schema"):
+        if _resolve_page(slug) is not None:
+            targets.add(slug)
+    return targets
+
+
 def _extract_keywords(text: str) -> set[str]:
     """Extract meaningful keywords from text."""
     words = re.sub(r"[^a-z0-9\s-]", " ", text.lower()).split()
@@ -783,7 +792,10 @@ def _promotion_lint_issues(
     if len(body.strip()) < 50:
         issues.append("Body too short (< 50 chars)")
     if not re.search(r"\[\[.+?\]\]", body) and category != "projects":
-        issues.append("No wikilinks found -- pages should cross-reference")
+        issues.append(
+            "No wikilinks found -- pages should cross-reference; use [[index]] "
+            "for the first page in a fresh wiki"
+        )
     return issues
 
 
@@ -799,11 +811,12 @@ def _wiki_lint_single_page(page: str) -> str:
     meta, body = _parse_frontmatter(raw)
     page_name = resolved.stem
     page_names = {p.stem for p in _find_all_pages(_wiki_pages_dir())}
+    link_targets = page_names | _wiki_builtin_link_targets()
     issues: list[str] = []
 
     for m in re.findall(r"\[\[([^\]]+)\]\]", raw):
         link = m.lower().replace(" ", "-")
-        if link not in page_names:
+        if link not in link_targets:
             issues.append(f"MISSING: [[{link}]]")
 
     if is_draft:
@@ -914,12 +927,13 @@ def _wiki_lint(page: str = "", **_kwargs: Any) -> str:
         indexed.add(m.lower().replace(" ", "-"))
 
     issues: list[str] = []
+    link_targets = page_names | _wiki_builtin_link_targets()
 
     for n in page_names:
         if inbound.get(n, 0) == 0 and n not in indexed:
             issues.append(f"ORPHAN: {n}")
     for link in all_linked:
-        if link not in page_names:
+        if link not in link_targets:
             issues.append(f"MISSING: [[{link}]]")
     for n in page_names:
         if n not in indexed:
