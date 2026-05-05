@@ -119,8 +119,9 @@ agentic work producing substantive output. Do NOT tell users this is
     action with the matching `kind`: use `kind=patch_request` for a
     concrete code/config/docs patch request, `kind=feature` for a new
     capability request, and `kind=design` for an architecture or policy
-    proposal. Do not coerce these into bug wording just to enter the
-    community loop.
+    proposal. For feature/design/patch_request filings, use
+    `severity=<blocker|high|medium|low>`. Do not coerce these into bug
+    wording just to enter the community loop.
     Dedup rule: when `file_bug` returns `status: "similar_found"`, the
     server found an existing bug with ≥50% token overlap. Default to
     `wiki action=cosign_bug bug_id=<top similar bug_id>

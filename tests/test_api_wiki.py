@@ -16,7 +16,9 @@ from workflow.api.wiki import (
     _BUG_DEDUP_THRESHOLD,
     _BUGS_CATEGORY,
     _KIND_ROUTING,
+    _KIND_SEVERITIES,
     _VALID_BUG_KINDS,
+    _VALID_REQUEST_SEVERITIES,
     _VALID_SEVERITIES,
     _WIKI_CATEGORIES,
     _bug_token_set,
@@ -70,6 +72,13 @@ def test_kind_routing_covers_all_valid_kinds():
     for kind, (subdir, prefix) in _KIND_ROUTING.items():
         assert subdir, f"empty subdir for kind={kind}"
         assert prefix, f"empty prefix for kind={kind}"
+
+
+def test_kind_severities_are_per_kind():
+    assert _KIND_SEVERITIES["bug"] == _VALID_SEVERITIES
+    assert _KIND_SEVERITIES["design"] == _VALID_REQUEST_SEVERITIES
+    assert _KIND_SEVERITIES["feature"] == _VALID_REQUEST_SEVERITIES
+    assert _KIND_SEVERITIES["patch_request"] == _VALID_REQUEST_SEVERITIES
 
 
 # ── helper unit tests ───────────────────────────────────────────────────────
@@ -299,6 +308,37 @@ def test_wiki_file_bug_rejects_invalid_severity(wiki_env):
     assert set(res["valid"]) == set(_VALID_SEVERITIES)
 
 
+def test_wiki_file_bug_design_uses_request_severity_vocab(wiki_env):
+    res = json.loads(
+        wiki(
+            action="file_bug",
+            component="architecture",
+            severity="high",
+            title="Design needs navigator review",
+            kind="design",
+            force_new=True,
+        )
+    )
+    assert res["status"] == "filed"
+    assert res["kind"] == "design"
+    assert res["severity"] == "high"
+    assert res["bug_id"].startswith("DESIGN-")
+
+
+def test_wiki_file_bug_design_rejects_bug_severity_vocab(wiki_env):
+    res = json.loads(
+        wiki(
+            action="file_bug",
+            component="architecture",
+            severity="major",
+            title="Design should not use bug severities",
+            kind="design",
+        )
+    )
+    assert "error" in res
+    assert set(res["valid"]) == set(_VALID_REQUEST_SEVERITIES)
+
+
 def test_wiki_file_bug_files_clean_when_no_dups(wiki_env):
     res = json.loads(
         wiki(
@@ -335,6 +375,7 @@ def test_wiki_file_bug_queued_investigation_returns_branch_task_lease_shape(
             title="Lease metadata response shape",
             observed="queued task lacks visible lease metadata",
             force_new=True,
+            verbose=True,
         )
     )
 
