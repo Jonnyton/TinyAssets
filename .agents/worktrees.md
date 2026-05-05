@@ -410,3 +410,13 @@ Notes:
   content-hash guard so long pages can be edited server-side.
 - Ship condition: focused wiki tests, ruff, plugin mirror build, diff-check,
   and PR opened for Claude/Cowork review.
+
+## Deploy-Failed P0 Triage - 2026-05-05
+
+- 2026-05-05 create `../wf-deploy-failed-p0-triage` on
+  `codex/deploy-failed-p0-triage` by codex-gpt5-desktop.
+- Source: live MCP 502 after deploy rollback failed; P0 triage recovered only
+  after `p0-outage` was manually added to deploy-failed issue #400.
+- Purpose: make rollback-red deploy failures auto-enter existing P0 triage.
+- Ship condition: deploy workflow structure tests pass, diff-check clean, PR
+  opened for Claude/Cowork review.

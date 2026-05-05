@@ -8,10 +8,10 @@ name: Deploy prod
 # run a post-deploy canary against `tinyassets.io/mcp`, and on canary
 # red, auto-rollback to the previous tag.
 #
-# Alarm hook: deploy failures open a GitHub issue labeled `deploy-failed`
-# — distinct from the canary-triggered `p0-outage` issue shape from
-# Row H. That way host can tell "deploy broke" from "daemon died
-# spontaneously."
+# Alarm hook: deploy failures open a GitHub issue labeled `deploy-failed`.
+# If rollback also leaves the daemon red, the issue additionally gets
+# `p0-outage` so the existing P0 auto-triage workflow can repair the host
+# without a human label relay.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   DO_DROPLET_HOST  — Droplet public IP (e.g. 161.35.237.133)
@@ -378,6 +378,7 @@ jobs:
           fi
 
       - name: Rollback on failure
+        id: rollback
         if: failure() && steps.deploy.outcome == 'success'
         env:
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
@@ -406,44 +407,66 @@ jobs:
         env:
           NEW_TAG: ${{ steps.tag.outputs.tag }}
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
+          ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
         with:
           script: |
-            const label = "deploy-failed";
-            // Ensure label exists.
-            try {
-              await github.rest.issues.getLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: label,
-              });
-            } catch (e) {
-              if (e.status === 404) {
-                await github.rest.issues.createLabel({
+            const deployLabel = "deploy-failed";
+            const p0Label = "p0-outage";
+            const labels = [deployLabel];
+            const rollbackStillRed = process.env.ROLLBACK_OUTCOME === "failure";
+            if (rollbackStillRed) {
+              labels.push(p0Label);
+            }
+
+            const labelDefs = {
+              [deployLabel]: {
+                color: 'fbca04',
+                description: 'CI deploy to DO Droplet failed; auto-rollback attempted.',
+              },
+              [p0Label]: {
+                color: 'd73a4a',
+                description: 'Auto-opened by uptime canary on public MCP outage.',
+              },
+            };
+            for (const name of labels) {
+              try {
+                await github.rest.issues.getLabel({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  name: label,
-                  color: 'fbca04',
-                  description: 'CI deploy to DO Droplet failed; auto-rollback attempted.',
+                  name,
                 });
-              } else {
-                throw e;
+              } catch (e) {
+                if (e.status === 404) {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name,
+                    ...labelDefs[name],
+                  });
+                } else {
+                  throw e;
+                }
               }
             }
+
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `Deploy failed — ${process.env.NEW_TAG} @ ${new Date().toISOString()}`,
-              labels: [label],
+              labels,
               body: [
                 `Auto-opened by the deploy-prod workflow.`,
                 ``,
                 `- Attempted: \`${process.env.NEW_TAG}\``,
                 `- Rolled back to: \`${process.env.PREV_IMAGE}\``,
+                `- Rollback outcome: \`${process.env.ROLLBACK_OUTCOME || 'skipped'}\``,
                 `- Run: ${runUrl}`,
                 ``,
                 `Check the run logs for the failing step (build, deploy, canary, or rollback).`,
-                `If rollback canary is also red, the daemon is down — investigate urgently.`,
+                rollbackStillRed
+                  ? `Rollback canary stayed red, so this issue is also labeled \`${p0Label}\` and P0 auto-triage should attempt repair.`
+                  : `If rollback canary is also red, the daemon is down — investigate urgently.`,
               ].join('\n'),
             });
 

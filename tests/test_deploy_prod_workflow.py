@@ -220,6 +220,32 @@ def test_rollback_conditioned_on_failure():
     pytest.fail("'Rollback on failure' step not found")
 
 
+def test_rollback_step_has_id_for_deploy_failed_routing():
+    wf = _load()
+    for step in _steps(wf):
+        if "rollback on failure" in (step.get("name") or "").lower():
+            assert step.get("id") == "rollback"
+            return
+    pytest.fail("'Rollback on failure' step not found")
+
+
+def test_deploy_failed_issue_gets_p0_label_when_rollback_fails():
+    wf = _load()
+    issue_step = next(
+        (s for s in _steps(wf) if s.get("name") == "Open deploy-failed issue"),
+        None,
+    )
+    assert issue_step is not None
+    env = issue_step.get("env") or {}
+    assert env.get("ROLLBACK_OUTCOME") == "${{ steps.rollback.outcome }}"
+
+    script = issue_step.get("with", {}).get("script", "") or ""
+    assert 'const p0Label = "p0-outage"' in script
+    assert 'process.env.ROLLBACK_OUTCOME === "failure"' in script
+    assert "labels.push(p0Label)" in script
+    assert "P0 auto-triage should attempt repair" in script
+
+
 # ---------------------------------------------------------------------------
 # (i) Codex subscription auth sync
 # ---------------------------------------------------------------------------
