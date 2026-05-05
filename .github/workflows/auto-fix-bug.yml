@@ -118,15 +118,18 @@ jobs:
               const needsHuman = hasLabel(issue, 'needs-human');
               const attempted = hasLabel(issue, 'auto-fix-attempted');
               const reviewed = hasLabel(issue, 'auto-fix-reviewed');
-              const retryBranchPushBlocked = (
-                hasLabel(issue, 'auto-fix-branch-push-blocked') &&
+              const retryPermissionBlocked = (
+                (
+                  hasLabel(issue, 'auto-fix-branch-push-blocked') ||
+                  hasLabel(issue, 'auto-fix-pr-blocked')
+                ) &&
                 hasWriterAuth &&
                 hasWorkflowPushToken &&
                 !autoFixDisabled
               );
               const retryAttempted = options.retryAttempted || (
                 needsHuman && hasWriterAuth && !autoFixDisabled && !reviewed
-              ) || retryBranchPushBlocked;
+              ) || retryPermissionBlocked;
               if (attempted && !retryAttempted) {
                 return;
               }
@@ -137,7 +140,7 @@ jobs:
                 return;
               }
               if (needsHuman) {
-                const reason = retryBranchPushBlocked
+                const reason = retryPermissionBlocked
                   ? 'workflow push token is now visible'
                   : 'writer auth is now visible';
                 core.info(`Retrying needs-human issue #${issue.number} because ${reason}.`);
@@ -162,7 +165,7 @@ jobs:
               }
             } else {
               async function scanAutoLabels(options = {}) {
-                const onlyBranchPushBlocked = options.onlyBranchPushBlocked || false;
+                const onlyPermissionBlocked = options.onlyPermissionBlocked || false;
                 for (const labelName of autoLabels) {
                   const { data: issues } = await github.rest.issues.listForRepo({
                     owner,
@@ -175,8 +178,9 @@ jobs:
                   });
                   for (const issue of issues) {
                     if (
-                      onlyBranchPushBlocked &&
-                      !hasLabel(issue, 'auto-fix-branch-push-blocked')
+                      onlyPermissionBlocked &&
+                      !hasLabel(issue, 'auto-fix-branch-push-blocked') &&
+                      !hasLabel(issue, 'auto-fix-pr-blocked')
                     ) {
                       continue;
                     }
@@ -188,9 +192,9 @@ jobs:
                 }
               }
 
-              await scanAutoLabels({ onlyBranchPushBlocked: true });
+              await scanAutoLabels({ onlyPermissionBlocked: true });
               if (rows.length >= maxIssues) {
-                core.info('Prioritized retryable branch-push-blocked issue before normal queue discovery.');
+                core.info('Prioritized retryable permission-blocked issue before normal queue discovery.');
               }
               if (rows.length < maxIssues) {
                 await scanAutoLabels();
@@ -494,9 +498,16 @@ jobs:
             }
             if (
               '${{ steps.auth.outputs.has_workflow_push_token }}' === 'true' &&
-              issueLabels.includes('auto-fix-branch-push-blocked')
+              (
+                issueLabels.includes('auto-fix-branch-push-blocked') ||
+                issueLabels.includes('auto-fix-pr-blocked')
+              )
             ) {
-              labelsToClear.push('auto-fix-reviewed', 'auto-fix-branch-push-blocked');
+              labelsToClear.push(
+                'auto-fix-reviewed',
+                'auto-fix-branch-push-blocked',
+                'auto-fix-pr-blocked',
+              );
             }
             for (const label of labelsToClear) {
               try {

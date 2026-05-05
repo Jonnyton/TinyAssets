@@ -112,24 +112,40 @@ def test_discover_retries_unreviewed_attempted_needs_human_with_auth(wf):
     assert "retryAttempted" in script
 
 
-def test_discover_retries_branch_push_blocked_when_push_token_visible(wf):
+def test_discover_retries_permission_blocked_when_push_token_visible(wf):
     discover_step = wf["jobs"]["discover"]["steps"][0]
     script = str(discover_step.get("with", {}).get("script", ""))
     assert "HAS_WORKFLOW_PUSH_TOKEN" in str(discover_step.get("env", {}))
     assert "hasWorkflowPushToken" in script
     assert "auto-fix-branch-push-blocked" in script
-    assert "retryBranchPushBlocked" in script
+    assert "auto-fix-pr-blocked" in script
+    assert "retryPermissionBlocked" in script
     assert "workflow push token is now visible" in script
 
 
-def test_discover_prioritizes_branch_push_blocked_before_normal_queue(wf):
+def test_discover_prioritizes_permission_blocked_before_normal_queue(wf):
     discover_step = wf["jobs"]["discover"]["steps"][0]
     script = str(discover_step.get("with", {}).get("script", ""))
-    branch_blocked_pass = "await scanAutoLabels({ onlyBranchPushBlocked: true });"
+    permission_blocked_pass = "await scanAutoLabels({ onlyPermissionBlocked: true });"
     normal_pass = "await scanAutoLabels();"
-    assert "onlyBranchPushBlocked" in script
+    assert "onlyPermissionBlocked" in script
     assert "!hasLabel(issue, 'auto-fix-branch-push-blocked')" in script
-    assert script.index(branch_blocked_pass) < script.index(normal_pass)
+    assert "!hasLabel(issue, 'auto-fix-pr-blocked')" in script
+    assert script.index(permission_blocked_pass) < script.index(normal_pass)
+
+
+def test_permission_blocked_retry_clears_terminal_labels_when_push_token_visible(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    clear_step = next(
+        (s for s in steps if s.get("name") == "Clear auth-missing block when auth is visible"),
+        None,
+    )
+    assert clear_step is not None
+    script = str(clear_step.get("with", {}).get("script", ""))
+    assert "has_workflow_push_token" in script
+    assert "auto-fix-branch-push-blocked" in script
+    assert "auto-fix-pr-blocked" in script
+    assert "auto-fix-reviewed" in script
 
 
 def test_discover_scheduled_backfill_reads_oldest_pending_first(wf):
