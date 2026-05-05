@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## 2026-05-05
+
+- [OTVDM Runtime Adapter Patch Request](2026-05-05-otvdm-runtime-adapter.md) - **status: proposed patch triage.** Repository-side preservation of WIKI-PATCH / Issue #342 for `ADAPTER-OTVDM-001`. Accepts OTVDM/winevdm only as a host-side candidate runtime with explicit media/license, sandbox, and playability gates; does not weaken browser-first exact-game proof.
+
 ## 2026-05-03
 
 - [Multi-User Workflow Operating Model](2026-05-03-multi-user-workflow-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-workflow-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
