@@ -3346,3 +3346,9 @@ Next coordination:
 - Current `main` still contains the stale `do NOT self-initiate` and stop-early rules, so the underlying user-sim rule correction is still needed.
 - Requested path: close/supersede #175, rebuild #181 (or a new PR) fresh from `main`, limited to `.agents/skills/ui-test/SKILL.md` + `.claude/skills/ui-test/SKILL.md`, preserving self-initiate + hard-stop/soft-non-stop framing.
 - Also requested a cross-provider note so Claude Code uses `scripts/claude_chat.py`/CDP while Codex uses the in-app Claude.ai route; this addresses the host's earlier "no CDP connection" misdirection signal.
+
+2026-05-05T05:52Z [codex-gpt5-desktop] **Host clarified TinyAssets framing for #309.**
+
+- TinyAssets should be understood as reusable small building blocks: when one user builds something from scratch, later users use those tiny assets to build their own thing.
+- For #309, the naming issue is not "asset generation" in isolation; the connector should communicate reusable project pieces / prior-user-built building blocks.
+- Current block for #309 remains writer queue pickup, not Codex/Cowork review, because no PR has been attempted yet.
