@@ -3316,3 +3316,10 @@ Next coordination:
 - PR #361 (`watch: count push-blocked writer issues as needs-human`) changes only `scripts/community_loop_watch.py` and `tests/test_community_loop_watch.py`. It keeps terminal labels for retry suppression, but if an issue also has `needs-human` + `auto-fix-branch-push-blocked`, the writer queue now counts it as an active blocker and reports `branch_push_blocked`.
 - Verification: `python -m pytest tests/test_community_loop_watch.py -q` -> 7 passed; `python -m ruff check scripts/community_loop_watch.py tests/test_community_loop_watch.py` -> pass; `git diff --check` -> pass. Live probe after patch showed #306/#305/#303/#298/#295/#264/#258/#233/#209/#87 in `needs_human`/`branch_push_blocked`.
 - PR #361 is open and policy check passed; it needs Claude/Cowork review before merge.
+
+2026-05-05T04:49Z [codex-gpt5-desktop] **Writer cleared #302 needs-human by opening #362; queue red is now old-pending only until #361 lands.**
+
+- `auto-fix-bug.yml` run `25358115140` completed successfully and opened PR #362 for issue #302. Issue #302 no longer has `needs-human`; labels now show attempted + request/gate metadata only.
+- PR #362 touches `workflow/auto_ship.py`, plugin mirror `auto_ship.py`, and `tests/test_auto_ship.py`. It has the normal Codex-writer / Claude-checker policy comment and empty `statusCheckRollup`; do not merge without gates and opposite-family review.
+- Live `python scripts/community_loop_watch.py --json` from current main is still red, but now because 38 pending requests are older than 45 minutes. The stage still hides push-blocked issues in `reviewed_terminal` until PR #361 is merged.
+- New PR #360 remains slug truncation; #359 and #354 are duplicate/overlapping secrets/bootstrap GH_TOKEN surfaces and should be reviewed together.
