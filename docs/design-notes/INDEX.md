@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## 2026-05-05
+
+- [Durable Coordination Architecture](2026-05-05-durable-coordination-architecture.md) - **status: research.** Repository-side preservation of wiki design proposal `pages/design-proposals/design-001-durable-coordination-architecture-where-workflow-s-structura.md` / Issue #299. Frames Workflow's durable moat as provider-neutral coordination, public commons memory, evidence chains, hostless uptime, lineage, and minimal primitives rather than generic agent capability; not yet canonical `PLAN.md` truth.
+
 ## 2026-05-03
 
 - [Multi-User Workflow Operating Model](2026-05-03-multi-user-workflow-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-workflow-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
