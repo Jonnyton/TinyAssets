@@ -147,6 +147,32 @@ The MCP `gates claim` path should validate this metadata once the current
 `workflow/api/market.py` sweep clears; until then, request labels and PR policy
 checks enforce the cloud-visible subset.
 
+### Platform-specific lint gates
+
+Wiki pages and patch requests that target emulator/runtime families should
+declare `platform_specific_gates` so generic branch review does not flatten
+family-specific evidence into one vague gate. The wiki linter recognizes these
+families and gate-code prefixes:
+
+| Runtime family | Gate code prefix |
+|----------------|------------------|
+| RetroArch / libretro | `LINT-RA-*` |
+| Amiga / vAmigaWeb / UAE | `LINT-AM-*` |
+| DOSBox / DOSBox Staging / js-dos | `LINT-DB-*` |
+
+Example:
+
+```yaml
+runtime_family: retroarch
+platform_specific_gates:
+  - LINT-RA-ROM
+  - LINT-RA-CORE
+```
+
+The linter reports `LINT-RA-001`, `LINT-AM-001`, or `LINT-DB-001` when a
+recognized runtime family is present without at least one matching
+`platform_specific_gates` entry.
+
 ---
 
 ## 5. Worked example — change_loop_v1's investigation gate

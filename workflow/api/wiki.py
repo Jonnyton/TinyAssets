@@ -62,6 +62,24 @@ _STOP_WORDS = frozenset(
     "on of that this these those it its not no nor so very just also".split()
 )
 
+_RUNTIME_FAMILY_GATE_PREFIXES = {
+    "retroarch": "LINT-RA-",
+    "amiga": "LINT-AM-",
+    "dosbox": "LINT-DB-",
+}
+
+_RUNTIME_FAMILY_ALIASES = {
+    "retroarch": "retroarch",
+    "libretro": "retroarch",
+    "amiga": "amiga",
+    "vamiga": "amiga",
+    "vamigaweb": "amiga",
+    "uae": "amiga",
+    "dosbox": "dosbox",
+    "dosbox-staging": "dosbox",
+    "js-dos": "dosbox",
+}
+
 
 _logger_wiki = logging.getLogger("universe_server.wiki")
 
@@ -784,7 +802,55 @@ def _promotion_lint_issues(
         issues.append("Body too short (< 50 chars)")
     if not re.search(r"\[\[.+?\]\]", body) and category != "projects":
         issues.append("No wikilinks found -- pages should cross-reference")
+    _append_runtime_family_gate_lint(issues, meta)
     return issues
+
+
+def _runtime_families_for_lint(meta: dict[str, str]) -> set[str]:
+    values: list[str] = []
+    for key in (
+        "title",
+        "runtime_family",
+        "runtime_families",
+        "runtime",
+        "runtimes",
+        "platform",
+        "platforms",
+        "emulator",
+        "emulators",
+    ):
+        value = meta.get(key)
+        if value:
+            values.append(value)
+
+    found: set[str] = set()
+    for raw_value in values:
+        tokens = re.findall(r"[a-z0-9][a-z0-9_-]*", raw_value.lower())
+        normalized = {token.replace("_", "-") for token in tokens}
+        for token in normalized:
+            family = _RUNTIME_FAMILY_ALIASES.get(token)
+            if family:
+                found.add(family)
+    return found
+
+
+def _append_runtime_family_gate_lint(
+    issues: list[str],
+    meta: dict[str, str],
+) -> None:
+    families = _runtime_families_for_lint(meta)
+    if not families:
+        return
+
+    declared_gates = meta.get("platform_specific_gates") or ""
+    for family in sorted(families):
+        prefix = _RUNTIME_FAMILY_GATE_PREFIXES[family]
+        if prefix not in declared_gates:
+            code = prefix + "001"
+            issues.append(
+                f"{code}: {family} runtime pages must declare "
+                f"platform_specific_gates with at least one {prefix}* gate"
+            )
 
 
 def _wiki_lint_single_page(page: str) -> str:
@@ -828,7 +894,7 @@ def _wiki_lint_single_page(page: str) -> str:
         if page_name not in indexed:
             issues.append(f"NOT INDEXED: {page_name}")
 
-        _append_page_metadata_lint(issues, page_name, meta)
+        _append_page_metadata_lint(issues, page_name, meta, body)
 
     if not issues:
         return json.dumps({"status": "healthy", "page": rel, "issues": []})
@@ -844,6 +910,7 @@ def _append_page_metadata_lint(
     issues: list[str],
     page_name: str,
     meta: dict[str, str],
+    body: str,
 ) -> None:
     now = datetime.now(timezone.utc)
     confidence = (meta.get("confidence") or "").strip().lower()
@@ -887,6 +954,7 @@ def _append_page_metadata_lint(
         and meta.get("type") != "project"
     ):
         issues.append(f"NO SOURCES: {page_name}")
+    _append_runtime_family_gate_lint(issues, meta)
 
 
 def _wiki_lint(page: str = "", **_kwargs: Any) -> str:
@@ -933,7 +1001,7 @@ def _wiki_lint(page: str = "", **_kwargs: Any) -> str:
 
     for p in all_pages:
         raw = _read_text(p)
-        meta, _ = _parse_frontmatter(raw)
+        meta, body = _parse_frontmatter(raw)
         page_name = p.stem
         confidence = (meta.get("confidence") or "").strip().lower()
         updated_str = meta.get("updated")
@@ -976,6 +1044,7 @@ def _wiki_lint(page: str = "", **_kwargs: Any) -> str:
                 and meta.get("type") != "project"
             ):
                 issues.append(f"NO SOURCES: {page_name}")
+            _append_runtime_family_gate_lint(issues, meta)
 
     if superseded_count:
         issues.append(

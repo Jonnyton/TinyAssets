@@ -12,9 +12,6 @@ from workflow.api.wiki import (
     _parse_frontmatter,
     _sanitize_slug,
     _wiki_similarity_score,
-)
-from workflow.universe_server import (
-    mcp,
     wiki,
 )
 
@@ -460,6 +457,69 @@ class TestWikiLint:
         assert any("Body too short" in issue for issue in issues)
         assert not any("orphan-page" in issue for issue in issues)
 
+    @pytest.mark.parametrize(
+        ("runtime_family", "expected_code"),
+        [
+            ("retroarch", "LINT-RA-001"),
+            ("amiga", "LINT-AM-001"),
+            ("dosbox", "LINT-DB-001"),
+        ],
+    )
+    def test_lint_requires_runtime_family_platform_gates(
+        self, wiki_dir, runtime_family, expected_code
+    ):
+        content = (
+            "---\n"
+            f"title: {runtime_family.title()} Runtime\n"
+            "type: reference\n"
+            "confidence: medium\n"
+            "sources: [test]\n"
+            f"runtime_family: {runtime_family}\n"
+            "---\n\n"
+            "A runtime page that links to [[test-project]] and contains enough "
+            "detail to make only runtime-family gate lint relevant.\n"
+        )
+        (wiki_dir / "pages" / "concepts" / f"{runtime_family}-runtime.md").write_text(
+            content, encoding="utf-8"
+        )
+        (wiki_dir / "index.md").write_text(
+            (wiki_dir / "index.md").read_text(encoding="utf-8")
+            + f"- [[{runtime_family}-runtime]] -- Runtime\n",
+            encoding="utf-8",
+        )
+
+        result = json.loads(wiki("lint", page=f"{runtime_family}-runtime"))
+
+        assert result["status"] == "issues_found"
+        assert any(expected_code in issue for issue in result["issues"])
+
+    def test_lint_accepts_runtime_family_platform_gate_code(self, wiki_dir):
+        content = (
+            "---\n"
+            "title: RetroArch Runtime\n"
+            "type: reference\n"
+            "confidence: medium\n"
+            "sources: [test]\n"
+            "runtime_family: retroarch\n"
+            "platform_specific_gates: [LINT-RA-ROM, LINT-RA-CORE]\n"
+            "---\n\n"
+            "A runtime page that links to [[test-project]] and declares the "
+            "RetroArch-specific lint gates it expects branches to satisfy.\n"
+        )
+        (wiki_dir / "pages" / "concepts" / "retroarch-runtime.md").write_text(
+            content, encoding="utf-8"
+        )
+        (wiki_dir / "index.md").write_text(
+            (wiki_dir / "index.md").read_text(encoding="utf-8")
+            + "- [[retroarch-runtime]] -- Runtime\n",
+            encoding="utf-8",
+        )
+
+        result = json.loads(wiki("lint", page="retroarch-runtime"))
+
+        assert result["status"] == "healthy"
+        assert result["issues"] == []
+
 
 class TestWikiSupersede:
     def test_supersede_page(self, wiki_dir):
@@ -655,11 +715,19 @@ class TestWikiFileBugDispatch:
 
 class TestWikiMCPRegistration:
     def test_wiki_tool_registered(self):
+        pytest.importorskip("uvicorn")
+        pytest.importorskip("fastmcp")
+        from workflow.universe_server import mcp
+
         tools = asyncio.run(mcp.list_tools(run_middleware=False))
         tool_names = {t.name for t in tools}
         assert "wiki" in tool_names
 
     def test_wiki_tool_metadata(self):
+        pytest.importorskip("uvicorn")
+        pytest.importorskip("fastmcp")
+        from workflow.universe_server import mcp
+
         tools = asyncio.run(mcp.list_tools(run_middleware=False))
         wiki_tool = next(t for t in tools if t.name == "wiki")
         assert wiki_tool.title == "Wiki Knowledge Base"
