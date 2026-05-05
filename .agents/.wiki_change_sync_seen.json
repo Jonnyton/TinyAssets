@@ -32,6 +32,7 @@
     "pages/patch-requests/pr-012-wiki-file-bug-dry-run-true-does-not-prevent-persistence-or-a.md",
     "pages/patch-requests/pr-013-add-author-facing-continuity-audit-primitive-that-checks-pro.md",
     "pages/patch-requests/pr-014-add-anchored-line-note-primitive-for-prose-lab-fragments-aut.md",
+    "pages/patch-requests/pr-015-retrolab-worker-connector-primitives-for-end-user-retro-game.md",
     "pages/plans/chatbot-builder-behaviors.md",
     "pages/plans/composition-patterns.md",
     "pages/plans/design-validate-branch-collision-admission-test.md",
