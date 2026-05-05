@@ -142,6 +142,104 @@ def test_compiler_accepts_approved_source_code():
     assert result["out"] == 6
 
 
+def test_compiler_fs_write_text_writes_state_content(tmp_path):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from workflow.graph_compiler import compile_branch
+
+    b = BranchDefinition(name="write config", entry_point="write_conf")
+    b.node_defs = [NodeDefinition(
+        node_id="write_conf",
+        display_name="Write DOSBox config",
+        input_keys=["config_text"],
+        output_keys=["written_path"],
+        fs_write_text_spec={
+            "path": "dosbox/game.conf",
+            "content_key": "config_text",
+        },
+    )]
+    b.graph_nodes = [GraphNodeRef(id="write_conf", node_def_id="write_conf")]
+    b.edges = [
+        EdgeDefinition(from_node="START", to_node="write_conf"),
+        EdgeDefinition(from_node="write_conf", to_node="END"),
+    ]
+    b.state_schema = [
+        {"name": "config_text", "type": "str"},
+        {"name": "written_path", "type": "str"},
+    ]
+
+    compiled = compile_branch(b, base_path=tmp_path)
+    app = compiled.graph.compile(checkpointer=InMemorySaver())
+    result = app.invoke(
+        {"config_text": "[autoexec]\nmount c .\n"},
+        config={"configurable": {"thread_id": "fs-write"}},
+    )
+
+    assert result["written_path"] == "dosbox/game.conf"
+    assert (tmp_path / "dosbox" / "game.conf").read_text(
+        encoding="utf-8",
+    ) == "[autoexec]\nmount c .\n"
+
+
+def test_compiler_rejects_fs_write_text_path_traversal():
+    from workflow.graph_compiler import CompilerError, compile_branch
+
+    b = BranchDefinition(name="bad writer", entry_point="write_conf")
+    b.node_defs = [NodeDefinition(
+        node_id="write_conf",
+        display_name="Write config",
+        fs_write_text_spec={
+            "path": "../escape.conf",
+            "content": "x",
+        },
+    )]
+    b.graph_nodes = [GraphNodeRef(id="write_conf", node_def_id="write_conf")]
+    b.edges = [
+        EdgeDefinition(from_node="START", to_node="write_conf"),
+        EdgeDefinition(from_node="write_conf", to_node="END"),
+    ]
+
+    with pytest.raises(CompilerError, match="cannot contain"):
+        compile_branch(b, base_path=".")
+
+
+def test_branch_spec_preserves_fs_write_text_spec(monkeypatch):
+    from workflow.api.branches import _staged_branch_from_spec
+
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    spec = {
+        "name": "Config writer",
+        "entry_point": "write_conf",
+        "node_defs": [{
+            "node_id": "write_conf",
+            "display_name": "Write DOSBox config",
+            "input_keys": ["config_text"],
+            "output_keys": ["written_path"],
+            "fs_write_text_spec": {
+                "path": "dosbox/game.conf",
+                "content_key": "config_text",
+            },
+        }],
+        "edges": [
+            {"from": "START", "to": "write_conf"},
+            {"from": "write_conf", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": "config_text", "type": "str"},
+            {"name": "written_path", "type": "str"},
+        ],
+    }
+
+    branch, errors = _staged_branch_from_spec(spec)
+
+    assert errors == []
+    assert branch.validate() == []
+    assert branch.node_defs[0].fs_write_text_spec == {
+        "path": "dosbox/game.conf",
+        "content_key": "config_text",
+    }
+
+
 def test_compiler_synthesized_typeddict_reducer_append():
     """state_schema with reducer=append should accumulate across nodes."""
     from langgraph.checkpoint.memory import InMemorySaver

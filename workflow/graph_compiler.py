@@ -1064,6 +1064,90 @@ def _build_source_code_node(
     return _fn
 
 
+def _resolve_fs_write_text_path(raw_path: Any, *, node_id: str) -> Path:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise CompilerError(
+            f"Node '{node_id}' fs_write_text_spec path must be a non-empty string."
+        )
+    rel = Path(raw_path)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise CompilerError(
+            f"Node '{node_id}' fs_write_text_spec path must be relative "
+            "and cannot contain '..'."
+        )
+    return rel
+
+
+def _build_fs_write_text_node(
+    node: NodeDefinition,
+    *,
+    base_path: str | Path,
+    event_sink: Callable[..., None] | None,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """Return a declarative file-writer node for small text artifacts."""
+    spec = node.fs_write_text_spec or {}
+    output_key = spec.get("output_key") or (node.output_keys[0] if node.output_keys else "")
+    root = Path(base_path).resolve()
+
+    def _fn(state: dict[str, Any]) -> dict[str, Any]:
+        if event_sink is not None:
+            try:
+                event_sink(node_id=node.node_id, phase="starting", fs_write_text=True)
+            except Exception as exc:
+                if _is_cancel_exception(exc):
+                    raise
+                logger.exception(
+                    "event_sink raised in %s (starting)", node.node_id,
+                )
+
+        if spec.get("path_key"):
+            rel = _resolve_fs_write_text_path(
+                state.get(spec["path_key"]), node_id=node.node_id,
+            )
+        else:
+            rel = _resolve_fs_write_text_path(spec.get("path"), node_id=node.node_id)
+
+        if "content_key" in spec:
+            content = state.get(spec["content_key"])
+        else:
+            content = spec.get("content", "")
+        if not isinstance(content, str):
+            raise CompilerError(
+                f"Node '{node.node_id}' fs_write_text_spec content must be a string."
+            )
+
+        target = (root / rel).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise CompilerError(
+                f"Node '{node.node_id}' fs_write_text_spec path escapes the "
+                "runner base path."
+            ) from exc
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        result = {output_key: str(rel)} if output_key else {}
+
+        if event_sink is not None:
+            try:
+                event_sink(
+                    node_id=node.node_id,
+                    phase="ran",
+                    fs_write_text=True,
+                    path=str(rel),
+                    bytes_written=len(content.encode("utf-8")),
+                    output=result,
+                )
+            except Exception as exc:
+                if _is_cancel_exception(exc):
+                    raise
+                logger.exception("event_sink raised in %s", node.node_id)
+        return result
+
+    return _fn
+
+
 def _build_opaque_node(
     node: NodeDefinition,
     fn: Callable[[dict[str, Any]], dict[str, Any]],
@@ -1830,6 +1914,16 @@ def _build_node(
                 f"compile_branch was not given base_path."
             )
         inner = _build_await_branch_run_node(
+            node, base_path=base_path, event_sink=event_sink,
+        )
+        return _wrap_with_checkpoints(inner, node, event_sink)
+    if node.fs_write_text_spec is not None:
+        if base_path is None:
+            raise CompilerError(
+                f"Node '{node.node_id}' uses fs_write_text_spec but "
+                f"compile_branch was not given base_path."
+            )
+        inner = _build_fs_write_text_node(
             node, base_path=base_path, event_sink=event_sink,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)

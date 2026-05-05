@@ -29,6 +29,7 @@ import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 # Placeholder-extraction regex pair — kept in sync with
@@ -388,6 +389,15 @@ class NodeDefinition:
     #   "timeout_seconds": float,  # default 300
     # }
     await_run_spec: dict[str, Any] | None = None
+
+    # Filesystem text writer node kind. Writes UTF-8 text supplied either
+    # literally or from state to a relative path under the runner base path.
+    # Shape: {
+    #   "path": str | "path_key": str,
+    #   "content": str | "content_key": str,
+    #   "output_key": str | None,  # default: first declared output_key
+    # }
+    fs_write_text_spec: dict[str, Any] | None = None
 
     # Legacy compat fields from NodeRegistration
     author: str = "anonymous"
@@ -1224,6 +1234,68 @@ class BranchDefinition:
                     errors.append(
                         f"Node '{n.node_id}' has await_run_spec and also "
                         f"prompt_template/source_code — these are mutually exclusive."
+                    )
+
+            if n.fs_write_text_spec is not None:
+                spec = n.fs_write_text_spec
+                if not isinstance(spec, dict):
+                    errors.append(
+                        f"Node '{n.node_id}' fs_write_text_spec must be an object."
+                    )
+                    continue
+                path_fields = [
+                    field for field in ("path", "path_key") if spec.get(field)
+                ]
+                content_fields = [
+                    field for field in ("content", "content_key") if field in spec
+                ]
+                if len(path_fields) != 1:
+                    errors.append(
+                        f"Node '{n.node_id}' fs_write_text_spec must set exactly "
+                        "one of 'path' or 'path_key'."
+                    )
+                if len(content_fields) != 1:
+                    errors.append(
+                        f"Node '{n.node_id}' fs_write_text_spec must set exactly "
+                        "one of 'content' or 'content_key'."
+                    )
+                if "path" in spec and spec.get("path"):
+                    path_value = spec["path"]
+                    if not isinstance(path_value, str):
+                        errors.append(
+                            f"Node '{n.node_id}' fs_write_text_spec path must be a string."
+                        )
+                    elif Path(path_value).is_absolute() or ".." in Path(path_value).parts:
+                        errors.append(
+                            f"Node '{n.node_id}' fs_write_text_spec path must be "
+                            "relative and cannot contain '..'."
+                        )
+                if "path_key" in spec and not isinstance(spec.get("path_key"), str):
+                    errors.append(
+                        f"Node '{n.node_id}' fs_write_text_spec path_key must be a string."
+                    )
+                if "content" in spec and not isinstance(spec["content"], str):
+                    errors.append(
+                        f"Node '{n.node_id}' fs_write_text_spec content must be a string."
+                    )
+                if "content_key" in spec and not spec.get("content_key"):
+                    errors.append(
+                        f"Node '{n.node_id}' fs_write_text_spec content_key "
+                        "must be a non-empty string."
+                    )
+                if n.prompt_template or n.source_code:
+                    errors.append(
+                        f"Node '{n.node_id}' has fs_write_text_spec and also "
+                        f"prompt_template/source_code — these are mutually exclusive."
+                    )
+                if (
+                    n.invoke_branch_spec is not None
+                    or n.invoke_branch_version_spec is not None
+                    or n.await_run_spec is not None
+                ):
+                    errors.append(
+                        f"Node '{n.node_id}' has fs_write_text_spec and another "
+                        "special runner spec — these are mutually exclusive."
                     )
 
         return errors

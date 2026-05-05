@@ -1155,6 +1155,7 @@ def _resolve_node_spec(
         for field_key in (
             "display_name", "description", "phase", "input_keys",
             "output_keys", "source_code", "prompt_template", "author",
+            "fs_write_text_spec",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1220,6 +1221,7 @@ def _lookup_node_body(
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
             "approved": bool(hit.get("approved", False)),
+            "fs_write_text_spec": hit.get("fs_write_text_spec"),
         }, ""
 
     # Otherwise treat `source` as a branch_def_id.
@@ -1247,6 +1249,7 @@ def _lookup_node_body(
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
                 "approved": bool(nd.get("approved", False)),
+                "fs_write_text_spec": nd.get("fs_write_text_spec"),
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
@@ -1294,11 +1297,13 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     invoke_branch = raw.get("invoke_branch_spec")
     invoke_branch_version = raw.get("invoke_branch_version_spec")
     await_run = raw.get("await_run_spec")
+    fs_write_text = raw.get("fs_write_text_spec")
     invoke_branch_arg = invoke_branch if isinstance(invoke_branch, dict) else None
     invoke_branch_version_arg = (
         invoke_branch_version if isinstance(invoke_branch_version, dict) else None
     )
     await_run_arg = await_run if isinstance(await_run, dict) else None
+    fs_write_text_arg = fs_write_text if isinstance(fs_write_text, dict) else None
     try:
         node = NodeDefinition(
             node_id=nid,
@@ -1314,6 +1319,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             invoke_branch_spec=invoke_branch_arg,
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
+            fs_write_text_spec=fs_write_text_arg,
         )
     except ValueError as exc:
         return str(exc)
@@ -2034,6 +2040,7 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "invoke_branch_spec",
             "invoke_branch_version_spec",
             "await_run_spec",
+            "fs_write_text_spec",
         ):
             raw_val = kwargs.get(field)
             if not raw_val:
@@ -2145,6 +2152,7 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "invoke_branch_spec",
             "invoke_branch_version_spec",
             "await_run_spec",
+            "fs_write_text_spec",
         ):
             if spec_field in updates:
                 val = updates[spec_field]
@@ -2760,6 +2768,21 @@ Pass `source_code="def run(state): ..."` instead of `prompt_template`
 for code nodes. Pass `reducer="append"` on `add_state_field` for
 accumulating list fields. The same 10 actions cover both audiences;
 the difference is how much you abstract on the user's behalf.
+
+For simple text artifacts, prefer a declarative `fs_write_text_spec`
+node over source code. It writes UTF-8 text under the runner base path
+and rejects absolute paths or `..` traversal:
+
+```
+{"node_id": "write_conf",
+ "display_name": "Write DOSBox config",
+ "input_keys": ["config_text"],
+ "output_keys": ["written_path"],
+ "fs_write_text_spec": {
+   "path": "dosbox/game.conf",
+   "content_key": "config_text"
+ }}
+```
 
 ## Running a branch
 
