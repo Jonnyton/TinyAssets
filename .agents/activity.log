@@ -3129,3 +3129,24 @@ Verification:
 - `python scripts/validate_skills.py` passed.
 - `python scripts/check_cross_provider_drift.py` passed.
 - `git diff --check -- .agents/skills/ui-test/SKILL.md .claude/skills/ui-test/SKILL.md` passed.
+
+2026-05-05T01:23Z [codex-gpt5-desktop] **Watch pass: fake-user burst synced; writer still newest-first; Codex in-app Claude route confirmed usable.**
+
+Fresh loop state:
+
+- `origin/main` advanced to `124657e` via wiki sync state files; `wiki-bug-sync.yml` run `25352633251` was green.
+- GitHub issues #309-#323 appeared from the latest fake-user / user-sim burst. This is useful load signal, not operator noise.
+- `auto-fix-bug.yml` run `25352641163` is in progress on #323 (`RetroLab worker: connector primitives...`). The run selected the freshest issue #323 while old pending issues #301/#300/#299/#298/#292 remain pending.
+- #302 is now `needs-human` after a Codex subscription run changed files but could not verify because the Actions environment still lacks `ruff` and `pytest` (`No module named ruff`, `No module named pytest`). This is the same readiness failure seen earlier on #304.
+- `community_loop_watch.py --json` remains red: writer queue has one `needs-human` blocker (#302) plus five old pending requests (#301/#300/#299/#298/#292); writer workflow itself is yellow because #323 is still running.
+- Existing PRs #297/#307/#308 remain open with empty `statusCheckRollup`; no autonomous PR dependency/rebase/refactor correction is visible yet.
+
+User-sim route check:
+
+- Codex in-app browser route is live. The selected tab is `https://claude.ai/chat/38213b65-82bc-418b-b14d-4653d2e75a56` (`Community loop PR stale-base detection and flagging - Claude`) and the page reports Claude finished the prior response.
+- No prompt was sent in this pass. Holding user-sim writes while the writer run is actively processing #323 and no new narrow filing is needed.
+
+Coordination interpretation:
+
+- The loop now has stronger evidence for a combined writer-readiness slice: oldest-first/fair queue selection, in-progress/lease idempotency, Actions dependency bootstrap for `ruff`/`pytest`, and PR readiness/dependency modeling.
+- #311 (`Auto-change PR queue needs auto-rebase or auto-close-superseded handling for stale-base PRs`) now exists in the loop itself, which is a good sign: the stale-base/self-correction concern has entered the queue. The next thing to watch is whether the loop prioritizes/refines it or lets it starve behind fresher requests.
