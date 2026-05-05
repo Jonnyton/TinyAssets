@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## 2026-05-05
+
+- [PR-029 / CURATOR-002 AuthoritativePoolRegistry Scope](2026-05-05-pr-029-curator-002-authoritative-pool-registry-scope.md) - **status: scoping artifact; not accepted architecture.** Repository-side response to Issue #328 / wiki proposal path `pages/design-proposals/design-003-pr-029-proposed-curator-002-authoritativepoolregistry-typed-.md`. Preserves the request as project-design, blocks premature hardcoded runtime registry work, and defines a typed source-pool evidence contract as the next reviewable step.
+
 ## 2026-05-03
 
 - [Multi-User Workflow Operating Model](2026-05-03-multi-user-workflow-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-workflow-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
