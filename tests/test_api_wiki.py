@@ -271,6 +271,36 @@ def test_wiki_promote_lint_blocks_when_required_fields_missing(wiki_env):
     assert any("Body too short" in i for i in res["issues"])
 
 
+def test_wiki_promote_lint_failure_returns_assisted_fix_scaffold(wiki_env):
+    body = "---\ntitle: Skinny\n---\ntoo short\n"
+    json.loads(
+        wiki(action="write", category="notes", filename="skinny", content=body)
+    )
+
+    res = json.loads(wiki(action="promote", filename="skinny"))
+
+    assert res["error"] == "Promotion blocked."
+    assert "type:" in res["required_frontmatter_template"]
+    assert "sources:" in res["required_frontmatter_template"]
+    assert res["assisted_fix"]["action"] == "write"
+    assert res["assisted_fix"]["category"] == "notes"
+    assert res["assisted_fix"]["filename"] == "skinny"
+    assert res["assisted_fix"]["then"] == "wiki promote filename=skinny"
+    assert res["assisted_fix"]["content"].startswith("---\ntitle: Skinny\n")
+    assert "type: note" in res["assisted_fix"]["content"]
+    assert "sources:\n  - TODO: add source" in res["assisted_fix"]["content"]
+    json.loads(
+        wiki(
+            action=res["assisted_fix"]["action"],
+            category=res["assisted_fix"]["category"],
+            filename=res["assisted_fix"]["filename"],
+            content=res["assisted_fix"]["content"],
+        )
+    )
+    promoted = json.loads(wiki(action="promote", filename="skinny"))
+    assert promoted["status"] == "promoted"
+
+
 def test_wiki_promote_lint_accepts_block_sources_with_non_http_uri(wiki_env):
     body = (
         "---\n"

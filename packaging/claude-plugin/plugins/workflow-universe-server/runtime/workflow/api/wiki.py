@@ -639,10 +639,15 @@ def _wiki_promote(
     if not skip_lint:
         issues = _promotion_lint_issues(meta, body, found_category)
         if issues:
+            assisted_fix = _promotion_assisted_fix(slug, found_category, meta, body)
             return json.dumps({
                 "error": "Promotion blocked.",
                 "issues": issues,
                 "hint": "Fix these issues or set skip_lint=true.",
+                "required_frontmatter_template": assisted_fix[
+                    "required_frontmatter_template"
+                ],
+                "assisted_fix": assisted_fix["assisted_fix"],
             })
 
     dest_path = _wiki_pages_dir() / found_category / (slug + ".md")
@@ -785,6 +790,56 @@ def _promotion_lint_issues(
     if not re.search(r"\[\[.+?\]\]", body) and category != "projects":
         issues.append("No wikilinks found -- pages should cross-reference")
     return issues
+
+
+def _promotion_assisted_fix(
+    slug: str,
+    category: str,
+    meta: dict[str, str],
+    body: str,
+) -> dict[str, Any]:
+    title = meta.get("title") or slug.replace("-", " ").title()
+    page_type = meta.get("type") or _default_page_type(category)
+    sources = meta.get("sources") or "- TODO: add source"
+    fixed_body = body.strip()
+    if len(fixed_body) < 50:
+        fixed_body = (
+            f"{fixed_body}\n\n"
+            "TODO: expand this page with enough context for promotion lint."
+        ).strip()
+    if category != "projects" and not re.search(r"\[\[.+?\]\]", fixed_body):
+        fixed_body = (
+            f"{fixed_body}\n\n"
+            "Related: [[TODO-related-page]]"
+        )
+
+    frontmatter = (
+        "---\n"
+        f"title: {title}\n"
+        f"type: {page_type}\n"
+        "sources:\n"
+        f"  {sources if sources.startswith('- ') else '- ' + sources}\n"
+        "---"
+    )
+    content = f"{frontmatter}\n\n{fixed_body}\n"
+    return {
+        "required_frontmatter_template": f"{frontmatter}\n",
+        "assisted_fix": {
+            "action": "write",
+            "category": category,
+            "filename": slug,
+            "content": content,
+            "then": f"wiki promote filename={slug}",
+        },
+    }
+
+
+def _default_page_type(category: str) -> str:
+    if category.endswith("ies"):
+        return category[:-3] + "y"
+    if category.endswith("s"):
+        return category[:-1]
+    return category or "note"
 
 
 def _wiki_lint_single_page(page: str) -> str:
