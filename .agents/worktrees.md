@@ -387,3 +387,15 @@ Notes:
   so MCP/chatbot-triggered auto-ship attempts can write ledger rows.
 - Ship condition: regression test, targeted auto-ship tests, plugin mirror,
   ruff, and diff-check pass; PR opened for Cowork review.
+
+## Loop Self-Clear Fix - 2026-05-05
+
+- 2026-05-05 create `../wf-loop-self-clear-fix` on
+  `codex/loop-self-clear-fix` by codex-gpt5-desktop.
+- Source: host liveness incident; issue #343 repeatedly retried while older
+  pending auto-change requests waited.
+- Purpose: make terminal no-PR writer failures add reviewed/failure labels so
+  scheduled discovery can advance to the next queue item.
+- Ship condition: static workflow tests, ruff, diff-check, PR opened for
+  Cowork/Claude review; recovery verified by a later writer run advancing past
+  the repeated issue.

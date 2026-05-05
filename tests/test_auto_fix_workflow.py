@@ -112,6 +112,16 @@ def test_discover_retries_unreviewed_attempted_needs_human_with_auth(wf):
     assert "retryAttempted" in script
 
 
+def test_discover_retries_branch_push_blocked_when_push_token_visible(wf):
+    discover_step = wf["jobs"]["discover"]["steps"][0]
+    script = str(discover_step.get("with", {}).get("script", ""))
+    assert "HAS_WORKFLOW_PUSH_TOKEN" in str(discover_step.get("env", {}))
+    assert "hasWorkflowPushToken" in script
+    assert "auto-fix-branch-push-blocked" in script
+    assert "retryBranchPushBlocked" in script
+    assert "workflow push token is now visible" in script
+
+
 def test_discover_scheduled_backfill_reads_oldest_pending_first(wf):
     discover_step = wf["jobs"]["discover"]["steps"][0]
     script = str(discover_step.get("with", {}).get("script", ""))
@@ -176,6 +186,15 @@ def test_auth_step_checks_codex_subscription_bundle(wf):
     assert "codex_subscription" in run_script, (
         "Auth step must route to the Codex subscription writer when its bundle is visible"
     )
+
+
+def test_auth_step_reports_workflow_push_token(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    auth_step = next(s for s in steps if s.get("id") == "auth")
+    run_script = auth_step.get("run", "")
+    assert "WORKFLOW_PUSH_TOKEN" in str(auth_step.get("env", {}))
+    assert "has_workflow_push_token" in run_script
+    assert ".github/workflows/*" in run_script
 
 
 def test_auth_step_reports_api_keys_as_diagnostics_only(wf):
@@ -261,6 +280,27 @@ def test_codex_subscription_step_uses_codex_cli(wf):
     assert "OPENAI_API_KEY" in run_script and "unset OPENAI_API_KEY" in run_script
 
 
+def test_codex_subscription_step_uses_workflow_push_token_for_git_push(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
+    assert codex_step is not None, "Must have a Codex subscription writer step"
+    run_script = codex_step.get("run", "")
+    assert "WORKFLOW_PUSH_TOKEN" in str(codex_step.get("env", {}))
+    assert "git remote set-url origin" in run_script
+    assert "x-access-token" in run_script
+    assert "unset WORKFLOW_PUSH_TOKEN" in run_script
+
+
+def test_codex_commit_title_uses_env_to_avoid_shell_injection(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
+    assert codex_step is not None, "Must have a Codex subscription writer step"
+    run_script = codex_step.get("run", "")
+    assert "PR_TITLE" in str(codex_step.get("env", {}))
+    assert 'git commit -m "$PR_TITLE"' in run_script
+    assert 'git commit -m "${{ steps.meta.outputs.pr_title }}"' not in run_script
+
+
 def test_codex_branch_push_permission_failure_is_classified(wf):
     steps = wf["jobs"]["fix"]["steps"]
     codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
@@ -269,6 +309,23 @@ def test_codex_branch_push_permission_failure_is_classified(wf):
     assert "refusing to allow a GitHub App to create or update workflow" in run_script
     assert "push_blocked=true" in run_script
     assert "github_actions_workflow_permission_missing" in run_script
+
+
+def test_branch_push_block_labels_clear_when_push_token_is_visible(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    clear_step = next(
+        (
+            s for s in steps
+            if s.get("name") == "Clear auth-missing block when auth is visible"
+        ),
+        None,
+    )
+    assert clear_step is not None, "Must clear retryable labels before writer runs"
+    script = str(clear_step.get("with", {}).get("script", ""))
+    assert "has_workflow_push_token" in script
+    assert "issueLabels.includes('auto-fix-branch-push-blocked')" in script
+    assert "auto-fix-reviewed" in script
+    assert "auto-fix-branch-push-blocked" in script
 
 
 def test_codex_no_change_is_classified_from_final_message(wf):
@@ -452,10 +509,17 @@ def test_no_pr_step_marks_review_without_failing_workflow(wf):
     assert "auto-fix-blocked" in script
     assert "auto-fix-pr-blocked" in script
     assert "auto-fix-branch-push-blocked" in script
+    assert "writerFailed" in script
+    assert "auto-fix-writer-failed" in script
     assert "CODEX_BRANCH" in str(no_pr_step.get("env", {}))
     assert "CODEX_PR_BLOCKED" in str(no_pr_step.get("env", {}))
     assert "CODEX_PUSH_BLOCKED" in str(no_pr_step.get("env", {}))
+    assert "CODEX_OUTCOME" in str(no_pr_step.get("env", {}))
+    assert "CLAUDE_OUTCOME" in str(no_pr_step.get("env", {}))
     assert "mode === 'codex_subscription' && codexBranch" in script
+    assert "Workflow push token present" in script
+    assert "WORKFLOW_PUSH_TOKEN" in script
+    assert "Workflows write" in script
 
 
 def test_pr_blocked_label_is_defined(wf):
@@ -467,3 +531,5 @@ def test_pr_blocked_label_is_defined(wf):
     assert "GitHub blocked Actions from opening the PR" in script
     assert "auto-fix-branch-push-blocked" in script
     assert "GitHub blocked Actions from pushing the branch" in script
+    assert "auto-fix-writer-failed" in script
+    assert "selected writer failed before opening a PR" in script

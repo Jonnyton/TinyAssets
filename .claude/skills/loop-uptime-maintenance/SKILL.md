@@ -1,6 +1,6 @@
 ---
 name: loop-uptime-maintenance
-description: The discipline for handling situations where the community patch loop is too broken to self-heal via its own loop. Use when, and only when, the loop cannot process its own emergency-fix request because the dispatcher itself is wedged, the supervisor is in a restart loop, or no daemon subprocess can pick up new tasks. Every use is a substrate improvement opportunity — each application teaches us how to never need this skill again. Success condition: usage trends to zero.
+description: "The discipline for handling situations where the community patch loop is too broken to self-heal via its own loop. Use when, and only when, the loop cannot process its own emergency-fix request because the dispatcher itself is wedged, the supervisor is in a restart loop, or no daemon subprocess can pick up new tasks. Every use is a substrate improvement opportunity — each application teaches us how to never need this skill again. Success condition: usage trends to zero."
 ---
 
 # Loop uptime maintenance

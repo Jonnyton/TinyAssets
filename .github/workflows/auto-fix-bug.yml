@@ -74,6 +74,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           HAS_WRITER_AUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' || secrets.WORKFLOW_CODEX_AUTH_JSON_B64 != '' }}
+          HAS_WORKFLOW_PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
           AUTO_FIX_DISABLED: ${{ vars.AUTO_FIX_DISABLED }}
         with:
           script: |
@@ -82,6 +83,7 @@ jobs:
             const maxIssues = 1;
             const autoLabels = ['daemon-request', 'auto-change', 'auto-bug'];
             const hasWriterAuth = process.env.HAS_WRITER_AUTH === 'true';
+            const hasWorkflowPushToken = process.env.HAS_WORKFLOW_PUSH_TOKEN === 'true';
             const autoFixDisabled = process.env.AUTO_FIX_DISABLED === 'true';
 
             function hasLabel(issue, name) {
@@ -116,9 +118,15 @@ jobs:
               const needsHuman = hasLabel(issue, 'needs-human');
               const attempted = hasLabel(issue, 'auto-fix-attempted');
               const reviewed = hasLabel(issue, 'auto-fix-reviewed');
+              const retryBranchPushBlocked = (
+                hasLabel(issue, 'auto-fix-branch-push-blocked') &&
+                hasWriterAuth &&
+                hasWorkflowPushToken &&
+                !autoFixDisabled
+              );
               const retryAttempted = options.retryAttempted || (
                 needsHuman && hasWriterAuth && !autoFixDisabled && !reviewed
-              );
+              ) || retryBranchPushBlocked;
               if (attempted && !retryAttempted) {
                 return;
               }
@@ -129,9 +137,10 @@ jobs:
                 return;
               }
               if (needsHuman) {
-                core.info(
-                  `Retrying needs-human issue #${issue.number} because writer auth is now visible.`
-                );
+                const reason = retryBranchPushBlocked
+                  ? 'workflow push token is now visible'
+                  : 'writer auth is now visible';
+                core.info(`Retrying needs-human issue #${issue.number} because ${reason}.`);
               }
               rows.push(issueRow(issue));
               seenIssueNumbers.add(issue.number);
@@ -237,6 +246,11 @@ jobs:
                 name: 'auto-fix-provider-exhausted',
                 color: 'd93f0b',
                 description: 'Automated writer auth exists, but the selected provider returned quota/capacity exhaustion.',
+              },
+              {
+                name: 'auto-fix-writer-failed',
+                color: 'd93f0b',
+                description: 'Automated writer auth existed, but the selected writer failed before opening a PR.',
               },
               {
                 name: 'auto-fix-claude-subscription-missing',
@@ -358,6 +372,7 @@ jobs:
         env:
           HAS_CLAUDE_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
           HAS_CODEX_AUTH_BUNDLE: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 != '' }}
+          HAS_WORKFLOW_PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
           HAS_OPENAI_API_KEY_CONFIGURED: ${{ secrets.OPENAI_API_KEY != '' }}
           HAS_ANTHROPIC_API_KEY_CONFIGURED: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
@@ -378,6 +393,7 @@ jobs:
           {
             echo "has_claude_oauth=${HAS_CLAUDE_OAUTH}"
             echo "has_codex=${HAS_CODEX_AUTH_BUNDLE}"
+            echo "has_workflow_push_token=${HAS_WORKFLOW_PUSH_TOKEN}"
             echo "has_claude_api=false"
             echo "has_openai_api_key_configured=${HAS_OPENAI_API_KEY_CONFIGURED}"
             echo "has_anthropic_api_key_configured=${HAS_ANTHROPIC_API_KEY_CONFIGURED}"
@@ -393,9 +409,11 @@ jobs:
             echo "|---|---|"
             echo "| CLAUDE_CODE_OAUTH_TOKEN | ${HAS_CLAUDE_OAUTH} |"
             echo "| WORKFLOW_CODEX_AUTH_JSON_B64 | ${HAS_CODEX_AUTH_BUNDLE} |"
+            echo "| WORKFLOW_PUSH_TOKEN | ${HAS_WORKFLOW_PUSH_TOKEN} |"
             echo ""
             echo "- selected writer mode: \`${mode}\`"
             echo "- required checker family: \`${checker_family}\`"
+            echo "- WORKFLOW_PUSH_TOKEN is optional, but required for automated branches that edit .github/workflows/*."
             echo "- API-key secrets are intentionally ignored for default daemon writers."
             echo "- OPENAI_API_KEY configured: \`${HAS_OPENAI_API_KEY_CONFIGURED}\`"
             echo "- ANTHROPIC_API_KEY configured: \`${HAS_ANTHROPIC_API_KEY_CONFIGURED}\`"
@@ -449,12 +467,22 @@ jobs:
         with:
           script: |
             const issueNumber = Number('${{ matrix.issue.issue_number }}');
+            const issue = ${{ toJson(matrix.issue) }};
+            const issueLabels = (issue.labels || []).map((label) => (
+              typeof label === 'string' ? label : label.name
+            ));
             const labelsToClear = ['needs-human', 'auto-fix-auth-missing', 'auto-fix-provider-exhausted'];
             if ('${{ steps.auth.outputs.has_claude_oauth }}' === 'true') {
               labelsToClear.push('auto-fix-claude-subscription-missing');
             }
             if ('${{ steps.auth.outputs.has_codex }}' === 'true') {
               labelsToClear.push('auto-fix-codex-subscription-missing');
+            }
+            if (
+              '${{ steps.auth.outputs.has_workflow_push_token }}' === 'true' &&
+              issueLabels.includes('auto-fix-branch-push-blocked')
+            ) {
+              labelsToClear.push('auto-fix-reviewed', 'auto-fix-branch-push-blocked');
             }
             for (const label of labelsToClear) {
               try {
@@ -608,6 +636,8 @@ jobs:
           steps.auth.outputs.mode == 'codex_subscription'
         env:
           WORKFLOW_CODEX_AUTH_JSON_B64: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 }}
+          WORKFLOW_PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN }}
+          PR_TITLE: ${{ steps.meta.outputs.pr_title }}
         run: |
           set -euo pipefail
           branch="auto-change/issue-${{ steps.meta.outputs.issue_number }}-codex-${GITHUB_RUN_ID}"
@@ -621,6 +651,10 @@ jobs:
 
           npm install -g @openai/codex
           git checkout -B "$branch"
+          if [[ -n "${WORKFLOW_PUSH_TOKEN:-}" ]]; then
+            git remote set-url origin "https://x-access-token:${WORKFLOW_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          unset WORKFLOW_PUSH_TOKEN
 
           codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$GITHUB_WORKSPACE" --output-last-message "$RUNNER_TEMP/codex-last-message.md" - <<'PROMPT'
           You are handling a community change request in the Workflow repository.
@@ -742,7 +776,7 @@ jobs:
           git config user.name "workflow-daemon[bot]"
           git config user.email "workflow-daemon[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "${{ steps.meta.outputs.pr_title }}" \
+          git commit -m "$PR_TITLE" \
             -m "Fixes #${{ steps.meta.outputs.issue_number }}" \
             -m "Writer family: Codex" \
             -m "Required checker family: Claude"
@@ -971,6 +1005,8 @@ jobs:
           CODEX_PR_BLOCK_REASON: ${{ steps.codex-pr-create.outputs.block_reason }}
           CODEX_PUSH_BLOCKED: ${{ steps.codex-subscription.outputs.push_blocked }}
           CODEX_PUSH_BLOCK_REASON: ${{ steps.codex-subscription.outputs.push_block_reason }}
+          CLAUDE_OUTCOME: ${{ steps.claude-oauth.outcome }}
+          CODEX_OUTCOME: ${{ steps.codex-subscription.outcome }}
         with:
           script: |
             const issueNumber = Number('${{ matrix.issue.issue_number }}');
@@ -998,9 +1034,15 @@ jobs:
             const codexPrBlockReason = process.env.CODEX_PR_BLOCK_REASON || '';
             const codexPushBlocked = process.env.CODEX_PUSH_BLOCKED === 'true';
             const codexPushBlockReason = process.env.CODEX_PUSH_BLOCK_REASON || '';
+            const claudeWriterFailed = mode === 'claude_oauth' && process.env.CLAUDE_OUTCOME === 'failure';
+            const codexWriterFailed = mode === 'codex_subscription' && process.env.CODEX_OUTCOME === 'failure';
+            const writerFailed = claudeWriterFailed || codexWriterFailed;
             const labels = ['needs-human'];
-            if (codexNoChangeReason || codexPrBlocked || codexPushBlocked) {
+            if (codexNoChangeReason || codexPrBlocked || codexPushBlocked || writerFailed) {
               labels.push('auto-fix-reviewed');
+            }
+            if (writerFailed) {
+              labels.push('auto-fix-writer-failed');
             }
             if (codexNoChangeReason) {
               labels.push('auto-fix-blocked');
@@ -1032,6 +1074,7 @@ jobs:
                 `Detected auth mode: \`${{ steps.auth.outputs.mode }}\``,
                 `Claude OAuth present: \`${{ steps.auth.outputs.has_claude_oauth }}\``,
                 `Codex subscription present: \`${{ steps.auth.outputs.has_codex }}\``,
+                `Workflow push token present: \`${{ steps.auth.outputs.has_workflow_push_token }}\``,
                 `OpenAI API key configured but ignored: \`${{ steps.auth.outputs.has_openai_api_key_configured }}\``,
                 `Anthropic API key configured but ignored: \`${{ steps.auth.outputs.has_anthropic_api_key_configured }}\``,
                 '',
@@ -1043,6 +1086,9 @@ jobs:
                   : '',
                 codexPushBlocked
                   ? `Branch push blocked: \`${codexPushBlockReason || 'unknown'}\``
+                  : '',
+                codexPushBlocked && codexPushBlockReason === 'github_actions_workflow_permission_missing'
+                  ? 'Configure `WORKFLOW_PUSH_TOKEN` with repo Contents write and Workflows write so automated workflow-file branches can push.'
                   : '',
                 codexPrBlocked && branch
                   ? `Auto-fix branch: https://github.com/${context.repo.owner}/${context.repo.repo}/tree/${branch}`
