@@ -3338,3 +3338,11 @@ Next coordination:
 - Target state is users plus the loop. Codex/Cowork PR notes, manual reorder decisions, duplicate-lane catches, refactor requests, and checker-key refusals are all current "cheats" that should trend down, not become normal governance.
 - Every loop-produced PR that Codex/Cowork would not approve is an evolution signal: the loop should learn to surface the same critique itself, revise/supersede/reorder its branches, and produce cleaner code than either operator would produce manually.
 - Next substrate framing should turn manual intervention into observable training data: intervention ledger, intervention classes, self-correction rate, and repeated-objection promotion into small substrate improvements.
+
+2026-05-05T05:20Z [codex-gpt5-desktop] **Reviewed pending Cowork ui-test PRs #175/#181; direction valid, PR packaging blocked.**
+
+- GitHub would not allow a formal request-changes review because the PRs resolve as same-owner under the current token, so Codex left review comments on both PRs.
+- #175 and #181 both remain `CONFLICTING` and carry a stale ~5k-line unrelated stack (skills, worktree/context-feed scripts, AGENTS/STATUS edits, tests) around the small intended `ui-test` text change.
+- Current `main` still contains the stale `do NOT self-initiate` and stop-early rules, so the underlying user-sim rule correction is still needed.
+- Requested path: close/supersede #175, rebuild #181 (or a new PR) fresh from `main`, limited to `.agents/skills/ui-test/SKILL.md` + `.claude/skills/ui-test/SKILL.md`, preserving self-initiate + hard-stop/soft-non-stop framing.
+- Also requested a cross-provider note so Claude Code uses `scripts/claude_chat.py`/CDP while Codex uses the in-app Claude.ai route; this addresses the host's earlier "no CDP connection" misdirection signal.
