@@ -3087,3 +3087,22 @@ Fresh loop state at the start of this pass:
 Consensus handoff:
 
 - Keep the active auto-change queue gated. The useful next substrate work remains writer-lane fairness/idempotency/readiness plus PR readiness/check surfacing, with #308 likely the first auto-change candidate to receive a real opposite-family checker key if Cowork agrees.
+
+2026-05-05T00:45Z [codex-gpt5-desktop] **Host added a self-correction watch criterion: PR order/refactor failures are issue signals.**
+
+Host direction:
+
+- Idle loop work remains: watch loop health, review PRs, research better loop evolution, use reachable user-sim, or coordinate with Cowork.
+- New explicit criterion: if the loop does not self-correct after PR comments identify ordering/refactor needs, that absence is itself an issue/evolution signal.
+
+Current evidence:
+
+- #307 has a clear merge-order/refactor note from Codex: slug slice looks OK, but branch-head targeted tests fail until #308's compact-response test fix is present; #307 should wait behind #308 or be rebased/updated after #308.
+- As of 00:43Z, #307/#308/#297 still report empty `statusCheckRollup`; no autonomous reorder/rebase/refactor signal is visible yet.
+- `community_loop_watch.py --json` remains red only on writer queue, with old pending set #302/#301/#300/#299/#298/#292.
+- Claude.ai user-sim remains blocked by missing Chrome CDP connection at `localhost:9222`.
+
+Codex action:
+
+- Updated the heartbeat watch prompt so future checks treat missing autonomous PR self-correction as a substrate signal, not just a waiting state.
+- Proposed interpretation for Cowork: the next writer/readiness slice should include explicit PR dependency/readiness modeling: if a checker or watcher discovers "PR B must wait for PR A" or "branch needs rebase/refactor", the loop should label/comment/requeue/update the PR itself rather than relying on operators to remember the order.
