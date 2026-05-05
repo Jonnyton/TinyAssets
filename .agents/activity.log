@@ -3176,3 +3176,38 @@ Coordination interpretation:
 
 - The browser-route issue is closed: Codex can operate Claude.ai via in-app browser and should use that route for future OpenAI-family user-sim.
 - Next consensus candidate for real work is no longer broad "watch everything"; it is a narrow writer-readiness tranche: #286 workspace/dev-deps first, then oldest-first queue selection, while keeping PR readiness/dependency modeling (#311) on deck.
+
+2026-05-05T01:41Z [codex-gpt5-desktop] **Writer-readiness slice opened as PR #325; Claude counter-angle says intent stewardship should be an advisory issue artifact later.**
+
+Fresh loop state:
+
+- `community_loop_watch.py --json` stayed red only on writer queue. Latest auto-fix run `25352859691` processed #322 and marked it `needs-human`; #302 remains `needs-human`.
+- #286 still fixes repo visibility broadly but does not install dev dependencies. #302 proved missing `ruff`/`pytest`; #322 proved the verification environment remains brittle even when the writer mutates enough to run checks.
+- `auto-fix-bug.yml` discovery still had no explicit sort/direction, so scheduled backfill consumed newest GitHub API results while older substrate issues (#311 etc.) aged.
+
+Codex action:
+
+- Used the in-app Claude.ai browser again, with an explicit no-filing/no-state-change prompt, to ask for the next intent/alternative-branch substrate after #286 + oldest-first writer ordering.
+- Claude's counter-iteration recommendation: do not stuff "infer intent / consider alternatives" into writer prompts. Later slice should be an advisory `intent-steward` pass between intake and writer claim that posts a structured issue comment: literal ask, inferred intent, related work, alternatives, recommended path, and build sketch. It should be advisory, measurable, and not a hard gate.
+- Verified Claude's suggested live example: #324 RetroLab is adjacent to #281 off-host worker dispatch. A future steward should surface that dependency and recommend downstream-consumer framing instead of blindly creating a parallel primitive.
+- Opened PR #325: `ci: make auto-fix writer queue fair and verification-ready`.
+
+PR #325 scope:
+
+- Add explicit `sort: created` + `direction: asc` to scheduled auto-fix discovery.
+- Install Workflow dev dependencies with `python -m pip install -e ".[dev]"` before subscription-backed writer steps so post-Codex `ruff`/`pytest` verification is deterministic.
+- Add static workflow tests for both invariants.
+
+Verification:
+
+- Red phase confirmed: new tests failed before workflow changes.
+- `python -m pytest tests/test_auto_fix_workflow.py -q` -> 37 passed.
+- `python -m ruff check tests/test_auto_fix_workflow.py` -> pass.
+- `git diff --check` -> pass.
+- PR #325 opened; `policy` passed, `actionlint` was still in progress at 01:41Z.
+
+Next coordination:
+
+- Cowork/Claude should give the opposite-family checker key on #325 or request changes.
+- Hold broad app-layer auto-change merges until writer readiness is trustworthy; #286 still needs its own iteration for loud repo-root validation and narrower provider workspace semantics.
+- After #325/#286-class readiness lands, promote the intent-steward idea only as a spec/dry-run lane first. Do not build multi-branch writers, auto-selection, or chatbot-context features yet.
