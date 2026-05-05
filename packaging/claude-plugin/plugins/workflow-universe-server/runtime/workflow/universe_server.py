@@ -41,6 +41,15 @@ from workflow.api.extensions import _extensions_impl
 from workflow.api.market import gates as _gates_impl
 from workflow.api.market import goals as _goals_impl
 from workflow.api.prompts import _CONTROL_STATION_PROMPT
+from workflow.api.retrolab import (
+    install_retrolab_worker_windows as _install_retrolab_worker_windows_impl,
+)
+from workflow.api.retrolab import (
+    launch_retro_game_windows as _launch_retro_game_windows_impl,
+)
+from workflow.api.retrolab import (
+    verify_retro_game_windows as _verify_retro_game_windows_impl,
+)
 from workflow.api.status import get_status as _get_status_impl
 from workflow.api.universe import _universe_impl
 from workflow.api.wiki import wiki as _wiki_impl
@@ -953,6 +962,94 @@ def wiki(
         bug_id=bug_id,
         reporter_context=reporter_context,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TOOL 5B — RetroLab Windows local game helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool(
+    title="Install RetroLab Worker on Windows",
+    tags={"retrolab", "games", "windows", "install"},
+    annotations=ToolAnnotations(
+        title="Install RetroLab Worker on Windows",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def install_retrolab_worker_windows(emulator: str = "dosbox-x", confirm: bool = False) -> str:
+    """Install an allowlisted local emulator for end-user retro-game launch.
+
+    Use for Windows users who explicitly ask Workflow to prepare RetroLab
+    game launching. Supported emulators are `dosbox-x` and `scummvm`.
+    The tool never downloads game media, ROMs, firmware, or BIOS files.
+
+    Args:
+        emulator: Allowlisted emulator package. Supported: dosbox-x, scummvm.
+        confirm: False returns a winget preview; true runs the install.
+    """
+    return _install_retrolab_worker_windows_impl(emulator=emulator, confirm=confirm)
+
+
+@mcp.tool(
+    title="Launch Retro Game on Windows",
+    tags={"retrolab", "games", "windows", "launch"},
+    annotations=ToolAnnotations(
+        title="Launch Retro Game on Windows",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+def launch_retro_game_windows(
+    game_path: str,
+    emulator: str = "auto",
+    confirm: bool = False,
+) -> str:
+    """Launch a user-owned local retro game path through an allowlisted emulator.
+
+    Use only when the user provides a local game path and approves launching
+    a local process. `auto` currently selects DOSBox-X. The tool never
+    downloads game media, ROMs, firmware, or BIOS files.
+
+    Args:
+        game_path: Local path to game files the user owns or has rights to use.
+        emulator: auto, dosbox-x, or scummvm.
+        confirm: False returns a command preview; true launches the emulator.
+    """
+    return _launch_retro_game_windows_impl(
+        game_path=game_path,
+        emulator=emulator,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(
+    title="Verify Retro Game on Windows",
+    tags={"retrolab", "games", "windows", "verify"},
+    annotations=ToolAnnotations(
+        title="Verify Retro Game on Windows",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def verify_retro_game_windows(game_path: str = "", emulator: str = "auto") -> str:
+    """Check whether Windows has the local emulator and game path needed to launch.
+
+    Use before install or launch when a user asks if RetroLab is ready.
+    The result is factual setup evidence; it does not infer media rights.
+
+    Args:
+        game_path: Optional local path to user-owned game files.
+        emulator: auto, dosbox-x, or scummvm.
+    """
+    return _verify_retro_game_windows_impl(game_path=game_path, emulator=emulator)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

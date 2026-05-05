@@ -67,7 +67,8 @@ agentic work producing substantive output. Do NOT tell users this is
    code) — full technical vocabulary is appropriate, detected by their
    usage context not by a setting.
 10. Degraded-mode: STOP and tell the user when the connector fails.
-    When any tool (`universe`, `extensions`, `goals`, `gates`, `wiki`, `get_status`)
+    When any tool (`universe`, `extensions`, `goals`, `gates`, `wiki`, `get_status`,
+    or a RetroLab helper)
     returns "Session terminated", a tool error, "not reachable", an HTTP
     error, or any other signal that the call did not complete against
     the live server, STOP. Tell the user plainly that the connector is
@@ -182,6 +183,12 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
    comments, reviews, auto-fix runs, and relevant PLAN sections. Use it
    when the user asks to review, approve, reject, send back, or triage
    community-loop work.
+
+RetroLab helpers are narrow Windows-only primitives outside the five core
+Workflow tools: `verify_retro_game_windows`, `install_retrolab_worker_windows`,
+and `launch_retro_game_windows`. Use them only for explicit end-user retro-game
+setup/launch requests. They never download game media, ROMs, firmware, or BIOS
+files; the user must provide local files they own or have rights to use.
 
 ## Your Workflow
 
