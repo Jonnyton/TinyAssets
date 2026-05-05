@@ -551,7 +551,7 @@ def extensions(
     Behavioral rules live in `control_station`, `extension_guide`, and
     `branch_design_guide`; this description is the I/O contract.
 
-    Main actions: build_branch, patch_branch, describe_branch, get_branch,
+    Main actions: branch_schema, build_branch, patch_branch, describe_branch, get_branch,
     list_branches, run_branch, get_run, list_runs, stream_run, cancel_run,
     get_run_output, attach_existing_child_run, wait_for_run, resume_run,
     judge_run, compare_runs, schedule_branch, publish_version,
@@ -561,7 +561,7 @@ def extensions(
     - Registry: register, list, inspect, approve, disable, enable, remove.
     - Branch atomic: create_branch, list_branches, get_branch,
       describe_branch, delete_branch, add_node, connect_nodes,
-      set_entry_point, add_state_field, validate_branch, build_branch,
+      set_entry_point, add_state_field, validate_branch, branch_schema, build_branch,
       patch_branch, patch_nodes, update_node, rollback_node,
       suggest_node_edit, search_nodes.
     - Runs: run_branch, list_runs, get_run, get_run_output, stream_run,

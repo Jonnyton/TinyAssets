@@ -97,6 +97,56 @@ def test_build_branch_persists(comp_env):
     assert got["name"] == "Recipe tracker"
 
 
+def test_branch_schema_documents_build_branch_node_and_graph_shape(comp_env):
+    us, _ = comp_env
+    result = _call(us, "branch_schema")
+    assert result["schema_version"] == 1
+    assert "build_branch_spec" in result
+    assert "node_defs" in result["build_branch_spec"]["properties"]
+    assert "graph" in result["build_branch_spec"]["properties"]
+    node_fields = result["node_definition"]["fields"]
+    assert node_fields["node_id"]["required"] is True
+    assert "prompt_template" in node_fields
+
+
+def test_build_branch_accepts_documented_nested_graph_shape(comp_env):
+    us, _ = comp_env
+    spec = {
+        "name": "Documented graph build",
+        "description": "Uses the branch_schema graph wrapper.",
+        "node_defs": [
+            {"node_id": "draft", "display_name": "Draft",
+             "prompt_template": "Draft from {topic}"},
+            {"node_id": "review", "display_name": "Review",
+             "prompt_template": "Review {draft_output}"},
+        ],
+        "state_schema": [
+            {"name": "topic", "type": "str"},
+            {"name": "draft_output", "type": "str"},
+            {"name": "review_output", "type": "str"},
+        ],
+        "graph": {
+            "nodes": [
+                {"id": "draft", "node_def_id": "draft", "position": 0},
+                {"id": "review", "node_def_id": "review", "position": 1},
+            ],
+            "edges": [
+                {"from": "START", "to": "draft"},
+                {"from": "draft", "to": "review"},
+                {"from": "review", "to": "END"},
+            ],
+            "entry_point": "draft",
+        },
+    }
+    result = _call(us, "build_branch", spec_json=json.dumps(spec))
+    assert result["status"] == "built", result
+
+    got = _call(us, "get_branch", branch_def_id=result["branch_def_id"])
+    assert got["entry_point"] == "draft"
+    assert got["graph"]["nodes"] == spec["graph"]["nodes"]
+    assert got["graph"]["edges"] == spec["graph"]["edges"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AC #2 — strict-with-suggestions
 # ─────────────────────────────────────────────────────────────────────────────

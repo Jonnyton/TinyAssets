@@ -638,6 +638,7 @@ def _extensions_impl(
         "available_actions": [
             "register", "list", "inspect",
             "approve", "disable", "enable", "remove",
+            "branch_schema", "get_branch_schema",
             "build_branch", "patch_branch", "update_node",
             "create_branch", "add_node", "connect_nodes",
             "set_entry_point", "add_state_field",

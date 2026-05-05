@@ -1007,6 +1007,124 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 _VALID_STATE_TYPES = {"str", "int", "float", "bool", "list", "dict", "any"}
 
 
+def _ext_branch_schema(kwargs: dict[str, Any]) -> str:
+    """Return the public BranchDefinition authoring schema for MCP clients."""
+    del kwargs
+    return json.dumps({
+        "schema_version": 1,
+        "description": (
+            "Schema for extensions action=build_branch spec_json. "
+            "The branch may use top-level topology fields or a nested "
+            "graph object with nodes/edges/conditional_edges/entry_point."
+        ),
+        "build_branch_spec": {
+            "type": "object",
+            "required": ["name", "node_defs", "entry_point"],
+            "properties": {
+                "name": {"type": "string", "required": True},
+                "description": {"type": "string", "required": False},
+                "domain_id": {"type": "string", "default": "workflow"},
+                "goal_id": {"type": "string", "required": False},
+                "author": {"type": "string", "required": False},
+                "tags": {"type": "array", "items": "string"},
+                "skills": {"type": "array", "items": "Branch skill snapshot"},
+                "fork_from": {
+                    "type": "string",
+                    "description": "Published branch_version_id, not branch_def_id.",
+                },
+                "node_defs": {"type": "array", "items": "NodeDefinition"},
+                "state_schema": {"type": "array", "items": "State field"},
+                "graph_nodes": {
+                    "type": "array",
+                    "items": "GraphNodeRef",
+                    "alias": "graph.nodes",
+                },
+                "edges": {
+                    "type": "array",
+                    "items": {"from": "node id", "to": "node id"},
+                    "alias": "graph.edges",
+                },
+                "conditional_edges": {
+                    "type": "array",
+                    "items": {
+                        "from": "node id",
+                        "conditions": {"outcome": "target node id"},
+                    },
+                    "alias": "graph.conditional_edges",
+                },
+                "entry_point": {
+                    "type": "string",
+                    "alias": "graph.entry_point",
+                },
+                "graph": {
+                    "type": "object",
+                    "properties": {
+                        "nodes": {"type": "array", "items": "GraphNodeRef"},
+                        "edges": {"type": "array"},
+                        "conditional_edges": {"type": "array"},
+                        "entry_point": {"type": "string"},
+                    },
+                },
+            },
+        },
+        "node_definition": {
+            "fields": {
+                "node_id": {"type": "string", "required": True},
+                "display_name": {"type": "string", "required": True},
+                "description": {"type": "string", "required": False},
+                "phase": {
+                    "type": "string",
+                    "default": "custom",
+                    "enum": sorted({
+                        "orient", "plan", "draft", "commit", "learn",
+                        "reflect", "worldbuild", "custom",
+                    }),
+                },
+                "input_keys": {
+                    "type": "array|string",
+                    "items": "string",
+                    "required": False,
+                },
+                "output_keys": {
+                    "type": "array|string",
+                    "items": "string",
+                    "required": False,
+                },
+                "prompt_template": {"type": "string", "required": False},
+                "source_code": {"type": "string", "required": False},
+                "node_ref": {
+                    "type": "object",
+                    "required": False,
+                    "properties": {"source": "standalone|branch_def_id", "node_id": "string"},
+                },
+                "intent": {"type": "string", "enum": ["copy"]},
+                "invoke_branch_spec": {"type": "object", "required": False},
+                "invoke_branch_version_spec": {
+                    "type": "object",
+                    "required": False,
+                },
+                "await_run_spec": {"type": "object", "required": False},
+            },
+            "rule": (
+                "Set exactly one body kind: prompt_template, source_code, "
+                "or an invocation spec."
+            ),
+        },
+        "graph_node_ref": {
+            "fields": {
+                "id": {"type": "string", "required": True},
+                "node_def_id": {
+                    "type": "string",
+                    "required": False,
+                    "default": "same as id",
+                },
+                "position": {"type": "integer", "required": False},
+            },
+        },
+        "reserved_node_ids": ["START", "END"],
+    })
+
+
 def _suggest_entry_point(branch: Any) -> str:
     if not branch.graph_nodes:
         return ""
@@ -1403,7 +1521,11 @@ def _staged_branch_from_spec(
     spec: dict[str, Any],
 ) -> tuple[Any, list[str]]:
     from workflow.api.engine_helpers import _current_actor
-    from workflow.branches import BranchDefinition, normalize_branch_skill_snapshots
+    from workflow.branches import (
+        BranchDefinition,
+        GraphNodeRef,
+        normalize_branch_skill_snapshots,
+    )
 
     errors: list[str] = []
     branch = BranchDefinition(
@@ -1422,17 +1544,51 @@ def _staged_branch_from_spec(
     except ValueError as exc:
         errors.append(str(exc))
 
+    graph = spec.get("graph") if isinstance(spec.get("graph"), dict) else {}
+    graph_nodes_raw = (
+        spec.get("graph_nodes")
+        if "graph_nodes" in spec
+        else graph.get("nodes", [])
+    )
+
     for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
         err = _apply_node_spec(branch, raw)
         if err:
             errors.append(f"node[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("edges") or []):
+    if graph_nodes_raw:
+        branch.graph_nodes = []
+        for idx, raw in enumerate(graph_nodes_raw):
+            if not isinstance(raw, dict):
+                errors.append(f"graph.nodes[{idx}]: must be an object")
+                continue
+            node_id = (raw.get("id") or raw.get("node_id") or "").strip()
+            if not node_id:
+                errors.append(f"graph.nodes[{idx}]: missing id")
+                continue
+            node_def_id = (raw.get("node_def_id") or node_id).strip()
+            try:
+                position = int(raw.get("position", idx) or 0)
+            except (TypeError, ValueError):
+                errors.append(f"graph.nodes[{idx}]: position must be an integer")
+                position = idx
+            branch.graph_nodes.append(
+                GraphNodeRef(
+                    id=node_id,
+                    node_def_id=node_def_id,
+                    position=position,
+                )
+            )
+
+    for idx, raw in enumerate(spec.get("edges", graph.get("edges", [])) or []):
         err = _apply_edge_spec(branch, raw)
         if err:
             errors.append(f"edge[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("conditional_edges") or []):
+    conditional_edges_raw = spec.get(
+        "conditional_edges", graph.get("conditional_edges", [])
+    )
+    for idx, raw in enumerate(conditional_edges_raw or []):
         err = _apply_conditional_edge_spec(branch, raw)
         if err:
             errors.append(f"conditional_edge[{idx}]: {err}")
@@ -1442,7 +1598,7 @@ def _staged_branch_from_spec(
         if err:
             errors.append(f"state_schema[{idx}]: {err}")
 
-    entry = (spec.get("entry_point") or "").strip()
+    entry = (spec.get("entry_point") or graph.get("entry_point") or "").strip()
     if entry:
         branch.entry_point = entry
 
@@ -2579,6 +2735,8 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
 
 
 _BRANCH_ACTIONS: dict[str, Any] = {
+    "branch_schema": _ext_branch_schema,
+    "get_branch_schema": _ext_branch_schema,
     "create_branch": _ext_branch_create,
     "get_branch": _ext_branch_get,
     "list_branches": _ext_branch_list,
@@ -2705,6 +2863,37 @@ extensions action=build_branch spec_json='{
 
 If validation fails, `build_branch` returns concrete `suggestions` with
 proposed fixes — apply them and retry. No partial branch is ever visible.
+
+To inspect the exact machine-readable contract first, call:
+
+```
+extensions action=branch_schema
+```
+
+`build_branch` accepts either the compact top-level shape shown above
+or the same topology nested under `graph`:
+
+```
+{
+  "name": "Research brief",
+  "node_defs": [
+    {"node_id": "draft", "display_name": "Draft", "prompt_template": "..."},
+    {"node_id": "review", "display_name": "Review", "prompt_template": "..."}
+  ],
+  "graph": {
+    "nodes": [
+      {"id": "draft", "node_def_id": "draft", "position": 0},
+      {"id": "review", "node_def_id": "review", "position": 1}
+    ],
+    "edges": [
+      {"from": "START", "to": "draft"},
+      {"from": "draft", "to": "review"},
+      {"from": "review", "to": "END"}
+    ],
+    "entry_point": "draft"
+  }
+}
+```
 
 ## Branch skills
 
