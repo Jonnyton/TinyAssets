@@ -144,6 +144,90 @@ def test_workflow_stage_keeps_in_progress_meaningful_run(monkeypatch):
     assert stage["details"]["run_id"] == 3
 
 
+def test_writer_stage_requires_recent_schedule_backfill_run(monkeypatch):
+    now = dt.datetime(2026, 5, 5, 0, 0, tzinfo=dt.timezone.utc)
+
+    def fake_gh_get(*_args, **_kwargs):
+        return {
+            "workflow_runs": [
+                {
+                    "id": 42,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "created_at": "2026-05-04T23:58:00Z",
+                    "updated_at": "2026-05-04T23:59:00Z",
+                    "event": "workflow_dispatch",
+                    "html_url": "https://example.test/manual-success",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(watch, "_gh_get", fake_gh_get)
+
+    stage = watch.workflow_stage(
+        "Writer workflow",
+        "owner/repo",
+        "auto-fix-bug.yml",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_age_min=90,
+        required_success_event="schedule",
+    )
+
+    assert stage["status"] == "red"
+    assert "schedule backfill" in stage["summary"]
+    assert stage["details"]["required_success_event"] == "schedule"
+    assert stage["details"]["latest_event"] == "workflow_dispatch"
+
+
+def test_writer_stage_uses_scheduled_success_when_other_runs_are_newer(monkeypatch):
+    now = dt.datetime(2026, 5, 5, 0, 0, tzinfo=dt.timezone.utc)
+
+    def fake_gh_get(*_args, **_kwargs):
+        return {
+            "workflow_runs": [
+                {
+                    "id": 43,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "created_at": "2026-05-04T23:58:00Z",
+                    "updated_at": "2026-05-04T23:59:00Z",
+                    "event": "workflow_dispatch",
+                    "html_url": "https://example.test/manual-success",
+                },
+                {
+                    "id": 44,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "created_at": "2026-05-04T23:37:00Z",
+                    "updated_at": "2026-05-04T23:38:00Z",
+                    "event": "schedule",
+                    "html_url": "https://example.test/scheduled-success",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(watch, "_gh_get", fake_gh_get)
+
+    stage = watch.workflow_stage(
+        "Writer workflow",
+        "owner/repo",
+        "auto-fix-bug.yml",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_age_min=90,
+        required_success_event="schedule",
+    )
+
+    assert stage["status"] == "green"
+    assert stage["details"]["run_id"] == 44
+    assert stage["details"]["required_success_event"] == "schedule"
+
+
 def test_queue_stage_counts_push_blocked_issue_as_needs_human(monkeypatch):
     now = dt.datetime(2026, 5, 5, 4, 20, tzinfo=dt.timezone.utc)
 

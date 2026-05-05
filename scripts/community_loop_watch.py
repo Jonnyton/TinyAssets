@@ -231,16 +231,54 @@ def workflow_stage(
     now: dt.datetime,
     max_age_min: int | None,
     stale_status: str = "red",
+    required_success_event: str | None = None,
+    per_page: int = 20,
 ) -> dict[str, Any]:
     runs = _recent_workflow_runs(
-        repo, workflow_id, api=api, token=token, timeout=timeout
+        repo,
+        workflow_id,
+        api=api,
+        token=token,
+        timeout=timeout,
+        per_page=per_page,
     )
     skipped_runs = [candidate for candidate in runs if _is_neutral_skipped_run(candidate)]
-    run = next(
-        (candidate for candidate in runs if not _is_neutral_skipped_run(candidate)),
-        None,
-    )
+    candidates = [candidate for candidate in runs if not _is_neutral_skipped_run(candidate)]
+    if required_success_event is not None:
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.get("event") == required_success_event
+        ]
+    run = next(iter(candidates), None)
     if run is None and runs:
+        if required_success_event is not None:
+            latest = runs[0]
+            latest_event = latest.get("event") or "unknown event"
+            details = {
+                "workflow_id": workflow_id,
+                "required_success_event": required_success_event,
+                "latest_run_id": latest.get("id"),
+                "latest_event": latest_event,
+                "latest_status": latest.get("status"),
+                "latest_conclusion": latest.get("conclusion"),
+                "latest_created_at": latest.get("created_at"),
+                "checked_run_count": len(runs),
+                "ignored_skipped_run_ids": [
+                    skipped.get("id") for skipped in skipped_runs
+                ],
+            }
+            return _stage(
+                label,
+                "red",
+                f"{workflow_id} has no visible {required_success_event} backfill runs",
+                evidence=(
+                    f"latest visible run was {latest_event} "
+                    f"{latest.get('status')}/{latest.get('conclusion')}"
+                ),
+                url=latest.get("html_url"),
+                details=details,
+            )
         run = runs[0]
     if not run:
         return _stage(label, "red", f"{workflow_id} has no visible runs")
@@ -263,6 +301,8 @@ def workflow_stage(
             skipped.get("id") for skipped in skipped_runs if skipped is not run
         ],
     }
+    if required_success_event is not None:
+        details["required_success_event"] = required_success_event
 
     if status != "completed":
         return _stage(
@@ -537,6 +577,8 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
             timeout=timeout,
             now=current_now,
             max_age_min=args.max_writer_age_min,
+            required_success_event="schedule",
+            per_page=100,
         ),
         queue_stage(
             repo,
