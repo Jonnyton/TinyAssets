@@ -262,3 +262,41 @@ def test_queue_stage_summarizes_mixed_permission_blocks(monkeypatch):
     assert stage["details"]["branch_push_blocked"] == [87]
     assert stage["details"]["pr_blocked"] == [70]
     assert "branch-push and PR-creation permission blocks" in stage["summary"]
+
+
+def test_queue_stage_treats_attempted_loop_smoke_as_not_waiting(monkeypatch):
+    now = dt.datetime(2026, 5, 2, 19, 30, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 178,
+                "title": "[BUG-046] Loop circuit smoke test 2026-05-02 1902 UTC",
+                "created_at": "2026-05-02T19:21:43Z",
+                "html_url": "https://example.test/issues/178",
+                "labels": [
+                    {"name": "daemon-request"},
+                    {"name": "auto-change"},
+                    {"name": "auto-bug"},
+                    {"name": "request:bug"},
+                    {"name": "severity:minor"},
+                    {"name": watch.ATTEMPTED_LABEL},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "green"
+    assert stage["details"]["attempted"] == [178]
+    assert stage["details"]["pending"] == []
+    assert stage["details"]["old_pending"] == []
