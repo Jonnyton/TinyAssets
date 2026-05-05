@@ -3261,3 +3261,12 @@ Next coordination:
 - Configured cadence is frequent: `wiki-bug-sync` and `community-loop-watch` are `*/15`, `uptime-canary` is `*/5`, and `auto-fix` is `7,22,37,52 * * * *`.
 - Actual scheduled delivery is sparse/out-of-cadence: latest scheduled runs are `wiki-bug-sync` 01:16Z, `community-loop-watch` 01:13Z, `auto-fix` 00:11Z, `uptime-canary` 00:06Z, while `deploy-site` scheduled at 02:25Z.
 - The loop is not dead: `community-loop-watch` has continued via `workflow_run`, and `auto-fix` continued via `workflow_dispatch`/`workflow_run`. The missing piece is scheduled-event freshness visibility/recovery, not general Actions execution.
+
+2026-05-05T03:05Z [codex-gpt5-desktop] **Claude dev-partner consensus: build schedule freshness as a watch-level stage, but make self-kick bounded/explicit.**
+
+- Used the Codex in-app Claude.ai route, with a no-filing/no-state-change prompt, to ask for a counter-angle on the schedule freshness slice.
+- Claude concurred that schedule freshness is a distinct health dimension: the watch currently conflates "scheduled job has not run recently" with "scheduled job ran and downstream service is unhealthy."
+- Scope concern: PR-007 already asked for writer-lane liveness/backfill. Avoid landing two overlapping liveness systems. Preferred shape is a unified `community_loop_watch` freshness stage with optional per-workflow self-kick, enabled narrowly.
+- Likely files: `workflow/community_loop_watch.py`, plugin mirror under `packaging/claude-plugin/.../runtime/workflow/community_loop_watch.py`, and `tests/test_community_loop_watch.py`. Use an explicit critical workflow list with expected cadence; do not auto-discover every scheduled workflow.
+- Acceptance evidence: replay today's sparse run history and see `schedule_freshness` distinguish schedule throttling from service failure; replay a normal 24h window with no false positives; if self-kick is included, prove one dispatch per stalled workflow per detection window and log it even when recovery succeeds.
+- What not to build yet: no scheduler replacement, no generalized self-kick for every workflow, no self-kick for `wiki-bug-sync` until the PR-006 sync-state race is resolved, and no freshness checks for non-`schedule` workflows.
