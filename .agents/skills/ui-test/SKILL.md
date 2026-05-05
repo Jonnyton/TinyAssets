@@ -1,6 +1,6 @@
 ---
 name: ui-test
-description: Simulate a Claude.ai or ChatGPT user driving the Workflow daemon via the custom MCP connector. Use when testing the live end-user surface. You type into the real chatbot UI in a visible browser tab, read the real rendered response, and log to a shared md with the lead. No MCP bypass. No browser tricks a human user could not do.
+description: Simulate a Claude.ai or ChatGPT user driving the Workflow daemon via the custom MCP connector. Use when testing the live end-user surface. Codex/OpenAI-family sessions use Claude.ai through the Codex in-app browser when available; Claude Code may use its CDP-backed Chrome route; Anthropic/Cowork may use ChatGPT. Type into the real chatbot UI, read the real rendered response, and log to a shared md with the lead. No MCP bypass. No browser tricks a human user could not do.
 ---
 
 # ui-test
@@ -11,16 +11,27 @@ The human host is watching the browser tab. Your job is to look like a naive, cu
 
 ## Driver routes
 
+- **Codex / OpenAI-family route:** use the Codex in-app browser to open or continue `https://claude.ai/`. If the app context already shows a Claude.ai conversation, use that visible tab. Do not block this route on `scripts/claude_chat.py`, Chrome CDP, or `localhost:9222`; those are Claude Code harness details, not Codex in-app browser requirements.
 - **Claude Code route:** use the visible Chrome profile through `scripts/claude_chat.py`. This remains the default route for Claude team user-sim. Host-login Claude.ai access is not the proof requirement; Claude.ai is valid when a real browser session can use the Workflow connector.
-- **Codex / ChatGPT desktop route:** when Codex has browser or computer control, use the in-app browser when ChatGPT Developer Mode is enabled and the Workflow connector is added/visible in that same session. Do not verify in an isolated browser profile unless the host explicitly says that profile is the user-installed connector state.
+- **Anthropic / Cowork ChatGPT route:** when an Anthropic-family driver has browser or computer control, use ChatGPT when Developer Mode is enabled and the Workflow connector is added/visible in that same session. Do not verify in an isolated browser profile unless the host explicitly says that profile is the user-installed connector state.
 
 ## Proof standard
 
 The verification target is a rendered chatbot conversation using the live installed connector. Claude.ai, ChatGPT Developer Mode, and future chatbot clients are all acceptable when the tester can see the connector in the browser, type a normal user prompt, and observe the chatbot's rendered answer or tool-use result. Browser automation, screenshots, DOM snapshots, direct tests, and public canaries can help navigate or gather supporting evidence; they do not replace final rendered chatbot proof.
 
+## Codex Claude.ai in-app preflight
+
+When Codex runs `ui-test`, check these before the first prompt and log the result:
+
+- The visible in-app browser tab is `https://claude.ai/` or an existing `claude.ai/chat/...` conversation.
+- The conversation can use the Workflow connector at `https://tinyassets.io/mcp`.
+- The host-visible tab is the same one Codex is reading and typing into.
+
+If login, connector installation, or the in-app browser itself is unavailable, stop the mission and name that exact harness blocker. Do not report `claude_chat.py status` or CDP failure as a blocker for the Codex route.
+
 ## ChatGPT live preflight
 
-When using the Codex / ChatGPT desktop route, check these before the first prompt and log the result:
+When using the Anthropic / Cowork ChatGPT route, check these before the first prompt and log the result:
 
 - The visible tab is `https://chatgpt.com/` or an existing `chatgpt.com/c/...` conversation.
 - Developer mode is enabled for the conversation.
@@ -39,7 +50,7 @@ Codex is mechanically good at browser operation, but must not massage the chatbo
 - Do not coach the bot around a UX failure; log the failure.
 - Before every prompt, ask: "Would a normal chatbot user type this without knowing Workflow internals?" If no, rewrite it.
 
-## Claude.ai setup the host does once (not you)
+## Claude Code CDP setup the host does once (not you)
 
 For the Claude Code route, the host launches Chrome with:
 
@@ -53,15 +64,15 @@ logs into claude.ai in that window only if the test route needs authenticated Cl
 python scripts/claude_chat.py status
 ```
 
-If it returns non-zero, the browser is not up — **SendMessage the lead** and wait. Do not proceed.
+If it returns non-zero on the Claude Code route, the CDP-backed browser is not up — **SendMessage the lead** and wait. Do not proceed on that route. This does not apply to the Codex in-app browser route.
 
 ## CRITICAL — TAB HYGIENE (forever rule, every step)
 
-**One tab, always. Not just at start — forever.** The host watches a single Chrome tab. If a second tab exists at ANY moment, the host cannot see what you are doing. Host should never be the one to notice a second tab. Neither should lead. Only you.
+**One visible chatbot tab, always. Not just at start — forever.** The host watches a single visible chatbot tab. If a second tab exists at ANY moment, the host cannot see what you are doing. Host should never be the one to notice a second tab. Neither should lead. Only you.
 
-- **BEFORE every prompt you send:** query the open-tab list (CDP `Target.getTargets`, `python scripts/claude_chat.py tabs` if it exists, or equivalent). Confirm exactly one tab.
+- **BEFORE every prompt you send:** confirm the route's visible browser has exactly one mission tab. On Claude Code, query the open-tab list (CDP `Target.getTargets`, `python scripts/claude_chat.py tabs` if it exists, or equivalent). On Codex, use the in-app browser's visible current tab/context; do not require CDP just to prove the tab exists.
 - **AFTER every action that might have navigated:** re-check. Links, OAuth flows, extension redirects, and Claude.ai's own UI can all spawn tabs unexpectedly.
-- **If >1 tab is ever seen:** stop the mission. Decide which tab is the correct mission tab (the claude.ai chat with the active conversation). Close all others via CDP. Log `## [...] TAB HYGIENE: closed N extra tab(s) — healed to 1 tab at URL=...` with a diagnosis of how the extra tab appeared. Then resume.
+- **If >1 tab is ever seen:** stop the mission. Decide which tab is the correct mission tab (the claude.ai/chatgpt chat with the active conversation). Close all others using the route's available browser controls; use CDP only on the Claude Code route. Log `## [...] TAB HYGIENE: closed N extra tab(s) — healed to 1 tab at URL=...` with a diagnosis of how the extra tab appeared. Then resume.
 - **Do NOT call `new_tab` / `open_tab` / `window.open` / equivalent.** Ever. If a flow forces a new tab (OAuth popup, "open in new tab" links), navigate in the same tab or pause and flag lead.
 - **Log every tab check** to `sessions.md` / `user_sim_session.md` with a one-line `TAB HYGIENE: 1 tab, URL=...` entry. The log proves you checked; absence of the line means you skipped the check.
 - **Residue at session start is no excuse.** If extra tabs exist at startup, close them before the first prompt. This rule holds from session start to session end with zero exceptions.
@@ -220,7 +231,7 @@ Claude.ai sometimes renders a clarifying-question widget where the free-text inp
 
 **What you do when you see the widget:**
 
-1. **Read the options first.** `claude_chat.py read` does NOT capture them — the rendered-text extraction strips the widget. Hit CDP directly with Playwright and write output as UTF-8 to avoid Windows console codec failures:
+1. **Read the options first.** On Codex's in-app browser route, read the visible widget text directly from the rendered page; do not require CDP. On the Claude Code route, `claude_chat.py read` does NOT capture them — the rendered-text extraction strips the widget. Hit CDP directly with Playwright and write output as UTF-8 to avoid Windows console codec failures:
 
    ```python
    from pathlib import Path
@@ -337,7 +348,8 @@ Every `ask` burns host's claude.ai quota. Every log entry is lead's context. Be 
 
 - 3 bugs → stop, log, wait.
 - Bot refuses or errors repeatedly → stop, SendMessage.
-- `claude_chat.py status` starts failing → stop, SendMessage.
+- Claude Code route only: `claude_chat.py status` starts failing → stop, SendMessage.
+- Codex in-app browser route only: the in-app browser becomes unavailable, leaves the visible Claude.ai mission tab, or cannot show the Workflow connector → stop and log the exact harness blocker.
 - Lead writes `LEAD STOP` or sends a stop message → stop immediately. No "relaxed pace."
 
 ## Never

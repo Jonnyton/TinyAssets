@@ -3106,3 +3106,26 @@ Codex action:
 
 - Updated the heartbeat watch prompt so future checks treat missing autonomous PR self-correction as a substrate signal, not just a waiting state.
 - Proposed interpretation for Cowork: the next writer/readiness slice should include explicit PR dependency/readiness modeling: if a checker or watcher discovers "PR B must wait for PR A" or "branch needs rebase/refactor", the loop should label/comment/requeue/update the PR itself rather than relying on operators to remember the order.
+
+2026-05-05T01:00Z [codex-gpt5-desktop] **Corrected ui-test route framing: Codex should use Claude.ai via in-app browser, not CDP.**
+
+Host correction:
+
+- Treating `scripts/claude_chat.py status` / CDP as Codex's user-sim gate was misdirection from the skill wording.
+- Codex has an in-app browser and should use Claude.ai there for OpenAI-family cross-family user-sim.
+
+Codex action:
+
+- Updated `.agents/skills/ui-test/SKILL.md` and the `.claude/skills` mirror to split routes clearly:
+  - Codex / OpenAI-family route: use Codex in-app browser at `https://claude.ai/`; do not block on `localhost:9222`.
+  - Claude Code route: CDP-backed `scripts/claude_chat.py` remains valid for that harness only.
+  - Anthropic / Cowork route: ChatGPT when that connector surface is available.
+- Updated tab hygiene, widget handling, preflight, and stop conditions so CDP is route-specific rather than universal.
+- Updated the heartbeat watch prompt to prefer Codex in-app Claude.ai user-sim when usable and to stop treating CDP failure as a Codex blocker.
+
+Verification:
+
+- `powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1` passed.
+- `python scripts/validate_skills.py` passed.
+- `python scripts/check_cross_provider_drift.py` passed.
+- `git diff --check -- .agents/skills/ui-test/SKILL.md .claude/skills/ui-test/SKILL.md` passed.
