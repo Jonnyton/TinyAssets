@@ -96,8 +96,22 @@ fi
 
 _workflow_bash_path() {
     local _path="${1:-}"
-    if [[ "${_path}" =~ ^[A-Za-z]:[\\/].* ]] && command -v cygpath >/dev/null 2>&1; then
-        cygpath -u "${_path}"
+    if [[ "${_path}" =~ ^([A-Za-z]):([\\/].*)$ ]]; then
+        if command -v cygpath >/dev/null 2>&1; then
+            cygpath -u "${_path}"
+        else
+            local _drive
+            local _prefix
+            local _rest
+            _drive="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+            _rest="${BASH_REMATCH[2]//\\//}"
+            _rest="${_rest#/}"
+            _prefix="/${_drive}"
+            if [[ -d "/mnt/${_drive}" ]]; then
+                _prefix="/mnt/${_drive}"
+            fi
+            printf '%s/%s\n' "${_prefix}" "${_rest}"
+        fi
     else
         printf '%s\n' "${_path}"
     fi

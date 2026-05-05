@@ -34,6 +34,23 @@ def _have_bash() -> bool:
     return shutil.which("bash") is not None
 
 
+def _bash_readable_path(path: Path) -> str:
+    text = str(path)
+    if sys.platform.startswith("win") and len(text) > 2 and text[1] == ":":
+        drive = text[0].lower()
+        rest = text[2:].replace("\\", "/").lstrip("/")
+        if shutil.which("bash"):
+            probe = subprocess.run(
+                ["bash", "-lc", f"test -d /mnt/{drive}"],
+                capture_output=True,
+                timeout=5,
+            )
+            if probe.returncode == 0:
+                return f"/mnt/{drive}/{rest}"
+        return f"/{drive}/{rest}"
+    return text
+
+
 # ---- entrypoint behavior --------------------------------------------------
 
 
@@ -58,7 +75,7 @@ def _run_entrypoint_via_stdin(
     preamble_lines = [
         # Clear sentinels first so ambient-shell values don't leak through.
         "unset CLOUDFLARE_TUNNEL_TOKEN SUPABASE_DB_URL WORKFLOW_IMAGE",
-        f"export WORKFLOW_PACKAGE_ROOT={str(_REPO)!r}",
+        f"export WORKFLOW_PACKAGE_ROOT={_bash_readable_path(_REPO)!r}",
     ]
     preamble_lines.extend(raw_preamble_lines or [])
     for key, value in (extra_env or {}).items():
@@ -149,6 +166,7 @@ def test_entrypoint_data_file_probe_accepts_git_bash_windows_package_root(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' \"$WORKFLOW_FAKE_POSIX_ROOT\"\n",
         encoding="utf-8",
+        newline="\n",
     )
     fake_cygpath.chmod(0o755)
 
@@ -157,9 +175,9 @@ def test_entrypoint_data_file_probe_accepts_git_bash_windows_package_root(
         extra_env={
             "WORKFLOW_IMAGE": "ghcr.io/jonnyton/workflow-daemon:abc123",
             "WORKFLOW_PACKAGE_ROOT": r"C:\Users\Jonathan\Projects\wf-review-108",
-            "WORKFLOW_FAKE_POSIX_ROOT": str(package_root),
+            "WORKFLOW_FAKE_POSIX_ROOT": _bash_readable_path(package_root),
         },
-        raw_preamble_lines=[f"export PATH={str(fake_bin)!r}:$PATH"],
+        raw_preamble_lines=[f"export PATH={_bash_readable_path(fake_bin)!r}:$PATH"],
     )
 
     assert result.returncode == 0, (
