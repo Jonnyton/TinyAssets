@@ -142,3 +142,38 @@ def test_workflow_stage_keeps_in_progress_meaningful_run(monkeypatch):
 
     assert stage["status"] == "yellow"
     assert stage["details"]["run_id"] == 3
+
+
+def test_queue_stage_counts_push_blocked_issue_as_needs_human(monkeypatch):
+    now = dt.datetime(2026, 5, 5, 4, 20, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 298,
+                "title": "Writer produced a patch but could not push it",
+                "created_at": "2026-05-05T03:00:00Z",
+                "html_url": "https://example.test/issues/298",
+                "labels": [
+                    {"name": watch.BLOCKED_LABEL},
+                    {"name": watch.ATTEMPTED_LABEL},
+                    {"name": watch.REVIEWED_LABEL},
+                    {"name": watch.BRANCH_PUSH_BLOCKED_LABEL},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "red"
+    assert stage["details"]["needs_human"] == [298]
+    assert stage["details"]["reviewed_terminal"] == []

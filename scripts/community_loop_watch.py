@@ -354,6 +354,7 @@ def queue_stage(
     missing_codex_subscription: list[dict[str, Any]] = []
     auth_missing: list[dict[str, Any]] = []
     provider_exhausted: list[dict[str, Any]] = []
+    branch_push_blocked: list[dict[str, Any]] = []
     reviewed_terminal: list[dict[str, Any]] = []
     attempted: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
@@ -361,7 +362,10 @@ def queue_stage(
 
     for issue in issues:
         labels = _labels(issue)
-        if BLOCKED_LABEL in labels and labels.isdisjoint(TERMINAL_REVIEW_LABELS):
+        if BLOCKED_LABEL in labels and (
+            labels.isdisjoint(TERMINAL_REVIEW_LABELS)
+            or BRANCH_PUSH_BLOCKED_LABEL in labels
+        ):
             needs_human.append(issue)
             if CLAUDE_SUBSCRIPTION_MISSING_LABEL in labels:
                 missing_subscription.append(issue)
@@ -369,6 +373,8 @@ def queue_stage(
                 missing_codex_subscription.append(issue)
             if AUTH_MISSING_LABEL in labels:
                 auth_missing.append(issue)
+            if BRANCH_PUSH_BLOCKED_LABEL in labels:
+                branch_push_blocked.append(issue)
             elif PROVIDER_EXHAUSTED_LABEL in labels:
                 provider_exhausted.append(issue)
         elif not labels.isdisjoint(TERMINAL_REVIEW_LABELS):
@@ -391,6 +397,9 @@ def queue_stage(
             issue.get("number") for issue in missing_codex_subscription
         ],
         "auth_missing": [issue.get("number") for issue in auth_missing],
+        "branch_push_blocked": [
+            issue.get("number") for issue in branch_push_blocked
+        ],
         "provider_exhausted": [issue.get("number") for issue in provider_exhausted],
         "pending": [issue.get("number") for issue in pending],
         "old_pending": [issue.get("number") for issue in old_pending],
@@ -417,6 +426,8 @@ def queue_stage(
             )
         elif auth_missing:
             root_cause = "approved subscription-backed writer auth is missing"
+        elif branch_push_blocked:
+            root_cause = "automated writer produced a patch but branch push was blocked"
         elif provider_exhausted:
             root_cause = "approved writer provider returned quota/capacity exhaustion"
         pending_clause = (
