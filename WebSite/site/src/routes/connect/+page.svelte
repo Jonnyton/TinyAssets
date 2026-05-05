@@ -221,7 +221,7 @@
             {copied ? 'Copied!' : 'Copy'}
           </button>
         </div>
-        <p class="endpoint-note">Use this today in custom remote MCP connector settings. Name the connector <strong>Workflow</strong>; TinyAssets is the site and publisher context, not the tool name.</p>
+        <p class="endpoint-note">Use this today in custom remote MCP connector settings. Name the connector <strong>Workflow</strong>; TinyAssets names the reusable building blocks earlier users leave for later builders, not the tool itself.</p>
       </div>
 
       <div class="card" id="directory-status">

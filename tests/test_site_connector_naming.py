@@ -13,6 +13,7 @@ def test_connect_page_names_custom_connector_workflow() -> None:
 
     assert "Name the connector Workflow" in source
     assert "rather than TinyAssets" in source
+    assert "reusable building blocks earlier users leave for later builders" in source
 
 
 def test_chatgpt_submission_display_name_stays_workflow() -> None:
