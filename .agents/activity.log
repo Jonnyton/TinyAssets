@@ -3237,3 +3237,12 @@ Next coordination:
 - Uptime canary manual run `25353361951` is still green, but there is still no scheduled `uptime-canary.yml` run after 00:06Z.
 - Broader schedule evidence: latest scheduled runs are DNS canary 01:20Z, Wiki bug sync 01:16Z, Community loop watch 01:13Z, Auto-fix change 00:11Z, Uptime canary 00:06Z. Workflow metadata reports these workflows active, and manual/workflow_run triggers still work.
 - Existing alarm issue #296 (`community-loop-red`) is open and being updated by the watch lane; no new GitHub issue was opened from Codex. Next narrow investigation should treat scheduled-event freshness as its own platform/loop uptime signal, separate from MCP service health.
+
+2026-05-05T02:40Z [codex-gpt5-desktop] **Schedule gap partially recovered; writer opened #327; public GitHub status shows Actions operational.**
+
+- Latest scheduled event list now includes `deploy-site.yml` at 02:25Z, so schedules are not globally dead. Core loop schedules are still stale: DNS canary 01:20Z, Wiki bug sync 01:16Z, Community loop watch 01:13Z, Auto-fix change 00:11Z, Uptime canary 00:06Z.
+- GitHub Status API at 02:40Z reports overall "All Systems Operational" and Actions component `operational`; no public incident or scheduled maintenance is listed. Treat this as a Workflow-visible schedule freshness gap, not a confirmed GitHub outage.
+- `auto-fix-bug.yml` run `25354591064` was workflow-dispatched at 02:26Z and opened PR #327 for #321 (`continuity-audit primitive`). This continues the pattern: writer can run manually/workflow-dispatched, but old pending remains red.
+- Writer queue now: #302 is still the only `needs-human`; old pending is #320-#309 plus #301/#300/#299/#298/#292.
+- Open auto-change PRs #327/#326/#324/#308/#307/#297/#286/#282-#276 still lack real check rollups (except #286 has changes-requested). PR #325 remains green and waiting for Claude/Cowork review.
+- Next useful substrate question if the schedule gap persists: should community-loop-watch track "no scheduled event freshness" across critical workflows as a first-class stage, rather than depending on each individual stage going stale/red one by one?
