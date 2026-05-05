@@ -413,7 +413,7 @@ jobs:
             echo ""
             echo "- selected writer mode: \`${mode}\`"
             echo "- required checker family: \`${checker_family}\`"
-            echo "- WORKFLOW_PUSH_TOKEN is optional, but required for automated branches that edit .github/workflows/*."
+            echo "- WORKFLOW_PUSH_TOKEN is optional, but required for automated branches that edit .github/workflows/* and for loop-created PRs to trigger pull_request checks."
             echo "- API-key secrets are intentionally ignored for default daemon writers."
             echo "- OPENAI_API_KEY configured: \`${HAS_OPENAI_API_KEY_CONFIGURED}\`"
             echo "- ANTHROPIC_API_KEY configured: \`${HAS_ANTHROPIC_API_KEY_CONFIGURED}\`"
@@ -653,6 +653,8 @@ jobs:
           git checkout -B "$branch"
           if [[ -n "${WORKFLOW_PUSH_TOKEN:-}" ]]; then
             git remote set-url origin "https://x-access-token:${WORKFLOW_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git config --local --unset-all "http.https://github.com/.extraheader" || true
+            git config --local --unset-all "http.https://github.com/${GITHUB_REPOSITORY}.extraheader" || true
           fi
           unset WORKFLOW_PUSH_TOKEN
 
@@ -812,6 +814,8 @@ jobs:
           PR_TITLE: ${{ steps.meta.outputs.pr_title }}
           ISSUE_NUMBER: ${{ steps.meta.outputs.issue_number }}
         with:
+          # PAT-created PRs fire pull_request checks; GITHUB_TOKEN-created PRs do not.
+          github-token: ${{ secrets.WORKFLOW_PUSH_TOKEN || github.token }}
           script: |
             const branch = process.env.CODEX_BRANCH;
             const issueNumber = Number(process.env.ISSUE_NUMBER);
@@ -1088,7 +1092,7 @@ jobs:
                   ? `Branch push blocked: \`${codexPushBlockReason || 'unknown'}\``
                   : '',
                 codexPushBlocked && codexPushBlockReason === 'github_actions_workflow_permission_missing'
-                  ? 'Configure `WORKFLOW_PUSH_TOKEN` with repo Contents write and Workflows write so automated workflow-file branches can push.'
+                  ? 'Configure `WORKFLOW_PUSH_TOKEN` with repo Contents write, Workflows write, and Pull requests write so automated workflow-file branches can push and loop-created PRs can trigger checks.'
                   : '',
                 codexPrBlocked && branch
                   ? `Auto-fix branch: https://github.com/${context.repo.owner}/${context.repo.repo}/tree/${branch}`

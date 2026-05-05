@@ -195,6 +195,7 @@ def test_auth_step_reports_workflow_push_token(wf):
     assert "WORKFLOW_PUSH_TOKEN" in str(auth_step.get("env", {}))
     assert "has_workflow_push_token" in run_script
     assert ".github/workflows/*" in run_script
+    assert "trigger pull_request checks" in run_script
 
 
 def test_auth_step_reports_api_keys_as_diagnostics_only(wf):
@@ -288,6 +289,8 @@ def test_codex_subscription_step_uses_workflow_push_token_for_git_push(wf):
     assert "WORKFLOW_PUSH_TOKEN" in str(codex_step.get("env", {}))
     assert "git remote set-url origin" in run_script
     assert "x-access-token" in run_script
+    assert 'git config --local --unset-all "http.https://github.com/.extraheader"' in run_script
+    assert "http.https://github.com/${GITHUB_REPOSITORY}.extraheader" in run_script
     assert "unset WORKFLOW_PUSH_TOKEN" in run_script
 
 
@@ -368,6 +371,19 @@ def test_codex_pr_gets_cross_family_checker(wf):
     assert "writer:codex" in script
     assert "checker:claude" in script
     assert "Required checker family: Claude" in script
+
+
+def test_codex_pr_creation_uses_workflow_push_token_for_checks(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    codex_pr_step = next((s for s in steps if s.get("id") == "codex-pr-create"), None)
+    assert codex_pr_step is not None, "Must create a PR for Codex-authored changes"
+    with_block = codex_pr_step.get("with", {})
+    assert with_block.get("github-token") == (
+        "${{ secrets.WORKFLOW_PUSH_TOKEN || github.token }}"
+    ), (
+        "Codex PR creation must prefer WORKFLOW_PUSH_TOKEN so pull_request "
+        "checks fire on loop-created PRs."
+    )
 
 
 def test_codex_pr_creation_policy_block_is_classified(wf):
@@ -520,6 +536,7 @@ def test_no_pr_step_marks_review_without_failing_workflow(wf):
     assert "Workflow push token present" in script
     assert "WORKFLOW_PUSH_TOKEN" in script
     assert "Workflows write" in script
+    assert "Pull requests write" in script
 
 
 def test_pr_blocked_label_is_defined(wf):

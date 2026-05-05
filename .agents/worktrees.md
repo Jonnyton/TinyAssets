@@ -410,3 +410,14 @@ Notes:
   content-hash guard so long pages can be edited server-side.
 - Ship condition: focused wiki tests, ruff, plugin mirror build, diff-check,
   and PR opened for Claude/Cowork review.
+
+## Auto-Fix PR Token - 2026-05-05
+
+- 2026-05-05 create `../wf-auto-fix-pr-token` on
+  `codex/auto-fix-pr-token` by codex-gpt5-desktop.
+- Source: post-#395 proof opened PR #397, but the PR had no status checks
+  because it was created through the default Actions token.
+- Purpose: prefer `WORKFLOW_PUSH_TOKEN` for Codex PR creation so pull_request
+  checks fire on loop-created PRs.
+- Ship condition: workflow static tests, actionlint, diff-check, PR opened for
+  Claude/Cowork review.
