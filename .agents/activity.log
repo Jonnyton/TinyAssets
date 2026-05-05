@@ -3044,3 +3044,28 @@ Research synthesis for next evolution layer:
 Near-term candidate once current queue stabilizes:
 
 - Add an "evolution ledger" around each patch-loop request: source persona/user, raw filing shape, dedup decision, routing decision, writer outcome, PR/checker outcome, failure class, and suggested system improvement. This would let the loop learn from fake-user traffic without bloating every chatbot context.
+
+2026-05-05T00:25Z [codex-gpt5-desktop] **Idle stance confirmed; writer burst exposed queue fairness + label-race + Actions-env readiness issues.**
+
+Host direction:
+
+- When Codex has no narrow agreed rollout, stay active by watching the loop, researching evolution patterns, using user-sim when reachable, or reaching consensus with Cowork.
+- Codex rechecked Claude.ai user-sim first; `python scripts/claude_chat.py status` still cannot connect to Chrome CDP at `localhost:9222`, so browser-backed filings remain blocked rather than faked.
+
+Observed writer burst:
+
+- `auto-fix-bug.yml` dispatch run `25350498653` selected #304, not oldest pending #292. It changed files locally but did not open a PR because the Actions Codex environment lacked `ruff` and `pytest` (`No module named ruff/pytest`).
+- Scheduled run `25350617477` started moments later and reprocessed #304 despite the first run having just marked it attempted. This looks like a label visibility/race/idempotency gap. It opened PR #308 from #304, then #304 retained a stale earlier comment claiming no PR opened.
+- Commented on #308 with the same no-check gate as #297/#307: `statusCheckRollup` is empty, so clean merge state is not merge-ready without Claude-family checker + CI/check clarity.
+- Dispatch run `25350849480` then processed #303 and ended terminal `needs-human` / `auto-fix-reviewed` / `auto-fix-branch-push-blocked` with `github_actions_workflow_permission_missing`.
+- `community_loop_watch.py --json` at 00:24Z remains red on writer queue: old pending set is now #302/#301/#300/#299/#298/#292. #292 is still unattempted, but the watch evidence URL points at #302 because the watch sorts pending issue numbers descending.
+
+Code-read note:
+
+- `.github/workflows/auto-fix-bug.yml` discovery uses `maxIssues = 1`, loops labels in order, and accepts the first issue returned by `issues.listForRepo`; it does not explicitly sort/age pending requests. This explains why fresh/replayed issues can starve older pending work and why fake-user bursts will amplify unfairness.
+- GitHub's own Actions docs say scheduled events can be delayed/dropped under high load. That explains schedule unreliability risk, but not the queue-selection unfairness or duplicate #304 processing.
+
+Consensus proposal for Cowork:
+
+- Treat the next substrate slice as writer-lane fairness/idempotency/readiness, not another user-facing feature: explicit oldest-first/aging selection, per-issue lease or in-progress label before writer starts, dependency install/probe for ruff+pytest in the Codex Actions lane, and no-check PR status surfaced as a blocking readiness state.
+- Keep #297/#307/#308 unmerged until checks and opposite-family checker keys exist.
