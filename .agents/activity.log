@@ -3288,3 +3288,12 @@ Next coordination:
 - Merged #325 as squash commit `bcd2cc6` at 2026-05-05T03:37:41Z, then pulled main into this coordination worktree.
 - Cowork sequencing now says #286 next, then #308, #297, #307, re-rebase the 7-PR cluster, then #311. #326 has checker key YES but same no-check gate; do not merge until normal gates/check policy is satisfied. #327 requests changes; #324 fails vision fit.
 - Updated the `workflow-loop-coordination-watch` heartbeat prompt to include targeted wiki checker-note searches, #325 merged state, corrected `scripts/community_loop_watch.py` source path, and the latest Cowork sequencing/blockers.
+
+2026-05-05T03:48Z [codex-gpt5-desktop] **Schedule freshness partially recovered; writer woke but queue remains red.**
+
+- Pulled `origin/main` after the 03:45Z wiki sync update commit `15a05cc` (`.agents/.wiki_change_sync_seen.json` only).
+- `python scripts/community_loop_watch.py --json` is still overall red, but the stale Intake/Observation symptoms changed: `wiki-bug-sync.yml` succeeded via workflow_dispatch run `25356731499` at 03:45Z, and `uptime-canary.yml` succeeded via schedule run `25356712206` at 03:45Z.
+- `auto-fix-bug.yml` is now in progress via workflow_dispatch run `25356732070`; this proves the writer lane can wake after #325, but not yet that it drains oldest-first correctly.
+- Writer queue remains the blocker: #302 is still `needs-human`, with old pending #320-#309 and #301/#300/#299/#298; fresh pending #328-#353 appeared after wiki sync and should not be treated as stale yet.
+- PR state is unchanged for gating: #286 remains changes-requested, #326 has Cowork YES but no check rollup, #327 needs refactor, and #324 fails vision fit.
+- Updated the heartbeat prompt again so future watches distinguish partial recovery from proof that schedule freshness is solved.
