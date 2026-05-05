@@ -3352,3 +3352,13 @@ Next coordination:
 - TinyAssets should be understood as reusable small building blocks: when one user builds something from scratch, later users use those tiny assets to build their own thing.
 - For #309, the naming issue is not "asset generation" in isolation; the connector should communicate reusable project pieces / prior-user-built building blocks.
 - Current block for #309 remains writer queue pickup, not Codex/Cowork review, because no PR has been attempted yet.
+
+2026-05-05T06:01Z [codex-gpt5-desktop] **Codex cleared avoidable PR-triage bottlenecks across open unmerged queue.**
+
+- Host correctly called out that Codex/Cowork were becoming bottlenecks by leaving possible operator-side triage undone.
+- Posted request-changes reviews on #327 and #324: #327 hardcodes continuity-audit pairs into substrate; #324 adds a premature large RetroLab-specific surface before reusable runner/recipe/linter primitives.
+- Posted duplicate/supersession routing: prefer #362 over #297 for removed-test/capability detection, and #360 over #307 for slug truncation; do not merge both members of either pair.
+- Posted current dispositions on #355, #326, #282-#276, #153, #151, #150, #142, #164, #162, #158, and stale auto-change PRs #107/#106/#104/#100 so they no longer sit as ambiguous open PRs.
+- Focus-verified #362: `tests/test_auto_ship.py` 66 passed; ruff passed; plugin build import probe ok; diff-check passed. Still requires Claude-family checker.
+- Focus-verified #360: ruff/plugin build/diff-check passed, but broader wiki test group still fails on known `file_bug` compact-response `branch_task` mismatch; treat as merge-order blocked, not slug-code failed.
+- Remaining true non-Codex blockers: Claude/Cowork checker keys where required, visible CI/status rollups on auto-change PRs, loop self-rework on #327/#324/#286, duplicate closure after newer PRs settle, and schedule/queue liveness.
