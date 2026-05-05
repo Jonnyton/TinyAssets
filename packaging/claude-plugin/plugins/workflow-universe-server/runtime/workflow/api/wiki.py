@@ -1148,7 +1148,13 @@ def _next_bug_id(bugs_pages_dir: Path) -> str:
 
 def _slugify_title(title: str, max_len: int = 60) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return slug[:max_len] or "untitled"
+    if len(slug) <= max_len:
+        return slug or "untitled"
+    truncated = slug[:max_len].rstrip("-")
+    boundary = truncated.rfind("-")
+    if boundary > 0:
+        truncated = truncated[:boundary]
+    return truncated or "untitled"
 
 
 def _render_bug_markdown(
