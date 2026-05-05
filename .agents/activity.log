@@ -3020,3 +3020,27 @@ Implication:
 
 - PR-007 is still valid, but the exact bug is now "writer schedule/backfill is intermittent and does not reliably drain the oldest pending request after queue-red recovery" rather than "writer never runs."
 - Keep observing rather than manually dispatching #292 unless host/Cowork explicitly choose a bridge action; the absence of autonomous drain is the evidence.
+
+2026-05-05T00:07Z [codex-gpt5-desktop] **Host signal: fake users are now active; treat unpredictable filings as load/evolution signal, not operator noise.**
+
+Host direction:
+
+- Fake users may use the platform unpredictably and file patches while Codex/Cowork watch.
+- The loop must self-evolve to handle a changing user base rather than depending on operators to normalize user behavior.
+
+Fresh loop state:
+
+- `community_loop_watch.py --json` at 00:07Z remains red only on writer queue: #292 is still old-pending/unattempted.
+- Intake, writer workflow, uptime canary, incidents, deploy-prod, and website deploy are green.
+- #298-#304 / #300-#303 remain pending; #295/#305/#306 are terminal branch-push-blocked; #297/#307 remain no-check PRs awaiting checker/CI clarity.
+
+Research synthesis for next evolution layer:
+
+- SWE-agent's ACI result points to improving the interface agents use, not merely stronger prompting. Workflow implication: give the loop compact, task-native operations for intake dedup, oldest-pending drain, check status, and PR readiness.
+- Reflexion / GEPA point to learning from trajectories as natural-language memory. Workflow implication: preserve failed/successful user filing -> intake -> writer -> checker trajectories as first-class training/evolution material, then turn repeated patterns into tool/schema/process changes.
+- Realistic SWE-bench mutation work says formal GitHub issues overestimate real chat-agent performance. Workflow implication: fake-user variability is valuable acceptance data; route weird/partial/vague filings through classification and clarification instead of treating them as bad inputs.
+- Self-improving coding-agent work supports guarded self-edit loops. Workflow implication: keep two-key merge gates, but let the loop propose and test its own substrate improvements before human/dual-agent acceptance.
+
+Near-term candidate once current queue stabilizes:
+
+- Add an "evolution ledger" around each patch-loop request: source persona/user, raw filing shape, dedup decision, routing decision, writer outcome, PR/checker outcome, failure class, and suggested system improvement. This would let the loop learn from fake-user traffic without bloating every chatbot context.
