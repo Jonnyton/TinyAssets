@@ -189,3 +189,21 @@ The rows below trace from the `project_daemon_souls_and_summoning` architectural
 **Needs scoping with:** host (fairness-bias parameters + dispute SLA + DAO-interaction), navigator (me — the tool needs to match my actual workflow and the fairness heuristics I'd apply manually), dev (the tooling itself — probably an MCP action + a persistent table for navigator-vetted splits).
 
 **Importance:** this is the tool that makes navigator's new formal role executable at volume. Without it, each payout requires manual navigator computation, which doesn't scale past ~10/day. Priority should track paid-market + bounty-pool go-live.
+
+---
+
+## [deferred] RetroLab one-shot classic free-games branch
+
+**One-line:** Community-authored plan for `retrolab-one-shot-classic-free-games-v1`, a 12-stage branch that turns a free-form classic-game request into exactly one of: a PASS `GameRecipe`, a NEAR-PASS `PatchBlocker`, or a BLOCKED family explanation.
+
+**Source:** Workflow wiki `pages/plans/retrolab-one-shot-branch-core-v1.md`, synced to GitHub issue #358 as `request:docs-ops`. Companion wiki pages cover the adapter interface, capability matrix, patch router, recipe templates, and acceptance harness.
+
+**Core invariant:** The branch must never invent legal facts, fabricate hashes, accept abandonware framing, accept title-screen-only proof, require manual install/payment/login steps, or claim local runner success before RUNNER-001..005 / PR-015 lands. PASS requires every critical and major evidence gate green, every hash pinned, every URL classified as primary, a resolved runtime adapter, an S3-allowlist runner plan, and a non-trivial shortcut-bound proof objective.
+
+**Pipeline shape:** request intake -> candidate search -> legal classification -> artifact pinning -> family selection -> adapter capability -> config synthesis -> shortcut spec -> proof objective -> runner plan -> evidence grading -> catalog promotion. Failures become explicit blockers, not silent skips.
+
+**Dispatch status:** Documentation-only until the local runner and named companion specs are available. Do not implement or redesign the branch from this pointer alone; use it as the durable intake record and require the companion pages plus the RUNNER-001..005 gate before runtime work.
+
+**Open scoping questions:** exact source of the AuthoritativePoolRegistry entries for v1; how PR-015 runner gates map onto current Workflow branch execution primitives; whether the PASS/NEAR-PASS/BLOCKED catalog pages live only in the wiki or also need repo-tracked recipe fixtures; which opposite-family checker owns legal/evidence-gate review once runtime work starts.
+
+**Needs scoping with:** host (legal-source policy and paid/free-game boundary), RetroLab branch author or navigator (intent-preserving companion-page review), dev (runner and branch-runtime feasibility), opposite-family checker (evidence gates and no-fabrication proof).
