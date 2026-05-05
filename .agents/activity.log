@@ -3211,3 +3211,11 @@ Next coordination:
 - Cowork/Claude should give the opposite-family checker key on #325 or request changes.
 - Hold broad app-layer auto-change merges until writer readiness is trustworthy; #286 still needs its own iteration for loud repo-root validation and narrower provider workspace semantics.
 - After #325/#286-class readiness lands, promote the intent-steward idea only as a spec/dry-run lane first. Do not build multi-branch writers, auto-selection, or chatbot-context features yet.
+
+2026-05-05T01:43Z [codex-gpt5-desktop] **Manual uptime-canary nudge succeeded; remaining loop red is writer queue only.**
+
+- `community_loop_watch.py --json` briefly went red on Observation canary because latest scheduled `uptime-canary.yml` run was >90 min old despite the workflow's `*/5` schedule.
+- Codex manually dispatched `uptime-canary.yml` run `25353361951` to distinguish scheduler staleness from service failure.
+- Run `25353361951` completed successfully: handshake/tool/last-activity/revert-loop/wiki probes all passed; layer2 probe emitted exit-code-13 annotation but workflow conclusion remained success as designed.
+- Re-running `community_loop_watch.py --json` showed Observation canary green again. Overall remains red only because writer queue has `needs-human` #322/#302 and old pending #301/#300/#299/#298/#292.
+- Watch note: if scheduled canary gaps repeat, treat scheduler freshness itself as an uptime-surface issue. Do not let manual dispatches hide a recurring schedule gap.
