@@ -219,6 +219,32 @@ def test_create_universe_appends_ledger_to_new_universe(universe: str) -> None:
     assert entries[0]["payload"]["has_premise"] is True
 
 
+def test_create_universe_surfaces_synthesis_first_run_checklist(
+    universe: str,
+) -> None:
+    out = _call("create_universe", universe_id="checklist-uni", text="A seed.")
+
+    checklist = out["first_run_checklist"]
+    assert checklist["synthesis_signal_meaning"] == (
+        "synthesis_signal_emitted only means an uploaded source was queued; "
+        "it is meaningful after a premise exists, at least one canon source "
+        "has been uploaded, and the daemon has processed the synthesize_source "
+        "signal."
+    )
+    assert [step["id"] for step in checklist["steps"]] == [
+        "premise",
+        "canon_source",
+        "synthesis_signal",
+        "daemon_worldbuild",
+    ]
+    assert checklist["steps"][0]["complete"] is True
+    assert checklist["steps"][1]["complete"] is False
+    assert checklist["next_action"] == (
+        "Upload canon with add_canon or add_canon_from_path, then wait for "
+        "the daemon to process the synthesize_source signal."
+    )
+
+
 def test_get_ledger_returns_appended_entries(universe: str) -> None:
     _call("set_premise", text="First.")
     _call("set_premise", text="Second.")

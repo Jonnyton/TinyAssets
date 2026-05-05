@@ -193,6 +193,52 @@ def _extract_create_universe(
     return (uid, summary, {"has_premise": bool(text.strip())})
 
 
+def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
+    """Explain when upload synthesis signals become actionable on first run."""
+    steps = [
+        {
+            "id": "premise",
+            "label": "Save a premise with create_universe text or set_premise.",
+            "complete": has_premise,
+        },
+        {
+            "id": "canon_source",
+            "label": "Upload at least one canon source with add_canon or add_canon_from_path.",
+            "complete": False,
+        },
+        {
+            "id": "synthesis_signal",
+            "label": "Confirm the upload response reports synthesis_signal_emitted=true.",
+            "complete": False,
+        },
+        {
+            "id": "daemon_worldbuild",
+            "label": "Let the daemon process the synthesize_source signal in a worldbuild cycle.",
+            "complete": False,
+        },
+    ]
+    if has_premise:
+        next_action = (
+            "Upload canon with add_canon or add_canon_from_path, then wait for "
+            "the daemon to process the synthesize_source signal."
+        )
+    else:
+        next_action = (
+            "Set a premise before uploading canon; synthesis needs the premise "
+            "and source material to produce useful context."
+        )
+    return {
+        "synthesis_signal_meaning": (
+            "synthesis_signal_emitted only means an uploaded source was queued; "
+            "it is meaningful after a premise exists, at least one canon source "
+            "has been uploaded, and the daemon has processed the synthesize_source "
+            "signal."
+        ),
+        "steps": steps,
+        "next_action": next_action,
+    }
+
+
 # action name -> (extractor, control_daemon_gate)
 # control_daemon_gate: if set, the wrapper only logs when the daemon action
 # was an actual write (pause/resume), not a read (status).
@@ -3928,6 +3974,9 @@ def _action_create_universe(
             "universe_id": uid,
             "status": "created",
             "has_premise": bool(text.strip()),
+            "first_run_checklist": _synthesis_first_run_checklist(
+                has_premise=bool(text.strip()),
+            ),
         }
 
         # Auto-switch the daemon to the new universe
