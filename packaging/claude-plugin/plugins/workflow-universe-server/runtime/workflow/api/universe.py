@@ -48,6 +48,7 @@ to ``workflow.api.engine_helpers``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -3614,6 +3615,157 @@ def _action_list_canon(
     return json.dumps({"universe_id": uid, "canon_files": files, "count": len(files)})
 
 
+def _source_sidecar_meta(canon_dir: Path, filename: str) -> dict[str, Any]:
+    meta_path = canon_dir / f".{filename}.meta.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _manifest_data(canon_dir: Path) -> dict[str, Any]:
+    manifest_path = canon_dir / ".manifest.json"
+    if not manifest_path.exists():
+        return {}
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _source_file_entry(
+    path: Path,
+    canon_dir: Path,
+    manifest: dict[str, Any],
+    raw: bytes | None = None,
+) -> dict[str, Any]:
+    stat = path.stat()
+    meta = _source_sidecar_meta(canon_dir, path.name)
+    manifest_entry = manifest.get(path.name, {})
+    if not isinstance(manifest_entry, dict):
+        manifest_entry = {}
+    synthesized_docs = manifest_entry.get("synthesized_docs", [])
+    if not isinstance(synthesized_docs, list):
+        synthesized_docs = []
+    manifest_sha = manifest_entry.get("sha256", "")
+    current_sha = hashlib.sha256(raw).hexdigest() if raw is not None else manifest_sha
+
+    entry: dict[str, Any] = {
+        "filename": path.name,
+        "source_path": f"sources/{path.name}",
+        "size_bytes": stat.st_size,
+        "modified_at": datetime.fromtimestamp(
+            stat.st_mtime, tz=timezone.utc,
+        ).isoformat(),
+        "sha256": current_sha,
+        "provenance": meta.get("provenance", ""),
+        "added": meta.get("added", ""),
+        "source": meta.get("source", ""),
+        "original_source_path": meta.get("source_path", ""),
+        "file_type": manifest_entry.get("file_type", "unknown"),
+        "mime_type": manifest_entry.get("mime_type", ""),
+        "manifest_sha256": manifest_sha,
+        "ingested_at": manifest_entry.get("ingested_at", ""),
+        "synthesized_docs": synthesized_docs,
+        "synthesis_complete": bool(synthesized_docs),
+        "synthesis_failed": bool(manifest_entry.get("synthesis_failed")),
+    }
+    if isinstance(manifest_entry.get("last_bite_outcomes"), dict):
+        entry["last_bite_outcomes"] = manifest_entry["last_bite_outcomes"]
+    return entry
+
+
+def _action_list_sources(
+    universe_id: str = "",
+    **_kwargs: Any,
+) -> str:
+    """List uploaded source documents with attestation metadata."""
+    uid = universe_id or _default_universe()
+    udir = _universe_dir(uid)
+    canon_dir = udir / "canon"
+    sources_dir = canon_dir / "sources"
+
+    if not sources_dir.is_dir():
+        return json.dumps({
+            "universe_id": uid,
+            "source_files": [],
+            "source_count": 0,
+            "note": "No canon/sources directory.",
+        })
+
+    manifest = _manifest_data(canon_dir)
+    source_files: list[dict[str, Any]] = []
+    try:
+        for path in sorted(sources_dir.iterdir()):
+            if path.is_file() and not path.name.startswith("."):
+                source_files.append(_source_file_entry(path, canon_dir, manifest))
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to list source files: {exc}"})
+
+    return json.dumps({
+        "universe_id": uid,
+        "source_files": source_files,
+        "source_count": len(source_files),
+    })
+
+
+def _action_read_source(
+    universe_id: str = "",
+    filename: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Read one uploaded source document verbatim with checksum metadata."""
+    uid = universe_id or _default_universe()
+    udir = _universe_dir(uid)
+    canon_dir = udir / "canon"
+    sources_dir = canon_dir / "sources"
+
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename:
+        return json.dumps({
+            "error": "Filename required. Use list_sources to see available files.",
+        })
+
+    target = (sources_dir / safe_name).resolve()
+    if not target.is_relative_to(sources_dir.resolve()):
+        return json.dumps({"error": "Path traversal not allowed."})
+    if not target.is_file():
+        return json.dumps({
+            "error": f"Source file '{safe_name}' not found.",
+            "hint": "Use list_sources to see available files.",
+        })
+
+    try:
+        raw = target.read_bytes()
+        content = raw.decode("utf-8")
+        manifest = _manifest_data(canon_dir)
+        entry = _source_file_entry(target, canon_dir, manifest, raw=raw)
+    except UnicodeDecodeError as exc:
+        return json.dumps({
+            "error": (
+                f"Source file '{safe_name}' is not valid UTF-8 "
+                f"({exc.reason} at byte {exc.start})."
+            ),
+        })
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to read source file: {exc}"})
+
+    truncated = len(content) > 10000
+    entry.update({
+        "universe_id": uid,
+        "content": content[:10000] if truncated else content,
+        "truncated": truncated,
+    })
+    if truncated:
+        entry["total_chars"] = len(content)
+        entry["note"] = "Source file truncated to 10K chars."
+    return json.dumps(entry)
+
+
 def _action_read_canon(
     universe_id: str = "",
     filename: str = "",
@@ -4044,6 +4196,8 @@ def _universe_impl(
         "add_canon_from_path": _action_add_canon_from_path,
         "list_canon": _action_list_canon,
         "read_canon": _action_read_canon,
+        "list_sources": _action_list_sources,
+        "read_source": _action_read_source,
         "control_daemon": _action_control_daemon,
         "switch_universe": _action_switch_universe,
         "create_universe": _action_create_universe,

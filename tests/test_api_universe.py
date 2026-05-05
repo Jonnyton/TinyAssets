@@ -75,7 +75,8 @@ def test_module_exposes_expected_public_names() -> None:
         "_action_query_world", "_action_read_premise",
         "_action_set_premise", "_action_add_canon",
         "_action_add_canon_from_path", "_action_list_canon",
-        "_action_read_canon", "_action_control_daemon",
+        "_action_read_canon", "_action_list_sources",
+        "_action_read_source", "_action_control_daemon",
         "_action_get_activity", "_action_get_recent_events",
         "_action_get_ledger", "_action_switch_universe",
         "_action_create_universe",
@@ -223,6 +224,7 @@ def test_universe_impl_dispatch_table_has_known_actions() -> None:
     "give_direction",
     "query_world", "read_premise", "set_premise", "add_canon",
     "add_canon_from_path", "list_canon", "read_canon",
+    "list_sources", "read_source",
     "control_daemon", "get_activity", "get_recent_events",
     "get_ledger", "switch_universe", "create_universe",
 ])

@@ -109,7 +109,7 @@ def _universe_dispatch_keys() -> set[str]:
         "submit_request", "give_direction",
         "read_premise", "set_premise",
         "add_canon", "add_canon_from_path",
-        "list_canon", "read_canon",
+        "list_canon", "read_canon", "list_sources", "read_source",
         "control_daemon", "switch_universe", "create_universe",
         "queue_list", "queue_cancel",
         "subscribe_goal", "unsubscribe_goal", "list_subscriptions",

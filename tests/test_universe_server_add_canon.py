@@ -16,6 +16,7 @@ Covers two defect fixes landed together:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -235,6 +236,56 @@ class TestAddCanonFromPathHappyPath:
         assert entries[0]["payload"]["provenance"] == "draft"
         assert entries[0]["payload"]["source_path"] == str(src)
         assert entries[0]["payload"]["synthesis_signal"] is True
+
+
+class TestSourceInspection:
+    def test_list_sources_exposes_manifest_and_attestation(
+        self, universe: str, tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "chapter-one.md"
+        src.write_text("# Chapter One\n\nThe gate opens.", encoding="utf-8")
+        _call("add_canon_from_path", path=str(src), provenance_tag="draft upload")
+
+        out = json.loads(us._universe_impl(action="list_sources"))
+
+        assert out["universe_id"] == universe
+        assert out["source_count"] == 1
+        source = out["source_files"][0]
+        assert source["filename"] == "chapter-one.md"
+        assert source["source_path"] == "sources/chapter-one.md"
+        assert source["provenance"] == "draft upload"
+        assert source["original_source_path"] == str(src)
+        assert source["sha256"] == hashlib.sha256(src.read_bytes()).hexdigest()
+        assert source["manifest_sha256"] == source["sha256"]
+        assert source["synthesis_complete"] is False
+        assert source["synthesized_docs"] == []
+
+    def test_read_source_returns_verbatim_content_and_checksum(
+        self, universe: str, tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "lore.md"
+        source_bytes = b"# Lore\n\nThe old bridge remembers every footstep."
+        content = source_bytes.decode("utf-8")
+        src.write_bytes(source_bytes)
+        _call("add_canon_from_path", path=str(src), provenance_tag="source pack")
+
+        out = json.loads(us._universe_impl(action="read_source", filename="lore.md"))
+
+        assert out["universe_id"] == universe
+        assert out["filename"] == "lore.md"
+        assert out["content"] == content
+        assert out["truncated"] is False
+        assert out["provenance"] == "source pack"
+        assert out["sha256"] == hashlib.sha256(source_bytes).hexdigest()
+
+    def test_read_source_rejects_path_segments(self, universe: str) -> None:
+        out = json.loads(us._universe_impl(
+            action="read_source",
+            filename="../PROGRAM.md",
+        ))
+
+        assert "error" in out
+        assert "list_sources" in out["error"]
 
 
 # ─── add_canon_from_path rejects bad input ─────────────────────────────
