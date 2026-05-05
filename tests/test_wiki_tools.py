@@ -300,6 +300,23 @@ class TestWikiPromote:
         assert (wiki_dir / "pages" / "concepts" / "promotable.md").exists()
         assert not (wiki_dir / "drafts" / "concepts" / "promotable.md").exists()
 
+    def test_promote_first_page_can_link_to_seed_index(self, tmp_path, monkeypatch):
+        wiki_root = tmp_path / "FreshWiki"
+        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+        content = (
+            "---\ntitle: First Concept\ntype: concept\n"
+            "created: 2026-05-05\nupdated: 2026-05-05\n"
+            "sources: [first-note]\n---\n\n"
+            "This is the first promoted concept in a fresh wiki, so it links "
+            "back to the canonical seed [[index]] until another page exists.\n"
+        )
+        wiki("write", category="concepts", filename="first-concept", content=content)
+
+        result = json.loads(wiki("promote", filename="first-concept"))
+
+        assert result["status"] == "promoted"
+        assert (wiki_root / "pages" / "concepts" / "first-concept.md").exists()
+
     def test_promote_blocks_without_title(self, wiki_dir):
         content = "---\ntype: concept\n---\nShort."
         wiki("write", category="concepts", filename="bad-draft", content=content)
@@ -459,6 +476,22 @@ class TestWikiLint:
         assert any("Missing type" in issue for issue in issues)
         assert any("Body too short" in issue for issue in issues)
         assert not any("orphan-page" in issue for issue in issues)
+
+    def test_lint_accepts_seed_index_as_wikilink_target(self, tmp_path, monkeypatch):
+        wiki_root = tmp_path / "FreshWiki"
+        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+        content = (
+            "---\ntitle: First Concept\ntype: concept\n"
+            "confidence: medium\nsources: [first-note]\n---\n\n"
+            "This first page links to the canonical seed [[index]] while the "
+            "fresh wiki has no other promoted content to cross-reference.\n"
+        )
+        wiki("write", category="concepts", filename="first-concept", content=content)
+        wiki("promote", filename="first-concept")
+
+        result = json.loads(wiki("lint", page="first-concept"))
+
+        assert "MISSING: [[index]]" not in result.get("issues", [])
 
 
 class TestWikiSupersede:
