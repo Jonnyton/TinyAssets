@@ -57,6 +57,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -3315,6 +3316,38 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": f"Failed to write premise: {exc}"})
 
 
+_CANON_SAME_FILENAME_BEHAVIOR = (
+    "A later add_canon call with the same filename replaces the stored "
+    "source bytes and manifest entry when the content hash changes; "
+    "identical bytes are treated as unchanged."
+)
+
+
+def _canon_source_operation(canon_dir: Path, filename: str, data: bytes) -> str:
+    from workflow.ingestion.core import SourceManifest
+
+    existing = SourceManifest.load(canon_dir).get(filename)
+    if existing is None:
+        return "created"
+    if existing.sha256 == sha256(data).hexdigest():
+        return "unchanged"
+    return "replaced"
+
+
+def _canon_version_semantics(filename: str, routed_to: str) -> dict[str, Any]:
+    identity = f"canon/{filename}"
+    if routed_to == "sources":
+        identity = f"canon/sources/{filename}"
+    return {
+        "mode": "filename_upsert",
+        "identity": identity,
+        "same_filename_behavior": _CANON_SAME_FILENAME_BEHAVIOR,
+        "history_retained": False,
+        "supersede_supported": False,
+        "deprecate_supported": False,
+    }
+
+
 def _action_add_canon(
     universe_id: str = "",
     filename: str = "",
@@ -3352,6 +3385,7 @@ def _action_add_canon(
 
     try:
         canon_dir.mkdir(parents=True, exist_ok=True)
+        source_operation = _canon_source_operation(canon_dir, safe_name, data)
         result = ingest_file(
             canon_dir=canon_dir,
             filename=safe_name,
@@ -3377,6 +3411,10 @@ def _action_add_canon(
             "routed_to": result.routed_to,
             "bytes_written": result.byte_count,
             "synthesis_signal_emitted": result.signal_emitted,
+            "source_operation": source_operation,
+            "version_semantics": _canon_version_semantics(
+                safe_name, result.routed_to,
+            ),
             "note": (
                 "Canon file ingested via ingest_file(). The daemon will "
                 "pick up the synthesize_source signal on its next cycle."
@@ -3497,6 +3535,7 @@ def _action_add_canon_from_path(
 
     try:
         canon_dir.mkdir(parents=True, exist_ok=True)
+        source_operation = _canon_source_operation(canon_dir, safe_name, data)
         result = ingest_file(
             canon_dir=canon_dir,
             filename=safe_name,
@@ -3523,6 +3562,10 @@ def _action_add_canon_from_path(
             "synthesis_signal_emitted": result.signal_emitted,
             "routed_to": result.routed_to,
             "provenance": tag,
+            "source_operation": source_operation,
+            "version_semantics": _canon_version_semantics(
+                safe_name, result.routed_to,
+            ),
             # Task #15: echo the first 200 decoded chars so the host
             # can confirm in the MCP response what was ingested —
             # silent file-swap becomes detectable without an
