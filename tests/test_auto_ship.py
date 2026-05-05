@@ -375,6 +375,35 @@ class TestDiffContent:
             v["rule_id"] == "diff_not_string" for v in d["violations"]
         )
 
+    def test_diff_removing_test_coverage_blocked(self):
+        d = validate_ship_request(_valid_packet(
+            diff=(
+                "--- a/tests/test_canary.py\n"
+                "+++ b/tests/test_canary.py\n"
+                "-def test_canary_records_receipt():\n"
+                "-    assert receipt['status'] == 'ok'\n"
+                "+# timestamp-only canary\n"
+            )
+        ))
+        assert d["validation_result"] == "blocked"
+        assert any(
+            v["rule_id"] == "diff_removes_test_coverage"
+            for v in d["violations"]
+        )
+
+    def test_diff_removing_capability_claim_blocked(self):
+        d = validate_ship_request(_valid_packet(
+            diff=(
+                "-This canary preserves the submit_request capability.\n"
+                "+This canary records a timestamp.\n"
+            )
+        ))
+        assert d["validation_result"] == "blocked"
+        assert any(
+            v["rule_id"] == "diff_removes_capability"
+            for v in d["violations"]
+        )
+
 
 # ── Rollback handle composition ───────────────────────────────────────────
 

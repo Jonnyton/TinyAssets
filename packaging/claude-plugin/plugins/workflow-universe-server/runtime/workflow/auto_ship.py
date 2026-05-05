@@ -111,6 +111,24 @@ SECRET_REGEX_PATTERNS: tuple[str, ...] = (
     r"AKIA[0-9A-Z]{16}",               # AWS access key id
 )
 
+#: Deleted diff lines that indicate lost tests or coverage. Conservative: v0
+#: auto-ship should stop for manual review rather than remove proof.
+TEST_COVERAGE_REMOVAL_PATTERNS: tuple[str, ...] = (
+    r"\bdef\s+test_[A-Za-z0-9_]*\b",
+    r"\bclass\s+Test[A-Za-z0-9_]*\b",
+    r"\bpytest\b",
+    r"\bunittest\b",
+    r"\bassert\b",
+    r"\btest coverage\b",
+    r"\bcoverage\b",
+)
+
+#: Deleted diff lines that explicitly remove an advertised capability.
+CAPABILITY_REMOVAL_PATTERNS: tuple[str, ...] = (
+    r"\bcapability\b",
+    r"\bcapabilities\b",
+)
+
 
 def _normalize_path(path: str) -> str:
     """Cheap path normalization — strip literal leading ``./``, collapse ``//``,
@@ -242,6 +260,39 @@ def _diff_violations(diff: str) -> list[dict[str, Any]]:
                 ),
             })
             # Don't break — we want all matches recorded for audit.
+    removed_lines = [
+        line[1:]
+        for line in diff.splitlines()
+        if line.startswith("-") and not line.startswith("---")
+    ]
+    if any(
+        re.search(pattern, line, flags=re.IGNORECASE)
+        for line in removed_lines
+        for pattern in TEST_COVERAGE_REMOVAL_PATTERNS
+    ):
+        out.append({
+            "rule_id": "diff_removes_test_coverage",
+            "field": "diff",
+            "severity": "block",
+            "message": (
+                "diff removes lines that look like tests or coverage proof — "
+                "manual review is required before shipping"
+            ),
+        })
+    if any(
+        re.search(pattern, line, flags=re.IGNORECASE)
+        for line in removed_lines
+        for pattern in CAPABILITY_REMOVAL_PATTERNS
+    ):
+        out.append({
+            "rule_id": "diff_removes_capability",
+            "field": "diff",
+            "severity": "block",
+            "message": (
+                "diff removes an explicit capability claim — manual review is "
+                "required before shipping"
+            ),
+        })
     return out
 
 
