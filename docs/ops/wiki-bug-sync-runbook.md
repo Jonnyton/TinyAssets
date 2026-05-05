@@ -63,7 +63,14 @@ commits increments back. This makes reruns idempotent.
 | `pages/workflows/*` | `request:branch-refinement` |
 | builder notes under `pages/notes/*` | `request:branch-refinement` |
 | strategic/roadmap/design/architecture/refactoring/attribution plans | `request:project-design` |
+| patch/feature pages whose title/path has architectural shape | `request:project-design` |
 | other promoted plans/concepts | `request:docs-ops` |
+
+Architectural shape wins over the folder name. A patch request asking for
+architecture, design-note, roadmap, operating-model, or substrate changes is
+filed as `request:project-design`; the auto-fix workflow then drafts under
+`docs/design-notes/proposed/` on a `design-note-draft/*` branch instead of
+opening a mechanical `auto-change/*` branch.
 
 ## Manual trigger
 
