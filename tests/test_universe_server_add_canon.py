@@ -73,6 +73,25 @@ def _signals(uid: str) -> list[dict]:
 
 
 class TestAddCanonSynthesisSignal:
+    def test_add_canon_response_makes_version_semantics_explicit(
+        self, universe: str,
+    ) -> None:
+        out = _call("add_canon", filename="ryn.md", text="# Ryn\n\nA scout.")
+
+        assert out["source_operation"] == "created"
+        assert out["version_semantics"] == {
+            "mode": "filename_upsert",
+            "identity": "canon/sources/ryn.md",
+            "same_filename_behavior": (
+                "A later add_canon call with the same filename replaces the "
+                "stored source bytes and manifest entry when the content hash "
+                "changes; identical bytes are treated as unchanged."
+            ),
+            "history_retained": False,
+            "supersede_supported": False,
+            "deprecate_supported": False,
+        }
+
     def test_add_canon_emits_signal(self, universe: str) -> None:
         """The pre-fix path bypassed ingest_file and no signal ever
         fired. Post-fix: every user upload emits synthesize_source."""
@@ -110,6 +129,17 @@ class TestAddCanonSynthesisSignal:
         assert entries[0]["target"] == "canon/ref.md"
         assert entries[0]["payload"]["provenance"] == "rough notes"
 
+    def test_add_canon_reports_replace_and_unchanged(
+        self, universe: str,
+    ) -> None:
+        first = _call("add_canon", filename="notes.md", text="Old notes")
+        second = _call("add_canon", filename="notes.md", text="New notes")
+        third = _call("add_canon", filename="notes.md", text="New notes")
+
+        assert first["source_operation"] == "created"
+        assert second["source_operation"] == "replaced"
+        assert third["source_operation"] == "unchanged"
+
 
 # ─── add_canon_from_path happy path ────────────────────────────────────
 
@@ -141,6 +171,9 @@ class TestAddCanonFromPathHappyPath:
         assert out["synthesis_signal_emitted"] is True
         assert out["routed_to"] == "sources"
         assert out["provenance"] == "published novel"
+        assert out["source_operation"] == "created"
+        assert out["version_semantics"]["mode"] == "filename_upsert"
+        assert out["version_semantics"]["identity"] == "canon/sources/big-lore.md"
 
         signals = _signals(universe)
         assert len(signals) == 1
