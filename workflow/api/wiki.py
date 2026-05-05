@@ -458,6 +458,7 @@ def _wiki_write(
     filename: str = "",
     content: str = "",
     log_entry: str = "",
+    append: bool = False,
     **_kwargs: Any,
 ) -> str:
     if not filename or not content:
@@ -498,14 +499,25 @@ def _wiki_write(
 
     if promoted_path.exists():
         try:
-            promoted_path.write_text(content, encoding="utf-8")
+            if append:
+                with open(promoted_path, "a", encoding="utf-8") as f:
+                    f.write(content)
+                action = "append"
+                note = "Appended to existing promoted page in-place."
+                status = "appended"
+            else:
+                promoted_path.write_text(content, encoding="utf-8")
+                action = "update"
+                note = "Updated existing promoted page in-place."
+                status = "updated"
             _append_wiki_log(
-                f"update | pages/{category}/{slug} | {log_entry or 'in-place update'}"
+                f"{action} | pages/{category}/{slug} | "
+                f"{log_entry or ('chunk append' if append else 'in-place update')}"
             )
             return json.dumps({
                 "path": f"pages/{category}/{slug}.md",
-                "status": "updated",
-                "note": "Updated existing promoted page in-place.",
+                "status": status,
+                "note": note,
             })
         except OSError as exc:
             return json.dumps({"error": f"Failed to write: {exc}"})
@@ -514,16 +526,24 @@ def _wiki_write(
     try:
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         is_new = not draft_path.exists()
-        draft_path.write_text(content, encoding="utf-8")
-        action_word = "draft" if is_new else "draft-update"
+        if append and not is_new:
+            with open(draft_path, "a", encoding="utf-8") as f:
+                f.write(content)
+            action_word = "draft-append"
+        else:
+            draft_path.write_text(content, encoding="utf-8")
+            action_word = "draft" if is_new else "draft-update"
         _append_wiki_log(
-            f"{action_word} | drafts/{category}/{slug} | {log_entry or 'new draft'}"
+            f"{action_word} | drafts/{category}/{slug} | "
+            f"{log_entry or ('chunk append' if append else 'new draft')}"
         )
         return json.dumps({
             "path": f"drafts/{category}/{slug}.md",
-            "status": "drafted" if is_new else "updated",
+            "status": (
+                "drafted" if is_new else ("appended" if append else "updated")
+            ),
             "note": (
-                f"{'Drafted' if is_new else 'Updated draft'}: "
+                f"{'Drafted' if is_new else ('Appended draft' if append else 'Updated draft')}: "
                 "call wiki promote to move to pages/."
             ),
         })
@@ -1734,6 +1754,7 @@ def wiki(
     filename: str = "",
     content: str = "",
     log_entry: str = "",
+    append: bool = False,
     old_text: str = "",
     new_text: str = "",
     expected_sha256: str = "",
@@ -1828,6 +1849,7 @@ def wiki(
         "filename": filename,
         "content": content,
         "log_entry": log_entry,
+        "append": append,
         "old_text": old_text,
         "new_text": new_text,
         "expected_sha256": expected_sha256,

@@ -261,6 +261,47 @@ def test_wiki_write_drafts_then_promote_roundtrip(wiki_env):
     assert "pages/notes/my-note.md" in promoted["path"]
 
 
+def test_wiki_write_appends_large_chunks_with_unresolved_same_turn_links(wiki_env):
+    first_chunk = (
+        "---\ntitle: Chunked Note\ntype: note\nsources: [chat]\n---\n\n"
+        "This first chunk references [[target-filed-later]] before that "
+        "target exists.\n"
+        + ("alpha " * 3000)
+    )
+    second_chunk = "\n\nMore detail after the first partial commit.\n" + (
+        "beta " * 3000
+    )
+
+    first = json.loads(
+        wiki(
+            action="write",
+            category="notes",
+            filename="chunked-note",
+            content=first_chunk,
+            append=True,
+        )
+    )
+    assert first["status"] == "drafted"
+    draft_path = wiki_env / "drafts" / "notes" / "chunked-note.md"
+    assert "[[target-filed-later]]" in draft_path.read_text(encoding="utf-8")
+
+    second = json.loads(
+        wiki(
+            action="write",
+            category="notes",
+            filename="chunked-note",
+            content=second_chunk,
+            append=True,
+        )
+    )
+
+    assert second["status"] == "appended"
+    saved = draft_path.read_text(encoding="utf-8")
+    assert len(saved) == len(first_chunk) + len(second_chunk)
+    assert "More detail after the first partial commit." in saved
+    assert not (wiki_env / "pages" / "notes" / "target-filed-later.md").exists()
+
+
 def test_wiki_patch_updates_long_page_without_full_replace(wiki_env):
     path = wiki_env / "pages" / "notes" / "long-note.md"
     original = (

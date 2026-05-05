@@ -886,6 +886,7 @@ def wiki(
     filename: str = "",
     content: str = "",
     log_entry: str = "",
+    append: bool = False,
     old_text: str = "",
     new_text: str = "",
     expected_sha256: str = "",
@@ -929,6 +930,9 @@ def wiki(
         action: One of — reads: read, search, list, lint;
             writes: write, patch, consolidate, promote, ingest, supersede,
             sync_projects, file_bug, cosign_bug.
+        append: For action="write", append content to an existing page or
+            draft instead of replacing it. Use for large pages that need
+            same-turn partial commits before all wikilink targets exist.
         old_text/new_text: For action="patch", exact text to replace server-side.
         expected_sha256: Optional full-page hash guard for action="patch".
     """
@@ -940,6 +944,7 @@ def wiki(
         filename=filename,
         content=content,
         log_entry=log_entry,
+        append=append,
         old_text=old_text,
         new_text=new_text,
         expected_sha256=expected_sha256,
