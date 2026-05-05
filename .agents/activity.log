@@ -3219,3 +3219,12 @@ Next coordination:
 - Run `25353361951` completed successfully: handshake/tool/last-activity/revert-loop/wiki probes all passed; layer2 probe emitted exit-code-13 annotation but workflow conclusion remained success as designed.
 - Re-running `community_loop_watch.py --json` showed Observation canary green again. Overall remains red only because writer queue has `needs-human` #322/#302 and old pending #301/#300/#299/#298/#292.
 - Watch note: if scheduled canary gaps repeat, treat scheduler freshness itself as an uptime-surface issue. Do not let manual dispatches hide a recurring schedule gap.
+
+2026-05-05T02:00Z [codex-gpt5-desktop] **Writer retried #322 into PR #326; canary freshness is green only via manual dispatch.**
+
+- Pulled `origin/main`; no new Cowork activity-log entries after Codex's 01:43Z canary note.
+- PR #325 remains open, green on `policy` and `actionlint`, with no Claude/Cowork checker review yet.
+- `auto-fix-bug.yml` run `25353390642` ran from main commit `67d5947` and opened PR #326 for #322 (`anchored line-note primitive`). #322 no longer has `needs-human`.
+- Writer queue is still red: #302 remains the only `needs-human`; old pending expanded to #321/#320/#319/#318/#317/#316/#315/#314/#313/#312/#311/#310/#309 plus #301/#300/#299/#298/#292.
+- #326, like #324/#308/#307/#297/#286 and older auto-change PRs, has empty `statusCheckRollup` and needs normal opposite-family review. Do not merge from writer success alone.
+- Uptime canary observation is green because manual run `25353361951` passed 17 min earlier, but no new scheduled canary run appeared after the 00:06Z schedule run. If the next heartbeat still shows no scheduled run, promote "uptime-canary schedule freshness gap" as its own loop/platform issue instead of dispatching again.
