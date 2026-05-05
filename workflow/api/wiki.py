@@ -19,6 +19,7 @@ but importable for tests via `workflow.universe_server` re-exports.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -528,6 +529,71 @@ def _wiki_write(
         })
     except OSError as exc:
         return json.dumps({"error": f"Failed to write draft: {exc}"})
+
+
+def _wiki_patch(
+    page: str = "",
+    old_text: str = "",
+    new_text: str = "",
+    expected_sha256: str = "",
+    log_entry: str = "",
+    dry_run: bool = True,
+    **_kwargs: Any,
+) -> str:
+    if not page:
+        return json.dumps({"error": "page parameter is required."})
+    if not old_text:
+        return json.dumps({"error": "old_text parameter is required."})
+
+    resolved = _resolve_page(page)
+    if resolved is None:
+        return json.dumps({"error": f"Page not found: {page}"})
+
+    text = _read_text(resolved)
+    old_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    rel = _page_rel_path(resolved)
+
+    if expected_sha256 and expected_sha256 != old_sha:
+        return json.dumps({
+            "error": "content hash mismatch",
+            "status": "conflict",
+            "path": rel,
+            "expected_sha256": expected_sha256,
+            "actual_sha256": old_sha,
+        })
+
+    matches = text.count(old_text)
+    if matches != 1:
+        return json.dumps({
+            "error": "old_text must match exactly once",
+            "status": "conflict",
+            "path": rel,
+            "matches": matches,
+            "sha256": old_sha,
+        })
+
+    patched = text.replace(old_text, new_text, 1)
+    new_sha = hashlib.sha256(patched.encode("utf-8")).hexdigest()
+    response = {
+        "path": rel,
+        "matches": matches,
+        "old_sha256": old_sha,
+        "new_sha256": new_sha,
+        "old_total_chars": len(text),
+        "new_total_chars": len(patched),
+    }
+
+    if dry_run:
+        response.update({"status": "dry_run", "would_write": old_sha != new_sha})
+        return json.dumps(response)
+
+    try:
+        resolved.write_text(patched, encoding="utf-8")
+        _append_wiki_log(f"patch | {rel} | {log_entry or 'exact replacement'}")
+        response.update({"status": "patched"})
+        return json.dumps(response)
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to patch: {exc}"})
 
 
 def _wiki_consolidate(
@@ -1668,6 +1734,9 @@ def wiki(
     filename: str = "",
     content: str = "",
     log_entry: str = "",
+    old_text: str = "",
+    new_text: str = "",
+    expected_sha256: str = "",
     source_url: str = "",
     old_page: str = "",
     new_draft: str = "",
@@ -1735,6 +1804,7 @@ def wiki(
         "list": _wiki_list,
         "lint": _wiki_lint,
         "write": _wiki_write,
+        "patch": _wiki_patch,
         "consolidate": _wiki_consolidate,
         "promote": _wiki_promote,
         "ingest": _wiki_ingest,
@@ -1758,6 +1828,9 @@ def wiki(
         "filename": filename,
         "content": content,
         "log_entry": log_entry,
+        "old_text": old_text,
+        "new_text": new_text,
+        "expected_sha256": expected_sha256,
         "source_url": source_url,
         "old_page": old_page,
         "new_draft": new_draft,

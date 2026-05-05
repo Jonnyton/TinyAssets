@@ -886,6 +886,9 @@ def wiki(
     filename: str = "",
     content: str = "",
     log_entry: str = "",
+    old_text: str = "",
+    new_text: str = "",
+    expected_sha256: str = "",
     source_url: str = "",
     old_page: str = "",
     new_draft: str = "",
@@ -924,8 +927,10 @@ def wiki(
 
     Args:
         action: One of — reads: read, search, list, lint;
-            writes: write, consolidate, promote, ingest, supersede,
+            writes: write, patch, consolidate, promote, ingest, supersede,
             sync_projects, file_bug, cosign_bug.
+        old_text/new_text: For action="patch", exact text to replace server-side.
+        expected_sha256: Optional full-page hash guard for action="patch".
     """
     return _wiki_impl(
         action=action,
@@ -935,6 +940,9 @@ def wiki(
         filename=filename,
         content=content,
         log_entry=log_entry,
+        old_text=old_text,
+        new_text=new_text,
+        expected_sha256=expected_sha256,
         source_url=source_url,
         old_page=old_page,
         new_draft=new_draft,

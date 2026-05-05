@@ -399,3 +399,14 @@ Notes:
 - Ship condition: static workflow tests, ruff, diff-check, PR opened for
   Cowork/Claude review; recovery verified by a later writer run advancing past
   the repeated issue.
+
+## Wiki Patch Action - 2026-05-05
+
+- 2026-05-05 create `../wf-wiki-patch-action` on
+  `codex/wiki-patch-action` by codex-gpt5-desktop.
+- Source: loop liveness incident: issue #347 blocked because `wiki read`
+  truncates long pages while `wiki write` requires full replacement.
+- Purpose: add a safe exact-match partial-patch wiki action with optional
+  content-hash guard so long pages can be edited server-side.
+- Ship condition: focused wiki tests, ruff, plugin mirror build, diff-check,
+  and PR opened for Claude/Cowork review.

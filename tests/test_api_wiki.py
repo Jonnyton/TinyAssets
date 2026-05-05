@@ -7,6 +7,7 @@ directly to lock in the canonical implementation surface.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -258,6 +259,100 @@ def test_wiki_write_drafts_then_promote_roundtrip(wiki_env):
     promoted = json.loads(wiki(action="promote", filename="my-note"))
     assert promoted["status"] == "promoted"
     assert "pages/notes/my-note.md" in promoted["path"]
+
+
+def test_wiki_patch_updates_long_page_without_full_replace(wiki_env):
+    path = wiki_env / "pages" / "notes" / "long-note.md"
+    original = (
+        "---\ntitle: Long Note\ntype: note\nsources: []\n---\n\n"
+        "intro marker\n"
+        + ("x" * 16000)
+        + "\noriginal tail marker\n"
+    )
+    path.write_text(original, encoding="utf-8")
+
+    read_result = json.loads(wiki(action="read", page="long-note"))
+    assert read_result["truncated"] is True
+    assert "original tail marker" not in read_result["content"]
+
+    result = json.loads(
+        wiki(
+            action="patch",
+            page="long-note",
+            old_text="intro marker",
+            new_text="intro marker\npatched detail",
+            expected_sha256=hashlib.sha256(original.encode("utf-8")).hexdigest(),
+            dry_run=False,
+            log_entry="test partial patch",
+        )
+    )
+
+    assert result["status"] == "patched"
+    assert result["path"] == "pages/notes/long-note.md"
+    patched = path.read_text(encoding="utf-8")
+    assert "intro marker\npatched detail" in patched
+    assert "original tail marker" in patched
+    assert len(patched) > 15000
+
+
+def test_wiki_patch_dry_run_reports_without_writing(wiki_env):
+    path = wiki_env / "pages" / "notes" / "dry-run-note.md"
+    original = "---\ntitle: Dry\ntype: note\n---\n\nbefore\n"
+    path.write_text(original, encoding="utf-8")
+
+    result = json.loads(
+        wiki(
+            action="patch",
+            page="dry-run-note",
+            old_text="before",
+            new_text="after",
+        )
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["would_write"] is True
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_wiki_patch_rejects_hash_mismatch_without_writing(wiki_env):
+    path = wiki_env / "pages" / "notes" / "hash-note.md"
+    original = "---\ntitle: Hash\ntype: note\n---\n\nbefore\n"
+    path.write_text(original, encoding="utf-8")
+
+    result = json.loads(
+        wiki(
+            action="patch",
+            page="hash-note",
+            old_text="before",
+            new_text="after",
+            expected_sha256="0" * 64,
+            dry_run=False,
+        )
+    )
+
+    assert result["error"] == "content hash mismatch"
+    assert result["status"] == "conflict"
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_wiki_patch_rejects_ambiguous_old_text_without_writing(wiki_env):
+    path = wiki_env / "pages" / "notes" / "ambiguous-note.md"
+    original = "---\ntitle: Ambiguous\ntype: note\n---\n\nsame\nsame\n"
+    path.write_text(original, encoding="utf-8")
+
+    result = json.loads(
+        wiki(
+            action="patch",
+            page="ambiguous-note",
+            old_text="same",
+            new_text="different",
+            dry_run=False,
+        )
+    )
+
+    assert result["error"] == "old_text must match exactly once"
+    assert result["matches"] == 2
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_wiki_promote_lint_blocks_when_required_fields_missing(wiki_env):
