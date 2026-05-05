@@ -53,19 +53,30 @@ class FakePage:
         self._screenshot_fails = screenshot_fails
         self._html_fails = html_fails
         self.screenshot_calls: list[dict] = []
+        self.bring_to_front_calls = 0
 
     def content(self) -> str:
         if self._html_fails:
             raise RuntimeError("content() blew up")
         return self._html
 
-    def screenshot(self, *, path: str, full_page: bool = False) -> None:
+    def bring_to_front(self) -> None:
+        self.bring_to_front_calls += 1
+
+    def screenshot(
+        self, *, path: str | None = None, full_page: bool = False,
+    ) -> bytes | None:
         self.screenshot_calls.append({"path": path, "full_page": full_page})
         if self._screenshot_fails:
             raise RuntimeError("screenshot blew up")
-        Path(path).write_bytes(b"fake-png")
+        if path is not None:
+            Path(path).write_bytes(b"fake-png")
+            return None
+        return b"fake-png"
 
     def evaluate(self, _script: str) -> str:
+        if "requestAnimationFrame" in _script:
+            return {"visible": True, "ready": True, "hasFrame": True}
         return self._visible
 
 
@@ -91,6 +102,7 @@ def test_dump_writes_three_artifacts(claude_chat, tmp_path: Path) -> None:
     assert "note: user-sim P2" in txt
     assert "some rendered text" in txt
     assert page.screenshot_calls[0]["full_page"] is True
+    assert page.bring_to_front_calls == 1
 
 
 def test_dump_sanitizes_reason_for_filename(claude_chat, tmp_path: Path) -> None:
@@ -160,3 +172,33 @@ def test_wait_for_response_returns_timed_out_flag(claude_chat) -> None:
         "tuple[str,bool]",
         "typing.Tuple[str,bool]",
     )
+
+
+def test_stable_screenshot_retries_black_frame(claude_chat, tmp_path: Path) -> None:
+    """A transient all-black compositor frame should be retried before save."""
+    Image = pytest.importorskip("PIL.Image")
+    import io
+
+    def png(color: tuple[int, int, int]) -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", (4, 4), color).save(buf, format="PNG")
+        return buf.getvalue()
+
+    class ScreenshotPage(FakePage):
+        def __init__(self) -> None:
+            super().__init__()
+            self._frames = [png((0, 0, 0)), png((12, 20, 28))]
+
+        def screenshot(
+            self, *, path: str | None = None, full_page: bool = False,
+        ) -> bytes | None:
+            self.screenshot_calls.append({"path": path, "full_page": full_page})
+            return self._frames.pop(0)
+
+    page = ScreenshotPage()
+    path = tmp_path / "stable.png"
+    claude_chat._save_stable_screenshot(page, path, timeout_s=0.5)
+
+    assert path.read_bytes() == png((12, 20, 28))
+    assert len(page.screenshot_calls) == 2
+    assert page.bring_to_front_calls == 1

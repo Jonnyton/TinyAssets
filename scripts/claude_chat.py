@@ -57,6 +57,9 @@ ROOT = Path(__file__).resolve().parent.parent
 TRACE = ROOT / "output" / "claude_chat_trace.md"
 FAILURE_DIR = ROOT / "output" / "claude_chat_failures"
 NOTEPAD = ROOT / "output" / "user_sim_session.md"
+SCREENSHOT_STABILITY_TIMEOUT_S = float(
+    os.environ.get("WORKFLOW_CLAUDE_CHAT_SCREENSHOT_STABILITY_TIMEOUT_S", "5")
+)
 
 CHROME_BIN = Path(
     os.environ.get(
@@ -1489,6 +1492,84 @@ def _append_trace(kind: str, body: str) -> None:
         f.write(f"\n\n## [{ts}] {kind}\n{body}\n")
 
 
+def _wait_for_target_window_and_stable_frame(
+    page, *, timeout_s: float = SCREENSHOT_STABILITY_TIMEOUT_S,
+) -> None:
+    """Bring the target tab forward and wait until it has a rendered frame."""
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            ready = page.evaluate(
+                """() => new Promise(resolve => {
+                    requestAnimationFrame(() => requestAnimationFrame(() => {
+                        const body = document.body;
+                        const root = document.documentElement;
+                        const rect = body ? body.getBoundingClientRect() : null;
+                        resolve({
+                            visible: document.visibilityState === 'visible',
+                            ready: document.readyState !== 'loading',
+                            hasFrame: !!(
+                                root && root.clientWidth > 0 && root.clientHeight > 0 &&
+                                rect && rect.width > 0 && rect.height > 0
+                            ),
+                        });
+                    }));
+                })"""
+            ) or {}
+            if (
+                bool(ready.get("visible"))
+                and bool(ready.get("ready"))
+                and bool(ready.get("hasFrame"))
+            ):
+                return
+        except Exception:
+            return
+        time.sleep(0.1)
+
+
+def _png_is_black_frame(data: bytes) -> bool:
+    """Best-effort all-black PNG detector for transient compositor frames."""
+    if not data:
+        return False
+    try:
+        from PIL import Image
+    except Exception:
+        return False
+    try:
+        image = Image.open(io.BytesIO(data)).convert("RGB")
+        image.thumbnail((64, 64))
+        extrema = image.getextrema()
+    except Exception:
+        return False
+    return all(channel_max <= 3 for _channel_min, channel_max in extrema)
+
+
+def _save_stable_screenshot(
+    page,
+    path: Path,
+    *,
+    full_page: bool = True,
+    timeout_s: float = SCREENSHOT_STABILITY_TIMEOUT_S,
+) -> None:
+    """Save a screenshot after the foreground tab has a non-black frame."""
+    _wait_for_target_window_and_stable_frame(page, timeout_s=timeout_s)
+    deadline = time.monotonic() + timeout_s
+    while True:
+        png = page.screenshot(full_page=full_page)
+        if not isinstance(png, bytes):
+            page.screenshot(path=str(path), full_page=full_page)
+            return
+        if not _png_is_black_frame(png) or time.monotonic() >= deadline:
+            path.write_bytes(png)
+            return
+        time.sleep(0.2)
+
+
 def _capture_failure_dump(page, reason: str, *, note: str = "") -> str:
     """Save DOM + screenshot when the driver can't recover.
 
@@ -1517,7 +1598,7 @@ def _capture_failure_dump(page, reason: str, *, note: str = "") -> str:
         print(f"WARN: failed to dump DOM: {exc}", file=sys.stderr)
 
     try:
-        page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
+        _save_stable_screenshot(page, base.with_suffix(".png"))
     except Exception as exc:
         print(f"WARN: failed to screenshot: {exc}", file=sys.stderr)
 
@@ -1766,9 +1847,7 @@ def cmd_ask(message: str) -> int:
                 shot_dir = ROOT / "output" / "claude_chat_turns"
                 shot_dir.mkdir(parents=True, exist_ok=True)
                 ts = dt.datetime.now().strftime("%Y%m%dT%H%M%S")
-                page.screenshot(
-                    path=str(shot_dir / f"{ts}.png"), full_page=True,
-                )
+                _save_stable_screenshot(page, shot_dir / f"{ts}.png")
             except Exception as exc:
                 print(f"WARN: turn screenshot failed: {exc}", file=sys.stderr)
 
