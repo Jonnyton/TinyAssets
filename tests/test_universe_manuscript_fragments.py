@@ -123,3 +123,31 @@ def test_rejects_empty_fragment_text(universe: str) -> None:
     )
     assert "error" in out
     assert "empty" in out["error"].lower()
+
+
+def test_corrupt_fragment_history_fails_loudly(universe: str) -> None:
+    frag_path = (
+        us._base_path()
+        / universe
+        / "manuscript"
+        / "fragments"
+        / "broken.json"
+    )
+    frag_path.parent.mkdir(parents=True, exist_ok=True)
+    frag_path.write_text("{not valid json", encoding="utf-8")
+
+    save = _call(
+        "save_manuscript_fragment",
+        filename="broken",
+        text="Replacement text should not erase history.",
+    )
+    read = _call("read_manuscript_fragment", filename="broken")
+    listed = _call("list_manuscript_fragments")
+
+    assert "error" in save
+    assert "Invalid manuscript fragment file" in save["error"]
+    assert "error" in read
+    assert "Invalid manuscript fragment file" in read["error"]
+    assert listed["fragments"][0]["fragment_id"] == "broken"
+    assert "Invalid manuscript fragment file" in listed["fragments"][0]["error"]
+    assert frag_path.read_text(encoding="utf-8") == "{not valid json"

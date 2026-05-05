@@ -3620,14 +3620,24 @@ def _manuscript_fragment_path(udir: Path, fragment_id: str) -> Path:
     return _manuscript_fragments_dir(udir) / f"{fragment_id}.json"
 
 
-def _load_manuscript_fragment(path: Path) -> dict[str, Any]:
+def _load_manuscript_fragment(path: Path, *, strict: bool = False) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        if strict:
+            raise ValueError(
+                f"Invalid manuscript fragment file: {path.name}",
+            ) from exc
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        if strict:
+            raise ValueError(
+                f"Invalid manuscript fragment file: {path.name}",
+            )
+        return {}
+    return data
 
 
 def _action_save_manuscript_fragment(
@@ -3677,7 +3687,10 @@ def _action_save_manuscript_fragment(
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        doc = _load_manuscript_fragment(path)
+        try:
+            doc = _load_manuscript_fragment(path, strict=True)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
         versions = doc.get("versions", [])
         if not isinstance(versions, list):
             versions = []
@@ -3747,7 +3760,17 @@ def _action_list_manuscript_fragments(
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         ):
-            doc = _load_manuscript_fragment(path)
+            try:
+                doc = _load_manuscript_fragment(path, strict=True)
+            except ValueError as exc:
+                fragments.append({
+                    "fragment_id": path.stem,
+                    "visibility": "host_private",
+                    "error": str(exc),
+                })
+                if len(fragments) >= max_items:
+                    break
+                continue
             versions = doc.get("versions", [])
             latest = versions[-1] if isinstance(versions, list) and versions else {}
             fragments.append({
@@ -3797,7 +3820,10 @@ def _action_read_manuscript_fragment(
             "hint": "Use list_manuscript_fragments to see available fragments.",
         })
 
-    doc = _load_manuscript_fragment(path)
+    try:
+        doc = _load_manuscript_fragment(path, strict=True)
+    except ValueError as exc:
+        return json.dumps({"universe_id": uid, "error": str(exc)})
     return json.dumps({
         "universe_id": uid,
         "fragment_id": doc.get("fragment_id") or fragment_id,
