@@ -264,8 +264,9 @@ class TestSourceInspection:
         self, universe: str, tmp_path: Path,
     ) -> None:
         src = tmp_path / "lore.md"
-        content = "# Lore\n\nThe old bridge remembers every footstep."
-        src.write_text(content, encoding="utf-8")
+        source_bytes = b"# Lore\n\nThe old bridge remembers every footstep."
+        content = source_bytes.decode("utf-8")
+        src.write_bytes(source_bytes)
         _call("add_canon_from_path", path=str(src), provenance_tag="source pack")
 
         out = json.loads(us._universe_impl(action="read_source", filename="lore.md"))
@@ -275,7 +276,7 @@ class TestSourceInspection:
         assert out["content"] == content
         assert out["truncated"] is False
         assert out["provenance"] == "source pack"
-        assert out["sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
+        assert out["sha256"] == hashlib.sha256(source_bytes).hexdigest()
 
     def test_read_source_rejects_path_segments(self, universe: str) -> None:
         out = json.loads(us._universe_impl(
