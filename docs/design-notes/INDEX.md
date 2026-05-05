@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## 2026-05-05
+
+- [RetroLab Runtime Adapters v1](2026-05-05-retrolab-runtime-adapters-v1.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/retrolab-runtime-adapters-v1.md` / Issue #352. Captures v1 runtime adapter families for ScummVM, Chocolate Doom, DOSBox Staging, and RetroArch plus Mesen, with 2026-05-05 source freshness notes and explicit gates before any runtime code consumes adapter pins.
+
 ## 2026-05-03
 
 - [Multi-User Workflow Operating Model](2026-05-03-multi-user-workflow-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-workflow-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
