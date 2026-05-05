@@ -1137,9 +1137,18 @@ jobs:
                 '',
                 `Claude OAuth outcome: \`${{ steps.claude-oauth.outcome }}\``,
                 `Codex subscription outcome: \`${{ steps.codex-subscription.outcome }}\``,
+                mode === 'codex_subscription' && process.env.CODEX_OUTCOME === 'success'
+                  ? 'Writer child invocation: `succeeded`'
+                  : '',
+                mode === 'codex_subscription' && codexBranch
+                  ? 'Auto-fix branch pushed: `true`'
+                  : '',
                 codexNoChangeReason ? `Codex no-change reason: \`${codexNoChangeReason}\`` : '',
                 codexPrBlocked
                   ? `PR creation blocked: \`${codexPrBlockReason || 'unknown'}\``
+                  : '',
+                codexPrBlocked
+                  ? 'Remaining blocker: GitHub Actions PR creation policy. Do not treat this as a failed child invocation.'
                   : '',
                 codexPushBlocked
                   ? `Branch push blocked: \`${codexPushBlockReason || 'unknown'}\``
