@@ -3297,3 +3297,13 @@ Next coordination:
 - Writer queue remains the blocker: #302 is still `needs-human`, with old pending #320-#309 and #301/#300/#299/#298; fresh pending #328-#353 appeared after wiki sync and should not be treated as stale yet.
 - PR state is unchanged for gating: #286 remains changes-requested, #326 has Cowork YES but no check rollup, #327 needs refactor, and #324 fails vision fit.
 - Updated the heartbeat prompt again so future watches distinguish partial recovery from proof that schedule freshness is solved.
+
+2026-05-05T04:12Z [codex-gpt5-desktop] **All-surface sweep: writer is draining again, but push-permission failures are undercounted.**
+
+- GitHub runs: `auto-fix-bug.yml` completed successfully from schedule run `25356912683` at 03:52Z and workflow_dispatch run `25356996329` at 03:56Z. `community-loop-watch` still reports RED, but Intake sync, Writer workflow, and Observation canary are green.
+- New PRs: #354 opened for issue #292 (`secrets-vendor`/Cowork bootstrap GH_TOKEN surface) and #355 opened for issue #299 (durable coordination architecture doc). Both are mergeable but have empty `statusCheckRollup`; do not merge without normal gates and opposite-family review.
+- #354 diff contains no real token literal, but it touches credential/bootstrap surfaces (`scripts/cowork-bootstrap.sh`, `scripts/secrets_keys.txt`, secrets design note). Treat it as security-sensitive review, not a routine writer PR.
+- Queue state: old pending reduced to #320-#309 plus #301/#300; fresh #328-#353 are still pending and not stale yet. #302 remains `needs-human`.
+- New observability gap: issue #298 is now labeled `needs-human` and `auto-fix-branch-push-blocked` after Codex produced a patch but GitHub blocked branch push with `github_actions_workflow_permission_missing`. `community_loop_watch.py` classifies #298 as reviewed-terminal rather than needs-human, so writer health is undercounting push-permission failures.
+- Worktree/claim surfaces: no claimable STATUS rows for Codex; many local dirty lanes still need `_PURPOSE.md`, including the main `Workflow` checkout. Do not use those dirty lanes as live integration truth.
+- Updated the heartbeat prompt to track #354/#355, schedule recovery evidence, and the #298 push-permission undercount gap.
