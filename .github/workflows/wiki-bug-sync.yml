@@ -61,5 +61,17 @@ jobs:
           else
             git add .agents/.wiki_bug_sync_cursor .agents/.wiki_change_sync_seen.json
             git commit -m "chore: wiki change sync state update [skip ci]"
-            git push
+            branch="${GITHUB_REF_NAME:-main}"
+            for attempt in 1 2 3; do
+              if git push origin "HEAD:${branch}"; then
+                exit 0
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "Sync state push failed after ${attempt} attempts."
+                exit 1
+              fi
+              echo "Sync state push rejected; rebasing on origin/${branch} and retrying."
+              git fetch origin "$branch"
+              git rebase "origin/${branch}"
+            done
           fi
