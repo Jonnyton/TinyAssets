@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -674,6 +675,37 @@ class TestCodexProvider:
         assert "-C" in captured_cmd
         assert "-m" in captured_cmd
         assert captured_cmd[captured_cmd.index("-m") + 1] == "gpt-5.4"
+
+    @pytest.mark.asyncio
+    async def test_runs_from_repo_root_so_coding_tasks_can_read_source(self):
+        """BUG-060: loop investigations need repo source/tests, not an empty tempdir."""
+        import workflow.providers.codex_provider as codex_provider
+        from workflow.providers.codex_provider import CodexProvider
+
+        captured_cmd = []
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
+
+        async def _fake_exec(*args, **kwargs):
+            captured_cmd.extend(args)
+            return mock_proc
+
+        with (
+            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+                  return_value=(["codex"], False)),
+            patch("workflow.providers.codex_provider.get_sandbox_status",
+                  return_value={"bwrap_available": False, "reason": "test"}),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        ):
+            provider = CodexProvider()
+            await provider.complete("prompt", "system", ModelConfig())
+
+        repo_root = Path(codex_provider.__file__).resolve().parents[2]
+        assert "-C" in captured_cmd
+        assert captured_cmd[captured_cmd.index("-C") + 1] == str(repo_root)
 
     @pytest.mark.asyncio
     async def test_model_can_be_overridden_by_env(self, monkeypatch):

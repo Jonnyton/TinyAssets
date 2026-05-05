@@ -12,8 +12,8 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
+from pathlib import Path
 
 from workflow.exceptions import (
     ProviderError,
@@ -54,6 +54,14 @@ def _codex_model() -> str:
     return os.environ.get("WORKFLOW_CODEX_MODEL", "gpt-5.4").strip() or "gpt-5.4"
 
 
+def _codex_workdir() -> str:
+    """Return the source workspace Codex should inspect for coding tasks."""
+    configured = os.environ.get("WORKFLOW_CODEX_WORKDIR", "").strip()
+    if configured:
+        return configured
+    return str(Path(__file__).resolve().parents[2])
+
+
 class CodexProvider(BaseProvider):
     """Calls GPT via the ``codex exec`` CLI binary."""
 
@@ -80,11 +88,11 @@ class CodexProvider(BaseProvider):
             if sandbox_status.get("bwrap_available")
             else ["--dangerously-bypass-approvals-and-sandbox"]
         )
-        # Prompt-node calls need Codex as a subscription-backed text model,
-        # not as a repo-editing agent. Run from an empty ephemeral directory.
+        # Prompt-node calls use Codex as a subscription-backed text model, but
+        # loop-investigation coding prompts still need repo source/tests mounted.
         # Prefer Codex's sandboxed auto mode when bwrap is actually usable;
         # bwrap-less hosts fall back to the hosted subscription mode already
-        # used by auto-fix, with API keys stripped and an empty working dir.
+        # used by auto-fix, with API keys stripped.
         cmd = [
             *base_cmd,
             "exec",
@@ -97,40 +105,39 @@ class CodexProvider(BaseProvider):
         proc_env = subprocess_env_without_api_keys()
 
         win_kw = _no_window_kwargs()
-        with tempfile.TemporaryDirectory(prefix="workflow-codex-provider-") as workdir:
-            cmd_with_cwd = [*cmd, "-C", workdir]
-            if use_shell:
-                proc = await asyncio.create_subprocess_shell(
-                    shlex.join(cmd_with_cwd),
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=proc_env,
-                    **win_kw,
-                )
-            else:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd_with_cwd,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=proc_env,
-                    **win_kw,
-                )
+        cmd_with_cwd = [*cmd, "-C", _codex_workdir()]
+        if use_shell:
+            proc = await asyncio.create_subprocess_shell(
+                shlex.join(cmd_with_cwd),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=proc_env,
+                **win_kw,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_with_cwd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=proc_env,
+                **win_kw,
+            )
 
-            start = time.monotonic()
+        start = time.monotonic()
 
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(input=full_input.encode("utf-8")),
-                    timeout=config.timeout,
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                raise ProviderTimeoutError(
-                    f"codex exec exceeded {config.timeout}s timeout"
-                )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=full_input.encode("utf-8")),
+                timeout=config.timeout,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise ProviderTimeoutError(
+                f"codex exec exceeded {config.timeout}s timeout"
+            )
 
         elapsed_ms = (time.monotonic() - start) * 1000
 
