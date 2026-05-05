@@ -25,6 +25,7 @@ class TestUniverseServerMetadata:
         assert universe.annotations.idempotentHint is False
         assert universe.annotations.openWorldHint is True
         assert 'action="inspect"' in universe.description
+        assert "continuity_audit" in universe.description
 
         extensions = tools["extensions"]
         assert extensions.title == "Graph Extensions"

@@ -310,10 +310,13 @@ def universe(
     to one of `pause` | `resume` | `status`. Calling `control_daemon`
     without `text` returns an error.
 
+    `continuity_audit` is a read-only authoring check: pass the prose
+    fragment in `text` to compare it against canon and wiki constraints.
+
     Args:
         action: One of — reads: list, inspect, read_output, query_world,
             get_activity, get_recent_events, get_ledger, read_premise,
-            list_canon, read_canon; writes: submit_request,
+            list_canon, read_canon, continuity_audit; writes: submit_request,
             give_direction, set_premise, add_canon, add_canon_from_path,
             create_universe, switch_universe; queue: queue_list,
             queue_cancel; subscriptions: subscribe_goal, unsubscribe_goal,

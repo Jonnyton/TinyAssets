@@ -233,6 +233,7 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
    |                                | or action="daemon_memory_promote"       |
    | Check daemon memory status     | `universe` action="daemon_memory_status"|
    | Query world state              | `universe` action="query_world"         |
+   | Audit prose continuity         | `universe` action="continuity_audit"    |
    | Read produced output           | `universe` action="read_output"         |
    | Browse source / canon docs     | `universe` action="list_canon"          |
    | Create a new universe          | `universe` action="create_universe"     |

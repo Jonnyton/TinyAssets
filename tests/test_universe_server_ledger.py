@@ -54,6 +54,7 @@ def _call(action: str, **kwargs) -> dict:
         "add_canon": us._action_add_canon,
         "list_canon": us._action_list_canon,
         "read_canon": us._action_read_canon,
+        "continuity_audit": us._action_continuity_audit,
         "control_daemon": us._action_control_daemon,
         "switch_universe": us._action_switch_universe,
         "create_universe": us._action_create_universe,
@@ -255,6 +256,7 @@ def test_read_actions_do_not_touch_ledger(universe: str) -> None:
     _call("read_premise")
     _call("list_canon")
     _call("query_world")
+    _call("continuity_audit", text="Ryn watches the river.")
     _call("get_activity")
     _call("get_ledger")
 

@@ -63,9 +63,11 @@ from typing import Any
 from workflow.api.helpers import (
     _base_path,
     _default_universe,
+    _find_all_pages,
     _read_json,
     _read_text,
     _universe_dir,
+    _wiki_pages_dir,
 )
 from workflow.catalog import list_unreconciled_writes
 
@@ -3089,6 +3091,208 @@ def _action_query_world(
     }, default=str)
 
 
+_AUDIT_CONTRADICTION_PAIRS: tuple[tuple[str, str], ...] = (
+    ("alive", "dead"),
+    ("living", "dead"),
+    ("open", "closed"),
+    ("unlocked", "locked"),
+    ("present", "absent"),
+    ("visible", "invisible"),
+    ("can", "cannot"),
+    ("can", "can't"),
+    ("allowed", "forbidden"),
+    ("possible", "impossible"),
+)
+
+
+def _audit_keywords(text: str) -> set[str]:
+    from workflow.api.wiki import _extract_keywords
+
+    return _extract_keywords(text)
+
+
+def _audit_terms(text: str) -> set[str]:
+    return set(re.findall(r"[a-z][a-z'-]*", text.lower()))
+
+
+def _audit_passages(content: str) -> list[str]:
+    passages = [
+        passage.strip()
+        for passage in re.split(r"\n\s*\n|(?<=[.!?])\s+", content)
+        if passage.strip()
+    ]
+    return passages or [content.strip()] if content.strip() else []
+
+
+def _audit_snippet(text: str, max_chars: int = 240) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 1].rstrip() + "..."
+
+
+def _audit_related_hits(
+    *,
+    fragment_keywords: set[str],
+    sources: list[tuple[str, Path]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    for source_path, absolute_path in sources:
+        try:
+            content = absolute_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for passage in _audit_passages(content):
+            passage_keywords = _audit_keywords(passage)
+            overlap = sorted(fragment_keywords & passage_keywords)
+            if not overlap:
+                continue
+            hits.append({
+                "path": source_path,
+                "overlap_terms": overlap[:12],
+                "score": len(overlap),
+                "snippet": _audit_snippet(passage),
+            })
+            break
+    hits.sort(key=lambda hit: (-int(hit["score"]), str(hit["path"])))
+    return hits[:limit]
+
+
+def _audit_conflicts(
+    *,
+    fragment_terms: set[str],
+    hit_type: str,
+    hits: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    for hit in hits:
+        evidence_terms = _audit_terms(str(hit["snippet"]))
+        for left, right in _AUDIT_CONTRADICTION_PAIRS:
+            fragment_left = left in fragment_terms
+            fragment_right = right in fragment_terms
+            evidence_left = left in evidence_terms
+            evidence_right = right in evidence_terms
+            if fragment_left and evidence_right:
+                conflicts.append({
+                    "source_type": hit_type,
+                    "path": hit["path"],
+                    "fragment_term": left,
+                    "evidence_term": right,
+                    "snippet": hit["snippet"],
+                })
+            elif fragment_right and evidence_left:
+                conflicts.append({
+                    "source_type": hit_type,
+                    "path": hit["path"],
+                    "fragment_term": right,
+                    "evidence_term": left,
+                    "snippet": hit["snippet"],
+                })
+    return conflicts
+
+
+def _action_continuity_audit(
+    universe_id: str = "",
+    text: str = "",
+    limit: int = 10,
+    **_kwargs: Any,
+) -> str:
+    """Check a prose fragment against local canon and wiki constraint pages.
+
+    This is a deterministic evidence primitive for author-facing continuity
+    review. It gathers related passages and flags obvious term-level
+    contradictions, but it does not claim semantic proof.
+    """
+    fragment = text.strip()
+    if not fragment:
+        return json.dumps({
+            "error": (
+                "Text required. Pass the prose fragment to audit in the text "
+                "field."
+            ),
+        })
+
+    uid = universe_id or _default_universe()
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    bounded_limit = max(1, min(int(limit or 10), 50))
+    fragment_keywords = _audit_keywords(fragment)
+    fragment_terms = _audit_terms(fragment)
+
+    canon_dir = udir / "canon"
+    canon_sources = [
+        (f"canon/{path.relative_to(canon_dir).as_posix()}", path)
+        for path in sorted(canon_dir.rglob("*.md"))
+        if path.is_file() and not path.name.startswith(".")
+    ] if canon_dir.is_dir() else []
+
+    wiki_pages_dir = _wiki_pages_dir()
+    wiki_sources = [
+        (f"pages/{path.relative_to(wiki_pages_dir).as_posix()}", path)
+        for path in _find_all_pages(wiki_pages_dir)
+    ]
+
+    canon_hits = _audit_related_hits(
+        fragment_keywords=fragment_keywords,
+        sources=canon_sources,
+        limit=bounded_limit,
+    )
+    wiki_hits = _audit_related_hits(
+        fragment_keywords=fragment_keywords,
+        sources=wiki_sources,
+        limit=bounded_limit,
+    )
+
+    conflicts = [
+        *_audit_conflicts(
+            fragment_terms=fragment_terms,
+            hit_type="canon",
+            hits=canon_hits,
+        ),
+        *_audit_conflicts(
+            fragment_terms=fragment_terms,
+            hit_type="wiki",
+            hits=wiki_hits,
+        ),
+    ]
+
+    caveats = [
+        (
+            "Continuity audit is heuristic: it surfaces related evidence and "
+            "obvious term conflicts, not full semantic proof."
+        ),
+        (
+            "Review snippets before editing canon or prose; absence of a "
+            "conflict is not confirmation."
+        ),
+    ]
+    if not canon_hits and not wiki_hits:
+        caveats.append("No related canon or wiki constraint passages found.")
+
+    if conflicts:
+        status = "needs_revision"
+    elif canon_hits or wiki_hits:
+        status = "needs_review"
+    else:
+        status = "insufficient_evidence"
+
+    return json.dumps({
+        "schema_version": 1,
+        "action": "continuity_audit",
+        "universe_id": uid,
+        "status": status,
+        "fragment": fragment,
+        "canon_hits": canon_hits,
+        "wiki_constraint_hits": wiki_hits,
+        "conflicts": conflicts[:bounded_limit],
+        "conflict_count": len(conflicts),
+        "caveats": caveats,
+    }, default=str)
+
+
 def _query_world_db(
     udir: Path, uid: str, query_type: str, filter_text: str, limit: int,
 ) -> str:
@@ -3986,6 +4190,7 @@ def _universe_impl(
         "add_canon_from_path": _action_add_canon_from_path,
         "list_canon": _action_list_canon,
         "read_canon": _action_read_canon,
+        "continuity_audit": _action_continuity_audit,
         "control_daemon": _action_control_daemon,
         "switch_universe": _action_switch_universe,
         "create_universe": _action_create_universe,

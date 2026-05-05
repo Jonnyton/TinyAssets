@@ -387,3 +387,13 @@ Notes:
   so MCP/chatbot-triggered auto-ship attempts can write ledger rows.
 - Ship condition: regression test, targeted auto-ship tests, plugin mirror,
   ruff, and diff-check pass; PR opened for Cowork review.
+
+## WIKI-PATCH #321 Continuity Audit Primitive - 2026-05-05
+
+- 2026-05-05 active branch `/home/runner/work/Workflow/Workflow` on
+  `auto-change/issue-321-codex-25354591064` by codex-wiki-patch.
+- Source: GitHub issue #321 / WIKI-PATCH patch request.
+- Purpose: add a minimal read-only author-facing continuity audit primitive
+  for prose fragments against canon and wiki constraints.
+- Ship condition: focused tests, ruff on touched Python files, plugin mirror
+  rebuild, and opposite-family checker before landing.
