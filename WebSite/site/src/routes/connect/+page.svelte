@@ -66,7 +66,7 @@
       title: 'Claude.ai',
       status: 'Best live chat path',
       account: 'Use this if Claude is where you already ask for help. Free, Pro, Max, Team, and Enterprise can use custom remote MCP with plan limits.',
-      setup: `Click Add it, paste ${url} into Claude connector settings, approve it, then start a chat with Workflow enabled.`,
+      setup: `Click Add it, name the connector Workflow, paste ${url} into Claude connector settings, approve it, then start a chat with Workflow enabled.`,
       proof: 'Custom URL is the current path. Claude directory listing is still pending, so the page does not claim directory acceptance.',
       anchor: '#mcp-server-url'
     },
@@ -196,7 +196,7 @@
       <button type="button" class="flow-card flow-card--copy" class:copied onclick={copyUrl}>
         <span class="flow-card__num">1</span>
         <span class="flow-card__title">Add it.</span>
-        <span class="flow-card__body">Copy the MCP URL, paste it into your chatbot connector settings, then approve.</span>
+        <span class="flow-card__body">Copy the MCP URL. Name the connector Workflow rather than TinyAssets, paste the URL into your chatbot connector settings, then approve.</span>
         <span class="flow-card__action">{copied ? 'Copied URL' : 'Copy MCP URL'}</span>
       </button>
       <a class="flow-card" href="/wiki">
@@ -221,7 +221,7 @@
             {copied ? 'Copied!' : 'Copy'}
           </button>
         </div>
-        <p class="endpoint-note">Use this today in custom remote MCP connector settings.</p>
+        <p class="endpoint-note">Use this today in custom remote MCP connector settings. Name the connector <strong>Workflow</strong>; TinyAssets is the site and publisher context, not the tool name.</p>
       </div>
 
       <div class="card" id="directory-status">
