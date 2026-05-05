@@ -129,3 +129,19 @@ def test_create_universe_normalizes_embedded_premise(us):
     assert result["status"] == "created"
     on_disk = (base / "newverse" / "PROGRAM.md").read_text(encoding="utf-8")
     assert on_disk == "# New Universe\n\nFirst premise line."
+
+
+def test_create_universe_rejects_confidential_tier_on_legacy_surface(us):
+    from workflow.api.universe import _action_create_universe
+
+    base = Path(us._base_path())
+    result = json.loads(_action_create_universe(
+        universe_id="private-draft",
+        text="A public-scope premise.",
+        tier="confidential",
+    ))
+
+    assert result["status"] == "rejected"
+    assert result["error"] == "unsupported_tier"
+    assert "get_status" in result["hint"]
+    assert not (base / "private-draft").exists()

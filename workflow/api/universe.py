@@ -4138,10 +4138,26 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
 def _action_create_universe(
     universe_id: str = "",
     text: str = "",
+    tier: str = "",
     **_kwargs: Any,
 ) -> str:
     if not universe_id:
         return json.dumps({"error": "universe_id is required."})
+
+    tier_name = (tier or "").strip().lower()
+    if tier_name and tier_name not in {"normal", "public"}:
+        return json.dumps({
+            "status": "rejected",
+            "error": "unsupported_tier",
+            "tier": tier_name,
+            "supported_tiers": ["normal", "public"],
+            "hint": (
+                "The legacy create_universe surface only creates public-scope "
+                "universes. It does not enforce confidential per-universe "
+                "routing; call get_status for routing evidence before handling "
+                "confidential work."
+            ),
+        })
 
     uid = universe_id
     base = _base_path()
