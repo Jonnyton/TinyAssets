@@ -86,6 +86,45 @@ class TestAttestGateEvent:
         assert "error" in result
 
 
+class TestExternalLongRunHeartbeat:
+    def test_goals_action_records_in_progress_heartbeat(self, tmp_path, monkeypatch):
+        from workflow.universe_server import goals
+
+        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+        initialize_runs_db(tmp_path)
+
+        result = json.loads(goals(
+            action="heartbeat_external_long_run",
+            goal_id="g1",
+            external_run_id="vendor-run-1",
+            heartbeat_at="2026-05-05T12:34:56+00:00",
+            status="running",
+            note="step 4 of 9",
+        ))
+
+        assert result["status"] == "heartbeat_recorded"
+        assert result["goal_id"] == "g1"
+        assert result["external_run_id"] == "vendor-run-1"
+        assert result["event_type"] == "external_long_run_heartbeat"
+        assert result["event_date"] == "2026-05-05"
+        assert result["heartbeat_by"] == "alice"
+
+    def test_goals_action_requires_external_run_id(self, tmp_path, monkeypatch):
+        from workflow.universe_server import goals
+
+        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        initialize_runs_db(tmp_path)
+
+        result = json.loads(goals(
+            action="heartbeat_external_long_run",
+            goal_id="g1",
+        ))
+
+        assert result["status"] == "rejected"
+        assert "external_run_id" in result["error"]
+
+
 class TestVerifyGateEvent:
     def test_verify_changes_status(self, tmp_path, monkeypatch):
         from workflow.api.market import (

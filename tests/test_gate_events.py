@@ -17,6 +17,7 @@ from workflow.gate_events import (
     attest_gate_event,
     dispute_gate_event,
     get_gate_event,
+    heartbeat_external_long_run,
     list_gate_events,
     retract_gate_event,
     verify_gate_event,
@@ -86,6 +87,25 @@ class TestGateEventDataclass:
             event_date="2026-04-24", attested_by="alice", cites=[],
         )
         assert e1.event_id != e2.event_id
+
+    def test_external_long_run_heartbeat_is_append_only_event(self, tmp_path):
+        initialize_runs_db(tmp_path)
+        evt = heartbeat_external_long_run(
+            tmp_path,
+            goal_id="g1",
+            external_run_id="vendor-run-1",
+            heartbeat_by="alice",
+            heartbeat_at="2026-05-05T12:34:56+00:00",
+            status="running",
+            notes="step 4 of 9",
+        )
+
+        assert evt.event_type == "external_long_run_heartbeat"
+        assert evt.event_date == "2026-05-05"
+        assert evt.verification_status == "attested"
+        assert evt.attested_by == "alice"
+        assert "vendor-run-1" in evt.notes
+        assert "step 4 of 9" in evt.notes
 
     def test_verify_transitions_status(self, tmp_path):
         initialize_runs_db(tmp_path)

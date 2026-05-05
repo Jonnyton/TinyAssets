@@ -733,6 +733,13 @@ def goals(
     limit: int = 50,
     scope: str = "",
     force: bool = False,
+    external_run_id: str = "",
+    heartbeat_by: str = "",
+    heartbeat_at: str = "",
+    status: str = "",
+    note: str = "",
+    run_id: str = "",
+    evidence_url: str = "",
 ) -> str:
     """Goals — first-class shared primitives above workflow Branches.
 
@@ -754,6 +761,9 @@ def goals(
                    tags. Needs query.
       leaderboard  Rank bound Branches by metric (run_count/forks/outcome).
       common_nodes Nodes appearing in >=`min_branches` Branches.
+      heartbeat_external_long_run Append an in-progress heartbeat for an
+                   external long-running workflow. Needs goal_id and
+                   external_run_id.
 
     """
     return _goals_impl(
@@ -772,6 +782,13 @@ def goals(
         limit=limit,
         scope=scope,
         force=force,
+        external_run_id=external_run_id,
+        heartbeat_by=heartbeat_by,
+        heartbeat_at=heartbeat_at,
+        status=status,
+        note=note,
+        run_id=run_id,
+        evidence_url=evidence_url,
     )
 
 

@@ -4,6 +4,7 @@ Spec: docs/vetted-specs.md §gate_event.
 
 Functions:
   attest_gate_event   — create a new gate event with N citation links
+  heartbeat_external_long_run — append in-progress external-run heartbeat
   verify_gate_event   — transition status to 'verified' (different user required)
   dispute_gate_event  — transition status to 'disputed'
   retract_gate_event  — transition status to 'retracted' (audit trail preserved)
@@ -16,6 +17,7 @@ Schema migration is idempotent via migrate_gate_event_schema().
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -31,6 +33,10 @@ from workflow.gate_events.schema import (
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 def _runs_db(base_path: str | Path) -> Path:
@@ -157,6 +163,57 @@ def attest_gate_event(
     evt = GateEvent.from_row(dict(row))
     evt.cites.extend(cite_records)
     return evt
+
+
+def heartbeat_external_long_run(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    external_run_id: str,
+    heartbeat_by: str,
+    heartbeat_at: str = "",
+    status: str = "in_progress",
+    notes: str = "",
+    branch_version_id: str = "",
+    run_id: str = "",
+    evidence_url: str = "",
+) -> GateEvent:
+    """Append an in-progress heartbeat for an externally running workflow.
+
+    The heartbeat is intentionally append-only and stored as a gate event
+    rather than mutating a "current state" row. Consumers can list events
+    for a Goal and choose the newest heartbeat per external_run_id.
+    """
+    if not external_run_id:
+        raise ValueError("external_run_id is required")
+    if not heartbeat_by:
+        raise ValueError("heartbeat_by is required")
+
+    event_date = (heartbeat_at or _today()).split("T", 1)[0]
+    payload = {
+        "kind": "external_long_run_heartbeat",
+        "external_run_id": external_run_id,
+        "heartbeat_at": heartbeat_at or _now(),
+        "status": status or "in_progress",
+        "evidence_url": evidence_url,
+        "notes": notes,
+    }
+    cites: list[dict[str, Any]] = []
+    if branch_version_id:
+        cites.append({
+            "branch_version_id": branch_version_id,
+            "run_id": run_id or None,
+            "contribution_summary": f"external_run_id={external_run_id}",
+        })
+    return attest_gate_event(
+        base_path,
+        goal_id=goal_id,
+        event_type="external_long_run_heartbeat",
+        event_date=event_date,
+        attested_by=heartbeat_by,
+        cites=cites,
+        notes=json.dumps(payload, sort_keys=True),
+    )
 
 
 def verify_gate_event(
@@ -475,6 +532,7 @@ __all__ = [
     "attest_gate_event",
     "dispute_gate_event",
     "get_gate_event",
+    "heartbeat_external_long_run",
     "leaderboard_by_gate_events",
     "list_gate_events",
     "retract_gate_event",

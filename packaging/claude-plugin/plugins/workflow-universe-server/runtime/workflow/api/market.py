@@ -26,11 +26,12 @@ Public surface (back-compat re-exported via ``workflow.universe_server``):
     Attribution handlers:
         _action_record_remix / _action_get_provenance
 
-    Goal handlers (9):
+    Goal handlers (10):
         _action_goal_propose / _action_goal_update / _action_goal_bind /
         _action_goal_list / _action_goal_get / _action_goal_search /
         _action_goal_leaderboard / _action_goal_common_nodes /
-        _action_goal_set_canonical
+        _action_goal_set_canonical /
+        _action_goal_heartbeat_external_long_run
 
     Gates handlers (9 + 6 gate_event):
         _action_gates_define_ladder / _action_gates_get_ladder /
@@ -1323,6 +1324,49 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_goal_heartbeat_external_long_run(kwargs: dict[str, Any]) -> str:
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.gate_events import heartbeat_external_long_run
+
+    goal_id = (kwargs.get("goal_id") or "").strip()
+    external_run_id = (kwargs.get("external_run_id") or "").strip()
+    heartbeat_by = (kwargs.get("heartbeat_by") or _current_actor()).strip()
+    heartbeat_at = (kwargs.get("heartbeat_at") or "").strip()
+    status = (kwargs.get("status") or "in_progress").strip()
+    note = (kwargs.get("note") or "").strip()
+    branch_version_id = (kwargs.get("branch_version_id") or "").strip()
+    run_id = (kwargs.get("run_id") or "").strip()
+    evidence_url = (kwargs.get("evidence_url") or "").strip()
+
+    try:
+        evt = heartbeat_external_long_run(
+            _base_path(),
+            goal_id=goal_id,
+            external_run_id=external_run_id,
+            heartbeat_by=heartbeat_by,
+            heartbeat_at=heartbeat_at,
+            status=status,
+            notes=note,
+            branch_version_id=branch_version_id,
+            run_id=run_id,
+            evidence_url=evidence_url,
+        )
+    except (ValueError, KeyError) as exc:
+        return json.dumps({"status": "rejected", "error": str(exc)})
+
+    return json.dumps({
+        "status": "heartbeat_recorded",
+        "event_id": evt.event_id,
+        "goal_id": evt.goal_id,
+        "external_run_id": external_run_id,
+        "event_type": evt.event_type,
+        "event_date": evt.event_date,
+        "heartbeat_by": evt.attested_by,
+        "verification_status": evt.verification_status,
+        "cite_count": len(evt.cites),
+    })
+
+
 _GOAL_ACTIONS: dict[str, Any] = {
     "propose": _action_goal_propose,
     "update": _action_goal_update,
@@ -1333,6 +1377,7 @@ _GOAL_ACTIONS: dict[str, Any] = {
     "leaderboard": _action_goal_leaderboard,
     "common_nodes": _action_goal_common_nodes,
     "set_canonical": _action_goal_set_canonical,
+    "heartbeat_external_long_run": _action_goal_heartbeat_external_long_run,
 }
 
 # Provider-routing compatibility: ChatGPT can render `/mcp-directory` tool
@@ -1346,6 +1391,7 @@ _GOAL_ACTION_ALIASES: dict[str, str] = {
 
 _GOAL_WRITE_ACTIONS: frozenset[str] = frozenset({
     "propose", "update", "bind", "set_canonical",
+    "heartbeat_external_long_run",
 })
 
 
@@ -1427,6 +1473,13 @@ def goals(
     limit: int = 50,
     scope: str = "",
     force: bool = False,
+    external_run_id: str = "",
+    heartbeat_by: str = "",
+    heartbeat_at: str = "",
+    status: str = "",
+    note: str = "",
+    run_id: str = "",
+    evidence_url: str = "",
 ) -> str:
     """Goals — first-class shared primitives above workflow Branches.
 
@@ -1462,6 +1515,10 @@ def goals(
                    this when helping a user decide "is there already
                    a node that does X somewhere on this server?" even
                    if they haven't committed to a Goal yet.
+      heartbeat_external_long_run Append an in-progress heartbeat for an
+                   external long-running workflow. Needs goal_id and
+                   external_run_id. Optional branch_version_id, run_id,
+                   heartbeat_by, heartbeat_at, status, note, evidence_url.
 
     Args:
       action: see above.
@@ -1483,6 +1540,10 @@ def goals(
         when the target YAML has uncommitted local edits. Default False —
         the conflict surfaces as a structured response so the caller can
         commit / stash / discard first.
+      external_run_id/status/heartbeat_by/heartbeat_at/note/run_id/evidence_url:
+        heartbeat_external_long_run fields. branch_version_id may cite a
+        published Workflow branch version while the external run is still
+        in progress.
     """
     from workflow.api.branches import _ensure_workflow_db
 
@@ -1502,6 +1563,13 @@ def goals(
         "limit": limit,
         "scope": scope,
         "force": force,
+        "external_run_id": external_run_id,
+        "heartbeat_by": heartbeat_by,
+        "heartbeat_at": heartbeat_at,
+        "status": status,
+        "note": note,
+        "run_id": run_id,
+        "evidence_url": evidence_url,
     }
     canonical_action = _canonical_goal_action(action)
     handler = _GOAL_ACTIONS.get(canonical_action)
