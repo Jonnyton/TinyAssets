@@ -174,6 +174,17 @@ def test_update_force_overrides_dirty(repo_env):
     assert _last_commit_subject(repo) == f"goals.update: {gid}"
 
 
+def test_retract_creates_retract_commit(repo_env):
+    us, repo, _base = repo_env
+    propose = _call(us, action="propose", name="Goal Z")
+    gid = propose["goal"]["goal_id"]
+
+    result = _call(us, action="retract", goal_id=gid)
+
+    assert result["status"] == "retracted"
+    assert _last_commit_subject(repo) == f"goals.retract: {gid}"
+
+
 # ─── bind ────────────────────────────────────────────────────────────────
 
 

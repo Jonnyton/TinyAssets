@@ -128,6 +128,29 @@ def test_update_by_author_succeeds(p5_env):
     assert result["goal"]["description"] == "Updated description"
 
 
+def test_update_description_leaves_existing_tags(p5_env):
+    us, _ = p5_env
+    gid = _call(
+        us, "goals", "propose", name="Tagged", tags="alpha,beta",
+    )["goal"]["goal_id"]
+    result = _call(us, "goals", "update",
+                   goal_id=gid, description="Updated description")
+    assert result["status"] == "updated"
+    assert "tags" not in result["changed_fields"]
+    assert result["goal"]["tags"] == ["alpha", "beta"]
+
+
+def test_update_clear_tags_explicitly(p5_env):
+    us, _ = p5_env
+    gid = _call(
+        us, "goals", "propose", name="Clear tags", tags="alpha,beta",
+    )["goal"]["goal_id"]
+    result = _call(us, "goals", "update", goal_id=gid, clear_tags=True)
+    assert result["status"] == "updated"
+    assert "tags" in result["changed_fields"]
+    assert result["goal"]["tags"] == []
+
+
 def test_update_by_non_author_rejected(p5_env, monkeypatch):
     us, _ = p5_env
     # Author = tester per fixture
@@ -518,6 +541,17 @@ def test_soft_delete_hides_from_list_but_get_still_works(p5_env):
     assert got["is_deleted"] is True
 
 
+def test_retract_hides_goal_and_returns_retracted_status(p5_env):
+    us, _ = p5_env
+    gid = _call(us, "goals", "propose", name="Retracted")["goal"]["goal_id"]
+    result = _call(us, "goals", "retract", goal_id=gid)
+    assert result["status"] == "retracted"
+    assert result["goal"]["visibility"] == "deleted"
+
+    lst = _call(us, "goals", "list")
+    assert all(g["goal_id"] != gid for g in lst["goals"])
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ledger write-through
 # ─────────────────────────────────────────────────────────────────────────────
@@ -546,6 +580,14 @@ def test_update_writes_ledger(p5_env):
     _call(us, "goals", "update", goal_id=gid, description="renamed")
     ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
     assert any(e["action"] == "goals.update" for e in ledger)
+
+
+def test_retract_writes_ledger(p5_env):
+    us, base = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+    _call(us, "goals", "retract", goal_id=gid)
+    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
+    assert any(e["action"] == "goals.retract" for e in ledger)
 
 
 def test_rejected_propose_does_not_ledger(p5_env):
@@ -584,7 +626,7 @@ def test_unknown_action_lists_available(p5_env):
     result = _call(us, "goals", "not-an-action")
     assert "error" in result
     avail = result.get("available_actions", [])
-    for a in ("propose", "update", "bind", "list", "get",
+    for a in ("propose", "update", "retract", "bind", "list", "get",
               "search", "leaderboard", "common_nodes"):
         assert a in avail
 

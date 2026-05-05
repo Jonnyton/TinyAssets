@@ -26,11 +26,11 @@ Public surface (back-compat re-exported via ``workflow.universe_server``):
     Attribution handlers:
         _action_record_remix / _action_get_provenance
 
-    Goal handlers (9):
+    Goal handlers (10):
         _action_goal_propose / _action_goal_update / _action_goal_bind /
         _action_goal_list / _action_goal_get / _action_goal_search /
         _action_goal_leaderboard / _action_goal_common_nodes /
-        _action_goal_set_canonical
+        _action_goal_set_canonical / _action_goal_retract
 
     Gates handlers (9 + 6 gate_event):
         _action_gates_define_ladder / _action_gates_get_ladder /
@@ -610,7 +610,7 @@ def _action_goal_propose(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": (
                 "visibility must be 'public' or 'private' at propose "
-                "time. Use the `delete_goal` action to soft-delete."
+                "time. Use `goals action=retract` to soft-delete."
             ),
         })
     goal_dict = {
@@ -688,7 +688,9 @@ def _action_goal_update(kwargs: dict[str, Any]) -> str:
     for fld in ("name", "description"):
         if kwargs.get(fld):
             updates[fld] = kwargs[fld]
-    if kwargs.get("tags"):
+    if kwargs.get("clear_tags"):
+        updates["tags"] = []
+    elif kwargs.get("tags"):
         updates["tags"] = _split_csv(kwargs["tags"])
     if kwargs.get("visibility"):
         vis = (kwargs["visibility"] or "").strip().lower()
@@ -706,7 +708,7 @@ def _action_goal_update(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": (
                 "No fields to update. Pass one or more of name, "
-                "description, tags, visibility."
+                "description, tags, clear_tags, visibility."
             ),
         })
 
@@ -718,7 +720,7 @@ def _action_goal_update(kwargs: dict[str, Any]) -> str:
         saved, _commit = _storage_backend().save_goal_and_commit(
             updated,
             author=git_author(_current_actor()),
-            message=f"goals.update: {gid}",
+            message=kwargs.get("_commit_message") or f"goals.update: {gid}",
             force=bool(kwargs.get("force", False)),
         )
     except CommitFailedError as exc:
@@ -734,6 +736,24 @@ def _action_goal_update(kwargs: dict[str, Any]) -> str:
         "changed_fields": changed,
         "goal": saved,
     }, default=str)
+
+
+def _action_goal_retract(kwargs: dict[str, Any]) -> str:
+    retract_kwargs = dict(kwargs)
+    retract_kwargs["visibility"] = "deleted"
+    retract_kwargs["_commit_message"] = (
+        f"goals.retract: {(kwargs.get('goal_id') or '').strip()}"
+    )
+    result_str = _action_goal_update(retract_kwargs)
+    try:
+        result = json.loads(result_str)
+    except (json.JSONDecodeError, TypeError):
+        return result_str
+    if not isinstance(result, dict) or result.get("status") != "updated":
+        return result_str
+    result["status"] = "retracted"
+    result["text"] = f"**Retracted Goal '{result['goal']['name']}'.**"
+    return json.dumps(result, default=str)
 
 
 def _action_goal_bind(kwargs: dict[str, Any]) -> str:
@@ -1326,6 +1346,7 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
 _GOAL_ACTIONS: dict[str, Any] = {
     "propose": _action_goal_propose,
     "update": _action_goal_update,
+    "retract": _action_goal_retract,
     "bind": _action_goal_bind,
     "list": _action_goal_list,
     "get": _action_goal_get,
@@ -1345,7 +1366,7 @@ _GOAL_ACTION_ALIASES: dict[str, str] = {
 }
 
 _GOAL_WRITE_ACTIONS: frozenset[str] = frozenset({
-    "propose", "update", "bind", "set_canonical",
+    "propose", "update", "retract", "bind", "set_canonical",
 })
 
 
@@ -1419,6 +1440,7 @@ def goals(
     name: str = "",
     description: str = "",
     tags: str = "",
+    clear_tags: bool = False,
     visibility: str = "",
     query: str = "",
     metric: str = "",
@@ -1439,8 +1461,13 @@ def goals(
       propose      Create a new Goal. Needs `name`. Optional
                    description, tags (CSV), visibility (public/private).
       update       Patch a Goal you own. Fields: name, description,
-                   tags, visibility. Non-owners cannot update — propose
-                   a new Goal instead.
+                   tags, clear_tags, visibility. Non-owners cannot
+                   update — propose a new Goal instead. Omitted tags
+                   leave existing tags unchanged; pass `clear_tags=True`
+                   to remove all tags.
+      retract      User-facing soft-delete for a Goal you own. This
+                   sets visibility=deleted and hides the Goal from list
+                   and search while keeping direct get/history intact.
       bind         Attach a Branch to a Goal. Pass goal_id="" to
                    unbind. Needs branch_def_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
@@ -1472,6 +1499,8 @@ def goals(
         (pass empty string to unset). Must reference a row in
         `branch_versions` — only published versions may be canonical.
       name/description/tags/visibility: Goal fields for propose/update.
+      clear_tags: Explicitly remove all tags during update. Empty or
+        omitted tags otherwise leave existing tags unchanged.
       query: search query.
       metric: leaderboard metric (run_count/forks/outcome).
       min_branches: common_nodes cutoff (default 2).
@@ -1494,6 +1523,7 @@ def goals(
         "name": name,
         "description": description,
         "tags": tags,
+        "clear_tags": clear_tags,
         "visibility": visibility,
         "query": query,
         "metric": metric,

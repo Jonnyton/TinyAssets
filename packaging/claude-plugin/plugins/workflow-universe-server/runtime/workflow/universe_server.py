@@ -725,6 +725,7 @@ def goals(
     name: str = "",
     description: str = "",
     tags: str = "",
+    clear_tags: bool = False,
     visibility: str = "",
     query: str = "",
     metric: str = "",
@@ -743,7 +744,10 @@ def goals(
       propose      Create a new Goal. Needs `name`. Optional
                    description, tags (CSV), visibility.
       update       Patch a Goal you own. Fields: name, description,
-                   tags, visibility.
+                   tags, clear_tags, visibility. Omitted tags leave
+                   existing tags unchanged; use clear_tags=True to
+                   remove all tags.
+      retract      Soft-delete a Goal you own while preserving history.
       bind         Attach a Branch to a Goal. Pass goal_id="" to
                    unbind. Needs branch_def_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
@@ -764,6 +768,7 @@ def goals(
         name=name,
         description=description,
         tags=tags,
+        clear_tags=clear_tags,
         visibility=visibility,
         query=query,
         metric=metric,
