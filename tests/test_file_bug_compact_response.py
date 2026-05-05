@@ -14,6 +14,7 @@ need the full BranchTask mirror pass ``verbose=True``.
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -157,3 +158,74 @@ class TestTriggerReceiptUnchanged:
         resp = _file_one(verbose=True, wired_wiki=wired_wiki)
         assert "trigger" in resp
         assert resp["trigger"].get("attempted") is True
+
+
+# ── Dry-run safety contract ────────────────────────────────────────────────
+
+
+class TestDryRunSafety:
+    def test_direct_dry_run_does_not_persist_or_enqueue(self, wired_wiki):
+        with patch(
+            "workflow.bug_investigation._maybe_enqueue_investigation",
+            side_effect=AssertionError("dry_run must not enqueue"),
+        ):
+            resp = json.loads(
+                _wiki_file_bug(
+                    component="probe",
+                    severity="major",
+                    title="direct-dry-run-safety",
+                    observed="dry_run persisted a wiki page",
+                    expected="no persistence",
+                    kind="feature",
+                    dry_run=True,
+                )
+            )
+
+        assert resp["status"] == "dry_run"
+        assert resp["dry_run"] is True
+        assert resp["investigation"] == {"status": "skipped", "reason": "dry_run"}
+        assert not list((wired_wiki / "pages" / "feature-requests").glob("*.md"))
+
+    def test_dispatch_dry_run_does_not_persist_or_enqueue(self, wired_wiki):
+        with patch(
+            "workflow.bug_investigation._maybe_enqueue_investigation",
+            side_effect=AssertionError("dry_run must not enqueue"),
+        ):
+            resp = json.loads(
+                wiki(
+                    action="file_bug",
+                    component="probe",
+                    severity="major",
+                    title="dispatch-dry-run-safety",
+                    observed="dry_run persisted a wiki page",
+                    expected="no persistence",
+                    kind="feature",
+                    dry_run=True,
+                )
+            )
+
+        assert resp["status"] == "dry_run"
+        assert "trigger" not in resp
+        assert not list((wired_wiki / "pages" / "feature-requests").glob("*.md"))
+
+    def test_dispatch_dry_run_does_not_scaffold_missing_wiki(
+        self, tmp_path, monkeypatch,
+    ):
+        wiki_root = tmp_path / "missing-wiki"
+        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+
+        resp = json.loads(
+            wiki(
+                action="file_bug",
+                component="probe",
+                severity="major",
+                title="no-scaffold-dry-run",
+                observed="dry_run scaffolded the wiki tree",
+                expected="no filesystem writes",
+                kind="feature",
+                dry_run=True,
+            )
+        )
+
+        assert resp["status"] == "dry_run"
+        assert not wiki_root.exists()

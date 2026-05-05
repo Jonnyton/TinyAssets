@@ -1378,6 +1378,7 @@ def _wiki_file_bug(
     tags: str = "",
     force_new: bool = False,
     verbose: bool = False,
+    dry_run: bool = False,
     **_kwargs: Any,
 ) -> str:
     """File a bug, feature request, design proposal, or patch request.
@@ -1415,10 +1416,6 @@ def _wiki_file_bug(
     category_dir, id_prefix = _KIND_ROUTING[effective_kind]
     pages_dir = _wiki_pages_dir() / category_dir
     drafts_dir = _wiki_drafts_dir() / category_dir
-    try:
-        pages_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return json.dumps({"error": f"Cannot create {category_dir} dir: {exc}"})
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slug = _slugify_title(title)
@@ -1456,6 +1453,30 @@ def _wiki_file_bug(
                     "materially different."
                 ),
             })
+
+    if dry_run:
+        bug_id = _next_id(pages_dir, drafts_dir, id_prefix)
+        filename = f"{bug_id.lower()}-{slug}.md"
+        rel_path = f"pages/{category_dir}/{filename}"
+        return json.dumps({
+            "path": rel_path,
+            "bug_id": bug_id,
+            "status": "dry_run",
+            "dry_run": True,
+            "kind": effective_kind,
+            "severity": severity,
+            "component": component,
+            "investigation": {"status": "skipped", "reason": "dry_run"},
+            "note": (
+                "Dry run only: no wiki page, log entry, trigger receipt, "
+                "or dispatcher request was created."
+            ),
+        })
+
+    try:
+        pages_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return json.dumps({"error": f"Cannot create {category_dir} dir: {exc}"})
 
     for attempt in (1, 2):
         bug_id = _next_id(pages_dir, drafts_dir, id_prefix)
@@ -1659,7 +1680,7 @@ def wiki(
     new_draft: str = "",
     reason: str = "",
     similarity_threshold: float = 0.25,
-    dry_run: bool = True,
+    dry_run: bool | None = None,
     skip_lint: bool = False,
     max_results: int = 10,
     component: str = "",
@@ -1694,20 +1715,24 @@ def wiki(
             ),
         })
 
+    file_bug_dry_run = action == "file_bug" and dry_run is True
+
     # Task #6 — scaffold the tree on first call so fresh deploys
     # (empty /data/wiki) don't error on read/list/search/lint. Idempotent.
-    try:
-        _ensure_wiki_scaffold(wiki_root)
-    except OSError as exc:
-        return json.dumps({
-            "error": f"Wiki scaffold failed at {wiki_root}: {exc}",
-            "hint": (
-                "Check filesystem permissions on the wiki root. The volume "
-                "must be writable by the daemon uid."
-            ),
-        })
+    # file_bug dry-run is a no-write safety preview, so it must not scaffold.
+    if not file_bug_dry_run:
+        try:
+            _ensure_wiki_scaffold(wiki_root)
+        except OSError as exc:
+            return json.dumps({
+                "error": f"Wiki scaffold failed at {wiki_root}: {exc}",
+                "hint": (
+                    "Check filesystem permissions on the wiki root. The volume "
+                    "must be writable by the daemon uid."
+                ),
+            })
 
-    if not wiki_root.is_dir():
+    if not file_bug_dry_run and not wiki_root.is_dir():
         return json.dumps({
             "error": f"Wiki not found at {wiki_root}.",
             "hint": (
@@ -1749,7 +1774,6 @@ def wiki(
         "new_draft": new_draft,
         "reason": reason,
         "similarity_threshold": similarity_threshold,
-        "dry_run": dry_run,
         "skip_lint": skip_lint,
         "max_results": max_results,
         "component": component,
@@ -1766,5 +1790,7 @@ def wiki(
         "reporter_context": reporter_context,
         "verbose": verbose,
     }
+    if dry_run is not None:
+        kwargs["dry_run"] = dry_run
 
     return handler(**kwargs)

@@ -891,7 +891,7 @@ def wiki(
     new_draft: str = "",
     reason: str = "",
     similarity_threshold: float = 0.25,
-    dry_run: bool = True,
+    dry_run: bool | None = None,
     skip_lint: bool = False,
     max_results: int = 10,
     component: str = "",
