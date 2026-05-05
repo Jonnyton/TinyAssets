@@ -585,6 +585,31 @@ class TestNotesEndpoints:
         assert note["clearly_wrong"] is True
         assert note["quoted_passage"] == "Kael said softly"
 
+    def test_post_note_with_line_anchor(self, client):
+        resp = client.post(
+            "/v1/universes/test-universe/notes",
+            json={
+                "text": "Tighten this fragment.",
+                "category": "direction",
+                "target": "output/chapter-1.md",
+                "anchor": {
+                    "start_line": 7,
+                    "end_line": 8,
+                    "start_column": 4,
+                    "end_column": 18,
+                },
+            },
+        )
+        assert resp.status_code == 201
+        note = resp.json()["note"]
+        assert note["target"] == "output/chapter-1.md"
+        assert note["anchor"] == {
+            "start_line": 7,
+            "end_line": 8,
+            "start_column": 4,
+            "end_column": 18,
+        }
+
 
 # ---------------------------------------------------------------------------
 # TOMBSTONE — orphan TestStatus tests deleted 2026-04-16

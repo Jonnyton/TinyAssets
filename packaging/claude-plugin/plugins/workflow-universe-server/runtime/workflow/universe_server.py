@@ -299,6 +299,7 @@ def universe(
     tier: str = "",
     enabled: bool = False,
     tag: str = "",
+    anchor_json: str = "",
 ) -> str:
     """Inspect and steer a workflow's universe.
 
@@ -332,6 +333,7 @@ def universe(
         pickup_incentive/directed_daemon_id: Optional patch-request pickup
             signals; these do not affect acceptance, release, or merge odds.
         filename/provenance_tag/limit/tag: Optional read/write filters.
+        anchor_json: Optional JSON object for `give_direction` line/span notes.
     """
     return _universe_impl(
         action=action,
@@ -361,6 +363,7 @@ def universe(
         tier=tier,
         enabled=enabled,
         tag=tag,
+        anchor_json=anchor_json,
     )
 
 
