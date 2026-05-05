@@ -749,7 +749,9 @@ def goals(
       set_canonical Mark a branch_version_id as the Goal's canonical
                    branch. Author-only or host-only.
       list         Browse Goals. Optional author, tags, limit.
-      get          Full Goal view + bound Branches. Needs goal_id.
+      get          Full Goal view + milestones + bound Branches.
+                   Needs goal_id. Milestones are the Goal gate ladder;
+                   define them with `gates action=define_ladder`.
       search       LIKE-based substring search over name, description,
                    tags. Needs query.
       leaderboard  Rank bound Branches by metric (run_count/forks/outcome).

@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from workflow.api.helpers import _base_path as _helpers_base_path
+from workflow.daemon_server import set_goal_ladder
 
 
 @pytest.fixture
@@ -104,7 +105,37 @@ def test_get_returns_full_goal_with_branches(p5_env):
     result = _call(us, "goals", "get", goal_id=gid)
     assert result["goal"]["goal_id"] == gid
     assert result["branch_count"] == 0
+    assert result["milestones"] == []
+    assert result["milestone_count"] == 0
+    assert "gates action=define_ladder" in result["text"]
     assert "Test" in result["text"]
+
+
+def test_get_surfaces_goal_gate_ladder_as_milestones(p5_env):
+    us, base = p5_env
+    gid = _call(
+        us, "goals", "propose", name="Research Program",
+    )["goal"]["goal_id"]
+
+    ladder = [
+        {
+            "rung_key": "literature_review",
+            "label": "Literature review",
+            "description": "Survey prior work",
+        },
+        {
+            "rung_key": "replication",
+            "label": "Replication package",
+        },
+    ]
+    set_goal_ladder(base, goal_id=gid, ladder=ladder)
+
+    result = _call(us, "goals", "get", goal_id=gid)
+
+    assert result["milestones"] == ladder
+    assert result["milestone_count"] == 2
+    assert "Literature review" in result["text"]
+    assert "Replication package" in result["text"]
 
 
 def test_get_rejects_missing_goal(p5_env):

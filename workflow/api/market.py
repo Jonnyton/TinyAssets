@@ -578,9 +578,13 @@ def _format_goal_catalog_line(g: dict[str, Any]) -> str:
     if len(desc) > 100:
         desc = desc[:100].rstrip() + "…"
     name = g.get("name") or "(unnamed)"
+    milestones = list(g.get("gate_ladder") or [])
+    milestone_suffix = (
+        f" · {len(milestones)} milestone(s)" if milestones else ""
+    )
     return (
         f"- `{g['goal_id']}` · **{name}** · {g.get('author')}"
-        f"{tag_suffix}" + (f" · {desc}" if desc else "")
+        f"{tag_suffix}{milestone_suffix}" + (f" · {desc}" if desc else "")
     )
 
 
@@ -914,6 +918,27 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
     if goal.get("description"):
         lines.append("")
         lines.append(goal["description"])
+    milestones = list(goal.get("gate_ladder") or [])
+    lines.append("")
+    if milestones:
+        lines.append(
+            f"**{len(milestones)} Milestone(s)** defined for this Goal:"
+        )
+        lines.append("")
+        for milestone in milestones[:12]:
+            key = milestone.get("rung_key") or milestone.get("key") or ""
+            label = milestone.get("label") or key or "(unnamed milestone)"
+            description = (milestone.get("description") or "").strip()
+            suffix = f" — {description}" if description else ""
+            key_prefix = f"`{key}` · " if key else ""
+            lines.append(f"- {key_prefix}**{label}**{suffix}")
+        if len(milestones) > 12:
+            lines.append(f"- … and {len(milestones) - 12} more.")
+    else:
+        lines.append(
+            "_No milestones yet. Define multi-stage program milestones "
+            "with `gates action=define_ladder goal_id=... ladder=...`._"
+        )
     lines.append("")
     if branches:
         lines.append(
@@ -945,6 +970,8 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
     return json.dumps({
         "text": "\n".join(lines),
         "goal": goal,
+        "milestones": milestones,
+        "milestone_count": len(milestones),
         "is_deleted": is_deleted,
         "branches": branches,
         "branch_count": len(branches),
@@ -1448,7 +1475,9 @@ def goals(
                    Pass branch_version_id="" to unset.
       list         Browse Goals. Optional author, tags (CSV first
                    value only), limit. Soft-deleted Goals hidden.
-      get          Full Goal view + bound Branches. Needs goal_id.
+      get          Full Goal view + milestones + bound Branches.
+                   Needs goal_id. Milestones are the Goal gate ladder;
+                   define them with `gates action=define_ladder`.
       search       LIKE-based substring search over name, description,
                    tags. Needs query.
       leaderboard  Rank bound Branches by metric. v1 supports

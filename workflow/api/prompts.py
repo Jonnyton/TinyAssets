@@ -219,6 +219,8 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
    |                                | goal_id=...`                            |
    | See who else built for a Goal  | `goals action=get goal_id=...` (lists   |
    |                                | bound workflows + daemon + run counts)  |
+   | Plan multi-stage milestones    | `gates action=define_ladder goal_id=...`|
+   |                                | then inspect via `goals action=get`     |
    | Compare workflows on a Goal    | `goals action=leaderboard goal_id=...   |
    |                                | metric=run_count`                       |
    | Find reusable nodes            | `goals action=common_nodes scope=all`   |

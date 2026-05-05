@@ -29,6 +29,7 @@ from workflow.api.market import (
     gates,
     goals,
 )
+from workflow.daemon_server import set_goal_ladder
 
 # ── module surface ──────────────────────────────────────────────────────────
 
@@ -175,6 +176,42 @@ def test_goals_unknown_action_lists_directory_aliases():
     out = json.loads(goals(action="totally_bogus_action"))
     assert "propose_workflow_goal" in out["available_actions"]
     assert "search_workflow_goals" in out["available_actions"]
+
+
+def test_goal_get_exposes_empty_milestone_surface(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+
+    proposed = json.loads(goals(action="propose", name="Program"))
+    out = json.loads(goals(action="get", goal_id=proposed["goal"]["goal_id"]))
+
+    assert out["milestones"] == []
+    assert out["milestone_count"] == 0
+    assert "gates action=define_ladder" in out["text"]
+
+
+def test_goal_get_exposes_gate_ladder_as_milestones(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+
+    proposed = json.loads(goals(action="propose", name="Program"))
+    goal_id = proposed["goal"]["goal_id"]
+    ladder = [
+        {
+            "rung_key": "literature_review",
+            "label": "Literature review",
+            "description": "Survey prior work",
+        },
+        {"rung_key": "replication", "label": "Replication package"},
+    ]
+
+    set_goal_ladder(tmp_path / "output", goal_id=goal_id, ladder=ladder)
+    out = json.loads(goals(action="get", goal_id=goal_id))
+
+    assert out["milestones"] == ladder
+    assert out["milestone_count"] == 2
+    assert "Literature review" in out["text"]
+    assert "Replication package" in out["text"]
 
 
 # ── _GATES_ACTIONS dispatch table ───────────────────────────────────────────
