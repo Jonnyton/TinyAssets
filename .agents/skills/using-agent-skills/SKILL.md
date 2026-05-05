@@ -40,6 +40,7 @@ Task arrives
     |   |-- Conditional-edge branch routing? --------> conditional-edge-testing
     |   |-- Browser runtime verification? -----------> browser-testing-with-devtools
     |   `-- Live Claude.ai phone-surface test? ------> ui-test
+    |-- Community loop unable to self-heal? ---------> loop-uptime-maintenance
     |-- Something broke? ----------------------------> debugging-and-error-recovery
     |-- Reviewing code? -----------------------------> code-review-and-quality
     |   |-- Security-sensitive? ---------------------> security-and-hardening
@@ -156,6 +157,7 @@ Not every task needs every step. Bug triage might be:
 | Verify | conditional-edge-testing | Require compile+invoke coverage for conditional-edge branches |
 | Verify | browser-testing-with-devtools | Use browser runtime evidence to verify behavior |
 | Verify | ui-test | Exercise the live Claude.ai user surface |
+| Ops | loop-uptime-maintenance | Handle community-loop failures too broken to self-heal through the loop |
 | Verify | debugging-and-error-recovery | Reproduce, localize, fix, and guard regressions |
 | Review | code-review-and-quality | Review by bugs, regressions, and missing tests first |
 | Review | security-and-hardening | Apply least privilege and hostile-input thinking |
