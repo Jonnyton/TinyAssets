@@ -456,6 +456,9 @@ def extensions(
     status: str = "",
     since_step: int = -1,
     max_wait_s: int = 60,
+    log_path: str = "",
+    marker_regex: str = "",
+    max_bytes: int = 1048576,
     limit: int = 50,
     spec_json: str = "",
     changes_json: str = "",
@@ -552,8 +555,9 @@ def extensions(
     `branch_design_guide`; this description is the I/O contract.
 
     Main actions: build_branch, patch_branch, describe_branch, get_branch,
-    list_branches, run_branch, get_run, list_runs, stream_run, cancel_run,
-    get_run_output, attach_existing_child_run, wait_for_run, resume_run,
+    list_branches, run_branch, get_run, list_runs, stream_run,
+    wait_for_run, ui_wait_log_marker, cancel_run, get_run_output,
+    attach_existing_child_run, resume_run,
     judge_run, compare_runs, schedule_branch, publish_version,
     validate_ship_packet, and open_auto_ship_pr.
 
@@ -565,9 +569,10 @@ def extensions(
       patch_branch, patch_nodes, update_node, rollback_node,
       suggest_node_edit, search_nodes.
     - Runs: run_branch, list_runs, get_run, get_run_output, stream_run,
-      wait_for_run, cancel_run, resume_run, query_runs, compare_runs,
-      estimate_run_cost, get_node_output, attach_existing_child_run,
-      get_routing_evidence, get_memory_scope_status.
+      wait_for_run, ui_wait_log_marker, cancel_run, resume_run,
+      query_runs, compare_runs, estimate_run_cost, get_node_output,
+      attach_existing_child_run, get_routing_evidence,
+      get_memory_scope_status.
     - Judgments: judge_run, list_judgments.
     - Versions: publish_version, list_branch_versions, get_branch_version,
       run_branch_version, rollback_merge, get_rollback_history,
@@ -609,6 +614,9 @@ def extensions(
         status=status,
         since_step=since_step,
         max_wait_s=max_wait_s,
+        log_path=log_path,
+        marker_regex=marker_regex,
+        max_bytes=max_bytes,
         limit=limit,
         spec_json=spec_json,
         changes_json=changes_json,

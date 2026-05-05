@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -499,6 +501,58 @@ def test_stream_run_returns_events_since_cursor(runner_env):
     second = _call(us, "stream_run",
                    run_id=run["run_id"], since_step=cursor)
     assert second["events"] == []
+
+
+def test_ui_wait_log_marker_waits_for_regex_match(runner_env):
+    us, base = runner_env
+    log_path = Path(base) / "ui.log"
+
+    def write_marker():
+        time.sleep(0.1)
+        log_path.write_text(
+            "booting\nLocal: http://127.0.0.1:5173/\n",
+            encoding="utf-8",
+        )
+
+    thread = threading.Thread(target=write_marker)
+    thread.start()
+    try:
+        result = _call(
+            us,
+            "ui_wait_log_marker",
+            log_path=str(log_path),
+            marker_regex=r"Local:\s+http://127\.0\.0\.1:\d+/",
+            max_wait_s=2,
+        )
+    finally:
+        thread.join(timeout=2)
+
+    assert result["matched"] is True
+    assert result["reason"] == "marker"
+    assert result["match_end"] > result["match_start"]
+    assert "matched_line" not in result
+    assert "matched_text" not in result
+
+
+def test_ui_wait_log_marker_scans_bounded_tail(runner_env):
+    us, base = runner_env
+    log_path = Path(base) / "ui.log"
+    log_path.write_text(
+        "READY old-marker\n" + ("x" * 2048),
+        encoding="utf-8",
+    )
+
+    result = _call(
+        us,
+        "ui_wait_log_marker",
+        log_path=str(log_path),
+        marker_regex="READY",
+        max_wait_s=0.5,
+        max_bytes=128,
+    )
+
+    assert result["matched"] is False
+    assert result["reason"] == "timeout"
 
 
 def test_cancel_run_marks_cancel_requested(runner_env):

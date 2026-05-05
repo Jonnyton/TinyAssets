@@ -863,6 +863,58 @@ def _action_wait_for_run(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_ui_wait_log_marker(kwargs: dict[str, Any]) -> str:
+    """Wait for a UI readiness marker in a bounded log-file tail."""
+    from workflow.runs import await_log_marker
+
+    log_path = str(kwargs.get("log_path", "") or "").strip()
+    marker_regex = str(kwargs.get("marker_regex", "") or "").strip()
+    if not log_path:
+        return json.dumps({"error": "log_path is required."})
+    if not marker_regex:
+        return json.dumps({"error": "marker_regex is required."})
+
+    try:
+        max_wait_s = max(0.5, min(120.0, float(kwargs.get("max_wait_s", 60) or 60)))
+    except (TypeError, ValueError):
+        max_wait_s = 60.0
+    try:
+        raw_max_bytes = int(
+            kwargs.get("max_bytes", 1_048_576) or 1_048_576,
+        )
+        max_bytes = max(1, min(raw_max_bytes, 16 * 1024 * 1024))
+    except (TypeError, ValueError):
+        max_bytes = 1_048_576
+
+    result = await_log_marker(
+        log_path,
+        marker_regex,
+        max_wait_s=max_wait_s,
+        max_bytes=max_bytes,
+    )
+    if result.get("matched"):
+        text = (
+            f"Readiness marker matched in `{log_path}` "
+            f"after {result.get('waited_s')}s."
+        )
+    elif result.get("reason") == "invalid_regex":
+        text = f"Invalid readiness regex: {result.get('error', '')}"
+    elif result.get("reason") == "not_a_file":
+        text = f"Readiness path is not a file: `{log_path}`."
+    else:
+        text = (
+            f"No readiness marker matched in `{log_path}` "
+            f"after {result.get('waited_s')}s."
+        )
+    return json.dumps({
+        "text": text,
+        "log_path": log_path,
+        "marker_regex": marker_regex,
+        "max_bytes": max_bytes,
+        **result,
+    }, default=str)
+
+
 def _action_cancel_run(kwargs: dict[str, Any]) -> str:
     from workflow.runs import (
         get_run as _get_run,
@@ -1558,6 +1610,7 @@ _RUN_ACTIONS: dict[str, Any] = {
     "list_runs": _action_list_runs,
     "stream_run": _action_stream_run,
     "wait_for_run": _action_wait_for_run,
+    "ui_wait_log_marker": _action_ui_wait_log_marker,
     "cancel_run": _action_cancel_run,
     "get_run_output": _action_get_run_output,
     "attach_existing_child_run": _action_attach_existing_child_run,

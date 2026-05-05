@@ -1097,6 +1097,81 @@ def await_run_events(
     }
 
 
+def await_log_marker(
+    log_path: str | Path,
+    marker_regex: str,
+    *,
+    max_wait_s: float = 60.0,
+    max_bytes: int = 1_048_576,
+    poll_interval_s: float = 0.25,
+) -> dict[str, Any]:
+    """Wait for ``marker_regex`` to appear in the bounded tail of ``log_path``.
+
+    This is a readiness primitive for UI/dev-server boot logs. It never reads
+    more than ``max_bytes`` per poll, so a noisy or unbounded log cannot pin
+    memory while a client waits for a startup marker.
+    """
+    try:
+        pattern = re.compile(marker_regex)
+    except re.error as exc:
+        return {
+            "matched": False,
+            "reason": "invalid_regex",
+            "error": str(exc),
+        }
+
+    path = Path(log_path).expanduser()
+    deadline = time.monotonic() + max(0.0, float(max_wait_s))
+    poll_interval = max(0.05, float(poll_interval_s))
+    byte_cap = max(1, min(int(max_bytes), 16 * 1024 * 1024))
+    started = time.monotonic()
+    last_error = ""
+
+    while True:
+        if path.exists() and not path.is_file():
+            return {
+                "matched": False,
+                "reason": "not_a_file",
+                "path": str(path),
+                "waited_s": round(time.monotonic() - started, 3),
+            }
+
+        if path.is_file():
+            try:
+                size = path.stat().st_size
+                with path.open("rb") as handle:
+                    if size > byte_cap:
+                        handle.seek(-byte_cap, os.SEEK_END)
+                    data = handle.read(byte_cap)
+                text = data.decode("utf-8", errors="replace")
+                match = pattern.search(text)
+                if match:
+                    return {
+                        "matched": True,
+                        "reason": "marker",
+                        "path": str(path),
+                        "waited_s": round(time.monotonic() - started, 3),
+                        "bytes_scanned": len(data),
+                        "log_size_bytes": size,
+                        "match_start": match.start(),
+                        "match_end": match.end(),
+                    }
+            except OSError as exc:
+                last_error = str(exc)
+
+        if time.monotonic() >= deadline:
+            result = {
+                "matched": False,
+                "reason": "timeout",
+                "path": str(path),
+                "waited_s": round(time.monotonic() - started, 3),
+            }
+            if last_error:
+                result["last_error"] = last_error
+            return result
+        time.sleep(poll_interval)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 4: judgments, lineage, node edit audit
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3404,6 +3479,7 @@ __all__ = [
     # Phase 4 storage helpers
     "add_judgment",
     "attach_existing_child_run",
+    "await_log_marker",
     "build_node_status_map",
     "create_run",
     "execute_branch",
