@@ -35,6 +35,7 @@ class TestNoteModel:
         assert note.category == "observation"
         assert note.status == "unread"
         assert note.clearly_wrong is False
+        assert note.anchor == {}
 
 
 class TestCRUD:
@@ -49,6 +50,31 @@ class TestCRUD:
         notes = list_notes(tmp_path)
         assert len(notes) == 1
         assert notes[0].text == "More tension"
+
+    def test_add_line_anchor(self, tmp_path):
+        note = add_note(
+            tmp_path,
+            source="user",
+            text="This phrase needs a sharper verb.",
+            category="direction",
+            target="output/chapter-1.md",
+            anchor={
+                "start_line": 12,
+                "end_line": 12,
+                "start_column": 9,
+                "end_column": 21,
+            },
+        )
+
+        restored = list_notes(tmp_path)[0]
+        assert restored.id == note.id
+        assert restored.target == "output/chapter-1.md"
+        assert restored.anchor == {
+            "start_line": 12,
+            "end_line": 12,
+            "start_column": 9,
+            "end_column": 21,
+        }
 
     def test_list_with_filters(self, tmp_path):
         add_note(tmp_path, source="user", text="A", category="direction")

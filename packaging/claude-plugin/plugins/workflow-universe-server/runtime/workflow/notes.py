@@ -33,6 +33,7 @@ class Note:
     target: str | None = None  # file path or scene reference
     clearly_wrong: bool = False  # for concerns: provable error?
     quoted_passage: str = ""  # evidence from prose
+    anchor: dict[str, Any] = field(default_factory=dict)  # optional line/span anchor
     tags: list[str] = field(default_factory=list)  # optional tags for filtering/categorization
     metadata: dict[str, Any] = field(default_factory=dict)  # optional metadata dict
     timestamp: float = field(default_factory=time.time)
@@ -51,6 +52,7 @@ class Note:
             target=data.get("target"),
             clearly_wrong=data.get("clearly_wrong", False),
             quoted_passage=data.get("quoted_passage", ""),
+            anchor=data.get("anchor", {}) if isinstance(data.get("anchor"), dict) else {},
             tags=data.get("tags", []) if isinstance(data.get("tags"), list) else [],
             metadata=data.get("metadata", {}) if isinstance(data.get("metadata"), dict) else {},
             timestamp=data.get("timestamp", time.time()),
@@ -108,6 +110,7 @@ def add_note(
     target: str | None = None,
     clearly_wrong: bool = False,
     quoted_passage: str = "",
+    anchor: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Note:
@@ -120,6 +123,7 @@ def add_note(
         target=target,
         clearly_wrong=clearly_wrong,
         quoted_passage=quoted_passage,
+        anchor=anchor or {},
         tags=tags or [],
         metadata=metadata or {},
     )

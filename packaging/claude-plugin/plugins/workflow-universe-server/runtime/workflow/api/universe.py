@@ -112,6 +112,7 @@ def _extract_give_direction(
         {
             "category": kwargs.get("category", "direction"),
             "note_id": result.get("note_id", ""),
+            "anchor": result.get("anchor", {}),
         },
     )
 
@@ -3014,6 +3015,7 @@ def _action_give_direction(
     text: str = "",
     category: str = "direction",
     target: str = "",
+    anchor_json: str = "",
     **_kwargs: Any,
 ) -> str:
     uid = universe_id or _default_universe()
@@ -3028,6 +3030,13 @@ def _action_give_direction(
     try:
         from workflow.notes import add_note as _add_note
 
+        anchor: dict[str, Any] = {}
+        if anchor_json.strip():
+            parsed_anchor = json.loads(anchor_json)
+            if not isinstance(parsed_anchor, dict):
+                return json.dumps({"error": "anchor_json must be a JSON object."})
+            anchor = parsed_anchor
+
         udir.mkdir(parents=True, exist_ok=True)
         note = _add_note(
             udir,
@@ -3035,14 +3044,19 @@ def _action_give_direction(
             text=text,
             category=category,
             target=target or None,
+            anchor=anchor,
         )
         return json.dumps({
             "universe_id": uid,
             "note_id": note.id,
             "category": category,
+            "target": note.target,
+            "anchor": note.anchor,
             "status": "written",
             "note": "Direction delivered. The daemon reads notes at scene boundaries.",
         })
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"Invalid anchor_json: {exc.msg}"})
     except Exception as exc:
         return json.dumps({"error": f"Failed to add note: {exc}"})
 
@@ -3965,6 +3979,7 @@ def _universe_impl(
     tier: str = "",
     enabled: bool = False,
     tag: str = "",
+    anchor_json: str = "",
 ) -> str:
     """Pattern A2 body — see ``workflow.universe_server.universe`` for the
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
@@ -4052,6 +4067,7 @@ def _universe_impl(
         "tier": tier,
         "enabled": enabled,
         "tag": tag,
+        "anchor_json": anchor_json,
     }
 
     # All WRITE actions are funneled through the ledger wrapper. READ actions

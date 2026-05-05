@@ -36,6 +36,7 @@ def _call(action: str, **kwargs) -> dict:
         "branch_id": "",
         "filename": "",
         "provenance_tag": "",
+        "anchor_json": "",
         "limit": 20,
     }
     base_kwargs.update(kwargs)
@@ -135,6 +136,22 @@ def test_give_direction_appends_ledger(universe: str) -> None:
     assert entries[0]["summary"] == "Tighten the opening."
     assert entries[0]["payload"]["category"] == "direction"
     assert entries[0]["payload"]["note_id"] == out["note_id"]
+
+
+def test_give_direction_accepts_line_anchor(universe: str) -> None:
+    anchor = {"start_line": 3, "end_line": 4, "start_column": 2, "end_column": 17}
+    out = _call(
+        "give_direction",
+        text="Keep this span, but sharpen the verb.",
+        target="output/chapter-1.md",
+        anchor_json=json.dumps(anchor),
+    )
+    assert out["status"] == "written"
+    assert out["target"] == "output/chapter-1.md"
+    assert out["anchor"] == anchor
+
+    entries = _ledger(universe)
+    assert entries[0]["payload"]["anchor"] == anchor
 
 
 def test_submit_request_appends_ledger(universe: str) -> None:
