@@ -294,6 +294,25 @@ def test_codex_subscription_step_uses_workflow_push_token_for_git_push(wf):
     assert "unset WORKFLOW_PUSH_TOKEN" in run_script
 
 
+def test_checkout_uses_fresh_main_for_auto_change_branch_bases(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    checkout_step = next((s for s in steps if s.get("name") == "Checkout"), None)
+    assert checkout_step is not None, "Must check out the repo before writers run"
+    with_block = checkout_step.get("with", {})
+    assert with_block.get("ref") == "main"
+    assert with_block.get("fetch-depth") == 0
+
+
+def test_codex_branch_is_created_from_fresh_origin_main(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
+    assert codex_step is not None, "Must have a Codex subscription writer step"
+    run_script = codex_step.get("run", "")
+    assert "git fetch origin main --prune" in run_script
+    assert 'git checkout -B "$branch" "origin/main"' in run_script
+    assert 'git checkout -B "$branch"\n' not in run_script
+
+
 def test_codex_commit_title_uses_env_to_avoid_shell_injection(wf):
     steps = wf["jobs"]["fix"]["steps"]
     codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
