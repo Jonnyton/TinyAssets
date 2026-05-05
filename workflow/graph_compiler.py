@@ -1125,6 +1125,23 @@ def _build_opaque_node(
     return _fn
 
 
+def _emit_node_event(
+    event_sink: Callable[..., None] | None,
+    node_id: str,
+    phase: str,
+    **detail: Any,
+) -> None:
+    if event_sink is None:
+        return
+    try:
+        event_sink(node_id=node_id, phase=phase, **detail)
+    except Exception as exc:  # noqa: BLE001
+        if _is_cancel_exception(exc):
+            raise
+        suffix = " (starting)" if phase == "starting" else ""
+        logger.exception("event_sink raised in %s%s", node_id, suffix)
+
+
 def _checkpoint_predicate_matches(
     reached_when: dict[str, Any], merged_state: dict[str, Any],
 ) -> bool:
@@ -1451,6 +1468,15 @@ def _build_invoke_branch_node(
         from workflow.branches import BranchDefinition as _BD
         from workflow.daemon_server import get_branch_definition
 
+        _emit_node_event(
+            event_sink,
+            node.node_id,
+            "starting",
+            invoke_branch=True,
+            wait_mode=wait_mode,
+            child_branch_def_id=child_branch_def_id,
+        )
+
         raw = get_branch_definition(_base, branch_def_id=child_branch_def_id)
         child_branch = _BD.from_dict(raw)
 
@@ -1485,10 +1511,21 @@ def _build_invoke_branch_node(
                         )
                     except Exception:
                         pass
-                    return {
+                    updates = {
                         parent_key: outcome.output.get(child_key)
                         for parent_key, child_key in output_mapping.items()
                     }
+                    _emit_node_event(
+                        event_sink,
+                        node.node_id,
+                        "ran",
+                        invoke_branch=True,
+                        wait_mode=wait_mode,
+                        child_run_id=outcome.run_id,
+                        child_status=outcome.status,
+                        output=updates,
+                    )
+                    return updates
                 # Non-completed terminal status — apply policy.
                 retries_left = (
                     retry_budget - (attempt - 1)
@@ -1513,6 +1550,16 @@ def _build_invoke_branch_node(
                 )
                 # _dispatch_invoke_outcome raised on propagate (default
                 # for retry-exhausted); only "default" path returns here.
+                _emit_node_event(
+                    event_sink,
+                    node.node_id,
+                    "ran",
+                    invoke_branch=True,
+                    wait_mode=wait_mode,
+                    child_run_id=outcome.run_id,
+                    child_status=outcome.status,
+                    output=updates,
+                )
                 return updates
         else:
             outcome = execute_branch_async(
@@ -1528,6 +1575,16 @@ def _build_invoke_branch_node(
             if output_mapping:
                 first_parent_key = next(iter(output_mapping))
                 updates[first_parent_key] = outcome.run_id
+            _emit_node_event(
+                event_sink,
+                node.node_id,
+                "ran",
+                invoke_branch=True,
+                wait_mode=wait_mode,
+                child_run_id=outcome.run_id,
+                child_status=outcome.status,
+                output=updates,
+            )
             return updates
 
     return _node_fn
@@ -1601,6 +1658,14 @@ def _build_invoke_branch_version_node(
             for parent_key, child_key in inputs_mapping.items()
         }
         actor_arg = child_actor or "anonymous"
+        _emit_node_event(
+            event_sink,
+            node.node_id,
+            "starting",
+            invoke_branch_version=True,
+            wait_mode=wait_mode,
+            child_branch_version_id=child_branch_version_id,
+        )
 
         def _resolve_branch_def_id_for_author() -> str:
             """Map child_branch_version_id → branch_def_id for author lookup.
@@ -1648,10 +1713,21 @@ def _build_invoke_branch_version_node(
                             )
                     except Exception:
                         pass
-                    return {
+                    updates = {
                         parent_key: child_output.get(child_key)
                         for parent_key, child_key in output_mapping.items()
                     }
+                    _emit_node_event(
+                        event_sink,
+                        node.node_id,
+                        "ran",
+                        invoke_branch_version=True,
+                        wait_mode=wait_mode,
+                        child_run_id=outcome.run_id,
+                        child_status=child_status,
+                        output=updates,
+                    )
+                    return updates
                 # Non-completed terminal status — apply policy.
                 retries_left = (
                     retry_budget - (attempt - 1)
@@ -1674,6 +1750,16 @@ def _build_invoke_branch_version_node(
                     default_outputs=default_outputs,
                     node_id=node.node_id,
                 )
+                _emit_node_event(
+                    event_sink,
+                    node.node_id,
+                    "ran",
+                    invoke_branch_version=True,
+                    wait_mode=wait_mode,
+                    child_run_id=outcome.run_id,
+                    child_status=child_status,
+                    output=updates,
+                )
                 return updates
         else:
             # Async: spawn and write child run_id; failure handling deferred
@@ -1692,6 +1778,16 @@ def _build_invoke_branch_version_node(
             if output_mapping:
                 first_parent_key = next(iter(output_mapping))
                 updates[first_parent_key] = outcome.run_id
+            _emit_node_event(
+                event_sink,
+                node.node_id,
+                "ran",
+                invoke_branch_version=True,
+                wait_mode=wait_mode,
+                child_run_id=outcome.run_id,
+                child_status=getattr(outcome, "status", ""),
+                output=updates,
+            )
             return updates
 
     return _node_fn
@@ -1730,6 +1826,13 @@ def _build_await_branch_run_node(
                 f"await_branch_run node '{node.node_id}': "
                 f"state field '{run_id_field}' is empty or missing."
             )
+        _emit_node_event(
+            event_sink,
+            node.node_id,
+            "starting",
+            await_run=True,
+            child_run_id=run_id,
+        )
         record = poll_child_run_status(
             _base, run_id, timeout_seconds=timeout_seconds,
         )
@@ -1743,6 +1846,15 @@ def _build_await_branch_run_node(
         updates: dict[str, Any] = {}
         for parent_key, child_key in output_mapping.items():
             updates[parent_key] = raw_output.get(child_key)
+        _emit_node_event(
+            event_sink,
+            node.node_id,
+            "ran",
+            await_run=True,
+            child_run_id=run_id,
+            child_status=record.get("status", ""),
+            output=updates,
+        )
         return updates
 
     return _node_fn

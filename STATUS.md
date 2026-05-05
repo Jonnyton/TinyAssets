@@ -35,6 +35,7 @@ Run `python scripts/claim_check.py --provider <name>` before claiming. Claim by 
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
 | Mission 10 retest | user-sim | host watches browser | claimed:user |
 | Host-action: re-register `Workflow DEV` ChatGPT connector to `/mcp-directory`; verified 2026-05-02T15:37 current ChatGPT DEV points to `/mcp` and exposes legacy `get_status`. | ChatGPT Apps settings | custom MCP warning approval | host-action |
+| BUG-049 fix — invoke/await child-run nodes must emit progress events so completed `change_loop_v1` runs do not render stalled at `invoke_autoresearch_lab`. | `workflow/graph_compiler.py`, `tests/test_sub_branch_invocation.py`, `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/graph_compiler.py` | issue #195 | claimed:codex-bug-049 |
 | Memory-scope Stage 2c flag — watch started 2026-04-16; earliest flip 2026-05-16. | `docs/exec-plans/active/2026-04-27-memory-scope-stage-2c-flip-prep.md` | date gate | monitoring |
 | Provider/DO key exposure audit — no concrete tokens found 2026-05-01; remaining DO refs are GH secret names for DR/P0 workflows. | `deploy/*`, `.github/workflows/{dr-drill,p0-outage-triage}.yml` | host decision | host-decision |
 | Site cert flip — GitHub Pages still says "certificate does not exist yet"; CF edge green via MCP canaries + in-app smoke. | - | - | monitoring |

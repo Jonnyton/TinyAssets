@@ -29,6 +29,7 @@ from workflow.graph_compiler import (
     CompilerError,
     _build_await_branch_run_node,
     _build_invoke_branch_node,
+    _build_invoke_branch_version_node,
 )
 from workflow.runs import MAX_INVOKE_BRANCH_DEPTH, poll_child_run_status
 
@@ -300,6 +301,113 @@ class TestAwaitBranchRunNode:
             fn = _build_await_branch_run_node(nd, base_path=tmp_path, event_sink=None)
             with pytest.raises(TimeoutError):
                 fn({"child_run_id": "some-run"})
+
+
+class TestChildBoundaryProgressEvents:
+    def test_invoke_branch_async_emits_starting_and_ran_events(self, tmp_path):
+        from workflow.runs import RUN_STATUS_QUEUED, RunOutcome
+
+        nd = NodeDefinition(
+            node_id="invoke_autoresearch_lab",
+            display_name="Invoke",
+            invoke_branch_spec={
+                "branch_def_id": "child",
+                "inputs_mapping": {},
+                "output_mapping": {"child_run_id": "ignored"},
+                "wait_mode": "async",
+            },
+        )
+        queued_outcome = RunOutcome(
+            run_id="child-run-1",
+            status=RUN_STATUS_QUEUED,
+            output={},
+            error="",
+        )
+        events: list[dict] = []
+        child_branch_mock = MagicMock()
+        child_branch_mock.validate.return_value = []
+
+        with (
+            patch("workflow.daemon_server.get_branch_definition", return_value={
+                "branch_def_id": "child",
+                "name": "child",
+                "node_defs": [],
+                "edges": [],
+            }),
+            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("workflow.runs.execute_branch_async", return_value=queued_outcome),
+        ):
+            fn = _build_invoke_branch_node(
+                nd,
+                base_path=tmp_path,
+                event_sink=lambda **event: events.append(event),
+            )
+            result = fn({})
+
+        assert result == {"child_run_id": "child-run-1"}
+        assert [event["phase"] for event in events] == ["starting", "ran"]
+        assert events[0]["node_id"] == "invoke_autoresearch_lab"
+        assert events[1]["child_run_id"] == "child-run-1"
+        assert events[1]["output"] == {"child_run_id": "child-run-1"}
+
+    def test_await_run_emits_starting_and_ran_events(self, tmp_path):
+        from workflow.runs import RUN_STATUS_COMPLETED
+
+        nd = NodeDefinition(
+            node_id="await_autoresearch_lab",
+            display_name="Await",
+            await_run_spec={
+                "run_id_field": "child_run_id",
+                "output_mapping": {"result": "answer"},
+                "timeout_seconds": 5.0,
+            },
+        )
+        events: list[dict] = []
+
+        with patch("workflow.runs.poll_child_run_status", return_value={
+            "run_id": "child-run-1",
+            "status": RUN_STATUS_COMPLETED,
+            "output": {"answer": "ok"},
+        }):
+            fn = _build_await_branch_run_node(
+                nd,
+                base_path=tmp_path,
+                event_sink=lambda **event: events.append(event),
+            )
+            result = fn({"child_run_id": "child-run-1"})
+
+        assert result == {"result": "ok"}
+        assert [event["phase"] for event in events] == ["starting", "ran"]
+        assert events[0]["child_run_id"] == "child-run-1"
+        assert events[1]["child_status"] == RUN_STATUS_COMPLETED
+        assert events[1]["output"] == {"result": "ok"}
+
+    def test_invoke_branch_version_async_emits_starting_and_ran_events(self, tmp_path):
+        nd = NodeDefinition(
+            node_id="invoke_version",
+            display_name="InvokeVersion",
+            invoke_branch_version_spec={
+                "branch_version_id": "child@v1",
+                "inputs_mapping": {},
+                "output_mapping": {"child_run_id": "ignored"},
+                "wait_mode": "async",
+            },
+        )
+        events: list[dict] = []
+
+        with patch("workflow.runs.execute_branch_version_async") as mock_async:
+            mock_async.return_value = MagicMock(run_id="child-run-2", status="queued")
+            fn = _build_invoke_branch_version_node(
+                nd,
+                base_path=tmp_path,
+                event_sink=lambda **event: events.append(event),
+            )
+            result = fn({})
+
+        assert result == {"child_run_id": "child-run-2"}
+        assert [event["phase"] for event in events] == ["starting", "ran"]
+        assert events[1]["child_run_id"] == "child-run-2"
+        assert events[1]["output"] == {"child_run_id": "child-run-2"}
 
 
 # ─── recursion depth cap ──────────────────────────────────────────────────────
