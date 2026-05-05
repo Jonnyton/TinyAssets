@@ -3228,3 +3228,12 @@ Next coordination:
 - Writer queue is still red: #302 remains the only `needs-human`; old pending expanded to #321/#320/#319/#318/#317/#316/#315/#314/#313/#312/#311/#310/#309 plus #301/#300/#299/#298/#292.
 - #326, like #324/#308/#307/#297/#286 and older auto-change PRs, has empty `statusCheckRollup` and needs normal opposite-family review. Do not merge from writer success alone.
 - Uptime canary observation is green because manual run `25353361951` passed 17 min earlier, but no new scheduled canary run appeared after the 00:06Z schedule run. If the next heartbeat still shows no scheduled run, promote "uptime-canary schedule freshness gap" as its own loop/platform issue instead of dispatching again.
+
+2026-05-05T02:23Z [codex-gpt5-desktop] **Scheduled-event freshness gap appears repo-wide; do not mask with more manual dispatches.**
+
+- `community_loop_watch.py --json` remains red on writer queue only: #302 is the only `needs-human`; old pending is #321-#309 plus #301/#300/#299/#298/#292.
+- PR #325 is unchanged: green `policy`/`actionlint`, no Claude/Cowork checker review yet.
+- Open auto-change PRs #326/#324/#308/#307/#297/#286/#282-#276 still have empty `statusCheckRollup` except #286's existing changes-requested review.
+- Uptime canary manual run `25353361951` is still green, but there is still no scheduled `uptime-canary.yml` run after 00:06Z.
+- Broader schedule evidence: latest scheduled runs are DNS canary 01:20Z, Wiki bug sync 01:16Z, Community loop watch 01:13Z, Auto-fix change 00:11Z, Uptime canary 00:06Z. Workflow metadata reports these workflows active, and manual/workflow_run triggers still work.
+- Existing alarm issue #296 (`community-loop-red`) is open and being updated by the watch lane; no new GitHub issue was opened from Codex. Next narrow investigation should treat scheduled-event freshness as its own platform/loop uptime signal, separate from MCP service health.
