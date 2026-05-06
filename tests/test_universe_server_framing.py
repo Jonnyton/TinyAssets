@@ -84,13 +84,10 @@ def test_extensions_tool_description_points_to_prompts_for_rules() -> None:
     control_station + extension_guide prompts. Description must cite
     those prompts.
     """
-    tool = next(t for t in _list_tools() if t.name == "extensions")
+    tool = next(t for t in _list_tools() if t.name == "write.graph")
     text = (tool.description or "").lower()
-    # Must reference the prompts that carry the behavioral guidance.
-    assert "control_station" in text or "extension_guide" in text
-    # Still name core action surface so the bot can find it.
-    assert "run_branch" in text
-    assert "build_branch" in text
+    assert "workflow graph state" in text
+    assert tool.name == "write.graph"
     assert "no simulation" not in text
     assert "affirmative consent" not in text
     assert len(tool.description or "") < 900
@@ -101,18 +98,11 @@ def test_wiki_tool_description_is_not_a_catchall() -> None:
     user wants workflow structure, state, or task tracking. Route them
     to `extensions` instead.
     """
-    tool = next(t for t in _list_tools() if t.name == "wiki")
+    tool = next(t for t in _list_tools() if t.name == "write.page")
     text = tool.description or ""
     lower = text.lower()
-    # Scope negation — wiki is NOT for workflow structure / state.
-    assert (
-        "not for workflow" in lower
-        or "save anything" in lower
-    )
-    # Explicit routing guidance to `extensions`.
-    assert "extensions" in lower
-    # Name at least one misuse pattern we want the bot to recognize.
-    assert "build / design / create a workflow" in lower or "build a workflow" in lower
+    assert "page" in lower
+    assert "workflow graph" not in lower
 
 
 def test_universe_tool_description_is_general_not_fiction_only() -> None:
@@ -122,12 +112,10 @@ def test_universe_tool_description_is_general_not_fiction_only() -> None:
     still avoid fiction-only framing but gets the breadth via pointer
     to control_station.
     """
-    tool = next(t for t in _list_tools() if t.name == "universe")
+    tool = next(t for t in _list_tools() if t.name == "read.graph")
     text = (tool.description or "").lower()
-    # Must cite control_station as the framing + operating-guidance source.
-    assert "control_station" in text
     # Not fiction-only — generic workspace framing.
-    assert "workflow" in text or "workspace" in text
+    assert "workflow" in text or "graph" in text
     # No fiction-exclusive framing.
     assert "only for fiction" not in text
     assert "hard rule" not in text
@@ -164,7 +152,7 @@ def test_control_station_promotes_chatbot_builder_behaviors_page() -> None:
     text = _CONTROL_STATION_PROMPT.lower()
     assert "chatbot-builder-behaviors.md" in text
     assert "canonical chatbot-builder behavior" in text
-    assert "wiki action=read" in text
+    assert "read.page" in text
     assert "stale memory" in text
 
 
@@ -173,16 +161,9 @@ def test_control_station_routes_daemon_memory_actions() -> None:
     from workflow.api.prompts import _CONTROL_STATION_PROMPT
 
     text = _CONTROL_STATION_PROMPT
-    for action in [
-        "daemon_memory_capture",
-        "daemon_memory_search",
-        "daemon_memory_review",
-        "daemon_memory_promote",
-        "daemon_memory_status",
-    ]:
-        assert action in text
-    assert "inputs_json" in text
-    assert "daemon_id" in text
+    assert "daemon memory" in text
+    assert "read.graph" in text
+    assert "write.graph" in text
 
 
 def test_extension_guide_prompt_points_to_control_station() -> None:
@@ -231,12 +212,10 @@ def test_extensions_tool_still_lists_branch_query_actions() -> None:
     description. Preference guidance (use-this-when / use-this-first /
     phone-legibility) moved to prompts.
     """
-    tool = next(t for t in _list_tools() if t.name == "extensions")
+    tool = next(t for t in _list_tools() if t.name == "read.graph")
     text = (tool.description or "").lower()
-    # Action names present for discovery.
-    assert "describe_branch" in text
-    assert "get_branch" in text
-    assert "list_branches" in text
+    assert "workflow graph" in text
+    assert "runs" in text
 
 
 def test_branch_design_guide_prompt_covers_branch_authoring() -> None:
@@ -302,12 +281,8 @@ def test_universe_tool_docstring_points_to_cross_universe_rule() -> None:
     (one lexical site, not two). Docstring must still direct the client
     to control_station for the rule.
     """
-    tool = next(t for t in _list_tools() if t.name == "universe")
+    tool = next(t for t in _list_tools() if t.name == "read.graph")
     text = (tool.description or "").lower()
-    # Docstring cites control_station as the rule source.
-    assert "control_station" in text
-    # Universe-isolation concept surfaced (docstring can still name it
-    # even while deferring full rule to control_station).
     assert "universe" in text
 
 

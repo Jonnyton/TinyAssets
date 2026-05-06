@@ -17,33 +17,37 @@ class TestUniverseServerMetadata:
     def test_tool_metadata_is_directory_ready(self):
         tools = {tool.name: tool for tool in _list_tools()}
 
-        universe = tools["universe"]
-        assert universe.title == "Universe Operations"
-        assert {"universe", "daemon", "collaboration", "workflow"} <= universe.tags
-        assert universe.annotations.readOnlyHint is False
-        assert universe.annotations.destructiveHint is False
-        assert universe.annotations.idempotentHint is False
-        assert universe.annotations.openWorldHint is True
-        assert 'action="inspect"' in universe.description
+        assert set(tools) == {
+            "read.graph", "write.graph", "run.graph", "read.page", "write.page",
+        }
 
-        extensions = tools["extensions"]
-        assert extensions.title == "Graph Extensions"
-        assert {"extensions", "nodes", "plugins", "customization"} <= extensions.tags
-        assert extensions.annotations.readOnlyHint is False
-        assert extensions.annotations.destructiveHint is False
-        assert extensions.annotations.idempotentHint is False
-        assert extensions.annotations.openWorldHint is True
-        assert "extension_guide" in extensions.description
+        read_graph = tools["read.graph"]
+        assert read_graph.title == "Read Graph"
+        assert {"graph", "workflow", "read", "status"} <= read_graph.tags
+        assert read_graph.annotations.readOnlyHint is True
+        assert read_graph.annotations.destructiveHint is False
+        assert read_graph.annotations.idempotentHint is True
+        assert read_graph.annotations.openWorldHint is True
 
-        change_context = tools["community_change_context"]
-        assert change_context.title == "Community Change Context"
-        assert {"community", "change-loop", "review", "github"} <= change_context.tags
-        assert change_context.annotations.readOnlyHint is True
-        assert change_context.annotations.destructiveHint is False
-        assert change_context.annotations.idempotentHint is True
-        assert change_context.annotations.openWorldHint is True
-        assert "PR metadata" in change_context.description
-        assert "project plan" in change_context.description
+        write_graph = tools["write.graph"]
+        assert write_graph.title == "Write Graph"
+        assert {"graph", "workflow", "write", "daemon"} <= write_graph.tags
+        assert write_graph.annotations.readOnlyHint is False
+        assert write_graph.annotations.destructiveHint is False
+        assert write_graph.annotations.idempotentHint is False
+        assert write_graph.annotations.openWorldHint is True
+
+        run_graph = tools["run.graph"]
+        assert run_graph.title == "Run Graph"
+        assert run_graph.annotations.readOnlyHint is False
+
+        read_page = tools["read.page"]
+        assert read_page.title == "Read Page"
+        assert read_page.annotations.readOnlyHint is True
+
+        write_page = tools["write.page"]
+        assert write_page.title == "Write Page"
+        assert write_page.annotations.readOnlyHint is False
 
     def test_prompt_metadata_is_present(self):
         prompts = {prompt.name: prompt for prompt in _list_prompts()}

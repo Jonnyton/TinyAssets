@@ -27,16 +27,17 @@ def _list_tools():
 
 
 def test_get_status_tool_is_registered() -> None:
-    """#88 must expose `get_status` as an MCP tool the chatbot can call."""
+    """#88 status remains callable through the collapsed read.graph handle."""
     names = {t.name for t in _list_tools()}
-    assert "get_status" in names
+    assert "read.graph" in names
+    assert "get_status" not in names
 
 
 def test_get_status_tool_is_read_only() -> None:
-    """#88 must be advertised as read-only so the chatbot + gateway
+    """Status must be advertised through a read-only handle so the chatbot + gateway
     treat it as safe to call on any turn without consent gates.
     """
-    tool = next(t for t in _list_tools() if t.name == "get_status")
+    tool = next(t for t in _list_tools() if t.name == "read.graph")
     # FastMCP may surface ToolAnnotations via tool.annotations.
     ann = getattr(tool, "annotations", None)
     if ann is not None:

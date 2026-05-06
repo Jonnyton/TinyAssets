@@ -27,8 +27,11 @@ delegate to plain callables in those submodules (Pattern A2).
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any, Callable
 
 import uvicorn
 from fastmcp import FastMCP
@@ -72,7 +75,8 @@ mcp = FastMCP(
         "\n\n"
         "You are a control station. Help users design workflows, inspect "
         "running ones, steer daemons, collaborate, and extend the system "
-        "with custom graph nodes. Start with `universe action=inspect` to "
+        "with custom graph nodes. Start with `read.graph` target=universe "
+        "operation=inspect to "
         "orient yourself. "
         "\n\n"
         "Load the `control_station` prompt early. It is the canonical "
@@ -151,6 +155,285 @@ async def _landing_index(request):  # type: ignore[no-untyped-def]
 
 # Preserve the at-server-start whitelist warning (Step 10 prep §3.5 Option B).
 _warn_if_no_upload_whitelist()
+
+
+def _private_tool(*args: Any, **kwargs: Any) -> Callable[[Callable[..., str]], Callable[..., str]]:
+    """Leave legacy Python callables importable without MCP registration."""
+    if args and callable(args[0]) and len(args) == 1 and not kwargs:
+        return args[0]
+
+    def decorator(fn: Callable[..., str]) -> Callable[..., str]:
+        return fn
+
+    return decorator
+
+
+def _payload(payload_json: str) -> dict[str, Any]:
+    if not payload_json:
+        return {}
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError as exc:
+        return {"__error__": f"payload_json must be valid JSON: {exc.msg}"}
+    if not isinstance(payload, dict):
+        return {"__error__": "payload_json must decode to a JSON object"}
+    return payload
+
+
+def _with_payload(payload_json: str, **kwargs: Any) -> dict[str, Any]:
+    payload = _payload(payload_json)
+    if "__error__" in payload:
+        return payload
+    payload.update({k: v for k, v in kwargs.items() if v not in ("", None)})
+    return payload
+
+
+def _json_error(message: str) -> str:
+    return json.dumps({"error": message})
+
+
+def _call_impl(fn: Callable[..., str], action: str, kwargs: dict[str, Any]) -> str:
+    signature = inspect.signature(fn)
+    if any(
+        param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    ):
+        call_kwargs = kwargs
+    else:
+        accepted = set(signature.parameters)
+        call_kwargs = {k: v for k, v in kwargs.items() if k in accepted}
+    return fn(action=action, **call_kwargs)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FIVE PUBLIC MCP HANDLES
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool(
+    name="read.graph",
+    title="Read Graph",
+    tags={"graph", "workflow", "read", "status"},
+    annotations=ToolAnnotations(
+        title="Read Graph",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+def read_graph(
+    target: str = "universe",
+    operation: str = "inspect",
+    universe_id: str = "",
+    query: str = "",
+    branch_def_id: str = "",
+    run_id: str = "",
+    goal_id: str = "",
+    limit: int = 30,
+    payload_json: str = "",
+) -> str:
+    """Read Workflow graph state, status, runs, goals, gates, or review context.
+
+    `target` selects universe, workflow, goal, gate, status, or community.
+    `operation` selects the internal read operation. Advanced callers may pass
+    additional implementation fields in `payload_json`.
+    """
+    kwargs = _with_payload(
+        payload_json,
+        universe_id=universe_id,
+        query=query,
+        filter_text=query,
+        node_query=query,
+        branch_def_id=branch_def_id,
+        run_id=run_id,
+        goal_id=goal_id,
+        limit=limit,
+    )
+    if "__error__" in kwargs:
+        return _json_error(kwargs["__error__"])
+
+    if target == "status":
+        return _get_status_impl(universe_id=universe_id)
+    if target == "community":
+        return _call_impl(_universe_impl, "community_change_context", kwargs)
+    if target == "universe":
+        return _call_impl(_universe_impl, operation, kwargs)
+    if target == "workflow":
+        return _call_impl(_extensions_impl, operation, kwargs)
+    if target == "goal":
+        return _call_impl(_goals_impl, operation, kwargs)
+    if target == "gate":
+        return _call_impl(_gates_impl, operation, kwargs)
+    return _json_error(
+        "target must be one of universe, workflow, goal, gate, status, community",
+    )
+
+
+@mcp.tool(
+    name="write.graph",
+    title="Write Graph",
+    tags={"graph", "workflow", "write", "daemon"},
+    annotations=ToolAnnotations(
+        title="Write Graph",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+def write_graph(
+    target: str = "universe",
+    operation: str = "submit_request",
+    universe_id: str = "",
+    text: str = "",
+    branch_def_id: str = "",
+    goal_id: str = "",
+    spec_json: str = "",
+    changes_json: str = "",
+    inputs_json: str = "",
+    payload_json: str = "",
+) -> str:
+    """Write Workflow graph state or submit bounded daemon/community input.
+
+    `target` selects universe, workflow, goal, or gate. Advanced callers may
+    pass implementation-specific fields in `payload_json`.
+    """
+    kwargs = _with_payload(
+        payload_json,
+        universe_id=universe_id,
+        text=text,
+        branch_def_id=branch_def_id,
+        goal_id=goal_id,
+        spec_json=spec_json,
+        changes_json=changes_json,
+        inputs_json=inputs_json,
+    )
+    if "__error__" in kwargs:
+        return _json_error(kwargs["__error__"])
+
+    if target == "universe":
+        return _call_impl(_universe_impl, operation, kwargs)
+    if target == "workflow":
+        return _call_impl(_extensions_impl, operation, kwargs)
+    if target == "goal":
+        return _call_impl(_goals_impl, operation, kwargs)
+    if target == "gate":
+        return _call_impl(_gates_impl, operation, kwargs)
+    return _json_error("target must be one of universe, workflow, goal, gate")
+
+
+@mcp.tool(
+    name="run.graph",
+    title="Run Graph",
+    tags={"graph", "workflow", "run", "execution"},
+    annotations=ToolAnnotations(
+        title="Run Graph",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+def run_graph(
+    operation: str = "run_branch",
+    branch_def_id: str = "",
+    run_id: str = "",
+    inputs_json: str = "",
+    resume_from: str = "",
+    max_wait_s: int = 60,
+    payload_json: str = "",
+) -> str:
+    """Start, resume, wait for, inspect, stream, or cancel workflow graph runs."""
+    kwargs = _with_payload(
+        payload_json,
+        branch_def_id=branch_def_id,
+        run_id=run_id,
+        inputs_json=inputs_json,
+        resume_from=resume_from,
+        max_wait_s=max_wait_s,
+    )
+    if "__error__" in kwargs:
+        return _json_error(kwargs["__error__"])
+    return _call_impl(_extensions_impl, operation, kwargs)
+
+
+@mcp.tool(
+    name="read.page",
+    title="Read Page",
+    tags={"wiki", "page", "read", "knowledge"},
+    annotations=ToolAnnotations(
+        title="Read Page",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+def read_page(
+    operation: str = "read",
+    page: str = "",
+    query: str = "",
+    category: str = "",
+    max_results: int = 10,
+    payload_json: str = "",
+) -> str:
+    """Read, search, list, or lint Workflow wiki pages."""
+    kwargs = _with_payload(
+        payload_json,
+        page=page,
+        query=query,
+        category=category,
+        max_results=max_results,
+    )
+    if "__error__" in kwargs:
+        return _json_error(kwargs["__error__"])
+    return _call_impl(_wiki_impl, operation, kwargs)
+
+
+@mcp.tool(
+    name="write.page",
+    title="Write Page",
+    tags={"wiki", "page", "write", "knowledge"},
+    annotations=ToolAnnotations(
+        title="Write Page",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+def write_page(
+    operation: str = "write",
+    page: str = "",
+    content: str = "",
+    old_text: str = "",
+    new_text: str = "",
+    expected_sha256: str = "",
+    kind: str = "bug",
+    title: str = "",
+    repro: str = "",
+    observed: str = "",
+    expected: str = "",
+    payload_json: str = "",
+) -> str:
+    """Write, patch, promote, or file change-request pages in the wiki."""
+    kwargs = _with_payload(
+        payload_json,
+        page=page,
+        content=content,
+        old_text=old_text,
+        new_text=new_text,
+        expected_sha256=expected_sha256,
+        kind=kind,
+        title=title,
+        repro=repro,
+        observed=observed,
+        expected=expected,
+    )
+    if "__error__" in kwargs:
+        return _json_error(kwargs["__error__"])
+    return _call_impl(_wiki_impl, operation, kwargs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -256,7 +539,7 @@ def branch_design_guide() -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
+@_private_tool(
     title="Universe Operations",
     tags={
         "universe", "daemon", "collaboration",
@@ -372,7 +655,7 @@ def universe(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(
+@_private_tool(
     title="Community Change Context",
     tags={
         "community", "change-loop", "review", "pull-request",
@@ -416,7 +699,7 @@ def community_change_context(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
+@_private_tool(
     title="Graph Extensions",
     tags={"extensions", "nodes", "plugins", "customization"},
     annotations=ToolAnnotations(
@@ -706,7 +989,7 @@ def extensions(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
+@_private_tool(
     title="Goals",
     tags={"goals", "discovery", "intent", "community"},
     annotations=ToolAnnotations(
@@ -780,7 +1063,7 @@ def goals(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
+@_private_tool(
     title="Outcome Gates",
     tags={"gates", "outcomes", "impact", "leaderboard", "community"},
     annotations=ToolAnnotations(
@@ -867,7 +1150,7 @@ def gates(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
+@_private_tool(
     title="Wiki Knowledge Base",
     tags={"wiki", "knowledge", "drafts", "pages", "research"},
     annotations=ToolAnnotations(
@@ -971,7 +1254,7 @@ def wiki(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
+@_private_tool(
     title="Daemon Status + Routing Evidence",
     tags={
         "status", "routing", "privacy", "verification",

@@ -48,7 +48,7 @@ def test_goals_tool_is_registered_callable(us_env):
 def test_all_five_tools_callable(us_env):
     us = us_env
     for name in (
-        "universe", "extensions", "goals", "wiki", "community_change_context",
+        "read_graph", "write_graph", "run_graph", "read_page", "write_page",
     ):
         assert hasattr(us, name), f"missing tool: {name}"
         assert callable(getattr(us, name))
@@ -63,8 +63,8 @@ def test_control_station_mentions_all_five_tools_by_name(us_env):
     us = us_env
     prompt = us.control_station()
     for name in (
-        "`universe`", "`extensions`", "`goals`", "`wiki`",
-        "`community_change_context`",
+        "`read.graph`", "`write.graph`", "`run.graph`", "`read.page`",
+        "`write.page`",
     ):
         assert name in prompt, f"control_station omits {name}"
 
@@ -89,14 +89,11 @@ def test_control_station_routes_intent_to_goals(us_env):
     """Routing rules section should tell the bot when to use goals."""
     us = us_env
     prompt = us.control_station()
-    # At least one routing row mentions a goals action.
-    assert "goals action=propose" in prompt
-    assert (
-        "goals action=search" in prompt
-        or "goals action=list" in prompt
-    )
-    assert "goals action=bind" in prompt or "bind" in prompt
-    assert "goals action=leaderboard" in prompt
+    # Goal work must route through graph read/write handles, not a legacy tool.
+    assert "`write.graph` target=goal" in prompt
+    assert "`read.graph` target=goal" in prompt
+    assert "Bind workflow to a Goal" in prompt
+    assert "Compare workflows on a Goal" in prompt
 
 
 def test_control_station_enumerate_directive_is_explicit(us_env):
