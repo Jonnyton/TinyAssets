@@ -3265,6 +3265,13 @@ ACTIONABLE_BY: dict[str, str] = {
 }
 
 
+_EMPTY_LLM_RESPONSE_ACTION = (
+    "Ask the host to check get_status provider availability/cooldowns and fix "
+    "provider credentials or CLI, then rerun; only switch llm_type if get_status "
+    "shows another provider available."
+)
+
+
 def _classify_failure(run: dict) -> str:
     """Return a short failure class string from a run record."""
     error = run.get("error") or ""
@@ -3276,6 +3283,8 @@ def _classify_failure(run: dict) -> str:
     if not error:
         return ""
     lower = error.lower()
+    if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
+        return "empty_llm_response"
     if "timeout" in lower:
         return "timeout"
     if "exhausted" in lower or "cooldown" in lower:
@@ -3343,7 +3352,9 @@ def list_recent_runs(
 
         failure_class = _classify_failure(run)
         suggested_action = ""
-        if failure_class == "provider_exhausted":
+        if failure_class == "empty_llm_response":
+            suggested_action = _EMPTY_LLM_RESPONSE_ACTION
+        elif failure_class == "provider_exhausted":
             suggested_action = "Wait for provider cooldown or add an alternative provider."
         elif failure_class == "timeout":
             suggested_action = "Increase node timeout or simplify the prompt."
