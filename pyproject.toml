@@ -38,6 +38,10 @@ dependencies = [
 
     # Retry with backoff for provider calls
     "tenacity>=9.0,<10.0",
+
+    # MCP/server entry points and Tier-3 structural smoke imports
+    "fastmcp>=3.0",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.scripts]
