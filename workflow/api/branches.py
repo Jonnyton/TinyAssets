@@ -1072,6 +1072,22 @@ def _errors_to_suggestions(
                     "target."
                 ),
             })
+        elif "collides with a graph node id" in low:
+            state_field = ""
+            match = re.search(r"State field name '([^']+)'", err)
+            if match:
+                state_field = match.group(1)
+            suggestions.append({
+                "issue": err,
+                "proposed_fix": (
+                    f"Rename state_schema field '{state_field}' or the "
+                    f"graph node ID '{state_field}' so they are distinct "
+                    "before running this branch."
+                    if state_field
+                    else "Rename the colliding state_schema field or graph "
+                    "node ID so they are distinct before running this branch."
+                ),
+            })
         elif "at least one node" in low:
             suggestions.append({
                 "issue": err,
