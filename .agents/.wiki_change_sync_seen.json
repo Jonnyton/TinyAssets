@@ -1,6 +1,7 @@
 {
   "seen_paths": [
     "pages/concepts/cross-algorithm-parity-rf-vs-maxent.md",
+    "pages/concepts/pages-concepts-cowork-unfinished-central-ambition-audit-and-refactored-direction-2026-05-06.md",
     "pages/concepts/pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles.md",
     "pages/concepts/structured-json-node-outputs.md",
     "pages/design-proposals/design-001-durable-coordination-architecture-where-workflow-s-structura.md",
@@ -70,6 +71,9 @@
     "pages/patch-requests/pr-042-dispatcher-should-prioritize-claimable-priority-loop-discipl.md",
     "pages/patch-requests/pr-043-compliance-overlay-on-describe-branch-mermaid-per-node-compl.md",
     "pages/patch-requests/pr-044-per-node-generic-metadata-primitive-describe-branch-color-by.md",
+    "pages/patch-requests/pr-045-cross-ai-auto-discovery-on-shared-goals-topic-aggregation-pa.md",
+    "pages/patch-requests/pr-046-use-patch-request-framing-across-user-facing-chatbot-and-loo.md",
+    "pages/patch-requests/pr-047-collapse-user-facing-mcp-surface-to-5-handles-read-graph-wri.md",
     "pages/plans/chatbot-builder-behaviors.md",
     "pages/plans/composition-patterns.md",
     "pages/plans/design-validate-branch-collision-admission-test.md",
