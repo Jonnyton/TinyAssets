@@ -446,7 +446,10 @@ def test_ready_for_checker_label_is_defined(wf):
     assert labels_step is not None, "Must define automation labels"
     script = str(labels_step.get("with", {}).get("script", ""))
     assert "ready_for_checker" in script
-    assert "source, duplicate, stale-base, and scope-split pre-checks" in script
+    assert (
+        "matured through source, duplicate, stale-base, and scope-split "
+        "pre-checks before checker escalation"
+    ) in script
 
 
 def test_codex_ready_for_checker_requires_pre_checker_self_review(wf):
@@ -464,6 +467,12 @@ def test_codex_ready_for_checker_requires_pre_checker_self_review(wf):
     assert script.index("const selfReviewFailures = await selfReviewLoopPr(pr)") < (
         script.index("labels: ['ready_for_checker']")
     )
+    assert script.index("const selfReviewFailures = await selfReviewLoopPr(pr)") < (
+        script.index("labels: ['writer:codex', 'checker:claude']")
+    )
+    assert script.index("labels: ['writer:codex', 'checker:claude']") < (
+        script.index("labels: ['ready_for_checker']")
+    )
 
 
 def test_claude_ready_for_checker_requires_pre_checker_self_review(wf):
@@ -479,6 +488,12 @@ def test_claude_ready_for_checker_requires_pre_checker_self_review(wf):
     assert "Pre-checker self-review blocked `ready_for_checker`" in script
     assert "labels: ['ready_for_checker']" in script
     assert script.index("const selfReviewFailures = await selfReviewLoopPr(pr)") < (
+        script.index("labels: ['ready_for_checker']")
+    )
+    assert script.index("const selfReviewFailures = await selfReviewLoopPr(pr)") < (
+        script.index("labels: ['writer:claude', 'checker:codex']")
+    )
+    assert script.index("labels: ['writer:claude', 'checker:codex']") < (
         script.index("labels: ['ready_for_checker']")
     )
 
