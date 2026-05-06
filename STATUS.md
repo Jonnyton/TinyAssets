@@ -20,6 +20,7 @@ Run `python scripts/claim_check.py --provider <name>` before claiming. Claim by 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| BUG-069 ChatGPT access-granted-then-Thinking wedge after substrate-changing tool call; prove final response envelope for write tools. ACTIVE 2026-05-06 local patch ready. | `workflow/universe_server.py`, `tests/test_mcp_response_shapes.py`, plugin mirror | opposite-family checker; live ChatGPT/Claude.ai user-sim after deploy | claimed:codex-bug-069 |
 | BUG-068 Phase A loop self-learning — blocked-patterns brain page + pre-claim read/evidence convention; opposite-family review needed. | `workflow/daemon_wiki.py`, `workflow/daemon_memory.py`, `tests/test_daemon_wiki.py`, docs/spec notes | BUG-049 for closed-loop trigger proof | dev-ready |
 | Scorched exact-original proof - mount guard green; needs rights-cleared Kickstart + input/sound/tank-hit acceptance. | WebSite/site/static/play/scorched-tanks/licensed/kickstart-a500-1.3.rom (deployment-only; do not commit ROM) | rights-cleared Kickstart | host-action |
 | OpenAI/Claude directory submission host actions - dashboard `/mcp-directory` green, domain verified, Claude UI read proof captured; ChatGPT DEV still `/mcp` as of 2026-05-02T15:37; needs directory-safe web/mobile proof after re-register, logo/publisher/legal/mature approvals, Claude form submit, final submit. | OpenAI Apps dashboard; ChatGPT dev/mobile app; Claude directory form | action-time approval for uploads/legal/final submit/custom MCP warning | host-action |

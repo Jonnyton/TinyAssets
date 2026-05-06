@@ -28,10 +28,13 @@ delegate to plain callables in those submodules (Pattern A2).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any
 
 import uvicorn
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 
@@ -52,19 +55,20 @@ logger = logging.getLogger("universe_server")
 # Server
 # ---------------------------------------------------------------------------
 
-def _structured_return(raw):
-    """Wrap an MCP tool result so FastMCP populates ``structured_content``.
+def _structured_payload(raw: Any) -> dict[str, Any]:
+    """Parse an implementation JSON string into structured MCP content.
 
     ChatGPT (OpenAI Apps SDK) wedges on substrate-changing tool calls when
     the response carries only ``content`` (text) without ``structuredContent``
     (typed dict) + ``_meta`` annotations. Claude tolerates either shape.
 
-    The internal ``*_impl`` functions return JSON strings for back-compat.
-    Wrapping their output in a dict (parsing JSON when possible, else
-    embedding the raw text) lets FastMCP's response builder populate
-    ``structured_content`` automatically — Apps SDK then renders cleanly.
+    The public Pattern A2 wrappers still return JSON strings for existing
+    direct-call tests and CLI users. The registered FastMCP handlers call this
+    helper and return ``ToolResult`` so MCP clients receive both a visible text
+    block and structured content.
     """
     import json as _json
+
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, list):
@@ -78,6 +82,28 @@ def _structured_return(raw):
             return parsed
         return {"result": parsed}
     return {"result": raw}
+
+
+def _mcp_tool_result(raw: Any) -> ToolResult:
+    structured = _structured_payload(raw)
+    text = structured.get("text") if isinstance(structured.get("text"), str) else None
+    return ToolResult(
+        content=text or raw,
+        structured_content=structured,
+        meta={"workflow": {"response_shape": "text+structuredContent"}},
+    )
+
+
+def _expose_direct_wrapper(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Preserve direct Pattern A2 calls while MCP registry keeps rich output."""
+    import inspect as _inspect
+
+    mcp_fn = globals()[name]
+    fn.__name__ = name
+    fn.__qualname__ = name
+    fn.__doc__ = mcp_fn.__doc__
+    fn.__signature__ = _inspect.signature(mcp_fn)  # type: ignore[attr-defined]
+    return fn
 
 
 mcp = FastMCP(
@@ -363,7 +389,7 @@ def universe(
         filename/provenance_tag/limit/tag: Optional read/write filters.
         anchor_json: Optional JSON object for `give_direction` line/span notes.
     """
-    return _structured_return(_universe_impl(
+    return _mcp_tool_result(_universe_impl(
         action=action,
         universe_id=universe_id,
         text=text,
@@ -432,7 +458,7 @@ def community_change_context(
             reviews; or "issue:NUMBER" for the request thread.
         limit: Max PRs/issues/files/comments to return, capped server-side.
     """
-    return _structured_return(_universe_impl(
+    return _mcp_tool_result(_universe_impl(
         action="community_change_context",
         filter_text=filter_text,
         limit=limit,
@@ -608,7 +634,7 @@ def extensions(
 
     Args: pass `action` plus the matching ids or JSON payload fields.
     """
-    return _structured_return(_extensions_impl(
+    return _mcp_tool_result(_extensions_impl(
         action=action,
         node_id=node_id,
         display_name=display_name,
@@ -784,7 +810,7 @@ def goals(
       common_nodes Nodes appearing in >=`min_branches` Branches.
 
     """
-    return _structured_return(_goals_impl(
+    return _mcp_tool_result(_goals_impl(
         action=action,
         goal_id=goal_id,
         branch_def_id=branch_def_id,
@@ -869,7 +895,7 @@ def gates(
       release_bonus Resolve a bonus payout via evaluator verdict.
 
     """
-    return _structured_return(_gates_impl(
+    return _mcp_tool_result(_gates_impl(
         action=action,
         goal_id=goal_id,
         branch_def_id=branch_def_id,
@@ -956,11 +982,11 @@ def wiki(
     Args:
         action: One of — reads: read, search, list, lint;
             writes: write, patch, consolidate, promote, ingest, supersede,
-            sync_projects, file_bug, cosign_bug.
+            sync_projects, file_bug, cosign_bug;
         old_text/new_text: For action="patch", exact text to replace server-side.
         expected_sha256: Optional full-page hash guard for action="patch".
     """
-    return _structured_return(_wiki_impl(
+    return _mcp_tool_result(_wiki_impl(
         action=action,
         page=page,
         query=query,
@@ -1032,7 +1058,60 @@ def get_status(universe_id: str = "") -> dict:
     Args:
         universe_id: Optional universe scope. Defaults to active universe.
     """
-    return _structured_return(_get_status_impl(universe_id=universe_id))
+    return _mcp_tool_result(_get_status_impl(universe_id=universe_id))
+
+
+_universe_mcp = universe
+_community_change_context_mcp = community_change_context
+_extensions_mcp = extensions
+_goals_mcp = goals
+_gates_mcp = gates
+_wiki_mcp = wiki
+_get_status_mcp = get_status
+
+
+def _universe_direct(*args: Any, **kwargs: Any) -> str:
+    return _universe_impl(*args, **kwargs)
+
+
+def _community_change_context_direct(filter_text: str = "", limit: int = 10) -> str:
+    return _universe_impl(
+        action="community_change_context",
+        filter_text=filter_text,
+        limit=limit,
+    )
+
+
+def _extensions_direct(*args: Any, **kwargs: Any) -> str:
+    return _extensions_impl(*args, **kwargs)
+
+
+def _goals_direct(*args: Any, **kwargs: Any) -> str:
+    return _goals_impl(*args, **kwargs)
+
+
+def _gates_direct(*args: Any, **kwargs: Any) -> str:
+    return _gates_impl(*args, **kwargs)
+
+
+def _wiki_direct(*args: Any, **kwargs: Any) -> str:
+    return _wiki_impl(*args, **kwargs)
+
+
+def _get_status_direct(universe_id: str = "") -> str:
+    return _get_status_impl(universe_id=universe_id)
+
+
+universe = _expose_direct_wrapper("universe", _universe_direct)
+community_change_context = _expose_direct_wrapper(
+    "community_change_context",
+    _community_change_context_direct,
+)
+extensions = _expose_direct_wrapper("extensions", _extensions_direct)
+goals = _expose_direct_wrapper("goals", _goals_direct)
+gates = _expose_direct_wrapper("gates", _gates_direct)
+wiki = _expose_direct_wrapper("wiki", _wiki_direct)
+get_status = _expose_direct_wrapper("get_status", _get_status_direct)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
