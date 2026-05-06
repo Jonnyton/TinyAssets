@@ -736,9 +736,20 @@ class TestWikiMCPRegistration:
 
     def test_wiki_tool_schema_advertises_file_bug_tags_field(self):
         """BUG-040: MCP clients must not reject backend-supported tags."""
+
         tools = asyncio.run(mcp.list_tools(run_middleware=False))
         wiki_tool = next(t for t in tools if t.name == "wiki")
         properties = wiki_tool.parameters["properties"]
 
         assert properties["tags"]["type"] == "string"
         assert properties["tags"]["default"] == ""
+
+    def test_wiki_file_bug_kind_field_is_in_mcp_schema(self):
+        """BUG-042: MCP schema must expose backend-supported file_bug kind."""
+
+        tools = asyncio.run(mcp.list_tools(run_middleware=False))
+        wiki_tool = next(t for t in tools if t.name == "wiki")
+        properties = wiki_tool.parameters["properties"]
+
+        assert properties["kind"] == {"default": "bug", "type": "string"}
+        assert "kind" not in wiki_tool.parameters["required"]
