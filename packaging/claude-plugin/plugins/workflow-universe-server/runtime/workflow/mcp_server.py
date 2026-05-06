@@ -64,11 +64,37 @@ def _universe_dir() -> Path:
     return data_dir() / "default-universe"
 
 
+
+def _structured_return(raw):
+    """Wrap an MCP tool result so FastMCP populates ``structured_content``.
+
+    ChatGPT (OpenAI Apps SDK) wedges on substrate-changing tool calls when
+    the response carries only ``content`` (text) without ``structuredContent``
+    (typed dict) + ``_meta`` annotations. Claude tolerates either shape.
+
+    Mirrors the helper in workflow.universe_server applied via PR #493.
+    """
+    import json as _json
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        return {"result": raw}
+    if isinstance(raw, str):
+        try:
+            parsed = _json.loads(raw)
+        except (_json.JSONDecodeError, ValueError):
+            return {"text": raw}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"result": parsed}
+    return {"result": raw}
+
+
 @mcp.tool(
     tags={"status", "monitoring"},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False),
 )
-def get_status() -> str:
+def get_status() -> dict:
     """Read the daemon's current status including phase, word count, and accept rate.
 
     Call this first to orient yourself.
@@ -77,7 +103,7 @@ def get_status() -> str:
     if not status_path.exists():
         return "No status.json found. The daemon may not be running."
     try:
-        return status_path.read_text(encoding="utf-8")
+        return _structured_return(status_path.read_text(encoding="utf-8"))
     except OSError as e:
         return f"Error reading status.json: {e}"
 
@@ -86,7 +112,7 @@ def get_status() -> str:
     tags={"notes", "steering", "direction"},
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False),
 )
-def add_note(text: str, category: str = "direction") -> str:
+def add_note(text: str, category: str = "direction") -> dict:
     """Add a note that the daemon reads at each scene boundary.
 
     Notes are the primary feedback mechanism — use them to steer the story,
@@ -115,14 +141,11 @@ def add_note(text: str, category: str = "direction") -> str:
 
 def steer(directive: str, category: str = "direction") -> str:
     """Backward-compatible alias for ``add_note``."""
-    return add_note(directive, category)
-
-
-@mcp.tool(
+    return _structured_return(add_note(directive, category))@mcp.tool(
     tags={"premise", "story"},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
-def get_premise() -> str:
+def get_premise() -> dict:
     """Read the current story premise from PROGRAM.md.
 
     The premise seeds the daemon's creative direction.
@@ -131,7 +154,7 @@ def get_premise() -> str:
     if not program_path.exists():
         return "No PROGRAM.md found. Use set_premise() to create one."
     try:
-        return program_path.read_text(encoding="utf-8")
+        return _structured_return(program_path.read_text(encoding="utf-8"))
     except OSError as e:
         return f"Error reading PROGRAM.md: {e}"
 
@@ -140,7 +163,7 @@ def get_premise() -> str:
     tags={"premise", "story"},
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
 )
-def set_premise(text: str) -> str:
+def set_premise(text: str) -> dict:
     """Write or overwrite the story premise in PROGRAM.md.
 
     The daemon reads this at startup to seed the story direction.
@@ -151,16 +174,16 @@ def set_premise(text: str) -> str:
     try:
         _universe_dir().mkdir(parents=True, exist_ok=True)
         program_path.write_text(text, encoding="utf-8")
-        return "PROGRAM.md updated."
+        return _structured_return("PROGRAM.md updated.")
     except OSError as e:
-        return f"Error writing PROGRAM.md: {e}"
+        return _structured_return(f"Error writing PROGRAM.md: {e}")
 
 
 @mcp.tool(
     tags={"progress", "monitoring"},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
-def get_progress() -> str:
+def get_progress() -> dict:
     """Read the human-readable progress summary.
 
     Includes story outline, word counts, and current chapter status.
@@ -169,7 +192,7 @@ def get_progress() -> str:
     if not progress_path.exists():
         return "No progress.md found. The daemon may not have started writing yet."
     try:
-        return progress_path.read_text(encoding="utf-8")
+        return _structured_return(progress_path.read_text(encoding="utf-8"))
     except OSError as e:
         return f"Error reading progress.md: {e}"
 
@@ -178,7 +201,7 @@ def get_progress() -> str:
     tags={"work-targets", "planning"},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
-def get_work_targets() -> str:
+def get_work_targets() -> dict:
     """Read the durable work target registry.
 
     Shows what the daemon is working on, what's queued, and lifecycle state.
@@ -187,7 +210,7 @@ def get_work_targets() -> str:
     if not path.exists():
         return "No work_targets.json found."
     try:
-        return path.read_text(encoding="utf-8")
+        return _structured_return(path.read_text(encoding="utf-8"))
     except OSError as e:
         return f"Error reading work_targets.json: {e}"
 
@@ -196,13 +219,13 @@ def get_work_targets() -> str:
     tags={"review", "monitoring"},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
-def get_review_state() -> str:
+def get_review_state() -> dict:
     """Read the latest review-state snapshot including daemon phase, word count, and accept rate."""
     status_path = _universe_dir() / "status.json"
     if not status_path.exists():
         return "No status.json found."
     try:
-        return status_path.read_text(encoding="utf-8")
+        return _structured_return(status_path.read_text(encoding="utf-8"))
     except OSError as e:
         return f"Error reading status.json: {e}"
 
@@ -211,7 +234,7 @@ def get_review_state() -> str:
     tags={"output", "reading"},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
-def get_chapter(book: int, chapter: int) -> str:
+def get_chapter(book: int, chapter: int) -> dict:
     """Read a completed chapter from the daemon's output.
 
     Args:
@@ -222,7 +245,7 @@ def get_chapter(book: int, chapter: int) -> str:
     if not chapter_path.exists():
         return f"Chapter file not found: book-{book}/chapter-{chapter:02d}.md"
     try:
-        return chapter_path.read_text(encoding="utf-8")
+        return _structured_return(chapter_path.read_text(encoding="utf-8"))
     except OSError as e:
         return f"Error reading chapter file: {e}"
 
@@ -231,7 +254,7 @@ def get_chapter(book: int, chapter: int) -> str:
     tags={"activity", "monitoring"},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
-def get_activity(lines: int = 20) -> str:
+def get_activity(lines: int = 20) -> dict:
     """Read the most recent lines from the daemon's activity log.
 
     Shows scene completions, reviews, and errors.
@@ -241,21 +264,21 @@ def get_activity(lines: int = 20) -> str:
     """
     log_path = _universe_dir() / "activity.log"
     if not log_path.exists():
-        return "No activity.log found."
+        return _structured_return("No activity.log found.")
     try:
         content = log_path.read_text(encoding="utf-8")
         all_lines = content.strip().splitlines()
         tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
-        return "\n".join(tail)
+        return _structured_return("\n".join(tail))
     except OSError as e:
-        return f"Error reading activity.log: {e}"
+        return _structured_return(f"Error reading activity.log: {e}")
 
 
 @mcp.tool(
     tags={"control", "daemon"},
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
 )
-def pause() -> str:
+def pause() -> dict:
     """Pause the daemon at the next scene boundary.
 
     The daemon checks for a pause signal between scenes.
@@ -266,32 +289,32 @@ def pause() -> str:
         pause_path.write_text(
             datetime.now(timezone.utc).isoformat(), encoding="utf-8",
         )
-        return "Pause signal written. The daemon will pause at the next scene boundary."
+        return _structured_return("Pause signal written. The daemon will pause at the next scene boundary.")
     except OSError as e:
-        return f"Error writing pause signal: {e}"
+        return _structured_return(f"Error writing pause signal: {e}")
 
 
 @mcp.tool(
     tags={"control", "daemon"},
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
 )
-def resume() -> str:
+def resume() -> dict:
     """Resume a paused daemon by removing the pause signal."""
     pause_path = _universe_dir() / ".pause"
     if not pause_path.exists():
-        return "Daemon is not paused (no .pause file found)."
+        return _structured_return("Daemon is not paused (no .pause file found).")
     try:
         pause_path.unlink()
-        return "Pause signal removed. The daemon will resume."
+        return _structured_return("Pause signal removed. The daemon will resume.")
     except OSError as e:
-        return f"Error removing pause signal: {e}"
+        return _structured_return(f"Error removing pause signal: {e}")
 
 
 @mcp.tool(
     tags={"canon", "worldbuilding"},
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
 )
-def add_canon(filename: str, content: str) -> str:
+def add_canon(filename: str, content: str) -> dict:
     """Add a reference document to the canon/ directory for the daemon to ingest.
 
     Canon files provide worldbuilding context — character sheets, maps, lore
@@ -306,14 +329,14 @@ def add_canon(filename: str, content: str) -> str:
     # Sanitize filename to prevent path traversal
     safe_name = Path(filename).name
     if not safe_name:
-        return "Invalid filename."
+        return _structured_return("Invalid filename.")
     try:
         canon_dir.mkdir(parents=True, exist_ok=True)
         target = canon_dir / safe_name
         target.write_text(content, encoding="utf-8")
-        return f"Written {safe_name} to canon/."
+        return _structured_return(f"Written {safe_name} to canon/.")
     except OSError as e:
-        return f"Error writing to canon/: {e}"
+        return _structured_return(f"Error writing to canon/: {e}")
 
 
 def main() -> None:

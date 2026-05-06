@@ -112,6 +112,32 @@ def _directory_safe_status(universe_id: str = "") -> str:
     return json.dumps(_redact_directory_status(payload), default=str)
 
 
+
+def _structured_return(raw):
+    """Wrap an MCP tool result so FastMCP populates ``structured_content``.
+
+    ChatGPT (OpenAI Apps SDK) wedges on substrate-changing tool calls when
+    the response carries only ``content`` (text) without ``structuredContent``
+    (typed dict) + ``_meta`` annotations. Claude tolerates either shape.
+
+    Mirrors the helper in workflow.universe_server applied via PR #493.
+    """
+    import json as _json
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        return {"result": raw}
+    if isinstance(raw, str):
+        try:
+            parsed = _json.loads(raw)
+        except (_json.JSONDecodeError, ValueError):
+            return {"text": raw}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"result": parsed}
+    return {"result": raw}
+
+
 @directory_mcp.tool(
     title="Get Workflow Status",
     tags={"status", "workflow", "diagnostics"},
@@ -123,16 +149,13 @@ def _directory_safe_status(universe_id: str = "") -> str:
         openWorldHint=False,
     ),
 )
-def get_workflow_status(universe_id: str = "") -> str:
+def get_workflow_status(universe_id: str = "") -> dict:
     """Use this when the user asks whether Workflow is reachable or safe to use.
 
     Args:
         universe_id: Optional universe scope. Empty uses the active universe.
     """
-    return _directory_safe_status(universe_id=universe_id)
-
-
-@directory_mcp.tool(
+    return _structured_return(_directory_safe_status(universe_id=universe_id))@directory_mcp.tool(
     title="List Workflow Universes",
     tags={"universes", "workflow", "browse"},
     annotations=ToolAnnotations(
@@ -143,16 +166,13 @@ def get_workflow_status(universe_id: str = "") -> str:
         openWorldHint=False,
     ),
 )
-def list_workflow_universes(limit: int = 30) -> str:
+def list_workflow_universes(limit: int = 30) -> dict:
     """Use this when the user wants to browse available Workflow universes.
 
     Args:
         limit: Maximum number of universes to return.
     """
-    return _universe_impl(action="list", limit=limit)
-
-
-@directory_mcp.tool(
+    return _structured_return(_universe_impl(action="list", limit=limit))@directory_mcp.tool(
     title="Inspect Workflow Universe",
     tags={"universes", "workflow", "inspect"},
     annotations=ToolAnnotations(
@@ -163,16 +183,13 @@ def list_workflow_universes(limit: int = 30) -> str:
         openWorldHint=False,
     ),
 )
-def inspect_workflow_universe(universe_id: str = "") -> str:
+def inspect_workflow_universe(universe_id: str = "") -> dict:
     """Use this when the user wants a summary of one Workflow universe.
 
     Args:
         universe_id: Optional universe scope. Empty uses the active universe.
     """
-    return _universe_impl(action="inspect", universe_id=universe_id)
-
-
-@directory_mcp.tool(
+    return _structured_return(_universe_impl(action="inspect", universe_id=universe_id))@directory_mcp.tool(
     title="List Workflow Goals",
     tags={"goals", "workflow", "browse"},
     annotations=ToolAnnotations(
@@ -183,7 +200,7 @@ def inspect_workflow_universe(universe_id: str = "") -> str:
         openWorldHint=False,
     ),
 )
-def list_workflow_goals(tags: str = "", author: str = "", limit: int = 50) -> str:
+def list_workflow_goals(tags: str = "", author: str = "", limit: int = 50) -> dict:
     """Use this when the user wants to browse existing shared Workflow goals.
 
     Args:
@@ -191,10 +208,7 @@ def list_workflow_goals(tags: str = "", author: str = "", limit: int = 50) -> st
         author: Optional author filter.
         limit: Maximum number of goals to return.
     """
-    return _goals_impl(action="list", tags=tags, author=author, limit=limit)
-
-
-@directory_mcp.tool(
+    return _structured_return(_goals_impl(action="list", tags=tags, author=author, limit=limit))@directory_mcp.tool(
     title="Search Workflow Goals",
     tags={"goals", "workflow", "search"},
     annotations=ToolAnnotations(
@@ -205,17 +219,14 @@ def list_workflow_goals(tags: str = "", author: str = "", limit: int = 50) -> st
         openWorldHint=False,
     ),
 )
-def search_workflow_goals(query: str, limit: int = 20) -> str:
+def search_workflow_goals(query: str, limit: int = 20) -> dict:
     """Use this when the user wants to find Workflow goals by text or tag.
 
     Args:
         query: Search text.
         limit: Maximum number of goals to return.
     """
-    return _goals_impl(action="search", query=query, limit=limit)
-
-
-@directory_mcp.tool(
+    return _structured_return(_goals_impl(action="search", query=query, limit=limit))@directory_mcp.tool(
     title="Get Workflow Goal",
     tags={"goals", "workflow", "inspect"},
     annotations=ToolAnnotations(
@@ -226,16 +237,13 @@ def search_workflow_goals(query: str, limit: int = 20) -> str:
         openWorldHint=False,
     ),
 )
-def get_workflow_goal(goal_id: str) -> str:
+def get_workflow_goal(goal_id: str) -> dict:
     """Use this when the user wants details for a specific Workflow goal.
 
     Args:
         goal_id: Goal identifier to inspect.
     """
-    return _goals_impl(action="get", goal_id=goal_id)
-
-
-@directory_mcp.tool(
+    return _structured_return(_goals_impl(action="get", goal_id=goal_id))@directory_mcp.tool(
     title="Search Workflow Wiki",
     tags={"wiki", "knowledge", "workflow", "search"},
     annotations=ToolAnnotations(
@@ -246,7 +254,7 @@ def get_workflow_goal(goal_id: str) -> str:
         openWorldHint=False,
     ),
 )
-def search_workflow_wiki(query: str, category: str = "", max_results: int = 10) -> str:
+def search_workflow_wiki(query: str, category: str = "", max_results: int = 10) -> dict:
     """Use this when the user wants to search Workflow project knowledge.
 
     Args:
@@ -254,12 +262,12 @@ def search_workflow_wiki(query: str, category: str = "", max_results: int = 10) 
         category: Optional wiki category filter.
         max_results: Maximum number of wiki hits to return.
     """
-    return _wiki_impl(
+    return _structured_return(_wiki_impl(
         action="search",
         query=query,
         category=category,
         max_results=max_results,
-    )
+    ))
 
 @directory_mcp.tool(
     title="Read Workflow Wiki Page",
@@ -272,16 +280,13 @@ def search_workflow_wiki(query: str, category: str = "", max_results: int = 10) 
         openWorldHint=False,
     ),
 )
-def read_workflow_wiki_page(page: str) -> str:
+def read_workflow_wiki_page(page: str) -> dict:
     """Use this when the user wants to read one Workflow wiki page.
 
     Args:
         page: Wiki page slug or path.
     """
-    return _wiki_impl(action="read", page=page)
-
-
-@directory_mcp.tool(
+    return _structured_return(_wiki_impl(action="read", page=page))@directory_mcp.tool(
     title="List Workflow Runs",
     tags={"runs", "workflow", "browse"},
     annotations=ToolAnnotations(
@@ -292,17 +297,14 @@ def read_workflow_wiki_page(page: str) -> str:
         openWorldHint=False,
     ),
 )
-def list_workflow_runs(status: str = "", limit: int = 20) -> str:
+def list_workflow_runs(status: str = "", limit: int = 20) -> dict:
     """Use this when the user wants recent Workflow run history.
 
     Args:
         status: Optional run status filter.
         limit: Maximum number of runs to return.
     """
-    return _extensions_impl(action="list_runs", status=status, limit=limit)
-
-
-@directory_mcp.tool(
+    return _structured_return(_extensions_impl(action="list_runs", status=status, limit=limit))@directory_mcp.tool(
     title="Propose Workflow Goal",
     tags={"goals", "workflow", "create"},
     annotations=ToolAnnotations(
@@ -318,7 +320,7 @@ def propose_workflow_goal(
     description: str = "",
     tags: str = "",
     visibility: str = "public",
-) -> str:
+) -> dict:
     """Use this when the user asks to create a shared Workflow goal proposal.
 
     Args:
@@ -327,13 +329,13 @@ def propose_workflow_goal(
         tags: Optional comma-separated tags.
         visibility: Visibility value accepted by Workflow, usually public.
     """
-    return _goals_impl(
+    return _structured_return(_goals_impl(
         action="propose",
         name=name,
         description=description,
         tags=tags,
         visibility=visibility,
-    )
+    ))
 
 
 @directory_mcp.tool(
@@ -352,7 +354,7 @@ def submit_workflow_request(
     universe_id: str = "",
     request_type: str = "scene_direction",
     branch_id: str = "",
-) -> str:
+) -> dict:
     """Use this when the user wants the Workflow daemon to handle a bounded request.
 
     Args:
@@ -361,10 +363,10 @@ def submit_workflow_request(
         request_type: Workflow request type.
         branch_id: Optional target branch identifier.
     """
-    return _universe_impl(
+    return _structured_return(_universe_impl(
         action="submit_request",
         universe_id=universe_id,
         text=text,
         request_type=request_type,
         branch_id=branch_id,
-    )
+    ))
