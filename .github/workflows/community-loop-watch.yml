@@ -12,7 +12,7 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
   workflow_run:
-    workflows: ["Wiki bug sync", "Auto-fix change", "Uptime canary", "deploy-site", "Deploy prod"]
+    workflows: ["Wiki bug sync", "Auto-fix change", "Uptime canary", "tier3-oss-clone-nightly", "deploy-site", "Deploy prod"]
     types: [completed]
   push:
     branches: [main]

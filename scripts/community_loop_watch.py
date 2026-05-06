@@ -46,6 +46,7 @@ BLOCKED_LABEL = "needs-human"
 AWAIT_PRIMITIVE_LAYER_LABEL = "await-primitive-layer"
 ATTEMPTED_LABEL = "auto-fix-attempted"
 P0_OUTAGE_LABEL = "p0-outage"
+TIER3_BROKEN_LABEL = "tier3-broken"
 AUTH_MISSING_LABEL = "auto-fix-auth-missing"
 CLAUDE_SUBSCRIPTION_MISSING_LABEL = "auto-fix-claude-subscription-missing"
 CODEX_SUBSCRIPTION_MISSING_LABEL = "auto-fix-codex-subscription-missing"
@@ -663,6 +664,37 @@ def incident_stage(
     )
 
 
+def tier3_clone_smoke_stage(
+    repo: str,
+    *,
+    api: str,
+    token: str | None,
+    timeout: float,
+) -> dict[str, Any]:
+    issues = list_open_issues_by_label(
+        repo, TIER3_BROKEN_LABEL, api=api, token=token, timeout=timeout
+    )
+    if issues:
+        issue = issues[0]
+        return _stage(
+            "Tier-3 clone smoke",
+            "red",
+            (
+                f"{len(issues)} open {TIER3_BROKEN_LABEL} issue(s); "
+                "Forever Rule tier-3 clone/run surface is red"
+            ),
+            evidence=f"#{issue.get('number')}: {issue.get('title')}",
+            url=issue.get("html_url"),
+            details={"open_tier3_broken": [i.get("number") for i in issues]},
+        )
+    return _stage(
+        "Tier-3 clone smoke",
+        "green",
+        f"no open {TIER3_BROKEN_LABEL} issues",
+        details={"open_tier3_broken": []},
+    )
+
+
 def classify(stages: list[dict[str, Any]]) -> str:
     return max((stage["status"] for stage in stages), key=lambda s: STATUS_RANK[s])
 
@@ -717,6 +749,7 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
             max_age_min=args.max_observation_age_min,
         ),
         incident_stage(repo, api=api, token=token, timeout=timeout),
+        tier3_clone_smoke_stage(repo, api=api, token=token, timeout=timeout),
         workflow_stage(
             "Production deploy",
             repo,

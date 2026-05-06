@@ -517,3 +517,89 @@ def test_queue_stage_maps_legacy_priority_labels_before_pending_stuck(monkeypatc
         }
     ]
     assert "legacy unprefixed priority label" in stage["summary"]
+
+
+def test_tier3_broken_issue_marks_clone_smoke_stage_red(monkeypatch):
+    def fake_list_open_issues_by_label(repo, label, **kwargs):
+        assert repo == "owner/repo"
+        assert label == watch.TIER3_BROKEN_LABEL
+        return [
+            {
+                "number": 521,
+                "title": "Tier-3 OSS clone smoke failed",
+                "html_url": "https://example.test/issues/521",
+            }
+        ]
+
+    monkeypatch.setattr(
+        watch, "list_open_issues_by_label", fake_list_open_issues_by_label
+    )
+
+    stage = watch.tier3_clone_smoke_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+    )
+
+    assert stage["status"] == "red"
+    assert stage["details"]["open_tier3_broken"] == [521]
+    assert "Forever Rule" in stage["summary"]
+
+
+def test_build_status_is_red_when_tier3_broken_issue_is_open(monkeypatch):
+    now = dt.datetime(2026, 5, 6, 12, 0, tzinfo=dt.timezone.utc)
+
+    def fake_recent_workflow_runs(*_args, **_kwargs):
+        return [
+            {
+                "id": 1,
+                "status": "completed",
+                "conclusion": "success",
+                "created_at": "2026-05-06T11:50:00Z",
+                "updated_at": "2026-05-06T11:51:00Z",
+                "event": "schedule",
+                "html_url": "https://example.test/runs/1",
+            }
+        ]
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return []
+
+    def fake_list_open_issues_by_label(_repo, label, **_kwargs):
+        if label == watch.TIER3_BROKEN_LABEL:
+            return [
+                {
+                    "number": 521,
+                    "title": "Tier-3 OSS clone smoke failed",
+                    "html_url": "https://example.test/issues/521",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(watch, "_recent_workflow_runs", fake_recent_workflow_runs)
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+    monkeypatch.setattr(
+        watch, "list_open_issues_by_label", fake_list_open_issues_by_label
+    )
+    monkeypatch.setattr(watch, "_github_token", lambda _args: None)
+
+    status = watch.build_status(
+        argparse.Namespace(
+            repo="owner/repo",
+            api="https://api.github.test",
+            token=None,
+            timeout=1,
+            max_sync_age_min=90,
+            max_writer_age_min=90,
+            max_observation_age_min=90,
+            max_pending_age_min=45,
+        ),
+        now=now,
+    )
+
+    assert status["overall"] == "red"
+    assert status["exit_code"] == 2
+    assert [
+        stage for stage in status["stages"] if stage["name"] == "Tier-3 clone smoke"
+    ][0]["status"] == "red"
