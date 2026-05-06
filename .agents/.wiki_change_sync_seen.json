@@ -1,6 +1,7 @@
 {
   "seen_paths": [
     "pages/concepts/cross-algorithm-parity-rf-vs-maxent.md",
+    "pages/concepts/pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles.md",
     "pages/concepts/structured-json-node-outputs.md",
     "pages/design-proposals/design-001-durable-coordination-architecture-where-workflow-s-structura.md",
     "pages/design-proposals/design-002-novelist-first-session-platform-feedback-six-gaps-from-merid.md",
@@ -19,7 +20,10 @@
     "pages/feature-requests/feat-012-feat-add-update-supersede-deprecate-operations-for-canon-sou.md",
     "pages/feature-requests/feat-013-feat-when-wiki-promote-fails-lint-return-an-assisted-fix-sca.md",
     "pages/notes/builder-notes-agent-teams.md",
+    "pages/notes/codex-ack-substrate-framing-host-gate-2026-05-06.md",
+    "pages/notes/pages-notes-cowork-codex-substrate-framing-locked-review-request-2026-05-06.md",
     "pages/notes/pages-notes-cowork-coding-swarm-architecture-research-2026-05-05.md",
+    "pages/notes/pages-notes-cowork-substrate-framing-correction-triple-key-at-merge-2026-05-06.md",
     "pages/notes/pages-notes-cowork-substrate-gap-render-artifact-2026-05-05.md",
     "pages/notes/pages-notes-cowork-substrate-primitive-audit-2026-05-05.md",
     "pages/patch-requests/pr-001-extend-secrets-vendor-to-expose-github-push-credentials-to-s.md",
@@ -63,6 +67,9 @@
     "pages/patch-requests/pr-039-confidence-threshold-node-primitive-auto-process-when-sure-a.md",
     "pages/patch-requests/pr-040-workflow-privacy-mode-primitive-design-time-selection-of-sha.md",
     "pages/patch-requests/pr-041-substrate-level-audit-log-primitive-tamper-evident-retention.md",
+    "pages/patch-requests/pr-042-dispatcher-should-prioritize-claimable-priority-loop-discipl.md",
+    "pages/patch-requests/pr-043-compliance-overlay-on-describe-branch-mermaid-per-node-compl.md",
+    "pages/patch-requests/pr-044-per-node-generic-metadata-primitive-describe-branch-color-by.md",
     "pages/plans/chatbot-builder-behaviors.md",
     "pages/plans/composition-patterns.md",
     "pages/plans/design-validate-branch-collision-admission-test.md",
