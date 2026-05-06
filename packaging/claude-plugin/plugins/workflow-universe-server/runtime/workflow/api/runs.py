@@ -606,6 +606,15 @@ def _compose_run_snapshot(
         pass
 
     node_statuses = build_node_status_map(events, declared_order)
+    if run_record.get("status") == "failed" and run_record.get("last_node_id"):
+        failed_node_id = run_record["last_node_id"]
+        for node_status in node_statuses:
+            if (
+                node_status.get("node_id") == failed_node_id
+                and node_status.get("status") == "running"
+            ):
+                node_status["status"] = "failed"
+                break
     mermaid = _run_mermaid_from_events(
         run_record["branch_def_id"], node_statuses,
     )
