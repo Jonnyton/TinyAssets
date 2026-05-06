@@ -7,13 +7,15 @@ silently succeeded even when ``other_node_output`` wasn't in
 ``input_keys``. That's an implicit cross-node dependency which reduces
 branch portability and hides unintentional coupling.
 
-Contract (per STATUS.md "Approved bugs" entry 2026-04-22):
+Contract:
 
-- ``NodeDefinition.strict_input_isolation: bool = False`` — default
-  preserves back-compat.
+- ``NodeDefinition.strict_input_isolation: bool = True`` — declaring
+  ``input_keys`` isolates prompt-template rendering by default.
 - When strict=true, ``_build_prompt_template_node`` renders against a
   state view filtered to ``input_keys`` only. Out-of-keys placeholders
   raise ``CompilerError`` at runtime.
+- Branch authors may set ``strict_input_isolation=False`` as an explicit
+  legacy escape hatch.
 - Regardless of flag, ``collect_build_warnings(branch)`` emits one
   warning per out-of-input_keys placeholder so authors see the leak.
 - When ``event_sink`` is provided and strict=false, the runtime emits
@@ -275,6 +277,27 @@ def test_strict_isolation_rejects_even_when_state_has_key():
         fn({"topic": "whales", "leaked_key": "present but filtered out"})
 
 
+def test_default_input_keys_isolation_rejects_out_of_input_keys():
+    """BUG-007: declaring input_keys must isolate prompt_template reads.
+
+    The author should not have to opt into strict mode; if a template
+    references a state key outside input_keys, rendering must fail even
+    when the broader branch state contains that key.
+    """
+    node = NodeDefinition(
+        node_id="n1",
+        display_name="n1",
+        input_keys=["topic"],
+        output_keys=["draft"],
+        prompt_template="Write {topic} with {leaked_key}.",
+    )
+    fn = _make_prompt_fn(node)
+    with pytest.raises(CompilerError) as exc:
+        fn({"topic": "whales", "leaked_key": "should not be readable"})
+    assert "strict_input_isolation=true" in str(exc.value)
+    assert "leaked_key" in str(exc.value)
+
+
 def test_non_strict_mode_renders_with_leaked_state():
     """Back-compat: strict=false preserves the pre-BUG-007 behavior
     where templates freely read non-input_keys state."""
@@ -392,11 +415,10 @@ def test_strict_input_isolation_roundtrips_through_to_dict():
     assert restored.strict_input_isolation is True
 
 
-def test_strict_input_isolation_default_false():
-    """Back-compat: default must be False so existing branches work
-    unchanged after the schema update."""
+def test_strict_input_isolation_default_true():
+    """input_keys is an isolation contract by default."""
     node = NodeDefinition(node_id="n1", display_name="n1")
-    assert node.strict_input_isolation is False
+    assert node.strict_input_isolation is True
 
 
 def test_node_registration_shape_excludes_strict_flag():

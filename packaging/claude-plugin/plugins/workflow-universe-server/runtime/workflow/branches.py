@@ -287,15 +287,12 @@ class NodeDefinition:
     output_keys: list[str] = field(default_factory=list)
     # When true, prompt_template rendering sees ONLY the state keys
     # declared in ``input_keys`` — references to any other state key
-    # raise CompilerError at runtime. Symmetry-restore vs code-node
-    # sandbox (node_sandbox.py:279-282 already filters code-node state
-    # views). Default false to preserve back-compat with branches that
-    # rely on implicit cross-key reads; flip to true for new branches
-    # that want strict isolation. Regardless of this flag,
-    # ``collect_build_warnings`` surfaces a warning per out-of-input_keys
-    # placeholder at build time so authors see the leak even without
-    # opting into strict mode.
-    strict_input_isolation: bool = False
+    # raise CompilerError at runtime. This restores symmetry with the
+    # code-node sandbox (node_sandbox.py:279-282 already filters
+    # code-node state views). Branch authors can explicitly set false
+    # as a legacy escape hatch for prompt templates that intentionally
+    # read beyond their declared input_keys.
+    strict_input_isolation: bool = True
 
     # Source and execution — one of source_code or prompt_template
     source_code: str = ""

@@ -219,6 +219,8 @@ def node_to_yaml_payload(node: NodeDefinition) -> dict[str, Any]:
         payload["input_keys"] = list(node.input_keys)
     if node.output_keys:
         payload["output_keys"] = list(node.output_keys)
+    if node.strict_input_isolation is False:
+        payload["strict_input_isolation"] = False
     if node.tools_allowed:
         payload["tools_allowed"] = list(node.tools_allowed)
     if node.dependencies:
@@ -256,6 +258,9 @@ def node_from_yaml_payload(payload: dict[str, Any]) -> NodeDefinition:
         output_keys=payload.get("output_keys") or [],
         source_code=payload.get("source_code", ""),
         prompt_template=payload.get("prompt_template", ""),
+        strict_input_isolation=bool(
+            payload.get("strict_input_isolation", True)
+        ),
         model_hint=payload.get("model_hint", ""),
         tools_allowed=list(payload.get("tools_allowed", []) or []),
         dependencies=list(payload.get("dependencies", []) or []),

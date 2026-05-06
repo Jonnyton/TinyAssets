@@ -455,8 +455,8 @@ def collect_build_warnings(branch: BranchDefinition) -> list[dict[str, Any]]:
                     f"input_keys {sorted(node.input_keys)!r}. This is "
                     f"an implicit cross-node dependency that reduces "
                     f"branch portability. Add '{placeholder}' to "
-                    f"input_keys, or set strict_input_isolation=true "
-                    f"to reject such references at runtime."
+                    f"input_keys, or set strict_input_isolation=false "
+                    f"only when the cross-key read is intentional."
                 ),
             })
     return warnings
@@ -731,7 +731,7 @@ def _build_prompt_template_node(
     role = (node.model_hint or "writer").strip().lower() or "writer"
     template = node.prompt_template or ""
     timeout_s = float(node.timeout_seconds or 300.0)
-    strict_isolation = bool(getattr(node, "strict_input_isolation", False))
+    strict_isolation = bool(getattr(node, "strict_input_isolation", True))
     declared_inputs = list(node.input_keys)
     state_types = _state_type_map(state_schema or [])
     needs_json = _needs_json_contract(node, state_types)
