@@ -19,6 +19,48 @@ The human host is watching the browser tab. Your job is to look like a naive, cu
 
 The verification target is a rendered chatbot conversation using the live installed connector. Claude.ai, ChatGPT Developer Mode, and future chatbot clients are all acceptable when the tester can see the connector in the browser, type a normal user prompt, and observe the chatbot's rendered answer or tool-use result. Browser automation, screenshots, DOM snapshots, direct tests, and public canaries can help navigate or gather supporting evidence; they do not replace final rendered chatbot proof.
 
+## CRITICAL — cross-client MCP alignment is a project prerequisite (mandatory pre-ship check)
+
+Every MCP tool the substrate exposes is consumed by both ChatGPT (OpenAI Apps SDK) and Claude (Anthropic MCP). Both clients must accept any shape we ship — divergent client tolerance is a substrate bug, not a client bug.
+
+**Mandatory pre-ship probe before any `@mcp.tool` shape change merges to main:**
+
+Run the same call through both clients and verify clean response (no wedge, no 424, no silent timeout):
+
+1. **ChatGPT (Apps SDK strict surface)** — Developer Mode + Workflow connector + same MCP server. Test substrate-changing call (e.g., `wiki action=write`, `universe action=submit_request`).
+2. **Claude.ai (Anthropic MCP)** — same connector, same call. Verify final rendered response includes both the tool result AND any post-call narration.
+
+If either client wedges, errors, or silently times out on a shape the other accepts, **treat as substrate bug** — fix the response shape, not the client expectation.
+
+### Tool-author checklist (for every new or modified `@mcp.tool` decorator)
+
+- ✅ Direct Python function returns its existing shape (typically `-> str` JSON for back-compat) — do NOT change direct-call return type.
+- ✅ MCP adapter wraps the direct function with `_register_structured_tool(fn, server=mcp, name="...", title="...", tags={...}, annotations=ToolAnnotations(...))` (the helper introduced by PR #495).
+- ✅ The adapter's `__signature__` declares `-> dict` so FastMCP populates `structuredContent`.
+- ✅ The `_structured_return` helper handles JSON parsing or `{"text": raw}` fallback.
+- ✅ Test coverage:
+  - Direct call returns `str` (back-compat).
+  - MCP adapter returns `dict` / structured content.
+  - Live cross-family probe via this skill (ChatGPT + Claude.ai) before merge.
+
+### Why this matters (origin of the rule)
+
+BUG-069 wedge (`Access granted → Thinking…` forever on ChatGPT) was a substrate bug: ChatGPT's Apps SDK requires `structuredContent` + `content` + `_meta` on substrate-changing calls, while Claude tolerates `content` only. Single-client verification missed the divergence; cross-family probe surfaced it. Fix shipped via #493 (initial wrap) + #495 (`_register_structured_tool` helper that preserves direct-call back-compat) + #528 (sibling repair on mcp_server + directory_server).
+
+Project-prerequisite memory: `feedback_mcp_cross_client_alignment`. Cross-AI broad-search discipline: `feedback_brain_cross_ai_discovery_gap`.
+
+### Rejection criteria for single-client verification
+
+Reject any "ready to ship" claim that lacks both-client verification:
+
+- ❌ "Tested on ChatGPT, looks good" → INSUFFICIENT. Run the Claude.ai probe.
+- ❌ "Tested on Claude.ai, no errors" → INSUFFICIENT. Run the ChatGPT probe.
+- ❌ "Direct MCP call works fine" → INSUFFICIENT. Direct MCP doesn't simulate either client's response-shape consumption; both rendered chatbot probes are required.
+- ❌ "Tests in `test_*_mcp_structured_results.py` pass" → NECESSARY but NOT SUFFICIENT. Adapter unit tests verify the helper layer; cross-family rendered probes verify the full chain.
+
+If both probes can't be run (e.g., Codex driver is the only one available), STOP and SendMessage the lead — do not declare cross-client readiness from a single-family probe.
+
+
 ## Codex Claude.ai in-app preflight
 
 When Codex runs `ui-test`, check these before the first prompt and log the result:
