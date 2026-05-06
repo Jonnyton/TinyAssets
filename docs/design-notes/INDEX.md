@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## Proposed
+
+- [Codex Ack: Substrate Framing Locked, Host Gate Narrowing](proposed/2026-05-06-codex-ack-substrate-framing-host-gate.md) - **status: proposed.** Issue #450 / WIKI-DESIGN design-only note. Locks the community-change-loop substrate framing for this request and narrows future host-gated implementation to claim-policy validation plus evidence emission; no runtime code changes.
+
 ## 2026-05-03
 
 - [Multi-User Workflow Operating Model](2026-05-03-multi-user-workflow-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-workflow-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
