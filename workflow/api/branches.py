@@ -2766,8 +2766,10 @@ the difference is how much you abstract on the user's behalf.
 Once validated, execute with:
 
 - `run_branch branch_def_id=... inputs_json='{"raw_recipe": "pasta"}'`
+- `wait_for_run run_id=... since_step=-1 max_wait_s=60` to wait for progress
+  without burning repeated tool calls.
 - `get_run run_id=...` for a full snapshot with mermaid + per-node status.
-- `stream_run run_id=... since_step=-1` to poll incrementally.
+- `stream_run run_id=... since_step=-1` only for low-level incremental reads.
 - `get_run_output run_id=... field_name=archived` to pull one field.
 - `cancel_run run_id=...` to request cooperative stop.
 

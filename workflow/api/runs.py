@@ -525,8 +525,9 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         "background executor.",
         "",
         *error_lines,
-        "Use `get_run` to read a snapshot, `stream_run` to poll for "
-        "progress, or `cancel_run` to stop. Each takes a `run_id` "
+        "Use `wait_for_run` to wait for progress without burning repeated "
+        "tool calls, `get_run` for a snapshot, or `cancel_run` to stop. "
+        "Each takes a `run_id` "
         "from the structured content of this response.",
     ]).strip()
 
@@ -1427,8 +1428,9 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
         "background executor.",
         "",
         *error_lines,
-        "Use `get_run` to read a snapshot, `stream_run` to poll for "
-        "progress, or `cancel_run` to stop. Each takes a `run_id` "
+        "Use `wait_for_run` to wait for progress without burning repeated "
+        "tool calls, `get_run` for a snapshot, or `cancel_run` to stop. "
+        "Each takes a `run_id` "
         "from the structured content of this response.",
     ]).strip()
 

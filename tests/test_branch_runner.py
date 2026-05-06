@@ -609,7 +609,8 @@ def test_unknown_action_catalog_lists_run_actions(runner_env):
     result = _call(us, "flimflam")
     avail = result.get("available_actions", [])
     for action in ("run_branch", "get_run", "list_runs",
-                   "stream_run", "cancel_run", "get_run_output"):
+                   "stream_run", "wait_for_run", "cancel_run",
+                   "get_run_output"):
         assert action in avail
 
 
@@ -631,8 +632,8 @@ def test_run_branch_returns_markdown_text_channel(runner_env):
     # the text channel (#58). run_id is still present in the dict.
     assert result["run_id"] not in result["text"]
     assert "run_id" in result  # structured content still carries it
-    # Text should direct the caller to the polling surface.
-    assert "stream_run" in result["text"] or "get_run" in result["text"]
+    # Text should direct the caller to the long-poll surface first.
+    assert "wait_for_run" in result["text"]
 
 
 def test_get_run_text_channel_matches_summary(runner_env):

@@ -644,7 +644,7 @@ def _extensions_impl(
             "validate_branch", "describe_branch",
             "get_branch", "list_branches", "delete_branch",
             "run_branch", "get_run", "list_runs",
-            "stream_run", "cancel_run", "get_run_output",
+            "stream_run", "wait_for_run", "cancel_run", "get_run_output",
             "attach_existing_child_run",
             "resume_run", "estimate_run_cost", "query_runs",
             "judge_run", "list_judgments", "compare_runs",
