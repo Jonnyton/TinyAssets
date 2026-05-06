@@ -108,7 +108,7 @@ def _universe_dispatch_keys() -> set[str]:
         "get_activity", "get_recent_events", "get_ledger",
         "submit_request", "give_direction",
         "read_premise", "set_premise",
-        "add_canon", "add_canon_from_path",
+        "add_canon", "add_canon_from_path", "import_source",
         "list_canon", "read_canon", "list_sources", "read_source",
         "control_daemon", "switch_universe", "create_universe",
         "queue_list", "queue_cancel",
@@ -130,7 +130,7 @@ def _wiki_dispatch_keys() -> set[str]:
     """Mirror of the local `dispatch = {...}` literal inside `wiki()`."""
     return {
         "read", "search", "list", "lint",
-        "write", "consolidate", "promote", "ingest", "supersede",
+        "write", "patch", "consolidate", "promote", "ingest", "supersede",
         "sync_projects",
         "file_bug", "cosign_bug",
     }
@@ -273,7 +273,7 @@ def _docstring_actions_universe() -> set[str]:
     slab = _extract_slab(
         doc,
         r"action:\s*One of\s*[—\-]",
-        r"\n {4}\w+:\s",
+        r"\n {4}[\w/]+:\s",
     )
     return _flat_group_actions(slab)
 
@@ -283,7 +283,7 @@ def _docstring_actions_wiki() -> set[str]:
     slab = _extract_slab(
         doc,
         r"action:\s*One of\s*[—\-]",
-        r"\n {4}\w+:\s",
+        r"\n {4}[\w/]+:\s",
     )
     return _flat_group_actions(slab)
 

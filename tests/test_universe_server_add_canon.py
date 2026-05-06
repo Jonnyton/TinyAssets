@@ -34,6 +34,8 @@ def _call(action: str, **kwargs) -> dict:
         "path": "",
         "category": "direction",
         "target": "",
+        "source_url": "",
+        "source_kind": "",
         "query_type": "facts",
         "filter_text": "",
         "request_type": "scene_direction",
@@ -47,6 +49,7 @@ def _call(action: str, **kwargs) -> dict:
     dispatch = {
         "add_canon": us._action_add_canon,
         "add_canon_from_path": us._action_add_canon_from_path,
+        "import_source": us._action_import_source,
     }
     handler = dispatch[action]
     return json.loads(us._dispatch_with_ledger(action, handler, base_kwargs))
@@ -236,6 +239,116 @@ class TestAddCanonFromPathHappyPath:
         assert entries[0]["payload"]["provenance"] == "draft"
         assert entries[0]["payload"]["source_path"] == str(src)
         assert entries[0]["payload"]["synthesis_signal"] is True
+
+
+class TestImportSource:
+    def test_import_source_accepts_voice_transcript_text(
+        self, universe: str,
+    ) -> None:
+        out = _call(
+            "import_source",
+            text="Speaker A: The gate opens.\nSpeaker B: Hold the line.",
+            source_kind="voice",
+        )
+
+        assert out["action"] == "import_source"
+        assert out["import_kind"] == "voice"
+        assert out["filename"] == "voice-transcript.md"
+        assert out["synthesis_signal_emitted"] is True
+
+        udir = us._base_path() / universe
+        dest = udir / "canon" / "sources" / "voice-transcript.md"
+        assert dest.read_text(encoding="utf-8").startswith("Speaker A")
+
+        ledger = json.loads((udir / "ledger.json").read_text(encoding="utf-8"))
+        assert ledger[0]["action"] == "import_source"
+        assert ledger[0]["target"] == "canon/sources/voice-transcript.md"
+        assert ledger[0]["payload"]["import_kind"] == "voice"
+
+    def test_import_source_delegates_server_path(
+        self, universe: str, tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "field-notes.md"
+        src.write_text("# Field Notes\n\nLook east.", encoding="utf-8")
+
+        out = _call(
+            "import_source",
+            path=str(src),
+            source_kind="file",
+            provenance_tag="research notes",
+        )
+
+        assert out["action"] == "import_source"
+        assert out["import_kind"] == "file"
+        assert out["source_path"] == str(src)
+        assert out["filename"] == "field-notes.md"
+        assert out["synthesis_signal_emitted"] is True
+
+        ledger = json.loads(
+            (us._base_path() / universe / "ledger.json").read_text(
+                encoding="utf-8",
+            ),
+        )
+        assert ledger[0]["action"] == "import_source"
+        assert ledger[0]["payload"]["source_path"] == str(src)
+
+    def test_import_source_fetches_url_text(
+        self, universe: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit: int) -> bytes:
+                return b"# Remote Source\n\nFetched canon."
+
+        seen = {}
+
+        def fake_urlopen(url: str, timeout: int):
+            seen["url"] = url
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        monkeypatch.setattr(us, "_source_url_is_fetchable", lambda _parsed: (True, ""))
+        monkeypatch.setattr(us.urllib.request, "urlopen", fake_urlopen)
+
+        out = _call(
+            "import_source",
+            source_url="https://example.test/source.md",
+            source_kind="url",
+        )
+
+        assert seen == {"url": "https://example.test/source.md", "timeout": 10}
+        assert out["action"] == "import_source"
+        assert out["import_kind"] == "url"
+        assert out["filename"] == "source.md"
+        assert out["source_url"] == "https://example.test/source.md"
+        assert out["preview_first_200_bytes"].startswith("# Remote Source")
+
+        udir = us._base_path() / universe
+        assert (
+            udir / "canon" / "sources" / "source.md"
+        ).read_text(encoding="utf-8").startswith("# Remote Source")
+        ledger = json.loads((udir / "ledger.json").read_text(encoding="utf-8"))
+        assert ledger[0]["payload"]["source_url"] == "https://example.test/source.md"
+
+    def test_import_source_requires_one_source(self, universe: str) -> None:
+        out = _call("import_source", text="inline", path="/tmp/source.md")
+        assert "error" in out
+        assert "exactly one" in out["error"]
+
+    def test_import_source_rejects_non_http_url(self, universe: str) -> None:
+        out = _call("import_source", source_url="file:///etc/passwd")
+        assert "error" in out
+        assert "http or https" in out["error"]
+
+    def test_import_source_rejects_localhost_url(self, universe: str) -> None:
+        out = _call("import_source", source_url="https://localhost/source.md")
+        assert "error" in out
+        assert "localhost" in out["error"]
 
 
 class TestSourceInspection:

@@ -317,6 +317,8 @@ def universe(
     branch_id: str = "",
     filename: str = "",
     provenance_tag: str = "",
+    source_url: str = "",
+    source_kind: str = "",
     limit: int = 30,
     priority_weight: float = 0.0,
     pickup_incentive: str = "",
@@ -349,7 +351,7 @@ def universe(
             get_activity, get_recent_events, get_ledger, read_premise,
             list_canon, read_canon, list_sources, read_source; writes: submit_request,
             give_direction, set_premise, add_canon, add_canon_from_path,
-            create_universe, switch_universe; queue: queue_list,
+            import_source, create_universe, switch_universe; queue: queue_list,
             queue_cancel; subscriptions: subscribe_goal, unsubscribe_goal,
             list_subscriptions; goal-pool: post_to_goal_pool,
             submit_node_bid; community review: community_change_context;
@@ -365,7 +367,8 @@ def universe(
         branch_id/request_type: Request routing fields.
         pickup_incentive/directed_daemon_id: Optional patch-request pickup
             signals; these do not affect acceptance, release, or merge odds.
-        filename/provenance_tag/limit/tag: Optional read/write filters.
+        filename/provenance_tag/source_url/source_kind/limit/tag:
+            Optional read/write filters and import-source metadata.
         anchor_json: Optional JSON object for `give_direction` line/span notes.
     """
     return _universe_impl(
@@ -381,6 +384,8 @@ def universe(
         branch_id=branch_id,
         filename=filename,
         provenance_tag=provenance_tag,
+        source_url=source_url,
+        source_kind=source_kind,
         limit=limit,
         priority_weight=priority_weight,
         pickup_incentive=pickup_incentive,

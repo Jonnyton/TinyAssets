@@ -37,6 +37,7 @@ def test_module_exposes_expected_public_names() -> None:
         "_extract_submit_request", "_extract_give_direction",
         "_extract_set_premise", "_extract_add_canon",
         "_extract_add_canon_from_path", "_extract_control_daemon",
+        "_extract_import_source",
         "_extract_switch_universe", "_extract_create_universe",
         "_extract_queue_cancel", "_extract_subscribe_goal",
         "_extract_unsubscribe_goal", "_extract_post_to_goal_pool",
@@ -74,7 +75,8 @@ def test_module_exposes_expected_public_names() -> None:
         "_action_give_direction",
         "_action_query_world", "_action_read_premise",
         "_action_set_premise", "_action_add_canon",
-        "_action_add_canon_from_path", "_action_list_canon",
+        "_action_add_canon_from_path", "_action_import_source",
+        "_action_list_canon",
         "_action_read_canon", "_action_list_sources",
         "_action_read_source", "_action_control_daemon",
         "_action_get_activity", "_action_get_recent_events",
@@ -90,7 +92,7 @@ def test_module_exposes_expected_public_names() -> None:
 
 def test_write_actions_table_has_24_entries() -> None:
     """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes."""
-    assert len(univ_mod.WRITE_ACTIONS) == 24
+    assert len(univ_mod.WRITE_ACTIONS) == 25
 
 
 def test_write_actions_entries_are_extractor_gate_tuples() -> None:
@@ -223,7 +225,7 @@ def test_universe_impl_dispatch_table_has_known_actions() -> None:
     "post_to_goal_pool", "submit_node_bid", "community_change_context",
     "give_direction",
     "query_world", "read_premise", "set_premise", "add_canon",
-    "add_canon_from_path", "list_canon", "read_canon",
+    "add_canon_from_path", "import_source", "list_canon", "read_canon",
     "list_sources", "read_source",
     "control_daemon", "get_activity", "get_recent_events",
     "get_ledger", "switch_universe", "create_universe",
