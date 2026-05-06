@@ -13,7 +13,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 MCP_SERVER_SURFACES = (
-    "workflow/mcp_server.py",
     "workflow/universe_server.py",
     "workflow/directory_server.py",
 )
@@ -43,6 +42,16 @@ def test_all_mcp_server_surfaces_register_tools_through_structured_adapter() -> 
             failures.append(f"{rel_path}: expected one adapter .tool call, found {calls}")
 
     assert failures == []
+
+
+def test_legacy_mcp_server_delegates_to_universe_surface() -> None:
+    """The deprecated stdio shim must not revive the old 12-tool surface."""
+    text = _read("workflow/mcp_server.py")
+
+    assert "from workflow.universe_server import main, mcp" in text
+    assert "def _register_structured_tool" not in text
+    assert ".tool(" not in text
+    assert "DEPRECATION_NOTICE" in text
 
 
 def test_ui_test_requires_cross_client_mcp_shape_proof() -> None:

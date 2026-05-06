@@ -46,7 +46,7 @@ dependencies = [
 
 [project.scripts]
 workflow-cli = "workflow.__main__:main"
-workflow-mcp = "workflow.mcp_server:main"
+workflow-mcp = "workflow.universe_server:main"
 workflow-universe-server = "workflow.universe_server:main"
 workflow-probe = "workflow.probe:entry_point"
 

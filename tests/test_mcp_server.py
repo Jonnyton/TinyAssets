@@ -1,8 +1,9 @@
-"""Tests for the MCP server tool functions.
+"""Tests for the deprecated MCP server compatibility shim.
 
-Each tool is a plain function that reads/writes files in a universe
-directory. We test them by pointing WORKFLOW_UNIVERSE at a
-temp directory and calling them directly.
+The old ``workflow.mcp_server`` module no longer registers its own 12-tool
+FastMCP surface. It delegates the server entry point to
+``workflow.universe_server`` while keeping import-level helper functions
+available for older callers.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ class TestMCPServerSetup:
     """MCP server is properly configured."""
 
     def test_server_name(self):
-        assert mcp.name == "fantasy-author"
+        assert mcp.name == "workflow"
 
 
 class TestUniverseDirResolution:
@@ -88,16 +89,15 @@ class TestUniverseDirResolution:
     def test_server_has_tools(self):
         import asyncio
 
-        tools = asyncio.run(mcp.list_tools())
+        tools = asyncio.run(mcp.list_tools(run_middleware=False))
         tool_names = {t.name for t in tools}
         expected = {
-            "get_status", "add_note", "get_premise", "set_premise",
-            "get_progress", "get_chapter", "get_activity",
-            "pause", "resume", "add_canon",
-            "get_work_targets", "get_review_state",
+            "universe", "extensions", "goals", "gates", "wiki",
         }
         assert expected.issubset(tool_names)
+        assert "get_status" in tool_names
         assert "steer" not in tool_names
+        assert "add_note" not in tool_names
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +329,7 @@ class TestAddCanon:
     def test_writes_file(self, universe_dir):
         result = add_canon("characters.md", "# Characters\n\nRyn: a wanderer.")
         assert "characters.md" in result
-        content = (universe_dir / "canon" / "characters.md").read_text(
+        content = (universe_dir / "canon" / "sources" / "characters.md").read_text(
             encoding="utf-8",
         )
         assert "Ryn: a wanderer" in content
@@ -342,7 +342,7 @@ class TestAddCanon:
     def test_overwrites_existing(self, universe_dir):
         add_canon("notes.md", "Old notes")
         add_canon("notes.md", "New notes")
-        content = (universe_dir / "canon" / "notes.md").read_text(
+        content = (universe_dir / "canon" / "sources" / "notes.md").read_text(
             encoding="utf-8",
         )
         assert "New notes" in content
@@ -350,8 +350,8 @@ class TestAddCanon:
 
     def test_path_traversal_sanitized(self, universe_dir):
         add_canon("../../evil.md", "Malicious content")
-        # Should be written as "evil.md" inside canon/, not outside
-        assert (universe_dir / "canon" / "evil.md").exists()
+        # Should be written as "evil.md" inside canon/sources/, not outside
+        assert (universe_dir / "canon" / "sources" / "evil.md").exists()
         assert not (universe_dir.parent / "evil.md").exists()
 
 
@@ -388,7 +388,7 @@ class TestMCPConfig:
         server = data["mcpServers"]["workflow"]
         assert server["command"] == "python"
         assert "-m" in server["args"]
-        assert "workflow.mcp_server" in server["args"]
+        assert "workflow.universe_server" in server["args"]
 
     def test_local_config_is_ignored(self):
         gitignore_path = Path(__file__).parent.parent / ".gitignore"
