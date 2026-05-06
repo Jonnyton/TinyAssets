@@ -57,6 +57,25 @@ VALID_EVENT_TYPES = {
     "daemon.memory.low_confidence_skip",
     "daemon.memory.eval",
 }
+MEMORY_KIND_VALUE_WEIGHTS = {
+    "semantic": 0.52,
+    "episodic": 0.48,
+    "procedural": 0.70,
+    "policy": 0.78,
+    "claim": 0.62,
+    "preference": 0.56,
+    "failure_mode": 0.82,
+    "open_loop": 0.58,
+    "contradiction": 0.88,
+    "soul_proposal": 0.50,
+}
+PROMOTION_STATE_VALUE_WEIGHTS = {
+    "candidate": 0.35,
+    "accepted": 0.72,
+    "promoted": 0.92,
+    "superseded": 0.18,
+    "rejected": 0.0,
+}
 
 
 def _utc_now() -> datetime:
@@ -204,6 +223,26 @@ def _clamp(value: float, *, default: float) -> float:
     except (TypeError, ValueError):
         parsed = default
     return max(0.0, min(1.0, parsed))
+
+
+def score_daemon_memory_value(entry: dict[str, Any]) -> float:
+    """Return a deterministic usefulness score for ranking memory entries."""
+    retrieval = _clamp(entry.get("retrieval_score"), default=0.0)
+    importance = _clamp(entry.get("importance"), default=0.5)
+    confidence = _clamp(entry.get("confidence"), default=0.5)
+    kind_weight = MEMORY_KIND_VALUE_WEIGHTS.get(str(entry.get("memory_kind") or ""), 0.5)
+    state_weight = PROMOTION_STATE_VALUE_WEIGHTS.get(
+        str(entry.get("promotion_state") or ""),
+        0.0,
+    )
+    value = (
+        (retrieval * 0.30)
+        + (importance * 0.25)
+        + (confidence * 0.20)
+        + (kind_weight * 0.15)
+        + (state_weight * 0.10)
+    )
+    return round(_clamp(value, default=0.0), 6)
 
 
 def _validate_choice(value: str, choices: set[str], field: str) -> str:
@@ -823,10 +862,13 @@ def search_daemon_memory(
             entry for entry in entries
             if float(entry.get("retrieval_score") or 0.0) >= threshold
         ]
+        for entry in entries:
+            entry["value_score"] = score_daemon_memory_value(entry)
         entries.sort(
             key=lambda entry: (
+                float(entry.get("value_score") or 0.0),
                 float(entry.get("retrieval_score") or 0.0),
-                entry["importance"],
+                float(entry["importance"]),
                 entry["updated_at"],
             ),
             reverse=True,
@@ -934,7 +976,8 @@ def build_daemon_brain_packet(
             (
                 f"- Kind: {entry['memory_kind']} | Reliability: "
                 f"{entry['reliability']} | Confidence: {entry['confidence']:.2f} | "
-                f"Score: {float(entry.get('retrieval_score') or 0.0):.2f}"
+                f"Retrieval: {float(entry.get('retrieval_score') or 0.0):.2f} | "
+                f"Value: {float(entry.get('value_score') or 0.0):.2f}"
             ),
             f"- Source: {entry['source_type']}:{entry['source_id']}",
             f"- State: {entry['promotion_state']} | Visibility: {entry['visibility']}",

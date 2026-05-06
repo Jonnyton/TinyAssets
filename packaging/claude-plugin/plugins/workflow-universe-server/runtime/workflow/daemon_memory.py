@@ -19,6 +19,8 @@ DEFAULT_FIRST_MONTH_DAYS = 30
 DEFAULT_PLATEAU_DAYS = 365
 DEFAULT_MEMORY_PACKET_CHARS = 8000
 DEFAULT_BRAIN_PACKET_CHARS = 1600
+DEFAULT_BUDGET_CAP_MIN_BYTES = 16 * MIB
+DEFAULT_BUDGET_CAP_MAX_BYTES = 512 * MIB
 
 VALID_CAP_POLICIES = {"fixed", "age_scaled", "custom"}
 
@@ -71,6 +73,14 @@ def _as_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _as_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _metadata_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
@@ -87,6 +97,28 @@ def _is_project_daemon(daemon: dict[str, Any]) -> bool:
 
 def _wiki_metadata(daemon: dict[str, Any]) -> dict[str, Any]:
     return _metadata_dict(_metadata_dict(daemon.get("metadata")).get("daemon_wiki"))
+
+
+def _budget_derived_cap_bytes(wiki_meta: dict[str, Any]) -> int | None:
+    monthly_budget_usd = _as_float(wiki_meta.get("monthly_budget_usd"))
+    cost_per_mib_month_usd = _as_float(wiki_meta.get("storage_cost_per_mib_month_usd"))
+    if monthly_budget_usd is None or cost_per_mib_month_usd is None:
+        return None
+    raw_mib = int(monthly_budget_usd / cost_per_mib_month_usd)
+    if raw_mib <= 0:
+        return None
+    cap_bytes = raw_mib * MIB
+    min_bytes = _as_int(
+        wiki_meta.get("budget_cap_min_bytes"),
+        DEFAULT_BUDGET_CAP_MIN_BYTES,
+    )
+    max_bytes = _as_int(
+        wiki_meta.get("budget_cap_max_bytes"),
+        DEFAULT_BUDGET_CAP_MAX_BYTES,
+    )
+    if max_bytes < min_bytes:
+        max_bytes = min_bytes
+    return max(min_bytes, min(max_bytes, cap_bytes))
 
 
 def daemon_memory_policy(
@@ -111,11 +143,15 @@ def daemon_memory_policy(
         if project_daemon
         else DEFAULT_USER_PLATEAU_BYTES
     )
+    budget_derived_cap = _budget_derived_cap_bytes(wiki_meta)
     first_month_cap = _as_int(
         wiki_meta.get("first_month_cap_bytes"),
         DEFAULT_FIRST_MONTH_CAP_BYTES,
     )
-    plateau_cap = _as_int(wiki_meta.get("plateau_cap_bytes"), default_plateau)
+    plateau_cap = _as_int(
+        wiki_meta.get("plateau_cap_bytes"),
+        budget_derived_cap or default_plateau,
+    )
     custom_cap = _as_int(wiki_meta.get("cap_bytes"), plateau_cap)
     first_month_days = _as_int(
         wiki_meta.get("first_month_days"),
@@ -150,6 +186,11 @@ def daemon_memory_policy(
         "first_month_cap_bytes": int(first_month_cap),
         "plateau_cap_bytes": int(plateau_cap),
         "custom_cap_bytes": int(custom_cap),
+        "budget_derived_cap_bytes": budget_derived_cap,
+        "monthly_budget_usd": _as_float(wiki_meta.get("monthly_budget_usd")),
+        "storage_cost_per_mib_month_usd": _as_float(
+            wiki_meta.get("storage_cost_per_mib_month_usd"),
+        ),
         "first_month_days": int(first_month_days),
         "plateau_days": int(plateau_days),
         "age_days": age_days,
