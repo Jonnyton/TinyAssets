@@ -1447,6 +1447,17 @@ def _build_invoke_branch_node(
 
     _base = Path(base_path)
 
+    def _resolve_actor() -> str:
+        if child_actor:
+            return child_actor
+        if parent_run_id:
+            from workflow.runs import get_run
+
+            parent = get_run(_base, parent_run_id)
+            if parent:
+                return parent.get("actor") or "anonymous"
+        return "anonymous"
+
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         from workflow.branches import BranchDefinition as _BD
         from workflow.daemon_server import get_branch_definition
@@ -1459,7 +1470,7 @@ def _build_invoke_branch_node(
             for parent_key, child_key in inputs_mapping.items()
         }
 
-        actor_arg = child_actor or "anonymous"
+        actor_arg = _resolve_actor()
         if wait_mode == "blocking":
             # Phase A item 5 / Task #76b — on_child_fail policy + retry.
             # Blocking-mode invocation knows the child's terminal status
@@ -1472,6 +1483,7 @@ def _build_invoke_branch_node(
                     _base, branch=child_branch, inputs=child_inputs,
                     actor=actor_arg,
                     provider_call=provider_call,
+                    _invocation_depth=depth + 1,
                 )
                 if outcome.status == "completed":
                     try:
@@ -1587,6 +1599,17 @@ def _build_invoke_branch_version_node(
 
     _base = Path(base_path)
 
+    def _resolve_actor() -> str:
+        if child_actor:
+            return child_actor
+        if parent_run_id:
+            from workflow.runs import get_run
+
+            parent = get_run(_base, parent_run_id)
+            if parent:
+                return parent.get("actor") or "anonymous"
+        return "anonymous"
+
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         # Lazy module-attribute lookups so unittest.mock.patch on
         # workflow.runs.* takes effect (matches the patch-where-the-
@@ -1600,7 +1623,7 @@ def _build_invoke_branch_version_node(
             child_key: state.get(parent_key)
             for parent_key, child_key in inputs_mapping.items()
         }
-        actor_arg = child_actor or "anonymous"
+        actor_arg = _resolve_actor()
 
         def _resolve_branch_def_id_for_author() -> str:
             """Map child_branch_version_id → branch_def_id for author lookup.
@@ -1759,6 +1782,7 @@ def _build_node(
     concurrency_tracker: ConcurrencyTracker | None = None,
     base_path: str | Path | None = None,
     parent_run_id: str = "",
+    invocation_depth: int = 0,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -1809,6 +1833,7 @@ def _build_node(
             node, base_path=base_path, event_sink=event_sink,
             provider_call=provider_call,
             parent_run_id=parent_run_id,
+            depth=invocation_depth,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.invoke_branch_version_spec is not None:
@@ -1821,6 +1846,7 @@ def _build_node(
             node, base_path=base_path, event_sink=event_sink,
             provider_call=provider_call,
             parent_run_id=parent_run_id,
+            depth=invocation_depth,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.await_run_spec is not None:
@@ -1928,6 +1954,7 @@ def compile_branch(
     concurrency_budget_override: int | None = None,
     base_path: str | Path | None = None,
     parent_run_id: str = "",
+    invocation_depth: int = 0,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -2037,6 +2064,7 @@ def compile_branch(
             concurrency_tracker=concurrency_tracker,
             base_path=base_path,
             parent_run_id=parent_run_id,
+            invocation_depth=invocation_depth,
         )
         graph.add_node(gn.id, fn)
 
