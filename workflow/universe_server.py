@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
+from functools import wraps
+from inspect import signature
 
 import uvicorn
 from fastmcp import FastMCP
@@ -78,6 +80,24 @@ def _structured_return(raw):
             return parsed
         return {"result": parsed}
     return {"result": raw}
+
+
+def _register_structured_tool(fn, *, title, tags, annotations):
+    """Register an MCP adapter without changing the direct Python API."""
+
+    @wraps(fn)
+    def _tool(*args, **kwargs):
+        return _structured_return(fn(*args, **kwargs))
+
+    _tool.__name__ = f"_mcp_{fn.__name__}"
+    _tool.__signature__ = signature(fn).replace(return_annotation=dict)
+    return mcp.tool(
+        name=fn.__name__,
+        title=title,
+        tags=tags,
+        annotations=annotations,
+        output_schema=None,
+    )(_tool)
 
 
 mcp = FastMCP(
@@ -284,21 +304,6 @@ def branch_design_guide() -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Universe Operations",
-    tags={
-        "universe", "daemon", "collaboration",
-        "workflow", "workflow-builder", "custom-ai", "agent-workflow",
-        "ai-builder", "universe-builder", "general-purpose",
-    },
-    annotations=ToolAnnotations(
-        title="Universe Operations",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 def universe(
     action: str,
     universe_id: str = "",
@@ -328,7 +333,7 @@ def universe(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
-) -> dict:
+) -> str:
     """Inspect and steer a workflow's universe.
 
     Self-contained workspace for a multi-step workflow. New workflows
@@ -363,7 +368,7 @@ def universe(
         filename/provenance_tag/limit/tag: Optional read/write filters.
         anchor_json: Optional JSON object for `give_direction` line/span notes.
     """
-    return _structured_return(_universe_impl(
+    return _universe_impl(
         action=action,
         universe_id=universe_id,
         text=text,
@@ -392,7 +397,25 @@ def universe(
         enabled=enabled,
         tag=tag,
         anchor_json=anchor_json,
-    ))
+    )
+
+
+_mcp_universe = _register_structured_tool(
+    universe,
+    title="Universe Operations",
+    tags={
+        "universe", "daemon", "collaboration",
+        "workflow", "workflow-builder", "custom-ai", "agent-workflow",
+        "ai-builder", "universe-builder", "general-purpose",
+    },
+    annotations=ToolAnnotations(
+        title="Universe Operations",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -400,24 +423,10 @@ def universe(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(
-    title="Community Change Context",
-    tags={
-        "community", "change-loop", "review", "pull-request",
-        "github", "plan", "workflow",
-    },
-    annotations=ToolAnnotations(
-        title="Community Change Context",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=True,
-    ),
-)
 def community_change_context(
     filter_text: str = "",
     limit: int = 10,
-) -> dict:
+) -> str:
     """Review PR metadata, changed files, reviews, and project plan context.
 
     Use this when the user asks to review, approve, reject, send back,
@@ -432,11 +441,28 @@ def community_change_context(
             reviews; or "issue:NUMBER" for the request thread.
         limit: Max PRs/issues/files/comments to return, capped server-side.
     """
-    return _structured_return(_universe_impl(
+    return _universe_impl(
         action="community_change_context",
         filter_text=filter_text,
         limit=limit,
-    ))
+    )
+
+
+_mcp_community_change_context = _register_structured_tool(
+    community_change_context,
+    title="Community Change Context",
+    tags={
+        "community", "change-loop", "review", "pull-request",
+        "github", "plan", "workflow",
+    },
+    annotations=ToolAnnotations(
+        title="Community Change Context",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -444,17 +470,6 @@ def community_change_context(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Graph Extensions",
-    tags={"extensions", "nodes", "plugins", "customization"},
-    annotations=ToolAnnotations(
-        title="Graph Extensions",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 def extensions(
     action: str,
     node_id: str = "",
@@ -573,7 +588,7 @@ def extensions(
     ship_class: str = "",
     changed_paths_json: str = "",
     stable_evidence_handle: str = "",
-) -> dict:
+) -> str:
     """Workflow-builder surface: design, edit, run, judge custom AI graphs.
 
     Behavioral rules live in `control_station`, `extension_guide`, and
@@ -608,7 +623,7 @@ def extensions(
 
     Args: pass `action` plus the matching ids or JSON payload fields.
     """
-    return _structured_return(_extensions_impl(
+    return _extensions_impl(
         action=action,
         node_id=node_id,
         display_name=display_name,
@@ -726,7 +741,21 @@ def extensions(
         ship_class=ship_class,
         changed_paths_json=changed_paths_json,
         stable_evidence_handle=stable_evidence_handle,
-    ))
+    )
+
+
+_mcp_extensions = _register_structured_tool(
+    extensions,
+    title="Graph Extensions",
+    tags={"extensions", "nodes", "plugins", "customization"},
+    annotations=ToolAnnotations(
+        title="Graph Extensions",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -734,17 +763,6 @@ def extensions(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Goals",
-    tags={"goals", "discovery", "intent", "community"},
-    annotations=ToolAnnotations(
-        title="Goals",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 def goals(
     action: str,
     goal_id: str = "",
@@ -761,7 +779,7 @@ def goals(
     limit: int = 50,
     scope: str = "",
     force: bool = False,
-) -> dict:
+) -> str:
     """Goals — first-class shared primitives above workflow Branches.
 
     A Goal captures the intent a workflow serves ("produce a research
@@ -784,7 +802,7 @@ def goals(
       common_nodes Nodes appearing in >=`min_branches` Branches.
 
     """
-    return _structured_return(_goals_impl(
+    return _goals_impl(
         action=action,
         goal_id=goal_id,
         branch_def_id=branch_def_id,
@@ -800,7 +818,21 @@ def goals(
         limit=limit,
         scope=scope,
         force=force,
-    ))
+    )
+
+
+_mcp_goals = _register_structured_tool(
+    goals,
+    title="Goals",
+    tags={"goals", "discovery", "intent", "community"},
+    annotations=ToolAnnotations(
+        title="Goals",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -808,17 +840,6 @@ def goals(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Outcome Gates",
-    tags={"gates", "outcomes", "impact", "leaderboard", "community"},
-    annotations=ToolAnnotations(
-        title="Outcome Gates",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 def gates(
     action: str,
     goal_id: str = "",
@@ -837,7 +858,7 @@ def gates(
     eval_verdict: str = "",
     node_last_claimer: str = "",
     node_id: str = "",
-) -> dict:
+) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
     Each Goal declares a ladder of rungs (draft -> peer-reviewed -> published
@@ -869,7 +890,7 @@ def gates(
       release_bonus Resolve a bonus payout via evaluator verdict.
 
     """
-    return _structured_return(_gates_impl(
+    return _gates_impl(
         action=action,
         goal_id=goal_id,
         branch_def_id=branch_def_id,
@@ -887,7 +908,21 @@ def gates(
         eval_verdict=eval_verdict,
         node_last_claimer=node_last_claimer,
         node_id=node_id,
-    ))
+    )
+
+
+_mcp_gates = _register_structured_tool(
+    gates,
+    title="Outcome Gates",
+    tags={"gates", "outcomes", "impact", "leaderboard", "community"},
+    annotations=ToolAnnotations(
+        title="Outcome Gates",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -895,17 +930,6 @@ def gates(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Wiki Knowledge Base",
-    tags={"wiki", "knowledge", "drafts", "pages", "research"},
-    annotations=ToolAnnotations(
-        title="Wiki Knowledge Base",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 def wiki(
     action: str,
     page: str = "",
@@ -937,7 +961,7 @@ def wiki(
     force_new: bool = False,
     bug_id: str = "",
     reporter_context: str = "",
-) -> dict:
+) -> str:
     """Read, write, and manage the cross-project knowledge wiki.
 
     Persistent prose knowledge shared across sessions. It is not for
@@ -960,7 +984,7 @@ def wiki(
         old_text/new_text: For action="patch", exact text to replace server-side.
         expected_sha256: Optional full-page hash guard for action="patch".
     """
-    return _structured_return(_wiki_impl(
+    return _wiki_impl(
         action=action,
         page=page,
         query=query,
@@ -991,7 +1015,21 @@ def wiki(
         force_new=force_new,
         bug_id=bug_id,
         reporter_context=reporter_context,
-    ))
+    )
+
+
+_mcp_wiki = _register_structured_tool(
+    wiki,
+    title="Wiki Knowledge Base",
+    tags={"wiki", "knowledge", "drafts", "pages", "research"},
+    annotations=ToolAnnotations(
+        title="Wiki Knowledge Base",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -999,21 +1037,7 @@ def wiki(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Daemon Status + Routing Evidence",
-    tags={
-        "status", "routing", "privacy", "verification",
-        "confidential-tier", "workflow",
-    },
-    annotations=ToolAnnotations(
-        title="Daemon Status + Routing Evidence",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def get_status(universe_id: str = "") -> dict:
+def get_status(universe_id: str = "") -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
     Chatbots call this whenever they need ground-truth daemon facts.
@@ -1032,7 +1056,24 @@ def get_status(universe_id: str = "") -> dict:
     Args:
         universe_id: Optional universe scope. Defaults to active universe.
     """
-    return _structured_return(_get_status_impl(universe_id=universe_id))
+    return _get_status_impl(universe_id=universe_id)
+
+
+_mcp_get_status = _register_structured_tool(
+    get_status,
+    title="Daemon Status + Routing Evidence",
+    tags={
+        "status", "routing", "privacy", "verification",
+        "confidential-tier", "workflow",
+    },
+    annotations=ToolAnnotations(
+        title="Daemon Status + Routing Evidence",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
