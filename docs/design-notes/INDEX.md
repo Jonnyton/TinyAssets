@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## 2026-05-05
+
+- [RetroLab Recipe Linter v1](2026-05-05-retrolab-recipe-linter-v1.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/retrolab-recipe-linter-v1.md` / Issue #350. Captures the proposed pure-function recipe linter gates for legality, hash pins, non-title-screen proof, shortcut-bound proof, headless runner actions, and generated-file containment; not yet canonical `PLAN.md` truth.
+
 ## 2026-05-03
 
 - [Multi-User Workflow Operating Model](2026-05-03-multi-user-workflow-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-workflow-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
