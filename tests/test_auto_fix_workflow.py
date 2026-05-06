@@ -632,6 +632,20 @@ def test_no_pr_step_marks_review_without_failing_workflow(wf):
     assert "Pull requests write" in script
 
 
+def test_no_pr_comment_distinguishes_successful_writer_from_pr_policy_block(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    no_pr_step = next(
+        (s for s in steps if s.get("name") == "Mark needs-human if no PR opened"),
+        None,
+    )
+    assert no_pr_step is not None, "Must mark no-PR outcomes"
+    script = str(no_pr_step.get("with", {}).get("script", ""))
+    assert "Writer child invocation: `succeeded`" in script
+    assert "Auto-fix branch pushed: `true`" in script
+    assert "Remaining blocker: GitHub Actions PR creation policy" in script
+    assert "Do not treat this as a failed child invocation" in script
+
+
 def test_pr_blocked_label_is_defined(wf):
     steps = wf["jobs"]["fix"]["steps"]
     labels_step = next((s for s in steps if s.get("name") == "Ensure automation labels"), None)
