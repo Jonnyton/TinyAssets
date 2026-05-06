@@ -1,5 +1,8 @@
 {
   "seen_paths": [
+    "pages/concepts/brain-architecture-deep-dive-synthesis-2026-05-03.md",
+    "pages/concepts/chatbot-friction-as-loop-learning-telemetry.md",
+    "pages/concepts/community-patch-loop-as-project-steward.md",
     "pages/concepts/cross-algorithm-parity-rf-vs-maxent.md",
     "pages/concepts/pages-concepts-cowork-unfinished-central-ambition-audit-and-refactored-direction-2026-05-06.md",
     "pages/concepts/pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles.md",
@@ -96,6 +99,8 @@
     "pages/patch-requests/pr-064-pr-064-fold-directory-server-py-11-tools-app-store-directory.md",
     "pages/patch-requests/pr-065-pr-065-single-server-architecture-1-fastmcp-instance-5-handl.md",
     "pages/patch-requests/pr-066-live-brain-ambient-relevance-feed-for-cross-session-insight-.md",
+    "pages/patch-requests/pr-067-loop-pr-readiness-should-require-cross-family-maturation-bef.md",
+    "pages/patch-requests/pr-068-auto-merge-must-require-an-explicit-host-named-merge-key-not.md",
     "pages/plans/chatbot-builder-behaviors.md",
     "pages/plans/composition-patterns.md",
     "pages/plans/design-validate-branch-collision-admission-test.md",
