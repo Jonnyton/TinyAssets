@@ -950,14 +950,16 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     if approval_warning_lines:
         summary_parts += ["", "Approval warnings (branch NOT runnable):"]
         summary_parts += approval_warning_lines
-    summary_parts += [
-        "",
-        "Graph:",
-        mermaid,
-        "",
-        "Note: run this branch with action='run_branch' once validated. "
-        "Pass state field values via inputs_json.",
-    ]
+    run_note = (
+        "Note: this branch has unapproved source_code nodes and must be "
+        "approved before it can run."
+        if unapproved_sc
+        else (
+            "Note: run this branch with action='run_branch' once validated. "
+            "Pass state field values via inputs_json."
+        )
+    )
+    summary_parts += ["", "Graph:", mermaid, "", run_note]
     summary = "\n".join(summary_parts)
     related = _related_wiki_pages(source_dict)
 
@@ -2750,9 +2752,12 @@ per-turn tool-call budget is not at risk:
 
 ## Hard rule
 
-After `describe_branch`, tell the user their branch is ready to run. Use
-`run_branch` with a JSON `inputs_json` that fills the state_schema fields.
-The runner returns a `run_id`, final status, and per-node trace.
+After `describe_branch`, check `runnable` before telling the user their
+branch is ready to run. If `runnable=false`, surface
+`unapproved_source_code_nodes` or validation errors and stop. If
+`runnable=true`, use `run_branch` with a JSON `inputs_json` that fills the
+state_schema fields. The runner returns a `run_id`, final status, and
+per-node trace.
 
 ## Power users
 

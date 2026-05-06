@@ -141,6 +141,8 @@ class TestDescribeBranchApproval:
         assert unapp["display_name"] == "Custom Runner"
         assert "APPROVAL REQUIRED" in result["summary"]
         assert "approve_source_code" in result["summary"]
+        assert "must be approved before it can run" in result["summary"]
+        assert "once validated" not in result["summary"]
 
     def test_unapproved_node_still_valid_structurally(self):
         """valid reflects structural errors only; approval is separate via runnable."""
