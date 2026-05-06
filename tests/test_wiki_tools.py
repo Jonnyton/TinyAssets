@@ -666,6 +666,28 @@ class TestWikiFileBugDispatch:
         assert out["bug_id"].startswith("BUG-")
         assert "path" in out
 
+    def test_file_bug_accepts_tags_via_public_wrapper(self, wiki_dir):
+        """BUG-040: public wiki wrapper must pass tags through to file_bug."""
+        (wiki_dir / "pages" / "bugs").mkdir(parents=True, exist_ok=True)
+        (wiki_dir / "drafts" / "bugs").mkdir(parents=True, exist_ok=True)
+
+        out = json.loads(
+            wiki(
+                "file_bug",
+                component="wiki-mcp",
+                severity="minor",
+                title="Tagged schema regression",
+                tags="schema, regression",
+                force_new=True,
+            )
+        )
+
+        assert out["status"] == "filed"
+        body = (wiki_dir / out["path"]).read_text(encoding="utf-8")
+        tags_line = [ln for ln in body.split("\n") if ln.startswith("tags:")][0]
+        assert "schema" in tags_line
+        assert "regression" in tags_line
+
     def test_id_collision_retry_via_dispatch(self, wiki_dir):
         """Collision retry is end-to-end via the wiki() router."""
         from pathlib import Path
@@ -711,3 +733,12 @@ class TestWikiMCPRegistration:
         assert {"wiki", "knowledge"} <= wiki_tool.tags
         assert wiki_tool.annotations.readOnlyHint is False
         assert wiki_tool.annotations.openWorldHint is True
+
+    def test_wiki_tool_schema_advertises_file_bug_tags_field(self):
+        """BUG-040: MCP clients must not reject backend-supported tags."""
+        tools = asyncio.run(mcp.list_tools(run_middleware=False))
+        wiki_tool = next(t for t in tools if t.name == "wiki")
+        properties = wiki_tool.parameters["properties"]
+
+        assert properties["tags"]["type"] == "string"
+        assert properties["tags"]["default"] == ""
