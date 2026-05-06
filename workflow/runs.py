@@ -988,6 +988,37 @@ def list_runs(
     return [_row_to_run(r) for r in rows]
 
 
+def latest_run_by_name(
+    base_path: str | Path,
+    *,
+    run_name: str,
+    branch_def_id: str = "",
+) -> dict[str, Any] | None:
+    """Return the newest run with ``run_name``.
+
+    Daemon BranchTasks use deterministic run names. Looking them up lets
+    restart recovery distinguish "task was requeued after a crash" from
+    "the branch never produced a durable run".
+    """
+    initialize_runs_db(base_path)
+    clauses = ["run_name = ?"]
+    params: list[Any] = [run_name]
+    if branch_def_id:
+        clauses.append("branch_def_id = ?")
+        params.append(branch_def_id)
+    where = " AND ".join(clauses)
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            f"""
+            SELECT * FROM runs
+            WHERE {where}
+            ORDER BY started_at DESC LIMIT 1
+            """,
+            params,
+        ).fetchone()
+    return _row_to_run(row) if row is not None else None
+
+
 def record_event(
     base_path: str | Path, event: RunStepEvent,
 ) -> None:
@@ -3436,6 +3467,7 @@ __all__ = [
     "list_judgments",
     "list_node_edit_audits",
     "list_runs",
+    "latest_run_by_name",
     "list_recent_runs",
     "node_output_from_run",
     "record_event",

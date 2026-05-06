@@ -873,6 +873,39 @@ def test_recover_in_flight_runs_leaves_terminal_rows_alone(tmp_path):
         assert get_run(tmp_path, rid)["status"] == status
 
 
+def test_latest_run_by_name_returns_newest_matching_branch_run(tmp_path):
+    from workflow.runs import (
+        RUN_STATUS_COMPLETED,
+        create_run,
+        latest_run_by_name,
+        update_run_status,
+    )
+
+    older = create_run(
+        tmp_path, branch_def_id="b1", thread_id="", inputs={},
+        run_name="branch-task-bt-1", actor="a",
+    )
+    newer = create_run(
+        tmp_path, branch_def_id="b1", thread_id="", inputs={},
+        run_name="branch-task-bt-1", actor="a",
+    )
+    other_branch = create_run(
+        tmp_path, branch_def_id="b2", thread_id="", inputs={},
+        run_name="branch-task-bt-1", actor="a",
+    )
+    for rid in (older, newer, other_branch):
+        update_run_status(tmp_path, rid, status=RUN_STATUS_COMPLETED)
+
+    match = latest_run_by_name(
+        tmp_path,
+        run_name="branch-task-bt-1",
+        branch_def_id="b1",
+    )
+
+    assert match is not None
+    assert match["run_id"] == newer
+
+
 def test_concurrent_cap_respected(tmp_path, monkeypatch):
     """Custom WORKFLOW_RUN_MAX_CONCURRENT is honored."""
     monkeypatch.setenv("WORKFLOW_RUN_MAX_CONCURRENT", "2")

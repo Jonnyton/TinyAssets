@@ -323,6 +323,74 @@ class TestBugInvestigationDirectRunRouting:
 
         assert inputs == {"bug_id": "BUG-009"}
 
+    def test_direct_run_reuses_completed_branch_task_run_after_restart(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import _try_execute_claimed_branch_task
+        from workflow.runs import (
+            RUN_STATUS_COMPLETED,
+            create_run,
+            update_run_status,
+        )
+
+        monkeypatch.setattr("workflow.storage.data_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "workflow.api.branches._resolve_branch_id",
+            lambda requested, base_path: "branch-1",
+        )
+        monkeypatch.setattr(
+            "workflow.daemon_server.get_branch_definition",
+            lambda base_path, branch_def_id: {"branch_def_id": branch_def_id},
+        )
+
+        class _Branch:
+            def validate(self):
+                return []
+
+        from workflow.branches import BranchDefinition
+        monkeypatch.setattr(
+            BranchDefinition,
+            "from_dict",
+            classmethod(lambda cls, data: _Branch()),
+        )
+
+        def _should_not_execute(*args, **kwargs):
+            raise AssertionError("completed durable run should be reused")
+
+        monkeypatch.setattr("workflow.runs.execute_branch", _should_not_execute)
+
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="branch-1",
+            thread_id="",
+            inputs={"bug_id": "BUG-011"},
+            run_name="branch-task-bt-restart",
+            actor="daemon-a",
+        )
+        update_run_status(
+            tmp_path,
+            run_id,
+            status=RUN_STATUS_COMPLETED,
+            output={"result": "already completed"},
+        )
+        task = BranchTask(
+            branch_task_id="bt-restart",
+            branch_def_id="branch-1",
+            universe_id="u",
+            inputs={"bug_id": "BUG-011"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        success, error, metadata = _try_execute_claimed_branch_task(
+            tmp_path, task, "daemon-a",
+        )
+
+        assert success is True
+        assert error == ""
+        assert metadata["run_id"] == run_id
+        assert metadata["run_status"] == RUN_STATUS_COMPLETED
+        assert metadata["reused_existing_run"] is True
+
 
 class TestBugInvestigationPatchPacketWriteBack:
     def _make_bug_page(self, tmp_path):

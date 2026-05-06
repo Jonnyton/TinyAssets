@@ -773,7 +773,11 @@ def _try_execute_claimed_branch_task(
         from workflow.api.branches import _resolve_branch_id
         from workflow.branches import BranchDefinition
         from workflow.daemon_server import get_branch_definition
-        from workflow.runs import RUN_STATUS_COMPLETED, execute_branch
+        from workflow.runs import (
+            RUN_STATUS_COMPLETED,
+            execute_branch,
+            latest_run_by_name,
+        )
         from workflow.storage import data_dir
 
         base_path = data_dir()
@@ -797,6 +801,37 @@ def _try_execute_claimed_branch_task(
                 "validation_errors": errors,
             }
 
+        run_name = f"branch-task-{claimed_task.branch_task_id}"
+        existing_run = latest_run_by_name(
+            base_path,
+            run_name=run_name,
+            branch_def_id=branch_def_id,
+        )
+        if existing_run and existing_run.get("status") == RUN_STATUS_COMPLETED:
+            output = existing_run.get("output", {})
+            metadata = {
+                "branch_def_id": branch_def_id,
+                "run_id": existing_run["run_id"],
+                "run_status": existing_run["status"],
+                "actor": existing_run.get("actor") or "",
+                "reused_existing_run": True,
+            }
+            attach_result = _maybe_attach_bug_investigation_patch_packet(
+                claimed_task,
+                existing_run["status"],
+                output if isinstance(output, dict) else {},
+            )
+            if attach_result.get("status") != "skipped":
+                metadata["wiki_patch_packet"] = attach_result
+            logger.info(
+                "dispatcher_pick: reused completed branch task run %s "
+                "branch=%s run=%s",
+                claimed_task.branch_task_id,
+                branch_def_id,
+                existing_run["run_id"],
+            )
+            return True, "", metadata
+
         provider_call: Any = None
         try:
             from domains.fantasy_daemon.phases._provider_stub import (
@@ -810,7 +845,7 @@ def _try_execute_claimed_branch_task(
             base_path,
             branch=branch,
             inputs=_branch_task_inputs_for_execution(claimed_task),
-            run_name=f"branch-task-{claimed_task.branch_task_id}",
+            run_name=run_name,
             actor=actor,
             provider_call=provider_call,
             on_node_status=on_node_status,
