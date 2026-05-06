@@ -100,6 +100,19 @@ _CHANGE_KIND_PREFIX: dict[str, str] = {
     "project-design": "WIKI-DESIGN",
 }
 
+_ARCHITECTURAL_FILING_MARKERS = (
+    "architecture",
+    "architectural",
+    "design-note",
+    "design note",
+    "project design",
+    "operating-model",
+    "operating model",
+    "roadmap",
+    "strategic",
+    "substrate",
+)
+
 _INIT_PAYLOAD = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -307,6 +320,9 @@ def _change_kind(entry: dict[str, Any]) -> str | None:
     ):
         return None
 
+    if any(marker in design_text for marker in _ARCHITECTURAL_FILING_MARKERS):
+        return "project-design"
+
     if (
         entry_type in {"feature", "feature_request"}
         or path.startswith("pages/feature-requests/")
@@ -336,15 +352,10 @@ def _change_kind(entry: dict[str, Any]) -> str | None:
     if path.startswith("pages/plans/") and any(
         marker in design_text
         for marker in (
-            "architecture",
+            *_ARCHITECTURAL_FILING_MARKERS,
             "attribution",
             "design",
-            "operating-model",
-            "operating model",
             "refactoring",
-            "roadmap",
-            "strategic",
-            "substrate",
             "synthesis",
         )
     ):

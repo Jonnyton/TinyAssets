@@ -447,23 +447,49 @@ def test_codex_pr_creation_policy_block_is_classified(wf):
 
 def test_branch_naming_convention(wf):
     steps = wf["jobs"]["fix"]["steps"]
+    meta_step = next((s for s in steps if s.get("id") == "meta"), None)
     oauth_step = next((s for s in steps if s.get("id") == "claude-oauth"), None)
+    assert meta_step is not None, "Must have request metadata step"
     assert oauth_step is not None, "Must have a Claude OAuth step"
+    meta_script = str(meta_step.get("with", {}).get("script", ""))
+    assert "const branchPrefix" in meta_script
+    assert "design-note-draft/" in meta_script
+    assert "auto-change/" in meta_script
+    assert "core.setOutput('branch_prefix', branchPrefix)" in meta_script
     with_block = oauth_step.get("with", {})
-    assert with_block.get("branch_prefix") == "auto-change/"
+    assert with_block.get("branch_prefix") == "${{ steps.meta.outputs.branch_prefix }}"
     assert "issue-${{ steps.meta.outputs.issue_number }}" == with_block.get(
         "branch_name_template"
     ), (
-        "Branch must follow auto-change/issue-<N> naming convention"
+        "Branch must follow the filing-shape branch prefix plus issue-<N>"
     )
 
 
-def test_pr_title_includes_auto_fix_prefix(wf):
+def test_pr_title_prefix_uses_filing_shape(wf):
     steps = wf["jobs"]["fix"]["steps"]
     meta_step = next((s for s in steps if s.get("id") == "meta"), None)
     assert meta_step is not None
     script = str(meta_step.get("with", {}).get("script", ""))
-    assert "[auto-change]" in script, "PR title must start with [auto-change]"
+    assert "const filingShape" in script
+    assert "'[design-note]'" in script
+    assert "'[auto-change]'" in script
+    assert "core.setOutput('filing_shape', filingShape)" in script
+    assert "prTitlePrefix" in script
+
+
+def test_architectural_prompt_routes_to_design_note_draft(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    oauth_step = next((s for s in steps if s.get("id") == "claude-oauth"), None)
+    codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
+    assert oauth_step is not None, "Must have a Claude OAuth step"
+    assert codex_step is not None, "Must have a Codex subscription step"
+    oauth_prompt = str(oauth_step.get("with", {}).get("prompt", ""))
+    codex_prompt = str(codex_step.get("run", ""))
+    for prompt in (oauth_prompt, codex_prompt):
+        assert "Filing shape:" in prompt
+        assert "architectural/project-design filings" in prompt
+        assert "docs/design-notes/proposed/" in prompt
+        assert "do not make runtime code changes" in prompt
 
 
 def test_meta_step_fetches_recent_issue_comments_for_feedback(wf):

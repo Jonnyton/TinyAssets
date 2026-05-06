@@ -208,6 +208,27 @@ def test_patch_request_page_enters_patch_lane():
     assert result[0]["request_kind"] == "patch"
 
 
+def test_architectural_patch_request_enters_project_design_lane():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": (
+                    "pages/patch-requests/"
+                    "pr-004-dispatcher-should-detect-filing-shape.md"
+                ),
+                "title": (
+                    "Dispatcher should detect filing-shape mechanical vs "
+                    "architectural and route to design-note drafts"
+                ),
+                "type": "patch_request",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert len(result) == 1
+    assert result[0]["request_kind"] == "project-design"
+
+
 def test_legacy_bug_typed_patch_request_page_enters_patch_lane():
     wiki_list = {
         "promoted": [
