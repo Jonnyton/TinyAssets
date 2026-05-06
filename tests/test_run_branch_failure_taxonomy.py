@@ -17,7 +17,8 @@ class TestClassifyRunError:
         exc = EmptyResponseError("node x returned empty string")
         result = _classify_run_error(exc, "b1")
         assert result["failure_class"] == "empty_llm_response"
-        assert result["suggested_action"]
+        assert "Ask the host" in result["suggested_action"]
+        assert "get_status" in result["suggested_action"]
         assert result["status"] == "error"
 
     def test_recursion_error_class(self):
@@ -236,6 +237,15 @@ class TestClassifyRunOutcomeError:
         fc, action = result
         assert fc == expected_class
         assert action_fragment.lower() in action.lower()
+
+    def test_empty_response_action_names_host_next_step(self):
+        result = _classify_run_outcome_error(
+            "Empty LLM response: Node 'extract_claims': LLM returned empty response"
+        )
+        assert result is not None
+        assert result[0] == "empty_llm_response"
+        assert "Ask the host" in result[1]
+        assert "get_status" in result[1]
 
     def test_unknown_pattern_returns_none(self):
         assert _classify_run_outcome_error("some opaque internal error xyz") is None
@@ -627,6 +637,31 @@ class TestActionableByOnListRecentRuns:
         row = rows[0]
         assert row["failure_class"] == "provider_exhausted"
         assert row["actionable_by"] == "host"
+
+    def test_empty_llm_response_includes_host_next_action(self, tmp_path):
+        from workflow.runs import (
+            create_run,
+            initialize_runs_db,
+            list_recent_runs,
+            update_run_status,
+        )
+        initialize_runs_db(tmp_path)
+        run_id = create_run(
+            tmp_path, branch_def_id="b1", thread_id="t3",
+            run_name="t", actor="tester", inputs={},
+        )
+        update_run_status(
+            tmp_path, run_id, status="failed",
+            error=(
+                "Empty LLM response: Node 'extract_claims': LLM returned empty response"
+            ),
+        )
+        rows = list_recent_runs(tmp_path, limit=10)
+        row = rows[0]
+        assert row["failure_class"] == "empty_llm_response"
+        assert row["actionable_by"] == "host"
+        assert "Ask the host" in row["suggested_action"]
+        assert "get_status" in row["suggested_action"]
 
     def test_completed_run_actionable_by_empty(self, tmp_path):
         from workflow.runs import (

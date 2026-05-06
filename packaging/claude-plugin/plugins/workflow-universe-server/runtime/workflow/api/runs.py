@@ -49,6 +49,13 @@ from workflow.api.helpers import (
 logger = logging.getLogger("universe_server.runs")
 
 
+_EMPTY_LLM_RESPONSE_ACTION = (
+    "Ask the host to check get_status provider availability/cooldowns and fix "
+    "provider credentials or CLI, then rerun; only switch llm_type if get_status "
+    "shows another provider available."
+)
+
+
 # Phase 3: Graph Runner — execute a BranchDefinition
 # ───────────────────────────────────────────────────────────────────────────
 # The runner compiles a validated branch into a LangGraph StateGraph via
@@ -154,7 +161,7 @@ def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
         rows.append((
             EmptyResponseError,
             "empty_llm_response",
-            "Check provider config or try a different model via the llm_type param.",
+            _EMPTY_LLM_RESPONSE_ACTION,
         ))
     except ImportError:
         pass
@@ -270,7 +277,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",
-            "Check provider config or try a different model via the llm_type param.",
+            _EMPTY_LLM_RESPONSE_ACTION,
         )
     if "timed out" in msg or "timeout" in msg:
         return (
