@@ -524,3 +524,51 @@ class TestVerboseFlag:
         p = mcp_probe._build_parser()
         args = p.parse_args(["status"])
         assert args.verbose is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #273 — latency probe TINY
+# ---------------------------------------------------------------------------
+
+class TestLatencyProbe:
+    def _run(self, argv, side_effects):
+        mcp_probe._VERBOSE = False
+        with patch("mcp_probe.urllib.request.urlopen", side_effect=side_effects), \
+             patch("mcp_probe.time.monotonic", side_effect=[100.0, 100.125]), \
+             patch("sys.argv", ["mcp_probe"] + argv):
+            return mcp_probe.main()
+
+    def test_latency_subcommand_prints_compact_line(self, capsys):
+        effects = _seq(
+            (_INIT_RESP, "s1"),
+            (_NOTIF_RESP, None),
+        )
+        rc = self._run(["--url", "http://fake", "latency"], effects)
+        out = capsys.readouterr().out.strip()
+        assert rc == 0
+        assert out == "ok=true latency_ms=125.0 session_id=true"
+
+    def test_latency_raw_outputs_json(self, capsys):
+        effects = _seq(
+            (_INIT_RESP, None),
+            (_NOTIF_RESP, None),
+        )
+        rc = self._run(["--url", "http://fake", "--raw", "latency"], effects)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert json.loads(out) == {
+            "ok": True,
+            "latency_ms": 125.0,
+            "session_id": False,
+            "url": "http://fake",
+        }
+
+    def test_latency_legacy_flag(self, capsys):
+        effects = _seq(
+            (_INIT_RESP, "s1"),
+            (_NOTIF_RESP, None),
+        )
+        rc = self._run(["--url", "http://fake", "--latency"], effects)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "latency_ms=125.0" in out

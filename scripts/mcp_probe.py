@@ -8,6 +8,7 @@ Subcommands (convenience):
     workflow-probe universe <id>        → universe action=inspect universe_id=<id>
     workflow-probe wiki                 → wiki action=list
     workflow-probe tools                → tools/list (same as --list)
+    workflow-probe latency              → tiny initialize latency probe
 
 Raw call:
     workflow-probe --tool get_status
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.request
 from typing import Any
 
@@ -169,6 +171,26 @@ def _cmd_tools(url: str, raw: bool) -> int:
     return 0
 
 
+def _cmd_latency(url: str, raw: bool) -> int:
+    start = time.monotonic()
+    sid, rc = _initialize(url)
+    elapsed_ms = round((time.monotonic() - start) * 1000, 1)
+    if rc:
+        return rc
+    result = {
+        "ok": True,
+        "latency_ms": elapsed_ms,
+        "session_id": bool(sid),
+        "url": url,
+    }
+    if raw:
+        print(json.dumps(result, indent=2))
+        return 0
+    session = "true" if result["session_id"] else "false"
+    print(f"ok=true latency_ms={elapsed_ms} session_id={session}")
+    return 0
+
+
 def _coerce_relaxed_value(value: str) -> Any:
     value = value.strip().strip("'\"")
     lower = value.lower()
@@ -265,10 +287,14 @@ def _build_parser() -> argparse.ArgumentParser:
     tools = sub.add_parser("tools", help="list available MCP tools")
     _add_subcommand_flags(tools)
 
+    latency = sub.add_parser("latency", help="run a tiny MCP initialize latency probe")
+    _add_subcommand_flags(latency)
+
     # Raw / legacy flags (no subcommand path)
     p.add_argument("--tool", help="tool name for raw call")
     p.add_argument("--args", default="{}", help="JSON args for raw tool call")
     p.add_argument("--list", action="store_true", help="list tools (legacy alias for 'tools')")
+    p.add_argument("--latency", action="store_true", help="run tiny latency probe")
 
     return p
 
@@ -291,13 +317,17 @@ def main() -> int:
         return _cmd_wiki(url, raw)
     if args.subcommand == "tools":
         return _cmd_tools(url, raw)
+    if args.subcommand == "latency":
+        return _cmd_latency(url, raw)
 
     # Legacy / raw path
     if args.list:
         return _cmd_tools(url, raw)
+    if args.latency:
+        return _cmd_latency(url, raw)
 
     if not args.tool:
-        print("use a subcommand (status/universes/universe/wiki/tools) or --tool <name>",
+        print("use a subcommand (status/universes/universe/wiki/tools/latency) or --tool <name>",
               file=sys.stderr)
         return 2
 
