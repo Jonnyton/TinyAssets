@@ -656,6 +656,7 @@ Canonical list of keys: `scripts/secrets_keys.txt` (edit there, not in shell pro
 | `CLAUDE_LEAD_OPS.md` | Claude Code lead | Situational: user-sim loops, dev team management, token efficiency. Not auto-loaded. |
 | `LAUNCH_PROMPT.md` | Claude Code lead | Team spawn, session protocol, lead norms. |
 | `.claude/agents/*.md` | Claude Code only | Individual agent definitions. |
+| `.claude/agent-memory/<name>/` | Claude Code teammate `<name>` only (write); any AI (read) | Per-teammate persistent memory. **Owned by the named teammate; other agents and other providers must NOT write here.** Read-only access is fine when context is needed. If a non-owner has a useful observation for another teammate, route it via SendMessage / activity log / a docs note, not by writing into the memory directory. |
 | `.agents/skills/*/SKILL.md` | Codex + project agents (canonical source) | Canonical skill definitions. Edit here first. |
 | `.claude/skills/*/SKILL.md` | Claude Code only | Mirror of `.agents/skills/` refreshed by `scripts/sync-skills.ps1`. |
 | `.agents/activity.log` | Any AI, any tool | Short cross-session activity feed for coordination. |
