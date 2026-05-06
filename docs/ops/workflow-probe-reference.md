@@ -69,6 +69,18 @@ Lists all registered MCP tools with one-line descriptions.
 workflow-probe tools
 ```
 
+### `latency`
+
+Times a real MCP `initialize` plus `get_status` call and prints a compact
+client-observed latency line.
+
+```bash
+workflow-probe latency
+```
+
+Use `--raw` to include the full `get_status` MCP response with the measured
+`latency_ms`.
+
 ## Raw / arbitrary tool calls
 
 ```bash
@@ -118,6 +130,12 @@ python scripts\mcp_probe.py --tool goals --args "{action:search,query:research-p
     {"id": "default-universe", "branch_count": 3}
   ]
 }
+```
+
+### `workflow-probe latency` (healthy)
+
+```text
+latency_ms=125 status=ok stage=get_status url=https://tinyassets.io/mcp
 ```
 
 ## Diagnosing prod-stale

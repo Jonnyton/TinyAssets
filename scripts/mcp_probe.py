@@ -8,6 +8,7 @@ Subcommands (convenience):
     workflow-probe universe <id>        → universe action=inspect universe_id=<id>
     workflow-probe wiki                 → wiki action=list
     workflow-probe tools                → tools/list (same as --list)
+    workflow-probe latency              → time initialize + get_status
 
 Raw call:
     workflow-probe --tool get_status
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.request
 from typing import Any
 
@@ -169,6 +171,56 @@ def _cmd_tools(url: str, raw: bool) -> int:
     return 0
 
 
+def _format_latency_line(result: dict[str, Any]) -> str:
+    status = "ok" if result.get("ok") else "error"
+    return (
+        f"latency_ms={result['latency_ms']} "
+        f"status={status} "
+        f"stage={result['stage']} "
+        f"url={result['url']}"
+    )
+
+
+def _cmd_latency(url: str, raw: bool) -> int:
+    start = time.monotonic()
+    sid, rc = _initialize(url)
+    if rc:
+        latency_ms = int((time.monotonic() - start) * 1000)
+        result = {
+            "ok": False,
+            "url": url,
+            "latency_ms": latency_ms,
+            "stage": "initialize",
+        }
+        print(json.dumps(result, indent=2) if raw else _format_latency_line(result))
+        return rc
+
+    resp, _ = _mcp_call(
+        url,
+        sid,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "get_status", "arguments": {}},
+        },
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    rc = _tool_response_exit_code(resp)
+    result: dict[str, Any] = {
+        "ok": rc == 0,
+        "url": url,
+        "latency_ms": latency_ms,
+        "stage": "get_status",
+    }
+    if raw:
+        result["response"] = resp
+        print(json.dumps(result, indent=2))
+    else:
+        print(_format_latency_line(result))
+    return rc
+
+
 def _coerce_relaxed_value(value: str) -> Any:
     value = value.strip().strip("'\"")
     lower = value.lower()
@@ -265,6 +317,9 @@ def _build_parser() -> argparse.ArgumentParser:
     tools = sub.add_parser("tools", help="list available MCP tools")
     _add_subcommand_flags(tools)
 
+    latency = sub.add_parser("latency", help="time initialize + get_status")
+    _add_subcommand_flags(latency)
+
     # Raw / legacy flags (no subcommand path)
     p.add_argument("--tool", help="tool name for raw call")
     p.add_argument("--args", default="{}", help="JSON args for raw tool call")
@@ -291,14 +346,19 @@ def main() -> int:
         return _cmd_wiki(url, raw)
     if args.subcommand == "tools":
         return _cmd_tools(url, raw)
+    if args.subcommand == "latency":
+        return _cmd_latency(url, raw)
 
     # Legacy / raw path
     if args.list:
         return _cmd_tools(url, raw)
 
     if not args.tool:
-        print("use a subcommand (status/universes/universe/wiki/tools) or --tool <name>",
-              file=sys.stderr)
+        print(
+            "use a subcommand (status/universes/universe/wiki/tools/latency) "
+            "or --tool <name>",
+            file=sys.stderr,
+        )
         return 2
 
     try:
