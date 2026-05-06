@@ -226,6 +226,68 @@ def test_wiki_read_index_after_scaffold(wiki_env):
     assert "Wiki Index" in res["content"]
 
 
+def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
+    source = wiki_env / "pages" / "notes" / "live-brain.md"
+    source.write_text(
+        "---\n"
+        "title: Live Brain\n"
+        "type: note\n"
+        "updated: 2026-05-01\n"
+        "tags: ambient relevance\n"
+        "---\n\n"
+        "# Live Brain\n\n"
+        "Ambient relevance should move source-read proof across sessions.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    related = wiki_env / "pages" / "notes" / "fresh-related.md"
+    related.write_text(
+        "---\n"
+        "title: Fresh Related\n"
+        "type: note\n"
+        "updated: 2026-05-06T12:00:00Z\n"
+        "tags: relevance feed\n"
+        "---\n\n"
+        "This note mentions ambient source-read proof for adjacent goals.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    old = wiki_env / "pages" / "notes" / "old-related.md"
+    old.write_text(
+        "---\n"
+        "title: Old Related\n"
+        "type: note\n"
+        "updated: 2026-04-01\n"
+        "tags: ambient relevance\n"
+        "---\n\n"
+        "Old ambient relevance should be excluded by changed_since.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    res = json.loads(
+        wiki(
+            action="read",
+            page="live-brain",
+            query="ambient relevance source proof",
+            changed_since="2026-05-02T00:00:00Z",
+            max_results=5,
+        )
+    )
+
+    assert res["source_read_proof"]["path"] == "pages/notes/live-brain.md"
+    assert res["source_read_proof"]["title"] == "Live Brain"
+    assert len(res["source_read_proof"]["sha256"]) == 64
+    feed = res["ambient_relevance_feed"]
+    assert feed["source_path"] == "pages/notes/live-brain.md"
+    paths = [item["path"] for item in feed["items"]]
+    assert "pages/notes/fresh-related.md" in paths
+    assert "pages/notes/old-related.md" not in paths
+    assert "pages/notes/live-brain.md" not in paths
+    fresh = next(item for item in feed["items"] if item["path"].endswith("fresh-related.md"))
+    assert "ambient" in fresh["matched_terms"]
+
+
 def test_wiki_write_requires_filename_and_content(wiki_env):
     res = json.loads(wiki(action="write", category="notes"))
     assert "error" in res

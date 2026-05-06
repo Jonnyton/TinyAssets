@@ -338,13 +338,27 @@ _mcp_search_workflow_wiki = _register_structured_tool(
     ),
 )
 
-def read_workflow_wiki_page(page: str) -> str:
+def read_workflow_wiki_page(
+    page: str,
+    query: str = "",
+    changed_since: str = "",
+    max_results: int = 10,
+) -> str:
     """Use this when the user wants to read one Workflow wiki page.
 
     Args:
         page: Wiki page slug or path.
+        query: Optional topic terms for the ambient relevance feed.
+        changed_since: Optional ISO timestamp for feed freshness filtering.
+        max_results: Maximum ambient feed items to return.
     """
-    return _wiki_impl(action="read", page=page)
+    return _wiki_impl(
+        action="read",
+        page=page,
+        query=query,
+        changed_since=changed_since,
+        max_results=max_results,
+    )
 
 
 _mcp_read_workflow_wiki_page = _register_structured_tool(

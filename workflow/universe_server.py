@@ -961,6 +961,7 @@ def wiki(
     force_new: bool = False,
     bug_id: str = "",
     reporter_context: str = "",
+    changed_since: str = "",
 ) -> str:
     """Read, write, and manage the cross-project knowledge wiki.
 
@@ -983,6 +984,8 @@ def wiki(
             sync_projects, file_bug, cosign_bug.
         old_text/new_text: For action="patch", exact text to replace server-side.
         expected_sha256: Optional full-page hash guard for action="patch".
+        changed_since: Optional ISO timestamp for action="read" ambient feed;
+            only pages updated after this timestamp are returned as feed items.
     """
     return _wiki_impl(
         action=action,
@@ -1015,6 +1018,7 @@ def wiki(
         force_new=force_new,
         bug_id=bug_id,
         reporter_context=reporter_context,
+        changed_since=changed_since,
     )
 
 

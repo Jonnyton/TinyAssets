@@ -235,6 +235,122 @@ def _wiki_similarity_score(
     return jaccard * 0.4 + link_score * 0.3 + title_bonus
 
 
+def _parse_wiki_timestamp(value: str) -> datetime | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(f"{raw}T00:00:00+00:00")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _page_updated_at(path: Path, meta: dict[str, str]) -> datetime:
+    parsed = _parse_wiki_timestamp(meta.get("updated", ""))
+    if parsed is not None:
+        return parsed
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+
+
+def _wiki_read_terms(
+    *,
+    page: str,
+    query: str,
+    meta: dict[str, str],
+    body: str,
+) -> set[str]:
+    text = query.strip()
+    if not text:
+        text = " ".join(
+            part for part in (
+                page,
+                meta.get("title", ""),
+                meta.get("tags", ""),
+                meta.get("type", ""),
+                body[:1200],
+            ) if part
+        )
+    return _extract_keywords(text)
+
+
+def _coerce_feed_limit(value: Any) -> int:
+    try:
+        raw = int(value or 0)
+    except (TypeError, ValueError):
+        raw = 10
+    return max(0, min(raw, 20))
+
+
+def _ambient_relevance_feed(
+    *,
+    source: Path,
+    page: str,
+    query: str,
+    changed_since: str,
+    max_results: int,
+    source_meta: dict[str, str],
+    source_body: str,
+) -> dict[str, Any]:
+    terms = _wiki_read_terms(
+        page=page,
+        query=query,
+        meta=source_meta,
+        body=source_body,
+    )
+    since = _parse_wiki_timestamp(changed_since)
+    limit = _coerce_feed_limit(max_results)
+    candidates: list[dict[str, Any]] = []
+    for candidate in (
+        _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
+    ):
+        if candidate == source:
+            continue
+        raw = _read_text(candidate)
+        if not raw:
+            continue
+        meta, body = _parse_frontmatter(raw)
+        updated_at = _page_updated_at(candidate, meta)
+        if since is not None and updated_at <= since:
+            continue
+        haystack = " ".join(
+            part for part in (
+                meta.get("title", ""),
+                meta.get("tags", ""),
+                meta.get("type", ""),
+                body,
+            ) if part
+        ).lower()
+        matched_terms = sorted(term for term in terms if term in haystack)
+        if not matched_terms:
+            continue
+        title = meta.get("title") or candidate.stem
+        excerpt = body.replace("\n", " ").strip()[:220]
+        candidates.append({
+            "path": _page_rel_path(candidate),
+            "title": title,
+            "updated": updated_at.isoformat().replace("+00:00", "Z"),
+            "matched_terms": matched_terms[:8],
+            "score": len(matched_terms),
+            "excerpt": excerpt,
+        })
+
+    candidates.sort(key=lambda item: (-item["score"], item["path"]))
+    items = candidates[:limit]
+    return {
+        "source_path": _page_rel_path(source),
+        "query_terms": sorted(terms)[:20],
+        "changed_since": changed_since.strip(),
+        "items": items,
+        "truncated_count": max(0, len(candidates) - len(items)),
+    }
+
+
 def _add_to_index(category: str, slug: str, title: str) -> None:
     """Add an entry to the wiki index.md under the right section."""
     idx_path = _wiki_index_path()
@@ -339,7 +455,13 @@ def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
 # ---------------------------------------------------------------------------
 
 
-def _wiki_read(page: str = "", **_kwargs: Any) -> str:
+def _wiki_read(
+    page: str = "",
+    query: str = "",
+    changed_since: str = "",
+    max_results: int = 10,
+    **_kwargs: Any,
+) -> str:
     if not page:
         return json.dumps({"error": "page parameter is required."})
 
@@ -350,7 +472,25 @@ def _wiki_read(page: str = "", **_kwargs: Any) -> str:
     text = _read_text(resolved)
     is_draft = _wiki_drafts_dir() in resolved.parents
     rel = _page_rel_path(resolved)
+    meta, body = _parse_frontmatter(text)
+    updated_at = _page_updated_at(resolved, meta)
     content = _draft_read_content(text, is_draft=is_draft)
+    source_read_proof = {
+        "path": rel,
+        "title": meta.get("title") or resolved.stem,
+        "updated": updated_at.isoformat().replace("+00:00", "Z"),
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "is_draft": is_draft,
+    }
+    ambient_feed = _ambient_relevance_feed(
+        source=resolved,
+        page=page,
+        query=query,
+        changed_since=changed_since,
+        max_results=max_results,
+        source_meta=meta,
+        source_body=body,
+    )
 
     if len(text) > 15000:
         return json.dumps({
@@ -359,12 +499,16 @@ def _wiki_read(page: str = "", **_kwargs: Any) -> str:
             "content": content[:15000],
             "truncated": True,
             "total_chars": len(text),
+            "source_read_proof": source_read_proof,
+            "ambient_relevance_feed": ambient_feed,
         })
     return json.dumps({
         "path": rel,
         "is_draft": is_draft,
         "content": content,
         "truncated": False,
+        "source_read_proof": source_read_proof,
+        "ambient_relevance_feed": ambient_feed,
     })
 
 
@@ -1764,6 +1908,7 @@ def wiki(
     bug_id: str = "",
     reporter_context: str = "",
     verbose: bool = False,
+    changed_since: str = "",
 ) -> str:
     """Dispatch entry for the wiki MCP tool. See universe_server.py for the
     chatbot-facing docstring; this function is the implementation invoked by
@@ -1858,6 +2003,7 @@ def wiki(
         "bug_id": bug_id,
         "reporter_context": reporter_context,
         "verbose": verbose,
+        "changed_since": changed_since,
     }
 
     return handler(**kwargs)
