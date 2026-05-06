@@ -123,6 +123,7 @@ class TestNodeDefinition:
             dependencies=["requests"],
             timeout_seconds=60.0,
             retry_policy={"max_retries": 2, "backoff_seconds": 5.0},
+            maintainer_notes="Private builder-to-builder note.",
             evaluation_criteria=[
                 {"name": "accuracy", "description": "Are the facts correct?"}
             ],
@@ -140,6 +141,7 @@ class TestNodeDefinition:
         assert n2.tools_allowed == n.tools_allowed
         assert n2.timeout_seconds == n.timeout_seconds
         assert n2.retry_policy == n.retry_policy
+        assert n2.maintainer_notes == n.maintainer_notes
         assert n2.evaluation_criteria == n.evaluation_criteria
 
     def test_to_node_registration_compat(self):
@@ -152,6 +154,7 @@ class TestNodeDefinition:
             output_keys=["c"],
             source_code="def run(s): return {}",
             dependencies=["requests"],
+            maintainer_notes="Do not expose this to node execution.",
             author="alice",
             enabled=True,
             approved=True,
@@ -164,6 +167,7 @@ class TestNodeDefinition:
         assert reg["output_keys"] == ["c"]
         assert reg["source_code"] == "def run(s): return {}"
         assert reg["dependencies"] == ["requests"]
+        assert "maintainer_notes" not in reg
         assert reg["author"] == "alice"
         assert reg["enabled"] is True
         assert reg["approved"] is True

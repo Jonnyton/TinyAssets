@@ -97,6 +97,46 @@ def test_build_branch_persists(comp_env):
     assert got["name"] == "Recipe tracker"
 
 
+def test_build_branch_persists_maintainer_notes(comp_env):
+    us, _ = comp_env
+    spec = {
+        **RECIPE_SPEC,
+        "node_defs": [
+            {
+                **RECIPE_SPEC["node_defs"][0],
+                "maintainer_notes": "Keep extract logic simple for remixers.",
+            },
+            *RECIPE_SPEC["node_defs"][1:],
+        ],
+    }
+    built = _call(us, "build_branch", spec_json=json.dumps(spec))
+    bid = built["branch_def_id"]
+
+    got = _call(us, "get_branch", branch_def_id=bid)
+    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
+    assert capture["maintainer_notes"] == "Keep extract logic simple for remixers."
+
+
+def test_update_node_changes_maintainer_notes(comp_env):
+    us, _ = comp_env
+    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    bid = built["branch_def_id"]
+
+    upd = _call(
+        us,
+        "update_node",
+        branch_def_id=bid,
+        node_id="capture",
+        maintainer_notes="Builder note for the next maintainer.",
+    )
+    assert upd["status"] == "updated"
+    assert "maintainer_notes" in upd["changed_fields"]
+
+    got = _call(us, "get_branch", branch_def_id=bid)
+    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
+    assert capture["maintainer_notes"] == "Builder note for the next maintainer."
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AC #2 — strict-with-suggestions
 # ─────────────────────────────────────────────────────────────────────────────

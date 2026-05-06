@@ -462,6 +462,7 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
         "output_keys": kwargs.get("output_keys", ""),
         "source_code": kwargs.get("source_code", ""),
         "prompt_template": kwargs.get("prompt_template", ""),
+        "maintainer_notes": kwargs.get("maintainer_notes", ""),
         "author": kwargs.get("author") or _current_actor(),
     }
     if "node_ref" in kwargs:
@@ -1309,6 +1310,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             output_keys=out_keys,
             source_code=source_code,
             prompt_template=prompt_template,
+            maintainer_notes=raw.get("maintainer_notes", ""),
             author=raw.get("author") or _current_actor(),
             approved=bool(raw.get("approved", False)),
             invoke_branch_spec=invoke_branch_arg,
@@ -1667,6 +1669,8 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     n.display_name = op["display_name"]
                 if "description" in op:
                     n.description = op["description"]
+                if "maintainer_notes" in op:
+                    n.maintainer_notes = op["maintainer_notes"]
                 if "prompt_template" in op:
                     n.prompt_template = op["prompt_template"]
                 if "source_code" in op:
@@ -2016,7 +2020,7 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
         # Pull supported fields from the top-level kwargs.
         for field in (
             "display_name", "description", "phase",
-            "prompt_template", "source_code",
+            "prompt_template", "source_code", "maintainer_notes",
         ):
             if kwargs.get(field):
                 updates[field] = kwargs[field]
@@ -2061,7 +2065,7 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "error": (
                 "No fields to update. Pass one or more of "
                 "display_name / description / phase / prompt_template / "
-                "source_code / input_keys / output_keys, or a "
+                "source_code / maintainer_notes / input_keys / output_keys, or a "
                 "changes_json object."
             ),
         })
@@ -2102,6 +2106,8 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             target_node.display_name = updates["display_name"]
         if "description" in updates:
             target_node.description = updates["description"]
+        if "maintainer_notes" in updates:
+            target_node.maintainer_notes = updates["maintainer_notes"]
         if "phase" in updates:
             # NodeDefinition.__post_init__ guards valid phases, so we
             # validate here too.
@@ -2683,7 +2689,8 @@ extensions action=build_branch spec_json='{
   ],
   "node_defs": [
     {"node_id": "capture", "display_name": "Capture raw recipe",
-     "prompt_template": "Read the user's message and extract recipe name."},
+     "prompt_template": "Read the user's message and extract recipe name.",
+     "maintainer_notes": "Builder-only note for future remixers."},
     {"node_id": "categorize", "display_name": "Categorize recipe",
      "prompt_template": "Classify by cuisine and meal type."},
     {"node_id": "archive", "display_name": "Archive to library",
@@ -2742,6 +2749,8 @@ per-turn tool-call budget is not at risk:
 
 - `create_branch name="..." description="..."`
 - `add_node branch_def_id=... node_id=... display_name=... prompt_template=...`
+- pass `maintainer_notes=...` on add_node/update_node or inside node_defs
+  when builders need daemon-invisible notes for future maintainers
 - `connect_nodes branch_def_id=... from_node=... to_node=...`
 - `set_entry_point branch_def_id=... node_id=...`
 - `add_state_field branch_def_id=... field_name=... field_type=...`

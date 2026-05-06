@@ -326,6 +326,11 @@ class NodeDefinition:
     # also None the existing role-based routing is used (backward-compat).
     llm_policy: dict[str, Any] | None = None
 
+    # Builder-to-builder notes. This is persisted with node metadata for
+    # maintainers and remixers, but the graph compiler and runner do not
+    # read it, so it stays invisible to daemon execution.
+    maintainer_notes: str = ""
+
     # When True the node shells out to a bwrap-sandboxed CLI (dev, checker,
     # tester variants). validate_branch warns when this is True and the
     # host's sandbox probe fails. Default False preserves back-compat.
