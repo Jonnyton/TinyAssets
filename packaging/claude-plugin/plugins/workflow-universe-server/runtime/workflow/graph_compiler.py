@@ -845,7 +845,13 @@ def _build_prompt_template_node(
                 # Policy-aware path: route through ProviderRouter.call_with_policy_sync
                 try:
                     _policy_router = _get_shared_router()
-                    if _policy_router is not None:
+                    router_providers = getattr(
+                        _policy_router, "available_providers", None,
+                    )
+                    router_has_providers = (
+                        router_providers is None or bool(router_providers)
+                    )
+                    if _policy_router is not None and router_has_providers:
                         def _policy_call() -> tuple[str, str]:
                             return _policy_router.call_with_policy_sync(
                                 role, prompt, "", effective_policy,
@@ -857,7 +863,8 @@ def _build_prompt_template_node(
                         )
                         response, provider_served = text_and_name
                     else:
-                        # Router not available — fall through to plain provider_call
+                        # Router unavailable or empty — fall through to the
+                        # run_branch-injected provider bridge.
                         response = _run_with_timeout(
                             lambda: provider_call(prompt, "", role=role),
                             timeout_s=timeout_s,
