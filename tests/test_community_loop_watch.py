@@ -384,3 +384,44 @@ def test_queue_stage_treats_attempted_loop_smoke_as_not_waiting(monkeypatch):
     assert stage["details"]["attempted"] == [178]
     assert stage["details"]["pending"] == []
     assert stage["details"]["old_pending"] == []
+
+
+def test_queue_stage_maps_legacy_priority_labels_before_pending_stuck(monkeypatch):
+    now = dt.datetime(2026, 5, 6, 21, 20, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 511,
+                "title": "Old priority taxonomy request",
+                "created_at": "2026-05-06T18:00:00Z",
+                "html_url": "https://example.test/issues/511",
+                "labels": [
+                    {"name": "daemon-request"},
+                    {"name": "auto-change"},
+                    {"name": "loop-discipline"},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "yellow"
+    assert stage["details"]["old_pending"] == []
+    assert stage["details"]["legacy_priority_migrations"] == [
+        {
+            "issue": 511,
+            "legacy_label": "loop-discipline",
+            "mapped_label": "priority:loop-discipline",
+        }
+    ]
+    assert "legacy unprefixed priority label" in stage["summary"]

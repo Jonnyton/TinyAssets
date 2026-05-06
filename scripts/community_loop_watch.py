@@ -37,6 +37,11 @@ WORKFLOWS = {
 }
 
 REQUEST_LABELS = ("daemon-request", "auto-change", "auto-bug")
+LEGACY_PRIORITY_LABEL_MAP = {
+    "loop-discipline": "priority:loop-discipline",
+    "primitive-layer": "priority:primitive-layer",
+    "primitive-surface": "priority:primitive-surface",
+}
 BLOCKED_LABEL = "needs-human"
 ATTEMPTED_LABEL = "auto-fix-attempted"
 P0_OUTAGE_LABEL = "p0-outage"
@@ -400,9 +405,15 @@ def queue_stage(
     attempted: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     old_pending: list[dict[str, Any]] = []
+    legacy_priority_migrations: list[dict[str, Any]] = []
 
     for issue in issues:
         labels = _labels(issue)
+        legacy_priority_labels = [
+            legacy
+            for legacy, mapped in LEGACY_PRIORITY_LABEL_MAP.items()
+            if legacy in labels and mapped not in labels
+        ]
         if BLOCKED_LABEL in labels and (
             labels.isdisjoint(TERMINAL_REVIEW_LABELS)
             or PR_BLOCKED_LABEL in labels
@@ -429,7 +440,17 @@ def queue_stage(
             pending.append(issue)
             age = _age_min(issue.get("created_at"), now)
             if age is None or age > max_pending_age_min:
-                old_pending.append(issue)
+                if legacy_priority_labels:
+                    for legacy_label in legacy_priority_labels:
+                        legacy_priority_migrations.append(
+                            {
+                                "issue": issue.get("number"),
+                                "legacy_label": legacy_label,
+                                "mapped_label": LEGACY_PRIORITY_LABEL_MAP[legacy_label],
+                            }
+                        )
+                else:
+                    old_pending.append(issue)
 
     details = {
         "open_loop_issues": len(issues),
@@ -448,6 +469,7 @@ def queue_stage(
         "provider_exhausted": [issue.get("number") for issue in provider_exhausted],
         "pending": [issue.get("number") for issue in pending],
         "old_pending": [issue.get("number") for issue in old_pending],
+        "legacy_priority_migrations": legacy_priority_migrations,
         "reviewed_terminal": [issue.get("number") for issue in reviewed_terminal],
         "attempted": [issue.get("number") for issue in attempted],
         "request_labels": list(REQUEST_LABELS),
@@ -509,6 +531,28 @@ def queue_stage(
             ),
             evidence=f"oldest visible pending issue #{first.get('number')}: {first.get('title')}",
             url=first.get("html_url"),
+            details=details,
+        )
+    if legacy_priority_migrations:
+        first = legacy_priority_migrations[0]
+        issue_number = first.get("issue")
+        mapped_label = first.get("mapped_label")
+        return _stage(
+            "Writer queue",
+            "yellow",
+            (
+                f"{len(legacy_priority_migrations)} legacy unprefixed priority "
+                "label(s) need migration before pending-age escalation"
+            ),
+            evidence=f"issue #{issue_number} should use {mapped_label}",
+            url=next(
+                (
+                    issue.get("html_url")
+                    for issue in pending
+                    if issue.get("number") == issue_number
+                ),
+                None,
+            ),
             details=details,
         )
     if pending:
