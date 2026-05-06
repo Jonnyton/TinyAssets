@@ -407,6 +407,8 @@ def test_codex_no_change_is_classified_from_final_message(wf):
     assert "last_message<<" in run_script
     assert "already_fixed" in run_script
     assert "stale bug report" in run_script
+    assert "live mcp source-read:" in run_script.lower()
+    assert "cannot|could not|unable|unavailable|blocked|failed" in run_script
 
 
 def test_already_fixed_no_change_closes_issue(wf):
@@ -428,6 +430,7 @@ def test_already_fixed_no_change_closes_issue(wf):
     assert "state_reason: 'completed'" in script
     assert "auto-fix-reviewed" in script
     assert "auto-fix-already-fixed" in script
+    assert "Live MCP source-read evidence:" in script
 
 
 def test_codex_pr_gets_cross_family_checker(wf):
@@ -438,6 +441,8 @@ def test_codex_pr_gets_cross_family_checker(wf):
     assert "writer:codex" in script
     assert "checker:claude" in script
     assert "Required checker family: Claude" in script
+    assert "Live MCP source-read evidence:" in script
+    assert "CODEX_LAST_MESSAGE" in str(codex_pr_step.get("env", {}))
 
 
 def test_codex_pr_creation_uses_workflow_push_token_for_checks(wf):
@@ -477,6 +482,7 @@ def test_codex_pr_creation_closes_stale_superseded_issue_prs(wf):
     assert "auto-fix-superseded" in script
     assert "state: 'closed'" in script
     assert "superseded by #${pr.number}" in script
+    assert "Live MCP source-read gate" in script
 
 
 def test_superseded_label_is_defined(wf):
@@ -555,6 +561,22 @@ def test_pr_body_references_fixes_keyword(wf):
     )
 
 
+def test_writer_prompts_require_live_mcp_source_read_before_issue_closure(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    oauth_step = next((s for s in steps if s.get("id") == "claude-oauth"), None)
+    codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
+    assert oauth_step is not None, "Must have a Claude OAuth step"
+    assert codex_step is not None, "Must have a Codex subscription step"
+    oauth_prompt = str(oauth_step.get("with", {}).get("prompt", ""))
+    codex_prompt = str(codex_step.get("run", ""))
+    for prompt in (oauth_prompt, codex_prompt):
+        assert "Live MCP source-read:" in prompt
+        assert "wiki action=read" in prompt
+        assert "Wiki path in the issue body" in prompt
+        assert "opening a PR that closes this issue" in prompt
+        assert "closing any older wiki-origin auto-change PR as superseded" in prompt
+
+
 def test_writer_prompts_require_plugin_mirror_for_workflow_runtime_edits(wf):
     steps = wf["jobs"]["fix"]["steps"]
     oauth_step = next((s for s in steps if s.get("id") == "claude-oauth"), None)
@@ -596,6 +618,7 @@ def test_codex_step_enforces_post_generation_verification(wf):
     assert "verification_status" in run_script
     assert "Post-Codex verification failed; leaving request retryable" in run_script
     assert "exit \"$verification_status\"" in run_script
+    assert "Codex changed files without required Live MCP source-read evidence" in run_script
 
 
 def test_python_dev_dependencies_are_installed_before_subscription_writers(wf):

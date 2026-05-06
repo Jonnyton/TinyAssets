@@ -687,13 +687,14 @@ jobs:
             6. If recent comments mention verification failures or review blockers, address those failures first.
             7. Run `python -m ruff check` on touched Python files and the relevant focused tests for changed test files; fix failures before finishing.
             8. If you edit canonical `workflow/*` runtime files, run `python packaging/claude-plugin/build_plugin.py` and commit the plugin mirror changes.
-            9. If you make changes, open a pull request titled:
+            9. Before reporting `already fixed`, opening a PR that closes this issue, or closing any older wiki-origin auto-change PR as superseded, read the wiki source page through the live Workflow MCP connector (`wiki action=read` for the Wiki path in the issue body) and include a `Live MCP source-read:` evidence line naming the wiki path and read result. If you cannot perform that live MCP read, leave the working tree unchanged and explain the blocker.
+            10. If you make changes, open a pull request titled:
                ${{ steps.meta.outputs.pr_title }}
-            10. The PR body must start with:
+            11. The PR body must start with:
                Fixes #${{ steps.meta.outputs.issue_number }}
-            11. Include `Writer family: Claude` and `Required checker family: Codex`.
-            12. Include a short fix summary, tests run, and any remaining risks.
-            13. Do not redesign community-authored branches unless the issue explicitly asks for that.
+            12. Include `Writer family: Claude` and `Required checker family: Codex`.
+            13. Include the `Live MCP source-read:` evidence, a short fix summary, tests run, and any remaining risks.
+            14. Do not redesign community-authored branches unless the issue explicitly asks for that.
 
             If you cannot find a safe targeted change or are not confident, leave a
             comment in the code and exit gracefully. Do not guess.
@@ -754,8 +755,9 @@ jobs:
           6. If recent comments mention verification failures or review blockers, address those failures first.
           7. Run `python -m ruff check` on touched Python files and the relevant focused tests for changed test files; fix failures before finishing.
           8. If you edit canonical `workflow/*` runtime files, run `python packaging/claude-plugin/build_plugin.py` and leave the plugin mirror changes in the working tree.
-          9. Do not commit, push, or open a PR. Leave any changes in the working tree for this workflow to commit.
-          10. Do not redesign community-authored branches unless the issue explicitly asks for that.
+          9. Before reporting `already fixed`, opening a PR that closes this issue, or closing any older wiki-origin auto-change PR as superseded, read the wiki source page through the live Workflow MCP connector (`wiki action=read` for the Wiki path in the issue body) and include a `Live MCP source-read:` evidence line naming the wiki path and read result. If you cannot perform that live MCP read, leave the working tree unchanged and explain the blocker.
+          10. Do not commit, push, or open a PR. Leave any changes in the working tree for this workflow to commit.
+          11. Do not redesign community-authored branches unless the issue explicitly asks for that.
 
           If you cannot find a safe targeted change or are not confident, leave the
           working tree unchanged and explain why in your final message. Do not guess.
@@ -766,7 +768,9 @@ jobs:
             message_file="$RUNNER_TEMP/codex-last-message.md"
             if [ -s "$message_file" ]; then
               message_lower="$(tr '[:upper:]' '[:lower:]' < "$message_file")"
-              if printf '%s' "$message_lower" | grep -Eq 'already (fixed|implemented|covered|contains|addressed|present)|current checkout already|repository already|stale bug report|no repository change was needed'; then
+              if printf '%s' "$message_lower" | grep -Eq 'already (fixed|implemented|covered|contains|addressed|present)|current checkout already|repository already|stale bug report|no repository change was needed' \
+                && printf '%s' "$message_lower" | grep -Eq 'live mcp source-read:' \
+                && ! printf '%s' "$message_lower" | grep -Eq 'live mcp source-read:.*(cannot|could not|unable|unavailable|blocked|failed)'; then
                 reason="already_fixed"
               fi
             fi
@@ -849,6 +853,25 @@ jobs:
           fi
 
           git status --short
+          message_file="$RUNNER_TEMP/codex-last-message.md"
+          message_lower=""
+          if [ -s "$message_file" ]; then
+            message_lower="$(tr '[:upper:]' '[:lower:]' < "$message_file")"
+          fi
+          if ! printf '%s' "$message_lower" | grep -Eq 'live mcp source-read:' \
+            || printf '%s' "$message_lower" | grep -Eq 'live mcp source-read:.*(cannot|could not|unable|unavailable|blocked|failed)'; then
+            {
+              echo "changed=false"
+              echo "no_change_reason="
+              echo "push_blocked=false"
+              echo "push_block_reason="
+              echo "last_message<<EOF_LIVE_MCP_SOURCE_READ_REQUIRED"
+              echo "Codex changed files, but did not include required Live MCP source-read evidence. Leaving request retryable."
+              echo "EOF_LIVE_MCP_SOURCE_READ_REQUIRED"
+            } >> "$GITHUB_OUTPUT"
+            echo "::error::Codex changed files without required Live MCP source-read evidence; leaving request retryable."
+            exit 1
+          fi
           git config user.name "workflow-daemon[bot]"
           git config user.email "workflow-daemon[bot]@users.noreply.github.com"
           git add -A
@@ -885,6 +908,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           CODEX_BRANCH: ${{ steps.codex-subscription.outputs.branch }}
+          CODEX_LAST_MESSAGE: ${{ steps.codex-subscription.outputs.last_message }}
           PR_TITLE: ${{ steps.meta.outputs.pr_title }}
           ISSUE_NUMBER: ${{ steps.meta.outputs.issue_number }}
         with:
@@ -902,6 +926,8 @@ jobs:
             });
             let pr = existing[0] || null;
             if (!pr) {
+              const finalMessage = (process.env.CODEX_LAST_MESSAGE || '(Codex left no final message.)')
+                .slice(0, 3500);
               try {
                 pr = (await github.rest.pulls.create({
                   owner: context.repo.owner,
@@ -914,6 +940,11 @@ jobs:
                     '',
                     'Writer family: Codex',
                     'Required checker family: Claude',
+                    '',
+                    'Live MCP source-read evidence:',
+                    '```text',
+                    finalMessage,
+                    '```',
                     '',
                     'Automated community-loop change produced by the subscription-backed Codex lane.',
                   ].join('\n'),
@@ -1009,6 +1040,7 @@ jobs:
                   '**Auto-change PR closed as superseded**',
                   '',
                   `This stale-base PR from \`${headRef}\` was superseded by #${pr.number} from \`${branch}\`.`,
+                  'The newer PR passed the Live MCP source-read gate before this older wiki-origin auto-change PR was closed.',
                   'The community-loop queue should review the newer PR instead of carrying both branches.',
                 ].join('\n'),
               });
@@ -1068,6 +1100,8 @@ jobs:
               issue_number: issueNumber,
               body: [
                 '**Auto-fix closed as already fixed** - the subscription-backed Codex writer inspected the request and found no repository change was needed.',
+                '',
+                'Live MCP source-read evidence:',
                 '',
                 'Codex final message:',
                 '```text',
