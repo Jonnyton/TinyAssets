@@ -77,9 +77,12 @@ def test_has_pull_requests_write(wf):
 # ---------------------------------------------------------------------------
 
 
-def test_workflow_concurrency_serializes_subscription_writer_lane(wf):
+def test_workflow_concurrency_is_issue_scoped(wf):
     conc = wf.get("concurrency", {})
-    assert conc.get("group") == "auto-fix-subscription-writer"
+    group = str(conc.get("group", ""))
+    assert "github.event.issue.number" in group
+    assert "inputs.issue_number" in group
+    assert "auto-fix-subscription-writer" not in group
     assert conc.get("cancel-in-progress") is False
 
 
