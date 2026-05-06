@@ -440,6 +440,49 @@ def test_codex_pr_gets_cross_family_checker(wf):
     assert "Required checker family: Claude" in script
 
 
+def test_ready_for_checker_label_is_defined(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    labels_step = next((s for s in steps if s.get("name") == "Ensure automation labels"), None)
+    assert labels_step is not None, "Must define automation labels"
+    script = str(labels_step.get("with", {}).get("script", ""))
+    assert "ready_for_checker" in script
+    assert "source, duplicate, stale-base, and scope-split pre-checks" in script
+
+
+def test_codex_ready_for_checker_requires_pre_checker_self_review(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    codex_pr_step = next((s for s in steps if s.get("id") == "codex-pr-create"), None)
+    assert codex_pr_step is not None, "Must create a PR for Codex-authored changes"
+    script = str(codex_pr_step.get("with", {}).get("script", ""))
+    assert "async function selfReviewLoopPr" in script
+    assert "source check failed" in script
+    assert "duplicate check failed" in script
+    assert "stale-base check failed" in script
+    assert "scope-split check failed" in script
+    assert "Pre-checker self-review blocked `ready_for_checker`" in script
+    assert "labels: ['ready_for_checker']" in script
+    assert script.index("const selfReviewFailures = await selfReviewLoopPr(pr)") < (
+        script.index("labels: ['ready_for_checker']")
+    )
+
+
+def test_claude_ready_for_checker_requires_pre_checker_self_review(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    claude_pr_step = next((s for s in steps if s.get("id") == "claude-pr"), None)
+    assert claude_pr_step is not None, "Must find and label Claude-created PRs"
+    script = str(claude_pr_step.get("with", {}).get("script", ""))
+    assert "async function selfReviewLoopPr" in script
+    assert "source check failed" in script
+    assert "duplicate check failed" in script
+    assert "stale-base check failed" in script
+    assert "scope-split check failed" in script
+    assert "Pre-checker self-review blocked `ready_for_checker`" in script
+    assert "labels: ['ready_for_checker']" in script
+    assert script.index("const selfReviewFailures = await selfReviewLoopPr(pr)") < (
+        script.index("labels: ['ready_for_checker']")
+    )
+
+
 def test_codex_pr_creation_uses_workflow_push_token_for_checks(wf):
     steps = wf["jobs"]["fix"]["steps"]
     codex_pr_step = next((s for s in steps if s.get("id") == "codex-pr-create"), None)
@@ -469,9 +512,10 @@ def test_codex_pr_creation_closes_stale_superseded_issue_prs(wf):
     codex_pr_step = next((s for s in steps if s.get("id") == "codex-pr-create"), None)
     assert codex_pr_step is not None, "Must create a PR for Codex-authored changes"
     script = str(codex_pr_step.get("with", {}).get("script", ""))
-    assert "issueBranchRoot = `auto-change/issue-${issueNumber}`" in script
+    assert "issueBranchRoot = `${branchPrefix}issue-${issueNumber}`" in script
     assert "issueBranchPrefix = `${issueBranchRoot}-`" in script
     assert "headRef !== issueBranchRoot" in script
+    assert "!headRef.startsWith(branchPrefix)" in script
     assert "compareCommitsWithBasehead" in script
     assert "Number(compare.behind_by || 0) > 0" in script
     assert "auto-fix-superseded" in script
