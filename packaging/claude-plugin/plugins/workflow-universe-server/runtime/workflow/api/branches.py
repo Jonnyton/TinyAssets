@@ -2669,6 +2669,10 @@ a bug (#66).
 Use `build_branch` with the whole workflow in a single `spec_json`.
 You get back a validated branch with a mermaid diagram in one call —
 no per-node chatter, no tool-call budget burn:
+This is the chat-native authoring path for small workflow units. Do NOT
+send community users to GitHub Actions YAML, repo files, or CI config
+when they ask to make or revise a workflow from chat; use `build_branch`
+for new units and `patch_branch` for edits.
 
 ```
 extensions action=build_branch spec_json='{

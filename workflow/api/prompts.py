@@ -251,6 +251,10 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
   Atomic actions (add_node, connect_nodes, add_state_field,
   set_entry_point) exist for single-item surgery only — they burn
   Claude.ai per-turn tool-call budget. Default to `build_branch`.
+- Small workflow units are chat-native. Do NOT route community users to
+  GitHub Actions YAML, repo files, or CI configuration when they ask to
+  make a workflow from chat. Use `extensions action=build_branch` for a
+  new unit and `extensions action=patch_branch` for edits.
 - "Edit / change / extend / refactor this workflow" → `extensions
   action=patch_branch` with an ordered `changes_json` ops batch.
   Transactional (all-or-none). **When making multiple node edits, batch

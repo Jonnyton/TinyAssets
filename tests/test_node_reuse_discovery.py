@@ -249,3 +249,11 @@ class TestReusePromptNudges:
         assert search_idx < author_idx, (
             "search-before-invent nudge must appear before the author flow"
         )
+
+    def test_branch_design_guide_names_chat_native_authoring(self, ext_env):
+        from workflow.api.branches import _BRANCH_DESIGN_GUIDE
+        text = _BRANCH_DESIGN_GUIDE
+        assert "chat-native" in text
+        assert "GitHub Actions YAML" in text
+        assert "build_branch" in text
+        assert "patch_branch" in text
