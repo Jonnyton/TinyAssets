@@ -346,6 +346,11 @@ jobs:
                 description: 'Older auto-change PR was closed because a newer branch superseded it.',
               },
               {
+                name: 'ready_for_checker',
+                color: '0e8a16',
+                description: 'Loop PR passed source, duplicate, stale-base, and scope-split pre-checks.',
+              },
+              {
                 name: 'writer:claude',
                 color: '5319e7',
                 description: 'Automated PR was written by a Claude-family model.',
@@ -893,6 +898,68 @@ jobs:
           script: |
             const branch = process.env.CODEX_BRANCH;
             const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const filingShape = '${{ steps.meta.outputs.filing_shape }}';
+            const branchPrefix = '${{ steps.meta.outputs.branch_prefix }}';
+            async function selfReviewLoopPr(pr) {
+              const failures = [];
+              const headRef = pr.head?.ref || '';
+              const headRepo = pr.head?.repo?.full_name || '';
+              const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+              const expectedRoot = `${branchPrefix}issue-${issueNumber}`;
+              const expectedPrefix = `${expectedRoot}-`;
+              if (headRef !== branch || headRepo !== expectedRepo) {
+                failures.push(`source check failed: expected ${expectedRepo}:${branch}, got ${headRepo}:${headRef}`);
+              }
+              if (pr.base?.ref !== 'main') {
+                failures.push(`source check failed: expected base main, got ${pr.base?.ref || '(unknown)'}`);
+              }
+              if (headRef !== expectedRoot && !headRef.startsWith(expectedPrefix)) {
+                failures.push(`scope-split check failed: branch ${headRef} does not match ${expectedRoot}*`);
+              }
+              if (
+                (filingShape === 'mechanical' && branchPrefix !== 'auto-change/') ||
+                (filingShape === 'architectural' && branchPrefix !== 'design-note-draft/')
+              ) {
+                failures.push(`scope-split check failed: filing shape ${filingShape} uses branch prefix ${branchPrefix}`);
+              }
+              try {
+                const { data: compare } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  basehead: `main...${headRef}`,
+                });
+                if (
+                  Number(compare.behind_by || 0) > 0 ||
+                  !['ahead', 'identical'].includes(String(compare.status || ''))
+                ) {
+                  failures.push(
+                    `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
+                  );
+                }
+              } catch (error) {
+                failures.push(`stale-base check failed: ${error.message}`);
+              }
+              const { data: openPrs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                base: 'main',
+                sort: 'updated',
+                direction: 'desc',
+                per_page: 100,
+              });
+              const duplicates = openPrs
+                .filter((candidate) => candidate.number !== pr.number)
+                .filter((candidate) => {
+                  const candidateHead = candidate.head?.ref || '';
+                  return candidateHead === expectedRoot || candidateHead.startsWith(expectedPrefix);
+                })
+                .map((candidate) => `#${candidate.number}`);
+              if (duplicates.length) {
+                failures.push(`duplicate check failed: still-open issue PR(s) ${duplicates.join(', ')}`);
+              }
+              return failures;
+            }
             const { data: existing } = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -957,7 +1024,7 @@ jobs:
               ].join('\n'),
             });
 
-            const issueBranchRoot = `auto-change/issue-${issueNumber}`;
+            const issueBranchRoot = `${branchPrefix}issue-${issueNumber}`;
             const issueBranchPrefix = `${issueBranchRoot}-`;
             const { data: issuePrs } = await github.rest.pulls.list({
               owner: context.repo.owner,
@@ -973,7 +1040,7 @@ jobs:
               if (
                 candidate.number === pr.number ||
                 (headRef !== issueBranchRoot && !headRef.startsWith(issueBranchPrefix)) ||
-                !headRef.startsWith('auto-change/')
+                !headRef.startsWith(branchPrefix)
               ) {
                 continue;
               }
@@ -1019,6 +1086,29 @@ jobs:
                 state: 'closed',
               });
             }
+            const selfReviewFailures = await selfReviewLoopPr(pr);
+            if (selfReviewFailures.length) {
+              core.warning(`Loop PR #${pr.number} is not ready_for_checker: ${selfReviewFailures.join('; ')}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: [
+                  '**Pre-checker self-review blocked `ready_for_checker`**',
+                  '',
+                  ...selfReviewFailures.map((failure) => `- ${failure}`),
+                  '',
+                  'Fix the pre-check failure before routing this loop PR to a checker.',
+                ].join('\n'),
+              });
+              return;
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['ready_for_checker'],
+            });
 
       - name: Close already-fixed issue when no repo change is needed
         if: >
@@ -1095,9 +1185,70 @@ jobs:
             const issueNumber = Number('${{ matrix.issue.issue_number }}');
             const mode = '${{ steps.auth.outputs.mode }}';
             const branchPrefix = '${{ steps.meta.outputs.branch_prefix }}';
+            const filingShape = '${{ steps.meta.outputs.filing_shape }}';
             const branch = mode === 'codex_subscription'
               ? '${{ steps.codex-subscription.outputs.branch }}'
               : `${branchPrefix}issue-${issueNumber}`;
+            async function selfReviewLoopPr(pr) {
+              const failures = [];
+              const headRef = pr.head?.ref || '';
+              const headRepo = pr.head?.repo?.full_name || '';
+              const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+              const expectedRoot = `${branchPrefix}issue-${issueNumber}`;
+              const expectedPrefix = `${expectedRoot}-`;
+              if (headRef !== branch || headRepo !== expectedRepo) {
+                failures.push(`source check failed: expected ${expectedRepo}:${branch}, got ${headRepo}:${headRef}`);
+              }
+              if (pr.base?.ref !== 'main') {
+                failures.push(`source check failed: expected base main, got ${pr.base?.ref || '(unknown)'}`);
+              }
+              if (headRef !== expectedRoot && !headRef.startsWith(expectedPrefix)) {
+                failures.push(`scope-split check failed: branch ${headRef} does not match ${expectedRoot}*`);
+              }
+              if (
+                (filingShape === 'mechanical' && branchPrefix !== 'auto-change/') ||
+                (filingShape === 'architectural' && branchPrefix !== 'design-note-draft/')
+              ) {
+                failures.push(`scope-split check failed: filing shape ${filingShape} uses branch prefix ${branchPrefix}`);
+              }
+              try {
+                const { data: compare } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  basehead: `main...${headRef}`,
+                });
+                if (
+                  Number(compare.behind_by || 0) > 0 ||
+                  !['ahead', 'identical'].includes(String(compare.status || ''))
+                ) {
+                  failures.push(
+                    `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
+                  );
+                }
+              } catch (error) {
+                failures.push(`stale-base check failed: ${error.message}`);
+              }
+              const { data: openPrs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                base: 'main',
+                sort: 'updated',
+                direction: 'desc',
+                per_page: 100,
+              });
+              const duplicates = openPrs
+                .filter((candidate) => candidate.number !== pr.number)
+                .filter((candidate) => {
+                  const candidateHead = candidate.head?.ref || '';
+                  return candidateHead === expectedRoot || candidateHead.startsWith(expectedPrefix);
+                })
+                .map((candidate) => `#${candidate.number}`);
+              if (duplicates.length) {
+                failures.push(`duplicate check failed: still-open issue PR(s) ${duplicates.join(', ')}`);
+              }
+              return failures;
+            }
             const { data: prs } = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -1130,6 +1281,29 @@ jobs:
                 '',
                 'Do not accept this PR with a same-family checker.',
               ].join('\n'),
+            });
+            const selfReviewFailures = await selfReviewLoopPr(pr);
+            if (selfReviewFailures.length) {
+              core.warning(`Loop PR #${pr.number} is not ready_for_checker: ${selfReviewFailures.join('; ')}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: [
+                  '**Pre-checker self-review blocked `ready_for_checker`**',
+                  '',
+                  ...selfReviewFailures.map((failure) => `- ${failure}`),
+                  '',
+                  'Fix the pre-check failure before routing this loop PR to a checker.',
+                ].join('\n'),
+              });
+              return;
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['ready_for_checker'],
             });
 
       - name: Mark needs-human if no PR opened
