@@ -3762,6 +3762,7 @@ def _action_list_sources(
 def _action_read_source(
     universe_id: str = "",
     filename: str = "",
+    limit: int = 30,
     **_kwargs: Any,
 ) -> str:
     """Read one uploaded source document verbatim with checksum metadata."""
@@ -3800,15 +3801,30 @@ def _action_read_source(
     except OSError as exc:
         return json.dumps({"error": f"Failed to read source file: {exc}"})
 
-    truncated = len(content) > 10000
+    # ChatGPT's connector wrapper can stop rendering downstream writes after
+    # several large source reads. Keep the default preview compact, while still
+    # allowing an explicit larger preview through the existing MCP `limit` arg.
+    preview_chars = 4000
+    if limit and limit > 100:
+        preview_chars = min(limit, 10000)
+
+    truncated = len(content) > preview_chars
     entry.update({
         "universe_id": uid,
-        "content": content[:10000] if truncated else content,
+        "content": content[:preview_chars] if truncated else content,
         "truncated": truncated,
+        "content_preview_chars": preview_chars,
+        "next_action_hint": (
+            "If the user requested a create or update, continue with that write "
+            "action now; do not stop after reading sources."
+        ),
     })
     if truncated:
         entry["total_chars"] = len(content)
-        entry["note"] = "Source file truncated to 10K chars."
+        entry["note"] = (
+            f"Source file preview truncated to {preview_chars} chars. "
+            "Pass limit=10000 for the largest supported preview."
+        )
     return json.dumps(entry)
 
 

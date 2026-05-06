@@ -275,8 +275,47 @@ class TestSourceInspection:
         assert out["filename"] == "lore.md"
         assert out["content"] == content
         assert out["truncated"] is False
+        assert out["content_preview_chars"] == 4000
+        assert "continue with that write action" in out["next_action_hint"]
         assert out["provenance"] == "source pack"
         assert out["sha256"] == hashlib.sha256(source_bytes).hexdigest()
+
+    def test_read_source_default_preview_preserves_chatgpt_continuation_budget(
+        self, universe: str, tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "long-source.md"
+        content = "A" * 6000
+        src.write_text(content, encoding="utf-8")
+        _call("add_canon_from_path", path=str(src), provenance_tag="long source")
+
+        out = json.loads(us._universe_impl(
+            action="read_source",
+            filename="long-source.md",
+        ))
+
+        assert out["content"] == content[:4000]
+        assert out["truncated"] is True
+        assert out["content_preview_chars"] == 4000
+        assert out["total_chars"] == 6000
+        assert "do not stop after reading sources" in out["next_action_hint"]
+
+    def test_read_source_explicit_limit_allows_larger_preview(
+        self, universe: str, tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "longer-source.md"
+        content = "B" * 6000
+        src.write_text(content, encoding="utf-8")
+        _call("add_canon_from_path", path=str(src), provenance_tag="longer source")
+
+        out = json.loads(us._universe_impl(
+            action="read_source",
+            filename="longer-source.md",
+            limit=10000,
+        ))
+
+        assert out["content"] == content
+        assert out["truncated"] is False
+        assert out["content_preview_chars"] == 10000
 
     def test_read_source_rejects_path_segments(self, universe: str) -> None:
         out = json.loads(us._universe_impl(
