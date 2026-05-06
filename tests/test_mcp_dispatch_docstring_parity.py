@@ -130,9 +130,9 @@ def _wiki_dispatch_keys() -> set[str]:
     """Mirror of the local `dispatch = {...}` literal inside `wiki()`."""
     return {
         "read", "search", "list", "lint",
-        "write", "consolidate", "promote", "ingest", "supersede",
+        "write", "patch", "consolidate", "promote", "ingest", "supersede",
         "sync_projects",
-        "file_bug", "cosign_bug",
+        "file_bug", "cosign_bug", "cleanup_bug_pages",
     }
 
 

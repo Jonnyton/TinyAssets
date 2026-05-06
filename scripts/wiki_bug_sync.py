@@ -624,6 +624,32 @@ def sync(
     try:
         sid = _mcp_initialize(url, timeout, post_fn)
 
+        # Prune stale same-id BUG pages before list/cursor processing so the
+        # loop does not keep rediscovering obsolete wiki artifacts.
+        cleanup_result = _mcp_call_tool(
+            url,
+            sid,
+            "wiki",
+            {"action": "cleanup_bug_pages", "dry_run": dry_run},
+            timeout,
+            post_fn,
+        )
+        try:
+            cleanup = json.loads(_parse_text_result(cleanup_result))
+        except json.JSONDecodeError:
+            cleanup = {}
+        if cleanup.get("duplicates_found"):
+            mode = "would remove" if dry_run else "removed"
+            count = (
+                cleanup.get("duplicates_found", 0)
+                if dry_run
+                else cleanup.get("removed_count", 0)
+            )
+            print(
+                "[wiki-bug-sync] cleanup_bug_pages "
+                f"{mode} {count} duplicate(s)"
+            )
+
         # Fetch wiki list
         list_result = _mcp_call_tool(url, sid, "wiki", {"action": "list"}, timeout, post_fn)
         wiki_list = json.loads(_parse_text_result(list_result))

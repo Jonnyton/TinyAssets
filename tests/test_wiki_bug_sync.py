@@ -62,6 +62,21 @@ def _wiki_read_resp(meta: dict) -> dict:
     }
 
 
+def _wiki_cleanup_resp(**payload: object) -> dict:
+    """Build a mock MCP tools/call result for wiki action=cleanup_bug_pages."""
+    body = {"status": "dry_run", "duplicates_found": 0, "removed_count": 0}
+    body.update(payload)
+    return {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {
+            "content": [
+                {"type": "text", "text": json.dumps(body)}
+            ]
+        },
+    }
+
+
 def _make_post_fn(*responses):
     it = iter(responses)
 
@@ -328,6 +343,7 @@ def test_sync_no_new_bugs(tmp_path):
     post_fn = _make_post_fn(
         (_INIT_OK, "sid1"),
         (_NOTIF_NONE, "sid1"),
+        (_wiki_cleanup_resp(), "sid1"),
         (_wiki_list_resp([
             {"path": "bugs/BUG-001-a"},
             {"path": "bugs/BUG-005-e"},
@@ -350,6 +366,7 @@ def test_sync_one_new_bug(tmp_path):
     post_fn = _make_post_fn(
         (_INIT_OK, "sid1"),
         (_NOTIF_NONE, "sid1"),
+        (_wiki_cleanup_resp(), "sid1"),
         (_wiki_list_resp([
             {"path": "bugs/BUG-001-old"},
             {"path": "bugs/BUG-002-old"},
@@ -383,6 +400,8 @@ def test_sync_one_new_bug_updates_cursor(tmp_path):
         tool = payload.get("params", {}).get("name")
         if tool == "wiki":
             args = payload.get("params", {}).get("arguments", {})
+            if args.get("action") == "cleanup_bug_pages":
+                return _wiki_cleanup_resp(status="cleaned"), "sid1"
             if args.get("action") == "list":
                 return _wiki_list_resp([{"path": "bugs/BUG-003-new", "title": "New Bug"}]), "sid1"
             if args.get("action") == "read":
@@ -421,6 +440,7 @@ def test_sync_many_new_bugs(tmp_path):
     responses = [
         (_INIT_OK, "sid1"),
         (_NOTIF_NONE, "sid1"),
+        (_wiki_cleanup_resp(), "sid1"),
         (_wiki_list_resp(bugs), "sid1"),
     ] + [
         (_wiki_read_resp({"title": f"Bug {i}", "severity": "low", "component": "x"}), "sid1")
@@ -433,6 +453,26 @@ def test_sync_many_new_bugs(tmp_path):
         cursor_path=cursor_path, post_fn=post_fn,
     )
     assert rc == 0
+
+
+def test_sync_runs_bug_cleanup_before_listing(tmp_path):
+    cursor_path = tmp_path / "cursor"
+    write_cursor(0, cursor_path)
+    post = CapturingPost([
+        (_INIT_OK, "sid1"),
+        (_NOTIF_NONE, "sid1"),
+        (_wiki_cleanup_resp(duplicates_found=1), "sid1"),
+        (_wiki_list_resp([]), "sid1"),
+    ])
+
+    rc = sync("http://fake/mcp", 5.0, dry_run=True, cursor_path=cursor_path, post_fn=post)
+
+    assert rc == 0
+    tool_calls = [call for call in post.calls if call.get("method") == "tools/call"]
+    cleanup_args = tool_calls[0]["params"]["arguments"]
+    list_args = tool_calls[1]["params"]["arguments"]
+    assert cleanup_args == {"action": "cleanup_bug_pages", "dry_run": True}
+    assert list_args == {"action": "list"}
 
 
 # ---------------------------------------------------------------------------

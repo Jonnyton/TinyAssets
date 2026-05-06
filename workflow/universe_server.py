@@ -928,7 +928,7 @@ def wiki(
     Args:
         action: One of — reads: read, search, list, lint;
             writes: write, patch, consolidate, promote, ingest, supersede,
-            sync_projects, file_bug, cosign_bug.
+            sync_projects, file_bug, cosign_bug, cleanup_bug_pages;
         old_text/new_text: For action="patch", exact text to replace server-side.
         expected_sha256: Optional full-page hash guard for action="patch".
     """

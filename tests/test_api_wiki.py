@@ -488,6 +488,39 @@ def test_wiki_file_bug_dedup_returns_similar_found(wiki_env):
     assert len(dup["similar"]) >= 1
 
 
+def test_wiki_cleanup_bug_pages_removes_same_id_stale_duplicates(wiki_env):
+    bugs_dir = wiki_env / "pages" / "bugs"
+    canonical = bugs_dir / "BUG-003-canonical-title.md"
+    duplicate = bugs_dir / "bug-003-canonical-title.md"
+    other = bugs_dir / "BUG-004-other-title.md"
+    body = (
+        "---\n"
+        "id: BUG-003\n"
+        "title: Canonical Title\n"
+        "type: bug\n"
+        "---\n\n"
+        "# BUG-003\n"
+    )
+    canonical.write_text(body, encoding="utf-8")
+    duplicate.write_text(body.replace("Canonical", "Duplicate"), encoding="utf-8")
+    other.write_text(
+        "---\nid: BUG-004\ntitle: Other Title\ntype: bug\n---\n\n# BUG-004\n",
+        encoding="utf-8",
+    )
+
+    dry_run = json.loads(wiki(action="cleanup_bug_pages"))
+    assert dry_run["status"] == "dry_run"
+    assert dry_run["duplicates_found"] == 1
+    assert duplicate.exists()
+
+    cleaned = json.loads(wiki(action="cleanup_bug_pages", dry_run=False))
+    assert cleaned["status"] == "cleaned"
+    assert cleaned["removed_count"] == 1
+    assert canonical.exists()
+    assert other.exists()
+    assert not duplicate.exists()
+
+
 def test_wiki_cosign_bug_requires_args(wiki_env):
     res = json.loads(wiki(action="cosign_bug"))
     assert "error" in res

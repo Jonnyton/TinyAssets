@@ -1359,6 +1359,86 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
     return results
 
 
+def _bug_id_from_page(path: Path) -> str | None:
+    """Return canonical BUG-NNN id from a bug-page filename, if present."""
+    m = re.match(r"^(bug)-(\d{3,})", path.stem, re.IGNORECASE)
+    if not m:
+        return None
+    return f"BUG-{m.group(2)}"
+
+
+def _bug_cleanup_rank(path: Path) -> tuple[int, int, int, str]:
+    """Rank same-id bug pages by canonical filename conventions."""
+    raw = _read_text(path)
+    meta, _ = _parse_frontmatter(raw)
+    frontmatter_id = str(meta.get("id", "")).upper()
+    title = str(meta.get("title", "")).strip()
+    expected_name = ""
+    if frontmatter_id.startswith("BUG-") and title:
+        expected_name = f"{frontmatter_id}-{_slugify_title(title)}.md"
+
+    is_expected = 0 if expected_name and path.name == expected_name else 1
+    is_upper_bug = 0 if path.name.startswith("BUG-") else 1
+    has_trailing_hyphen = 1 if path.stem.endswith("-") else 0
+    return (is_expected, is_upper_bug, has_trailing_hyphen, path.name)
+
+
+def _wiki_cleanup_bug_pages(dry_run: bool = True, **_kwargs: Any) -> str:
+    """Remove stale promoted bug pages when multiple files claim one BUG-NNN.
+
+    This intentionally only removes same-id duplicates. A single lowercase or
+    otherwise ugly filename is left alone because that is a naming cleanup, not
+    safe autonomous deduplication.
+    """
+    bugs_dir = _wiki_pages_dir() / _BUGS_CATEGORY
+    if not bugs_dir.is_dir():
+        return json.dumps({
+            "status": "dry_run" if dry_run else "cleaned",
+            "duplicates_found": 0,
+            "removed_count": 0,
+            "removed": [],
+        })
+
+    groups: dict[str, list[Path]] = {}
+    for path in bugs_dir.glob("*.md"):
+        bug_id = _bug_id_from_page(path)
+        if bug_id:
+            groups.setdefault(bug_id, []).append(path)
+
+    removals: list[dict[str, str]] = []
+    for bug_id, paths in sorted(groups.items()):
+        if len(paths) < 2:
+            continue
+        paths.sort(key=_bug_cleanup_rank)
+        keep = paths[0]
+        for stale in paths[1:]:
+            rel_stale = _page_rel_path(stale)
+            rel_keep = _page_rel_path(keep)
+            removals.append({
+                "bug_id": bug_id,
+                "path": rel_stale,
+                "kept": rel_keep,
+                "reason": "same BUG-NNN duplicate",
+            })
+            if not dry_run:
+                try:
+                    stale.unlink()
+                except OSError as exc:
+                    removals[-1]["error"] = str(exc)
+
+    removed_count = sum(1 for item in removals if "error" not in item)
+    if removals and not dry_run:
+        _append_wiki_log(
+            f"cleanup_bug_pages | removed {removed_count} stale duplicate bug page(s)"
+        )
+    return json.dumps({
+        "status": "dry_run" if dry_run else "cleaned",
+        "duplicates_found": len(removals),
+        "removed_count": 0 if dry_run else removed_count,
+        "removed": removals,
+    })
+
+
 def _wiki_cosign_bug(
     bug_id: str = "",
     reporter_context: str = "",
@@ -1812,6 +1892,7 @@ def wiki(
         "sync_projects": _wiki_sync_projects,
         "file_bug": _wiki_file_bug,
         "cosign_bug": _wiki_cosign_bug,
+        "cleanup_bug_pages": _wiki_cleanup_bug_pages,
     }
 
     handler = dispatch.get(action)
