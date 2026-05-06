@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,11 +25,17 @@ def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base.mkdir()
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from workflow.api import extensions as ext_api
 
-    importlib.reload(us)
+    importlib.reload(ext_api)
+    us = SimpleNamespace(
+        extensions=lambda action, **kwargs: ext_api._extensions_impl(
+            action=action,
+            **kwargs,
+        )
+    )
     yield us, base
-    importlib.reload(us)
+    importlib.reload(ext_api)
 
 
 def _call(us, tool: str, action: str, **kwargs):
@@ -51,6 +58,23 @@ def _build(us, *, name: str = "b", tags: list | None = None,
         "edges": [
             {"from": "START", "to": "capture"},
             {"from": "capture", "to": "END"},
+        ],
+        "state_schema": [{"name": "x", "type": "str"}],
+    }
+    res = _call(us, "extensions", "build_branch", spec_json=json.dumps(spec))
+    assert res["status"] == "built", res
+    return res["branch_def_id"]
+
+
+def _build_with_nodes(us, node_defs: list[dict]) -> str:
+    spec = {
+        "name": "metadata-overlay",
+        "entry_point": "capture",
+        "node_defs": node_defs,
+        "edges": [
+            {"from": "START", "to": "capture"},
+            {"from": "capture", "to": "review"},
+            {"from": "review", "to": "END"},
         ],
         "state_schema": [{"name": "x", "type": "str"}],
     }
@@ -230,6 +254,140 @@ class TestPatchBranchMetadataCombined:
         # Original name must be intact.
         assert loaded["name"] == "original"
         assert loaded["tags"] == ["x"]
+
+
+class TestPatchBranchNodeMetadata:
+
+    def test_build_branch_persists_generic_node_metadata(self, ext_env):
+        us, base = ext_env
+        bid = _build_with_nodes(us, [
+            {
+                "node_id": "capture",
+                "display_name": "Capture",
+                "prompt_template": "cap: {x}",
+                "metadata": {"owner": "research", "tier": 1},
+            },
+            {
+                "node_id": "review",
+                "display_name": "Review",
+                "prompt_template": "review: {x}",
+            },
+        ])
+
+        loaded = _load(us, base, bid)
+        capture = next(n for n in loaded["node_defs"] if n["node_id"] == "capture")
+        assert capture["metadata"] == {"owner": "research", "tier": 1}
+
+    def test_patch_branch_sets_generic_node_metadata_atomically(self, ext_env):
+        us, base = ext_env
+        bid = _build_with_nodes(us, [
+            {
+                "node_id": "capture",
+                "display_name": "Capture",
+                "prompt_template": "cap: {x}",
+            },
+            {
+                "node_id": "review",
+                "display_name": "Review",
+                "prompt_template": "review: {x}",
+            },
+        ])
+
+        res = _patch(us, bid, [
+            {
+                "op": "set_node_metadata",
+                "node_id": "capture",
+                "metadata": {"owner": "research", "risk": "low"},
+            },
+        ])
+
+        assert res.get("status") == "patched", res
+        assert "node_defs" in res["patched_fields"]
+        loaded = _load(us, base, bid)
+        capture = next(n for n in loaded["node_defs"] if n["node_id"] == "capture")
+        assert capture["metadata"] == {"owner": "research", "risk": "low"}
+
+    def test_patch_branch_updates_and_removes_node_metadata_keys(self, ext_env):
+        us, base = ext_env
+        bid = _build_with_nodes(us, [
+            {
+                "node_id": "capture",
+                "display_name": "Capture",
+                "prompt_template": "cap: {x}",
+                "metadata": {"owner": "research", "risk": "low"},
+            },
+            {
+                "node_id": "review",
+                "display_name": "Review",
+                "prompt_template": "review: {x}",
+            },
+        ])
+
+        res = _patch(us, bid, [
+            {
+                "op": "update_node_metadata",
+                "node_id": "capture",
+                "metadata": {"risk": "high", "stage": "draft"},
+            },
+            {
+                "op": "remove_node_metadata_key",
+                "node_id": "capture",
+                "key": "owner",
+            },
+        ])
+
+        assert res.get("status") == "patched", res
+        loaded = _load(us, base, bid)
+        capture = next(n for n in loaded["node_defs"] if n["node_id"] == "capture")
+        assert capture["metadata"] == {"risk": "high", "stage": "draft"}
+
+    def test_patch_branch_rejects_non_object_node_metadata(self, ext_env):
+        us, base = ext_env
+        bid = _build(us)
+
+        res = _patch(us, bid, [{
+            "op": "set_node_metadata",
+            "node_id": "capture",
+            "metadata": ["not", "an", "object"],
+        }])
+
+        assert res.get("status") == "rejected"
+        loaded = _load(us, base, bid)
+        capture = next(n for n in loaded["node_defs"] if n["node_id"] == "capture")
+        assert capture["metadata"] == {}
+
+    def test_describe_branch_colors_mermaid_by_metadata_key(self, ext_env):
+        us, _ = ext_env
+        bid = _build_with_nodes(us, [
+            {
+                "node_id": "capture",
+                "display_name": "Capture",
+                "prompt_template": "cap: {x}",
+                "metadata": {"owner": "research"},
+            },
+            {
+                "node_id": "review",
+                "display_name": "Review",
+                "prompt_template": "review: {x}",
+                "metadata": {"owner": "legal"},
+            },
+        ])
+
+        described = _call(
+            us,
+            "extensions",
+            "describe_branch",
+            branch_def_id=bid,
+            color_by_metadata="owner",
+        )
+
+        assert described["metadata_color_by"] == "owner"
+        assert described["metadata_color_legend"] == [
+            {"value": "legal", "class": "metadata_0", "color": "#FDE68A"},
+            {"value": "research", "class": "metadata_1", "color": "#BFDBFE"},
+        ]
+        assert "class capture metadata_1" in described["mermaid"]
+        assert "class review metadata_0" in described["mermaid"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

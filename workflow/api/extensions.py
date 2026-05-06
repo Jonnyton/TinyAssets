@@ -347,6 +347,7 @@ def _extensions_impl(
     ship_class: str = "",
     changed_paths_json: str = "",
     stable_evidence_handle: str = "",
+    color_by_metadata: str = "",
 ) -> str:
     """Pattern A2 body — see ``workflow.universe_server.extensions`` for the
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
@@ -395,6 +396,7 @@ def _extensions_impl(
         "query": node_query,
         "limit": limit,
         "force": force,
+        "color_by_metadata": color_by_metadata,
     }
     if node_ref_json:
         try:

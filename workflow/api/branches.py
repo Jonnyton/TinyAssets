@@ -738,7 +738,46 @@ def _mermaid_label(text: str) -> str:
     return text.replace('"', "'").replace("\n", " ")
 
 
-def _branch_mermaid(branch: Any) -> str:
+def _metadata_color_overlay(
+    branch: Any,
+    color_by_metadata: str,
+) -> tuple[dict[str, str], list[dict[str, str]]]:
+    key = (color_by_metadata or "").strip()
+    if not key:
+        return {}, []
+
+    values: list[str] = []
+    for node in branch.node_defs:
+        metadata = getattr(node, "metadata", {}) or {}
+        if not isinstance(metadata, dict) or key not in metadata:
+            continue
+        value = str(metadata[key])
+        if value not in values:
+            values.append(value)
+
+    legend: list[dict[str, str]] = []
+    for idx, value in enumerate(sorted(values)):
+        legend.append({
+            "value": value,
+            "class": f"metadata_{idx}",
+            "color": _METADATA_COLOR_PALETTE[
+                idx % len(_METADATA_COLOR_PALETTE)
+            ],
+        })
+    value_to_class = {item["value"]: item["class"] for item in legend}
+    node_classes: dict[str, str] = {}
+    for node in branch.node_defs:
+        metadata = getattr(node, "metadata", {}) or {}
+        if isinstance(metadata, dict) and key in metadata:
+            node_classes[node.node_id] = value_to_class[str(metadata[key])]
+    return node_classes, legend
+
+
+def _branch_mermaid(
+    branch: Any,
+    *,
+    color_by_metadata: str = "",
+) -> str:
     """Render a BranchDefinition as a Mermaid ``flowchart LR`` block.
 
     Claude.ai and many markdown clients auto-render fenced ``mermaid``
@@ -747,6 +786,9 @@ def _branch_mermaid(branch: Any) -> str:
     everything else uses the default rectangle with its display_name.
     """
     lines: list[str] = ["```mermaid", "flowchart LR"]
+    metadata_classes, metadata_legend = _metadata_color_overlay(
+        branch, color_by_metadata
+    )
 
     # START/END get stadium shape so they read as terminals.
     lines.append('    START(["START"])')
@@ -783,6 +825,14 @@ def _branch_mermaid(branch: Any) -> str:
             lines.append(
                 "    classDef entry stroke:#4a90e2,stroke-width:3px"
             )
+
+    for item in metadata_legend:
+        lines.append(
+            f"    classDef {item['class']} fill:{item['color']},"
+            "stroke:#374151,color:#111827"
+        )
+    for node_id, class_name in metadata_classes.items():
+        lines.append(f"    class {_mermaid_node_id(node_id)} {class_name}")
 
     lines.append("```")
     return "\n".join(lines)
@@ -892,6 +942,7 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 
     branch = BranchDefinition.from_dict(source_dict)
     errors = branch.validate()
+    color_by_metadata = (kwargs.get("color_by_metadata") or "").strip()
 
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
@@ -928,7 +979,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         else ["  (none — structure is valid)"]
     )
 
-    mermaid = _branch_mermaid(branch)
+    mermaid = _branch_mermaid(branch, color_by_metadata=color_by_metadata)
+    _, metadata_color_legend = _metadata_color_overlay(branch, color_by_metadata)
 
     summary_parts = [
         f"Branch: {branch.name or '(unnamed)'}  [{branch.branch_def_id}]",
@@ -994,6 +1046,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         "fork_descendants": fork_descendants,
         "related_wiki_pages": related["items"],
         "related_wiki_pages_truncated": related["truncated_count"],
+        "metadata_color_by": color_by_metadata,
+        "metadata_color_legend": metadata_color_legend,
     })
 
 
@@ -1007,6 +1061,16 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 
 
 _VALID_STATE_TYPES = {"str", "int", "float", "bool", "list", "dict", "any"}
+_METADATA_COLOR_PALETTE = [
+    "#FDE68A",
+    "#BFDBFE",
+    "#BBF7D0",
+    "#FBCFE8",
+    "#DDD6FE",
+    "#FED7AA",
+    "#A7F3D0",
+    "#FECACA",
+]
 
 
 def _suggest_entry_point(branch: Any) -> str:
@@ -1157,6 +1221,7 @@ def _resolve_node_spec(
         for field_key in (
             "display_name", "description", "phase", "input_keys",
             "output_keys", "source_code", "prompt_template", "author",
+            "metadata",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1222,6 +1287,7 @@ def _lookup_node_body(
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
             "approved": bool(hit.get("approved", False)),
+            "metadata": dict(hit.get("metadata") or {}),
         }, ""
 
     # Otherwise treat `source` as a branch_def_id.
@@ -1249,6 +1315,7 @@ def _lookup_node_body(
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
                 "approved": bool(nd.get("approved", False)),
+                "metadata": dict(nd.get("metadata") or {}),
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
@@ -1301,6 +1368,11 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         invoke_branch_version if isinstance(invoke_branch_version, dict) else None
     )
     await_run_arg = await_run if isinstance(await_run, dict) else None
+    metadata = raw.get("metadata") if "metadata" in raw else {}
+    if metadata is None:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        return f"node '{nid}' metadata must be an object"
     try:
         node = NodeDefinition(
             node_id=nid,
@@ -1316,6 +1388,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             invoke_branch_spec=invoke_branch_arg,
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
+            metadata=dict(metadata),
         )
     except ValueError as exc:
         return str(exc)
@@ -1573,6 +1646,21 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     return json.dumps(payload, default=str)
 
 
+def _find_node_def(branch: Any, node_id: str) -> Any | None:
+    for node in branch.node_defs:
+        if node.node_id == node_id:
+            return node
+    return None
+
+
+def _coerce_node_metadata(value: Any, op_name: str) -> tuple[dict[str, Any], str]:
+    if value is None:
+        return {}, ""
+    if not isinstance(value, dict):
+        return {}, f"{op_name} metadata must be an object"
+    return dict(value), ""
+
+
 def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
     name = (op.get("op") or "").strip().lower()
     if name == "add_node":
@@ -1687,8 +1775,55 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     if err:
                         return err
                     n.output_keys = keys
+                if "metadata" in op:
+                    metadata, err = _coerce_node_metadata(
+                        op.get("metadata"), "update_node"
+                    )
+                    if err:
+                        return err
+                    n.metadata = metadata
                 return ""
         return f"update_node: node '{nid}' not found"
+    if name == "set_node_metadata":
+        nid = (op.get("node_id") or "").strip()
+        if not nid:
+            return "set_node_metadata requires node_id"
+        node = _find_node_def(branch, nid)
+        if node is None:
+            return f"set_node_metadata: node '{nid}' not found"
+        metadata, err = _coerce_node_metadata(
+            op.get("metadata"), "set_node_metadata"
+        )
+        if err:
+            return err
+        node.metadata = metadata
+        return ""
+    if name == "update_node_metadata":
+        nid = (op.get("node_id") or "").strip()
+        if not nid:
+            return "update_node_metadata requires node_id"
+        node = _find_node_def(branch, nid)
+        if node is None:
+            return f"update_node_metadata: node '{nid}' not found"
+        metadata, err = _coerce_node_metadata(
+            op.get("metadata"), "update_node_metadata"
+        )
+        if err:
+            return err
+        node.metadata = dict(node.metadata or {})
+        node.metadata.update(metadata)
+        return ""
+    if name == "remove_node_metadata_key":
+        nid = (op.get("node_id") or "").strip()
+        key = (op.get("key") or "").strip()
+        if not nid or not key:
+            return "remove_node_metadata_key requires node_id and key"
+        node = _find_node_def(branch, nid)
+        if node is None:
+            return f"remove_node_metadata_key: node '{nid}' not found"
+        node.metadata = dict(node.metadata or {})
+        node.metadata.pop(key, None)
+        return ""
     if name == "add_skill":
         from workflow.branches import normalize_branch_skill_snapshot
 
@@ -1924,6 +2059,8 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         k for k in source
         if k not in _SKIP_DIFF and source.get(k) != saved.get(k)
     ]
+    if source.get("node_defs") != saved.get("node_defs"):
+        patched_fields.append("node_defs")
 
     post_patch = {
         "branch_def_id": persisted.branch_def_id,
@@ -2740,6 +2877,23 @@ extensions action=patch_branch branch_def_id=... changes_json='[
              "body": "Check tests, code shape, and live proof."}}
 ]'
 ```
+
+Nodes may carry generic JSON metadata. Use it for domain labels,
+ownership, review state, or any other branch-local classifier without
+introducing a special-purpose field:
+
+```
+{"op": "set_node_metadata", "node_id": "novelty_check",
+ "metadata": {"owner": "research", "stage": "draft"}}
+{"op": "update_node_metadata", "node_id": "novelty_check",
+ "metadata": {"stage": "review"}}
+{"op": "remove_node_metadata_key", "node_id": "novelty_check",
+ "key": "owner"}
+```
+
+To inspect a workflow by one metadata dimension, call
+`describe_branch branch_def_id=... color_by_metadata="stage"`; the Mermaid
+diagram includes a color class per metadata value plus a structured legend.
 
 ## Atomic actions (single-item surgery only)
 
