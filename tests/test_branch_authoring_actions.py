@@ -36,6 +36,8 @@ def branch_env(tmp_path, monkeypatch):
 
 def _call(us, action, **kwargs):
     result = us.extensions(action=action, **kwargs)
+    if isinstance(result, dict):
+        return result
     return json.loads(result)
 
 
@@ -351,6 +353,75 @@ def test_describe_branch_returns_mermaid_flowchart(branch_env):
     assert "class capture entry" in mermaid
     # Summary also contains the mermaid block so markdown clients render it
     assert "```mermaid" in described["summary"]
+
+
+def test_describe_branch_surfaces_node_compliance_tags(branch_env):
+    """Compliance diagram asks must anchor to branch data, not chatbot guesses."""
+    us, _ = branch_env
+    bid = _call(us, "create_branch", name="Compliance flow")["branch_def_id"]
+    added = _call(
+        us, "add_node",
+        branch_def_id=bid,
+        node_id="review_phi",
+        display_name="Review PHI",
+        prompt_template="Check {claim}",
+        compliance_tags='["HIPAA", "PII"]',
+    )
+    assert added["status"] == "added"
+    got = _call(us, "get_branch", branch_def_id=bid)
+    persisted = next(n for n in got["node_defs"] if n["node_id"] == "review_phi")
+    assert persisted["compliance_tags"] == ["HIPAA", "PII"]
+    _call(us, "connect_nodes", branch_def_id=bid,
+          from_node="START", to_node="review_phi")
+    _call(us, "connect_nodes", branch_def_id=bid,
+          from_node="review_phi", to_node="END")
+    _call(us, "set_entry_point", branch_def_id=bid, node_id="review_phi")
+
+    described = _call(us, "describe_branch", branch_def_id=bid)
+
+    node = next(n for n in described["nodes"] if n["node_id"] == "review_phi")
+    assert node["compliance_tags"] == ["HIPAA", "PII"]
+    assert 'review_phi["Review PHI | compliance: HIPAA, PII"]' in described["mermaid"]
+    assert "class review_phi compliance" in described["mermaid"]
+    assert "classDef compliance" in described["mermaid"]
+    assert "compliance: HIPAA, PII" in described["summary"]
+
+
+def test_patch_branch_updates_node_compliance_tags(branch_env):
+    us, _ = branch_env
+    built = _call(
+        us, "build_branch",
+        spec_json=json.dumps({
+            "name": "Compliance patch",
+            "entry_point": "screen",
+            "node_defs": [
+                {"node_id": "screen", "display_name": "Screen",
+                 "prompt_template": "Screen {claim}",
+                 "compliance_tags": ["SOX"]},
+            ],
+            "edges": [
+                {"from": "START", "to": "screen"},
+                {"from": "screen", "to": "END"},
+            ],
+            "state_schema": [{"name": "claim", "type": "str"}],
+        }),
+    )
+    assert built["status"] == "built"
+
+    patched = _call(
+        us, "patch_branch",
+        branch_def_id=built["branch_def_id"],
+        changes_json=json.dumps([
+            {"op": "update_node", "node_id": "screen",
+             "compliance_tags": "SOX, retention-review"},
+        ]),
+    )
+    assert patched["status"] == "patched"
+
+    described = _call(us, "describe_branch", branch_def_id=built["branch_def_id"])
+    node = next(n for n in described["nodes"] if n["node_id"] == "screen")
+    assert node["compliance_tags"] == ["SOX", "retention-review"]
+    assert "compliance: SOX, retention-review" in described["mermaid"]
 
 
 def test_describe_empty_branch_still_emits_mermaid(branch_env):

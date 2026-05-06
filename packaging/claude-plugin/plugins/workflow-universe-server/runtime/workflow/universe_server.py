@@ -463,6 +463,7 @@ def extensions(
     phase: str = "",
     input_keys: str = "",
     output_keys: str = "",
+    compliance_tags: str = "",
     source_code: str = "",
     dependencies: str = "",
     enabled_only: bool = True,
@@ -607,6 +608,9 @@ def extensions(
     - Provenance: fork_tree.
 
     Args: pass `action` plus the matching ids or JSON payload fields.
+    For compliance diagram requests, inspect persisted Workflow data with
+    `describe_branch`; nodes may carry `compliance_tags`, which are rendered
+    into the returned Mermaid diagram and structured node list.
     """
     return _structured_return(_extensions_impl(
         action=action,
@@ -616,6 +620,7 @@ def extensions(
         phase=phase,
         input_keys=input_keys,
         output_keys=output_keys,
+        compliance_tags=compliance_tags,
         source_code=source_code,
         dependencies=dependencies,
         enabled_only=enabled_only,

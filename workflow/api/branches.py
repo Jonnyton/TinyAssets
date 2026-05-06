@@ -162,6 +162,14 @@ def _coerce_node_keys(
     )
 
 
+def _coerce_compliance_tags(value: Any) -> tuple[list[str], str]:
+    """Coerce per-node compliance tags through the same chat-friendly shapes."""
+    tags, err = _coerce_node_keys(value, "compliance_tags")
+    if err:
+        return [], err
+    return tags, ""
+
+
 def _append_global_ledger(
     action: str,
     *,
@@ -462,6 +470,7 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
         "output_keys": kwargs.get("output_keys", ""),
         "source_code": kwargs.get("source_code", ""),
         "prompt_template": kwargs.get("prompt_template", ""),
+        "compliance_tags": kwargs.get("compliance_tags", ""),
         "author": kwargs.get("author") or _current_actor(),
     }
     if "node_ref" in kwargs:
@@ -754,7 +763,10 @@ def _branch_mermaid(branch: Any) -> str:
 
     for node in branch.node_defs:
         nid = _mermaid_node_id(node.node_id)
-        label = _mermaid_label(node.display_name or node.node_id)
+        label_text = node.display_name or node.node_id
+        if getattr(node, "compliance_tags", None):
+            label_text += " | compliance: " + ", ".join(node.compliance_tags)
+        label = _mermaid_label(label_text)
         lines.append(f'    {nid}["{label}"]')
 
     # Include graph_nodes that weren't also declared as node_defs.
@@ -783,6 +795,17 @@ def _branch_mermaid(branch: Any) -> str:
             lines.append(
                 "    classDef entry stroke:#4a90e2,stroke-width:3px"
             )
+
+    compliance_ids = [
+        _mermaid_node_id(node.node_id)
+        for node in branch.node_defs
+        if getattr(node, "compliance_tags", None)
+    ]
+    if compliance_ids:
+        lines.append(f"    class {','.join(compliance_ids)} compliance")
+        lines.append(
+            "    classDef compliance fill:#fff4cc,stroke:#b7791f,stroke-width:2px"
+        )
 
     lines.append("```")
     return "\n".join(lines)
@@ -902,6 +925,10 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     node_lines = [
         f"  - {n.node_id}: {n.display_name}"
         + (f" ({n.phase})" if n.phase != "custom" else "")
+        + (
+            f" [compliance: {', '.join(n.compliance_tags)}]"
+            if n.compliance_tags else ""
+        )
         for n in branch.node_defs
     ] or ["  (no nodes yet)"]
 
@@ -962,6 +989,15 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     summary_parts += ["", "Graph:", mermaid, "", run_note]
     summary = "\n".join(summary_parts)
     related = _related_wiki_pages(source_dict)
+    nodes = [
+        {
+            "node_id": n.node_id,
+            "display_name": n.display_name,
+            "phase": n.phase,
+            "compliance_tags": list(n.compliance_tags),
+        }
+        for n in branch.node_defs
+    ]
 
     # Lineage: expose fork_from + compute fork_descendants.
     fork_from = source_dict.get("fork_from")
@@ -989,6 +1025,7 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         "valid": not errors,
         "error_count": len(errors),
         "runnable": not errors and not unapproved_sc,
+        "nodes": nodes,
         "unapproved_source_code_nodes": unapproved_sc,
         "fork_from": fork_from,
         "fork_descendants": fork_descendants,
@@ -1156,7 +1193,8 @@ def _resolve_node_spec(
         merged["node_id"] = nid or ref_nid
         for field_key in (
             "display_name", "description", "phase", "input_keys",
-            "output_keys", "source_code", "prompt_template", "author",
+            "output_keys", "source_code", "prompt_template",
+            "compliance_tags", "author",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1220,6 +1258,7 @@ def _lookup_node_body(
             "output_keys": list(hit.get("output_keys") or []),
             "source_code": hit.get("source_code", ""),
             "prompt_template": hit.get("prompt_template", ""),
+            "compliance_tags": list(hit.get("compliance_tags") or []),
             "author": hit.get("author", ""),
             "approved": bool(hit.get("approved", False)),
         }, ""
@@ -1247,6 +1286,7 @@ def _lookup_node_body(
                 "output_keys": list(nd.get("output_keys") or []),
                 "source_code": nd.get("source_code", ""),
                 "prompt_template": nd.get("prompt_template", ""),
+                "compliance_tags": list(nd.get("compliance_tags") or []),
                 "author": nd.get("author", ""),
                 "approved": bool(nd.get("approved", False)),
             }, ""
@@ -1285,6 +1325,9 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     out_keys, err = _coerce_node_keys(raw.get("output_keys"), "output_keys")
     if err:
         return err
+    compliance_tags, err = _coerce_compliance_tags(raw.get("compliance_tags"))
+    if err:
+        return err
     # BUG-045: thread the three sub-branch / sibling-run spec fields. The
     # compiler reads them (workflow/graph_compiler.py:_build_invoke_branch /
     # invoke_branch_version / await_run callables) and NodeDefinition
@@ -1311,6 +1354,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             output_keys=out_keys,
             source_code=source_code,
             prompt_template=prompt_template,
+            compliance_tags=compliance_tags,
             author=raw.get("author") or _current_actor(),
             approved=bool(raw.get("approved", False)),
             invoke_branch_spec=invoke_branch_arg,
@@ -1687,6 +1731,11 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     if err:
                         return err
                     n.output_keys = keys
+                if "compliance_tags" in op:
+                    tags, err = _coerce_compliance_tags(op["compliance_tags"])
+                    if err:
+                        return err
+                    n.compliance_tags = tags
                 return ""
         return f"update_node: node '{nid}' not found"
     if name == "add_skill":
@@ -2019,6 +2068,7 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
         for field in (
             "display_name", "description", "phase",
             "prompt_template", "source_code",
+            "compliance_tags",
         ):
             if kwargs.get(field):
                 updates[field] = kwargs[field]
@@ -2063,7 +2113,7 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "error": (
                 "No fields to update. Pass one or more of "
                 "display_name / description / phase / prompt_template / "
-                "source_code / input_keys / output_keys, or a "
+                "source_code / input_keys / output_keys / compliance_tags, or a "
                 "changes_json object."
             ),
         })
@@ -2139,6 +2189,11 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             if err:
                 return json.dumps({"status": "rejected", "error": err})
             target_node.output_keys = keys
+        if "compliance_tags" in updates:
+            tags, err = _coerce_compliance_tags(updates["compliance_tags"])
+            if err:
+                return json.dumps({"status": "rejected", "error": err})
+            target_node.compliance_tags = tags
         # BUG-045: thread the three spec fields onto target_node. Mutual
         # exclusivity vs prompt_template / source_code is enforced by
         # BranchDefinition.validate() at compile time; we accept what
@@ -2753,6 +2808,15 @@ per-turn tool-call budget is not at risk:
 - `add_state_field branch_def_id=... field_name=... field_type=...`
 - `validate_branch branch_def_id=...`
 - `describe_branch branch_def_id=...`
+
+## Compliance diagrams
+
+When the user asks for a compliance diagram, do not draw it from memory
+or generic assumptions. Call `describe_branch` for the relevant
+`branch_def_id` and anchor the answer to its returned `nodes[*].compliance_tags`
+and `mermaid` fields. Branch authors can set per-node `compliance_tags`
+through `build_branch`, `patch_branch`, `add_node`, or `update_node`;
+`describe_branch` renders tagged nodes with a visible compliance overlay.
 
 ## Hard rule
 

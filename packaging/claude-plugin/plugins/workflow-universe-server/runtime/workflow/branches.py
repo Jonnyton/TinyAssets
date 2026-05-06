@@ -344,6 +344,11 @@ class NodeDefinition:
 
     # Quality
     evaluation_criteria: list[dict[str, str]] = field(default_factory=list)
+    # Compliance classification tags carried by the branch author.
+    # Examples: "PII", "HIPAA", "GDPR", "safety-review". These are
+    # descriptive labels, not enforcement policy; describe_branch renders
+    # them so compliance diagrams anchor to persisted Workflow data.
+    compliance_tags: list[str] = field(default_factory=list)
 
     # Sub-branch invocation (invoke_branch node kind).
     # When set this node spawns a child branch run rather than executing an
@@ -422,6 +427,19 @@ class NodeDefinition:
                         f"[{idx}] must be a string, got "
                         f"{type(item).__name__}",
                     )
+        if not isinstance(self.compliance_tags, list):
+            raise NodeDefinitionValidationError(
+                "compliance_tags",
+                f"must be a list of strings, got "
+                f"{type(self.compliance_tags).__name__}",
+            )
+        for idx, item in enumerate(self.compliance_tags):
+            if not isinstance(item, str):
+                raise NodeDefinitionValidationError(
+                    "compliance_tags",
+                    f"[{idx}] must be a string, got "
+                    f"{type(item).__name__}",
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
