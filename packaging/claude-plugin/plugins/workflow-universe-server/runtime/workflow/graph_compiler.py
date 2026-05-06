@@ -38,7 +38,7 @@ from typing import Annotated, Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from workflow.branches import BranchDefinition, NodeDefinition
+from workflow.branches import BranchDefinition, GraphNodeRef, NodeDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -2010,6 +2010,9 @@ def compile_branch(
     node_by_id: dict[str, NodeDefinition] = {
         n.node_id: n for n in branch.node_defs
     }
+    graph_node_by_id: dict[str, GraphNodeRef] = {
+        gn.id: gn for gn in branch.graph_nodes
+    }
 
     node_ids_in_order = [gn.id for gn in branch.graph_nodes]
 
@@ -2055,7 +2058,9 @@ def compile_branch(
 
     # Conditional edges.
     for cedge in branch.conditional_edges:
-        source_def = node_by_id.get(cedge.from_node)
+        source_ref = graph_node_by_id.get(cedge.from_node)
+        source_def_id = source_ref.node_def_id if source_ref else cedge.from_node
+        source_def = node_by_id.get(source_def_id or cedge.from_node)
         conditions = {
             label: (END if tgt == "END" else tgt)
             for label, tgt in cedge.conditions.items()
