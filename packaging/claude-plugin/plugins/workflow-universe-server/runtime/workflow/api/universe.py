@@ -57,10 +57,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as _xml_escape
 
 from workflow.api.helpers import (
     _base_path,
@@ -1077,6 +1079,262 @@ def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -
         "path": path,
         "content": content,
         "truncated": False,
+    })
+
+
+_RENDER_FORMATS: dict[str, tuple[str, str]] = {
+    "markdown": (".md", "text/markdown"),
+    "md": (".md", "text/markdown"),
+    "docx": (
+        ".docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
+    "pdf": (".pdf", "application/pdf"),
+}
+
+
+def _safe_export_filename(
+    requested: str,
+    *,
+    uid: str,
+    suffix: str,
+) -> str:
+    stem = Path(requested).name if requested else ""
+    if not stem:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stem = f"{uid}-export-{stamp}{suffix}"
+    if not stem.endswith(suffix):
+        stem = f"{Path(stem).stem}{suffix}"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip(".-")
+    return safe or f"{uid}-export{suffix}"
+
+
+def _markdown_for_shareable_artifact(uid: str, udir: Path) -> str:
+    sections: list[str] = [
+        f"# Workflow Universe Export: {uid}",
+        "",
+        f"Generated: {datetime.now(timezone.utc).isoformat()}",
+        "",
+    ]
+
+    premise = _read_text(udir / "PROGRAM.md").strip()
+    if premise:
+        sections.extend(["## Premise", "", premise, ""])
+
+    canon_dir = udir / "canon"
+    if canon_dir.is_dir():
+        canon_files = [
+            p for p in sorted(canon_dir.iterdir())
+            if p.is_file() and not p.name.startswith(".")
+        ]
+        if canon_files:
+            sections.extend(["## Canon", ""])
+            for path in canon_files:
+                sections.extend([
+                    f"### {path.name}",
+                    "",
+                    _read_text(path).strip(),
+                    "",
+                ])
+
+    output_dir = udir / "output"
+    if output_dir.is_dir():
+        output_files = [
+            p for p in sorted(output_dir.rglob("*.md"))
+            if p.is_file() and not p.name.startswith(".")
+        ]
+        if output_files:
+            sections.extend(["## Output", ""])
+            for path in output_files:
+                rel = path.relative_to(output_dir)
+                sections.extend([
+                    f"### {rel}",
+                    "",
+                    _read_text(path).strip(),
+                    "",
+                ])
+
+    if len(sections) <= 4:
+        sections.extend([
+            "## Empty Export",
+            "",
+            "No premise, canon, or markdown output files were found.",
+            "",
+        ])
+
+    return "\n".join(sections).rstrip() + "\n"
+
+
+def _write_docx(path: Path, markdown_text: str) -> None:
+    paragraphs = [line if line.strip() else " " for line in markdown_text.splitlines()]
+    body = "".join(
+        "<w:p><w:r><w:t xml:space=\"preserve\">"
+        f"{_xml_escape(line)}"
+        "</w:t></w:r></w:p>"
+        for line in paragraphs
+    )
+    document_xml = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<w:document "
+        "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+        f"<w:body>{body}<w:sectPr/></w:body></w:document>"
+    )
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+            "<Default Extension=\"rels\" "
+            "ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+            "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+            "<Override PartName=\"/word/document.xml\" "
+            "ContentType=\"application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document.main+xml\"/>"
+            "</Types>",
+        )
+        zf.writestr(
+            "_rels/.rels",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<Relationships "
+            "xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+            "<Relationship Id=\"rId1\" "
+            "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+            "officeDocument\" Target=\"word/document.xml\"/>"
+            "</Relationships>",
+        )
+        zf.writestr("word/document.xml", document_xml)
+
+
+def _pdf_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _wrap_pdf_line(line: str, width: int = 86) -> list[str]:
+    if not line:
+        return [""]
+    chunks = []
+    words = line.split()
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) <= width:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        current = word
+    if current:
+        chunks.append(current)
+    return chunks or [line[:width]]
+
+
+def _write_pdf(path: Path, markdown_text: str) -> None:
+    lines: list[str] = []
+    for raw_line in markdown_text.splitlines():
+        lines.extend(_wrap_pdf_line(raw_line))
+
+    pages = [lines[i:i + 54] for i in range(0, len(lines), 54)] or [[]]
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"",  # filled after page object ids are known
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    page_ids: list[int] = []
+    for page_lines in pages:
+        content_lines = ["BT", "/F1 10 Tf", "72 760 Td", "14 TL"]
+        for line in page_lines:
+            content_lines.append(f"({_pdf_escape(line)}) Tj")
+            content_lines.append("T*")
+        content_lines.append("ET")
+        stream = "\n".join(content_lines).encode("latin-1", errors="replace")
+        content_obj_id = len(objects) + 2
+        page_obj_id = len(objects) + 1
+        page_ids.append(page_obj_id)
+        objects.append(
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                f"/Resources << /Font << /F1 3 0 R >> >> "
+                f"/Contents {content_obj_id} 0 R >>"
+            ).encode("ascii")
+        )
+        objects.append(
+            b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\n"
+            b"stream\n" + stream + b"\nendstream"
+        )
+    kids = " ".join(f"{obj_id} 0 R" for obj_id in page_ids)
+    objects[1] = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>".encode(
+        "ascii",
+    )
+
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{index} 0 obj\n".encode("ascii"))
+        pdf.extend(obj)
+        pdf.extend(b"\nendobj\n")
+    xref_at = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    pdf.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_at}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    path.write_bytes(bytes(pdf))
+
+
+def _action_render_artifact(
+    universe_id: str = "",
+    artifact_format: str = "markdown",
+    filename: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Render premise, canon, and markdown output into a shareable artifact."""
+    uid = universe_id or _default_universe()
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    normalized_format = (artifact_format or "markdown").strip().lower()
+    if normalized_format not in _RENDER_FORMATS:
+        return json.dumps({
+            "error": "Unsupported artifact format.",
+            "supported_formats": ["markdown", "docx", "pdf"],
+        })
+
+    suffix, mime_type = _RENDER_FORMATS[normalized_format]
+    if normalized_format == "md":
+        normalized_format = "markdown"
+
+    export_dir = udir / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_export_filename(filename, uid=uid, suffix=suffix)
+    target = (export_dir / safe_name).resolve()
+    if not target.is_relative_to(export_dir.resolve()):
+        return json.dumps({"error": "Path traversal not allowed."})
+
+    markdown_text = _markdown_for_shareable_artifact(uid, udir)
+    if normalized_format == "markdown":
+        target.write_text(markdown_text, encoding="utf-8")
+    elif normalized_format == "docx":
+        _write_docx(target, markdown_text)
+    elif normalized_format == "pdf":
+        _write_pdf(target, markdown_text)
+
+    raw = target.read_bytes()
+    return json.dumps({
+        "universe_id": uid,
+        "format": normalized_format,
+        "path": str(target.relative_to(udir)),
+        "absolute_path": str(target),
+        "mime_type": mime_type,
+        "size_bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "source_sections": ["premise", "canon", "output"],
     })
 
 
@@ -4214,6 +4472,7 @@ def _action_create_universe(
 def _universe_impl(
     action: str,
     universe_id: str = "",
+    artifact_format: str = "markdown",
     text: str = "",
     path: str = "",
     category: str = "",
@@ -4249,6 +4508,7 @@ def _universe_impl(
         "list": _action_list_universes,
         "inspect": _action_inspect_universe,
         "read_output": _action_read_output,
+        "render_artifact": _action_render_artifact,
         "query_world": _action_query_world,
         "get_activity": _action_get_activity,
         "get_recent_events": _action_get_recent_events,
@@ -4304,6 +4564,7 @@ def _universe_impl(
     # Build kwargs from all optional params
     kwargs: dict[str, Any] = {
         "universe_id": universe_id,
+        "artifact_format": artifact_format,
         "text": text,
         "path": path,
         "category": category,

@@ -59,6 +59,18 @@ class TestUniverseIdInResponses:
         assert out["universe_id"] == "alpha"
         assert out["content"] == "hello"
 
+    def test_render_artifact_includes_universe_id(self, universe_base):
+        udir = _make_universe(universe_base, "alpha")
+        (udir / "PROGRAM.md").write_text("Alpha premise.", encoding="utf-8")
+        out = json.loads(us._action_render_artifact(
+            universe_id="alpha",
+            artifact_format="markdown",
+            filename="alpha-share.md",
+        ))
+        assert out["universe_id"] == "alpha"
+        assert out["format"] == "markdown"
+        assert out["path"] == "exports/alpha-share.md"
+
     def test_list_canon_includes_universe_id(self, universe_base):
         udir = _make_universe(universe_base, "alpha")
         (udir / "canon").mkdir()

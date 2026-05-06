@@ -30,7 +30,6 @@ from __future__ import annotations
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 
-import uvicorn
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
@@ -274,6 +273,7 @@ def branch_design_guide() -> str:
 def universe(
     action: str,
     universe_id: str = "",
+    artifact_format: str = "markdown",
     text: str = "",
     path: str = "",
     category: str = "",
@@ -313,8 +313,9 @@ def universe(
 
     Args:
         action: One of — reads: list, inspect, read_output, query_world,
-            get_activity, get_recent_events, get_ledger, read_premise,
-            list_canon, read_canon, list_sources, read_source; writes: submit_request,
+            render_artifact, get_activity, get_recent_events, get_ledger,
+            read_premise, list_canon, read_canon, list_sources, read_source;
+            writes: submit_request,
             give_direction, set_premise, add_canon, add_canon_from_path,
             create_universe, switch_universe; queue: queue_list,
             queue_cancel; subscriptions: subscribe_goal, unsubscribe_goal,
@@ -328,6 +329,7 @@ def universe(
             daemon_memory_search, daemon_memory_list, daemon_memory_review,
             daemon_memory_promote, daemon_memory_status; config: set_tier_config;
         universe_id: Target universe. Defaults to the active universe.
+        artifact_format: For render_artifact: markdown, docx, or pdf.
         text/path/filter_text: Action-specific content, file path, or filter.
         branch_id/request_type: Request routing fields.
         pickup_incentive/directed_daemon_id: Optional patch-request pickup
@@ -338,6 +340,7 @@ def universe(
     return _universe_impl(
         action=action,
         universe_id=universe_id,
+        artifact_format=artifact_format,
         text=text,
         path=path,
         category=category,
@@ -1064,6 +1067,8 @@ def main(
     )
 
     if transport == "streamable-http":
+        import uvicorn
+
         app = create_streamable_http_app()
         uvicorn.run(app, host=host, port=port)
     elif transport == "sse":

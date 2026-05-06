@@ -104,7 +104,7 @@ KNOWN_DEBT: dict[str, frozenset[str]] = {
 def _universe_dispatch_keys() -> set[str]:
     """Mirror of the local `dispatch = {...}` literal inside `universe()`."""
     return {
-        "list", "inspect", "read_output", "query_world",
+        "list", "inspect", "read_output", "render_artifact", "query_world",
         "get_activity", "get_recent_events", "get_ledger",
         "submit_request", "give_direction",
         "read_premise", "set_premise",
@@ -130,7 +130,7 @@ def _wiki_dispatch_keys() -> set[str]:
     """Mirror of the local `dispatch = {...}` literal inside `wiki()`."""
     return {
         "read", "search", "list", "lint",
-        "write", "consolidate", "promote", "ingest", "supersede",
+        "write", "patch", "consolidate", "promote", "ingest", "supersede",
         "sync_projects",
         "file_bug", "cosign_bug",
     }
@@ -273,7 +273,7 @@ def _docstring_actions_universe() -> set[str]:
     slab = _extract_slab(
         doc,
         r"action:\s*One of\s*[—\-]",
-        r"\n {4}\w+:\s",
+        r"\n {4}[\w/]+:\s",
     )
     return _flat_group_actions(slab)
 
@@ -283,7 +283,7 @@ def _docstring_actions_wiki() -> set[str]:
     slab = _extract_slab(
         doc,
         r"action:\s*One of\s*[—\-]",
-        r"\n {4}\w+:\s",
+        r"\n {4}[\w/]+:\s",
     )
     return _flat_group_actions(slab)
 
