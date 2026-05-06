@@ -349,23 +349,29 @@ def _wiki_read(page: str = "", **_kwargs: Any) -> str:
 
     text = _read_text(resolved)
     is_draft = _wiki_drafts_dir() in resolved.parents
-    prefix = "[DRAFT] " if is_draft else ""
     rel = _page_rel_path(resolved)
+    content = _draft_read_content(text, is_draft=is_draft)
 
     if len(text) > 15000:
         return json.dumps({
             "path": rel,
             "is_draft": is_draft,
-            "content": prefix + text[:15000],
+            "content": content[:15000],
             "truncated": True,
             "total_chars": len(text),
         })
     return json.dumps({
         "path": rel,
         "is_draft": is_draft,
-        "content": prefix + text,
+        "content": content,
         "truncated": False,
     })
+
+
+def _draft_read_content(text: str, *, is_draft: bool) -> str:
+    if not is_draft or text.startswith("[DRAFT]"):
+        return text
+    return "[DRAFT] " + text
 
 
 def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:

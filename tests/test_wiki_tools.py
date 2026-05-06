@@ -170,6 +170,18 @@ class TestWikiRead:
         result = json.loads(wiki("read"))
         assert "error" in result
 
+    def test_read_draft_does_not_duplicate_existing_draft_marker(self, wiki_dir):
+        content = "[DRAFT] # Pending Concept\n\nDraft body.\n"
+        (wiki_dir / "drafts" / "concepts" / "pending-concept.md").write_text(
+            content, encoding="utf-8"
+        )
+
+        result = json.loads(wiki("read", page="pending-concept"))
+
+        assert result["is_draft"] is True
+        assert result["content"].startswith("[DRAFT] # Pending Concept")
+        assert not result["content"].startswith("[DRAFT] [DRAFT]")
+
 
 class TestWikiList:
     def test_list_pages(self, wiki_dir):
