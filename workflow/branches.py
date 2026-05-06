@@ -386,6 +386,22 @@ class NodeDefinition:
     # }
     await_run_spec: dict[str, Any] | None = None
 
+    # confidence_threshold node kind. Deterministically routes by a numeric
+    # confidence state field: auto-process at/above threshold, ask below it,
+    # and emit an optional learning signal when a later user answer is present.
+    # Shape: {
+    #   "confidence_key": str,            # required
+    #   "threshold": float,               # default 0.8, inclusive
+    #   "route_key": str,                 # default output_keys[0] or "route"
+    #   "process_route": str,             # default "process"
+    #   "ask_route": str,                 # default "ask_user"
+    #   "answer_key": str,                # optional user answer state field
+    #   "question_key": str,              # optional output state field
+    #   "question_template": str,         # optional, state placeholders allowed
+    #   "learn_key": str,                 # optional output state field
+    # }
+    confidence_threshold_spec: dict[str, Any] | None = None
+
     # Legacy compat fields from NodeRegistration
     author: str = "anonymous"
     registered_at: str = ""
@@ -1221,6 +1237,46 @@ class BranchDefinition:
                     errors.append(
                         f"Node '{n.node_id}' has await_run_spec and also "
                         f"prompt_template/source_code — these are mutually exclusive."
+                    )
+
+            if n.confidence_threshold_spec is not None:
+                spec = n.confidence_threshold_spec
+                if not spec.get("confidence_key"):
+                    errors.append(
+                        f"Node '{n.node_id}' confidence_threshold_spec missing "
+                        f"'confidence_key'."
+                    )
+                try:
+                    threshold = float(spec.get("threshold", 0.8))
+                except (TypeError, ValueError):
+                    errors.append(
+                        f"Node '{n.node_id}' confidence_threshold_spec "
+                        "threshold must be a number between 0 and 1."
+                    )
+                else:
+                    if threshold < 0.0 or threshold > 1.0:
+                        errors.append(
+                            f"Node '{n.node_id}' confidence_threshold_spec "
+                            "threshold must be between 0 and 1."
+                        )
+                if n.prompt_template or n.source_code:
+                    errors.append(
+                        f"Node '{n.node_id}' has confidence_threshold_spec and "
+                        f"also prompt_template/source_code — these are mutually "
+                        f"exclusive."
+                    )
+                other_specs = [
+                    name for name, value in (
+                        ("invoke_branch_spec", n.invoke_branch_spec),
+                        ("invoke_branch_version_spec", n.invoke_branch_version_spec),
+                        ("await_run_spec", n.await_run_spec),
+                    )
+                    if value is not None
+                ]
+                if other_specs:
+                    errors.append(
+                        f"Node '{n.node_id}' has confidence_threshold_spec and "
+                        f"{', '.join(other_specs)} — these are mutually exclusive."
                     )
 
         return errors

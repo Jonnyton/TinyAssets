@@ -1778,6 +1778,120 @@ def _build_await_branch_run_node(
     return _node_fn
 
 
+def _non_empty(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict, tuple, set)):
+        return bool(value)
+    return True
+
+
+def compile_confidence_threshold_spec(
+    state: dict[str, Any],
+    spec: dict[str, Any],
+    *,
+    output_keys: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Evaluate a confidence-threshold node spec against runtime state.
+
+    This is intentionally a deterministic routing primitive. It does not
+    persist memory itself; when an uncertain route later carries a user answer,
+    it emits a structured learning signal for a downstream learn/memory node.
+    """
+    confidence_key = str(spec.get("confidence_key") or "").strip()
+    if not confidence_key:
+        raise CompilerError("confidence_threshold_spec missing 'confidence_key'.")
+
+    try:
+        confidence = float(state.get(confidence_key, 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    try:
+        threshold = float(spec.get("threshold", 0.8))
+    except (TypeError, ValueError) as exc:
+        raise CompilerError(
+            "confidence_threshold_spec threshold must be a number."
+        ) from exc
+    if threshold < 0.0 or threshold > 1.0:
+        raise CompilerError(
+            "confidence_threshold_spec threshold must be between 0 and 1."
+        )
+
+    route_key = str(
+        spec.get("route_key") or (output_keys[0] if output_keys else "route")
+    ).strip()
+    if not route_key:
+        raise CompilerError("confidence_threshold_spec route_key is empty.")
+
+    process_route = str(spec.get("process_route") or "process")
+    ask_route = str(spec.get("ask_route") or "ask_user")
+    answer_key = str(spec.get("answer_key") or "").strip()
+    has_answer = bool(answer_key and _non_empty(state.get(answer_key)))
+
+    confident = confidence >= threshold
+    result: dict[str, Any] = {
+        route_key: process_route if confident or has_answer else ask_route,
+    }
+
+    if not confident and not has_answer:
+        question_key = str(spec.get("question_key") or "").strip()
+        if question_key:
+            template = str(
+                spec.get("question_template")
+                or "Please clarify before this node continues."
+            )
+            missing = _missing_state_keys(template, state)
+            if missing:
+                raise CompilerError(
+                    "confidence_threshold_spec question_template references "
+                    f"missing state keys: {missing}"
+                )
+            result[question_key] = _render_template(template, state)
+
+    learn_key = str(spec.get("learn_key") or "").strip()
+    if learn_key and has_answer:
+        result[learn_key] = {
+            "answer": state[answer_key],
+            "confidence": confidence,
+            "threshold": threshold,
+            "confidence_key": confidence_key,
+            "route": process_route,
+        }
+
+    return result
+
+
+def _build_confidence_threshold_node(
+    node: NodeDefinition,
+    *,
+    event_sink: Callable[..., None] | None,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    spec = node.confidence_threshold_spec or {}
+
+    def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
+        result = compile_confidence_threshold_spec(
+            state, spec, output_keys=node.output_keys,
+        )
+        if event_sink is not None:
+            try:
+                event_sink(
+                    node_id=node.node_id,
+                    phase="ran",
+                    confidence_threshold=True,
+                    output=result,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if _is_cancel_exception(exc):
+                    raise
+                logger.exception("event_sink raised in %s", node.node_id)
+        return result
+
+    return _node_fn
+
+
 def _build_node(
     node: NodeDefinition,
     *,
@@ -1865,6 +1979,9 @@ def _build_node(
         inner = _build_await_branch_run_node(
             node, base_path=base_path, event_sink=event_sink,
         )
+        return _wrap_with_checkpoints(inner, node, event_sink)
+    if node.confidence_threshold_spec is not None:
+        inner = _build_confidence_threshold_node(node, event_sink=event_sink)
         return _wrap_with_checkpoints(inner, node, event_sink)
     # Fallback: a genuine body-less node in a non-domain-trusted
     # context is a malformed Branch. Preserve the CompilerError
