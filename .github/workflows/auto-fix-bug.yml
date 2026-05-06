@@ -341,6 +341,11 @@ jobs:
                 description: 'Automated writer produced a patch, but GitHub blocked Actions from pushing the branch.',
               },
               {
+                name: 'auto-fix-superseded',
+                color: 'cfd3d7',
+                description: 'Older auto-change PR was closed because a newer branch superseded it.',
+              },
+              {
                 name: 'writer:claude',
                 color: '5319e7',
                 description: 'Automated PR was written by a Claude-family model.',
@@ -951,6 +956,69 @@ jobs:
                 'Do not accept this PR with a same-family checker.',
               ].join('\n'),
             });
+
+            const issueBranchRoot = `auto-change/issue-${issueNumber}`;
+            const issueBranchPrefix = `${issueBranchRoot}-`;
+            const { data: issuePrs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              base: 'main',
+              sort: 'updated',
+              direction: 'desc',
+              per_page: 100,
+            });
+            for (const candidate of issuePrs) {
+              const headRef = candidate.head?.ref || '';
+              if (
+                candidate.number === pr.number ||
+                (headRef !== issueBranchRoot && !headRef.startsWith(issueBranchPrefix)) ||
+                !headRef.startsWith('auto-change/')
+              ) {
+                continue;
+              }
+              let staleBase = false;
+              try {
+                const { data: compare } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  basehead: `main...${headRef}`,
+                });
+                staleBase = Number(compare.behind_by || 0) > 0 ||
+                  !['ahead', 'identical'].includes(String(compare.status || ''));
+              } catch (error) {
+                core.warning(
+                  `Could not compare stale-base state for PR #${candidate.number} (${headRef}): ${error.message}`
+                );
+                continue;
+              }
+              if (!staleBase) {
+                continue;
+              }
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: candidate.number,
+                labels: ['auto-fix-reviewed', 'auto-fix-superseded'],
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: candidate.number,
+                body: [
+                  '**Auto-change PR closed as superseded**',
+                  '',
+                  `This stale-base PR from \`${headRef}\` was superseded by #${pr.number} from \`${branch}\`.`,
+                  'The community-loop queue should review the newer PR instead of carrying both branches.',
+                ].join('\n'),
+              });
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: candidate.number,
+                state: 'closed',
+              });
+            }
 
       - name: Close already-fixed issue when no repo change is needed
         if: >

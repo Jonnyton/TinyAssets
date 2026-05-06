@@ -464,6 +464,30 @@ def test_codex_pr_creation_policy_block_is_classified(wf):
     assert "core.warning" in script
 
 
+def test_codex_pr_creation_closes_stale_superseded_issue_prs(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    codex_pr_step = next((s for s in steps if s.get("id") == "codex-pr-create"), None)
+    assert codex_pr_step is not None, "Must create a PR for Codex-authored changes"
+    script = str(codex_pr_step.get("with", {}).get("script", ""))
+    assert "issueBranchRoot = `auto-change/issue-${issueNumber}`" in script
+    assert "issueBranchPrefix = `${issueBranchRoot}-`" in script
+    assert "headRef !== issueBranchRoot" in script
+    assert "compareCommitsWithBasehead" in script
+    assert "Number(compare.behind_by || 0) > 0" in script
+    assert "auto-fix-superseded" in script
+    assert "state: 'closed'" in script
+    assert "superseded by #${pr.number}" in script
+
+
+def test_superseded_label_is_defined(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    labels_step = next((s for s in steps if s.get("name") == "Ensure automation labels"), None)
+    assert labels_step is not None, "Must define automation labels"
+    script = str(labels_step.get("with", {}).get("script", ""))
+    assert "auto-fix-superseded" in script
+    assert "Older auto-change PR was closed" in script
+
+
 def test_branch_naming_convention(wf):
     steps = wf["jobs"]["fix"]["steps"]
     meta_step = next((s for s in steps if s.get("id") == "meta"), None)
