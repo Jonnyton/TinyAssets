@@ -88,7 +88,36 @@ def test_provider_alias_maps_to_family(tmp_path: Path) -> None:
 
     assert any(item.provider == "codex" for item in candidates)
     assert any(item.provider == "shared" for item in candidates)
-    assert not any(item.provider == "claude" for item in candidates)
+    assert any(item.provider == "claude" for item in candidates)
+    assert any(
+        item.provider == "claude" and item.source_type == "provider-memory"
+        for item in candidates
+    )
+
+
+def test_other_provider_memory_is_claim_only(tmp_path: Path) -> None:
+    codex_config = tmp_path / ".codex" / "config.toml"
+    codex_config.parent.mkdir()
+    codex_config.write_text("# TODO: codex desktop claim context\n", encoding="utf-8")
+    claude_memory = tmp_path / ".claude" / "agent-memory" / "dev" / "MEMORY.md"
+    claude_memory.parent.mkdir(parents=True)
+    claude_memory.write_text("TODO: claude-authored prior context\n", encoding="utf-8")
+
+    claim_candidates = provider_context_feed.collect_candidates(
+        tmp_path,
+        provider="codex-gpt5-desktop",
+        phase="claim",
+        limit=None,
+    )
+    build_candidates = provider_context_feed.collect_candidates(
+        tmp_path,
+        provider="codex-gpt5-desktop",
+        phase="build",
+        limit=None,
+    )
+
+    assert any(item.provider == "claude" for item in claim_candidates)
+    assert not any(item.provider == "claude" for item in build_candidates)
 
 
 def test_active_pipeline_ranks_before_old_activity_log(tmp_path: Path) -> None:

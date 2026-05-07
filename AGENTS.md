@@ -297,6 +297,10 @@ Every provider, every session, in this order:
    artifacts, worktree handoffs, and provider automation notes. It is a
    context feed, not a backlog writer. Relevant candidates must be promoted
    into a current STATUS/worktree/PR lane before they become build authority.
+   Claim phase deliberately includes durable memory/brain notes authored by
+   other AI families, not only your own provider. Search the feed for the
+   issue/request slug and related domain terms before assuming no prior
+   Claude/Codex/Cursor/Cowork context exists.
 5. **Claim by editing STATUS.md.** Change the chosen row's Status cell
    to `claimed:<yourname>`. Use a session-specific provider name when
    more than one session from the same tool may be active (for example
