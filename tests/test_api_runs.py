@@ -296,3 +296,63 @@ def test_failed_run_snapshot_marks_last_running_node_failed(monkeypatch):
     by_id = {node["node_id"]: node["status"] for node in snapshot["node_statuses"]}
     assert by_id["step1"] == "failed"
     assert "- step1: failed" in snapshot["summary"]
+
+
+def test_failed_run_snapshot_exposes_provider_chain_diagnostics(monkeypatch):
+    def _missing_branch(*_args, **_kwargs):
+        raise KeyError("missing-branch")
+
+    monkeypatch.setattr("workflow.daemon_server.get_branch_definition", _missing_branch)
+    monkeypatch.setattr(
+        runs_mod,
+        "_run_mermaid_from_events",
+        lambda _branch_def_id, _node_statuses: "```mermaid\nflowchart LR\n```",
+    )
+
+    snapshot = _compose_run_snapshot(
+        {
+            "run_id": "run-1",
+            "branch_def_id": "missing-branch",
+            "status": "failed",
+            "actor": "tester",
+            "last_node_id": "step1",
+            "error": "Provider call failed in node 'step1': "
+            "All providers exhausted for role=writer. "
+            "Daemon should retry with backoff.",
+        },
+        [
+            {
+                "node_id": "step1",
+                "status": "failed",
+                "detail": {
+                    "failure_class": "provider_exhausted",
+                    "provider_chain": {
+                        "role": "writer",
+                        "chain": ["claude-code", "codex"],
+                        "attempts": [
+                            {
+                                "provider": "claude-code",
+                                "status": "skipped",
+                                "skip_class": "not_in_registry",
+                                "detail": "provider name not registered with daemon",
+                            },
+                            {
+                                "provider": "codex",
+                                "status": "failed",
+                                "skip_class": "timed_out",
+                                "detail": "codex hung",
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+    )
+
+    assert snapshot["failure_class"] == "provider_exhausted"
+    assert snapshot["error_detail"]["failure_class"] == "provider_exhausted"
+    attempts = snapshot["error_detail"]["provider_chain"]["attempts"]
+    assert attempts[0]["provider"] == "claude-code"
+    assert attempts[0]["skip_class"] == "not_in_registry"
+    assert attempts[1]["provider"] == "codex"
+    assert attempts[1]["skip_class"] == "timed_out"

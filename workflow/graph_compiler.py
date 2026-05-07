@@ -39,6 +39,7 @@ from typing import Annotated, Any, Callable
 from langgraph.graph import END, START, StateGraph
 
 from workflow.branches import BranchDefinition, GraphNodeRef, NodeDefinition
+from workflow.exceptions import AllProvidersExhaustedError
 
 logger = logging.getLogger(__name__)
 
@@ -229,13 +230,22 @@ def _emit_failed_event(
     """Emit a terminal failed event before re-raising CompilerError."""
     if event_sink is None:
         return
+    detail: dict[str, Any] = {
+        "phase": "failed",
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+    }
+    if isinstance(exc, AllProvidersExhaustedError):
+        detail["failure_class"] = "provider_exhausted"
+        if exc.chain_state is not None:
+            detail["provider_chain"] = exc.chain_state
+        elif exc.attempts is not None:
+            detail["provider_attempts"] = [
+                attempt.to_dict() if hasattr(attempt, "to_dict") else dict(attempt)
+                for attempt in exc.attempts
+            ]
     try:
-        event_sink(
-            node_id=node_id,
-            phase="failed",
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
+        event_sink(node_id=node_id, **detail)
     except Exception as sink_exc:  # noqa: BLE001
         if _is_cancel_exception(sink_exc):
             raise

@@ -26,7 +26,12 @@ from workflow.branches import (
     GraphNodeRef,
     NodeDefinition,
 )
+from workflow.exceptions import AllProvidersExhaustedError
 from workflow.graph_compiler import CompilerError, compile_branch
+from workflow.providers.diagnostics import (
+    ProviderAttemptDiagnostic,
+    build_chain_state,
+)
 from workflow.runs import (
     NODE_STATUS_FAILED,
     NODE_STATUS_RUNNING,
@@ -210,6 +215,62 @@ def test_execute_branch_records_failed_node_event(tmp_path):
     )
     assert failed["detail"]["error_type"] == "RuntimeError"
     assert "exhausted" in failed["detail"]["error"].lower()
+
+
+def test_provider_exhausted_failed_event_preserves_diagnostics(tmp_path):
+    """FEAT-006: provider_exhausted failures expose per-provider reasons."""
+
+    attempts = [
+        ProviderAttemptDiagnostic(
+            provider="claude-code",
+            status="skipped",
+            skip_class="not_in_registry",
+            detail="provider name not registered with daemon",
+        ),
+        ProviderAttemptDiagnostic(
+            provider="codex",
+            status="failed",
+            skip_class="timed_out",
+            detail="codex hung",
+        ),
+    ]
+    chain_state = build_chain_state(
+        role="writer",
+        chain=["claude-code", "codex"],
+        attempts=attempts,
+        api_key_providers_enabled=False,
+    )
+
+    def _exhausted(prompt, system, *, role):
+        raise AllProvidersExhaustedError(
+            "All providers exhausted for role=writer. "
+            "Daemon should retry with backoff.",
+            attempts=attempts,
+            chain_state=chain_state,
+        )
+
+    base = tmp_path / "output"
+    base.mkdir()
+    outcome = execute_branch(
+        base,
+        branch=_simple_branch(),
+        inputs={"x": "test"},
+        actor="tester",
+        provider_call=_exhausted,
+    )
+
+    assert outcome.status == RUN_STATUS_FAILED
+    failed = next(
+        event for event in list_events(base, outcome.run_id, since_step=-1)
+        if event["node_id"] == "step1" and event["status"] == NODE_STATUS_FAILED
+    )
+    detail = failed["detail"]
+    assert detail["failure_class"] == "provider_exhausted"
+    assert detail["provider_chain"]["role"] == "writer"
+    assert detail["provider_chain"]["attempts"][0]["provider"] == "claude-code"
+    assert detail["provider_chain"]["attempts"][0]["skip_class"] == "not_in_registry"
+    assert detail["provider_chain"]["attempts"][1]["provider"] == "codex"
+    assert detail["provider_chain"]["attempts"][1]["skip_class"] == "timed_out"
 
 
 def test_build_node_status_map_flips_failed_node_terminal():
