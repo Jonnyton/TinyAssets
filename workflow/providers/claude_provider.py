@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
 import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from workflow.exceptions import (
     ProviderError,
@@ -48,6 +50,14 @@ def _resolve_claude_cmd() -> tuple[list[str], bool]:
     return ["claude"], False
 
 
+def _claude_workdir() -> str:
+    """Return the source workspace Claude should inspect for coding tasks."""
+    configured = os.environ.get("WORKFLOW_CLAUDE_WORKDIR", "").strip()
+    if configured:
+        return configured
+    return str(Path(__file__).resolve().parents[2])
+
+
 class ClaudeProvider(BaseProvider):
     """Calls Claude via the ``claude -p`` CLI binary."""
 
@@ -71,6 +81,7 @@ class ClaudeProvider(BaseProvider):
         proc_env = subprocess_env_without_api_keys()
 
         win_kw = _no_window_kwargs()
+        workdir = _claude_workdir()
         if use_shell:
             proc = await asyncio.create_subprocess_shell(
                 shlex.join(cmd),
@@ -78,6 +89,7 @@ class ClaudeProvider(BaseProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=proc_env,
+                cwd=workdir,
                 **win_kw,
             )
         else:
@@ -87,6 +99,7 @@ class ClaudeProvider(BaseProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=proc_env,
+                cwd=workdir,
                 **win_kw,
             )
 
@@ -156,6 +169,7 @@ class ClaudeProvider(BaseProvider):
         proc_env = subprocess_env_without_api_keys()
 
         win_kw = _no_window_kwargs()
+        workdir = _claude_workdir()
         if use_shell:
             proc = await asyncio.create_subprocess_shell(
                 shlex.join(cmd),
@@ -163,6 +177,7 @@ class ClaudeProvider(BaseProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=proc_env,
+                cwd=workdir,
                 **win_kw,
             )
         else:
@@ -172,6 +187,7 @@ class ClaudeProvider(BaseProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=proc_env,
+                cwd=workdir,
                 **win_kw,
             )
 

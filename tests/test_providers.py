@@ -569,6 +569,34 @@ class TestClaudeProvider:
             with pytest.raises(ProviderTimeoutError):
                 await provider.complete("prompt", "system", ModelConfig(timeout=1))
 
+    @pytest.mark.asyncio
+    async def test_runs_from_repo_root_so_coding_tasks_can_read_source(self):
+        """BUG-060: Claude loop investigations need repo source/tests."""
+        import workflow.providers.claude_provider as claude_provider
+        from workflow.providers.claude_provider import ClaudeProvider
+
+        captured_kwargs = {}
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"Hello world", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
+
+        async def _fake_exec(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_proc
+
+        with (
+            patch("workflow.providers.claude_provider._resolve_claude_cmd",
+                  return_value=(["claude"], False)),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        ):
+            provider = ClaudeProvider()
+            await provider.complete("prompt", "system", ModelConfig())
+
+        repo_root = Path(claude_provider.__file__).resolve().parents[2]
+        assert captured_kwargs["cwd"] == str(repo_root)
+
 
 # =====================================================================
 # CodexProvider (subprocess mock)
