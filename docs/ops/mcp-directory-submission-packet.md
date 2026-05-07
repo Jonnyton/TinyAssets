@@ -190,6 +190,7 @@ Ready artifact:
 Submit:
 
 - Display name: Workflow
+- Connector display name: `Workflow`
 - Subtitle: Build durable workflows
 - Category: Productivity
 - MCP server URL: `https://tinyassets.io/mcp-directory`

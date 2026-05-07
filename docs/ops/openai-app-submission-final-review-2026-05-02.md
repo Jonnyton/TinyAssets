@@ -72,8 +72,10 @@ Post-rebase freshness check 2026-05-02T15:46-07:00:
 
 2026-05-02T15:35-07:00 in-app browser audit:
 
-- App Info populated: `Workflow`, `Build durable workflows`, `Productivity`,
-  developer `TinyAssets`, website/support/privacy/terms URLs.
+- App Info populated: connector display name `Workflow`, subtitle
+  `Build durable workflows`, `Productivity`, verified publisher/legal identity
+  `TinyAssets`, website/support/privacy/terms URLs.
+- Connector display name: `Workflow`
 - Logo upload control still visible; no logo uploaded.
 - MCP Server populated: `https://tinyassets.io/mcp-directory`, `No Auth`, 11
   tool rows, complete justifications, `Domain verified`.

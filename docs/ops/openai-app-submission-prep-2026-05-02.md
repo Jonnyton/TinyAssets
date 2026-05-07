@@ -39,10 +39,12 @@ Historical ChatGPT Developer Mode proof is preserved in
 ## App Info
 
 - App name: `Workflow`
+- Connector display name: `Workflow`
 - Subtitle: `Build durable workflows` (23 chars; under OpenAI's 30-char
   guidance from the submission skill)
 - Category: `PRODUCTIVITY`
-- Developer/publisher: `TinyAssets`
+- Verified publisher/legal identity: `TinyAssets` (do not use this as the app
+  or connector display name)
 - Website URL: `https://tinyassets.io`
 - Support: `https://tinyassets.io/legal#contact` or `ops@tinyassets.io`
 - Privacy Policy URL: `https://tinyassets.io/legal#privacy`

@@ -235,9 +235,11 @@ OpenAI dashboard audit 2026-05-02T15:05-07:00:
 
 OpenAI dashboard re-audit 2026-05-02T15:35-07:00:
 
-- App Info values are populated: `Workflow`, `Build durable workflows`,
-  `Productivity`, developer `TinyAssets`, website/support/privacy/terms URLs,
-  and no commerce/purchase checkbox selected.
+- App Info values are populated: connector display name `Workflow`, subtitle
+  `Build durable workflows`, `Productivity`, verified publisher/legal identity
+  `TinyAssets`, website/support/privacy/terms URLs, and no commerce/purchase
+  checkbox selected.
+- Connector display name: `Workflow`
 - Logo upload control is still visible; logo not uploaded.
 - MCP Server values are populated with `https://tinyassets.io/mcp-directory`,
   `No Auth`, 11 tool rows, complete justifications, and `Domain verified`.

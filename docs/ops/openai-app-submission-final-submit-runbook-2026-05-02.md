@@ -51,9 +51,11 @@ Submission implications:
 ## Dashboard Values
 
 - Display name: `Workflow`
+- Connector display name: `Workflow`
 - Subtitle: `Build durable workflows`
 - Category: `PRODUCTIVITY`
-- Developer/publisher: `TinyAssets` (host must confirm verified publisher)
+- Verified publisher/legal identity: `TinyAssets` (host must confirm verified
+  publisher; do not use this as the app or connector display name)
 - Website: `https://tinyassets.io`
 - Support: `https://tinyassets.io/legal#contact` or `ops@tinyassets.io`
 - Privacy policy: `https://tinyassets.io/legal#privacy`

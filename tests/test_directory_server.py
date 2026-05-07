@@ -129,6 +129,37 @@ def test_chatgpt_submission_packet_matches_directory_surface() -> None:
         }
 
 
+def test_chatgpt_submission_uses_workflow_as_connector_display_name() -> None:
+    """BUG-062: TinyAssets is the publisher/legal identity, not the connector name."""
+    repo_root = Path(__file__).resolve().parents[1]
+    packet = json.loads(
+        (repo_root / "chatgpt-app-submission.json").read_text(encoding="utf-8")
+    )
+
+    app_info = packet["app_info"]
+    assert app_info["display_name"] == "Workflow"
+    assert app_info["subtitle"] == "Build durable workflows"
+    assert "TinyAssets" not in json.dumps(app_info)
+
+
+def test_openai_submission_docs_separate_display_name_from_publisher() -> None:
+    """Operator docs must not invite copying TinyAssets into app-name fields."""
+    repo_root = Path(__file__).resolve().parents[1]
+    docs = [
+        "docs/ops/mcp-directory-submission-packet.md",
+        "docs/ops/openai-app-submission-prep-2026-05-02.md",
+        "docs/ops/openai-app-submission-readiness-2026-05-02.md",
+        "docs/ops/openai-app-submission-final-review-2026-05-02.md",
+        "docs/ops/openai-app-submission-final-submit-runbook-2026-05-02.md",
+    ]
+
+    for rel_path in docs:
+        text = (repo_root / rel_path).read_text(encoding="utf-8")
+        assert "Developer/publisher: `TinyAssets`" not in text
+        assert "developer `TinyAssets`" not in text
+        assert "Connector display name: `Workflow`" in text
+
+
 def test_directory_tools_do_not_use_catch_all_action_inputs() -> None:
     for tool in _list_tools():
         properties = tool.parameters.get("properties", {})
