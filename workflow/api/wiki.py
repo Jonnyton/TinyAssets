@@ -177,6 +177,17 @@ def _resolve_page(name: str) -> Path | None:
         p = specials[clean.lower()]
         return p if p.exists() else None
 
+    rel_candidate = Path(clean)
+    if not rel_candidate.is_absolute() and ".." not in rel_candidate.parts:
+        root = _wiki_root().resolve()
+        for candidate in (root / rel_candidate, root / f"{clean}.md"):
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved.is_relative_to(root) and resolved.is_file():
+                return resolved
+
     for base_dir in [_wiki_pages_dir(), _wiki_drafts_dir()]:
         for sub in _WIKI_CATEGORIES:
             fp = base_dir / sub / (clean + ".md")
@@ -399,6 +410,31 @@ def _append_wiki_log(msg: str) -> None:
             f.write(f"\n## [{today}] {msg}\n")
     except OSError:
         pass
+
+
+def _wiki_write_receipt(
+    *,
+    action: str,
+    path: str,
+    status: str,
+    sha256: str,
+) -> dict[str, str]:
+    """Compact write receipt for chat clients that lose rendered responses."""
+    receipt_id = hashlib.sha256(
+        f"{action}\0{path}\0{status}\0{sha256}".encode("utf-8")
+    ).hexdigest()[:16]
+    return {
+        "receipt_id": receipt_id,
+        "action": action,
+        "status": status,
+        "path": path,
+        "sha256": sha256,
+        "recovery_action": f"wiki action=read page={path}",
+        "recovery_hint": (
+            "If the chatbot-visible response was lost, read this path to "
+            "confirm the write landed."
+        ),
+    }
 
 
 def _sanitize_slug(name: str) -> str:
@@ -649,13 +685,22 @@ def _wiki_write(
     if promoted_path.exists():
         try:
             promoted_path.write_text(content, encoding="utf-8")
+            rel_path = _page_rel_path(promoted_path)
+            status = "updated"
+            content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
             _append_wiki_log(
                 f"update | pages/{category}/{slug} | {log_entry or 'in-place update'}"
             )
             return json.dumps({
-                "path": f"pages/{category}/{slug}.md",
-                "status": "updated",
+                "path": rel_path,
+                "status": status,
                 "note": "Updated existing promoted page in-place.",
+                "write_receipt": _wiki_write_receipt(
+                    action="write",
+                    path=rel_path,
+                    status=status,
+                    sha256=content_sha,
+                ),
             })
         except OSError as exc:
             return json.dumps({"error": f"Failed to write: {exc}"})
@@ -666,15 +711,24 @@ def _wiki_write(
         is_new = not draft_path.exists()
         draft_path.write_text(content, encoding="utf-8")
         action_word = "draft" if is_new else "draft-update"
+        rel_path = _page_rel_path(draft_path)
+        status = "drafted" if is_new else "updated"
+        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
         _append_wiki_log(
             f"{action_word} | drafts/{category}/{slug} | {log_entry or 'new draft'}"
         )
         return json.dumps({
-            "path": f"drafts/{category}/{slug}.md",
-            "status": "drafted" if is_new else "updated",
+            "path": rel_path,
+            "status": status,
             "note": (
                 f"{'Drafted' if is_new else 'Updated draft'}: "
                 "call wiki promote to move to pages/."
+            ),
+            "write_receipt": _wiki_write_receipt(
+                action="write",
+                path=rel_path,
+                status=status,
+                sha256=content_sha,
             ),
         })
     except OSError as exc:
@@ -740,7 +794,15 @@ def _wiki_patch(
     try:
         resolved.write_text(patched, encoding="utf-8")
         _append_wiki_log(f"patch | {rel} | {log_entry or 'exact replacement'}")
-        response.update({"status": "patched"})
+        response.update({
+            "status": "patched",
+            "write_receipt": _wiki_write_receipt(
+                action="patch",
+                path=rel,
+                status="patched",
+                sha256=new_sha,
+            ),
+        })
         return json.dumps(response)
     except OSError as exc:
         return json.dumps({"error": f"Failed to patch: {exc}"})
@@ -882,9 +944,16 @@ def _wiki_promote(
         _append_wiki_log(
             f"promote | {found_category}/{slug} | moved from drafts to pages"
         )
+        rel_path = _page_rel_path(dest_path)
         return json.dumps({
-            "path": f"pages/{found_category}/{slug}.md",
+            "path": rel_path,
             "status": "promoted",
+            "write_receipt": _wiki_write_receipt(
+                action="promote",
+                path=rel_path,
+                status="promoted",
+                sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            ),
         })
     except OSError as exc:
         return json.dumps({"error": f"Failed to promote: {exc}"})
@@ -983,11 +1052,18 @@ def _wiki_supersede(
         _append_wiki_log(
             f"supersede | {old_category}/{old_slug} -> {new_slug} | {reason}"
         )
+        rel_path = _page_rel_path(old_path)
         return json.dumps({
             "status": "superseded",
             "old_page": old_slug,
             "new_draft": new_slug,
             "note": f"Superseded {old_slug}. Now call wiki promote on {new_slug}.",
+            "write_receipt": _wiki_write_receipt(
+                action="supersede",
+                path=rel_path,
+                status="superseded",
+                sha256=hashlib.sha256(old_content.encode("utf-8")).hexdigest(),
+            ),
         })
     except OSError as exc:
         return json.dumps({"error": f"Failed to supersede: {exc}"})

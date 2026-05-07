@@ -317,6 +317,16 @@ def test_wiki_write_drafts_then_promote_roundtrip(wiki_env):
     )
     assert res["status"] == "drafted"
     assert "drafts/notes/my-note.md" in res["path"]
+    assert res["write_receipt"]["action"] == "write"
+    assert res["write_receipt"]["status"] == "drafted"
+    assert res["write_receipt"]["path"] == "drafts/notes/my-note.md"
+    assert len(res["write_receipt"]["sha256"]) == 64
+    assert (
+        res["write_receipt"]["recovery_action"]
+        == "wiki action=read page=drafts/notes/my-note.md"
+    )
+    recovered = json.loads(wiki(action="read", page=res["write_receipt"]["path"]))
+    assert recovered["source_read_proof"]["sha256"] == res["write_receipt"]["sha256"]
 
     promoted = json.loads(wiki(action="promote", filename="my-note"))
     assert promoted["status"] == "promoted"
@@ -351,6 +361,16 @@ def test_wiki_patch_updates_long_page_without_full_replace(wiki_env):
 
     assert result["status"] == "patched"
     assert result["path"] == "pages/notes/long-note.md"
+    assert result["write_receipt"]["action"] == "patch"
+    assert result["write_receipt"]["status"] == "patched"
+    assert result["write_receipt"]["path"] == "pages/notes/long-note.md"
+    assert result["write_receipt"]["sha256"] == result["new_sha256"]
+    assert (
+        result["write_receipt"]["recovery_action"]
+        == "wiki action=read page=pages/notes/long-note.md"
+    )
+    recovered = json.loads(wiki(action="read", page=result["write_receipt"]["path"]))
+    assert recovered["source_read_proof"]["sha256"] == result["write_receipt"]["sha256"]
     patched = path.read_text(encoding="utf-8")
     assert "intro marker\npatched detail" in patched
     assert "original tail marker" in patched
