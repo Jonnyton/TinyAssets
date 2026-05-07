@@ -13,7 +13,7 @@ Canary flow
 3. POST ``tools/list`` → confirm the returned tools array is non-empty.
 4. POST ``tools/call`` for the strongest advertised read-only probe:
    ``universe`` with ``action=inspect`` on the legacy endpoint, or
-   ``get_workflow_status`` on the directory endpoint.
+   ``read.graph`` with ``target=status`` on the directory endpoint.
 
 Exit codes (task #6 spec)
 -------------------------
@@ -92,12 +92,12 @@ def _select_probe(tools: list[Any]) -> tuple[str, dict[str, Any], str]:
     names = _tool_names(tools)
     if "universe" in names:
         return "universe", {"action": "inspect"}, "universe inspect"
-    if "get_workflow_status" in names:
-        return "get_workflow_status", {}, "get_workflow_status"
+    if "read.graph" in names:
+        return "read.graph", {"target": "status"}, "read.graph status"
     raise ToolCanaryError(
         5,
         "tools/list did not advertise a supported read-only probe "
-        f"(wanted 'universe' or 'get_workflow_status'; saw {sorted(names)!r})",
+        f"(wanted 'universe' or 'read.graph'; saw {sorted(names)!r})",
     )
 
 
@@ -139,10 +139,10 @@ def _validate_probe_obj(obj: dict[str, Any], label: str) -> None:
             )
         return
 
-    if label == "get_workflow_status":
+    if label == "read.graph status":
         if "schema_version" not in obj:
             raise ToolCanaryError(
-                5, f"get_workflow_status missing schema_version: {obj!r}",
+                5, f"read.graph status missing schema_version: {obj!r}",
             )
         return
 

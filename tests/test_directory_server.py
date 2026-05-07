@@ -7,78 +7,60 @@ from pathlib import Path
 from workflow.directory_server import (
     _redact_directory_status,
     directory_mcp,
-    propose_workflow_goal,
-    search_workflow_goals,
-    submit_workflow_request,
+    read_graph,
+    write_graph,
+    write_page,
 )
 
 EXPECTED_TOOLS = {
-    "get_workflow_status": {
+    "read.graph": {
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
         "openWorldHint": False,
     },
-    "list_workflow_universes": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "inspect_workflow_universe": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "list_workflow_goals": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "search_workflow_goals": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "get_workflow_goal": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "search_workflow_wiki": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "read_workflow_wiki_page": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "list_workflow_runs": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "propose_workflow_goal": {
+    "write.graph": {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
         "openWorldHint": True,
     },
-    "submit_workflow_request": {
+    "run.graph": {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
         "openWorldHint": False,
     },
+    "read.page": {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+    "write.page": {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+}
+
+LEGACY_DIRECTORY_TOOL_NAMES = {
+    "get_workflow_status",
+    "list_workflow_universes",
+    "inspect_workflow_universe",
+    "list_workflow_goals",
+    "search_workflow_goals",
+    "get_workflow_goal",
+    "search_workflow_wiki",
+    "read_workflow_wiki_page",
+    "list_workflow_runs",
+    "propose_workflow_goal",
+    "submit_workflow_request",
+    "universe",
+    "extensions",
+    "goals",
+    "wiki",
 }
 
 
@@ -90,10 +72,7 @@ def test_directory_surface_exposes_review_scoped_tool_set() -> None:
     tools = {tool.name: tool for tool in _list_tools()}
 
     assert set(tools) == set(EXPECTED_TOOLS)
-    assert "universe" not in tools
-    assert "extensions" not in tools
-    assert "goals" not in tools
-    assert "wiki" not in tools
+    assert LEGACY_DIRECTORY_TOOL_NAMES.isdisjoint(tools)
 
 
 def test_directory_tools_have_explicit_submission_annotations() -> None:
@@ -213,7 +192,8 @@ def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> No
     invalidate_backend_cache()
     try:
         proposed = json.loads(
-            propose_workflow_goal(
+            write_graph(
+                target="goal",
                 name="Directory smoke goal",
                 tags="directory,smoke",
                 visibility="public",
@@ -221,7 +201,7 @@ def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> No
         )
         assert proposed["status"] == "proposed"
 
-        searched = json.loads(search_workflow_goals("Directory smoke"))
+        searched = json.loads(read_graph(target="goals", query="Directory smoke"))
         assert searched["count"] >= 1
         assert any(
             goal["goal_id"] == proposed["goal"]["goal_id"]
@@ -244,8 +224,9 @@ def test_directory_submit_request_queues_temp_universe_request(monkeypatch, tmp_
 
     try:
         result = json.loads(
-            submit_workflow_request(
-                universe_id="directory-universe",
+            write_graph(
+                target="request",
+                graph_id="directory-universe",
                 text="Summarize submission readiness blockers.",
                 request_type="general",
             )
@@ -264,3 +245,24 @@ def test_directory_submit_request_queues_temp_universe_request(monkeypatch, tmp_
         assert requests[0]["type"] == "general"
     finally:
         invalidate_backend_cache()
+
+
+def test_directory_write_page_drafts_temp_wiki_page(monkeypatch, tmp_path) -> None:
+    """Guard the five-handle page write adapter against parameter drift."""
+    wiki_root = tmp_path / "wiki"
+    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+
+    drafted = json.loads(
+        write_page(
+            category="notes",
+            filename="directory-page-smoke",
+            content="# Directory page smoke\n",
+            log_entry="directory page smoke",
+        )
+    )
+
+    assert drafted["status"] == "drafted"
+    assert drafted["path"] == "drafts/notes/directory-page-smoke.md"
+    assert (
+        wiki_root / "drafts" / "notes" / "directory-page-smoke.md"
+    ).read_text(encoding="utf-8") == "# Directory page smoke\n"
