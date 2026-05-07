@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## 2026-05-07
+
+- [Markovic Fingerprint RD Scaling Program](2026-05-07-markovic-fingerprint-rd-scaling-program.md) - **status: research.** Repository-side preservation of wiki research program `pages/plans/markovic-fingerprint-rd-scaling-program.md` / Issue #343. Captures the five-stage RD-scaling ladder, V004 gate discipline, and platform/local-execution boundary; not canonical `PLAN.md` truth and not a scientific attestation.
+
 ## 2026-05-03
 
 - [Multi-User Workflow Operating Model](2026-05-03-multi-user-workflow-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-workflow-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
