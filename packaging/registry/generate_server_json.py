@@ -6,6 +6,8 @@ import json
 import urllib.request
 from pathlib import Path
 
+from workflow.connector_catalog import directory_mcp_remote_url
+
 SCHEMA_URL = (
     "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"
 )
@@ -16,7 +18,7 @@ DESCRIPTION = (
 )
 REPOSITORY_URL = "https://github.com/Jonnyton/Workflow"
 WEBSITE_URL = "https://tinyassets.io/connect"
-REMOTE_URL = "https://tinyassets.io/mcp-directory"
+REMOTE_URL = directory_mcp_remote_url()
 ICON_URL = "https://raw.githubusercontent.com/Jonnyton/Workflow/main/assets/icon.png"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

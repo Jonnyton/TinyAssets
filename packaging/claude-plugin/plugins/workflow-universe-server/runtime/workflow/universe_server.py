@@ -48,6 +48,7 @@ from workflow.api.prompts import _CONTROL_STATION_PROMPT
 from workflow.api.status import get_status as _get_status_impl
 from workflow.api.universe import _universe_impl
 from workflow.api.wiki import wiki as _wiki_impl
+from workflow.connector_catalog import DIRECTORY_MCP_PATH, VERSIONED_DIRECTORY_MCP_PATH
 from workflow.directory_server import directory_mcp
 
 logger = logging.getLogger("universe_server")
@@ -1216,12 +1217,18 @@ def create_streamable_http_app() -> Starlette:
     """Create the production HTTP app with both MCP surfaces.
 
     `/mcp` preserves the legacy custom-connector surface. `/mcp-directory`
-    exposes the narrow directory-review surface used for app-store style host
-    submissions. Both route to the same backend state.
+    remains as the stable directory surface. The versioned directory path is
+    the advertised chatbot-host URL; changing it invalidates host-side cached
+    tool catalogs after substrate schema updates. Both route to the same
+    backend state.
     """
     legacy_app = mcp.http_app(path="/mcp", transport="streamable-http")
     directory_app = directory_mcp.http_app(
-        path="/mcp-directory",
+        path=DIRECTORY_MCP_PATH,
+        transport="streamable-http",
+    )
+    versioned_directory_app = directory_mcp.http_app(
+        path=VERSIONED_DIRECTORY_MCP_PATH,
         transport="streamable-http",
     )
 
@@ -1234,13 +1241,20 @@ def create_streamable_http_app() -> Starlette:
             await stack.enter_async_context(
                 directory_app.router.lifespan_context(directory_app),
             )
+            await stack.enter_async_context(
+                versioned_directory_app.router.lifespan_context(versioned_directory_app),
+            )
             yield
 
     app = Starlette(
-        routes=[*legacy_app.routes, *directory_app.routes],
+        routes=[
+            *legacy_app.routes,
+            *directory_app.routes,
+            *versioned_directory_app.routes,
+        ],
         lifespan=lifespan,
     )
-    app.state.path = "/mcp,/mcp-directory"
+    app.state.path = f"/mcp,{DIRECTORY_MCP_PATH},{VERSIONED_DIRECTORY_MCP_PATH}"
     app.state.transport_type = "streamable-http"
     # Substrate-fix #11 / Family A Phase 1.A: serve discovery HTML to
     # browser-style GETs on /mcp + /mcp-directory; pass MCP transport
