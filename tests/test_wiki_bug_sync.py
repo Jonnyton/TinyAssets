@@ -13,10 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from wiki_bug_sync import (  # noqa: E402
     SyncError,
     _bug_number,
+    create_gh_change_issue,
     create_gh_issue,
     fetch_bug_detail,
     list_new_bugs,
     list_new_change_requests,
+    priority_labels_for_request,
     read_cursor,
     sync,
     write_cursor,
@@ -335,6 +337,55 @@ def test_create_gh_issue_labels_canonical_wiki_severity(capsys):
     out = capsys.readouterr().out
     assert url == "[dry-run]"
     assert "severity:critical" in out
+
+
+def test_priority_labels_promote_loop_discipline_requests():
+    labels = priority_labels_for_request(
+        "patch",
+        title=(
+            "Auto-promote priority labels from access/meaning/authority "
+            "classifier - operator triage burden trends to zero"
+        ),
+        path=(
+            "pages/patch-requests/"
+            "pr-076-auto-promote-priority-labels.md"
+        ),
+    )
+
+    assert labels == ["priority:loop-discipline"]
+
+
+def test_priority_labels_promote_project_design_to_primitive_layer():
+    assert priority_labels_for_request(
+        "project-design",
+        title="Dispatcher should detect filing shape",
+    ) == ["priority:primitive-layer"]
+
+
+def test_priority_labels_promote_patch_to_primitive_surface():
+    assert priority_labels_for_request(
+        "patch",
+        title="Update connector guidance",
+    ) == ["priority:primitive-surface"]
+
+
+def test_create_gh_change_issue_includes_promoted_priority_label(capsys):
+    url = create_gh_change_issue(
+        token="",
+        repo="owner/repo",
+        request_kind="patch",
+        title=(
+            "Auto-promote priority labels from access/meaning/authority "
+            "classifier"
+        ),
+        path="pages/patch-requests/pr-076-auto-promote-priority-labels.md",
+        body_md="**Wiki type:** `patch_request`",
+        dry_run=True,
+    )
+    out = capsys.readouterr().out
+
+    assert url == "[dry-run]"
+    assert "priority:loop-discipline" in out
 
 
 def test_create_gh_issue_no_token_raises():
