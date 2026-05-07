@@ -348,7 +348,7 @@ jobs:
               {
                 name: 'ready_for_checker',
                 color: '0e8a16',
-                description: 'Loop PR passed source, duplicate, stale-base, and scope-split pre-checks.',
+                description: 'Loop PR matured through source, duplicate, stale-base, and scope-split pre-checks before checker escalation.',
               },
               {
                 name: 'writer:claude',
@@ -1004,26 +1004,6 @@ jobs:
             core.setOutput('blocked', 'false');
             core.setOutput('block_reason', '');
             core.setOutput('number', String(pr.number));
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr.number,
-              labels: ['writer:codex', 'checker:claude'],
-            });
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr.number,
-              body: [
-                '**Loop review policy**',
-                '',
-                '- Writer family: Codex',
-                '- Required checker family: Claude',
-                '',
-                'Do not accept this PR with a same-family checker.',
-              ].join('\n'),
-            });
-
             const issueBranchRoot = `${branchPrefix}issue-${issueNumber}`;
             const issueBranchPrefix = `${issueBranchRoot}-`;
             const { data: issuePrs } = await github.rest.pulls.list({
@@ -1103,6 +1083,25 @@ jobs:
               });
               return;
             }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['writer:codex', 'checker:claude'],
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: [
+                '**Loop review policy**',
+                '',
+                '- Writer family: Codex',
+                '- Required checker family: Claude',
+                '',
+                'Do not accept this PR with a same-family checker.',
+              ].join('\n'),
+            });
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -1263,6 +1262,23 @@ jobs:
               core.info(`No Claude-created PR found for ${branch}.`);
               return;
             }
+            const selfReviewFailures = await selfReviewLoopPr(pr);
+            if (selfReviewFailures.length) {
+              core.warning(`Loop PR #${pr.number} is not ready_for_checker: ${selfReviewFailures.join('; ')}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: [
+                  '**Pre-checker self-review blocked `ready_for_checker`**',
+                  '',
+                  ...selfReviewFailures.map((failure) => `- ${failure}`),
+                  '',
+                  'Fix the pre-check failure before routing this loop PR to a checker.',
+                ].join('\n'),
+              });
+              return;
+            }
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -1282,23 +1298,6 @@ jobs:
                 'Do not accept this PR with a same-family checker.',
               ].join('\n'),
             });
-            const selfReviewFailures = await selfReviewLoopPr(pr);
-            if (selfReviewFailures.length) {
-              core.warning(`Loop PR #${pr.number} is not ready_for_checker: ${selfReviewFailures.join('; ')}`);
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pr.number,
-                body: [
-                  '**Pre-checker self-review blocked `ready_for_checker`**',
-                  '',
-                  ...selfReviewFailures.map((failure) => `- ${failure}`),
-                  '',
-                  'Fix the pre-check failure before routing this loop PR to a checker.',
-                ].join('\n'),
-              });
-              return;
-            }
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
