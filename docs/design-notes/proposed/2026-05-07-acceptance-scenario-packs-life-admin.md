@@ -25,15 +25,16 @@ external benchmark harness.
 An Acceptance Scenario Pack is a reusable long-horizon evaluation bundle. It
 declares personas, starting state, prompts or task episodes, required tool/API
 or browser evidence, rubric checks, artifact expectations, and the way those
-checks collapse into `EvalResult` evidence. Packs are substrate because many
-domains can reuse the same shape, but the first life-admin pack should be
-community-authored content over existing primitives.
+checks collapse into `EvalResult` evidence. Packs are substrate-level
+conventions because many domains can reuse the same shape, but the first
+life-admin pack should be community-authored content over existing primitives.
 
 This matches the accepted `PLAN.md` direction for Acceptance Scenario Packs:
 combine user simulation, rubric checks, MCP/API or browser evidence, and
 artifact capture into `EvalResult` evidence. The design deliberately keeps the
-engine primitive small. The primitive is the pack contract plus runner
-adapter, not a growing set of life-admin-specific tools.
+engine primitive surface small. The pack contract and runner adapter are a
+user-authorable convention over existing primitives, not a new substrate
+primitive and not a growing set of life-admin-specific tools.
 
 ## 2. Classification
 
@@ -116,24 +117,38 @@ pack declares privacy handling and artifact retention rules up front.
 
 ## 5. Composition From Existing Pieces
 
-PR-073's title says the life-admin suite "composes from existing 6+5." I could
-not find a checked-in canonical artifact named `6+5` or a PR-073 wiki page in
-this checkout. Treat that phrase as a composition constraint, not as permission
-to invent hidden requirements.
+PR-073's "existing 6+5" constraint is explicit in the live brain source. An
+Acceptance Scenario Pack must compose from the existing six Workflow primitives
+and existing MCP handle surface instead of creating a scenario-pack action or a
+separate life-admin subsystem.
 
-Recommended interpretation until the wiki source is available:
+The six primitive mapping is:
 
-- The "6" should map to concrete life-admin episodes or public uptime surfaces
-  that the pack covers.
-- The "5" should map to the five `PLAN.md` scoping rules, used as design
-  checks before any implementation: minimal primitives, community-build over
-  platform-build, privacy as community composition, commons-first architecture,
-  and user capability axis.
+- `Node`: the scenario container, for example `kind=acceptance-scenario`, plus
+  the durable audit record for scenario definitions and results.
+- `State`: initial conditions, expected outcomes, fixture references,
+  acceptance criteria, and post-run observations.
+- `Trigger`: scenario boundaries such as before commit, after action, scheduled
+  canary, rollback signal, or user-confirmation checkpoint.
+- `Run`: scenario execution, with sub-runs for multi-step episodes and
+  evidence capture.
+- `Edge`: evaluator flow from post-run state to pass, fail, skip, rollback, or
+  human-review outcomes.
+- `Scope`: who can author and run the scenario, which user/branch/identity it
+  applies to, and what authority or privacy boundary applies.
 
-If the wiki page defines a different 6+5 set, fold that mapping into this note
-before implementation. The runner contract above still holds as long as the
-pack remains declarative and emits `EvalResult` evidence through existing
-evaluator shapes.
+The MCP surface stays inside the five-handle vocabulary. Humans and agents use
+`read.page` to inspect scenario definitions and results, `write.page` to record
+scenario definitions or run evidence, and `run.graph` to execute scenario
+flows. Graph-level reads/writes remain available through the canonical graph
+handles when an implementation needs to inspect or update the underlying
+scenario graph. No `run.scenario_pack`, `acceptance.pack`, or life-admin-only
+tool should be introduced for v1.
+
+This keeps the pack declarative and user-buildable while giving agents a test
+suite for non-code work: the pack is a reusable pattern that future users can
+author from scratch with the same few powerful handles, not a platform-owned
+domain feature.
 
 ## 6. Non-Goals
 
@@ -186,9 +201,10 @@ Before any implementation branch is treated as complete:
 
 ## 9. Open Questions
 
-1. What exactly does PR-073's "existing 6+5" refer to in the wiki source?
-   Recommendation: do not implement until the mapping is recovered or the host
-   accepts the interpretation in §5.
+1. Should the first checked-in pack be life-admin only, or should it include a
+   second tiny non-life-admin pack to prove the contract is not domain-bound?
+   Recommendation: start with life-admin, but keep schema names domain-neutral
+   and add another domain only after the first runner path works.
 
 2. Where should packs live long term: `docs/scenario-packs/`, `tests/scenario_packs/`,
    or a domain package? Recommendation: start in docs with validator coverage;
