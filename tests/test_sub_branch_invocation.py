@@ -301,6 +301,30 @@ class TestAwaitBranchRunNode:
             with pytest.raises(TimeoutError):
                 fn({"child_run_id": "some-run"})
 
+    def test_non_completed_child_propagates_failure(self, tmp_path):
+        from workflow.graph_compiler import ChildFailedError
+        from workflow.runs import RUN_STATUS_INTERRUPTED
+
+        nd = NodeDefinition(
+            node_id="await_autoresearch_lab",
+            display_name="Await autoresearch lab",
+            await_run_spec={
+                "run_id_field": "child_run_id",
+                "output_mapping": {"result": "answer"},
+                "timeout_seconds": 5.0,
+            },
+        )
+        child_record = {
+            "run_id": "child-interrupted",
+            "status": RUN_STATUS_INTERRUPTED,
+            "output": {"answer": "partial"},
+        }
+
+        with patch("workflow.runs.poll_child_run_status", return_value=child_record):
+            fn = _build_await_branch_run_node(nd, base_path=tmp_path, event_sink=None)
+            with pytest.raises(ChildFailedError, match="child_timeout"):
+                fn({"child_run_id": "child-interrupted"})
+
 
 # ─── recursion depth cap ──────────────────────────────────────────────────────
 

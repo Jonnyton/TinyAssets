@@ -1769,10 +1769,17 @@ def _build_await_branch_run_node(
                 raw_output = _json.loads(raw_output)
             except Exception:
                 raw_output = {}
+        status = str(record.get("status") or "")
+        updates, _failure = _dispatch_invoke_outcome(
+            child_status=status,
+            child_run_id=run_id,
+            child_output=raw_output,
+            output_mapping=output_mapping,
+            on_child_fail="propagate",
+            default_outputs=None,
+            node_id=node.node_id,
+        )
 
-        updates: dict[str, Any] = {}
-        for parent_key, child_key in output_mapping.items():
-            updates[parent_key] = raw_output.get(child_key)
         return updates
 
     return _node_fn
