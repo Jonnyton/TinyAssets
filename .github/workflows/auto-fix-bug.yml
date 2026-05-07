@@ -323,6 +323,148 @@ jobs:
             core.info(`Discovered ${rows.length} pending daemon request issue(s).`);
             core.setOutput('matrix', JSON.stringify(rows));
 
+  recover-stale-dual-key-prs:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-update stale already-dual-keyed loop PRs
+        uses: actions/github-script@v7
+        with:
+          # PAT-created branch updates fire pull_request checks; GITHUB_TOKEN updates do not.
+          github-token: ${{ secrets.WORKFLOW_PUSH_TOKEN || github.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const expectedRepo = `${owner}/${repo}`;
+            const maxUpdates = 5;
+            let updated = 0;
+
+            function hasDualKey(labels) {
+              const names = new Set(labels);
+              const writerCodex = names.has('writer:codex');
+              const writerClaude = names.has('writer:claude');
+              const checkerClaude = names.has('checker:claude');
+              const checkerCodex = names.has('checker:codex');
+              return (
+                (writerCodex && checkerClaude) ||
+                (writerClaude && checkerCodex)
+              );
+            }
+
+            function isLoopBranch(headRef) {
+              return (
+                headRef.startsWith('auto-change/') ||
+                headRef.startsWith('design-note-draft/')
+              );
+            }
+
+            const { data: prs } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: 'open',
+              base: 'main',
+              sort: 'updated',
+              direction: 'asc',
+              per_page: 100,
+            });
+
+            for (const pr of prs) {
+              if (updated >= maxUpdates) {
+                core.info(`Reached stale dual-key PR update cap (${maxUpdates}).`);
+                break;
+              }
+              const headRef = pr.head?.ref || '';
+              const headRepo = pr.head?.repo?.full_name || '';
+              const headSha = pr.head?.sha || '';
+              if (headRepo !== expectedRepo || !isLoopBranch(headRef) || !headSha) {
+                continue;
+              }
+
+              const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+                owner,
+                repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+              const labelNames = labels.map((label) => label.name);
+              if (!labelNames.includes('ready_for_checker') || !hasDualKey(labelNames)) {
+                continue;
+              }
+
+              let staleBase = false;
+              let compareSummary = '';
+              try {
+                const { data: compare } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner,
+                  repo,
+                  basehead: `main...${headRef}`,
+                });
+                staleBase = Number(compare.behind_by || 0) > 0 ||
+                  !['ahead', 'identical'].includes(String(compare.status || ''));
+                compareSummary = `status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`;
+              } catch (error) {
+                core.warning(`Could not compare stale-base state for PR #${pr.number} (${headRef}): ${error.message}`);
+                continue;
+              }
+              if (!staleBase) {
+                continue;
+              }
+
+              try {
+                await github.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch', {
+                  owner,
+                  repo,
+                  pull_number: pr.number,
+                  expected_head_sha: headSha,
+                });
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                  body: [
+                    '**Auto-fix refreshed stale base**',
+                    '',
+                    `This already-dual-keyed loop PR was stale against \`main\` (${compareSummary}).`,
+                    'The workflow requested a branch update so pull_request checks can rerun against current main before checker review continues.',
+                  ].join('\n'),
+                });
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner,
+                    repo,
+                    issue_number: pr.number,
+                    name: 'needs-rebase-human',
+                  });
+                } catch (error) {
+                  if (error.status !== 404) {
+                    core.warning(`Could not clear needs-rebase-human from PR #${pr.number}: ${error.message}`);
+                  }
+                }
+                updated += 1;
+              } catch (error) {
+                core.warning(`Could not update stale dual-key PR #${pr.number} (${headRef}): ${error.message}`);
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                  labels: ['needs-rebase-human'],
+                });
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                  body: [
+                    '**Auto-fix could not refresh stale base**',
+                    '',
+                    `This already-dual-keyed loop PR is stale against \`main\` (${compareSummary}).`,
+                    `Automatic branch update failed: ${error.message}`,
+                    '',
+                    'Labeling `needs-rebase-human` so the queue reports the manual rebase requirement instead of silently staying dirty.',
+                  ].join('\n'),
+                });
+              }
+            }
+
   fix:
     needs: discover
     if: needs.discover.outputs.matrix != '[]'
@@ -408,6 +550,11 @@ jobs:
                 name: 'auto-fix-stale-gate',
                 color: 'd93f0b',
                 description: 'Attempted request has no terminal review label and is blocking the gated queue.',
+              },
+              {
+                name: 'needs-rebase-human',
+                color: 'd93f0b',
+                description: 'Already-keyed loop PR could not be automatically updated onto the current base.',
               },
               {
                 name: 'auto-fix-reviewed',

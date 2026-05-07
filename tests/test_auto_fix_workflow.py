@@ -600,6 +600,90 @@ def test_stale_gate_label_is_defined(wf):
     assert "blocking the gated queue" in script
 
 
+def test_stale_dual_key_recovery_runs_on_schedule_and_dispatch(wf):
+    triggers = wf.get(True, wf.get("on", {}))
+    recover_job = wf["jobs"].get("recover-stale-dual-key-prs")
+    assert recover_job is not None, "Must recover stale already-dual-keyed PRs"
+    assert "schedule" in triggers
+    assert "workflow_dispatch" in triggers
+    assert "github.event_name == 'schedule'" in str(recover_job.get("if", ""))
+    assert "github.event_name == 'workflow_dispatch'" in str(recover_job.get("if", ""))
+
+
+def test_stale_dual_key_recovery_updates_only_loop_prs(wf):
+    recover_job = wf["jobs"]["recover-stale-dual-key-prs"]
+    step = next(
+        (
+            s for s in recover_job["steps"]
+            if s.get("name") == "Auto-update stale already-dual-keyed loop PRs"
+        ),
+        None,
+    )
+    assert step is not None, "Must have a stale dual-key recovery step"
+    script = str(step.get("with", {}).get("script", ""))
+    assert "function hasDualKey(labels)" in script
+    assert "writer:codex" in script
+    assert "checker:claude" in script
+    assert "writer:claude" in script
+    assert "checker:codex" in script
+    assert "ready_for_checker" in script
+    assert "headRepo !== expectedRepo" in script
+    assert "auto-change/" in script
+    assert "design-note-draft/" in script
+    assert "maxUpdates = 5" in script
+
+
+def test_stale_dual_key_recovery_compares_before_branch_update(wf):
+    recover_job = wf["jobs"]["recover-stale-dual-key-prs"]
+    step = next(
+        (
+            s for s in recover_job["steps"]
+            if s.get("name") == "Auto-update stale already-dual-keyed loop PRs"
+        ),
+        None,
+    )
+    assert step is not None, "Must have a stale dual-key recovery step"
+    with_block = step.get("with", {})
+    script = str(with_block.get("script", ""))
+    assert with_block.get("github-token") == (
+        "${{ secrets.WORKFLOW_PUSH_TOKEN || github.token }}"
+    )
+    assert "compareCommitsWithBasehead" in script
+    assert "Number(compare.behind_by || 0) > 0" in script
+    assert "PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch" in script
+    assert "expected_head_sha: headSha" in script
+    assert "Auto-fix refreshed stale base" in script
+    assert script.index("compareCommitsWithBasehead") < (
+        script.index("update-branch")
+    )
+
+
+def test_stale_dual_key_recovery_labels_manual_rebase_on_conflict(wf):
+    recover_job = wf["jobs"]["recover-stale-dual-key-prs"]
+    step = next(
+        (
+            s for s in recover_job["steps"]
+            if s.get("name") == "Auto-update stale already-dual-keyed loop PRs"
+        ),
+        None,
+    )
+    assert step is not None, "Must have a stale dual-key recovery step"
+    script = str(step.get("with", {}).get("script", ""))
+    assert "needs-rebase-human" in script
+    assert "Auto-fix could not refresh stale base" in script
+    assert "Automatic branch update failed" in script
+    assert "silently staying dirty" in script
+
+
+def test_needs_rebase_human_label_is_defined(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    labels_step = next((s for s in steps if s.get("name") == "Ensure automation labels"), None)
+    assert labels_step is not None, "Must define automation labels"
+    script = str(labels_step.get("with", {}).get("script", ""))
+    assert "needs-rebase-human" in script
+    assert "could not be automatically updated" in script
+
+
 def test_branch_naming_convention(wf):
     steps = wf["jobs"]["fix"]["steps"]
     meta_step = next((s for s in steps if s.get("id") == "meta"), None)
