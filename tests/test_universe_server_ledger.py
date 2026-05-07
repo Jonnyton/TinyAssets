@@ -37,6 +37,7 @@ def _call(action: str, **kwargs) -> dict:
         "filename": "",
         "provenance_tag": "",
         "anchor_json": "",
+        "inputs_json": "",
         "limit": 20,
     }
     base_kwargs.update(kwargs)
@@ -55,6 +56,7 @@ def _call(action: str, **kwargs) -> dict:
         "add_canon": us._action_add_canon,
         "list_canon": us._action_list_canon,
         "read_canon": us._action_read_canon,
+        "manuscript_save_fragment": us._action_manuscript_save_fragment,
         "control_daemon": us._action_control_daemon,
         "switch_universe": us._action_switch_universe,
         "create_universe": us._action_create_universe,
@@ -100,6 +102,7 @@ def test_write_actions_table_is_exhaustive() -> None:
         "daemon_update_behavior",
         "daemon_memory_capture", "daemon_memory_review",
         "daemon_memory_promote",
+        "manuscript_save_fragment",
     }
     assert set(us.WRITE_ACTIONS.keys()) == expected
 
@@ -117,6 +120,24 @@ def test_set_premise_appends_ledger(universe: str) -> None:
     assert entry["summary"] == "A tower of bones."
     assert "timestamp" in entry
     assert entry["payload"]["bytes"] == len("A tower of bones.".encode("utf-8"))
+
+
+def test_manuscript_save_fragment_appends_ledger(universe: str) -> None:
+    out = _call(
+        "manuscript_save_fragment",
+        filename="opening-scene",
+        text="Mara opened the lock with a borrowed star.",
+    )
+    assert out["status"] == "saved"
+
+    entries = _ledger(universe)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["action"] == "manuscript_save_fragment"
+    assert entry["target"] == "opening-scene"
+    assert entry["payload"]["fragment_id"] == "opening-scene"
+    assert entry["payload"]["version_number"] == 1
+    assert entry["payload"]["privacy"] == "private_manuscript_workspace"
 
 
 def test_set_premise_empty_does_not_append(universe: str) -> None:

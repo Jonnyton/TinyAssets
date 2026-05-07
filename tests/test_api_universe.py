@@ -32,7 +32,7 @@ from workflow.api import universe as univ_mod
 def test_module_exposes_expected_public_names() -> None:
     """Contract surface — guards against silent removal post-Step-9."""
     expected = {
-        # WRITE_ACTIONS table + 17 extractor closures
+        # WRITE_ACTIONS table + extractor closures
         "WRITE_ACTIONS",
         "_extract_submit_request", "_extract_give_direction",
         "_extract_set_premise", "_extract_add_canon",
@@ -46,6 +46,7 @@ def test_module_exposes_expected_public_names() -> None:
         "_extract_daemon_update_behavior",
         "_extract_daemon_memory_capture", "_extract_daemon_memory_review",
         "_extract_daemon_memory_promote",
+        "_extract_manuscript_save_fragment",
         # Ledger dispatcher trio
         "_ledger_target_dir", "_scope_universe_response",
         "_dispatch_with_ledger",
@@ -77,6 +78,9 @@ def test_module_exposes_expected_public_names() -> None:
         "_action_add_canon_from_path", "_action_list_canon",
         "_action_read_canon", "_action_list_sources",
         "_action_read_source", "_action_control_daemon",
+        "_action_manuscript_save_fragment",
+        "_action_manuscript_list_fragments",
+        "_action_manuscript_read_fragment",
         "_action_get_activity", "_action_get_recent_events",
         "_action_get_ledger", "_action_switch_universe",
         "_action_create_universe",
@@ -88,9 +92,9 @@ def test_module_exposes_expected_public_names() -> None:
     )
 
 
-def test_write_actions_table_has_24_entries() -> None:
+def test_write_actions_table_has_25_entries() -> None:
     """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes."""
-    assert len(univ_mod.WRITE_ACTIONS) == 24
+    assert len(univ_mod.WRITE_ACTIONS) == 25
 
 
 def test_write_actions_entries_are_extractor_gate_tuples() -> None:
@@ -225,6 +229,8 @@ def test_universe_impl_dispatch_table_has_known_actions() -> None:
     "query_world", "read_premise", "set_premise", "add_canon",
     "add_canon_from_path", "list_canon", "read_canon",
     "list_sources", "read_source",
+    "manuscript_save_fragment", "manuscript_list_fragments",
+    "manuscript_read_fragment",
     "control_daemon", "get_activity", "get_recent_events",
     "get_ledger", "switch_universe", "create_universe",
 ])
@@ -402,6 +408,73 @@ def test_community_change_context_issue_detail(monkeypatch) -> None:
     assert data["target"] == "issue:39"
     assert data["issue"]["number"] == 39
     assert data["comments"][0]["author"] == "daemon"
+
+
+def test_manuscript_workspace_saves_private_scene_fragment_versions(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Author-authored scene fragments live outside canon and keep history."""
+    universe_dir = tmp_path / "u1"
+    universe_dir.mkdir()
+    monkeypatch.setattr(univ_mod, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(univ_mod, "_default_universe", lambda: "u1")
+    monkeypatch.setattr(univ_mod, "_universe_dir", lambda uid: tmp_path / uid)
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "author-test")
+
+    first = json.loads(univ_mod._universe_impl(
+        action="manuscript_save_fragment",
+        universe_id="u1",
+        filename="opening-scene",
+        text="Mara opened the lock with a borrowed star.",
+        inputs_json=json.dumps({"title": "Opening Scene", "tags": ["draft"]}),
+    ))
+    second = json.loads(univ_mod._universe_impl(
+        action="manuscript_save_fragment",
+        universe_id="u1",
+        filename="opening-scene",
+        text="Mara opened the lock with a stolen star.",
+        inputs_json=json.dumps({"title": "Opening Scene", "tags": ["draft"]}),
+    ))
+
+    assert first["fragment_id"] == "opening-scene"
+    assert second["version_number"] == 2
+    assert second["version_history_count"] == 2
+    assert second["privacy"] == "private_manuscript_workspace"
+    assert not (universe_dir / "canon" / "opening-scene").exists()
+
+    listed = json.loads(univ_mod._universe_impl(
+        action="manuscript_list_fragments",
+        universe_id="u1",
+    ))
+    assert listed["fragment_count"] == 1
+    assert listed["fragments"][0]["fragment_id"] == "opening-scene"
+    assert listed["fragments"][0]["latest_version_number"] == 2
+
+    latest = json.loads(univ_mod._universe_impl(
+        action="manuscript_read_fragment",
+        universe_id="u1",
+        filename="opening-scene",
+    ))
+    assert latest["content"] == "Mara opened the lock with a stolen star."
+    assert latest["version_number"] == 2
+
+    historical = json.loads(univ_mod._universe_impl(
+        action="manuscript_read_fragment",
+        universe_id="u1",
+        filename="opening-scene",
+        inputs_json=json.dumps({"version_id": first["version_id"]}),
+    ))
+    assert historical["content"] == "Mara opened the lock with a borrowed star."
+    assert historical["version_number"] == 1
+
+    invalid = json.loads(univ_mod._universe_impl(
+        action="manuscript_save_fragment",
+        universe_id="u1",
+        filename="../escape",
+        text="Nope.",
+    ))
+    assert "error" in invalid
 
 
 def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch) -> None:

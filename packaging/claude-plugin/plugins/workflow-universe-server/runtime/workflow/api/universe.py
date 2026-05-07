@@ -470,6 +470,24 @@ def _extract_daemon_memory_promote(
     )
 
 
+def _extract_manuscript_save_fragment(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    from workflow.api.engine_helpers import _truncate
+    fragment_id = str(result.get("fragment_id") or kwargs.get("filename", ""))
+    return (
+        fragment_id,
+        _truncate(str(result.get("title") or fragment_id)),
+        {
+            "fragment_id": fragment_id,
+            "version_id": result.get("version_id", ""),
+            "version_number": result.get("version_number", 0),
+            "privacy": result.get("privacy", ""),
+            "bytes": len(kwargs.get("text", "").encode("utf-8")),
+        },
+    )
+
+
 WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
@@ -495,6 +513,7 @@ WRITE_ACTIONS: dict[str, Any] = {
     "daemon_memory_capture": (_extract_daemon_memory_capture, None),
     "daemon_memory_review": (_extract_daemon_memory_review, None),
     "daemon_memory_promote": (_extract_daemon_memory_promote, None),
+    "manuscript_save_fragment": (_extract_manuscript_save_fragment, None),
 }
 
 
@@ -3882,6 +3901,263 @@ def _action_read_canon(
         return json.dumps({"error": f"Failed to read canon file: {exc}"})
 
 
+_MANUSCRIPT_WORKSPACE_DIR = "manuscript_workspace"
+_MANUSCRIPT_FRAGMENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+def _manuscript_workspace_dir(udir: Path) -> Path:
+    return udir / _MANUSCRIPT_WORKSPACE_DIR
+
+
+def _manuscript_fragment_id(raw: str) -> str:
+    fragment_id = raw.strip()
+    if not fragment_id:
+        return ""
+    if "/" in fragment_id or "\\" in fragment_id:
+        return ""
+    if not _MANUSCRIPT_FRAGMENT_ID_RE.fullmatch(fragment_id):
+        return ""
+    return fragment_id
+
+
+def _manuscript_manifest_path(workspace_dir: Path, fragment_id: str) -> Path:
+    return workspace_dir / "fragments" / fragment_id / "manifest.json"
+
+
+def _read_manuscript_manifest(
+    workspace_dir: Path,
+    fragment_id: str,
+) -> dict[str, Any]:
+    data = _read_json(_manuscript_manifest_path(workspace_dir, fragment_id))
+    return data if isinstance(data, dict) else {}
+
+
+def _manuscript_version_path(
+    workspace_dir: Path,
+    fragment_id: str,
+    version_id: str,
+) -> Path:
+    return workspace_dir / "fragments" / fragment_id / "versions" / f"{version_id}.md"
+
+
+def _action_manuscript_save_fragment(
+    universe_id: str = "",
+    filename: str = "",
+    target: str = "",
+    text: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Save an author-authored scene fragment in a private draft workspace."""
+    from workflow.api.engine_helpers import _current_actor
+
+    if not text.strip():
+        return json.dumps({"error": "Manuscript fragment text cannot be empty."})
+
+    inputs, err = _parse_inputs_object(inputs_json)
+    if err:
+        return json.dumps({"error": err})
+
+    requested_id = str(inputs.get("fragment_id") or target or filename)
+    fragment_id = _manuscript_fragment_id(requested_id)
+    if not fragment_id:
+        return json.dumps({
+            "error": (
+                "A valid manuscript fragment id is required in filename, "
+                "target, or inputs_json.fragment_id. Use letters, digits, "
+                "dot, underscore, or hyphen; path separators are not allowed."
+            ),
+        })
+
+    title = str(inputs.get("title") or fragment_id).strip() or fragment_id
+    tags_raw = inputs.get("tags", [])
+    tags = [str(tag) for tag in tags_raw] if isinstance(tags_raw, list) else []
+    scene_id = str(inputs.get("scene_id") or "").strip()
+
+    uid = universe_id or _default_universe()
+    udir = _universe_dir(uid)
+    workspace_dir = _manuscript_workspace_dir(udir)
+    manifest_path = _manuscript_manifest_path(workspace_dir, fragment_id)
+    versions_dir = manifest_path.parent / "versions"
+
+    content = _normalize_escaped_text(text)
+    now = datetime.now(timezone.utc).isoformat()
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    manifest = _read_manuscript_manifest(workspace_dir, fragment_id)
+    existing_versions = manifest.get("versions", [])
+    if not isinstance(existing_versions, list):
+        existing_versions = []
+    version_number = len(existing_versions) + 1
+    version_id = f"v{version_number:04d}-{content_hash[:12]}"
+
+    version_entry: dict[str, Any] = {
+        "version_id": version_id,
+        "version_number": version_number,
+        "created_at": now,
+        "author": _current_actor(),
+        "sha256": content_hash,
+        "size_bytes": len(content.encode("utf-8")),
+    }
+    if scene_id:
+        version_entry["scene_id"] = scene_id
+
+    manifest = {
+        "fragment_id": fragment_id,
+        "title": title,
+        "privacy": "private_manuscript_workspace",
+        "storage": f"{_MANUSCRIPT_WORKSPACE_DIR}/fragments/{fragment_id}",
+        "latest_version_id": version_id,
+        "latest_version_number": version_number,
+        "updated_at": now,
+        "created_at": manifest.get("created_at") or now,
+        "tags": tags,
+        "scene_id": scene_id,
+        "versions": [*existing_versions, version_entry],
+    }
+
+    try:
+        versions_dir.mkdir(parents=True, exist_ok=True)
+        _manuscript_version_path(
+            workspace_dir, fragment_id, version_id,
+        ).write_text(content, encoding="utf-8")
+        (manifest_path.parent / "current.md").write_text(content, encoding="utf-8")
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to save manuscript fragment: {exc}"})
+
+    return json.dumps({
+        "universe_id": uid,
+        "fragment_id": fragment_id,
+        "title": title,
+        "version_id": version_id,
+        "version_number": version_number,
+        "version_history_count": len(manifest["versions"]),
+        "privacy": "private_manuscript_workspace",
+        "status": "saved",
+        "note": (
+            "Fragment saved in the private manuscript workspace. It was not "
+            "ingested as canon or queued for daemon synthesis."
+        ),
+    })
+
+
+def _action_manuscript_list_fragments(
+    universe_id: str = "",
+    **_kwargs: Any,
+) -> str:
+    uid = universe_id or _default_universe()
+    workspace_dir = _manuscript_workspace_dir(_universe_dir(uid))
+    fragments_dir = workspace_dir / "fragments"
+    if not fragments_dir.is_dir():
+        return json.dumps({
+            "universe_id": uid,
+            "fragments": [],
+            "fragment_count": 0,
+            "privacy": "private_manuscript_workspace",
+        })
+
+    fragments: list[dict[str, Any]] = []
+    try:
+        for manifest_path in sorted(fragments_dir.glob("*/manifest.json")):
+            data = _read_json(manifest_path)
+            if not isinstance(data, dict):
+                continue
+            versions = data.get("versions", [])
+            fragments.append({
+                "fragment_id": data.get("fragment_id", manifest_path.parent.name),
+                "title": data.get("title", manifest_path.parent.name),
+                "latest_version_id": data.get("latest_version_id", ""),
+                "latest_version_number": data.get("latest_version_number", 0),
+                "updated_at": data.get("updated_at", ""),
+                "tags": data.get("tags", []),
+                "scene_id": data.get("scene_id", ""),
+                "version_history_count": len(versions)
+                if isinstance(versions, list) else 0,
+            })
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to list manuscript fragments: {exc}"})
+
+    return json.dumps({
+        "universe_id": uid,
+        "fragments": fragments,
+        "fragment_count": len(fragments),
+        "privacy": "private_manuscript_workspace",
+    })
+
+
+def _action_manuscript_read_fragment(
+    universe_id: str = "",
+    filename: str = "",
+    target: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    inputs, err = _parse_inputs_object(inputs_json)
+    if err:
+        return json.dumps({"error": err})
+
+    fragment_id = _manuscript_fragment_id(str(inputs.get("fragment_id") or target or filename))
+    if not fragment_id:
+        return json.dumps({
+            "error": (
+                "A valid manuscript fragment id is required in filename, "
+                "target, or inputs_json.fragment_id."
+            ),
+        })
+
+    uid = universe_id or _default_universe()
+    workspace_dir = _manuscript_workspace_dir(_universe_dir(uid))
+    manifest = _read_manuscript_manifest(workspace_dir, fragment_id)
+    if not manifest:
+        return json.dumps({
+            "error": f"Manuscript fragment '{fragment_id}' not found.",
+            "hint": "Use manuscript_list_fragments to see available fragments.",
+        })
+
+    requested_version = str(inputs.get("version_id") or "").strip()
+    version_id = requested_version or str(manifest.get("latest_version_id") or "")
+    versions = manifest.get("versions", [])
+    version_entry = {}
+    if isinstance(versions, list):
+        for candidate in versions:
+            if isinstance(candidate, dict) and candidate.get("version_id") == version_id:
+                version_entry = candidate
+                break
+    if not version_id or not version_entry:
+        return json.dumps({
+            "error": f"Version '{requested_version}' not found for '{fragment_id}'.",
+            "available_versions": [
+                v.get("version_id") for v in versions if isinstance(v, dict)
+            ] if isinstance(versions, list) else [],
+        })
+
+    version_path = _manuscript_version_path(workspace_dir, fragment_id, version_id)
+    try:
+        content = version_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to read manuscript fragment: {exc}"})
+
+    return json.dumps({
+        "universe_id": uid,
+        "fragment_id": fragment_id,
+        "title": manifest.get("title", fragment_id),
+        "version_id": version_id,
+        "version_number": version_entry.get("version_number", 0),
+        "latest_version_id": manifest.get("latest_version_id", ""),
+        "is_latest": version_id == manifest.get("latest_version_id"),
+        "privacy": "private_manuscript_workspace",
+        "content": content,
+        "metadata": {
+            "tags": manifest.get("tags", []),
+            "scene_id": manifest.get("scene_id", ""),
+            "created_at": version_entry.get("created_at", ""),
+            "author": version_entry.get("author", ""),
+            "sha256": version_entry.get("sha256", ""),
+        },
+    })
+
+
 def _action_control_daemon(
     universe_id: str = "",
     text: str = "",
@@ -4275,6 +4551,9 @@ def _universe_impl(
         "read_canon": _action_read_canon,
         "list_sources": _action_list_sources,
         "read_source": _action_read_source,
+        "manuscript_save_fragment": _action_manuscript_save_fragment,
+        "manuscript_list_fragments": _action_manuscript_list_fragments,
+        "manuscript_read_fragment": _action_manuscript_read_fragment,
         "control_daemon": _action_control_daemon,
         "switch_universe": _action_switch_universe,
         "create_universe": _action_create_universe,
