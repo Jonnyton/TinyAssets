@@ -229,6 +229,35 @@ def test_architectural_patch_request_enters_project_design_lane():
     assert result[0]["request_kind"] == "project-design"
 
 
+def test_coordination_note_with_design_language_is_not_a_request():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": "pages/notes/codex-architectural-coordination-2026-05-06.md",
+                "title": "Codex architectural coordination note",
+                "type": "note",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert result == []
+
+
+def test_builder_note_enters_branch_refinement_lane():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": "pages/notes/builder-notes-agent-teams.md",
+                "title": "Builder notes: agent teams",
+                "type": "note",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert len(result) == 1
+    assert result[0]["request_kind"] == "branch-refinement"
+
+
 def test_legacy_bug_typed_patch_request_page_enters_patch_lane():
     wiki_list = {
         "promoted": [

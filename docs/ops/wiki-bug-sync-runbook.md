@@ -62,6 +62,7 @@ commits increments back. This makes reruns idempotent.
 | `pages/plans/patch-*` | `request:patch` |
 | `pages/workflows/*` | `request:branch-refinement` |
 | builder notes under `pages/notes/*` | `request:branch-refinement` |
+| other coordination notes under `pages/notes/*` | ignored by sync |
 | strategic/roadmap/design/architecture/refactoring/attribution plans | `request:project-design` |
 | patch/feature pages whose title/path has architectural shape | `request:project-design` |
 | other promoted plans/concepts | `request:docs-ops` |
@@ -71,6 +72,10 @@ architecture, design-note, roadmap, operating-model, or substrate changes is
 filed as `request:project-design`; the auto-fix workflow then drafts under
 `docs/design-notes/proposed/` on a `design-note-draft/*` branch instead of
 opening a mechanical `auto-change/*` branch.
+
+Ordinary `pages/notes/*` coordination artifacts are not request artifacts.
+Only builder notes enter the branch-refinement lane; design or architecture
+words in coordination-note titles are not enough to create daemon requests.
 
 ## Manual trigger
 

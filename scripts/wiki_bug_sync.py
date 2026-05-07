@@ -320,6 +320,11 @@ def _change_kind(entry: dict[str, Any]) -> str | None:
     ):
         return None
 
+    if path.startswith("pages/notes/"):
+        if "builder" in entry_type or "builder" in title:
+            return "branch-refinement"
+        return None
+
     if any(marker in design_text for marker in _ARCHITECTURAL_FILING_MARKERS):
         return "project-design"
 
@@ -346,8 +351,6 @@ def _change_kind(entry: dict[str, Any]) -> str | None:
     ):
         return "project-design"
     if path.startswith("pages/workflows/"):
-        return "branch-refinement"
-    if path.startswith("pages/notes/") and ("builder" in entry_type or "builder" in title):
         return "branch-refinement"
     if path.startswith("pages/plans/") and any(
         marker in design_text
