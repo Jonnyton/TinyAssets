@@ -130,8 +130,8 @@ def _wiki_dispatch_keys() -> set[str]:
     """Mirror of the local `dispatch = {...}` literal inside `wiki()`."""
     return {
         "read", "search", "list", "lint",
-        "write", "consolidate", "promote", "ingest", "supersede",
-        "sync_projects",
+        "write", "patch", "consolidate", "promote", "ingest", "supersede",
+        "sync_projects", "cleanup_bug_pages",
         "file_bug", "cosign_bug",
     }
 
@@ -273,7 +273,7 @@ def _docstring_actions_universe() -> set[str]:
     slab = _extract_slab(
         doc,
         r"action:\s*One of\s*[—\-]",
-        r"\n {4}\w+:\s",
+        r"\n {4}[\w/]+:\s",
     )
     return _flat_group_actions(slab)
 
@@ -283,7 +283,7 @@ def _docstring_actions_wiki() -> set[str]:
     slab = _extract_slab(
         doc,
         r"action:\s*One of\s*[—\-]",
-        r"\n {4}\w+:\s",
+        r"\n {4}[\w/]+:\s",
     )
     return _flat_group_actions(slab)
 

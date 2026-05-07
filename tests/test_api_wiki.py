@@ -205,6 +205,39 @@ def test_wiki_list_returns_promoted_and_drafts_keys(wiki_env):
     assert "drafts_count" in res
 
 
+def test_wiki_cleanup_bug_pages_removes_duplicate_promoted_bug_ids(wiki_env):
+    bugs_dir = wiki_env / "pages" / "bugs"
+    canonical = bugs_dir / "bug-052-canonical.md"
+    duplicate = bugs_dir / "bug-052-stale-duplicate.md"
+    canonical.write_text(
+        "---\nid: BUG-052\ntitle: Canonical\nstatus: open\n---\n\ncanonical body\n",
+        encoding="utf-8",
+    )
+    duplicate.write_text(
+        "---\nid: BUG-052\ntitle: Stale duplicate\nstatus: duplicate\n---\n\nold\n",
+        encoding="utf-8",
+    )
+
+    dry = json.loads(wiki(action="cleanup_bug_pages", dry_run=True))
+
+    assert dry["mode"] == "dry_run"
+    assert dry["removed"] == []
+    assert dry["duplicate_groups"] == [{
+        "bug_id": "BUG-052",
+        "keep": "pages/bugs/bug-052-canonical.md",
+        "duplicates": ["pages/bugs/bug-052-stale-duplicate.md"],
+    }]
+    assert duplicate.exists()
+
+    cleaned = json.loads(wiki(action="cleanup_bug_pages", dry_run=False))
+
+    assert cleaned["mode"] == "executed"
+    assert cleaned["removed"] == ["pages/bugs/bug-052-stale-duplicate.md"]
+    assert cleaned["removed_count"] == 1
+    assert canonical.exists()
+    assert not duplicate.exists()
+
+
 def test_wiki_search_requires_query(wiki_env):
     res = json.loads(wiki(action="search", query=""))
     assert "error" in res

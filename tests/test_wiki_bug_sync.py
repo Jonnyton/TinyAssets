@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from wiki_bug_sync import (  # noqa: E402
     SyncError,
     _bug_number,
+    cleanup_bug_pages,
     create_gh_change_issue,
     create_gh_issue,
     fetch_bug_detail,
@@ -155,6 +156,29 @@ def test_list_new_bugs_sorted_ascending():
     }
     result = list_new_bugs(wiki_list, cursor=2)
     assert [e["bug_number"] for e in result] == [3, 4, 5]
+
+
+def test_list_new_bugs_deduplicates_duplicate_promoted_bug_ids():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": "pages/bugs/bug-052-stale-duplicate.md",
+                "type": "bug",
+                "title": "Stale duplicate",
+            },
+            {
+                "path": "pages/bugs/bug-052-canonical.md",
+                "type": "bug",
+                "title": "Canonical",
+            },
+            {"path": "pages/bugs/bug-053-next.md", "type": "bug"},
+        ]
+    }
+
+    result = list_new_bugs(wiki_list, cursor=51)
+
+    assert [entry["bug_number"] for entry in result] == [52, 53]
+    assert result[0]["path"] == "pages/bugs/bug-052-canonical.md"
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +457,43 @@ def test_fetch_bug_detail_reads_with_page_not_path():
     assert detail["title"] == "Bug"
 
 
+def test_cleanup_bug_pages_calls_wiki_housekeeping_action():
+    post = CapturingPost([
+        (
+            {
+                "jsonrpc": "2.0",
+                "id": 10,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps({
+                                "mode": "executed",
+                                "duplicate_groups": [],
+                                "removed": [],
+                                "removed_count": 0,
+                            }),
+                        }
+                    ]
+                },
+            },
+            "sid1",
+        ),
+    ])
+
+    result = cleanup_bug_pages(
+        "http://fake/mcp",
+        "sid1",
+        5.0,
+        dry_run=False,
+        post_fn=post,
+    )
+
+    args = post.calls[0]["params"]["arguments"]
+    assert args == {"action": "cleanup_bug_pages", "dry_run": False}
+    assert result["removed_count"] == 0
+
+
 # ---------------------------------------------------------------------------
 # sync() — happy path: no new bugs
 # ---------------------------------------------------------------------------
@@ -454,6 +515,61 @@ def test_sync_no_new_bugs(tmp_path):
     rc = sync("http://fake/mcp", 5.0, dry_run=True, cursor_path=cursor_path, post_fn=post_fn)
     assert rc == 0
     assert read_cursor(cursor_path) == 5  # unchanged
+
+
+def test_sync_runs_bug_page_cleanup_before_live_list(tmp_path):
+    cursor_path = tmp_path / "cursor"
+    write_cursor(5, cursor_path)
+    post = CapturingPost([
+        (_INIT_OK, "sid1"),
+        (_NOTIF_NONE, "sid1"),
+        (
+            {
+                "jsonrpc": "2.0",
+                "id": 10,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps({
+                                "mode": "executed",
+                                "duplicate_groups": [{
+                                    "bug_id": "BUG-052",
+                                    "keep": "pages/bugs/bug-052-canonical.md",
+                                    "duplicates": [
+                                        "pages/bugs/bug-052-stale-duplicate.md"
+                                    ],
+                                }],
+                                "removed": [
+                                    "pages/bugs/bug-052-stale-duplicate.md"
+                                ],
+                                "removed_count": 1,
+                            }),
+                        }
+                    ]
+                },
+            },
+            "sid1",
+        ),
+        (_wiki_list_resp([]), "sid1"),
+    ])
+
+    rc = sync(
+        "http://fake/mcp",
+        5.0,
+        dry_run=False,
+        token="fake-token",
+        cursor_path=cursor_path,
+        post_fn=post,
+    )
+
+    assert rc == 0
+    tool_actions = [
+        call["params"]["arguments"]["action"]
+        for call in post.calls
+        if call.get("method") == "tools/call"
+    ]
+    assert tool_actions == ["cleanup_bug_pages", "list"]
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +617,24 @@ def test_sync_one_new_bug_updates_cursor(tmp_path):
         tool = payload.get("params", {}).get("name")
         if tool == "wiki":
             args = payload.get("params", {}).get("arguments", {})
+            if args.get("action") == "cleanup_bug_pages":
+                return {
+                    "jsonrpc": "2.0",
+                    "id": 10,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps({
+                                    "mode": "executed",
+                                    "duplicate_groups": [],
+                                    "removed": [],
+                                    "removed_count": 0,
+                                }),
+                            }
+                        ]
+                    },
+                }, "sid1"
             if args.get("action") == "list":
                 return _wiki_list_resp([{"path": "bugs/BUG-003-new", "title": "New Bug"}]), "sid1"
             if args.get("action") == "read":

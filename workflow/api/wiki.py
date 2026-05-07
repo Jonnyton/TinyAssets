@@ -684,6 +684,97 @@ def _wiki_list(**_kwargs: Any) -> str:
     })
 
 
+def _bug_id_from_page(path: Path) -> str | None:
+    raw = _read_text(path)
+    meta, _ = _parse_frontmatter(raw)
+    candidate = meta.get("id") or meta.get("bug_id") or path.name
+    match = _BUG_ID_RE.search(candidate)
+    if match is None:
+        match = _BUG_ID_RE.search(path.name)
+    if match is None:
+        return None
+    return f"BUG-{int(match.group(1)):03d}"
+
+
+def _bug_page_cleanup_rank(path: Path) -> tuple[int, int, int, str]:
+    raw = _read_text(path)
+    meta, _ = _parse_frontmatter(raw)
+    status_text = " ".join((
+        meta.get("status", ""),
+        meta.get("resolution", ""),
+        meta.get("title", ""),
+        path.name,
+    )).lower()
+    stale_marked = int(any(
+        marker in status_text
+        for marker in ("duplicate", "stale", "superseded", "obsolete")
+    ))
+    uppercase_legacy_canonical = 0 if path.name.startswith("BUG-") else 1
+    richer_content = -len(raw)
+    return (stale_marked, uppercase_legacy_canonical, richer_content, path.name)
+
+
+def _wiki_cleanup_bug_pages(
+    dry_run: bool = True,
+    **_kwargs: Any,
+) -> str:
+    bugs_dir = _wiki_pages_dir() / _BUGS_CATEGORY
+    if not bugs_dir.is_dir():
+        return json.dumps({
+            "mode": "dry_run" if dry_run else "executed",
+            "duplicate_groups": [],
+            "removed": [],
+            "removed_count": 0,
+            "note": "No promoted bugs directory found.",
+        })
+
+    by_bug_id: dict[str, list[Path]] = {}
+    for path in sorted(bugs_dir.glob("*.md")):
+        bug_id = _bug_id_from_page(path)
+        if bug_id is None:
+            continue
+        by_bug_id.setdefault(bug_id, []).append(path)
+
+    duplicate_groups: list[dict[str, Any]] = []
+    removed: list[str] = []
+    for bug_id, paths in sorted(by_bug_id.items()):
+        if len(paths) < 2:
+            continue
+        ranked = sorted(paths, key=_bug_page_cleanup_rank)
+        keep = ranked[0]
+        duplicates = ranked[1:]
+        group: dict[str, Any] = {
+            "bug_id": bug_id,
+            "keep": _page_rel_path(keep),
+            "duplicates": [_page_rel_path(path) for path in duplicates],
+        }
+        duplicate_groups.append(group)
+        if dry_run:
+            continue
+        for duplicate in duplicates:
+            try:
+                duplicate.unlink()
+                removed.append(_page_rel_path(duplicate))
+            except OSError as exc:
+                group.setdefault("errors", []).append({
+                    "path": _page_rel_path(duplicate),
+                    "error": str(exc),
+                })
+
+    if removed:
+        _append_wiki_log(
+            "cleanup_bug_pages | removed duplicate promoted bug pages | "
+            + ", ".join(removed)
+        )
+
+    return json.dumps({
+        "mode": "dry_run" if dry_run else "executed",
+        "duplicate_groups": duplicate_groups,
+        "removed": removed,
+        "removed_count": len(removed),
+    })
+
+
 def _wiki_write(
     category: str = "",
     filename: str = "",
@@ -2043,6 +2134,7 @@ def wiki(
         "ingest": _wiki_ingest,
         "supersede": _wiki_supersede,
         "sync_projects": _wiki_sync_projects,
+        "cleanup_bug_pages": _wiki_cleanup_bug_pages,
         "file_bug": _wiki_file_bug,
         "cosign_bug": _wiki_cosign_bug,
     }

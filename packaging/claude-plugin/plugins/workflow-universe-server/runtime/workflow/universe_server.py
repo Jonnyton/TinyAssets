@@ -965,7 +965,7 @@ def wiki(
     Args:
         action: One of — reads: read, search, since, list, lint;
             writes: write, patch, consolidate, promote, ingest, supersede,
-            sync_projects, file_bug, cosign_bug.
+            sync_projects, cleanup_bug_pages, file_bug, cosign_bug.
             `search` is lexical best-effort, not a completeness proof; use
             `since` with `changed_since` to review pages updated after a known
             timestamp, then `read` the candidate pages.
