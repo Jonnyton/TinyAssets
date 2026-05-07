@@ -100,6 +100,7 @@ def _extract_submit_request(
             "branch_id": kwargs.get("branch_id", "") or None,
             "pickup_incentive": kwargs.get("pickup_incentive", "") or None,
             "directed_daemon_id": kwargs.get("directed_daemon_id", "") or None,
+            "request_classification": result.get("request_classification"),
         },
     )
 
@@ -1096,6 +1097,7 @@ def _action_submit_request(
 ) -> str:
     from workflow.api.market import (
         PATCH_REQUEST_AUTHORITY_BOUNDARY,
+        classify_patch_request,
         normalize_patch_request_incentive,
     )
     from workflow.branch_tasks import BranchTask, append_task, new_task_id
@@ -1167,6 +1169,13 @@ def _action_submit_request(
                 "error": "directed_daemon_not_authorized",
                 "requester_directed_daemon": requester_directed_daemon,
             })
+    request_classification = classify_patch_request(
+        text=text,
+        request_type=request_type,
+        requester_id=source,
+        host_id=host_id,
+        directed_daemon=requester_directed_daemon is not None,
+    )
     request_obj = {
         "id": request_id,
         "type": request_type,
@@ -1177,6 +1186,7 @@ def _action_submit_request(
         "source": source,
         "pickup_incentive": incentive,
         "authority_boundary": authority_boundary,
+        "request_classification": request_classification,
     }
     if requester_directed_daemon is not None:
         request_obj["requester_directed_daemon"] = requester_directed_daemon
@@ -1214,6 +1224,7 @@ def _action_submit_request(
                 "branch_id": branch_id or "",
                 "pickup_incentive": incentive,
                 "authority_boundary": authority_boundary,
+                "request_classification": request_classification,
                 "requester_directed_daemon": requester_directed_daemon,
             },
             trigger_source=(
@@ -1253,6 +1264,7 @@ def _action_submit_request(
         "priority_weight": pw,
         "pickup_incentive": incentive,
         "authority_boundary": authority_boundary,
+        "request_classification": request_classification,
         "requester_directed_daemon": requester_directed_daemon,
         "queue_position": pending_count,
         "ahead_of_yours": ahead,

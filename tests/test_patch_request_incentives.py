@@ -59,9 +59,25 @@ def test_pickup_incentive_boosts_pickup_not_acceptance(
         "affects_release": False,
         "affects_merge": False,
     }
+    assert response["request_classification"] == {
+        "access": {
+            "claimable_by": ["free_daemon", "paid_daemon"],
+            "code_writer_gate": "claude_or_codex",
+            "checker_gate": "opposite_family_checker",
+        },
+        "meaning": "branch_refinement",
+        "authority": {
+            "scope": "requester_pickup_only",
+            "boundary": response["authority_boundary"],
+        },
+    }
     assert queue[0].priority_weight == 0.0
     assert 0.0 < queue[0].pickup_signal_weight <= 5.0
     assert queue[0].trigger_source == "user_request"
+    assert (
+        queue[0].inputs["request_classification"]
+        == response["request_classification"]
+    )
 
     plain = BranchTask(
         branch_task_id="plain",
@@ -116,6 +132,23 @@ def test_incentivized_request_materializes_ahead_with_metadata(server_base):
                     "affects_release": False,
                     "affects_merge": False,
                 },
+                "request_classification": {
+                    "access": {
+                        "claimable_by": ["free_daemon", "paid_daemon"],
+                        "code_writer_gate": "claude_or_codex",
+                        "checker_gate": "opposite_family_checker",
+                    },
+                    "meaning": "patch",
+                    "authority": {
+                        "scope": "requester_pickup_only",
+                        "boundary": {
+                            "affects_pickup_priority": True,
+                            "affects_acceptance": False,
+                            "affects_release": False,
+                            "affects_merge": False,
+                        },
+                    },
+                },
             },
         ]),
         encoding="utf-8",
@@ -126,9 +159,41 @@ def test_incentivized_request_materializes_ahead_with_metadata(server_base):
 
     assert ranked[0].metadata["request_id"] == "req_incentive"
     assert ranked[0].metadata["pickup_incentive"]["enabled"] is True
+    assert ranked[0].metadata["request_classification"]["meaning"] == "patch"
     assert "pickup-incentive" in ranked[0].tags
+    assert "meaning:patch" in ranked[0].tags
     stored = load_work_targets(udir)
     assert any(t.metadata.get("request_id") == "req_plain" for t in stored)
+
+
+def test_submit_request_classifies_access_meaning_and_authority(
+    server_base,
+    monkeypatch,
+):
+    base, uid = server_base
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+
+    response = _submit(
+        universe_id=uid,
+        text="Patch-loop should classify requests before implementation.",
+        request_type="general",
+    )
+
+    assert response["request_classification"]["access"] == {
+        "claimable_by": ["free_daemon", "paid_daemon"],
+        "code_writer_gate": "claude_or_codex",
+        "checker_gate": "opposite_family_checker",
+    }
+    assert response["request_classification"]["meaning"] == "patch"
+    assert response["request_classification"]["authority"] == {
+        "scope": "requester_pickup_only",
+        "boundary": response["authority_boundary"],
+    }
+    queue = read_queue(base / uid)
+    assert (
+        queue[0].inputs["request_classification"]
+        == response["request_classification"]
+    )
 
 
 def test_requester_directed_daemon_requires_ownership(

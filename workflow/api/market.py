@@ -74,6 +74,56 @@ PATCH_REQUEST_AUTHORITY_BOUNDARY: dict[str, bool] = {
     "affects_merge": False,
 }
 PATCH_REQUEST_PICKUP_SIGNAL_WEIGHT = 5.0
+_PATCH_REQUEST_MEANING_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("bug", ("bug", "broken", "crash", "error", "fail", "flake", "regression")),
+    ("project_design", ("architecture", "design note", "plan.md", "principle")),
+    ("docs_ops", ("docs", "documentation", "runbook", "ops", "deploy", "ci")),
+    ("feature", ("feature", "add support", "new capability")),
+    ("patch", ("patch", "fix", "update", "change", "cleanup")),
+)
+_REQUEST_TYPE_MEANING: dict[str, str] = {
+    "branch_proposal": "branch_refinement",
+    "canon_change": "patch",
+    "general": "patch",
+    "revision": "patch",
+    "scene_direction": "branch_refinement",
+}
+
+
+def classify_patch_request(
+    *,
+    text: str,
+    request_type: str,
+    requester_id: str,
+    host_id: str,
+    directed_daemon: bool = False,
+) -> dict[str, Any]:
+    """Classify patch-loop intake before daemon implementation work starts."""
+    lower_text = text.lower()
+    meaning = _REQUEST_TYPE_MEANING.get(request_type, "patch")
+    for candidate, keywords in _PATCH_REQUEST_MEANING_KEYWORDS:
+        if any(keyword in lower_text for keyword in keywords):
+            meaning = candidate
+            break
+
+    authority_scope = (
+        "host_priority_allowed" if requester_id == host_id else "requester_pickup_only"
+    )
+    if directed_daemon:
+        authority_scope = f"{authority_scope}+proposal_only_directed_daemon"
+
+    return {
+        "access": {
+            "claimable_by": ["free_daemon", "paid_daemon"],
+            "code_writer_gate": "claude_or_codex",
+            "checker_gate": "opposite_family_checker",
+        },
+        "meaning": meaning,
+        "authority": {
+            "scope": authority_scope,
+            "boundary": dict(PATCH_REQUEST_AUTHORITY_BOUNDARY),
+        },
+    }
 
 
 def normalize_patch_request_incentive(

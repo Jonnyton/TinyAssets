@@ -460,10 +460,16 @@ def materialize_pending_requests(
         authority_boundary = req.get("authority_boundary")
         if isinstance(authority_boundary, dict):
             metadata["authority_boundary"] = dict(authority_boundary)
+        request_classification = req.get("request_classification")
+        if isinstance(request_classification, dict):
+            metadata["request_classification"] = dict(request_classification)
         directed_daemon = req.get("requester_directed_daemon")
         if isinstance(directed_daemon, dict):
             metadata["requester_directed_daemon"] = dict(directed_daemon)
         tags = ["user-request", req_type]
+        meaning = metadata.get("request_classification", {}).get("meaning")
+        if isinstance(meaning, str) and meaning:
+            tags.append(f"meaning:{meaning}")
         if _bounded_pickup_signal(metadata) > 0:
             if metadata.get("pickup_incentive"):
                 tags.append(PATCH_REQUEST_PICKUP_SIGNAL_TAG)
