@@ -550,6 +550,73 @@ def test_wiki_file_bug_dedup_returns_similar_found(wiki_env):
     assert len(dup["similar"]) >= 1
 
 
+def test_patch_request_counter_scans_frontmatter_ids(wiki_env):
+    patch_dir = wiki_env / "pages" / "patch-requests"
+    patch_dir.mkdir(parents=True)
+    (patch_dir / "pr-001-contradictory-page.md").write_text(
+        "---\nid: PR-010\ntitle: old imported patch request\n---\n",
+        encoding="utf-8",
+    )
+
+    res = json.loads(
+        wiki(
+            action="file_bug",
+            component="wiki.file_bug",
+            severity="minor",
+            title="Fresh patch request after imported wiki page",
+            kind="patch_request",
+            force_new=True,
+        )
+    )
+
+    assert res["status"] == "filed"
+    assert res["bug_id"] == "PR-011"
+
+
+def test_patch_request_slug_does_not_repeat_assigned_pr_id(wiki_env):
+    patch_dir = wiki_env / "pages" / "patch-requests"
+    patch_dir.mkdir(parents=True)
+    (patch_dir / "pr-052-existing.md").write_text("x", encoding="utf-8")
+
+    res = json.loads(
+        wiki(
+            action="file_bug",
+            component="wiki.file_bug",
+            severity="minor",
+            title="PR-053 Escalation replay on substrate fix",
+            kind="patch_request",
+            force_new=True,
+        )
+    )
+
+    assert res["status"] == "filed"
+    assert res["bug_id"] == "PR-053"
+    assert res["path"].startswith("pages/patch-requests/pr-053-")
+    assert "pr-053-pr-053" not in res["path"]
+
+
+def test_patch_request_slug_does_not_embed_contradictory_pr_id(wiki_env):
+    patch_dir = wiki_env / "pages" / "patch-requests"
+    patch_dir.mkdir(parents=True)
+    (patch_dir / "pr-052-existing.md").write_text("x", encoding="utf-8")
+
+    res = json.loads(
+        wiki(
+            action="file_bug",
+            component="wiki.file_bug",
+            severity="minor",
+            title="PR-999 Escalation replay on substrate fix",
+            kind="patch_request",
+            force_new=True,
+        )
+    )
+
+    assert res["status"] == "filed"
+    assert res["bug_id"] == "PR-053"
+    assert res["path"].startswith("pages/patch-requests/pr-053-")
+    assert "pr-999" not in res["path"]
+
+
 def test_wiki_cosign_bug_requires_args(wiki_env):
     res = json.loads(wiki(action="cosign_bug"))
     assert "error" in res

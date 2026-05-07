@@ -1358,10 +1358,17 @@ def _next_id(pages_dir: Path, drafts_dir: Path, prefix: str) -> str:
 
     Scans both ``pages_dir`` and ``drafts_dir`` so concurrent writes don't
     collide with an already-promoted entry. Returns ``<PREFIX>-001`` when
-    both dirs are empty or missing. Glob is case-insensitive via *.md plus a
-    prefix-anchored regex filter.
+    both dirs are empty or missing. Glob is case-insensitive via *.md plus
+    prefix-anchored regex filters against both the filename stem and the
+    frontmatter ``id`` field. The frontmatter scan prevents imported or
+    manually edited wiki pages from silently reusing an existing request ID
+    when their filename and canonical ID disagree.
     """
     pat = re.compile(rf"^{re.escape(prefix)}-(\d{{3,}})", re.IGNORECASE)
+    fm_id_pat = re.compile(
+        rf"^id:\s*['\"]?{re.escape(prefix)}-(\d{{3,}})['\"]?\s*$",
+        re.IGNORECASE,
+    )
     seen: set[int] = set()
     for base in (pages_dir, drafts_dir):
         if not base.is_dir():
@@ -1373,6 +1380,24 @@ def _next_id(pages_dir: Path, drafts_dir: Path, prefix: str) -> str:
                     seen.add(int(m.group(1)))
                 except ValueError:
                     continue
+            try:
+                lines = p.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                ).splitlines()
+                in_frontmatter = bool(lines and lines[0].strip() == "---")
+                for i, line in enumerate(lines[:80]):
+                    stripped = line.strip()
+                    if i > 0 and in_frontmatter and stripped == "---":
+                        break
+                    fm_match = fm_id_pat.match(stripped)
+                    if fm_match:
+                        seen.add(int(fm_match.group(1)))
+                        break
+                    if not in_frontmatter and stripped:
+                        break
+            except (OSError, ValueError):
+                continue
     next_n = (max(seen) + 1) if seen else 1
     return f"{prefix}-{next_n:03d}"
 
@@ -1392,6 +1417,26 @@ def _next_bug_id(bugs_pages_dir: Path) -> str:
 def _slugify_title(title: str, max_len: int = 60) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     return slug[:max_len] or "untitled"
+
+
+def _slugify_request_title(title: str, prefix: str, max_len: int = 60) -> str:
+    """Slugify a request title without embedding same-prefix request IDs."""
+    parts = _slugify_title(title, max_len=max_len).split("-")
+    prefix_part = prefix.lower()
+    filtered: list[str] = []
+    i = 0
+    while i < len(parts):
+        if (
+            parts[i] == prefix_part
+            and i + 1 < len(parts)
+            and len(parts[i + 1]) >= 3
+            and parts[i + 1].isdigit()
+        ):
+            i += 2
+            continue
+        filtered.append(parts[i])
+        i += 1
+    return "-".join(filtered).strip("-") or "untitled"
 
 
 def _render_bug_markdown(
@@ -1651,7 +1696,7 @@ def _wiki_file_bug(
         return json.dumps({"error": f"Cannot create {category_dir} dir: {exc}"})
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    slug = _slugify_title(title)
+    slug = _slugify_request_title(title, id_prefix)
 
     # Dedup check: scan existing filings of THIS kind for Jaccard similarity
     # ≥ threshold. Per-kind only — a feature-request shouldn't dedup against
