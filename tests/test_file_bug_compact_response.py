@@ -157,3 +157,22 @@ class TestTriggerReceiptUnchanged:
         resp = _file_one(verbose=True, wired_wiki=wired_wiki)
         assert "trigger" in resp
         assert resp["trigger"].get("attempted") is True
+
+    def test_feature_request_files_and_queues_branch_trigger(self, wired_wiki):
+        resp = _file_one(verbose=True, wired_wiki=wired_wiki)
+
+        assert resp["kind"] == "feature"
+        assert resp["bug_id"].startswith("FEAT-")
+        assert resp["path"].startswith("pages/feature-requests/")
+
+        inv = resp["investigation"]
+        task = inv["branch_task"]
+        assert task["branch_task_id"] == inv["dispatcher_request_id"]
+        assert task["branch_def_id"] == "branch-canonical-test"
+        assert task["inputs"]["bug_id"] == resp["bug_id"]
+        assert task["inputs"]["kind"] == "feature"
+
+        trig = resp["trigger"]
+        assert trig["status"] == "queued"
+        assert trig["dispatcher_request_id"] == inv["dispatcher_request_id"]
+        assert trig["branch_def_id"] == "branch-canonical-test"
