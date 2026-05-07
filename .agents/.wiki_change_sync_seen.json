@@ -1,8 +1,10 @@
 {
   "seen_paths": [
+    "pages/concepts/anticipation-gap-and-permission-ladder-jones-2026-05-07.md",
     "pages/concepts/brain-architecture-deep-dive-synthesis-2026-05-03.md",
     "pages/concepts/chatbot-friction-as-loop-learning-telemetry.md",
     "pages/concepts/community-patch-loop-as-project-steward.md",
+    "pages/concepts/consumer-ai-anticipation-gap-jones-2026-05-05.md",
     "pages/concepts/cross-algorithm-parity-rf-vs-maxent.md",
     "pages/concepts/pages-concepts-cowork-unfinished-central-ambition-audit-and-refactored-direction-2026-05-06.md",
     "pages/concepts/pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles.md",
@@ -107,6 +109,8 @@
     "pages/patch-requests/pr-070-pr-070-auto-rebase-on-stale-base-for-already-dual-keyed-prs-.md",
     "pages/patch-requests/pr-071-pr-072-pre-claim-brain-search-by-other-ai-authorship-convent.md",
     "pages/patch-requests/pr-072-pr-073-auto-close-orphan-branches-on-fully-merged-branch-hyg.md",
+    "pages/patch-requests/pr-073-pr-073-acceptance-scenario-packs-as-substrate-primitive-test.md",
+    "pages/patch-requests/pr-074-pr-074-per-user-intent-history-substrate-hawaii-swimsuit-pro.md",
     "pages/plans/chatbot-builder-behaviors.md",
     "pages/plans/composition-patterns.md",
     "pages/plans/design-validate-branch-collision-admission-test.md",
