@@ -18,6 +18,7 @@ import json
 import pytest
 
 from workflow.api.wiki import _wiki_file_bug, wiki
+from workflow.wiki import trigger_receipts
 
 
 @pytest.fixture
@@ -157,3 +158,19 @@ class TestTriggerReceiptUnchanged:
         resp = _file_one(verbose=True, wired_wiki=wired_wiki)
         assert "trigger" in resp
         assert resp["trigger"].get("attempted") is True
+
+    def test_feature_trigger_block_points_to_persisted_receipt(self, wired_wiki):
+        resp = _file_one(verbose=False, wired_wiki=wired_wiki)
+        receipt = trigger_receipts.get_receipt(resp["trigger"]["trigger_attempt_id"])
+
+        assert receipt is not None
+        assert receipt.request_id == resp["bug_id"]
+        assert receipt.request_kind == "feature"
+        assert receipt.request_page == resp["path"]
+        assert receipt.status == "queued"
+        assert receipt.dispatcher_request_id == resp["trigger"]["dispatcher_request_id"]
+
+        receipts = trigger_receipts.receipts_for_request(resp["bug_id"])
+        assert [r.trigger_attempt_id for r in receipts] == [
+            resp["trigger"]["trigger_attempt_id"],
+        ]
