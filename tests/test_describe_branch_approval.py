@@ -315,3 +315,54 @@ class TestValidateBranchApproval:
             "State field name 'status' collides with a graph node ID" in error
             for error in result["errors"]
         )
+        assert result["admission_tests"] == [{
+            "name": "collision_free_names",
+            "status": "failed",
+            "collision_class": "state_field_graph_node_id",
+            "field": "status",
+            "message": (
+                "State field name 'status' collides with a graph node ID. "
+                "Rename the state field or node before running this branch."
+            ),
+        }]
+
+    def test_duplicate_id_collisions_report_admission_tests(self):
+        node = _make_node(node_id="status", display_name="Status")
+        branch = _make_branch_dict(node_defs=[node, node])
+        branch["graph_nodes"] = [
+            {"id": "status", "node_def_id": "status", "position": 0},
+            {"id": "status", "node_def_id": "status", "position": 1},
+        ]
+        branch["edges"] = [
+            {"from": "START", "to": "status"},
+            {"from": "status", "to": "END"},
+        ]
+        branch["state_schema"] = [
+            {"name": "draft", "type": "str"},
+            {"name": "draft", "type": "str"},
+        ]
+
+        result = _call_validate_real(branch)
+
+        admission_tests = result["admission_tests"]
+        assert {
+            "name": "collision_free_names",
+            "status": "failed",
+            "collision_class": "duplicate_node_definition_id",
+            "field": "status",
+            "message": "Duplicate node definition ID: 'status'.",
+        } in admission_tests
+        assert {
+            "name": "collision_free_names",
+            "status": "failed",
+            "collision_class": "duplicate_graph_node_id",
+            "field": "status",
+            "message": "Duplicate graph node ID: 'status'.",
+        } in admission_tests
+        assert {
+            "name": "collision_free_names",
+            "status": "failed",
+            "collision_class": "duplicate_state_field_name",
+            "field": "draft",
+            "message": "Duplicate state field name: 'draft'.",
+        } in admission_tests

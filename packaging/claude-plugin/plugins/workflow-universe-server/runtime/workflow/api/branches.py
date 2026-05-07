@@ -712,6 +712,7 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
         "branch_def_id": bid,
         "valid": not errors,
         "errors": errors,
+        "admission_tests": _collision_errors_to_admission_tests(errors),
         "runnable": not errors and not unapproved_sc,
         "unapproved_source_code_nodes": unapproved_sc,
         "sandbox_warnings": sandbox_warnings,
@@ -1111,6 +1112,51 @@ def _errors_to_suggestions(
                 "proposed_fix": "Review this error and reshape the spec.",
             })
     return suggestions
+
+
+def _collision_errors_to_admission_tests(
+    errors: list[str],
+) -> list[dict[str, str]]:
+    """Return structured admission-test failures for name collisions.
+
+    ``BranchDefinition.validate()`` intentionally returns human-readable
+    strings for broad compatibility. The MCP surface additionally exposes
+    machine-readable collision classes so callers can tell users which
+    admission rule failed without regexing the raw ``errors`` list.
+    """
+    tests: list[dict[str, str]] = []
+    patterns = (
+        (
+            "duplicate_node_definition_id",
+            re.compile(r"Duplicate node definition ID: '([^']+)'\."),
+        ),
+        (
+            "duplicate_graph_node_id",
+            re.compile(r"Duplicate graph node ID: '([^']+)'\."),
+        ),
+        (
+            "duplicate_state_field_name",
+            re.compile(r"Duplicate state field name: '([^']+)'\."),
+        ),
+        (
+            "state_field_graph_node_id",
+            re.compile(r"State field name '([^']+)' collides with a graph node ID\."),
+        ),
+    )
+    for err in errors:
+        for collision_class, pattern in patterns:
+            match = pattern.search(err)
+            if not match:
+                continue
+            tests.append({
+                "name": "collision_free_names",
+                "status": "failed",
+                "collision_class": collision_class,
+                "field": match.group(1),
+                "message": err,
+            })
+            break
+    return tests
 
 
 def _resolve_node_spec(
@@ -2774,7 +2820,8 @@ per-turn tool-call budget is not at risk:
 
 After `describe_branch`, check `runnable` before telling the user their
 branch is ready to run. If `runnable=false`, surface
-`unapproved_source_code_nodes` or validation errors and stop. If
+`unapproved_source_code_nodes`, `admission_tests` collision failures, or
+validation errors and stop. If
 `runnable=true`, use `run_branch` with a JSON `inputs_json` that fills the
 state_schema fields. The runner returns a `run_id`, final status, and
 per-node trace.
