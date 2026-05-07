@@ -21,6 +21,7 @@ Surface guarded:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -169,6 +170,36 @@ def test_scope_universe_response_prepends_universe_lead_in() -> None:
     raw = '{"text": "hello", "universe_id": "u_test"}'
     out = univ_mod._scope_universe_response(raw)
     assert "Universe:" in out
+
+
+def test_confidential_tier_rejected_when_action_does_not_support_tier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = tmp_path / "output"
+    udir = base / "public-scope"
+    udir.mkdir(parents=True)
+    (udir / "PROGRAM.md").write_text(
+        "scope: public\n\nA public benchmark universe.",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+
+    out = json.loads(univ_mod._universe_impl(
+        action="set_premise",
+        universe_id="public-scope",
+        text="tier=confidential should not be ignored",
+        tier="confidential",
+    ))
+
+    assert out["status"] == "rejected"
+    assert out["error"] == "unsupported_tier_parameter"
+    assert out["action"] == "set_premise"
+    assert out["tier"] == "confidential"
+    assert "privacy or confidentiality flag" in out["hint"]
+    assert (udir / "PROGRAM.md").read_text(encoding="utf-8") == (
+        "scope: public\n\nA public benchmark universe."
+    )
 
 
 # ── Daemon telemetry helpers ─────────────────────────────────────────────────

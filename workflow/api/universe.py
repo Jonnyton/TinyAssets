@@ -2549,6 +2549,7 @@ def _action_daemon_overview(
 _VALID_TIER_KEYS = frozenset({
     "external_requests", "goal_pool", "paid_bids", "opportunistic",
 })
+_TIER_CONFIG_ACTION = "set_tier_config"
 _TIER_KEY_TO_CONFIG_FIELD = {
     "external_requests": "accept_external_requests",
     "goal_pool": "accept_goal_pool",
@@ -2626,6 +2627,26 @@ def _action_set_tier_config(
         "tier": tier_name,
         "enabled": bool(enabled),
         "takes_effect": "next_dispatcher_cycle",
+    })
+
+
+def _reject_unsupported_tier_param(action: str, tier: str) -> str | None:
+    tier_name = (tier or "").strip().lower()
+    if not tier_name or action == _TIER_CONFIG_ACTION:
+        return None
+    return json.dumps({
+        "status": "rejected",
+        "error": "unsupported_tier_parameter",
+        "action": action,
+        "tier": tier_name,
+        "hint": (
+            "The universe tool's tier parameter only configures dispatcher "
+            "tiers through action='set_tier_config'. It is not a privacy or "
+            "confidentiality flag, and unsupported tier values are rejected "
+            "instead of being silently ignored."
+        ),
+        "available_tier_config_actions": [_TIER_CONFIG_ACTION],
+        "available_dispatcher_tiers": sorted(_VALID_TIER_KEYS),
     })
 
 
@@ -4312,6 +4333,9 @@ def _universe_impl(
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(dispatch.keys()),
         })
+    unsupported_tier = _reject_unsupported_tier_param(action, tier)
+    if unsupported_tier is not None:
+        return unsupported_tier
 
     # Build kwargs from all optional params
     kwargs: dict[str, Any] = {
