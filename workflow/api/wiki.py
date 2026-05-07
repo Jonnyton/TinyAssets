@@ -1357,9 +1357,11 @@ def _next_id(pages_dir: Path, drafts_dir: Path, prefix: str) -> str:
     """Allocate the next ``<PREFIX>-NNN`` id for a kind's directory pair.
 
     Scans both ``pages_dir`` and ``drafts_dir`` so concurrent writes don't
-    collide with an already-promoted entry. Returns ``<PREFIX>-001`` when
-    both dirs are empty or missing. Glob is case-insensitive via *.md plus a
-    prefix-anchored regex filter.
+    collide with an already-promoted entry. Both filename stems and
+    frontmatter ``id:`` fields reserve ordinals, so imported/manual pages with
+    mismatched names cannot make the allocator reuse an exact ID. Returns
+    ``<PREFIX>-001`` when both dirs are empty or missing. Glob is
+    case-insensitive via *.md plus a prefix-anchored regex filter.
     """
     pat = re.compile(rf"^{re.escape(prefix)}-(\d{{3,}})", re.IGNORECASE)
     seen: set[int] = set()
@@ -1368,6 +1370,18 @@ def _next_id(pages_dir: Path, drafts_dir: Path, prefix: str) -> str:
             continue
         for p in base.glob("*.md"):
             m = pat.match(p.stem)
+            if m:
+                try:
+                    seen.add(int(m.group(1)))
+                except ValueError:
+                    pass
+            try:
+                raw = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            meta, _ = _parse_frontmatter(raw)
+            frontmatter_id = meta.get("id", "").strip().strip("'\"")
+            m = pat.match(frontmatter_id)
             if m:
                 try:
                     seen.add(int(m.group(1)))

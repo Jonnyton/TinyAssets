@@ -163,6 +163,31 @@ def test_next_id_increments_past_existing(tmp_path):
     assert _next_id(pages, drafts, "BUG") == "BUG-008"
 
 
+def test_next_id_increments_past_frontmatter_id_mismatch(tmp_path):
+    pages = tmp_path / "pages"
+    drafts = tmp_path / "drafts"
+    pages.mkdir()
+    drafts.mkdir()
+    (pages / "pr-001-imported.md").write_text(
+        "---\n"
+        "id: PR-077\n"
+        "title: Imported patch request\n"
+        "---\n\n"
+        "# PR-077: Imported patch request\n",
+        encoding="utf-8",
+    )
+    (drafts / "pr-020-draft.md").write_text(
+        "---\n"
+        "id: PR-003\n"
+        "title: Draft patch request\n"
+        "---\n\n"
+        "# PR-003: Draft patch request\n",
+        encoding="utf-8",
+    )
+
+    assert _next_id(pages, drafts, "PR") == "PR-078"
+
+
 # ── scaffold ────────────────────────────────────────────────────────────────
 
 
@@ -499,6 +524,35 @@ def test_wiki_file_bug_files_clean_when_no_dups(wiki_env):
     )
     assert res["status"] == "filed"
     assert res["bug_id"].startswith("BUG-")
+
+
+def test_wiki_file_patch_request_avoids_frontmatter_id_collision(wiki_env):
+    patch_pages = wiki_env / "pages" / "patch-requests"
+    patch_pages.mkdir(parents=True, exist_ok=True)
+    (patch_pages / "pr-001-imported.md").write_text(
+        "---\n"
+        "id: PR-077\n"
+        "title: Imported patch request\n"
+        "type: patch_request\n"
+        "---\n\n"
+        "# PR-077: Imported patch request\n",
+        encoding="utf-8",
+    )
+
+    res = json.loads(
+        wiki(
+            action="file_bug",
+            kind="patch_request",
+            component="wiki-change-sync",
+            severity="major",
+            title="Exact id brain sweep regression",
+            force_new=True,
+        )
+    )
+
+    assert res["status"] == "filed"
+    assert res["bug_id"] == "PR-078"
+    assert res["path"].startswith("pages/patch-requests/pr-078-")
 
 
 def test_wiki_file_bug_queued_investigation_returns_branch_task_lease_shape(
