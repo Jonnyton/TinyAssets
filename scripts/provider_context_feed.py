@@ -318,7 +318,9 @@ def _provider_scope(provider: str) -> set[str]:
     return scope
 
 
-def _spec_visible(spec: SourceSpec, scope: set[str]) -> bool:
+def _spec_visible(spec: SourceSpec, scope: set[str], *, phase: str) -> bool:
+    if phase == "claim" and spec.source_type == "provider-memory":
+        return True
     return "all" in scope or spec.provider in scope or spec.provider == "shared"
 
 
@@ -367,7 +369,7 @@ def collect_candidates(
     seen: set[tuple[str, int, str]] = set()
 
     for spec in default_specs(root):
-        if not _spec_visible(spec, scope):
+        if not _spec_visible(spec, scope, phase=phase):
             continue
         for path in _iter_files(root, spec):
             try:
