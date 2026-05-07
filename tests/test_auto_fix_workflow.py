@@ -177,6 +177,23 @@ def test_discover_scheduled_backfill_reads_oldest_pending_first(wf):
     assert "direction: 'asc'" in script
 
 
+def test_discover_paginates_past_deferred_oldest_issues(wf):
+    discover_step = wf["jobs"]["discover"]["steps"][0]
+    script = str(discover_step.get("with", {}).get("script", ""))
+    assert "github.paginate(github.rest.issues.listForRepo" in script
+    assert "Scanning ${issues.length} open issue(s)" in script
+
+
+def test_workflow_dispatch_logs_and_uses_target_issue_input(wf):
+    discover_step = wf["jobs"]["discover"]["steps"][0]
+    script = str(discover_step.get("with", {}).get("script", ""))
+    assert "const dispatchIssueNumber" in script
+    assert "context.payload.inputs?.issue_number" in script
+    assert "Workflow dispatch requested issue #" in script
+    assert "issueFromNumber(dispatchIssueNumber)" in script
+    assert "Workflow dispatch did not include issue_number" in script
+
+
 # ---------------------------------------------------------------------------
 # Disable toggle
 # ---------------------------------------------------------------------------

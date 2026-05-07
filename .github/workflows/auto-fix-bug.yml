@@ -93,6 +93,11 @@ jobs:
             const hasWriterAuth = process.env.HAS_WRITER_AUTH === 'true';
             const hasWorkflowPushToken = process.env.HAS_WORKFLOW_PUSH_TOKEN === 'true';
             const autoFixDisabled = process.env.AUTO_FIX_DISABLED === 'true';
+            const dispatchIssueNumber = (
+              core.getInput('issue_number') ||
+              context.payload.inputs?.issue_number ||
+              ''
+            ).trim();
 
             function hasLabel(issue, name) {
               return (issue.labels || []).some((label) => label.name === name);
@@ -174,16 +179,20 @@ jobs:
               ) {
                 pushIfPending(issue, { retryAttempted: true });
               }
-            } else if (context.eventName === 'workflow_dispatch' && core.getInput('issue_number')) {
-              const issue = await issueFromNumber(core.getInput('issue_number'));
+            } else if (context.eventName === 'workflow_dispatch' && dispatchIssueNumber) {
+              core.info(`Workflow dispatch requested issue #${dispatchIssueNumber}.`);
+              const issue = await issueFromNumber(dispatchIssueNumber);
               if (issue) {
                 pushIfPending(issue, { retryAttempted: true });
               }
             } else {
+              if (context.eventName === 'workflow_dispatch') {
+                core.info('Workflow dispatch did not include issue_number; scanning pending daemon requests.');
+              }
               async function scanAutoLabels(options = {}) {
                 const onlyPermissionBlocked = options.onlyPermissionBlocked || false;
                 async function scanLabelQuery(labelNames) {
-                  const { data: issues } = await github.rest.issues.listForRepo({
+                  const issues = await github.paginate(github.rest.issues.listForRepo, {
                     owner,
                     repo,
                     state: 'open',
@@ -192,6 +201,7 @@ jobs:
                     direction: 'asc',
                     per_page: 100,
                   });
+                  core.info(`Scanning ${issues.length} open issue(s) for labels ${labelNames.join(',')}.`);
                   for (const issue of issues) {
                     if (
                       onlyPermissionBlocked &&

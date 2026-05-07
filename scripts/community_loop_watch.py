@@ -43,6 +43,7 @@ LEGACY_PRIORITY_LABEL_MAP = {
     "primitive-surface": "priority:primitive-surface",
 }
 BLOCKED_LABEL = "needs-human"
+AWAIT_PRIMITIVE_LAYER_LABEL = "await-primitive-layer"
 ATTEMPTED_LABEL = "auto-fix-attempted"
 P0_OUTAGE_LABEL = "p0-outage"
 AUTH_MISSING_LABEL = "auto-fix-auth-missing"
@@ -237,6 +238,7 @@ def workflow_stage(
     max_age_min: int | None,
     stale_status: str = "red",
     required_success_event: str | None = None,
+    fallback_success_events: tuple[str, ...] = (),
     per_page: int = 20,
 ) -> dict[str, Any]:
     runs = _recent_workflow_runs(
@@ -249,11 +251,20 @@ def workflow_stage(
     )
     skipped_runs = [candidate for candidate in runs if _is_neutral_skipped_run(candidate)]
     candidates = [candidate for candidate in runs if not _is_neutral_skipped_run(candidate)]
+    fallback_candidates: list[dict[str, Any]] = []
     if required_success_event is not None:
         candidates = [
             candidate
             for candidate in candidates
             if candidate.get("event") == required_success_event
+        ]
+        fallback_candidates = [
+            candidate
+            for candidate in runs
+            if not _is_neutral_skipped_run(candidate)
+            and candidate.get("event") in fallback_success_events
+            and candidate.get("status") == "completed"
+            and candidate.get("conclusion") == "success"
         ]
     run = next(iter(candidates), None)
     if run is None and runs:
@@ -319,6 +330,35 @@ def workflow_stage(
             details=details,
         )
     if conclusion != "success":
+        fallback_run = next(iter(fallback_candidates), None)
+        fallback_age = _age_min(fallback_run.get("created_at"), now) if fallback_run else None
+        if (
+            fallback_run is not None
+            and max_age_min is not None
+            and fallback_age is not None
+            and fallback_age <= max_age_min
+        ):
+            fallback_event = fallback_run.get("event") or "unknown event"
+            return _stage(
+                label,
+                "yellow",
+                (
+                    f"{workflow_id} {required_success_event} run concluded {conclusion}, "
+                    f"but recent {fallback_event} success proves the workflow is dispatchable"
+                ),
+                evidence=(
+                    f"required {required_success_event} run was {status}/{conclusion}; "
+                    f"fallback {fallback_event} success was {fallback_age:.1f} min ago"
+                ),
+                url=fallback_run.get("html_url") or run.get("html_url"),
+                details={
+                    **details,
+                    "fallback_run_id": fallback_run.get("id"),
+                    "fallback_event": fallback_event,
+                    "fallback_created_at": fallback_run.get("created_at"),
+                    "fallback_age_min": round(fallback_age, 1),
+                },
+            )
         return _stage(
             label,
             "red",
@@ -405,6 +445,7 @@ def queue_stage(
     attempted: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     old_pending: list[dict[str, Any]] = []
+    await_primitive_layer: list[dict[str, Any]] = []
     legacy_priority_migrations: list[dict[str, Any]] = []
 
     for issue in issues:
@@ -436,6 +477,8 @@ def queue_stage(
             reviewed_terminal.append(issue)
         elif ATTEMPTED_LABEL in labels:
             attempted.append(issue)
+        elif AWAIT_PRIMITIVE_LAYER_LABEL in labels:
+            await_primitive_layer.append(issue)
         else:
             pending.append(issue)
             age = _age_min(issue.get("created_at"), now)
@@ -469,6 +512,9 @@ def queue_stage(
         "provider_exhausted": [issue.get("number") for issue in provider_exhausted],
         "pending": [issue.get("number") for issue in pending],
         "old_pending": [issue.get("number") for issue in old_pending],
+        "await_primitive_layer": [
+            issue.get("number") for issue in await_primitive_layer
+        ],
         "legacy_priority_migrations": legacy_priority_migrations,
         "reviewed_terminal": [issue.get("number") for issue in reviewed_terminal],
         "attempted": [issue.get("number") for issue in attempted],
@@ -565,6 +611,22 @@ def queue_stage(
             url=first.get("html_url"),
             details=details,
         )
+    if await_primitive_layer:
+        first = await_primitive_layer[0]
+        return _stage(
+            "Writer queue",
+            "yellow",
+            (
+                f"{len(await_primitive_layer)} loop request(s) are intentionally "
+                f"waiting on {AWAIT_PRIMITIVE_LAYER_LABEL}"
+            ),
+            evidence=(
+                f"first deferred issue #{first.get('number')}: "
+                f"{first.get('title')}"
+            ),
+            url=first.get("html_url"),
+            details=details,
+        )
     return _stage(
         "Writer queue",
         "green",
@@ -633,6 +695,7 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
             now=current_now,
             max_age_min=args.max_writer_age_min,
             required_success_event="schedule",
+            fallback_success_events=("workflow_dispatch", "issues"),
             per_page=100,
         ),
         queue_stage(
