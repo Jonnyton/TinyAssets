@@ -135,6 +135,19 @@ def test_discover_prioritizes_permission_blocked_before_normal_queue(wf):
     assert script.index(permission_blocked_pass) < script.index(normal_pass)
 
 
+def test_discover_prioritizes_stale_gate_before_normal_queue(wf):
+    discover_step = wf["jobs"]["discover"]["steps"][0]
+    script = str(discover_step.get("with", {}).get("script", ""))
+    stale_gate_pass = "await scanAutoLabels({ onlyStaleGate: true });"
+    normal_pass = "await scanAutoLabels();"
+    assert "const staleGateLabel = 'auto-fix-stale-gate'" in script
+    assert "const staleGate = hasLabel(issue, staleGateLabel)" in script
+    assert "retryPermissionBlocked || staleGate" in script
+    assert "onlyStaleGate" in script
+    assert "Prioritized stale-gate issue before normal queue discovery" in script
+    assert script.index(stale_gate_pass) < script.index(normal_pass)
+
+
 def test_discover_respects_priority_and_skip_labels(wf):
     discover_step = wf["jobs"]["discover"]["steps"][0]
     script = str(discover_step.get("with", {}).get("script", ""))
@@ -562,6 +575,15 @@ def test_superseded_label_is_defined(wf):
     script = str(labels_step.get("with", {}).get("script", ""))
     assert "auto-fix-superseded" in script
     assert "Older auto-change PR was closed" in script
+
+
+def test_stale_gate_label_is_defined(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    labels_step = next((s for s in steps if s.get("name") == "Ensure automation labels"), None)
+    assert labels_step is not None, "Must define automation labels"
+    script = str(labels_step.get("with", {}).get("script", ""))
+    assert "auto-fix-stale-gate" in script
+    assert "blocking the gated queue" in script
 
 
 def test_branch_naming_convention(wf):

@@ -90,6 +90,7 @@ jobs:
             const repo = context.repo.repo;
             const maxIssues = 1;
             const autoLabels = ['daemon-request', 'auto-change', 'auto-bug'];
+            const staleGateLabel = 'auto-fix-stale-gate';
             const priorityLabelOrder = [
               'priority:loop-discipline',
               'priority:primitive-layer',
@@ -146,6 +147,7 @@ jobs:
               const attempted = hasLabel(issue, 'auto-fix-attempted');
               const reviewed = hasLabel(issue, 'auto-fix-reviewed');
               const incompleteAttempt = attempted && !reviewed && !needsHuman;
+              const staleGate = hasLabel(issue, staleGateLabel);
               const retryPermissionBlocked = (
                 (
                   hasLabel(issue, 'auto-fix-branch-push-blocked') ||
@@ -157,7 +159,7 @@ jobs:
               );
               const retryAttempted = options.retryAttempted || incompleteAttempt || (
                 needsHuman && hasWriterAuth && !autoFixDisabled && !reviewed
-              ) || retryPermissionBlocked;
+              ) || retryPermissionBlocked || staleGate;
               if (attempted && !retryAttempted) {
                 return;
               }
@@ -177,6 +179,9 @@ jobs:
                   ? 'workflow push token is now visible'
                   : 'writer auth is now visible';
                 core.info(`Retrying needs-human issue #${issue.number} because ${reason}.`);
+              }
+              if (staleGate) {
+                core.info(`Retrying stale-gate issue #${issue.number}.`);
               }
               rows.push(issueRow(issue));
               seenIssueNumbers.add(issue.number);
@@ -203,6 +208,7 @@ jobs:
               }
               async function scanAutoLabels(options = {}) {
                 const onlyPermissionBlocked = options.onlyPermissionBlocked || false;
+                const onlyStaleGate = options.onlyStaleGate || false;
                 async function scanLabelQuery(labelNames) {
                   const issues = await github.paginate(github.rest.issues.listForRepo, {
                     owner,
@@ -220,6 +226,9 @@ jobs:
                       !hasLabel(issue, 'auto-fix-branch-push-blocked') &&
                       !hasLabel(issue, 'auto-fix-pr-blocked')
                     ) {
+                      continue;
+                    }
+                    if (onlyStaleGate && !hasLabel(issue, staleGateLabel)) {
                       continue;
                     }
                     pushIfPending(issue, { ignoreSkip: onlyPermissionBlocked });
@@ -244,7 +253,13 @@ jobs:
                 }
               }
 
-              await scanAutoLabels({ onlyPermissionBlocked: true });
+              await scanAutoLabels({ onlyStaleGate: true });
+              if (rows.length >= maxIssues) {
+                core.info('Prioritized stale-gate issue before normal queue discovery.');
+              }
+              if (rows.length < maxIssues) {
+                await scanAutoLabels({ onlyPermissionBlocked: true });
+              }
               if (rows.length >= maxIssues) {
                 core.info('Prioritized retryable permission-blocked issue before normal queue discovery.');
               }
@@ -336,6 +351,11 @@ jobs:
                 name: 'auto-fix-attempted',
                 color: 'fbca04',
                 description: 'Automated fix workflow already attempted this issue.',
+              },
+              {
+                name: 'auto-fix-stale-gate',
+                color: 'd93f0b',
+                description: 'Attempted request has no terminal review label and is blocking the gated queue.',
               },
               {
                 name: 'auto-fix-reviewed',

@@ -45,6 +45,7 @@ LEGACY_PRIORITY_LABEL_MAP = {
 BLOCKED_LABEL = "needs-human"
 AWAIT_PRIMITIVE_LAYER_LABEL = "await-primitive-layer"
 ATTEMPTED_LABEL = "auto-fix-attempted"
+STALE_GATE_LABEL = "auto-fix-stale-gate"
 P0_OUTAGE_LABEL = "p0-outage"
 AUTH_MISSING_LABEL = "auto-fix-auth-missing"
 CLAUDE_SUBSCRIPTION_MISSING_LABEL = "auto-fix-claude-subscription-missing"
@@ -442,6 +443,7 @@ def queue_stage(
     pr_blocked: list[dict[str, Any]] = []
     branch_push_blocked: list[dict[str, Any]] = []
     reviewed_terminal: list[dict[str, Any]] = []
+    stale_gate: list[dict[str, Any]] = []
     attempted: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     old_pending: list[dict[str, Any]] = []
@@ -477,6 +479,9 @@ def queue_stage(
             reviewed_terminal.append(issue)
         elif ATTEMPTED_LABEL in labels:
             attempted.append(issue)
+            age = _age_min(issue.get("created_at"), now)
+            if STALE_GATE_LABEL in labels or age is None or age > max_pending_age_min:
+                stale_gate.append(issue)
         elif AWAIT_PRIMITIVE_LAYER_LABEL in labels:
             await_primitive_layer.append(issue)
         else:
@@ -517,6 +522,7 @@ def queue_stage(
         ],
         "legacy_priority_migrations": legacy_priority_migrations,
         "reviewed_terminal": [issue.get("number") for issue in reviewed_terminal],
+        "stale_gate": [issue.get("number") for issue in stale_gate],
         "attempted": [issue.get("number") for issue in attempted],
         "request_labels": list(REQUEST_LABELS),
     }
@@ -576,6 +582,22 @@ def queue_stage(
                 f"{max_pending_age_min} min"
             ),
             evidence=f"oldest visible pending issue #{first.get('number')}: {first.get('title')}",
+            url=first.get("html_url"),
+            details=details,
+        )
+    if stale_gate:
+        first = stale_gate[0]
+        return _stage(
+            "Writer queue",
+            "red",
+            (
+                f"{len(stale_gate)} attempted loop request(s) have no terminal "
+                f"review label after {max_pending_age_min} min"
+            ),
+            evidence=(
+                f"stale attempted issue #{first.get('number')}: {first.get('title')} "
+                f"(apply {STALE_GATE_LABEL} while triaging)"
+            ),
             url=first.get("html_url"),
             details=details,
         )

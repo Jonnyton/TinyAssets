@@ -437,6 +437,42 @@ def test_queue_stage_treats_attempted_loop_smoke_as_not_waiting(monkeypatch):
     assert stage["details"]["attempted"] == [178]
     assert stage["details"]["pending"] == []
     assert stage["details"]["old_pending"] == []
+    assert stage["details"]["stale_gate"] == []
+
+
+def test_queue_stage_marks_old_attempted_without_terminal_review_red(monkeypatch):
+    now = dt.datetime(2026, 5, 7, 10, 0, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 589,
+                "title": "Attempted request with no terminal review",
+                "created_at": "2026-05-07T08:00:00Z",
+                "html_url": "https://example.test/issues/589",
+                "labels": [
+                    {"name": "daemon-request"},
+                    {"name": "auto-change"},
+                    {"name": watch.ATTEMPTED_LABEL},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "red"
+    assert stage["details"]["attempted"] == [589]
+    assert stage["details"]["stale_gate"] == [589]
+    assert watch.STALE_GATE_LABEL in stage["evidence"]
 
 
 def test_queue_stage_treats_await_primitive_layer_as_deferred_not_stuck(
