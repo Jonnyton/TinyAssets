@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -1608,6 +1609,7 @@ def _wiki_file_bug(
     tags: str = "",
     force_new: bool = False,
     verbose: bool = False,
+    dry_run: bool = False,
     **_kwargs: Any,
 ) -> str:
     """File a bug, feature request, design proposal, or patch request.
@@ -1645,10 +1647,6 @@ def _wiki_file_bug(
     category_dir, id_prefix = _KIND_ROUTING[effective_kind]
     pages_dir = _wiki_pages_dir() / category_dir
     drafts_dir = _wiki_drafts_dir() / category_dir
-    try:
-        pages_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return json.dumps({"error": f"Cannot create {category_dir} dir: {exc}"})
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slug = _slugify_title(title)
@@ -1686,6 +1684,32 @@ def _wiki_file_bug(
                     "materially different."
                 ),
             })
+
+    if dry_run:
+        bug_id = _next_id(pages_dir, drafts_dir, id_prefix)
+        filename = f"{bug_id.lower()}-{slug}.md"
+        canonical_branch_def_id = os.environ.get(
+            "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "",
+        ).strip()
+        return json.dumps({
+            "path": f"pages/{category_dir}/{filename}",
+            "bug_id": bug_id,
+            "status": "dry_run",
+            "kind": effective_kind,
+            "severity": severity,
+            "component": component,
+            "would_write": True,
+            "would_dispatch": bool(canonical_branch_def_id),
+            "note": (
+                "Dry run only; no wiki page, log entry, trigger receipt, "
+                "or investigation task was created."
+            ),
+        })
+
+    try:
+        pages_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return json.dumps({"error": f"Cannot create {category_dir} dir: {exc}"})
 
     for attempt in (1, 2):
         bug_id = _next_id(pages_dir, drafts_dir, id_prefix)
@@ -1753,8 +1777,7 @@ def _wiki_file_bug(
         # Pre-write trigger receipt (status=pending). Read canonical branch_def_id
         # from env so the receipt records what we *expected* to invoke even if the
         # enqueue helper rejects.
-        import os as _os
-        canonical_branch_def_id = _os.environ.get(
+        canonical_branch_def_id = os.environ.get(
             "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "",
         ).strip() or None
         try:
@@ -1892,7 +1915,7 @@ def wiki(
     new_draft: str = "",
     reason: str = "",
     similarity_threshold: float = 0.25,
-    dry_run: bool = True,
+    dry_run: bool | None = None,
     skip_lint: bool = False,
     max_results: int = 10,
     component: str = "",
@@ -1972,6 +1995,11 @@ def wiki(
             "available_actions": sorted(dispatch.keys()),
         })
 
+    handler_dry_run = (
+        (False if action == "file_bug" else True)
+        if dry_run is None
+        else dry_run
+    )
     kwargs: dict[str, Any] = {
         "page": page,
         "query": query,
@@ -1987,7 +2015,7 @@ def wiki(
         "new_draft": new_draft,
         "reason": reason,
         "similarity_threshold": similarity_threshold,
-        "dry_run": dry_run,
+        "dry_run": handler_dry_run,
         "skip_lint": skip_lint,
         "max_results": max_results,
         "component": component,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -499,6 +500,38 @@ def test_wiki_file_bug_files_clean_when_no_dups(wiki_env):
     )
     assert res["status"] == "filed"
     assert res["bug_id"].startswith("BUG-")
+
+
+def test_wiki_file_bug_dry_run_does_not_write_log_or_trigger(wiki_env, monkeypatch):
+    monkeypatch.setenv(
+        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID",
+        "bug_investigation_v1",
+    )
+
+    with (
+        patch("workflow.bug_investigation._maybe_enqueue_investigation") as maybe_enqueue,
+        patch("workflow.wiki.trigger_receipts.create_pending") as create_pending,
+    ):
+        res = json.loads(
+            wiki(
+                action="file_bug",
+                component="universe.inspect",
+                severity="major",
+                title="Dry run must not persist",
+                observed="dry_run=true wrote a page",
+                dry_run=True,
+            )
+        )
+
+    assert res["status"] == "dry_run"
+    assert res["would_write"] is True
+    assert res["would_dispatch"] is True
+    assert res["bug_id"] == "BUG-001"
+    assert res["path"].startswith("pages/bugs/bug-001-")
+    assert list((wiki_env / "pages" / "bugs").glob("*.md")) == []
+    assert "file_bug" not in (wiki_env / "log.md").read_text(encoding="utf-8")
+    maybe_enqueue.assert_not_called()
+    create_pending.assert_not_called()
 
 
 def test_wiki_file_bug_queued_investigation_returns_branch_task_lease_shape(
