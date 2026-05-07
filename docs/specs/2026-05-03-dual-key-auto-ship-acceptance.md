@@ -1,4 +1,4 @@
-# Spec: Dual-Key Auto-Ship Acceptance
+# Spec: Required-Key Auto-Ship Acceptance
 
 Captured: 2026-05-03
 Status: proposal for Cowork/Codex agreement
@@ -7,15 +7,14 @@ Builds on: `docs/milestones/auto-ship-canary-v0.md`, `workflow.auto_ship.validat
 
 ## Objective
 
-Let the patch loop experience the full autonomous ship path while Codex and
-Cowork retain a reversible safety gate.
+Let the patch loop experience the full autonomous ship path while Codex,
+Cowork, and an explicit host-named merge key retain a reversible safety gate.
 
 The host's model is correct: close the full steps 1-8 loop, but put a
-double-key acceptance gate at step 4. Codex and Cowork should already be
-watching before the gate opens, so by the time step 4 asks for acceptance,
-both reviewers have followed the packet through the preceding stages and can
-turn their keys quickly. If either key is not turned, the loop parks at the
-acceptance gate instead of silently shipping or losing state.
+required-key acceptance gate at step 4. Codex and Cowork should already be
+watching before the gate opens, and the host merge key must be explicit rather
+than inferred from momentum. If any required key is not turned, the loop parks
+at the acceptance gate instead of silently shipping or losing state.
 
 Success means a docs-canary ship can proceed through the same machinery that
 will eventually be fully autonomous: the loop opens a PR, the acceptance gate
@@ -29,10 +28,10 @@ different code path.
   and before the shipper merges or deploys anything.
 - Existing auto-ship validation remains the final structural envelope for path
   allowlists, diff limits, secret checks, rollback handle requirements, and CI.
-- The dual keys are policy gates, not replacement review systems. They do not
+- Required keys are policy gates, not replacement review systems. They do not
   bypass tests, CI, rollback requirements, or ship-class restrictions.
-- Reviewers are provider-family independent at first: one OpenAI-family key and
-  one Anthropic-family key.
+- Reviewers are provider-family independent at first: one OpenAI-family key,
+  one Anthropic-family key, and one explicit host-named merge key.
 - The initial implementation should be feature-flagged and observable before
   it is allowed to merge anything.
 - For PR-backed ships, GitHub PR approval state is the canonical key surface.
@@ -45,7 +44,7 @@ Use this eight-stage map unless Cowork has a sharper naming scheme:
 1. User intake through chatbot/wiki.
 2. Dedup, classification, and dispatcher queueing.
 3. Loop investigation, coding packet, and release safety analysis.
-4. Dual-key acceptance/auto-merge gate.
+4. Required-key acceptance/auto-merge gate.
 5. Shipper action: merge or park according to ship class.
 6. CI, deploy, canary, and live observation.
 7. Rollback, revert PR, or parked remediation if observation turns red.
@@ -64,8 +63,9 @@ There are two key surfaces:
    auto-ship attempt ledger.
 
 For PR-backed ships, GitHub is authoritative. A Codex approval review opens
-the Codex key. A Cowork approval review opens the Cowork key. Missing approval
-is the default safety state: the PR waits.
+the Codex key. A Cowork approval review opens the Cowork key. A host approval
+review opens `host_merge_key`. Missing approval is the default safety state:
+the PR waits.
 
 The mirror ledger exists so `get_status`, wiki Investigation write-back, and
 dry-run/non-PR attempts can explain what is waiting without forcing chatbots to
@@ -196,10 +196,11 @@ Add read-only summaries after PR-open and mirror-key recording exist:
         "request_id": "BUG-055",
         "pr_url": "https://github.com/Jonnyton/Workflow/pull/243",
         "ship_class": "docs_canary",
-        "required_keys": ["codex", "cowork"],
+        "required_keys": ["codex_reviewer", "cowork_reviewer", "host_merge_key"],
         "key_state": {
-          "codex": "open",
-          "cowork": "pending"
+          "codex_reviewer": "open",
+          "cowork_reviewer": "pending",
+          "host_merge_key": "pending"
         },
         "expires_at": "2026-05-03T23:00:00Z"
       }

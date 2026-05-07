@@ -256,6 +256,7 @@ CI passed
 PR contains only allowlisted paths
 PR title includes [autoship-canary]
 shipper identity is expected bot/service identity
+explicit host-named merge key is open
 ```
 
 If any check fails:
@@ -448,6 +449,7 @@ changed_paths subset docs/autoship-canaries/**
 CI passed
 no human block label present
 release_gate_result == APPROVE_AUTO_SHIP
+host_merge_key explicitly open
 ```
 
 ### Phase 4 — observation gate

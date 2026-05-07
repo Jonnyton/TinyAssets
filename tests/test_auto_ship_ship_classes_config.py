@@ -5,14 +5,19 @@ import yaml
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "auto_ship_ship_classes.yaml"
 
 
-def test_ship_class_defaults_require_two_manual_keys():
+def test_ship_class_defaults_require_manual_review_and_host_merge_key():
     config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
 
     defaults = config["defaults"]
 
     assert defaults["auto_merge"] is False
     assert defaults["keys_auto_open"] is False
-    assert defaults["required_keys"] == ["codex_reviewer", "cowork_reviewer"]
+    assert defaults["required_keys"] == [
+        "codex_reviewer",
+        "cowork_reviewer",
+        "host_merge_key",
+    ]
+    assert config["reviewer_roles"]["host_merge_key"]["provider_family"] == "host"
 
 
 def test_graduation_classes_start_disabled_until_policy_flip():

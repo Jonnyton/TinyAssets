@@ -1,7 +1,8 @@
 # Auto-ship ship-class policy.
 #
 # New ship classes inherit `defaults`, so the safe baseline is two manual
-# reviewer keys and no auto-merge/auto-open policy. Runtime code must treat
+# reviewer keys, one explicit host-named merge key, and no auto-merge/auto-open
+# policy. Runtime code must treat
 # missing or unknown classes as defaults plus a closed path allowlist.
 version: 1
 
@@ -11,6 +12,7 @@ defaults:
   required_keys:
     - codex_reviewer
     - cowork_reviewer
+    - host_merge_key
   approval_ttl_minutes: 30
   required_status_checks:
     - auto_ship_envelope
@@ -35,7 +37,7 @@ reviewer_roles:
   cowork_reviewer:
     provider_family: anthropic
     github_review_required: true
-  host_reviewer:
+  host_merge_key:
     provider_family: host
     github_review_required: true
 

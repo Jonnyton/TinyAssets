@@ -13,8 +13,9 @@ roll back regressions, and seek new work when the queue is empty.
 This stays one roadmap entry for now because the parts are coupled. PR
 creation, keyed auto-merge, ship-class graduation, branch protection,
 observation, rollback, and self-seeking define one control loop. Splitting
-them too early would hide the central constraint: assisted, double-keyed, and
-eventually keyless ship classes must use the same loop code path.
+them too early would hide the central constraint: assisted, required-keyed,
+and eventually auto-opened non-host-key ship classes must use the same loop
+code path.
 
 ## Current State
 
@@ -91,7 +92,8 @@ Default for every new ship class:
 
 - `auto_merge=false`;
 - `keys_auto_open=false`;
-- required keys are `codex_reviewer` and `cowork_reviewer`;
+- required keys are `codex_reviewer`, `cowork_reviewer`, and the explicit
+  host-named `host_merge_key`;
 - approvals expire after the configured TTL;
 - missing approval is the safety state.
 
@@ -107,14 +109,15 @@ Auto-merge eligibility:
 3. Reviewers approve through normal GitHub PR review.
 4. Phase 3 polls every open auto-ship PR.
 5. The loop re-runs the safety envelope against the PR head and changed paths.
-6. Eligibility is true only when the envelope still passes and either:
-   `ship_class.auto_merge=true`, or all required keys are open in GitHub review
-   state.
+6. Eligibility is true only when the envelope still passes, `host_merge_key` is
+   explicitly open in GitHub review state, and either `ship_class.auto_merge=true`
+   or all non-host required keys are open in GitHub review state.
 7. If eligible, the loop calls `gh pr merge` or the GitHub merge API itself.
 
 Humans authorize while required keys are manual. The loop executes. Later
-graduation flips policy so a class can auto-open keys, still through the same
-poll-and-merge path.
+graduation may auto-open non-host keys for a class, but it must not replace or
+infer `host_merge_key` from broad momentum, successful history, or class
+graduation.
 
 ## Failure Semantics
 
