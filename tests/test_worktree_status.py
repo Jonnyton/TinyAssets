@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,6 +12,17 @@ worktree_status = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = worktree_status
 SPEC.loader.exec_module(worktree_status)
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 def test_parse_porcelain_branch_and_detached_entries() -> None:
@@ -96,6 +108,21 @@ def test_classify_ready_to_remove_when_upstream_gone() -> None:
     )
 
 
+def test_classify_ready_to_remove_when_branch_fully_merged() -> None:
+    assert (
+        worktree_status.classify(
+            dirty=False,
+            purpose_exists=False,
+            purpose_complete=False,
+            age_hours=1,
+            upstream="tracking",
+            branch="codex/landed-fix",
+            fully_merged=True,
+        )
+        == "READY_TO_REMOVE"
+    )
+
+
 def test_ready_to_remove_action_uses_underscore_state() -> None:
     action = worktree_status._action_for_state(
         state="READY_TO_REMOVE",
@@ -105,6 +132,34 @@ def test_ready_to_remove_action_uses_underscore_state() -> None:
     )
 
     assert "Log remove/sweep" in action
+
+
+def test_ready_to_remove_sweep_commands_remove_worktree_and_local_branch() -> None:
+    status = worktree_status.WorktreeStatus(
+        slug="wf-landed",
+        path="/tmp/wf-landed",
+        branch="codex/landed-fix",
+        head="abc123",
+        state="READY_TO_REMOVE",
+        age_hours=1,
+        upstream="tracking",
+        dirty=False,
+        current=False,
+        live_safety="ISOLATED_UNTIL_MERGED",
+        status_ref=False,
+        purpose_exists=False,
+        purpose_missing_fields=[],
+        purpose="-",
+        memory_refs=[],
+        action="Log remove/sweep in .agents/worktrees.md after ideas are extracted.",
+    )
+
+    commands = worktree_status.sweep_commands([status])
+
+    assert commands == [
+        "git worktree remove /tmp/wf-landed",
+        "git branch -d codex/landed-fix",
+    ]
 
 
 def test_build_status_handles_missing_worktree_path(tmp_path: Path) -> None:
@@ -121,6 +176,37 @@ def test_build_status_handles_missing_worktree_path(tmp_path: Path) -> None:
 
     assert status.state == "MISSING"
     assert "path missing" in status.action
+
+
+def test_build_status_marks_fully_merged_branch_ready_to_remove(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    topic_path = tmp_path / "wf-topic"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "checkout", "-q", "-b", "codex/topic")
+    (repo / "topic.txt").write_text("topic\n", encoding="utf-8")
+    _git(repo, "add", "topic.txt")
+    _git(repo, "commit", "-q", "-m", "topic")
+    topic_head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "merge", "-q", "--no-ff", "codex/topic", "-m", "merge topic")
+    _git(repo, "worktree", "add", "-q", str(topic_path), "codex/topic")
+
+    status = worktree_status.build_status(
+        worktree_status.WorktreeEntry(
+            path=str(topic_path),
+            head=topic_head,
+            branch_ref="refs/heads/codex/topic",
+        ),
+        repo=repo,
+    )
+
+    assert status.state == "READY_TO_REMOVE"
 
 
 def test_classify_clean_local_branch_with_purpose_needs_pr_or_status() -> None:

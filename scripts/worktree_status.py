@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 import time
@@ -197,6 +198,7 @@ def build_status(
     current = _is_current_worktree(path, repo)
     status_ref = _has_status_ref(status_text, entry)
     live_safety = _live_safety(entry.branch)
+    fully_merged = _is_fully_merged(path, entry)
     state = classify(
         dirty=dirty,
         purpose_exists=purpose_exists,
@@ -206,6 +208,7 @@ def build_status(
         current=current,
         status_ref=status_ref,
         branch=entry.branch,
+        fully_merged=fully_merged,
     )
     action = _action_for_state(
         state=state,
@@ -243,6 +246,7 @@ def classify(
     current: bool = False,
     status_ref: bool = False,
     branch: str = "",
+    fully_merged: bool = False,
 ) -> str:
     if dirty and current and not purpose_exists:
         return "DIRTY_CURRENT_NEEDS_PURPOSE"
@@ -253,6 +257,8 @@ def classify(
     if dirty:
         return "IN_FLIGHT"
     old = age_hours is not None and age_hours >= 24
+    if fully_merged and not _is_main_branch(branch):
+        return "READY_TO_REMOVE"
     if upstream == "gone":
         return "READY_TO_REMOVE"
     if not purpose_exists and old and upstream in {"none", "gone", "detached"}:
@@ -297,6 +303,36 @@ def _upstream_state(path: Path, entry: WorktreeEntry) -> str:
     if track.stdout.strip():
         return "ahead-behind"
     return "tracking"
+
+
+def _is_fully_merged(path: Path, entry: WorktreeEntry) -> bool:
+    if entry.detached or not entry.head or not entry.branch_ref:
+        return False
+    branch = entry.branch
+    if _is_main_branch(branch):
+        return False
+    for base in _merge_base_candidates(path):
+        result = run_git(["merge-base", "--is-ancestor", entry.head, base], path)
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def _merge_base_candidates(path: Path) -> list[str]:
+    candidates = [
+        "refs/remotes/origin/main",
+        "refs/remotes/origin/master",
+        "refs/remotes/origin/production",
+        "refs/heads/main",
+        "refs/heads/master",
+        "refs/heads/production",
+    ]
+    existing: list[str] = []
+    for candidate in candidates:
+        result = run_git(["rev-parse", "--verify", "--quiet", candidate], path)
+        if result.returncode == 0 and result.stdout.strip():
+            existing.append(candidate)
+    return existing
 
 
 def _purpose(path: Path) -> tuple[bool, str]:
@@ -477,6 +513,21 @@ def render_table(statuses: list[WorktreeStatus]) -> str:
     return "\n".join(lines)
 
 
+def sweep_commands(statuses: list[WorktreeStatus]) -> list[str]:
+    commands: list[str] = []
+    for status in statuses:
+        if status.state not in {"ORPHANED", "READY_TO_REMOVE"}:
+            continue
+        commands.append(f"git worktree remove {shlex.quote(status.path)}")
+        if status.state == "READY_TO_REMOVE" and _branch_can_be_deleted(status.branch):
+            commands.append(f"git branch -d {shlex.quote(status.branch)}")
+    return commands
+
+
+def _branch_can_be_deleted(branch: str) -> bool:
+    return bool(branch and not branch.startswith("(") and not _is_main_branch(branch))
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
@@ -484,7 +535,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--sweep-orphaned",
         action="store_true",
-        help="Print worktree remove commands for ORPHANED entries. Dry-run only.",
+        help=(
+            "Print cleanup commands for ORPHANED entries and fully merged "
+            "READY_TO_REMOVE branches. Dry-run only."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -509,10 +563,9 @@ def main(argv: list[str]) -> int:
         print(render_table(statuses))
 
     if args.sweep_orphaned:
-        print("\n# Dry-run orphan sweep commands")
-        for status in statuses:
-            if status.state == "ORPHANED":
-                print(f"git worktree remove {status.path}")
+        print("\n# Dry-run orphan/removable sweep commands")
+        for command in sweep_commands(statuses):
+            print(command)
         print("# Log any removal in .agents/worktrees.md before running it.")
     return 0
 
