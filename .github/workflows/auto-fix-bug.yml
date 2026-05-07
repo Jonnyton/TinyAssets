@@ -114,6 +114,55 @@ jobs:
               return !options.ignoreSkip && skipLabels.some((name) => hasLabel(issue, name));
             }
 
+            function prerequisitePrNumbers(issue) {
+              const labels = (issue.labels || []).map((label) => label.name || label);
+              const text = [
+                issue.title || '',
+                issue.body || '',
+                labels.join('\n'),
+              ].join('\n');
+              const patterns = [
+                /sequenced[-_ ]after[^\n#]{0,120}#(\d+)/gi,
+                /sequenced[-_ ]after[^\n]{0,120}PR\s*#?(\d+)/gi,
+                /sequenced[-_ ]after[-_: ]*pr[-_: ]*(\d+)/gi,
+                /prerequisite[-_ ]pr[^\n0-9]{0,80}(\d+)/gi,
+                /depends[-_ ]on[^\n#]{0,120}PR\s*#?(\d+)/gi,
+                /blocked[^\n]{0,80}(?:by|on)[^\n#]{0,80}PR\s*#?(\d+)/gi,
+              ];
+              const numbers = new Set();
+              for (const pattern of patterns) {
+                for (const match of text.matchAll(pattern)) {
+                  numbers.add(Number(match[1]));
+                }
+              }
+              return [...numbers].filter((number) => Number.isInteger(number) && number > 0);
+            }
+
+            async function hasUnlandedPrerequisitePr(issue) {
+              const prNumbers = prerequisitePrNumbers(issue);
+              for (const prNumber of prNumbers) {
+                try {
+                  const { data: pull } = await github.rest.pulls.get({
+                    owner,
+                    repo,
+                    pull_number: prNumber,
+                  });
+                  if (!pull.merged_at) {
+                    core.info(
+                      `Skipping issue #${issue.number} because it has an unlanded prerequisite PR #${prNumber}.`
+                    );
+                    return true;
+                  }
+                } catch (error) {
+                  core.warning(
+                    `Skipping issue #${issue.number} because prerequisite PR #${prNumber} could not be verified: ${error.message}`
+                  );
+                  return true;
+                }
+              }
+              return false;
+            }
+
             function issueRow(issue) {
               return {
                 issue_number: issue.number,
@@ -135,12 +184,15 @@ jobs:
             const rows = [];
             const seenIssueNumbers = new Set();
 
-            function pushIfPending(issue, options = {}) {
+            async function pushIfPending(issue, options = {}) {
               if (!issue || issue.pull_request || seenIssueNumbers.has(issue.number)) {
                 return;
               }
               if (shouldSkipIssue(issue, options)) {
                 core.info(`Skipping issue #${issue.number} because it is deferred or complete.`);
+                return;
+              }
+              if (await hasUnlandedPrerequisitePr(issue)) {
                 return;
               }
               const needsHuman = hasLabel(issue, 'needs-human');
@@ -194,13 +246,13 @@ jobs:
                 autoLabels.includes(label?.name) &&
                 !issue.pull_request
               ) {
-                pushIfPending(issue, { retryAttempted: true });
+                await pushIfPending(issue, { retryAttempted: true });
               }
             } else if (context.eventName === 'workflow_dispatch' && dispatchIssueNumber) {
               core.info(`Workflow dispatch requested issue #${dispatchIssueNumber}.`);
               const issue = await issueFromNumber(dispatchIssueNumber);
               if (issue) {
-                pushIfPending(issue, { retryAttempted: true });
+                await pushIfPending(issue, { retryAttempted: true });
               }
             } else {
               if (context.eventName === 'workflow_dispatch') {
@@ -231,7 +283,7 @@ jobs:
                     if (onlyStaleGate && !hasLabel(issue, staleGateLabel)) {
                       continue;
                     }
-                    pushIfPending(issue, { ignoreSkip: onlyPermissionBlocked });
+                    await pushIfPending(issue, { ignoreSkip: onlyPermissionBlocked });
                     if (rows.length >= maxIssues) {
                       return true;
                     }

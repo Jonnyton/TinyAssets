@@ -169,6 +169,20 @@ def test_discover_respects_priority_and_skip_labels(wf):
     )
 
 
+def test_discover_skips_sequenced_after_requests_until_pr_lands(wf):
+    discover_step = wf["jobs"]["discover"]["steps"][0]
+    script = str(discover_step.get("with", {}).get("script", ""))
+    assert "function prerequisitePrNumbers" in script
+    assert "async function hasUnlandedPrerequisitePr" in script
+    assert "sequenced[-_ ]after" in script
+    assert "github.rest.pulls.get" in script
+    assert "pull.merged_at" in script
+    assert "has an unlanded prerequisite PR" in script
+    assert script.index("if (await hasUnlandedPrerequisitePr(issue))") < (
+        script.index("rows.push(issueRow(issue));")
+    )
+
+
 def test_permission_blocked_retry_clears_terminal_labels_when_push_token_visible(wf):
     steps = wf["jobs"]["fix"]["steps"]
     clear_step = next(
