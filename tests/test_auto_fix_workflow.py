@@ -584,6 +584,27 @@ def test_branch_naming_convention(wf):
     )
 
 
+def test_meta_step_extracts_reconciliation_artifacts(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    meta_step = next((s for s in steps if s.get("id") == "meta"), None)
+    assert meta_step is not None
+    script = str(meta_step.get("with", {}).get("script", ""))
+    assert r"body.match(/\*\*Wiki path:\*\*\s*`([^`]+)`/i)" in script
+    assert "core.setOutput('wiki_path', wikiPath)" in script
+    assert "const expectedBranchTask = `${branchPrefix}issue-${issue.issue_number}`" in script
+    assert "core.setOutput('expected_branch_task', expectedBranchTask)" in script
+
+
+def test_discovery_retries_attempted_without_terminal_receipt(wf):
+    steps = wf["jobs"]["discover"]["steps"]
+    discover_step = next((s for s in steps if s.get("id") == "discover"), None)
+    assert discover_step is not None
+    script = str(discover_step.get("with", {}).get("script", ""))
+    assert "const incompleteAttempt = attempted && !reviewed && !needsHuman" in script
+    assert "options.retryAttempted || incompleteAttempt" in script
+    assert "has no terminal receipt" in script
+
+
 def test_pr_title_prefix_uses_filing_shape(wf):
     steps = wf["jobs"]["fix"]["steps"]
     meta_step = next((s for s in steps if s.get("id") == "meta"), None)
@@ -629,6 +650,42 @@ def test_pr_body_references_fixes_keyword(wf):
     assert "Fixes #${{ steps.meta.outputs.issue_number }}" in prompt, (
         "Claude prompt must require PR body to reference the issue with Fixes #N"
     )
+
+
+def test_writer_pr_bodies_reconcile_request_surfaces(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    oauth_step = next((s for s in steps if s.get("id") == "claude-oauth"), None)
+    codex_pr_step = next((s for s in steps if s.get("id") == "codex-pr-create"), None)
+    assert oauth_step is not None, "Must have a Claude OAuth step"
+    assert codex_pr_step is not None, "Must create a PR for Codex-authored changes"
+    oauth_prompt = str(oauth_step.get("with", {}).get("prompt", ""))
+    codex_env = str(codex_pr_step.get("env", {}))
+    codex_script = str(codex_pr_step.get("with", {}).get("script", ""))
+    for text in (oauth_prompt, codex_script):
+        assert "Request artifact reconciliation" in text
+        assert "Wiki page" in text
+        assert "GitHub issue" in text
+        assert "Branch task" in text
+        assert "PR artifact" in text
+    assert "WIKI_PATH" in codex_env
+    assert "EXPECTED_BRANCH_TASK" in codex_env
+
+
+def test_writer_steps_record_issue_side_artifact_receipts(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    claude_pr_step = next((s for s in steps if s.get("id") == "claude-pr"), None)
+    codex_pr_step = next((s for s in steps if s.get("id") == "codex-pr-create"), None)
+    assert claude_pr_step is not None, "Must find and label Claude-authored PRs"
+    assert codex_pr_step is not None, "Must create Codex-authored PRs"
+    claude_script = str(claude_pr_step.get("with", {}).get("script", ""))
+    codex_script = str(codex_pr_step.get("with", {}).get("script", ""))
+    for script in (claude_script, codex_script):
+        assert "Auto-fix artifact receipt" in script
+        assert "issue_number: issueNumber" in script
+        assert "Child invocation receipt" in script
+        assert "Terminal outcome: `pr-opened`" in script
+        assert "pr.html_url" in script
+        assert "labels: ['auto-fix-reviewed']" in script
 
 
 def test_writer_prompts_require_plugin_mirror_for_workflow_runtime_edits(wf):
@@ -723,6 +780,8 @@ def test_no_pr_step_marks_review_without_failing_workflow(wf):
     assert "CODEX_BRANCH" in str(no_pr_step.get("env", {}))
     assert "CODEX_PR_BLOCKED" in str(no_pr_step.get("env", {}))
     assert "CODEX_PUSH_BLOCKED" in str(no_pr_step.get("env", {}))
+    assert "WIKI_PATH" in str(no_pr_step.get("env", {}))
+    assert "EXPECTED_BRANCH_TASK" in str(no_pr_step.get("env", {}))
     assert "CODEX_OUTCOME" in str(no_pr_step.get("env", {}))
     assert "CLAUDE_OUTCOME" in str(no_pr_step.get("env", {}))
     assert "mode === 'codex_subscription' && codexBranch" in script
@@ -730,6 +789,39 @@ def test_no_pr_step_marks_review_without_failing_workflow(wf):
     assert "WORKFLOW_PUSH_TOKEN" in script
     assert "Workflows write" in script
     assert "Pull requests write" in script
+
+
+def test_no_pr_comment_records_terminal_artifact_receipt(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    no_pr_step = next(
+        (s for s in steps if s.get("name") == "Mark needs-human if no PR opened"),
+        None,
+    )
+    assert no_pr_step is not None, "Must mark no-PR outcomes"
+    script = str(no_pr_step.get("with", {}).get("script", ""))
+    assert "Request artifact reconciliation" in script
+    assert "Wiki page" in script
+    assert "GitHub issue" in script
+    assert "Branch task" in script
+    assert "PR artifact: `not created`" in script
+    assert "Child invocation receipt" in script
+    assert "Terminal outcome" in script
+    assert "writer-failed-before-pr" in script
+    assert "context.runId" in script
+
+
+def test_no_pr_step_heals_existing_open_pr_receipt(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    no_pr_step = next(
+        (s for s in steps if s.get("name") == "Mark needs-human if no PR opened"),
+        None,
+    )
+    assert no_pr_step is not None, "Must mark no-PR outcomes"
+    script = str(no_pr_step.get("with", {}).get("script", ""))
+    assert "Auto-fix PR exists" in script
+    assert "pr-opened-existing" in script
+    assert "PR artifact: #${pr.number} (${pr.html_url})" in script
+    assert "labels: ['auto-fix-reviewed']" in script
 
 
 def test_no_pr_comment_distinguishes_successful_writer_from_pr_policy_block(wf):

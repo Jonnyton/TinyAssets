@@ -9,6 +9,12 @@ name: Auto-fix change
 #   -> an automated writer attempts a change, or the issue is marked
 #      `needs-human`.
 #
+# Lost-work guard:
+#   once an issue is labeled `auto-fix-attempted`, it must eventually gain a
+#   terminal receipt: PR artifact, `auto-fix-reviewed`, or `needs-human`.
+#   Attempted issues without a terminal receipt are treated as interrupted and
+#   retried instead of skipped.
+#
 # Why this has a backfill path:
 #   wiki-bug-sync intentionally uses GITHUB_TOKEN. GitHub suppresses most
 #   follow-on workflow runs caused by GITHUB_TOKEN events, so an issue label
@@ -139,6 +145,7 @@ jobs:
               const needsHuman = hasLabel(issue, 'needs-human');
               const attempted = hasLabel(issue, 'auto-fix-attempted');
               const reviewed = hasLabel(issue, 'auto-fix-reviewed');
+              const incompleteAttempt = attempted && !reviewed && !needsHuman;
               const retryPermissionBlocked = (
                 (
                   hasLabel(issue, 'auto-fix-branch-push-blocked') ||
@@ -148,11 +155,16 @@ jobs:
                 hasWorkflowPushToken &&
                 !autoFixDisabled
               );
-              const retryAttempted = options.retryAttempted || (
+              const retryAttempted = options.retryAttempted || incompleteAttempt || (
                 needsHuman && hasWriterAuth && !autoFixDisabled && !reviewed
               ) || retryPermissionBlocked;
               if (attempted && !retryAttempted) {
                 return;
+              }
+              if (incompleteAttempt) {
+                core.info(
+                  `Retrying issue #${issue.number} because auto-fix-attempted has no terminal receipt.`
+                );
               }
               if (attempted) {
                 core.info(`Retrying previously attempted issue #${issue.number}.`);
@@ -615,6 +627,8 @@ jobs:
             const filingShape = architecturalKinds.has(requestKind) ? 'architectural' : 'mechanical';
             const branchPrefix = filingShape === 'architectural' ? 'design-note-draft/' : 'auto-change/';
             const prTitlePrefix = filingShape === 'architectural' ? '[design-note]' : '[auto-change]';
+            const wikiPathMatch = body.match(/\*\*Wiki path:\*\*\s*`([^`]+)`/i);
+            const wikiPath = wikiPathMatch ? wikiPathMatch[1] : '';
 
             // Pull request id from titles like "[BUG-003] ..." or "[WIKI-FEATURE] ...".
             const bugMatch = title.match(/\[?(BUG-\d+)\]?/i);
@@ -624,6 +638,7 @@ jobs:
               : wikiMatch
                 ? wikiMatch[1].toUpperCase()
                 : `ISSUE-${String(issue.issue_number).padStart(3, '0')}`;
+            const expectedBranchTask = `${branchPrefix}issue-${issue.issue_number}`;
 
             // Short title = everything after the bracketed request prefix, trimmed.
             const shortTitle = title.replace(/^\[?(BUG-\d+|WIKI-[A-Z-]+)\]?\s*/i, '').trim() || title;
@@ -633,6 +648,8 @@ jobs:
             core.setOutput('request_kind', requestKind);
             core.setOutput('filing_shape', filingShape);
             core.setOutput('branch_prefix', branchPrefix);
+            core.setOutput('wiki_path', wikiPath);
+            core.setOutput('expected_branch_task', expectedBranchTask);
             core.setOutput('short_title', shortTitle);
             core.setOutput('pr_title', `${prTitlePrefix} ${requestId}: ${shortTitle}`);
             core.setOutput('issue_body', body);
@@ -706,9 +723,14 @@ jobs:
                ${{ steps.meta.outputs.pr_title }}
             10. The PR body must start with:
                Fixes #${{ steps.meta.outputs.issue_number }}
-            11. Include `Writer family: Claude` and `Required checker family: Codex`.
-            12. Include a short fix summary, tests run, and any remaining risks.
-            13. Do not redesign community-authored branches unless the issue explicitly asks for that.
+            11. Include a `Request artifact reconciliation` section that lists:
+               - Wiki page: `${{ steps.meta.outputs.wiki_path || 'not declared' }}`
+               - GitHub issue: `#${{ steps.meta.outputs.issue_number }}`
+               - Branch task: `${{ steps.meta.outputs.expected_branch_task }}`
+               - PR artifact: this PR
+            12. Include `Writer family: Claude` and `Required checker family: Codex`.
+            13. Include a short fix summary, tests run, and any remaining risks.
+            14. Do not redesign community-authored branches unless the issue explicitly asks for that.
 
             If you cannot find a safe targeted change or are not confident, leave a
             comment in the code and exit gracefully. Do not guess.
@@ -902,6 +924,8 @@ jobs:
           CODEX_BRANCH: ${{ steps.codex-subscription.outputs.branch }}
           PR_TITLE: ${{ steps.meta.outputs.pr_title }}
           ISSUE_NUMBER: ${{ steps.meta.outputs.issue_number }}
+          WIKI_PATH: ${{ steps.meta.outputs.wiki_path }}
+          EXPECTED_BRANCH_TASK: ${{ steps.meta.outputs.expected_branch_task }}
         with:
           # PAT-created PRs fire pull_request checks; GITHUB_TOKEN-created PRs do not.
           github-token: ${{ secrets.WORKFLOW_PUSH_TOKEN || github.token }}
@@ -910,6 +934,8 @@ jobs:
             const issueNumber = Number(process.env.ISSUE_NUMBER);
             const filingShape = '${{ steps.meta.outputs.filing_shape }}';
             const branchPrefix = '${{ steps.meta.outputs.branch_prefix }}';
+            const wikiPath = process.env.WIKI_PATH || 'not declared';
+            const expectedBranchTask = process.env.EXPECTED_BRANCH_TASK || `${branchPrefix}issue-${issueNumber}`;
             async function selfReviewLoopPr(pr) {
               const failures = [];
               const headRef = pr.head?.ref || '';
@@ -988,6 +1014,13 @@ jobs:
                   base: 'main',
                   body: [
                     `Fixes #${issueNumber}`,
+                    '',
+                    '## Request artifact reconciliation',
+                    '',
+                    `- Wiki page: \`${wikiPath}\``,
+                    `- GitHub issue: #${issueNumber}`,
+                    `- Branch task: \`${expectedBranchTask}\``,
+                    '- PR artifact: this PR',
                     '',
                     'Writer family: Codex',
                     'Required checker family: Claude',
@@ -1112,6 +1145,27 @@ jobs:
                 'Do not accept this PR with a same-family checker.',
               ].join('\n'),
             });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                '**Auto-fix artifact receipt**',
+                '',
+                `- Wiki page: \`${wikiPath}\``,
+                `- GitHub issue: #${issueNumber}`,
+                `- Branch task: \`${expectedBranchTask}\``,
+                `- PR artifact: #${pr.number} (${pr.html_url})`,
+                `- Child invocation receipt: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '- Terminal outcome: `pr-opened`',
+              ].join('\n'),
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['auto-fix-reviewed'],
+            });
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -1189,6 +1243,9 @@ jobs:
           steps.check-disabled.outputs.disabled == 'false' &&
           steps.auth.outputs.mode == 'claude_oauth'
         uses: actions/github-script@v7
+        env:
+          WIKI_PATH: ${{ steps.meta.outputs.wiki_path }}
+          EXPECTED_BRANCH_TASK: ${{ steps.meta.outputs.expected_branch_task }}
         with:
           script: |
             const issueNumber = Number('${{ matrix.issue.issue_number }}');
@@ -1308,6 +1365,29 @@ jobs:
                 'Do not accept this PR with a same-family checker.',
               ].join('\n'),
             });
+            const wikiPath = process.env.WIKI_PATH || 'not declared';
+            const expectedBranchTask = process.env.EXPECTED_BRANCH_TASK || `${branchPrefix}issue-${issueNumber}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                '**Auto-fix artifact receipt**',
+                '',
+                `- Wiki page: \`${wikiPath}\``,
+                `- GitHub issue: #${issueNumber}`,
+                `- Branch task: \`${expectedBranchTask}\``,
+                `- PR artifact: #${pr.number} (${pr.html_url})`,
+                `- Child invocation receipt: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '- Terminal outcome: `pr-opened`',
+              ].join('\n'),
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['auto-fix-reviewed'],
+            });
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -1330,6 +1410,8 @@ jobs:
           CODEX_PR_BLOCK_REASON: ${{ steps.codex-pr-create.outputs.block_reason }}
           CODEX_PUSH_BLOCKED: ${{ steps.codex-subscription.outputs.push_blocked }}
           CODEX_PUSH_BLOCK_REASON: ${{ steps.codex-subscription.outputs.push_block_reason }}
+          WIKI_PATH: ${{ steps.meta.outputs.wiki_path }}
+          EXPECTED_BRANCH_TASK: ${{ steps.meta.outputs.expected_branch_task }}
           CLAUDE_OUTCOME: ${{ steps.claude-oauth.outcome }}
           CODEX_OUTCOME: ${{ steps.codex-subscription.outcome }}
         with:
@@ -1341,6 +1423,9 @@ jobs:
             const branch = mode === 'codex_subscription' && codexBranch
               ? codexBranch
               : `${branchPrefix}issue-${issueNumber}`;
+            const wikiPath = process.env.WIKI_PATH || 'not declared';
+            const expectedBranchTask = process.env.EXPECTED_BRANCH_TASK || `${branchPrefix}issue-${issueNumber}`;
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const { data: prs } = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -1349,7 +1434,29 @@ jobs:
               per_page: 5,
             });
             if (prs.length) {
-              core.info(`Auto-fix PR exists: #${prs[0].number}`);
+              const pr = prs[0];
+              core.info(`Auto-fix PR exists: #${pr.number}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: [
+                  '**Auto-fix artifact receipt**',
+                  '',
+                  `- Wiki page: \`${wikiPath}\``,
+                  `- GitHub issue: #${issueNumber}`,
+                  `- Branch task: \`${expectedBranchTask}\``,
+                  `- PR artifact: #${pr.number} (${pr.html_url})`,
+                  `- Child invocation receipt: ${runUrl}`,
+                  '- Terminal outcome: `pr-opened-existing`',
+                ].join('\n'),
+              });
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                labels: ['auto-fix-reviewed'],
+              });
               return;
             }
 
@@ -1363,6 +1470,15 @@ jobs:
             const claudeWriterFailed = mode === 'claude_oauth' && process.env.CLAUDE_OUTCOME === 'failure';
             const codexWriterFailed = mode === 'codex_subscription' && process.env.CODEX_OUTCOME === 'failure';
             const writerFailed = claudeWriterFailed || codexWriterFailed;
+            const terminalOutcome = writerFailed
+              ? 'writer-failed-before-pr'
+              : codexPushBlocked
+                ? 'branch-push-blocked'
+                : codexPrBlocked
+                  ? 'pr-creation-blocked'
+                  : codexNoChangeReason
+                    ? `no-change-${codexNoChangeReason}`
+                    : 'no-pr-artifact-created';
             const labels = ['needs-human'];
             if (codexNoChangeReason || codexPrBlocked || codexPushBlocked || writerFailed) {
               labels.push('auto-fix-reviewed');
@@ -1396,6 +1512,15 @@ jobs:
               issue_number: issueNumber,
               body: [
                 '**Auto-fix needs human review** - approved writer auth was present, but no automated PR was opened.',
+                '',
+                '## Request artifact reconciliation',
+                '',
+                `- Wiki page: \`${wikiPath}\``,
+                `- GitHub issue: #${issueNumber}`,
+                `- Branch task: \`${expectedBranchTask}\``,
+                '- PR artifact: `not created`',
+                `- Child invocation receipt: ${runUrl}`,
+                `- Terminal outcome: \`${terminalOutcome}\``,
                 '',
                 `Detected auth mode: \`${{ steps.auth.outputs.mode }}\``,
                 `Claude OAuth present: \`${{ steps.auth.outputs.has_claude_oauth }}\``,
