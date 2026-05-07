@@ -696,11 +696,43 @@ jobs:
             const requestKindLabel = labels.find((name) => name?.startsWith('request:'));
             const requestKind = requestKindLabel ? requestKindLabel.replace('request:', '') : 'change';
             const architecturalKinds = new Set(['project-design']);
-            const filingShape = architecturalKinds.has(requestKind) ? 'architectural' : 'mechanical';
-            const branchPrefix = filingShape === 'architectural' ? 'design-note-draft/' : 'auto-change/';
-            const prTitlePrefix = filingShape === 'architectural' ? '[design-note]' : '[auto-change]';
             const wikiPathMatch = body.match(/\*\*Wiki path:\*\*\s*`([^`]+)`/i);
             const wikiPath = wikiPathMatch ? wikiPathMatch[1] : '';
+            const architecturalFilingMarkers = [
+              'architecture',
+              'architectural',
+              'design-note',
+              'design note',
+              'project design',
+              'operating-model',
+              'operating model',
+              'roadmap',
+              'strategic',
+              'substrate',
+            ];
+
+            function declaredFilingShape(body) {
+              const match = String(body || '').match(/\*\*Filing shape:\*\*\s*`?([A-Za-z-]+)`?/i);
+              if (!match) {
+                return '';
+              }
+              const value = match[1].toLowerCase();
+              return ['architectural', 'mechanical'].includes(value) ? value : '';
+            }
+
+            function hasArchitecturalFilingShape(...parts) {
+              const corpus = parts.join(' ').toLowerCase();
+              return architecturalFilingMarkers.some((marker) => corpus.includes(marker));
+            }
+
+            const declaredShape = declaredFilingShape(body);
+            const markerShape = hasArchitecturalFilingShape(requestKind, title, wikiPath, body) ? 'architectural' : '';
+            const labelShape = architecturalKinds.has(requestKind) ? 'architectural' : 'mechanical';
+            const filingShape = [declaredShape, markerShape, labelShape].includes('architectural')
+              ? 'architectural'
+              : (declaredShape || labelShape);
+            const branchPrefix = filingShape === 'architectural' ? 'design-note-draft/' : 'auto-change/';
+            const prTitlePrefix = filingShape === 'architectural' ? '[design-note]' : '[auto-change]';
 
             function issueLinkKeyword(requestKind, body) {
               if (requestKind !== 'patch') {

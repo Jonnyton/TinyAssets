@@ -653,6 +653,32 @@ def test_pr_title_prefix_uses_filing_shape(wf):
     assert "prTitlePrefix" in script
 
 
+def test_meta_step_detects_architectural_filing_shape_from_issue_text(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    meta_step = next((s for s in steps if s.get("id") == "meta"), None)
+    assert meta_step is not None
+    script = str(meta_step.get("with", {}).get("script", ""))
+    assert "const architecturalFilingMarkers = [" in script
+    assert "'architectural'" in script
+    assert "'design-note'" in script
+    assert "'substrate'" in script
+    assert "function hasArchitecturalFilingShape" in script
+    assert "hasArchitecturalFilingShape(requestKind, title, wikiPath, body)" in script
+    assert "design-note-draft/" in script
+
+
+def test_meta_step_allows_explicit_filing_shape_override(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    meta_step = next((s for s in steps if s.get("id") == "meta"), None)
+    assert meta_step is not None
+    script = str(meta_step.get("with", {}).get("script", ""))
+    assert "function declaredFilingShape" in script
+    assert r"body || '').match(/\*\*Filing shape:\*\*" in script
+    assert "const declaredShape = declaredFilingShape(body)" in script
+    assert "const markerShape = hasArchitecturalFilingShape" in script
+    assert "[declaredShape, markerShape, labelShape].includes('architectural')" in script
+
+
 def test_architectural_prompt_routes_to_design_note_draft(wf):
     steps = wf["jobs"]["fix"]["steps"]
     oauth_step = next((s for s in steps if s.get("id") == "claude-oauth"), None)
