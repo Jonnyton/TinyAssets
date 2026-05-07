@@ -72,6 +72,9 @@ _PAYMENT_FREE_OK_LABEL = "payment:free-ok"
 _WRITER_POOL_LABEL = "writer-pool:claude-codex"
 _CHECKER_POLICY_LABEL = "checker:cross-family"
 _GATE_REQUIRED_LABEL = "gate-required"
+_PRIORITY_LOOP_DISCIPLINE_LABEL = "priority:loop-discipline"
+_PRIORITY_PRIMITIVE_LAYER_LABEL = "priority:primitive-layer"
+_PRIORITY_PRIMITIVE_SURFACE_LABEL = "priority:primitive-surface"
 _DAEMON_REQUEST_LABELS = [
     _DAEMON_REQUEST_LABEL,
     _AUTO_CHANGE_LABEL,
@@ -112,6 +115,41 @@ _ARCHITECTURAL_FILING_MARKERS = (
     "strategic",
     "substrate",
 )
+
+_LOOP_DISCIPLINE_MARKERS = (
+    "auto-fix",
+    "auto fix",
+    "checker",
+    "community loop",
+    "daemon request",
+    "loop",
+    "operator triage",
+    "priority label",
+    "triage burden",
+    "wiki-bug-sync",
+    "wiki-change-sync",
+    "wiki_bug_sync",
+)
+
+_PRIMITIVE_LAYER_MARKERS = (
+    "access",
+    "architecture",
+    "authority",
+    "classifier",
+    "design note",
+    "gate ladder",
+    "meaning",
+    "primitive",
+    "request contract",
+    "substrate",
+)
+
+_PRIMITIVE_SURFACE_KINDS = {
+    "bug",
+    "branch-refinement",
+    "feature",
+    "patch",
+}
 
 _INIT_PAYLOAD = {
     "jsonrpc": "2.0",
@@ -475,11 +513,34 @@ def _label_color(label: str) -> str:
         return "b60205"
     if label == _GATE_REQUIRED_LABEL:
         return "fbca04"
+    if label.startswith("priority:"):
+        return "f9d0c4"
     if label.startswith("severity:"):
         return "d93f0b"
     if label.startswith("request:"):
         return "5319e7"
     return "e4e669"
+
+
+def priority_labels_for_request(
+    request_kind: str,
+    *,
+    title: str = "",
+    path: str = "",
+    body_md: str = "",
+) -> list[str]:
+    """Return queue-priority labels promoted from request classifier signals."""
+    corpus = " ".join((request_kind, title, path, body_md)).lower()
+    if any(marker in corpus for marker in _LOOP_DISCIPLINE_MARKERS):
+        return [_PRIORITY_LOOP_DISCIPLINE_LABEL]
+    if (
+        request_kind == "project-design"
+        or any(marker in corpus for marker in _PRIMITIVE_LAYER_MARKERS)
+    ):
+        return [_PRIORITY_PRIMITIVE_LAYER_LABEL]
+    if request_kind in _PRIMITIVE_SURFACE_KINDS:
+        return [_PRIORITY_PRIMITIVE_SURFACE_LABEL]
+    return []
 
 
 def create_gh_issue(
@@ -496,6 +557,9 @@ def create_gh_issue(
 ) -> str:
     """Create a GitHub Issue; returns the issue URL or '[dry-run]'."""
     labels = [_AUTO_LABEL, *_DAEMON_REQUEST_LABELS, _REQUEST_KIND_LABELS["bug"]]
+    labels.extend(priority_labels_for_request(
+        "bug", title=title, body_md=body_md,
+    ))
     sev_label = _SEVERITY_LABELS.get(severity.lower())
     if sev_label:
         labels.append(sev_label)
@@ -565,6 +629,9 @@ def create_gh_change_issue(
     """Create a non-bug community change Issue."""
     kind_label = _REQUEST_KIND_LABELS.get(request_kind, "request:change")
     labels = [*_DAEMON_REQUEST_LABELS, kind_label]
+    labels.extend(priority_labels_for_request(
+        request_kind, title=title, path=path, body_md=body_md,
+    ))
     prefix = _CHANGE_KIND_PREFIX.get(request_kind, "WIKI-CHANGE")
     title_str = f"[{prefix}] {title}"
     issue_body = (

@@ -24,10 +24,11 @@ of the community change loop.
 6. BUG issue title: `[BUG-NNN] <title>`. Labels: `daemon-request`,
    `auto-change`, `auto-bug`, `request:bug`, `payment:free-ok`,
    `writer-pool:claude-codex`, `checker:cross-family`, `gate-required`, and
-   `severity:<level>`.
+   classifier-promoted `priority:*` plus `severity:<level>`.
 7. Non-bug issue title: `[WIKI-<KIND>] <title>`. Labels: `daemon-request`,
    `auto-change`, `request:<kind>`, `payment:free-ok`,
-   `writer-pool:claude-codex`, `checker:cross-family`, and `gate-required`.
+   `writer-pool:claude-codex`, `checker:cross-family`, `gate-required`, and
+   classifier-promoted `priority:*`.
 8. Commits updated sync state back with `[skip ci]`.
 
 ## State files
@@ -140,6 +141,7 @@ Labels are created automatically if missing.
 | `writer-pool:*` | `1d76db` |
 | `checker:*` | `b60205` |
 | `gate-required` | `fbca04` |
+| `priority:*` | `f9d0c4` |
 
 ## Request contract
 
