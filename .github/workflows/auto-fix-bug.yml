@@ -59,9 +59,10 @@ on:
     - cron: "7,22,37,52 * * * *"
 
 concurrency:
-  # Subscription-backed writer sessions are a shared daemon lane. Queue triggers
-  # instead of overlapping writers and burning through subscription rate limits.
-  group: auto-fix-subscription-writer
+  # Queue duplicate triggers for the same issue, but do not block unrelated
+  # issue-specific runs behind a single workflow-wide subscription lane. Backfill
+  # scans still share one lane because discovery intentionally claims one issue.
+  group: auto-fix-${{ github.event.issue.number || inputs.issue_number || 'backfill' }}
   cancel-in-progress: false
 
 permissions:
