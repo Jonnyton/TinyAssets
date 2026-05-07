@@ -91,6 +91,7 @@ Default for every new ship class:
 
 - `auto_merge=false`;
 - `keys_auto_open=false`;
+- auto-merge policy requires an explicit `host_reviewer` key;
 - required keys are `codex_reviewer` and `cowork_reviewer`;
 - approvals expire after the configured TTL;
 - missing approval is the safety state.
@@ -107,9 +108,10 @@ Auto-merge eligibility:
 3. Reviewers approve through normal GitHub PR review.
 4. Phase 3 polls every open auto-ship PR.
 5. The loop re-runs the safety envelope against the PR head and changed paths.
-6. Eligibility is true only when the envelope still passes and either:
-   `ship_class.auto_merge=true`, or all required keys are open in GitHub review
-   state.
+6. Eligibility is true only when the envelope still passes,
+   `ship_class.auto_merge=true`, all required keys are open in GitHub review
+   state, and the required keys include the explicit host-named merge key
+   `host_reviewer`.
 7. If eligible, the loop calls `gh pr merge` or the GitHub merge API itself.
 
 Humans authorize while required keys are manual. The loop executes. Later
@@ -140,8 +142,8 @@ GitHub remains the human approval substrate:
   `ship_class`.
 - Required review count and accepted reviewer classes match
   `auto_ship_ship_classes.yaml`.
-- Runtime/substrate classes, if proposed later, must add an explicit host key
-  and cannot inherit only the two default reviewer keys.
+- Every auto-merge class must add an explicit host key and cannot inherit only
+  the two default reviewer keys.
 - The loop must never merge around branch protection; it can only call GitHub's
   normal merge API and accept GitHub's refusal.
 

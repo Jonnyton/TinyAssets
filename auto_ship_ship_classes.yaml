@@ -8,6 +8,8 @@ version: 1
 defaults:
   auto_merge: false
   keys_auto_open: false
+  auto_merge_required_keys:
+    - host_reviewer
   required_keys:
     - codex_reviewer
     - cowork_reviewer

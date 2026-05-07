@@ -256,6 +256,8 @@ CI passed
 PR contains only allowlisted paths
 PR title includes [autoship-canary]
 shipper identity is expected bot/service identity
+required keys include explicit host_reviewer key
+all required keys are open in GitHub review state
 ```
 
 If any check fails:
@@ -448,6 +450,8 @@ changed_paths subset docs/autoship-canaries/**
 CI passed
 no human block label present
 release_gate_result == APPROVE_AUTO_SHIP
+required keys include explicit host_reviewer key
+all required keys are open in GitHub review state
 ```
 
 ### Phase 4 — observation gate
