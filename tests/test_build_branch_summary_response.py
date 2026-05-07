@@ -71,7 +71,10 @@ def _call_build(spec_dict, verbose=None):
         entry_point=spec_dict.get("entry_point", "n1"),
         node_defs=spec_dict.get("node_defs", [_make_node()]),
     )
-    save_mock = MagicMock(return_value=saved)
+    def _save_branch(*args, **kwargs):
+        return kwargs.get("branch_def") or saved
+
+    save_mock = MagicMock(side_effect=_save_branch)
 
     kwargs = {"spec_json": json.dumps(spec_dict)}
     if verbose is not None:
@@ -173,6 +176,90 @@ class TestBuildBranchSummaryDefault:
     def test_validation_summary_is_ok_on_success(self):
         result = _call_build(self._spec())
         assert result["validation_summary"] == "ok"
+
+    def test_accepts_explicit_graph_nodes(self):
+        spec = {
+            "name": "graph-node-spec",
+            "entry_point": "draft_step",
+            "node_defs": [
+                {
+                    "node_id": "draft_node",
+                    "display_name": "Draft node",
+                    "phase": "draft",
+                    "prompt_template": "Draft from {topic}",
+                    "input_keys": ["topic"],
+                    "output_keys": ["draft"],
+                },
+            ],
+            "graph_nodes": [
+                {
+                    "id": "draft_step",
+                    "node_def_id": "draft_node",
+                    "position": 0,
+                },
+            ],
+            "edges": [
+                {"from": "START", "to": "draft_step"},
+                {"from": "draft_step", "to": "END"},
+            ],
+        }
+
+        result = _call_build(spec, verbose=True)
+
+        assert result["status"] == "built"
+        assert result["entry_point"] == "draft_step"
+        assert result["branch"]["graph_nodes"] == [
+            {"id": "draft_step", "node_def_id": "draft_node", "position": 0},
+        ]
+
+    def test_accepts_nested_graph_shape(self):
+        spec = {
+            "name": "nested-graph-spec",
+            "node_defs": [
+                {
+                    "node_id": "router_node",
+                    "display_name": "Router node",
+                    "phase": "draft",
+                    "prompt_template": "Route {topic}",
+                    "input_keys": ["topic"],
+                    "output_keys": ["decision"],
+                },
+                {
+                    "node_id": "finish_node",
+                    "display_name": "Finish node",
+                    "phase": "draft",
+                    "prompt_template": "Finish {decision}",
+                    "input_keys": ["decision"],
+                    "output_keys": ["result"],
+                },
+            ],
+            "graph": {
+                "entry_point": "route",
+                "nodes": [
+                    {"id": "route", "node_def_id": "router_node"},
+                    {"id": "finish", "node_def_id": "finish_node"},
+                ],
+                "conditional_edges": [
+                    {"from": "route", "conditions": {"done": "finish"}},
+                ],
+                "edges": [
+                    {"from": "START", "to": "route"},
+                    {"from": "finish", "to": "END"},
+                ],
+            },
+        }
+
+        result = _call_build(spec, verbose=True)
+
+        assert result["status"] == "built"
+        assert result["entry_point"] == "route"
+        assert result["branch"]["graph_nodes"] == [
+            {"id": "route", "node_def_id": "router_node", "position": 0},
+            {"id": "finish", "node_def_id": "finish_node", "position": 1},
+        ]
+        assert result["branch"]["conditional_edges"] == [
+            {"from": "route", "conditions": {"done": "finish"}},
+        ]
 
 
 # ── patch_branch ──────────────────────────────────────────────────────────────

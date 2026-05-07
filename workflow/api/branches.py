@@ -1272,7 +1272,12 @@ def _lookup_node_body(
     )
 
 
-def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
+def _apply_node_spec(
+    branch: Any,
+    raw: dict[str, Any],
+    *,
+    add_graph_node: bool = True,
+) -> str:
     from workflow.api.engine_helpers import _current_actor
     from workflow.branches import GraphNodeRef, NodeDefinition
 
@@ -1340,9 +1345,32 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         return f"node '{nid}' already exists on the branch"
 
     branch.node_defs.append(node)
-    branch.graph_nodes.append(GraphNodeRef(
-        id=nid, node_def_id=nid, position=len(branch.graph_nodes),
-    ))
+    if add_graph_node:
+        branch.graph_nodes.append(GraphNodeRef(
+            id=nid, node_def_id=nid, position=len(branch.graph_nodes),
+        ))
+    return ""
+
+
+def _apply_graph_node_spec(branch: Any, raw: dict[str, Any]) -> str:
+    from workflow.branches import GraphNodeRef
+
+    if not isinstance(raw, dict):
+        return "graph node spec must be an object"
+    node_id = (raw.get("id") or raw.get("node_id") or "").strip()
+    if not node_id:
+        return "graph node spec missing 'id'"
+    node_def_id = (raw.get("node_def_id") or raw.get("node_id") or node_id).strip()
+    position_raw = raw.get("position", len(branch.graph_nodes))
+    try:
+        position = int(position_raw)
+    except (TypeError, ValueError):
+        return f"graph node '{node_id}' position must be an integer"
+    if any(gn.id == node_id for gn in branch.graph_nodes):
+        return f"graph node '{node_id}' already exists on the branch"
+    branch.graph_nodes.append(
+        GraphNodeRef(id=node_id, node_def_id=node_def_id, position=position)
+    )
     return ""
 
 
@@ -1440,17 +1468,40 @@ def _staged_branch_from_spec(
     except ValueError as exc:
         errors.append(str(exc))
 
-    for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
-        err = _apply_node_spec(branch, raw)
+    graph = spec.get("graph") if isinstance(spec.get("graph"), dict) else {}
+    graph_nodes_raw = spec.get("graph_nodes")
+    if graph_nodes_raw is None:
+        graph_nodes_raw = graph.get("nodes")
+    has_explicit_graph_nodes = graph_nodes_raw is not None
+
+    node_defs_raw = spec.get("node_defs")
+    if node_defs_raw is None and not has_explicit_graph_nodes:
+        node_defs_raw = spec.get("nodes")
+
+    for idx, raw in enumerate(node_defs_raw or []):
+        err = _apply_node_spec(
+            branch, raw, add_graph_node=not has_explicit_graph_nodes,
+        )
         if err:
             errors.append(f"node[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("edges") or []):
+    for idx, raw in enumerate(graph_nodes_raw or []):
+        err = _apply_graph_node_spec(branch, raw)
+        if err:
+            errors.append(f"graph_node[{idx}]: {err}")
+
+    edges_raw = spec.get("edges")
+    if edges_raw is None:
+        edges_raw = graph.get("edges")
+    for idx, raw in enumerate(edges_raw or []):
         err = _apply_edge_spec(branch, raw)
         if err:
             errors.append(f"edge[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("conditional_edges") or []):
+    conditional_edges_raw = spec.get("conditional_edges")
+    if conditional_edges_raw is None:
+        conditional_edges_raw = graph.get("conditional_edges")
+    for idx, raw in enumerate(conditional_edges_raw or []):
         err = _apply_conditional_edge_spec(branch, raw)
         if err:
             errors.append(f"conditional_edge[{idx}]: {err}")
@@ -1460,7 +1511,7 @@ def _staged_branch_from_spec(
         if err:
             errors.append(f"state_schema[{idx}]: {err}")
 
-    entry = (spec.get("entry_point") or "").strip()
+    entry = (spec.get("entry_point") or graph.get("entry_point") or "").strip()
     if entry:
         branch.entry_point = entry
 
@@ -2723,6 +2774,63 @@ extensions action=build_branch spec_json='{
     {"name": "archived", "type": "bool", "default": false}
   ]
 }'
+```
+
+`node_defs` are the reusable branch-node definitions. Each entry accepts:
+
+```
+{
+  "node_id": "draft_node",
+  "display_name": "Draft node",
+  "description": "Optional purpose",
+  "phase": "draft",
+  "prompt_template": "Draft from {topic}",
+  "source_code": "def run(state): ...",
+  "input_keys": ["topic"],
+  "output_keys": ["draft"],
+  "node_ref": {"source": "standalone", "node_id": "existing_node"},
+  "intent": "copy"
+}
+```
+
+Use either `prompt_template`, `source_code`, or a branch invocation spec
+(`invoke_branch_spec`, `invoke_branch_version_spec`, `await_run_spec`).
+`input_keys` and `output_keys` must be lists of strings; the server also
+accepts CSV or JSON-list strings for chat clients that cannot send arrays.
+
+Most branches can omit `graph_nodes`; `build_branch` creates one graph node
+per `node_defs` entry using the same ID. If you need graph node IDs to differ
+from node definition IDs, pass explicit graph nodes:
+
+```
+{
+  "node_defs": [
+    {"node_id": "draft_node", "display_name": "Draft", "prompt_template": "..."}
+  ],
+  "graph_nodes": [
+    {"id": "draft_step", "node_def_id": "draft_node", "position": 0}
+  ],
+  "entry_point": "draft_step",
+  "edges": [
+    {"from": "START", "to": "draft_step"},
+    {"from": "draft_step", "to": "END"}
+  ]
+}
+```
+
+The same topology can be nested under `graph` when copying a documented
+BranchDefinition shape:
+
+```
+{
+  "node_defs": [...],
+  "graph": {
+    "nodes": [{"id": "draft_step", "node_def_id": "draft_node"}],
+    "edges": [{"from": "START", "to": "draft_step"}],
+    "conditional_edges": [],
+    "entry_point": "draft_step"
+  }
+}
 ```
 
 If validation fails, `build_branch` returns concrete `suggestions` with
