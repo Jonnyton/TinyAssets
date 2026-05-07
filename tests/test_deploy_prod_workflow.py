@@ -298,6 +298,20 @@ def test_deploy_rejects_cloud_worker_workflow_universe_override():
     assert "_resolve_universe_path" in run_script
 
 
+def test_deploy_runs_dispatcher_pickup_smoke_in_cloud_worker():
+    wf = _load()
+    worker_step = next(
+        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
+        None,
+    )
+    assert worker_step is not None
+    run_script = worker_step.get("run", "") or ""
+    assert "_has_pickable_branch_task" in run_script
+    assert "deploy-dispatcher-pickup-smoke" in run_script
+    assert "request_type=\"bug_investigation\"" in run_script
+    assert "dispatcher pickup smoke failed" in run_script
+
+
 def test_deploy_verifies_llm_binding_when_codex_auth_is_synced():
     wf = _load()
     for step in _steps(wf):

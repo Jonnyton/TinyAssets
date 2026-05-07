@@ -302,6 +302,35 @@ jobs:
           fi
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo docker exec -i workflow-worker python -' <<'PY'
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+
+          from workflow.branch_tasks import BranchTask, append_task
+          from workflow.cloud_worker import _has_pickable_branch_task
+
+          with TemporaryDirectory() as tmp:
+              universe = Path(tmp) / "dispatcher-pickup-smoke"
+              universe.mkdir(parents=True, exist_ok=True)
+              append_task(
+                  universe,
+                  BranchTask(
+                      branch_task_id="deploy-dispatcher-pickup-smoke",
+                      branch_def_id="bug-investigation-smoke",
+                      universe_id="dispatcher-pickup-smoke",
+                      trigger_source="owner_queued",
+                      request_type="bug_investigation",
+                  ),
+              )
+              if not _has_pickable_branch_task(universe):
+                  raise SystemExit(
+                      "dispatcher pickup smoke failed: worker cannot select "
+                      "a pending bug_investigation BranchTask"
+                  )
+          print("dispatcher pickup smoke: pending bug_investigation task is pickable")
+          PY
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo docker logs --tail 160 workflow-worker 2>&1 | grep -E 'cloud_worker:|Registered|Graph execution failed|subprocess exited|spawn failed|No module named|Traceback' || true"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
