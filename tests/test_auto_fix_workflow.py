@@ -519,6 +519,23 @@ def test_codex_ready_for_checker_requires_pre_checker_self_review(wf):
     )
 
 
+def test_codex_stale_dual_keyed_pr_requests_branch_update_before_blocking(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    codex_pr_step = next((s for s in steps if s.get("id") == "codex-pr-create"), None)
+    assert codex_pr_step is not None, "Must create a PR for Codex-authored changes"
+    script = str(codex_pr_step.get("with", {}).get("script", ""))
+    assert "async function shouldAutoUpdateDualKeyedPr" in script
+    assert "github.rest.issues.listLabelsOnIssue" in script
+    assert "writer:codex" in script
+    assert "checker:claude" in script
+    assert "github.rest.pulls.updateBranch" in script
+    assert "expected_head_sha: pr.head?.sha" in script
+    assert "stale-base auto-update failed" in script
+    assert script.index("github.rest.pulls.updateBranch") < script.index(
+        "`stale-base check failed: status=${compare.status || '(unknown)'}"
+    )
+
+
 def test_claude_ready_for_checker_requires_pre_checker_self_review(wf):
     steps = wf["jobs"]["fix"]["steps"]
     claude_pr_step = next((s for s in steps if s.get("id") == "claude-pr"), None)
@@ -539,6 +556,23 @@ def test_claude_ready_for_checker_requires_pre_checker_self_review(wf):
     )
     assert script.index("labels: ['writer:claude', 'checker:codex']") < (
         script.index("labels: ['ready_for_checker']")
+    )
+
+
+def test_claude_stale_dual_keyed_pr_requests_branch_update_before_blocking(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    claude_pr_step = next((s for s in steps if s.get("id") == "claude-pr"), None)
+    assert claude_pr_step is not None, "Must find and label Claude-created PRs"
+    script = str(claude_pr_step.get("with", {}).get("script", ""))
+    assert "async function shouldAutoUpdateDualKeyedPr" in script
+    assert "github.rest.issues.listLabelsOnIssue" in script
+    assert "writer:claude" in script
+    assert "checker:codex" in script
+    assert "github.rest.pulls.updateBranch" in script
+    assert "expected_head_sha: pr.head?.sha" in script
+    assert "stale-base auto-update failed" in script
+    assert script.index("github.rest.pulls.updateBranch") < script.index(
+        "`stale-base check failed: status=${compare.status || '(unknown)'}"
     )
 
 

@@ -1038,6 +1038,19 @@ jobs:
             const branchPrefix = '${{ steps.meta.outputs.branch_prefix }}';
             const wikiPath = process.env.WIKI_PATH || 'not declared';
             const expectedBranchTask = process.env.EXPECTED_BRANCH_TASK || `${branchPrefix}issue-${issueNumber}`;
+            async function shouldAutoUpdateDualKeyedPr(pr) {
+              const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+              const names = new Set(labels.map((label) => label.name));
+              return (
+                (names.has('writer:codex') && names.has('checker:claude')) ||
+                (names.has('writer:claude') && names.has('checker:codex'))
+              );
+            }
             async function selfReviewLoopPr(pr) {
               const failures = [];
               const headRef = pr.head?.ref || '';
@@ -1070,9 +1083,23 @@ jobs:
                   Number(compare.behind_by || 0) > 0 ||
                   !['ahead', 'identical'].includes(String(compare.status || ''))
                 ) {
-                  failures.push(
-                    `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
-                  );
+                  if (await shouldAutoUpdateDualKeyedPr(pr)) {
+                    try {
+                      await github.rest.pulls.updateBranch({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        pull_number: pr.number,
+                        expected_head_sha: pr.head?.sha,
+                      });
+                      core.info(`Requested branch update for stale already-dual-keyed PR #${pr.number}.`);
+                    } catch (error) {
+                      failures.push(`stale-base auto-update failed: ${error.message}`);
+                    }
+                  } else {
+                    failures.push(
+                      `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
+                    );
+                  }
                 }
               } catch (error) {
                 failures.push(`stale-base check failed: ${error.message}`);
@@ -1357,6 +1384,19 @@ jobs:
             const branch = mode === 'codex_subscription'
               ? '${{ steps.codex-subscription.outputs.branch }}'
               : `${branchPrefix}issue-${issueNumber}`;
+            async function shouldAutoUpdateDualKeyedPr(pr) {
+              const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+              const names = new Set(labels.map((label) => label.name));
+              return (
+                (names.has('writer:codex') && names.has('checker:claude')) ||
+                (names.has('writer:claude') && names.has('checker:codex'))
+              );
+            }
             async function selfReviewLoopPr(pr) {
               const failures = [];
               const headRef = pr.head?.ref || '';
@@ -1389,9 +1429,23 @@ jobs:
                   Number(compare.behind_by || 0) > 0 ||
                   !['ahead', 'identical'].includes(String(compare.status || ''))
                 ) {
-                  failures.push(
-                    `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
-                  );
+                  if (await shouldAutoUpdateDualKeyedPr(pr)) {
+                    try {
+                      await github.rest.pulls.updateBranch({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        pull_number: pr.number,
+                        expected_head_sha: pr.head?.sha,
+                      });
+                      core.info(`Requested branch update for stale already-dual-keyed PR #${pr.number}.`);
+                    } catch (error) {
+                      failures.push(`stale-base auto-update failed: ${error.message}`);
+                    }
+                  } else {
+                    failures.push(
+                      `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
+                    );
+                  }
                 }
               } catch (error) {
                 failures.push(`stale-base check failed: ${error.message}`);
