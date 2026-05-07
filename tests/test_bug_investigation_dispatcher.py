@@ -391,6 +391,75 @@ class TestBugInvestigationDirectRunRouting:
         assert metadata["run_status"] == RUN_STATUS_COMPLETED
         assert metadata["reused_existing_run"] is True
 
+    def test_direct_run_resolves_trigger_receipt_run_id(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import _try_execute_claimed_branch_task
+        from workflow.runs import RUN_STATUS_COMPLETED, RunOutcome
+        from workflow.wiki import trigger_receipts as tr
+
+        receipt_db = tmp_path / "receipts.db"
+        monkeypatch.setenv("WORKFLOW_TRIGGER_RECEIPTS_DB", str(receipt_db))
+        monkeypatch.setattr("workflow.storage.data_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "workflow.api.branches._resolve_branch_id",
+            lambda requested, base_path: "branch-1",
+        )
+        monkeypatch.setattr(
+            "workflow.daemon_server.get_branch_definition",
+            lambda base_path, branch_def_id: {"branch_def_id": branch_def_id},
+        )
+
+        class _Branch:
+            def validate(self):
+                return []
+
+        from workflow.branches import BranchDefinition
+        monkeypatch.setattr(
+            BranchDefinition,
+            "from_dict",
+            classmethod(lambda cls, data: _Branch()),
+        )
+        monkeypatch.setattr(
+            "workflow.runs.execute_branch",
+            lambda *args, **kwargs: RunOutcome(
+                run_id="run-from-daemon",
+                status=RUN_STATUS_COMPLETED,
+                output={},
+                error="",
+            ),
+        )
+
+        receipt = tr.create_pending(
+            request_id="BUG-268",
+            request_kind="bug",
+            request_page="pages/bugs/bug-268.md",
+            db_path=receipt_db,
+        )
+        tr.mark_queued(
+            receipt,
+            dispatcher_request_id="bt-trigger",
+            db_path=receipt_db,
+        )
+        task = BranchTask(
+            branch_task_id="bt-trigger",
+            branch_def_id="branch-1",
+            universe_id="u",
+            inputs={"bug_id": "BUG-268"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        success, error, metadata = _try_execute_claimed_branch_task(
+            tmp_path, task, "daemon-a",
+        )
+
+        assert success is True
+        assert error == ""
+        assert metadata["run_id"] == "run-from-daemon"
+        updated = tr.get_receipt(receipt.trigger_attempt_id, db_path=receipt_db)
+        assert updated is not None
+        assert updated.run_id == "run-from-daemon"
+
 
 class TestBugInvestigationPatchPacketWriteBack:
     def _make_bug_page(self, tmp_path):

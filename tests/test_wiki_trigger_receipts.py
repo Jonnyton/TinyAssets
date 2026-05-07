@@ -87,6 +87,35 @@ class TestMarkQueued:
         assert fetched.run_id == "r-id"
 
 
+class TestMarkRunResolved:
+    def test_updates_receipt_by_dispatcher_request_id(self, db_path: Path) -> None:
+        r = tr.create_pending(
+            request_id="FEAT-004", request_kind="feature",
+            request_page="pages/feature-requests/feat-004.md", db_path=db_path,
+        )
+        tr.mark_queued(r, dispatcher_request_id="dispatch-1", db_path=db_path)
+
+        updated = tr.mark_run_resolved(
+            dispatcher_request_id="dispatch-1",
+            run_id="run-abc",
+            db_path=db_path,
+        )
+
+        assert updated is not None
+        assert updated.trigger_attempt_id == r.trigger_attempt_id
+        assert updated.run_id == "run-abc"
+        fetched = tr.get_receipt(r.trigger_attempt_id, db_path=db_path)
+        assert fetched is not None
+        assert fetched.run_id == "run-abc"
+
+    def test_missing_dispatcher_request_id_is_noop(self, db_path: Path) -> None:
+        assert tr.mark_run_resolved(
+            dispatcher_request_id="missing",
+            run_id="run-abc",
+            db_path=db_path,
+        ) is None
+
+
 class TestMarkFailed:
     def test_with_exception(self, db_path: Path) -> None:
         r = tr.create_pending(

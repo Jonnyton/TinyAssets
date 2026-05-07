@@ -756,6 +756,30 @@ def _maybe_attach_bug_investigation_patch_packet(
         return {"status": "error", "bug_id": bug_id, "error": str(exc)}
 
 
+def _maybe_resolve_bug_investigation_trigger_run(
+    claimed_task: Any,
+    run_id: str,
+) -> None:
+    """Best-effort FEAT-004 receipt update once a dispatcher request has a run."""
+    request_type = str(getattr(claimed_task, "request_type", "") or "branch_run")
+    task_id = str(getattr(claimed_task, "branch_task_id", "") or "").strip()
+    resolved_run_id = str(run_id or "").strip()
+    if request_type != "bug_investigation" or not task_id or not resolved_run_id:
+        return
+    try:
+        from workflow.wiki.trigger_receipts import mark_run_resolved
+
+        mark_run_resolved(
+            dispatcher_request_id=task_id,
+            run_id=resolved_run_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "bug_investigation trigger receipt run_id resolve failed for %s",
+            task_id,
+        )
+
+
 def _try_execute_claimed_branch_task(
     universe_path: Path,
     claimed_task: Any,
@@ -809,6 +833,10 @@ def _try_execute_claimed_branch_task(
         )
         if existing_run and existing_run.get("status") == RUN_STATUS_COMPLETED:
             output = existing_run.get("output", {})
+            _maybe_resolve_bug_investigation_trigger_run(
+                claimed_task,
+                str(existing_run["run_id"]),
+            )
             metadata = {
                 "branch_def_id": branch_def_id,
                 "run_id": existing_run["run_id"],
@@ -856,6 +884,10 @@ def _try_execute_claimed_branch_task(
             "run_status": outcome.status,
             "actor": actor,
         }
+        _maybe_resolve_bug_investigation_trigger_run(
+            claimed_task,
+            outcome.run_id,
+        )
         attach_result = _maybe_attach_bug_investigation_patch_packet(
             claimed_task,
             outcome.status,

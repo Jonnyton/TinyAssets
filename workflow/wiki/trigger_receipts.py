@@ -262,6 +262,45 @@ def mark_queued(
     return receipt
 
 
+def mark_run_resolved(
+    *,
+    dispatcher_request_id: str,
+    run_id: str,
+    db_path: Path | None = None,
+) -> TriggerReceipt | None:
+    """Attach the daemon-created run_id to a queued trigger receipt.
+
+    ``file_bug`` only knows the dispatcher request id at enqueue time. The
+    daemon resolves that request into a durable run later, so this helper lets
+    the daemon close the receipt -> outbox -> run join without rewriting the
+    original wiki page filing path.
+    """
+    request_id = str(dispatcher_request_id or "").strip()
+    resolved_run_id = str(run_id or "").strip()
+    if not request_id or not resolved_run_id:
+        return None
+    with _conn(db_path) as c:
+        c.execute(
+            """UPDATE wiki_trigger_attempts
+               SET run_id=?
+               WHERE dispatcher_request_id=?""",
+            (resolved_run_id, request_id),
+        )
+        row = c.execute(
+            "SELECT * FROM wiki_trigger_attempts WHERE dispatcher_request_id=? "
+            "ORDER BY attempted_at DESC LIMIT 1",
+            (request_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    receipt = TriggerReceipt(**dict(row))
+    logger.info(
+        "trigger_receipt | run_resolved | %s | dispatcher=%s run=%s",
+        receipt.trigger_attempt_id, request_id, resolved_run_id,
+    )
+    return receipt
+
+
 def mark_failed(
     receipt: TriggerReceipt,
     *,
