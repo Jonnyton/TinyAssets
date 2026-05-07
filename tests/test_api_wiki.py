@@ -426,6 +426,75 @@ def test_wiki_promote_lint_blocks_when_required_fields_missing(wiki_env):
     assert "error" in res
     assert res["error"] == "Promotion blocked."
     assert any("Body too short" in i for i in res["issues"])
+    assert res["required_frontmatter_template"] == (
+        "---\n"
+        "title: Skinny\n"
+        "type: note\n"
+        "sources: []\n"
+        "---"
+    )
+    assert res["assisted_fix_scaffold"]["action"] == "wiki.write"
+    assert res["assisted_fix_scaffold"]["category"] == "notes"
+    assert res["assisted_fix_scaffold"]["filename"] == "skinny"
+    assert "[[index]]" in res["assisted_fix_scaffold"]["content"]
+
+
+def test_wiki_promote_lint_scaffold_preserves_existing_type_and_sources(wiki_env):
+    body = (
+        "---\n"
+        "title: Local Source Draft\n"
+        "type: reference\n"
+        "sources:\n"
+        "  - file:///tmp/local-source.md\n"
+        "---\n"
+        "short\n"
+    )
+    json.loads(
+        wiki(
+            action="write",
+            category="references",
+            filename="local-source-draft",
+            content=body,
+        )
+    )
+
+    res = json.loads(wiki(action="promote", filename="local-source-draft"))
+
+    assert res["error"] == "Promotion blocked."
+    assert res["required_frontmatter_template"] == (
+        "---\n"
+        "title: Local Source Draft\n"
+        "type: reference\n"
+        "sources:\n"
+        "  - file:///tmp/local-source.md\n"
+        "---"
+    )
+    assert "file:///tmp/local-source.md" in res["assisted_fix_scaffold"]["content"]
+
+
+def test_wiki_promote_lint_scaffold_preserves_path_alternative(wiki_env):
+    body = (
+        "---\n"
+        "title: Project Draft\n"
+        "type: project\n"
+        "path: /tmp/project\n"
+        "---\n"
+        "short\n"
+    )
+    json.loads(
+        wiki(
+            action="write",
+            category="projects",
+            filename="project-draft",
+            content=body,
+        )
+    )
+
+    res = json.loads(wiki(action="promote", filename="project-draft"))
+
+    assert res["error"] == "Promotion blocked."
+    assert "path: /tmp/project" in res["required_frontmatter_template"]
+    assert "sources:" not in res["required_frontmatter_template"]
 
 
 def test_wiki_promote_lint_accepts_block_sources_with_non_http_uri(wiki_env):

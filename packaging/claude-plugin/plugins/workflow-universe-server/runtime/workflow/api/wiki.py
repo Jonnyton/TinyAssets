@@ -864,10 +864,17 @@ def _wiki_promote(
     if not skip_lint:
         issues = _promotion_lint_issues(meta, body, found_category)
         if issues:
+            scaffold = _promotion_lint_fix_scaffold(
+                slug=slug,
+                category=found_category,
+                meta=meta,
+                body=body,
+            )
             return json.dumps({
                 "error": "Promotion blocked.",
                 "issues": issues,
                 "hint": "Fix these issues or set skip_lint=true.",
+                **scaffold,
             })
 
     dest_path = _wiki_pages_dir() / found_category / (slug + ".md")
@@ -1013,6 +1020,77 @@ def _promotion_lint_issues(
             "for the first page in a fresh wiki"
         )
     return issues
+
+
+def _default_wiki_type_for_category(category: str) -> str:
+    category_types = {
+        "bugs": "bug",
+        "concepts": "concept",
+        "notes": "note",
+        "people": "person",
+        "plans": "plan",
+        "projects": "project",
+        "recipes": "recipe",
+        "references": "reference",
+        "research": "research",
+        "workflows": "workflow",
+    }
+    return category_types.get(category, category.removesuffix("s") or "note")
+
+
+def _format_frontmatter_field(name: str, value: str) -> list[str]:
+    if "\n" in value or value.lstrip().startswith("- "):
+        nested = [line for line in value.splitlines() if line.strip()]
+        return [f"{name}:"] + [f"  {line.strip()}" for line in nested]
+    return [f"{name}: {value}"]
+
+
+def _promotion_lint_fix_scaffold(
+    *,
+    slug: str,
+    category: str,
+    meta: dict[str, str],
+    body: str,
+) -> dict[str, Any]:
+    title = meta.get("title") or slug.replace("-", " ").title()
+    page_type = meta.get("type") or _default_wiki_type_for_category(category)
+    frontmatter_lines = [
+        "---",
+        *_format_frontmatter_field("title", title),
+        *_format_frontmatter_field("type", page_type),
+    ]
+    if meta.get("sources"):
+        frontmatter_lines.extend(_format_frontmatter_field("sources", meta["sources"]))
+    elif meta.get("path"):
+        frontmatter_lines.extend(_format_frontmatter_field("path", meta["path"]))
+    else:
+        frontmatter_lines.extend(_format_frontmatter_field("sources", "[]"))
+    frontmatter_lines.append("---")
+    frontmatter_template = "\n".join(frontmatter_lines)
+
+    scaffold_body = body.strip()
+    if len(scaffold_body) < 50:
+        scaffold_body = (
+            f"{scaffold_body}\n\n" if scaffold_body else ""
+        ) + (
+            "TODO: Expand this draft with enough durable context to explain "
+            "what the page records and why it belongs in the wiki."
+        )
+    if not re.search(r"\[\[.+?\]\]", scaffold_body) and category != "projects":
+        scaffold_body = (
+            f"{scaffold_body}\n\n"
+            "Related: [[index]]"
+        )
+
+    return {
+        "required_frontmatter_template": frontmatter_template,
+        "assisted_fix_scaffold": {
+            "action": "wiki.write",
+            "category": category,
+            "filename": slug,
+            "content": f"{frontmatter_template}\n\n{scaffold_body}\n",
+        },
+    }
 
 
 def _wiki_lint_single_page(page: str) -> str:
