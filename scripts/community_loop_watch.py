@@ -46,6 +46,7 @@ BLOCKED_LABEL = "needs-human"
 AWAIT_PRIMITIVE_LAYER_LABEL = "await-primitive-layer"
 ATTEMPTED_LABEL = "auto-fix-attempted"
 STALE_GATE_LABEL = "auto-fix-stale-gate"
+COMPLETE_LABEL = "complete"
 P0_OUTAGE_LABEL = "p0-outage"
 TIER3_BROKEN_LABEL = "tier3-broken"
 AUTH_MISSING_LABEL = "auto-fix-auth-missing"
@@ -195,13 +196,17 @@ def _recent_workflow_runs(
     token: str | None,
     timeout: float,
     per_page: int = 20,
+    event: str | None = None,
 ) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"per_page": per_page}
+    if event is not None:
+        params["event"] = event
     data = _gh_get(
         f"/repos/{repo}/actions/workflows/{workflow_id}/runs",
         api=api,
         token=token,
         timeout=timeout,
-        params={"per_page": per_page},
+        params=params,
     )
     runs = data.get("workflow_runs", []) if isinstance(data, dict) else []
     return runs if isinstance(runs, list) else []
@@ -255,11 +260,28 @@ def workflow_stage(
     candidates = [candidate for candidate in runs if not _is_neutral_skipped_run(candidate)]
     fallback_candidates: list[dict[str, Any]] = []
     if required_success_event is not None:
+        event_runs = _recent_workflow_runs(
+            repo,
+            workflow_id,
+            api=api,
+            token=token,
+            timeout=timeout,
+            per_page=per_page,
+            event=required_success_event,
+        )
+        skipped_event_runs = [
+            candidate
+            for candidate in event_runs
+            if _is_neutral_skipped_run(candidate)
+            and candidate.get("event") == required_success_event
+        ]
         candidates = [
             candidate
-            for candidate in candidates
-            if candidate.get("event") == required_success_event
+            for candidate in event_runs
+            if not _is_neutral_skipped_run(candidate)
+            and candidate.get("event") == required_success_event
         ]
+        skipped_runs = skipped_event_runs
         fallback_candidates = [
             candidate
             for candidate in runs
@@ -282,6 +304,7 @@ def workflow_stage(
                 "latest_conclusion": latest.get("conclusion"),
                 "latest_created_at": latest.get("created_at"),
                 "checked_run_count": len(runs),
+                "checked_required_event_run_count": len(event_runs),
                 "ignored_skipped_run_ids": [
                     skipped.get("id") for skipped in skipped_runs
                 ],
@@ -476,15 +499,15 @@ def queue_stage(
                 branch_push_blocked.append(issue)
             if PROVIDER_EXHAUSTED_LABEL in labels:
                 provider_exhausted.append(issue)
-        elif not labels.isdisjoint(TERMINAL_REVIEW_LABELS):
+        elif COMPLETE_LABEL in labels or not labels.isdisjoint(TERMINAL_REVIEW_LABELS):
             reviewed_terminal.append(issue)
+        elif AWAIT_PRIMITIVE_LAYER_LABEL in labels:
+            await_primitive_layer.append(issue)
         elif ATTEMPTED_LABEL in labels:
             attempted.append(issue)
             age = _age_min(issue.get("created_at"), now)
             if STALE_GATE_LABEL in labels or age is None or age > max_pending_age_min:
                 stale_gate.append(issue)
-        elif AWAIT_PRIMITIVE_LAYER_LABEL in labels:
-            await_primitive_layer.append(issue)
         else:
             pending.append(issue)
             age = _age_min(issue.get("created_at"), now)

@@ -281,6 +281,66 @@ def test_writer_stage_uses_scheduled_success_when_other_runs_are_newer(monkeypat
     assert stage["details"]["required_success_event"] == "schedule"
 
 
+def test_writer_stage_fetches_required_event_when_general_runs_are_flooded(
+    monkeypatch,
+):
+    now = dt.datetime(2026, 5, 8, 2, 41, tzinfo=dt.timezone.utc)
+    calls = []
+
+    def fake_gh_get(*_args, **kwargs):
+        params = kwargs.get("params", {})
+        calls.append(params)
+        if params.get("event") == "schedule":
+            return {
+                "workflow_runs": [
+                    {
+                        "id": 90,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "created_at": "2026-05-08T01:52:00Z",
+                        "updated_at": "2026-05-08T01:56:00Z",
+                        "event": "schedule",
+                        "html_url": "https://example.test/scheduled-success",
+                    }
+                ]
+            }
+        return {
+            "workflow_runs": [
+                {
+                    "id": issue_run_id,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "created_at": "2026-05-08T02:39:00Z",
+                    "updated_at": "2026-05-08T02:39:10Z",
+                    "event": "issues",
+                    "html_url": f"https://example.test/issues-run-{issue_run_id}",
+                }
+                for issue_run_id in range(100, 200)
+            ]
+        }
+
+    monkeypatch.setattr(watch, "_gh_get", fake_gh_get)
+
+    stage = watch.workflow_stage(
+        "Writer workflow",
+        "owner/repo",
+        "auto-fix-bug.yml",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_age_min=90,
+        required_success_event="schedule",
+        fallback_success_events=("workflow_dispatch", "issues"),
+        per_page=100,
+    )
+
+    assert stage["status"] == "green"
+    assert stage["details"]["run_id"] == 90
+    assert stage["details"]["required_success_event"] == "schedule"
+    assert any(call.get("event") == "schedule" for call in calls)
+
+
 def test_queue_stage_counts_push_blocked_issue_as_needs_human(monkeypatch):
     now = dt.datetime(2026, 5, 5, 4, 20, tzinfo=dt.timezone.utc)
 
@@ -512,6 +572,82 @@ def test_queue_stage_treats_await_primitive_layer_as_deferred_not_stuck(
     assert stage["details"]["old_pending"] == []
     assert stage["details"]["await_primitive_layer"] == [541]
     assert "intentionally waiting" in stage["summary"]
+
+
+def test_queue_stage_treats_attempted_await_primitive_layer_as_deferred(
+    monkeypatch,
+):
+    now = dt.datetime(2026, 5, 7, 3, 40, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 376,
+                "title": "Attempted request waits for primitive layer",
+                "created_at": "2026-05-06T23:46:00Z",
+                "html_url": "https://example.test/issues/376",
+                "labels": [
+                    {"name": "daemon-request"},
+                    {"name": "auto-change"},
+                    {"name": watch.ATTEMPTED_LABEL},
+                    {"name": watch.STALE_GATE_LABEL},
+                    {"name": watch.AWAIT_PRIMITIVE_LAYER_LABEL},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "yellow"
+    assert stage["details"]["attempted"] == []
+    assert stage["details"]["stale_gate"] == []
+    assert stage["details"]["await_primitive_layer"] == [376]
+
+
+def test_queue_stage_treats_complete_attempted_issue_as_terminal(monkeypatch):
+    now = dt.datetime(2026, 5, 8, 2, 41, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 300,
+                "title": "Completed request should not keep stale gate red",
+                "created_at": "2026-05-05T03:00:00Z",
+                "html_url": "https://example.test/issues/300",
+                "labels": [
+                    {"name": "daemon-request"},
+                    {"name": "auto-change"},
+                    {"name": watch.ATTEMPTED_LABEL},
+                    {"name": watch.STALE_GATE_LABEL},
+                    {"name": watch.COMPLETE_LABEL},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "green"
+    assert stage["details"]["attempted"] == []
+    assert stage["details"]["stale_gate"] == []
+    assert stage["details"]["reviewed_terminal"] == [300]
 
 
 def test_queue_stage_maps_legacy_priority_labels_before_pending_stuck(monkeypatch):
