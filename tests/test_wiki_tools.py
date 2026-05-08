@@ -182,6 +182,28 @@ class TestWikiRead:
         assert result["content"].startswith("[DRAFT] # Pending Concept")
         assert not result["content"].startswith("[DRAFT] [DRAFT]")
 
+    def test_read_page_as_shareable_artifact(self, wiki_dir):
+        result = json.loads(wiki("read", page="test-project", format="artifact"))
+
+        assert result["format"] == "artifact"
+        assert result["content"].startswith("---\ntitle: Test Project")
+        assert result["artifact"] == {
+            "kind": "markdown",
+            "title": "Test Project",
+            "filename": "test-project.md",
+            "mime_type": "text/markdown",
+            "content": "# Test Project\n\nA test project for unit tests.\n\n"
+            "## See Also\n\n- [[workflow-engine]]",
+            "source_path": "pages/projects/test-project.md",
+        }
+        assert result["text"].startswith("**Test Project**")
+
+    def test_read_page_rejects_unknown_format(self, wiki_dir):
+        result = json.loads(wiki("read", page="test-project", format="pdf"))
+
+        assert result["error"] == "Unsupported read format: pdf"
+        assert result["available_formats"] == ["artifact", "json"]
+
 
 class TestWikiList:
     def test_list_pages(self, wiki_dir):

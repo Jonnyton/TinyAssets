@@ -911,6 +911,7 @@ def wiki(
     action: str,
     page: str = "",
     query: str = "",
+    format: str = "",
     category: str = "",
     filename: str = "",
     content: str = "",
@@ -962,6 +963,9 @@ def wiki(
             `search` is lexical best-effort, not a completeness proof; use
             `since` with `changed_since` to review pages updated after a known
             timestamp, then `read` the candidate pages.
+        format: Optional read output format. For action="read", use
+            format="artifact" to include a shareable Markdown artifact
+            envelope alongside the normal read payload.
         old_text/new_text: For action="patch", exact text to replace server-side.
         expected_sha256: Optional full-page hash guard for action="patch".
         changed_since: Optional ISO timestamp for action="read" ambient feed
@@ -972,6 +976,7 @@ def wiki(
         action=action,
         page=page,
         query=query,
+        format=format,
         category=category,
         filename=filename,
         content=content,

@@ -475,10 +475,18 @@ def _wiki_read(
     query: str = "",
     changed_since: str = "",
     max_results: int = 10,
+    format: str = "",
     **_kwargs: Any,
 ) -> str:
     if not page:
         return json.dumps({"error": "page parameter is required."})
+
+    read_format = (format or "json").strip().lower()
+    if read_format not in {"json", "artifact"}:
+        return json.dumps({
+            "error": f"Unsupported read format: {read_format}",
+            "available_formats": ["artifact", "json"],
+        })
 
     resolved = _resolve_page(page)
     if resolved is None:
@@ -506,9 +514,10 @@ def _wiki_read(
         source_meta=meta,
         source_body=body,
     )
+    result: dict[str, Any]
 
     if len(text) > 15000:
-        return json.dumps({
+        result = {
             "path": rel,
             "is_draft": is_draft,
             "content": content[:15000],
@@ -516,15 +525,57 @@ def _wiki_read(
             "total_chars": len(text),
             "source_read_proof": source_read_proof,
             "ambient_relevance_feed": ambient_feed,
-        })
-    return json.dumps({
-        "path": rel,
-        "is_draft": is_draft,
+        }
+    else:
+        result = {
+            "path": rel,
+            "is_draft": is_draft,
+            "content": content,
+            "truncated": False,
+            "source_read_proof": source_read_proof,
+            "ambient_relevance_feed": ambient_feed,
+        }
+
+    if read_format == "artifact":
+        title = meta.get("title") or resolved.stem
+        artifact = _wiki_page_artifact(
+            title=title,
+            body=body,
+            rel_path=rel,
+            filename=resolved.name,
+            is_draft=is_draft,
+        )
+        result["format"] = "artifact"
+        result["artifact"] = artifact
+        result["text"] = (
+            f"**{title}** is ready as a shareable Markdown artifact.\n\n"
+            f"Source: `{rel}`"
+        )
+
+    return json.dumps(result)
+
+
+def _wiki_page_artifact(
+    *,
+    title: str,
+    body: str,
+    rel_path: str,
+    filename: str,
+    is_draft: bool,
+) -> dict[str, str]:
+    content = body.strip()
+    if content and not content.startswith("#"):
+        content = f"# {title}\n\n{content}"
+    if is_draft and not content.startswith("[DRAFT]"):
+        content = "[DRAFT] " + content
+    return {
+        "kind": "markdown",
+        "title": title,
+        "filename": filename,
+        "mime_type": "text/markdown",
         "content": content,
-        "truncated": False,
-        "source_read_proof": source_read_proof,
-        "ambient_relevance_feed": ambient_feed,
-    })
+        "source_path": rel_path,
+    }
 
 
 def _draft_read_content(text: str, *, is_draft: bool) -> str:
@@ -1961,6 +2012,7 @@ def wiki(
     action: str,
     page: str = "",
     query: str = "",
+    format: str = "",
     category: str = "",
     filename: str = "",
     content: str = "",
@@ -2057,6 +2109,7 @@ def wiki(
     kwargs: dict[str, Any] = {
         "page": page,
         "query": query,
+        "format": format,
         "category": category,
         "filename": filename,
         "content": content,
