@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import subprocess
+from pathlib import Path
 
 from scripts import community_loop_watch as watch
 
@@ -65,21 +66,20 @@ def test_closing_issue_numbers_accepts_common_closing_keywords():
 
 def test_list_open_prs_by_closing_issue_maps_linked_prs(monkeypatch):
     def fake_gh_get(path, **kwargs):
-        assert path == "/repos/owner/repo/issues"
+        assert path == "/repos/owner/repo/pulls"
         assert kwargs["params"]["state"] == "open"
         return [
             {
                 "number": 598,
                 "body": "Fixes #568",
                 "html_url": "https://example.test/pull/598",
-                "pull_request": {},
                 "labels": [{"name": watch.READY_FOR_CHECKER_LABEL}],
             },
             {
-                "number": 568,
-                "body": "Bug body mentioning Fixes #999 should not count",
-                "html_url": "https://example.test/issues/568",
-                "labels": [{"name": "daemon-request"}],
+                "number": 599,
+                "body": "Mentions #999 without a closing keyword",
+                "html_url": "https://example.test/pull/599",
+                "labels": [],
             },
         ]
 
@@ -95,6 +95,14 @@ def test_list_open_prs_by_closing_issue_maps_linked_prs(monkeypatch):
 
     assert list(result) == [568]
     assert result[568][0]["number"] == 598
+
+
+def test_community_loop_watch_workflow_can_read_pull_requests():
+    workflow = Path(".github/workflows/community-loop-watch.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pull-requests: read" in workflow
 
 
 def test_workflow_stage_ignores_neutral_skipped_runs(monkeypatch):

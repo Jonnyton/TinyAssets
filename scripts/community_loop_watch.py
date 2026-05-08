@@ -512,7 +512,7 @@ def list_open_prs_by_closing_issue(
     if not issue_numbers:
         return {}
     data = _gh_get_paginated(
-        f"/repos/{repo}/issues",
+        f"/repos/{repo}/pulls",
         api=api,
         token=token,
         timeout=timeout,
@@ -520,8 +520,6 @@ def list_open_prs_by_closing_issue(
     )
     result: dict[int, list[dict[str, Any]]] = {number: [] for number in issue_numbers}
     for item in data:
-        if not _is_pr(item):
-            continue
         for issue_number in _closing_issue_numbers(str(item.get("body") or "")):
             if issue_number in result:
                 result[issue_number].append(item)
