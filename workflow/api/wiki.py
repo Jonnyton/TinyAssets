@@ -11,6 +11,7 @@ Public surface (test imports):
     _ensure_wiki_scaffold(root)  → None: idempotent dir + anchor scaffold
     _WIKI_CATEGORIES             → tuple: canonical category enum
     _wiki_file_bug(...)          → str: bug-filing handler (referenced by docs)
+    _wiki_file_feature_request(...) → str: feature-request filing alias
     _wiki_cosign_bug(...)        → str: cosign handler
 
 Other helpers and action handlers are module-private (single-leading-underscore)
@@ -1951,6 +1952,12 @@ def _wiki_file_bug(
     return json.dumps(response_body)
 
 
+def _wiki_file_feature_request(**kwargs: Any) -> str:
+    """File a feature request via the same vetted request pipeline as file_bug."""
+    kwargs["kind"] = "feature"
+    return _wiki_file_bug(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch entry — plain function. The MCP tool wrapper lives in
 # workflow/universe_server.py and delegates here (Pattern A2).
@@ -2044,6 +2051,7 @@ def wiki(
         "supersede": _wiki_supersede,
         "sync_projects": _wiki_sync_projects,
         "file_bug": _wiki_file_bug,
+        "file_feature_request": _wiki_file_feature_request,
         "cosign_bug": _wiki_cosign_bug,
     }
 

@@ -130,9 +130,9 @@ def _wiki_dispatch_keys() -> set[str]:
     """Mirror of the local `dispatch = {...}` literal inside `wiki()`."""
     return {
         "read", "search", "list", "lint",
-        "write", "consolidate", "promote", "ingest", "supersede",
+        "write", "patch", "consolidate", "promote", "ingest", "supersede",
         "sync_projects",
-        "file_bug", "cosign_bug",
+        "file_bug", "file_feature_request", "cosign_bug",
     }
 
 
@@ -386,8 +386,9 @@ def test_wiki_docstring_tells_clients_to_file_bug_directly() -> None:
     doc = _tool_doc(us.wiki)
 
     assert "call `file_bug` directly" in doc
+    assert "`file_feature_request` directly" in doc
     assert "duplicate detection server-side" in doc
-    assert "do NOT need to search/list/read" in doc
+    assert re.search(r"do NOT\s+need to search/list/read", doc)
     assert "status=\"similar_found\"" in doc
     assert "Start with `action=\"list\"`" not in doc
     assert "Start with `action=\"read\"`" not in doc

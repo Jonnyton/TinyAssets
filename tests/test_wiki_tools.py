@@ -666,6 +666,26 @@ class TestWikiFileBugDispatch:
         assert out["bug_id"].startswith("BUG-")
         assert "path" in out
 
+    def test_file_feature_request_alias_returns_feat_id_and_path(self, wiki_dir):
+        (wiki_dir / "pages" / "feature-requests").mkdir(parents=True, exist_ok=True)
+        (wiki_dir / "drafts" / "feature-requests").mkdir(parents=True, exist_ok=True)
+
+        out = json.loads(
+            wiki(
+                "file_feature_request",
+                component="wiki-mcp",
+                severity="minor",
+                title="Let clients file feature requests directly",
+                observed="No action alias exists",
+                expected="Action alias routes to feature request filing",
+            )
+        )
+
+        assert out["status"] == "filed"
+        assert out["kind"] == "feature"
+        assert out["bug_id"].startswith("FEAT-")
+        assert out["path"].startswith("pages/feature-requests/")
+
     def test_file_bug_accepts_tags_via_public_wrapper(self, wiki_dir):
         """BUG-040: public wiki wrapper must pass tags through to file_bug."""
         (wiki_dir / "pages" / "bugs").mkdir(parents=True, exist_ok=True)

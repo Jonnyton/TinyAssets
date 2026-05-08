@@ -948,17 +948,18 @@ def wiki(
     for "save this how-to / ref / note", "what is X", or filing user
     bugs, patch requests, feature requests, and design proposals.
 
-    When the user asks to file a bug, patch request, feature request, or
-    design proposal, call `file_bug` directly with the matching `kind`
-    (`bug`, `patch_request`, `feature`, or `design`). `file_bug` already
-    does Jaccard duplicate detection server-side; you do NOT need to search/list/read
-    the wiki before filing. If a similar filing exists,
-    it returns status="similar_found" with the existing match.
+    When the user asks to file a feature request, call
+    `file_feature_request` directly. When the user asks to file a bug,
+    patch request, or design proposal, call `file_bug` directly with the
+    matching `kind` (`bug`, `patch_request`, or `design`). These filing
+    actions already do Jaccard duplicate detection server-side; you do NOT
+    need to search/list/read the wiki before filing. If a similar filing
+    exists, they return status="similar_found" with the existing match.
 
     Args:
         action: One of — reads: read, search, since, list, lint;
             writes: write, patch, consolidate, promote, ingest, supersede,
-            sync_projects, file_bug, cosign_bug.
+            sync_projects, file_bug, file_feature_request, cosign_bug.
             `search` is lexical best-effort, not a completeness proof; use
             `since` with `changed_since` to review pages updated after a known
             timestamp, then `read` the candidate pages.
