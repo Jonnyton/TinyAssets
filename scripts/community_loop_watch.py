@@ -33,6 +33,7 @@ WORKFLOWS = {
     "intake": "wiki-bug-sync.yml",
     "writer": "auto-fix-bug.yml",
     "observation": "uptime-canary.yml",
+    "tier3": "tier3-oss-clone-nightly.yml",
     "deploy_prod": "deploy-prod.yml",
     "deploy_site": "deploy-site.yml",
 }
@@ -885,6 +886,54 @@ def tier3_clone_smoke_stage(
     )
     if issues:
         issue = issues[0]
+        latest_run = _latest_workflow_run(
+            repo,
+            WORKFLOWS["tier3"],
+            api=api,
+            token=token,
+            timeout=timeout,
+        )
+        latest_run_time = _parse_time(latest_run.get("created_at")) if latest_run else None
+        issue_times = [
+            parsed
+            for parsed in (
+                _parse_time(item.get("created_at") or item.get("updated_at"))
+                for item in issues
+            )
+            if parsed is not None
+        ]
+        newest_issue_time = max(issue_times) if issue_times else None
+        if (
+            latest_run is not None
+            and latest_run.get("status") == "completed"
+            and latest_run.get("conclusion") == "success"
+            and latest_run_time is not None
+            and newest_issue_time is not None
+            and latest_run_time > newest_issue_time
+        ):
+            return _stage(
+                "Tier-3 clone smoke",
+                "yellow",
+                (
+                    f"latest {WORKFLOWS['tier3']} success is newer than "
+                    f"{len(issues)} open {TIER3_BROKEN_LABEL} issue(s)"
+                ),
+                evidence=(
+                    f"latest successful tier-3 run {latest_run.get('id')} at "
+                    f"{latest_run.get('created_at')}; newest open issue "
+                    f"#{issue.get('number')}: {issue.get('title')}"
+                ),
+                url=latest_run.get("html_url") or issue.get("html_url"),
+                details={
+                    "open_tier3_broken": [i.get("number") for i in issues],
+                    "latest_run_id": latest_run.get("id"),
+                    "latest_run_conclusion": latest_run.get("conclusion"),
+                    "latest_run_created_at": latest_run.get("created_at"),
+                    "newest_issue_at": newest_issue_time.isoformat().replace(
+                        "+00:00", "Z"
+                    ),
+                },
+            )
         return _stage(
             "Tier-3 clone smoke",
             "red",

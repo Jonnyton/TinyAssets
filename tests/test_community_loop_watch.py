@@ -858,6 +858,7 @@ def test_tier3_broken_issue_marks_clone_smoke_stage_red(monkeypatch):
     monkeypatch.setattr(
         watch, "list_open_issues_by_label", fake_list_open_issues_by_label
     )
+    monkeypatch.setattr(watch, "_latest_workflow_run", lambda *_, **__: None)
 
     stage = watch.tier3_clone_smoke_stage(
         "owner/repo",
@@ -869,6 +870,46 @@ def test_tier3_broken_issue_marks_clone_smoke_stage_red(monkeypatch):
     assert stage["status"] == "red"
     assert stage["details"]["open_tier3_broken"] == [521]
     assert "Forever Rule" in stage["summary"]
+
+
+def test_tier3_broken_issues_are_yellow_when_newer_smoke_success_exists(
+    monkeypatch,
+):
+    def fake_list_open_issues_by_label(*_args, **_kwargs):
+        return [
+            {
+                "number": 506,
+                "title": "Tier-3 OSS clone smoke failed",
+                "created_at": "2026-05-06T09:37:32Z",
+                "html_url": "https://example.test/issues/506",
+            }
+        ]
+
+    def fake_latest_workflow_run(*_args, **_kwargs):
+        return {
+            "id": 25488453292,
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": "2026-05-07T09:46:45Z",
+            "html_url": "https://example.test/runs/25488453292",
+        }
+
+    monkeypatch.setattr(
+        watch, "list_open_issues_by_label", fake_list_open_issues_by_label
+    )
+    monkeypatch.setattr(watch, "_latest_workflow_run", fake_latest_workflow_run)
+
+    stage = watch.tier3_clone_smoke_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+    )
+
+    assert stage["status"] == "yellow"
+    assert stage["details"]["open_tier3_broken"] == [506]
+    assert stage["details"]["latest_run_id"] == 25488453292
+    assert "newer than 1 open" in stage["summary"]
 
 
 def test_build_status_is_red_when_tier3_broken_issue_is_open(monkeypatch):
