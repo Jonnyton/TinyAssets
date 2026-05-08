@@ -8,6 +8,7 @@ collisions; this script owns persistent local directories created by
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import shlex
 import subprocess
@@ -53,6 +54,36 @@ STATE_MAP_NOTE = (
     "READY_TO_REMOVE are action-required intermediates. "
     "Idea/reference-only lanes live in ideas/*.md or _PURPOSE.md idea refs."
 )
+
+
+def _force_utf8_stdio() -> None:
+    """Keep Windows console encodings from crashing on non-ASCII output."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name)
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("_", "-")
+        if encoding == "utf-8":
+            continue
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+                continue
+            except (AttributeError, ValueError, OSError):
+                pass
+        buffer = getattr(stream, "buffer", None)
+        if buffer is not None:
+            try:
+                setattr(
+                    sys,
+                    stream_name,
+                    io.TextIOWrapper(
+                        buffer,
+                        encoding="utf-8",
+                        errors="replace",
+                        line_buffering=True,
+                    ),
+                )
+            except (AttributeError, ValueError, OSError):
+                pass
 
 
 @dataclass
@@ -529,6 +560,7 @@ def _branch_can_be_deleted(branch: str) -> bool:
 
 
 def main(argv: list[str]) -> int:
+    _force_utf8_stdio()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     parser.add_argument("--provider", help="Filter by provider/branch/slug substring.")

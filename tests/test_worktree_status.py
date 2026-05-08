@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -268,6 +269,44 @@ def test_render_table_includes_state_branch_and_purpose() -> None:
     assert "Pickup through STATUS" in table
     assert "demo purpose" in table
     assert "state map" in table
+
+
+def test_force_utf8_stdio_reconfigures_narrow_windows_streams(monkeypatch) -> None:
+    class NarrowStream:
+        encoding = "cp1252"
+
+        def __init__(self) -> None:
+            self.reconfigured_to: str | None = None
+
+        def reconfigure(self, *, encoding: str) -> None:
+            self.reconfigured_to = encoding
+
+    stdout = NarrowStream()
+    stderr = NarrowStream()
+    monkeypatch.setattr(worktree_status.sys, "stdout", stdout)
+    monkeypatch.setattr(worktree_status.sys, "stderr", stderr)
+
+    worktree_status._force_utf8_stdio()
+
+    assert stdout.reconfigured_to == "utf-8"
+    assert stderr.reconfigured_to == "utf-8"
+
+
+def test_force_utf8_stdio_wraps_legacy_stream_buffer(monkeypatch) -> None:
+    class LegacyNarrowStream:
+        encoding = "cp1252"
+
+        def __init__(self) -> None:
+            self.buffer = io.BytesIO()
+
+    stdout = LegacyNarrowStream()
+    monkeypatch.setattr(worktree_status.sys, "stdout", stdout)
+
+    worktree_status._force_utf8_stdio()
+    worktree_status.sys.stdout.write("branch → ready\n")
+    worktree_status.sys.stdout.flush()
+
+    assert stdout.buffer.getvalue().decode("utf-8") == "branch → ready\n"
 
 
 def test_memory_refs_read_from_purpose_file(tmp_path: Path) -> None:
