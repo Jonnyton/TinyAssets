@@ -26,7 +26,12 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.branches import NodeDefinition
+from workflow.branches import (
+    BranchDefinition,
+    EdgeDefinition,
+    GraphNodeRef,
+    NodeDefinition,
+)
 from workflow.graph_compiler import (
     CompilerError,
     _build_prompt_template_node,
@@ -34,6 +39,7 @@ from workflow.graph_compiler import (
     _extract_json_object,
     _needs_json_contract,
     _state_type_map,
+    compile_branch,
 )
 
 
@@ -175,6 +181,46 @@ def test_typed_output_coerces_int():
     )
     result = fn({})
     assert result == {"retry_count": 3}
+    assert isinstance(result["retry_count"], int)
+
+
+def test_typed_output_is_written_to_compiled_graph_state():
+    """Regression for BUG-016: typed prompt outputs must update state."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    captured: dict[str, str] = {}
+
+    def provider(prompt, system, *, role):
+        captured["prompt"] = prompt
+        return '{"retry_count": "3"}'
+
+    branch = BranchDefinition(name="typed-output-e2e", entry_point="count")
+    branch.node_defs = [
+        NodeDefinition(
+            node_id="count",
+            display_name="Count",
+            input_keys=[],
+            output_keys=["retry_count"],
+            prompt_template="How many retries?",
+        )
+    ]
+    branch.graph_nodes = [GraphNodeRef(id="count", node_def_id="count")]
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node="count"),
+        EdgeDefinition(from_node="count", to_node="END"),
+    ]
+    branch.state_schema = [{"name": "retry_count", "type": "int"}]
+
+    compiled = compile_branch(branch, provider_call=provider)
+    app = compiled.graph.compile(checkpointer=InMemorySaver())
+    result = app.invoke(
+        {"retry_count": 0},
+        config={"configurable": {"thread_id": "bug-016"}},
+    )
+
+    assert "RESPONSE FORMAT" in captured["prompt"]
+    assert "'retry_count': int" in captured["prompt"]
+    assert result["retry_count"] == 3
     assert isinstance(result["retry_count"], int)
 
 

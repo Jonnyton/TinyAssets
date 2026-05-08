@@ -32,7 +32,6 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
 from inspect import signature
 
-import uvicorn
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
@@ -1137,6 +1136,8 @@ def main(
     )
 
     if transport == "streamable-http":
+        import uvicorn
+
         app = create_streamable_http_app()
         uvicorn.run(app, host=host, port=port)
     elif transport == "sse":
