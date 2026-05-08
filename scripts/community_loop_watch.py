@@ -331,6 +331,15 @@ def workflow_stage(
             and candidate.get("status") == "completed"
             and candidate.get("conclusion") == "success"
         ]
+        fallback_in_progress_candidates = [
+            candidate
+            for candidate in runs
+            if not _is_neutral_skipped_run(candidate)
+            and candidate.get("event") in fallback_success_events
+            and candidate.get("status") != "completed"
+        ]
+    else:
+        fallback_in_progress_candidates = []
     run = next(iter(candidates), None)
     if run is None and runs:
         if required_success_event is not None:
@@ -459,6 +468,37 @@ def workflow_stage(
                     "max_age_min": max_age_min,
                     "fallback_run_id": fallback_run.get("id"),
                     "fallback_event": fallback_event,
+                    "fallback_created_at": fallback_run.get("created_at"),
+                    "fallback_age_min": round(fallback_age, 1),
+                },
+            )
+        fallback_run = next(iter(fallback_in_progress_candidates), None)
+        fallback_age = _age_min(fallback_run.get("created_at"), now) if fallback_run else None
+        if (
+            fallback_run is not None
+            and fallback_age is not None
+            and fallback_age <= max_age_min
+        ):
+            fallback_event = fallback_run.get("event") or "unknown event"
+            fallback_status = fallback_run.get("status") or "unknown"
+            return _stage(
+                label,
+                "yellow",
+                (
+                    f"{workflow_id} {required_success_event} success is stale, "
+                    f"but recent {fallback_event} run is {fallback_status}"
+                ),
+                evidence=(
+                    f"required {required_success_event} success was {age_text}; "
+                    f"fallback {fallback_event} run started {fallback_age:.1f} min ago"
+                ),
+                url=fallback_run.get("html_url") or run.get("html_url"),
+                details={
+                    **details,
+                    "max_age_min": max_age_min,
+                    "fallback_run_id": fallback_run.get("id"),
+                    "fallback_event": fallback_event,
+                    "fallback_status": fallback_status,
                     "fallback_created_at": fallback_run.get("created_at"),
                     "fallback_age_min": round(fallback_age, 1),
                 },

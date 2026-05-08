@@ -341,6 +341,61 @@ def test_writer_stage_downgrades_stale_schedule_when_issue_run_succeeds(
     assert stage["details"]["fallback_event"] == "issues"
 
 
+def test_writer_stage_downgrades_stale_schedule_when_fallback_is_in_progress(
+    monkeypatch,
+):
+    now = dt.datetime(2026, 5, 8, 6, 2, tzinfo=dt.timezone.utc)
+
+    def fake_gh_get(*_args, **kwargs):
+        params = kwargs.get("params", {})
+        scheduled = {
+            "id": 44,
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": "2026-05-08T03:55:48Z",
+            "updated_at": "2026-05-08T03:59:15Z",
+            "event": "schedule",
+            "html_url": "https://example.test/scheduled-success",
+        }
+        if params.get("event") == "schedule":
+            return {"workflow_runs": [scheduled]}
+        return {
+            "workflow_runs": [
+                {
+                    "id": 45,
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "created_at": "2026-05-08T06:01:30Z",
+                    "updated_at": "2026-05-08T06:01:45Z",
+                    "event": "workflow_dispatch",
+                    "html_url": "https://example.test/manual-in-progress",
+                },
+                scheduled,
+            ]
+        }
+
+    monkeypatch.setattr(watch, "_gh_get", fake_gh_get)
+
+    stage = watch.workflow_stage(
+        "Writer workflow",
+        "owner/repo",
+        "auto-fix-bug.yml",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_age_min=90,
+        required_success_event="schedule",
+        fallback_success_events=("workflow_dispatch", "issues", "workflow_run"),
+    )
+
+    assert stage["status"] == "yellow"
+    assert "run is in_progress" in stage["summary"]
+    assert stage["details"]["fallback_run_id"] == 45
+    assert stage["details"]["fallback_event"] == "workflow_dispatch"
+    assert stage["details"]["fallback_status"] == "in_progress"
+
+
 def test_build_status_downgrades_stale_writer_schedule_when_workflow_run_succeeds(
     monkeypatch,
 ):
