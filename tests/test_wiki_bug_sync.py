@@ -355,6 +355,23 @@ def test_priority_labels_promote_loop_discipline_requests():
     assert labels == ["priority:loop-discipline"]
 
 
+def test_priority_labels_promote_brain_update_consensus_lint_docs_ops():
+    labels = priority_labels_for_request(
+        "docs-ops",
+        title=(
+            "BrainUpdate BU-001 — Required-reason field on positions + "
+            "ConsensusEngagementIndex + consensus-marker lint"
+        ),
+        path=(
+            "pages/concepts/"
+            "brain-update-001-required-reason-consensus-engagement-lint.md"
+        ),
+        body_md="**Wiki type:** `brain_update`",
+    )
+
+    assert labels == ["priority:loop-discipline"]
+
+
 def test_priority_labels_promote_project_design_to_primitive_layer():
     assert priority_labels_for_request(
         "project-design",
