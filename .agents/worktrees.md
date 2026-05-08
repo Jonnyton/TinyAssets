@@ -36,6 +36,23 @@ Format for future entries:
 
 ---
 
+## 2026-05-07 19:50 - create loop-watch-skip-receipts
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/loop-watch-skip-receipts
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-loop-watch-skip-receipts
+- STATUS/Issue/PR: STATUS row "Community loop watch false-red alignment"
+- PLAN refs: Forever Rule uptime; community loop health watch
+- Purpose: align community_loop_watch with writer skip semantics and direct schedule evidence lookup.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-loop-watch-skip-receipts\_PURPOSE.md
+- Memory refs: Cowork checker note for PR #594; PR #597 receipt-chain landing
+- Related implications: live watch run 25533591057, stale-gate issue flood at 2026-05-08T02:39Z
+- Idea feed refs: none
+- Ship/abandon: PR pending, abandon if a newer loop-health PR covers both mismatches
+
+---
+
 ## Initial Seed - 2026-05-02
 
 Generated from `git worktree list --porcelain` during the worktree discipline

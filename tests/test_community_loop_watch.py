@@ -55,6 +55,48 @@ def test_github_token_returns_none_when_gh_cli_unavailable(monkeypatch):
     assert watch._github_token(argparse.Namespace(token=None)) is None
 
 
+def test_closing_issue_numbers_accepts_common_closing_keywords():
+    assert watch._closing_issue_numbers("Fixes #568\nCloses #12; resolves #7") == {
+        568,
+        12,
+        7,
+    }
+
+
+def test_list_open_prs_by_closing_issue_maps_linked_prs(monkeypatch):
+    def fake_gh_get(path, **kwargs):
+        assert path == "/repos/owner/repo/issues"
+        assert kwargs["params"]["state"] == "open"
+        return [
+            {
+                "number": 598,
+                "body": "Fixes #568",
+                "html_url": "https://example.test/pull/598",
+                "pull_request": {},
+                "labels": [{"name": watch.READY_FOR_CHECKER_LABEL}],
+            },
+            {
+                "number": 568,
+                "body": "Bug body mentioning Fixes #999 should not count",
+                "html_url": "https://example.test/issues/568",
+                "labels": [{"name": "daemon-request"}],
+            },
+        ]
+
+    monkeypatch.setattr(watch, "_gh_get", fake_gh_get)
+
+    result = watch.list_open_prs_by_closing_issue(
+        "owner/repo",
+        {568, 999},
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+    )
+
+    assert list(result) == [568]
+    assert result[568][0]["number"] == 598
+
+
 def test_workflow_stage_ignores_neutral_skipped_runs(monkeypatch):
     now = dt.datetime(2026, 5, 1, 5, 10, tzinfo=dt.timezone.utc)
 
@@ -235,6 +277,62 @@ def test_writer_stage_downgrades_cancelled_schedule_when_dispatch_succeeds(
     assert stage["details"]["fallback_event"] == "workflow_dispatch"
 
 
+def test_writer_stage_downgrades_stale_schedule_when_issue_run_succeeds(
+    monkeypatch,
+):
+    now = dt.datetime(2026, 5, 8, 3, 30, tzinfo=dt.timezone.utc)
+
+    def fake_gh_get(*_args, **kwargs):
+        params = kwargs.get("params", {})
+        scheduled = {
+            "id": 44,
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": "2026-05-08T00:10:00Z",
+            "updated_at": "2026-05-08T00:14:00Z",
+            "event": "schedule",
+            "html_url": "https://example.test/scheduled-success",
+        }
+        if params.get("event") == "schedule":
+            return {"workflow_runs": [scheduled]}
+        return {
+            "workflow_runs": [
+                {
+                    "id": 45,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "created_at": "2026-05-08T02:39:00Z",
+                    "updated_at": "2026-05-08T02:40:00Z",
+                    "event": "issues",
+                    "html_url": "https://example.test/issues-success",
+                },
+                scheduled,
+            ]
+        }
+
+    monkeypatch.setattr(watch, "_gh_get", fake_gh_get)
+
+    stage = watch.workflow_stage(
+        "Writer workflow",
+        "owner/repo",
+        "auto-fix-bug.yml",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_age_min=90,
+        required_success_event="schedule",
+        fallback_success_events=("workflow_dispatch", "issues"),
+    )
+
+    assert stage["status"] == "yellow"
+    assert "success is stale" in stage["summary"]
+    assert "workflow is productive" in stage["summary"]
+    assert stage["details"]["run_id"] == 44
+    assert stage["details"]["fallback_run_id"] == 45
+    assert stage["details"]["fallback_event"] == "issues"
+
+
 def test_writer_stage_uses_scheduled_success_when_other_runs_are_newer(monkeypatch):
     now = dt.datetime(2026, 5, 5, 0, 0, tzinfo=dt.timezone.utc)
 
@@ -279,6 +377,66 @@ def test_writer_stage_uses_scheduled_success_when_other_runs_are_newer(monkeypat
     assert stage["status"] == "green"
     assert stage["details"]["run_id"] == 44
     assert stage["details"]["required_success_event"] == "schedule"
+
+
+def test_writer_stage_fetches_required_event_when_general_runs_are_flooded(
+    monkeypatch,
+):
+    now = dt.datetime(2026, 5, 8, 2, 41, tzinfo=dt.timezone.utc)
+    calls = []
+
+    def fake_gh_get(*_args, **kwargs):
+        params = kwargs.get("params", {})
+        calls.append(params)
+        if params.get("event") == "schedule":
+            return {
+                "workflow_runs": [
+                    {
+                        "id": 90,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "created_at": "2026-05-08T01:52:00Z",
+                        "updated_at": "2026-05-08T01:56:00Z",
+                        "event": "schedule",
+                        "html_url": "https://example.test/scheduled-success",
+                    }
+                ]
+            }
+        return {
+            "workflow_runs": [
+                {
+                    "id": issue_run_id,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "created_at": "2026-05-08T02:39:00Z",
+                    "updated_at": "2026-05-08T02:39:10Z",
+                    "event": "issues",
+                    "html_url": f"https://example.test/issues-run-{issue_run_id}",
+                }
+                for issue_run_id in range(100, 200)
+            ]
+        }
+
+    monkeypatch.setattr(watch, "_gh_get", fake_gh_get)
+
+    stage = watch.workflow_stage(
+        "Writer workflow",
+        "owner/repo",
+        "auto-fix-bug.yml",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_age_min=90,
+        required_success_event="schedule",
+        fallback_success_events=("workflow_dispatch", "issues"),
+        per_page=100,
+    )
+
+    assert stage["status"] == "green"
+    assert stage["details"]["run_id"] == 90
+    assert stage["details"]["required_success_event"] == "schedule"
+    assert any(call.get("event") == "schedule" for call in calls)
 
 
 def test_queue_stage_counts_push_blocked_issue_as_needs_human(monkeypatch):
@@ -423,6 +581,7 @@ def test_queue_stage_treats_attempted_loop_smoke_as_not_waiting(monkeypatch):
         ]
 
     monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+    monkeypatch.setattr(watch, "list_open_prs_by_closing_issue", lambda *_, **__: {})
 
     stage = watch.queue_stage(
         "owner/repo",
@@ -459,6 +618,7 @@ def test_queue_stage_marks_old_attempted_without_terminal_review_red(monkeypatch
         ]
 
     monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+    monkeypatch.setattr(watch, "list_open_prs_by_closing_issue", lambda *_, **__: {})
 
     stage = watch.queue_stage(
         "owner/repo",
@@ -473,6 +633,58 @@ def test_queue_stage_marks_old_attempted_without_terminal_review_red(monkeypatch
     assert stage["details"]["attempted"] == [589]
     assert stage["details"]["stale_gate"] == [589]
     assert watch.STALE_GATE_LABEL in stage["evidence"]
+
+
+def test_queue_stage_treats_attempted_with_open_pr_as_review_waiting(monkeypatch):
+    now = dt.datetime(2026, 5, 8, 3, 30, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 568,
+                "title": "Attempted request with linked PR",
+                "created_at": "2026-05-07T23:00:00Z",
+                "html_url": "https://example.test/issues/568",
+                "labels": [
+                    {"name": "daemon-request"},
+                    {"name": "auto-change"},
+                    {"name": watch.ATTEMPTED_LABEL},
+                    {"name": watch.STALE_GATE_LABEL},
+                ],
+            }
+        ]
+
+    def fake_open_prs_by_issue(*_args, **_kwargs):
+        return {
+            568: [
+                {
+                    "number": 598,
+                    "html_url": "https://example.test/pull/598",
+                    "labels": [{"name": watch.READY_FOR_CHECKER_LABEL}],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+    monkeypatch.setattr(watch, "list_open_prs_by_closing_issue", fake_open_prs_by_issue)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "yellow"
+    assert stage["details"]["attempted"] == [568]
+    assert stage["details"]["stale_gate"] == []
+    assert stage["details"]["attempted_with_open_pr"] == [
+        {"issue": 568, "prs": [598], "ready_for_checker": [598]}
+    ]
+    assert "linked open PRs" in stage["summary"]
+    assert stage["url"] == "https://example.test/pull/598"
 
 
 def test_queue_stage_treats_await_primitive_layer_as_deferred_not_stuck(
@@ -512,6 +724,82 @@ def test_queue_stage_treats_await_primitive_layer_as_deferred_not_stuck(
     assert stage["details"]["old_pending"] == []
     assert stage["details"]["await_primitive_layer"] == [541]
     assert "intentionally waiting" in stage["summary"]
+
+
+def test_queue_stage_treats_attempted_await_primitive_layer_as_deferred(
+    monkeypatch,
+):
+    now = dt.datetime(2026, 5, 7, 3, 40, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 376,
+                "title": "Attempted request waits for primitive layer",
+                "created_at": "2026-05-06T23:46:00Z",
+                "html_url": "https://example.test/issues/376",
+                "labels": [
+                    {"name": "daemon-request"},
+                    {"name": "auto-change"},
+                    {"name": watch.ATTEMPTED_LABEL},
+                    {"name": watch.STALE_GATE_LABEL},
+                    {"name": watch.AWAIT_PRIMITIVE_LAYER_LABEL},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "yellow"
+    assert stage["details"]["attempted"] == []
+    assert stage["details"]["stale_gate"] == []
+    assert stage["details"]["await_primitive_layer"] == [376]
+
+
+def test_queue_stage_treats_complete_attempted_issue_as_terminal(monkeypatch):
+    now = dt.datetime(2026, 5, 8, 2, 41, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 300,
+                "title": "Completed request should not keep stale gate red",
+                "created_at": "2026-05-05T03:00:00Z",
+                "html_url": "https://example.test/issues/300",
+                "labels": [
+                    {"name": "daemon-request"},
+                    {"name": "auto-change"},
+                    {"name": watch.ATTEMPTED_LABEL},
+                    {"name": watch.STALE_GATE_LABEL},
+                    {"name": watch.COMPLETE_LABEL},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "green"
+    assert stage["details"]["attempted"] == []
+    assert stage["details"]["stale_gate"] == []
+    assert stage["details"]["reviewed_terminal"] == [300]
 
 
 def test_queue_stage_maps_legacy_priority_labels_before_pending_stuck(monkeypatch):
@@ -570,6 +858,7 @@ def test_tier3_broken_issue_marks_clone_smoke_stage_red(monkeypatch):
     monkeypatch.setattr(
         watch, "list_open_issues_by_label", fake_list_open_issues_by_label
     )
+    monkeypatch.setattr(watch, "_latest_workflow_run", lambda *_, **__: None)
 
     stage = watch.tier3_clone_smoke_stage(
         "owner/repo",
@@ -581,6 +870,46 @@ def test_tier3_broken_issue_marks_clone_smoke_stage_red(monkeypatch):
     assert stage["status"] == "red"
     assert stage["details"]["open_tier3_broken"] == [521]
     assert "Forever Rule" in stage["summary"]
+
+
+def test_tier3_broken_issues_are_yellow_when_newer_smoke_success_exists(
+    monkeypatch,
+):
+    def fake_list_open_issues_by_label(*_args, **_kwargs):
+        return [
+            {
+                "number": 506,
+                "title": "Tier-3 OSS clone smoke failed",
+                "created_at": "2026-05-06T09:37:32Z",
+                "html_url": "https://example.test/issues/506",
+            }
+        ]
+
+    def fake_latest_workflow_run(*_args, **_kwargs):
+        return {
+            "id": 25488453292,
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": "2026-05-07T09:46:45Z",
+            "html_url": "https://example.test/runs/25488453292",
+        }
+
+    monkeypatch.setattr(
+        watch, "list_open_issues_by_label", fake_list_open_issues_by_label
+    )
+    monkeypatch.setattr(watch, "_latest_workflow_run", fake_latest_workflow_run)
+
+    stage = watch.tier3_clone_smoke_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+    )
+
+    assert stage["status"] == "yellow"
+    assert stage["details"]["open_tier3_broken"] == [506]
+    assert stage["details"]["latest_run_id"] == 25488453292
+    assert "newer than 1 open" in stage["summary"]
 
 
 def test_build_status_is_red_when_tier3_broken_issue_is_open(monkeypatch):
