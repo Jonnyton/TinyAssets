@@ -148,6 +148,20 @@ def test_discover_prioritizes_stale_gate_before_normal_queue(wf):
     assert script.index(stale_gate_pass) < script.index(normal_pass)
 
 
+def test_discover_skips_issues_that_already_have_linked_open_prs(wf):
+    discover_step = wf["jobs"]["discover"]["steps"][0]
+    script = str(discover_step.get("with", {}).get("script", ""))
+    assert "async function linkedOpenPrNumbers(issue)" in script
+    assert "github.paginate(github.rest.pulls.list" in script
+    assert "state: 'open'" in script
+    assert "issueMention.test(text) || branchMention.test(text)" in script
+    assert "const linkedPrNumbers = await linkedOpenPrNumbers(issue);" in script
+    assert "linked open PR(s)" in script
+    assert script.index("const linkedPrNumbers = await linkedOpenPrNumbers(issue);") < (
+        script.index("const needsHuman = hasLabel(issue, 'needs-human');")
+    )
+
+
 def test_discover_respects_priority_and_skip_labels(wf):
     discover_step = wf["jobs"]["discover"]["steps"][0]
     script = str(discover_step.get("with", {}).get("script", ""))
