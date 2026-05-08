@@ -143,8 +143,8 @@ def test_directory_tool_set_uses_workflow_status_probe():
         _init_resp(),
         _initialized_notif_resp(),
         _tools_list_resp(tools=[
-            {"name": "get_workflow_status", "description": "..."},
-            {"name": "search_workflow_goals", "description": "..."},
+            {"name": "read.graph", "description": "..."},
+            {"name": "read.page", "description": "..."},
         ]),
         _workflow_status_resp(schema_version=1),
     ])
@@ -152,8 +152,8 @@ def test_directory_tool_set_uses_workflow_status_probe():
     assert result["schema_version"] == 1
     assert result["universe_id"] == "demo-universe"
     assert scripted.calls[3]["payload"]["params"] == {
-        "name": "get_workflow_status",
-        "arguments": {},
+        "name": "read.graph",
+        "arguments": {"target": "status"},
     }
 
 
@@ -322,7 +322,7 @@ def test_exit_5_when_no_supported_probe_tool_advertised():
         _init_resp(),
         _initialized_notif_resp(),
         _tools_list_resp(tools=[
-            {"name": "search_workflow_goals", "description": "..."},
+            {"name": "read.page", "description": "..."},
         ]),
     ])
     with pytest.raises(tc.ToolCanaryError) as ei:
@@ -335,7 +335,7 @@ def test_exit_5_when_workflow_status_missing_schema_version():
     scripted = ScriptedPost([
         _init_resp(),
         _initialized_notif_resp(),
-        _tools_list_resp(tools=[{"name": "get_workflow_status"}]),
+        _tools_list_resp(tools=[{"name": "read.graph"}]),
         _workflow_status_resp(raw_text=json.dumps({"universe_id": "demo"})),
     ])
     with pytest.raises(tc.ToolCanaryError) as ei:
