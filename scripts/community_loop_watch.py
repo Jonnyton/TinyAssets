@@ -433,6 +433,35 @@ def workflow_stage(
             details=details,
         )
     if max_age_min is not None and (age is None or age > max_age_min):
+        fallback_run = next(iter(fallback_candidates), None)
+        fallback_age = _age_min(fallback_run.get("created_at"), now) if fallback_run else None
+        if (
+            fallback_run is not None
+            and fallback_age is not None
+            and fallback_age <= max_age_min
+        ):
+            fallback_event = fallback_run.get("event") or "unknown event"
+            return _stage(
+                label,
+                "yellow",
+                (
+                    f"{workflow_id} {required_success_event} success is stale, "
+                    f"but recent {fallback_event} success proves the workflow is productive"
+                ),
+                evidence=(
+                    f"required {required_success_event} success was {age_text}; "
+                    f"fallback {fallback_event} success was {fallback_age:.1f} min ago"
+                ),
+                url=fallback_run.get("html_url") or run.get("html_url"),
+                details={
+                    **details,
+                    "max_age_min": max_age_min,
+                    "fallback_run_id": fallback_run.get("id"),
+                    "fallback_event": fallback_event,
+                    "fallback_created_at": fallback_run.get("created_at"),
+                    "fallback_age_min": round(fallback_age, 1),
+                },
+            )
         return _stage(
             label,
             stale_status,
