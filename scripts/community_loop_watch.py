@@ -983,7 +983,7 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
             now=current_now,
             max_age_min=args.max_writer_age_min,
             required_success_event="schedule",
-            fallback_success_events=("workflow_dispatch", "issues"),
+            fallback_success_events=("workflow_dispatch", "issues", "workflow_run"),
             per_page=100,
         ),
         queue_stage(

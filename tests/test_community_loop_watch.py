@@ -341,6 +341,77 @@ def test_writer_stage_downgrades_stale_schedule_when_issue_run_succeeds(
     assert stage["details"]["fallback_event"] == "issues"
 
 
+def test_build_status_downgrades_stale_writer_schedule_when_workflow_run_succeeds(
+    monkeypatch,
+):
+    now = dt.datetime(2026, 5, 8, 5, 47, tzinfo=dt.timezone.utc)
+
+    stale_schedule = {
+        "id": 44,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-05-08T03:55:48Z",
+        "updated_at": "2026-05-08T03:59:15Z",
+        "event": "schedule",
+        "html_url": "https://example.test/auto-fix-schedule",
+    }
+    recent_workflow_run = {
+        "id": 45,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-05-08T04:28:48Z",
+        "updated_at": "2026-05-08T04:33:07Z",
+        "event": "workflow_run",
+        "html_url": "https://example.test/auto-fix-workflow-run",
+    }
+    fresh_schedule = {
+        "id": 46,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-05-08T04:45:00Z",
+        "updated_at": "2026-05-08T04:46:00Z",
+        "event": "schedule",
+        "html_url": "https://example.test/other-schedule",
+    }
+
+    def fake_recent_workflow_runs(_repo, workflow_id, **kwargs):
+        if workflow_id == watch.WORKFLOWS["writer"]:
+            if kwargs.get("event") == "schedule":
+                return [stale_schedule]
+            return [recent_workflow_run, stale_schedule]
+        return [fresh_schedule]
+
+    monkeypatch.setattr(watch, "_recent_workflow_runs", fake_recent_workflow_runs)
+    monkeypatch.setattr(watch, "list_loop_issues", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        watch, "list_open_issues_by_label", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(watch, "_github_token", lambda _args: None)
+
+    status = watch.build_status(
+        argparse.Namespace(
+            repo="owner/repo",
+            api="https://api.github.test",
+            token=None,
+            timeout=1,
+            max_sync_age_min=90,
+            max_writer_age_min=90,
+            max_observation_age_min=90,
+            max_pending_age_min=45,
+        ),
+        now=now,
+    )
+
+    writer_stage = [
+        stage for stage in status["stages"] if stage["name"] == "Writer workflow"
+    ][0]
+    assert status["overall"] == "yellow"
+    assert writer_stage["status"] == "yellow"
+    assert writer_stage["details"]["run_id"] == 44
+    assert writer_stage["details"]["fallback_run_id"] == 45
+    assert writer_stage["details"]["fallback_event"] == "workflow_run"
+
+
 def test_writer_stage_uses_scheduled_success_when_other_runs_are_newer(monkeypatch):
     now = dt.datetime(2026, 5, 5, 0, 0, tzinfo=dt.timezone.utc)
 
