@@ -128,6 +128,8 @@
     "pages/patch-requests/pr-083-urgent-runtime-impl-mcp-mcp-directory-get-discovery-affordan.md",
     "pages/patch-requests/pr-084-runtime-impl-substrate-fix-12-phase-1-firstobserverlegibilit.md",
     "pages/patch-requests/pr-085-runtime-impl-queue-aware-writer-recency-when-writer-schedule.md",
+    "pages/patch-requests/pr-086-urgent-minimal-slice-mcp-mcp-directory-get-with-accept-text-.md",
+    "pages/patch-requests/pr-087-minimal-slice-additive-display-reason-reason-code-fields-alo.md",
     "pages/plans/chatbot-builder-behaviors.md",
     "pages/plans/composition-patterns.md",
     "pages/plans/design-validate-branch-collision-admission-test.md",
