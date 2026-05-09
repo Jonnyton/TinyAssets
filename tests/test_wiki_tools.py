@@ -753,3 +753,15 @@ class TestWikiMCPRegistration:
 
         assert properties["kind"] == {"default": "bug", "type": "string"}
         assert "kind" not in wiki_tool.parameters["required"]
+
+    def test_wiki_since_changed_since_field_is_in_mcp_schema(self):
+        """PR-088: action=since must advertise its timestamp parameter."""
+
+        tools = asyncio.run(mcp.list_tools(run_middleware=False))
+        wiki_tool = next(t for t in tools if t.name == "wiki")
+        properties = wiki_tool.parameters["properties"]
+
+        assert properties["changed_since"]["type"] == "string"
+        assert properties["changed_since"]["default"] == ""
+        assert "action=\"since\"" in properties["changed_since"]["description"]
+        assert "changed_since" not in wiki_tool.parameters["required"]

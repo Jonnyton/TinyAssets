@@ -8,6 +8,7 @@ from workflow.directory_server import (
     _redact_directory_status,
     directory_mcp,
     read_graph,
+    read_page,
     write_graph,
     write_page,
 )
@@ -133,6 +134,18 @@ def test_directory_tool_inputs_avoid_sensitive_credentials() -> None:
         assert names.isdisjoint(sensitive_terms), (
             f"{tool.name} requests a sensitive credential-like field"
         )
+
+
+def test_directory_read_page_schema_advertises_changed_since() -> None:
+    """PR-088: directory wiki reads must expose the since-feed timestamp."""
+
+    tool = next(tool for tool in _list_tools() if tool.name == "read.page")
+    properties = tool.parameters["properties"]
+
+    assert properties["changed_since"]["type"] == "string"
+    assert properties["changed_since"]["default"] == ""
+    assert "changed after this" in properties["changed_since"]["description"]
+    assert "changed_since" not in tool.parameters.get("required", [])
 
 
 def test_directory_status_redacts_operator_diagnostics() -> None:
@@ -266,3 +279,30 @@ def test_directory_write_page_drafts_temp_wiki_page(monkeypatch, tmp_path) -> No
     assert (
         wiki_root / "drafts" / "notes" / "directory-page-smoke.md"
     ).read_text(encoding="utf-8") == "# Directory page smoke\n"
+
+
+def test_directory_read_page_changed_since_routes_to_since_feed(
+    monkeypatch, tmp_path,
+) -> None:
+    """Empty read.page + changed_since is the directory-safe since action."""
+    wiki_root = tmp_path / "wiki"
+    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+
+    from workflow.api.wiki import _ensure_wiki_scaffold
+
+    _ensure_wiki_scaffold(wiki_root)
+    fresh = wiki_root / "pages" / "notes" / "fresh-directory-feed.md"
+    fresh.write_text(
+        "---\ntitle: Fresh directory feed\ntype: note\n---\n# Fresh\n",
+        encoding="utf-8",
+    )
+
+    result = json.loads(
+        read_page(changed_since="2026-05-01T00:00:00Z", max_results=5)
+    )
+
+    assert result["changed_since"] == "2026-05-01T00:00:00Z"
+    assert any(
+        item["path"] == "pages/notes/fresh-directory-feed.md"
+        for item in result["results"]
+    )

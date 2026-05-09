@@ -354,6 +354,8 @@ def read_page(
         query: Optional search text or ambient relevance terms.
         category: Optional wiki category filter for searches.
         changed_since: Optional ISO timestamp for feed freshness filtering.
+            With an empty page/query/category, returns pages changed after this
+            timestamp.
         max_results: Maximum result count.
     """
     if page:
@@ -361,6 +363,12 @@ def read_page(
             action="read",
             page=page,
             query=query,
+            changed_since=changed_since,
+            max_results=max_results,
+        )
+    if changed_since.strip() and not query.strip() and not category.strip():
+        return _wiki_impl(
+            action="since",
             changed_since=changed_since,
             max_results=max_results,
         )
