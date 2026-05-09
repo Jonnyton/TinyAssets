@@ -449,3 +449,15 @@ Notes:
   auto labels before normal queue discovery.
 - Ship condition: focused workflow tests, ruff, diff-check, PR opened for
   Claude/Cowork review.
+
+## Merge Readiness View - 2026-05-08
+
+- 2026-05-08 create `../wf-merge-readiness-view` on
+  `codex/merge-readiness-view` by codex-gpt5-desktop.
+- Source: new-day Codex/Cowork/host Phase 0-4 consensus after the 13h
+  operator-asleep stall and PR #617 merge.
+- Purpose: add the first read-only Phase 3 classifier for
+  `RiskClassedMergeReadiness` / `MergeExecutorState` so queue routing is
+  observable before any merge automation.
+- Ship condition: focused tests, no PR mutation behavior, draft PR opened for
+  Claude/Cowork review.

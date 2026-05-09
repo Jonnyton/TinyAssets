@@ -20,6 +20,7 @@ Run `python scripts/claim_check.py --provider <name>` before claiming. Claim by 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| Phase 3 merge-readiness classifier — read-only `RiskClassedMergeReadiness` / `MergeExecutorState` first slice; no merge/approval/close/rebase mutations. | `scripts/merge_readiness.py`, `tests/test_merge_readiness.py` | PR #617 landed; Phase 0-4 consensus notes | claimed:codex-gpt5-desktop ACTIVE 2026-05-08 |
 | Community loop watch false-red alignment — live run 25533591057 still red after stale-gate batch because label floods hide schedule runs and `complete`/`await-primitive-layer` skip issues count stale. | `scripts/community_loop_watch.py`, `tests/test_community_loop_watch.py` | PR #594/#597 landed | claimed:codex-gpt5-desktop ACTIVE 2026-05-07 |
 | BUG-068 Phase A loop self-learning — blocked-patterns brain page + pre-claim read/evidence convention; opposite-family review needed. | `workflow/daemon_wiki.py`, `workflow/daemon_memory.py`, `tests/test_daemon_wiki.py`, docs/spec notes | BUG-049 for closed-loop trigger proof | dev-ready |
 | Scorched exact-original proof - mount guard green; needs rights-cleared Kickstart + input/sound/tank-hit acceptance. | WebSite/site/static/play/scorched-tanks/licensed/kickstart-a500-1.3.rom (deployment-only; do not commit ROM) | rights-cleared Kickstart | host-action |
