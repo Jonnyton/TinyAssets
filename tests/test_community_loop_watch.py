@@ -467,6 +467,85 @@ def test_build_status_downgrades_stale_writer_schedule_when_workflow_run_succeed
     assert writer_stage["details"]["fallback_event"] == "workflow_run"
 
 
+def test_build_status_downgrades_stale_writer_schedule_when_queue_has_only_deferrals(
+    monkeypatch,
+):
+    now = dt.datetime(2026, 5, 8, 5, 47, tzinfo=dt.timezone.utc)
+    stale_writer_schedule = {
+        "id": 44,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-05-08T03:55:48Z",
+        "updated_at": "2026-05-08T03:59:15Z",
+        "event": "schedule",
+        "html_url": "https://example.test/auto-fix-schedule",
+    }
+    fresh_schedule = {
+        "id": 46,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-05-08T04:45:00Z",
+        "updated_at": "2026-05-08T04:46:00Z",
+        "event": "schedule",
+        "html_url": "https://example.test/other-schedule",
+    }
+
+    def fake_recent_workflow_runs(_repo, workflow_id, **kwargs):
+        if workflow_id == watch.WORKFLOWS["writer"]:
+            return [stale_writer_schedule]
+        if kwargs.get("event") == "schedule":
+            return [fresh_schedule]
+        return [fresh_schedule]
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 541,
+                "title": "Single-server architecture waits for primitive layer",
+                "created_at": "2026-05-06T23:46:00Z",
+                "html_url": "https://example.test/issues/541",
+                "labels": [
+                    {"name": "daemon-request"},
+                    {"name": "auto-change"},
+                    {"name": watch.AWAIT_PRIMITIVE_LAYER_LABEL},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "_recent_workflow_runs", fake_recent_workflow_runs)
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+    monkeypatch.setattr(
+        watch, "list_open_issues_by_label", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(watch, "_github_token", lambda _args: None)
+
+    status = watch.build_status(
+        argparse.Namespace(
+            repo="owner/repo",
+            api="https://api.github.test",
+            token=None,
+            timeout=1,
+            max_sync_age_min=90,
+            max_writer_age_min=90,
+            max_observation_age_min=90,
+            max_pending_age_min=45,
+        ),
+        now=now,
+    )
+
+    writer_stage = [
+        stage for stage in status["stages"] if stage["name"] == "Writer workflow"
+    ][0]
+    queue_stage = [
+        stage for stage in status["stages"] if stage["name"] == "Writer queue"
+    ][0]
+    assert status["overall"] == "yellow"
+    assert writer_stage["status"] == "yellow"
+    assert "no writer-eligible queue" in writer_stage["evidence"]
+    assert writer_stage["details"]["queue_downgrade"] == "no writer-eligible queue"
+    assert queue_stage["details"]["await_primitive_layer"] == [541]
+
+
 def test_writer_stage_uses_scheduled_success_when_other_runs_are_newer(monkeypatch):
     now = dt.datetime(2026, 5, 5, 0, 0, tzinfo=dt.timezone.utc)
 

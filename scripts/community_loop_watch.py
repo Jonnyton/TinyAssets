@@ -76,6 +76,13 @@ CLOSING_ISSUE_RE = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(?P<number>\d+)\b",
     re.IGNORECASE,
 )
+WRITER_ELIGIBLE_QUEUE_DETAIL_KEYS = (
+    "needs_human",
+    "old_pending",
+    "stale_gate",
+    "attempted_with_open_pr",
+    "pending",
+)
 
 
 class WatchError(Exception):
@@ -884,6 +891,28 @@ def queue_stage(
     )
 
 
+def _has_no_writer_eligible_queue(stage: dict[str, Any]) -> bool:
+    if stage.get("name") != "Writer queue":
+        return False
+    details = stage.get("details")
+    if not isinstance(details, dict):
+        return False
+    return all(not details.get(key) for key in WRITER_ELIGIBLE_QUEUE_DETAIL_KEYS)
+
+
+def _is_stale_writer_schedule_stage(stage: dict[str, Any]) -> bool:
+    if stage.get("name") != "Writer workflow":
+        return False
+    details = stage.get("details")
+    if not isinstance(details, dict):
+        return False
+    return (
+        stage.get("status") == "red"
+        and details.get("required_success_event") == "schedule"
+        and "max_age_min" in details
+    )
+
+
 def incident_stage(
     repo: str,
     *,
@@ -1067,6 +1096,33 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
             max_age_min=None,
         ),
     ]
+    writer_workflow = next(
+        (stage for stage in stages if stage.get("name") == "Writer workflow"),
+        None,
+    )
+    writer_queue = next(
+        (stage for stage in stages if stage.get("name") == "Writer queue"),
+        None,
+    )
+    if (
+        writer_workflow is not None
+        and writer_queue is not None
+        and _is_stale_writer_schedule_stage(writer_workflow)
+        and _has_no_writer_eligible_queue(writer_queue)
+    ):
+        writer_workflow["status"] = "yellow"
+        writer_workflow["summary"] = (
+            f"{writer_workflow.get('summary')}; no writer-eligible queue"
+        )
+        existing_evidence = writer_workflow.get("evidence")
+        writer_workflow["evidence"] = (
+            f"{existing_evidence}; no writer-eligible queue"
+            if existing_evidence
+            else "no writer-eligible queue"
+        )
+        details = writer_workflow.get("details")
+        if isinstance(details, dict):
+            details["queue_downgrade"] = "no writer-eligible queue"
     overall = classify(stages)
     return {
         "version": 1,
