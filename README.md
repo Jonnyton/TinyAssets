@@ -2,14 +2,14 @@
 
 **A global goals engine. Fully self-hostable, open-source (MIT platform / CC0 catalog), runs on your own infrastructure.** Humanity declares shared Goals — research breakthroughs, great novels, successful prosecutions, cures, open datasets, whatever people actually want done — and a legion of diverse AI-augmented workflows pursues each Goal in parallel. Branches evolve, cross-pollinate, and get ranked by how far their outputs advance up each Goal's real-world outcome-gate ladder. The system is built for whatever people collectively care about next.
 
-This repo already contains substantial architecture and implementation work. These starter surfaces exist to make that work easier to navigate, extend, and connect in Obsidian.
+This repo contains substantial architecture and implementation work. The starter surfaces below help you navigate, extend, and connect — including via Obsidian if you use it.
 
 ## Quick Start (for contributors)
 
 Clone-to-green-tests in ~5 minutes on a clean machine:
 
 ```bash
-git clone https://github.com/your-org/Workflow.git
+git clone https://github.com/Jonnyton/Workflow.git
 cd Workflow
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .[dev]
@@ -30,16 +30,13 @@ Cross-platform notes:
 2. Read [PLAN.md](PLAN.md) for architecture and design intent.
 3. Read [AGENTS.md](AGENTS.md) for process rules.
 4. Read [docs/project-lineage.md](docs/project-lineage.md) for how Workflow grew out of the earlier Hex, Echoes, Fantasy Writer, and Fantasy Author work.
-5. Use [INDEX.md](INDEX.md) as the repo map.
-6. Use `python scripts/docview.py` for large Markdown, text, and JSON files
+5. Use `python scripts/docview.py` for large Markdown, text, and JSON files
    before any raw whole-file read.
-7. Capture loose user ideas in [ideas/INBOX.md](ideas/INBOX.md) or with
+6. Capture loose user ideas in [ideas/INBOX.md](ideas/INBOX.md) or with
    `python scripts/capture_idea.py "Idea summary"`.
 
 ## Core Hubs
 
-- [INDEX.md](INDEX.md): top-level repo map and graph hub.
-- [VAULT_GUIDE.md](VAULT_GUIDE.md): Obsidian-friendly orientation note.
 - [AGENTS.md](AGENTS.md): process truth.
 - [PLAN.md](PLAN.md): design truth.
 - [STATUS.md](STATUS.md): live-state truth.

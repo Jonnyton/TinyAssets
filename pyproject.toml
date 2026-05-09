@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Goal-agnostic daemon engine — summon it, bind it to a domain, let it drive. MCP interface for any chatbot."
 requires-python = ">=3.11"
 authors = [
-    {name = "Jonathan", email = "jonathan@example.com"}
+    {name = "Jonathan Farnsworth", email = "jonathan.m.farnsworth@gmail.com"}
 ]
 dependencies = [
     # Core orchestration

@@ -1,7 +1,9 @@
 # Workflow
 
 A goal-agnostic daemon engine. You summon it, bind it to a domain, and
-let it drive. Fantasy authoring is one domain. There will be others.
+let it drive. The platform supports any multi-step AI workflow — research
+papers, screenplays, recipe trackers, standup trackers, novels, news
+summaries, any substantive long-running work.
 
 ---
 
