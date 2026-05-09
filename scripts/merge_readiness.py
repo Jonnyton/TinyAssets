@@ -37,6 +37,31 @@ PRECHECK_BLOCKED_PATTERNS = (
     "stale-base check failed",
 )
 
+HOST_KEY_PATTERNS = (
+    "host key recorded",
+    "host third-key explicit",
+    "host explicitly turned keys",
+)
+
+INDEPENDENT_CHECKER_BLOCKER_TERMS = (
+    "independent checker",
+    "independent codex checker",
+    "independent claude checker",
+    "not an independent",
+)
+
+EXECUTOR_INELIGIBILITY_TERMS = (
+    "current executor",
+    "executor session",
+    "same session",
+    "mechanically applied",
+    "mechanically executed",
+    "mechanically opened",
+    "support commit",
+    "support commits",
+    "ineligible",
+)
+
 
 @dataclass(frozen=True)
 class ConsensusMirrorFacts:
@@ -98,6 +123,7 @@ class PullRequestFacts:
     checks_green: bool | None = None
     send_back_advisory: bool = False
     precheck_blocked: bool = False
+    checker_executor_ineligible: bool = False
     consensus_mirror: ConsensusMirrorFacts = ConsensusMirrorFacts()
 
     @classmethod
@@ -105,6 +131,7 @@ class PullRequestFacts:
         labels = frozenset(_label_names(pr.get("labels", [])))
         comments = pr.get("comments", [])
         reviews = pr.get("reviews", [])
+        checker_family = _checker_family(labels)
         return cls(
             number=int(pr["number"]),
             title=str(pr.get("title") or ""),
@@ -119,12 +146,16 @@ class PullRequestFacts:
             opposite_family_checker_approved=bool(
                 pr.get("opposite_family_checker_approved") or _has_required_family_approval(reviews)
             ),
-            host_keyed=bool(pr.get("host_keyed")),
+            host_keyed=bool(pr.get("host_keyed") or _has_host_key_comment(comments)),
             checks_green=pr.get("checks_green"),
             send_back_advisory=bool(
                 pr.get("send_back_advisory") or _has_send_back_advisory(comments)
             ),
             precheck_blocked=bool(pr.get("precheck_blocked") or _has_precheck_blocker(comments)),
+            checker_executor_ineligible=bool(
+                pr.get("checker_executor_ineligible")
+                or _has_checker_executor_ineligibility(comments, checker_family)
+            ),
             consensus_mirror=ConsensusMirrorFacts.from_mapping(pr.get("consensus_mirror")),
         )
 
@@ -245,6 +276,19 @@ def classify_pr(facts: PullRequestFacts) -> ReadinessResult:
 
     if checker_family and not facts.opposite_family_checker_approved:
         checker_name = "Cowork/Claude" if checker_family == "claude" else "Codex"
+        if facts.checker_executor_ineligible:
+            return _result(
+                facts,
+                f"needs_independent_{checker_family}_checker",
+                f"route to independent {checker_name} checker; current executor is ineligible",
+                risk_class,
+                "blocked_ineligible_checker",
+                reasons
+                + [
+                    f"required_checker_family={checker_family}",
+                    "current executor/session cannot provide checker key",
+                ],
+            )
         return _result(
             facts,
             f"needs_{checker_family}_checker",
@@ -330,6 +374,31 @@ def _has_precheck_blocker(comments: Any) -> bool:
         body = comment.get("body") if isinstance(comment, dict) else str(comment)
         lowered = str(body or "").lower()
         if any(pattern in lowered for pattern in PRECHECK_BLOCKED_PATTERNS):
+            return True
+    return False
+
+
+def _has_host_key_comment(comments: Any) -> bool:
+    for comment in comments or []:
+        body = comment.get("body") if isinstance(comment, dict) else str(comment)
+        lowered = str(body or "").lower()
+        if any(pattern in lowered for pattern in HOST_KEY_PATTERNS):
+            return True
+    return False
+
+
+def _has_checker_executor_ineligibility(comments: Any, checker_family: str | None) -> bool:
+    if not checker_family:
+        return False
+    family_term = f"independent {checker_family} checker"
+    for comment in comments or []:
+        body = comment.get("body") if isinstance(comment, dict) else str(comment)
+        lowered = str(body or "").lower()
+        has_independent_checker_reference = family_term in lowered or any(
+            term in lowered for term in INDEPENDENT_CHECKER_BLOCKER_TERMS
+        )
+        has_executor_ineligibility = any(term in lowered for term in EXECUTOR_INELIGIBILITY_TERMS)
+        if has_independent_checker_reference and has_executor_ineligibility:
             return True
     return False
 

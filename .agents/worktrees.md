@@ -461,3 +461,14 @@ Notes:
   observable before any merge automation.
 - Ship condition: focused tests, no PR mutation behavior, draft PR opened for
   Claude/Cowork review.
+
+## Independent Checker Routing - 2026-05-09
+
+- 2026-05-09 create `../wf-independent-checker-routing` on
+  `codex/independent-checker-routing` by codex-gpt5-desktop.
+- Source: live #720 recruiter-readiness stall; host asked to make the
+  independent-checker self-heal gap real instead of a session workaround.
+- Purpose: extend merge-readiness / loop-watch observability so mixed-provenance
+  PRs with ineligible executor sessions route to an independent checker lane.
+- Ship condition: focused tests pass, PR opened for Cowork/Claude review, no
+  merge/approval behavior added.

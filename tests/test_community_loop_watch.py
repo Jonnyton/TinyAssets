@@ -98,9 +98,7 @@ def test_list_open_prs_by_closing_issue_maps_linked_prs(monkeypatch):
 
 
 def test_community_loop_watch_workflow_can_read_pull_requests():
-    workflow = Path(".github/workflows/community-loop-watch.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = Path(".github/workflows/community-loop-watch.yml").read_text(encoding="utf-8")
 
     assert "pull-requests: read" in workflow
 
@@ -438,9 +436,7 @@ def test_build_status_downgrades_stale_writer_schedule_when_workflow_run_succeed
 
     monkeypatch.setattr(watch, "_recent_workflow_runs", fake_recent_workflow_runs)
     monkeypatch.setattr(watch, "list_loop_issues", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        watch, "list_open_issues_by_label", lambda *_args, **_kwargs: []
-    )
+    monkeypatch.setattr(watch, "list_open_issues_by_label", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(watch, "_github_token", lambda _args: None)
 
     status = watch.build_status(
@@ -457,9 +453,7 @@ def test_build_status_downgrades_stale_writer_schedule_when_workflow_run_succeed
         now=now,
     )
 
-    writer_stage = [
-        stage for stage in status["stages"] if stage["name"] == "Writer workflow"
-    ][0]
+    writer_stage = [stage for stage in status["stages"] if stage["name"] == "Writer workflow"][0]
     assert status["overall"] == "yellow"
     assert writer_stage["status"] == "yellow"
     assert writer_stage["details"]["run_id"] == 44
@@ -514,9 +508,7 @@ def test_build_status_downgrades_stale_writer_schedule_when_queue_has_only_defer
 
     monkeypatch.setattr(watch, "_recent_workflow_runs", fake_recent_workflow_runs)
     monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
-    monkeypatch.setattr(
-        watch, "list_open_issues_by_label", lambda *_args, **_kwargs: []
-    )
+    monkeypatch.setattr(watch, "list_open_issues_by_label", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(watch, "_github_token", lambda _args: None)
 
     status = watch.build_status(
@@ -533,20 +525,13 @@ def test_build_status_downgrades_stale_writer_schedule_when_queue_has_only_defer
         now=now,
     )
 
-    writer_stage = [
-        stage for stage in status["stages"] if stage["name"] == "Writer workflow"
-    ][0]
-    queue_stage = [
-        stage for stage in status["stages"] if stage["name"] == "Writer queue"
-    ][0]
+    writer_stage = [stage for stage in status["stages"] if stage["name"] == "Writer workflow"][0]
+    queue_stage = [stage for stage in status["stages"] if stage["name"] == "Writer queue"][0]
     assert status["overall"] == "yellow"
     assert writer_stage["status"] == "yellow"
     expected_reason = "no writer-eligible queue (1 await-primitive-layer deferrals)"
     assert expected_reason in writer_stage["evidence"]
-    assert (
-        writer_stage["details"]["queue_downgrade"]
-        == expected_reason
-    )
+    assert writer_stage["details"]["queue_downgrade"] == expected_reason
     assert queue_stage["details"]["await_primitive_layer"] == [541]
 
 
@@ -904,6 +889,74 @@ def test_queue_stage_treats_attempted_with_open_pr_as_review_waiting(monkeypatch
     assert stage["url"] == "https://example.test/pull/598"
 
 
+def test_checker_queue_surfaces_independent_checker_blocker(monkeypatch):
+    def fake_list_open_issues_by_label(*_args, **_kwargs):
+        return [
+            {
+                "number": 720,
+                "title": "Recruiter-readiness bundle",
+                "state": "open",
+                "html_url": "https://example.test/pull/720",
+                "pull_request": {},
+                "labels": [
+                    {"name": "writer:claude"},
+                    {"name": "checker:codex"},
+                    {"name": watch.READY_FOR_CHECKER_LABEL},
+                    {"name": "priority:urgent"},
+                ],
+            }
+        ]
+
+    def fake_gh_get(path, **_kwargs):
+        assert path == "/repos/owner/repo/pulls/720"
+        return {"mergeable_state": "clean", "html_url": "https://example.test/pull/720"}
+
+    def fake_gh_get_paginated(path, **_kwargs):
+        if path == "/repos/owner/repo/issues/720/comments":
+            return [
+                {
+                    "body": (
+                        "Host key recorded: user explicitly said `720 approved`.\n\n"
+                        "This same Codex executor session mechanically opened the "
+                        "PR, so it is not an independent Codex checker path."
+                    )
+                }
+            ]
+        if path == "/repos/owner/repo/pulls/720/reviews":
+            return []
+        raise AssertionError(path)
+
+    monkeypatch.setattr(watch, "list_open_issues_by_label", fake_list_open_issues_by_label)
+    monkeypatch.setattr(watch, "_gh_get", fake_gh_get)
+    monkeypatch.setattr(watch, "_gh_get_paginated", fake_gh_get_paginated)
+
+    stage = watch.checker_queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+    )
+
+    assert stage["status"] == "yellow"
+    assert "independent checker" in stage["summary"]
+    assert stage["details"]["by_state"] == {"needs_independent_codex_checker": [720]}
+    assert "current executor is ineligible" in stage["evidence"]
+
+
+def test_checker_queue_green_when_no_ready_prs(monkeypatch):
+    monkeypatch.setattr(watch, "list_open_issues_by_label", lambda *_args, **_kwargs: [])
+
+    stage = watch.checker_queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+    )
+
+    assert stage["status"] == "green"
+    assert stage["details"]["ready_for_checker_prs"] == []
+
+
 def test_queue_stage_treats_await_primitive_layer_as_deferred_not_stuck(
     monkeypatch,
 ):
@@ -1072,9 +1125,7 @@ def test_tier3_broken_issue_marks_clone_smoke_stage_red(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(
-        watch, "list_open_issues_by_label", fake_list_open_issues_by_label
-    )
+    monkeypatch.setattr(watch, "list_open_issues_by_label", fake_list_open_issues_by_label)
     monkeypatch.setattr(watch, "_latest_workflow_run", lambda *_, **__: None)
 
     stage = watch.tier3_clone_smoke_stage(
@@ -1111,9 +1162,7 @@ def test_tier3_broken_issues_are_yellow_when_newer_smoke_success_exists(
             "html_url": "https://example.test/runs/25488453292",
         }
 
-    monkeypatch.setattr(
-        watch, "list_open_issues_by_label", fake_list_open_issues_by_label
-    )
+    monkeypatch.setattr(watch, "list_open_issues_by_label", fake_list_open_issues_by_label)
     monkeypatch.setattr(watch, "_latest_workflow_run", fake_latest_workflow_run)
 
     stage = watch.tier3_clone_smoke_stage(
@@ -1161,9 +1210,7 @@ def test_build_status_is_red_when_tier3_broken_issue_is_open(monkeypatch):
 
     monkeypatch.setattr(watch, "_recent_workflow_runs", fake_recent_workflow_runs)
     monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
-    monkeypatch.setattr(
-        watch, "list_open_issues_by_label", fake_list_open_issues_by_label
-    )
+    monkeypatch.setattr(watch, "list_open_issues_by_label", fake_list_open_issues_by_label)
     monkeypatch.setattr(watch, "_github_token", lambda _args: None)
 
     status = watch.build_status(
@@ -1182,6 +1229,6 @@ def test_build_status_is_red_when_tier3_broken_issue_is_open(monkeypatch):
 
     assert status["overall"] == "red"
     assert status["exit_code"] == 2
-    assert [
-        stage for stage in status["stages"] if stage["name"] == "Tier-3 clone smoke"
-    ][0]["status"] == "red"
+    assert [stage for stage in status["stages"] if stage["name"] == "Tier-3 clone smoke"][0][
+        "status"
+    ] == "red"
