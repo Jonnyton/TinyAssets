@@ -103,6 +103,30 @@ python scripts/wiki_bug_sync.py \
 
 Prints what would be created. It does not touch GitHub or update state files.
 
+## Timestamp lint for BrainUpdate pages
+
+BU-002 coordination pages use a source-fidelity split: typed coordination
+timestamps must be UTC ISO8601 `Z` values, while source/canon prose keeps the
+source's original date conventions. Before bridging or reviewing BrainUpdate
+pages that add typed timestamp metadata, run:
+
+```bash
+python scripts/timestamp_lint_run.py path/to/page.md
+```
+
+For replaying wiki evidence against the observed write time, pass the server
+write timestamp explicitly:
+
+```bash
+python scripts/timestamp_lint_run.py path/to/page.md \
+    --write-time 2026-05-08T01:25:00Z
+```
+
+The check rejects typed timestamp fields in frontmatter or YAML state blocks
+that are non-UTC, lack the `Z` suffix, or are future-stamped beyond the small
+clock-skew tolerance. Prose dates and untyped source text are advisory only and
+are intentionally ignored.
+
 ## Reset and skip
 
 Reset BUG cursor:
