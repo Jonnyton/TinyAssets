@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from scripts.merge_readiness import (
     CHECKER_CLAUDE_LABEL,
+    CHECKER_CODEX_LABEL,
     READY_FOR_CHECKER_LABEL,
+    WRITER_CLAUDE_LABEL,
     WRITER_CODEX_LABEL,
     PullRequestFacts,
     classify_many,
@@ -25,12 +27,53 @@ def _codex_pr(**overrides):
     return data
 
 
+def _claude_pr(**overrides):
+    data = {
+        "number": 720,
+        "title": "Recruiter-readiness bundle: public framing",
+        "mergeStateStatus": "CLEAN",
+        "labels": [
+            {"name": WRITER_CLAUDE_LABEL},
+            {"name": CHECKER_CODEX_LABEL},
+            {"name": READY_FOR_CHECKER_LABEL},
+        ],
+    }
+    data.update(overrides)
+    return data
+
+
 def test_codex_written_ready_pr_needs_claude_checker_first():
     result = classify_pr(PullRequestFacts.from_mapping(_codex_pr()))
 
     assert result.state == "needs_claude_checker"
     assert result.merge_executor_state == "blocked"
     assert result.next_action == "route to Cowork/Claude checker"
+
+
+def test_mixed_provenance_pr_routes_to_independent_checker_when_executor_ineligible():
+    result = classify_pr(
+        PullRequestFacts.from_mapping(
+            _claude_pr(
+                comments=[
+                    {
+                        "body": (
+                            "Host key recorded: user explicitly said `720 approved`.\n\n"
+                            "I am not merging from this Codex session because this same "
+                            "session mechanically applied the Cowork bundle and added "
+                            "support commits, so it is not an independent Codex checker path."
+                        )
+                    }
+                ],
+            )
+        )
+    )
+
+    assert result.state == "needs_independent_codex_checker"
+    assert result.merge_executor_state == "blocked_ineligible_checker"
+    assert result.next_action == (
+        "route to independent Codex checker; current executor is ineligible"
+    )
+    assert "current executor/session cannot provide checker key" in result.reasons
 
 
 def test_consensus_send_back_advisory_blocks_checker_routing():

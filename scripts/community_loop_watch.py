@@ -23,7 +23,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_REPO = "Jonnyton/Workflow"
 DEFAULT_API = "https://api.github.com"
@@ -56,6 +61,7 @@ CLAUDE_SUBSCRIPTION_MISSING_LABEL = "auto-fix-claude-subscription-missing"
 CODEX_SUBSCRIPTION_MISSING_LABEL = "auto-fix-codex-subscription-missing"
 PROVIDER_EXHAUSTED_LABEL = "auto-fix-provider-exhausted"
 READY_FOR_CHECKER_LABEL = "ready_for_checker"
+CHECKER_CODEX_LABEL = "checker:codex"
 REVIEWED_LABEL = "auto-fix-reviewed"
 ALREADY_FIXED_LABEL = "auto-fix-already-fixed"
 BLOCKED_REVIEWED_LABEL = "auto-fix-blocked"
@@ -272,9 +278,7 @@ def _latest_workflow_run(
     token: str | None,
     timeout: float,
 ) -> dict[str, Any] | None:
-    runs = _recent_workflow_runs(
-        repo, workflow_id, api=api, token=token, timeout=timeout
-    )
+    runs = _recent_workflow_runs(repo, workflow_id, api=api, token=token, timeout=timeout)
     for run in runs:
         if not _is_neutral_skipped_run(run):
             return run
@@ -362,9 +366,7 @@ def workflow_stage(
                 "latest_created_at": latest.get("created_at"),
                 "checked_run_count": len(runs),
                 "checked_required_event_run_count": len(event_runs),
-                "ignored_skipped_run_ids": [
-                    skipped.get("id") for skipped in skipped_runs
-                ],
+                "ignored_skipped_run_ids": [skipped.get("id") for skipped in skipped_runs],
             }
             return _stage(
                 label,
@@ -452,11 +454,7 @@ def workflow_stage(
     if max_age_min is not None and (age is None or age > max_age_min):
         fallback_run = next(iter(fallback_candidates), None)
         fallback_age = _age_min(fallback_run.get("created_at"), now) if fallback_run else None
-        if (
-            fallback_run is not None
-            and fallback_age is not None
-            and fallback_age <= max_age_min
-        ):
+        if fallback_run is not None and fallback_age is not None and fallback_age <= max_age_min:
             fallback_event = fallback_run.get("event") or "unknown event"
             return _stage(
                 label,
@@ -481,11 +479,7 @@ def workflow_stage(
             )
         fallback_run = next(iter(fallback_in_progress_candidates), None)
         fallback_age = _age_min(fallback_run.get("created_at"), now) if fallback_run else None
-        if (
-            fallback_run is not None
-            and fallback_age is not None
-            and fallback_age <= max_age_min
-        ):
+        if fallback_run is not None and fallback_age is not None and fallback_age <= max_age_min:
             fallback_event = fallback_run.get("event") or "unknown event"
             fallback_status = fallback_run.get("status") or "unknown"
             return _stage(
@@ -535,6 +529,7 @@ def list_open_issues_by_label(
     api: str,
     token: str | None,
     timeout: float,
+    include_prs: bool = False,
 ) -> list[dict[str, Any]]:
     data = _gh_get_paginated(
         f"/repos/{repo}/issues",
@@ -545,7 +540,128 @@ def list_open_issues_by_label(
     )
     if not isinstance(data, list):
         raise WatchError(f"GitHub issues response for {label!r} was not a list")
-    return [issue for issue in data if not _is_pr(issue)]
+    return [issue for issue in data if include_prs or not _is_pr(issue)]
+
+
+def _pull_comments(
+    repo: str,
+    number: int,
+    *,
+    api: str,
+    token: str | None,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    return _gh_get_paginated(
+        f"/repos/{repo}/issues/{number}/comments",
+        api=api,
+        token=token,
+        timeout=timeout,
+        params={"per_page": 100},
+    )
+
+
+def list_ready_for_checker_prs(
+    repo: str,
+    *,
+    api: str,
+    token: str | None,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    issues = list_open_issues_by_label(
+        repo,
+        READY_FOR_CHECKER_LABEL,
+        api=api,
+        token=token,
+        timeout=timeout,
+        include_prs=True,
+    )
+    prs: list[dict[str, Any]] = []
+    for issue in issues:
+        if not _is_pr(issue) or not isinstance(issue.get("number"), int):
+            continue
+        number = int(issue["number"])
+        labels = _labels(issue)
+        should_hydrate_comments = CHECKER_CODEX_LABEL in labels or "priority:urgent" in labels
+        prs.append(
+            {
+                "number": number,
+                "title": issue.get("title") or "",
+                "state": str(issue.get("state") or "open").upper(),
+                # ready_for_checker is added only after stale-base pre-checks.
+                # Keep this watch stage cheap and checker-focused; hydrated
+                # merge-state proof remains in scripts/merge_readiness.py.
+                "mergeStateStatus": "CLEAN",
+                "labels": issue.get("labels", []),
+                "comments": (
+                    _pull_comments(repo, number, api=api, token=token, timeout=timeout)
+                    if should_hydrate_comments
+                    else []
+                ),
+                "reviews": [],
+                "html_url": issue.get("html_url"),
+            }
+        )
+    return prs
+
+
+def checker_queue_stage(
+    repo: str,
+    *,
+    api: str,
+    token: str | None,
+    timeout: float,
+) -> dict[str, Any]:
+    from scripts.merge_readiness import PullRequestFacts, classify_pr
+
+    prs = list_ready_for_checker_prs(repo, api=api, token=token, timeout=timeout)
+    results = [classify_pr(PullRequestFacts.from_mapping(pr)) for pr in prs]
+    by_state: dict[str, list[int]] = {}
+    for result in results:
+        by_state.setdefault(result.state, []).append(result.number)
+    independent_blockers = [
+        result for result in results if result.state.startswith("needs_independent_")
+    ]
+    checker_waiting = [
+        result
+        for result in results
+        if result.state in {"needs_codex_checker", "needs_claude_checker"}
+    ]
+    details = {
+        "ready_for_checker_prs": [pr.get("number") for pr in prs],
+        "by_state": by_state,
+        "items": [result.as_dict() for result in results],
+    }
+    if independent_blockers:
+        first = independent_blockers[0]
+        first_pr = next((pr for pr in prs if pr.get("number") == first.number), {})
+        return _stage(
+            "Checker queue",
+            "yellow",
+            (
+                f"{len(independent_blockers)} ready PR(s) need an independent "
+                "checker because the current executor is ineligible"
+            ),
+            evidence=f"PR #{first.number}: {first.next_action}",
+            url=first_pr.get("html_url"),
+            details=details,
+        )
+    if checker_waiting:
+        first = checker_waiting[0]
+        first_pr = next((pr for pr in prs if pr.get("number") == first.number), {})
+        return _stage(
+            "Checker queue",
+            "yellow",
+            f"{len(checker_waiting)} ready PR(s) are waiting on checker keys",
+            evidence=f"PR #{first.number}: {first.next_action}",
+            url=first_pr.get("html_url"),
+            details=details,
+        )
+    return _stage(
+        "Checker queue",
+        "green",
+        "no ready_for_checker PRs are waiting on independent checker routing",
+        details=details,
+    )
 
 
 def list_open_prs_by_closing_issue(
@@ -582,9 +698,7 @@ def list_loop_issues(
 ) -> list[dict[str, Any]]:
     by_number: dict[int, dict[str, Any]] = {}
     for label in REQUEST_LABELS:
-        for issue in list_open_issues_by_label(
-            repo, label, api=api, token=token, timeout=timeout
-        ):
+        for issue in list_open_issues_by_label(repo, label, api=api, token=token, timeout=timeout):
             number = issue.get("number")
             if isinstance(number, int):
                 by_number[number] = issue
@@ -695,23 +809,15 @@ def queue_stage(
     details = {
         "open_loop_issues": len(issues),
         "needs_human": [issue.get("number") for issue in needs_human],
-        "missing_claude_subscription": [
-            issue.get("number") for issue in missing_subscription
-        ],
-        "missing_codex_subscription": [
-            issue.get("number") for issue in missing_codex_subscription
-        ],
+        "missing_claude_subscription": [issue.get("number") for issue in missing_subscription],
+        "missing_codex_subscription": [issue.get("number") for issue in missing_codex_subscription],
         "auth_missing": [issue.get("number") for issue in auth_missing],
-        "branch_push_blocked": [
-            issue.get("number") for issue in branch_push_blocked
-        ],
+        "branch_push_blocked": [issue.get("number") for issue in branch_push_blocked],
         "pr_blocked": [issue.get("number") for issue in pr_blocked],
         "provider_exhausted": [issue.get("number") for issue in provider_exhausted],
         "pending": [issue.get("number") for issue in pending],
         "old_pending": [issue.get("number") for issue in old_pending],
-        "await_primitive_layer": [
-            issue.get("number") for issue in await_primitive_layer
-        ],
+        "await_primitive_layer": [issue.get("number") for issue in await_primitive_layer],
         "legacy_priority_migrations": legacy_priority_migrations,
         "reviewed_terminal": [issue.get("number") for issue in reviewed_terminal],
         "stale_gate": [issue.get("number") for issue in stale_gate],
@@ -721,9 +827,7 @@ def queue_stage(
                 "issue": item["issue"].get("number"),
                 "prs": [pr.get("number") for pr in item["prs"]],
                 "ready_for_checker": [
-                    pr.get("number")
-                    for pr in item["prs"]
-                    if READY_FOR_CHECKER_LABEL in _labels(pr)
+                    pr.get("number") for pr in item["prs"] if READY_FOR_CHECKER_LABEL in _labels(pr)
                 ],
             }
             for item in attempted_with_open_pr
@@ -735,9 +839,7 @@ def queue_stage(
         first = needs_human[0]
         root_cause = "automated writer is blocked"
         if branch_push_blocked and pr_blocked:
-            root_cause = (
-                "automated writer hit branch-push and PR-creation permission blocks"
-            )
+            root_cause = "automated writer hit branch-push and PR-creation permission blocks"
         elif branch_push_blocked:
             root_cause = "automated writer produced a patch but branch push was blocked"
         elif pr_blocked:
@@ -748,20 +850,15 @@ def queue_stage(
                 "are not visible to GitHub Actions"
             )
         elif missing_subscription:
-            root_cause = (
-                "Claude subscription OAuth is not visible to GitHub Actions"
-            )
+            root_cause = "Claude subscription OAuth is not visible to GitHub Actions"
         elif missing_codex_subscription:
-            root_cause = (
-                "Codex subscription auth bundle is not visible to GitHub Actions"
-            )
+            root_cause = "Codex subscription auth bundle is not visible to GitHub Actions"
         elif auth_missing:
             root_cause = "approved subscription-backed writer auth is missing"
         elif provider_exhausted:
             root_cause = "approved writer provider returned quota/capacity exhaustion"
         pending_clause = (
-            f" and {len(old_pending)} pending request(s) are older than "
-            f"{max_pending_age_min} min"
+            f" and {len(old_pending)} pending request(s) are older than {max_pending_age_min} min"
             if old_pending
             else ""
         )
@@ -816,9 +913,7 @@ def queue_stage(
             if READY_FOR_CHECKER_LABEL in _labels(pr)
         ]
         ready_clause = (
-            f"; {len(ready_prs)} PR(s) are {READY_FOR_CHECKER_LABEL}"
-            if ready_prs
-            else ""
+            f"; {len(ready_prs)} PR(s) are {READY_FOR_CHECKER_LABEL}" if ready_prs else ""
         )
         return _stage(
             "Writer queue",
@@ -848,11 +943,7 @@ def queue_stage(
             ),
             evidence=f"issue #{issue_number} should use {mapped_label}",
             url=next(
-                (
-                    issue.get("html_url")
-                    for issue in pending
-                    if issue.get("number") == issue_number
-                ),
+                (issue.get("html_url") for issue in pending if issue.get("number") == issue_number),
                 None,
             ),
             details=details,
@@ -876,10 +967,7 @@ def queue_stage(
                 f"{len(await_primitive_layer)} loop request(s) are intentionally "
                 f"waiting on {AWAIT_PRIMITIVE_LAYER_LABEL}"
             ),
-            evidence=(
-                f"first deferred issue #{first.get('number')}: "
-                f"{first.get('title')}"
-            ),
+            evidence=(f"first deferred issue #{first.get('number')}: {first.get('title')}"),
             url=first.get("html_url"),
             details=details,
         )
@@ -906,10 +994,7 @@ def _writer_queue_downgrade_reason(stage: dict[str, Any]) -> str:
         return "no writer-eligible queue"
     deferred = details.get("await_primitive_layer")
     if isinstance(deferred, list) and deferred:
-        return (
-            f"no writer-eligible queue ({len(deferred)} "
-            "await-primitive-layer deferrals)"
-        )
+        return f"no writer-eligible queue ({len(deferred)} await-primitive-layer deferrals)"
     return "no writer-eligible queue"
 
 
@@ -933,9 +1018,7 @@ def incident_stage(
     token: str | None,
     timeout: float,
 ) -> dict[str, Any]:
-    issues = list_open_issues_by_label(
-        repo, P0_OUTAGE_LABEL, api=api, token=token, timeout=timeout
-    )
+    issues = list_open_issues_by_label(repo, P0_OUTAGE_LABEL, api=api, token=token, timeout=timeout)
     if issues:
         issue = issues[0]
         return _stage(
@@ -977,8 +1060,7 @@ def tier3_clone_smoke_stage(
         issue_times = [
             parsed
             for parsed in (
-                _parse_time(item.get("created_at") or item.get("updated_at"))
-                for item in issues
+                _parse_time(item.get("created_at") or item.get("updated_at")) for item in issues
             )
             if parsed is not None
         ]
@@ -1009,9 +1091,7 @@ def tier3_clone_smoke_stage(
                     "latest_run_id": latest_run.get("id"),
                     "latest_run_conclusion": latest_run.get("conclusion"),
                     "latest_run_created_at": latest_run.get("created_at"),
-                    "newest_issue_at": newest_issue_time.isoformat().replace(
-                        "+00:00", "Z"
-                    ),
+                    "newest_issue_at": newest_issue_time.isoformat().replace("+00:00", "Z"),
                 },
             )
         return _stage(
@@ -1076,6 +1156,7 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
             now=current_now,
             max_pending_age_min=args.max_pending_age_min,
         ),
+        checker_queue_stage(repo, api=api, token=token, timeout=timeout),
         workflow_stage(
             "Observation canary",
             repo,
@@ -1125,14 +1206,10 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
     ):
         downgrade_reason = _writer_queue_downgrade_reason(writer_queue)
         writer_workflow["status"] = "yellow"
-        writer_workflow["summary"] = (
-            f"{writer_workflow.get('summary')}; {downgrade_reason}"
-        )
+        writer_workflow["summary"] = f"{writer_workflow.get('summary')}; {downgrade_reason}"
         existing_evidence = writer_workflow.get("evidence")
         writer_workflow["evidence"] = (
-            f"{existing_evidence}; {downgrade_reason}"
-            if existing_evidence
-            else downgrade_reason
+            f"{existing_evidence}; {downgrade_reason}" if existing_evidence else downgrade_reason
         )
         details = writer_workflow.get("details")
         if isinstance(details, dict):
