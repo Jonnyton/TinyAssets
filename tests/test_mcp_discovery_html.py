@@ -21,7 +21,8 @@ def app():
 
 @pytest.fixture
 def client(app):
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 def test_browser_get_mcp_returns_discovery_html(client):
