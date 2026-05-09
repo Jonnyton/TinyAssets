@@ -163,6 +163,36 @@ jobs:
               return false;
             }
 
+            let openPullsCache = null;
+
+            async function listOpenPulls() {
+              if (!openPullsCache) {
+                openPullsCache = await github.paginate(github.rest.pulls.list, {
+                  owner,
+                  repo,
+                  state: 'open',
+                  per_page: 100,
+                });
+              }
+              return openPullsCache;
+            }
+
+            async function linkedOpenPrNumbers(issue) {
+              const issueMention = new RegExp(`(^|[^0-9])#${issue.number}([^0-9]|$)`);
+              const branchMention = new RegExp(`issue-${issue.number}(?![0-9])`);
+              const pulls = await listOpenPulls();
+              return pulls
+                .filter((pull) => {
+                  const text = [
+                    pull.title || '',
+                    pull.body || '',
+                    pull.head?.ref || '',
+                  ].join('\n');
+                  return issueMention.test(text) || branchMention.test(text);
+                })
+                .map((pull) => pull.number);
+            }
+
             function issueRow(issue) {
               return {
                 issue_number: issue.number,
@@ -193,6 +223,13 @@ jobs:
                 return;
               }
               if (await hasUnlandedPrerequisitePr(issue)) {
+                return;
+              }
+              const linkedPrNumbers = await linkedOpenPrNumbers(issue);
+              if (linkedPrNumbers.length) {
+                core.info(
+                  `Skipping issue #${issue.number} because linked open PR(s) #${linkedPrNumbers.join(', #')} already exist.`
+                );
                 return;
               }
               const needsHuman = hasLabel(issue, 'needs-human');

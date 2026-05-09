@@ -11,6 +11,11 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      self_heal_followup:
+        description: Internal self-heal follow-up pass after dependency dispatch.
+        required: false
+        default: "false"
   workflow_run:
     workflows: ["Wiki bug sync", "Auto-fix change", "Uptime canary", "tier3-oss-clone-nightly", "deploy-site", "Deploy prod"]
     types: [completed]
@@ -130,6 +135,7 @@ jobs:
               'wiki-bug-sync.yml',
               'uptime-canary.yml',
             ]);
+            const isSelfHealFollowup = context.payload.inputs?.self_heal_followup === 'true';
             const retryDelaysMs = [1000, 3000, 7000];
 
             function githubStatus(error) {
@@ -174,10 +180,11 @@ jobs:
                 status = JSON.parse(probeMsg);
               } catch (error) {
                 core.warning(`Could not parse community loop status JSON for self-heal dispatch: ${error.message}`);
-                return;
+                return false;
               }
 
               const stages = Array.isArray(status.stages) ? status.stages : [];
+              let dispatched = false;
               for (const stage of stages) {
                 const workflowId = stage?.details?.workflow_id;
                 const summary = String(stage?.summary || '');
@@ -194,6 +201,7 @@ jobs:
                       ref: 'main',
                     });
                     console.log(`dispatched stale dependency workflow ${workflowId}`);
+                    dispatched = true;
                   } catch (error) {
                     core.warning(`Could not dispatch stale dependency workflow ${workflowId}: ${error.message}`);
                   }
@@ -217,8 +225,13 @@ jobs:
                 count('provider_exhausted') > 0
               );
               const writerAlreadyRunning = writerStage?.status === 'yellow';
+              const writerStale = (
+                writerStage?.status === 'red' &&
+                writerStage?.details?.workflow_id === 'auto-fix-bug.yml' &&
+                String(writerStage?.summary || '').includes('has not run successfully')
+              );
               if (
-                queueStage?.status === 'red' &&
+                (queueStage?.status === 'red' || writerStale) &&
                 hasBacklog &&
                 !blockedByUnavailableAuth &&
                 !writerAlreadyRunning
@@ -231,13 +244,30 @@ jobs:
                     ref: 'main',
                   });
                   console.log('dispatched auto-fix-bug.yml for red writer queue');
+                  dispatched = true;
                 } catch (error) {
                   core.warning(`Could not dispatch auto-fix-bug.yml for red writer queue: ${error.message}`);
                 }
               }
+
+              return dispatched;
             }
 
-            await dispatchStaleDependencies();
+            const dispatchedSelfHeal = await dispatchStaleDependencies();
+            if (dispatchedSelfHeal && !isSelfHealFollowup) {
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: 'community-loop-watch.yml',
+                  ref: 'main',
+                  inputs: { self_heal_followup: 'true' },
+                });
+                console.log('dispatched community-loop-watch.yml self-heal follow-up');
+              } catch (error) {
+                core.warning(`Could not dispatch community-loop-watch.yml self-heal follow-up: ${error.message}`);
+              }
+            }
 
             try {
               await githubCall('lookup alarm label', () => github.rest.issues.getLabel({
