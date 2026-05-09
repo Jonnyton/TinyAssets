@@ -541,8 +541,12 @@ def test_build_status_downgrades_stale_writer_schedule_when_queue_has_only_defer
     ][0]
     assert status["overall"] == "yellow"
     assert writer_stage["status"] == "yellow"
-    assert "no writer-eligible queue" in writer_stage["evidence"]
-    assert writer_stage["details"]["queue_downgrade"] == "no writer-eligible queue"
+    expected_reason = "no writer-eligible queue (1 await-primitive-layer deferrals)"
+    assert expected_reason in writer_stage["evidence"]
+    assert (
+        writer_stage["details"]["queue_downgrade"]
+        == expected_reason
+    )
     assert queue_stage["details"]["await_primitive_layer"] == [541]
 
 

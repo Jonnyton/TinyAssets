@@ -900,6 +900,19 @@ def _has_no_writer_eligible_queue(stage: dict[str, Any]) -> bool:
     return all(not details.get(key) for key in WRITER_ELIGIBLE_QUEUE_DETAIL_KEYS)
 
 
+def _writer_queue_downgrade_reason(stage: dict[str, Any]) -> str:
+    details = stage.get("details")
+    if not isinstance(details, dict):
+        return "no writer-eligible queue"
+    deferred = details.get("await_primitive_layer")
+    if isinstance(deferred, list) and deferred:
+        return (
+            f"no writer-eligible queue ({len(deferred)} "
+            "await-primitive-layer deferrals)"
+        )
+    return "no writer-eligible queue"
+
+
 def _is_stale_writer_schedule_stage(stage: dict[str, Any]) -> bool:
     if stage.get("name") != "Writer workflow":
         return False
@@ -1110,19 +1123,20 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
         and _is_stale_writer_schedule_stage(writer_workflow)
         and _has_no_writer_eligible_queue(writer_queue)
     ):
+        downgrade_reason = _writer_queue_downgrade_reason(writer_queue)
         writer_workflow["status"] = "yellow"
         writer_workflow["summary"] = (
-            f"{writer_workflow.get('summary')}; no writer-eligible queue"
+            f"{writer_workflow.get('summary')}; {downgrade_reason}"
         )
         existing_evidence = writer_workflow.get("evidence")
         writer_workflow["evidence"] = (
-            f"{existing_evidence}; no writer-eligible queue"
+            f"{existing_evidence}; {downgrade_reason}"
             if existing_evidence
-            else "no writer-eligible queue"
+            else downgrade_reason
         )
         details = writer_workflow.get("details")
         if isinstance(details, dict):
-            details["queue_downgrade"] = "no writer-eligible queue"
+            details["queue_downgrade"] = downgrade_reason
     overall = classify(stages)
     return {
         "version": 1,
