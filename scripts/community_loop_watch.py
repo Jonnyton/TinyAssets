@@ -62,6 +62,10 @@ CODEX_SUBSCRIPTION_MISSING_LABEL = "auto-fix-codex-subscription-missing"
 PROVIDER_EXHAUSTED_LABEL = "auto-fix-provider-exhausted"
 READY_FOR_CHECKER_LABEL = "ready_for_checker"
 CHECKER_CODEX_LABEL = "checker:codex"
+CHECKER_CLAUDE_LABEL = "checker:claude"
+AUTO_CHECKER_DISPATCHED_LABEL = "auto-checker-dispatched"
+AUTO_CHECKER_FAILED_LABEL = "auto-checker-failed"
+AUTO_CHECK_PR_WORKFLOW = "auto-check-pr.yml"
 REVIEWED_LABEL = "auto-fix-reviewed"
 ALREADY_FIXED_LABEL = "auto-fix-already-fixed"
 BLOCKED_REVIEWED_LABEL = "auto-fix-blocked"
@@ -621,6 +625,36 @@ def checker_queue_stage(
     independent_blockers = [
         result for result in results if result.state.startswith("needs_independent_")
     ]
+    prs_by_number = {int(pr["number"]): pr for pr in prs if isinstance(pr.get("number"), int)}
+    self_heal_dispatches: list[dict[str, Any]] = []
+    already_dispatched: list[int] = []
+    failed_dispatches: list[int] = []
+    for blocker in independent_blockers:
+        pr = prs_by_number.get(blocker.number, {})
+        labels = _labels(pr)
+        if AUTO_CHECKER_FAILED_LABEL in labels:
+            failed_dispatches.append(blocker.number)
+            continue
+        if AUTO_CHECKER_DISPATCHED_LABEL in labels:
+            already_dispatched.append(blocker.number)
+            continue
+        checker_family = _checker_family_from_state(blocker.state)
+        if not checker_family:
+            continue
+        reason = blocker.merge_executor_state
+        self_heal_dispatches.append(
+            {
+                "workflow_id": AUTO_CHECK_PR_WORKFLOW,
+                "pr_number": blocker.number,
+                "checker_family": checker_family,
+                "reason": reason,
+                "inputs": {
+                    "pr_number": str(blocker.number),
+                    "checker_family": checker_family,
+                    "reason": reason,
+                },
+            }
+        )
     checker_waiting = [
         result
         for result in results
@@ -630,8 +664,11 @@ def checker_queue_stage(
         "ready_for_checker_prs": [pr.get("number") for pr in prs],
         "by_state": by_state,
         "items": [result.as_dict() for result in results],
+        "self_heal_dispatches": self_heal_dispatches,
+        "already_dispatched_independent_checkers": already_dispatched,
+        "failed_independent_checker_dispatches": failed_dispatches,
     }
-    if independent_blockers:
+    if self_heal_dispatches:
         first = independent_blockers[0]
         first_pr = next((pr for pr in prs if pr.get("number") == first.number), {})
         return _stage(
@@ -642,6 +679,31 @@ def checker_queue_stage(
                 "checker because the current executor is ineligible"
             ),
             evidence=f"PR #{first.number}: {first.next_action}",
+            url=first_pr.get("html_url"),
+            details=details,
+        )
+    if failed_dispatches:
+        first = independent_blockers[0]
+        first_pr = next((pr for pr in prs if pr.get("number") == first.number), {})
+        return _stage(
+            "Checker queue",
+            "yellow",
+            f"{len(failed_dispatches)} ready PR(s) have failed independent checker dispatch",
+            evidence=f"PR #{failed_dispatches[0]}: repair checker worker/auth and redispatch",
+            url=first_pr.get("html_url"),
+            details=details,
+        )
+    if independent_blockers:
+        first = independent_blockers[0]
+        first_pr = next((pr for pr in prs if pr.get("number") == first.number), {})
+        return _stage(
+            "Checker queue",
+            "yellow",
+            (
+                f"{len(independent_blockers)} ready PR(s) already dispatched "
+                "to independent checker workers"
+            ),
+            evidence=f"PR #{first.number}: waiting on dispatched independent checker",
             url=first_pr.get("html_url"),
             details=details,
         )
@@ -662,6 +724,14 @@ def checker_queue_stage(
         "no ready_for_checker PRs are waiting on independent checker routing",
         details=details,
     )
+
+
+def _checker_family_from_state(state: str) -> str | None:
+    prefix = "needs_independent_"
+    suffix = "_checker"
+    if not state.startswith(prefix) or not state.endswith(suffix):
+        return None
+    return state[len(prefix) : -len(suffix)]
 
 
 def list_open_prs_by_closing_issue(

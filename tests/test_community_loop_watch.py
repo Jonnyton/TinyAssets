@@ -941,6 +941,112 @@ def test_checker_queue_surfaces_independent_checker_blocker(monkeypatch):
     assert "independent checker" in stage["summary"]
     assert stage["details"]["by_state"] == {"needs_independent_codex_checker": [720]}
     assert "current executor is ineligible" in stage["evidence"]
+    assert stage["details"]["self_heal_dispatches"] == [
+        {
+            "workflow_id": "auto-check-pr.yml",
+            "pr_number": 720,
+            "checker_family": "codex",
+            "reason": "blocked_ineligible_checker",
+            "inputs": {
+                "pr_number": "720",
+                "checker_family": "codex",
+                "reason": "blocked_ineligible_checker",
+            },
+        }
+    ]
+
+
+def test_checker_queue_does_not_redispatch_labeled_checker_pr(monkeypatch):
+    def fake_list_open_issues_by_label(*_args, **_kwargs):
+        return [
+            {
+                "number": 720,
+                "title": "Recruiter-readiness bundle",
+                "state": "open",
+                "html_url": "https://example.test/pull/720",
+                "pull_request": {},
+                "labels": [
+                    {"name": "writer:claude"},
+                    {"name": "checker:codex"},
+                    {"name": watch.READY_FOR_CHECKER_LABEL},
+                    {"name": watch.AUTO_CHECKER_DISPATCHED_LABEL},
+                ],
+            }
+        ]
+
+    def fake_gh_get_paginated(path, **_kwargs):
+        if path == "/repos/owner/repo/issues/720/comments":
+            return [
+                {
+                    "body": (
+                        "Host key recorded: user explicitly said `720 approved`.\n\n"
+                        "This same Codex executor session mechanically opened the "
+                        "PR, so it is not an independent Codex checker path."
+                    )
+                }
+            ]
+        raise AssertionError(path)
+
+    monkeypatch.setattr(watch, "list_open_issues_by_label", fake_list_open_issues_by_label)
+    monkeypatch.setattr(watch, "_gh_get_paginated", fake_gh_get_paginated)
+
+    stage = watch.checker_queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+    )
+
+    assert stage["status"] == "yellow"
+    assert "already dispatched" in stage["summary"]
+    assert stage["details"]["self_heal_dispatches"] == []
+
+
+def test_checker_queue_surfaces_failed_checker_dispatch(monkeypatch):
+    def fake_list_open_issues_by_label(*_args, **_kwargs):
+        return [
+            {
+                "number": 720,
+                "title": "Recruiter-readiness bundle",
+                "state": "open",
+                "html_url": "https://example.test/pull/720",
+                "pull_request": {},
+                "labels": [
+                    {"name": "writer:claude"},
+                    {"name": "checker:codex"},
+                    {"name": watch.READY_FOR_CHECKER_LABEL},
+                    {"name": watch.AUTO_CHECKER_FAILED_LABEL},
+                ],
+            }
+        ]
+
+    def fake_gh_get_paginated(path, **_kwargs):
+        if path == "/repos/owner/repo/issues/720/comments":
+            return [
+                {
+                    "body": (
+                        "Host key recorded: user explicitly said `720 approved`.\n\n"
+                        "This same Codex executor session mechanically opened the "
+                        "PR, so it is not an independent Codex checker path."
+                    )
+                }
+            ]
+        raise AssertionError(path)
+
+    monkeypatch.setattr(watch, "list_open_issues_by_label", fake_list_open_issues_by_label)
+    monkeypatch.setattr(watch, "_gh_get_paginated", fake_gh_get_paginated)
+
+    stage = watch.checker_queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+    )
+
+    assert stage["status"] == "yellow"
+    assert "failed independent checker dispatch" in stage["summary"]
+    assert stage["details"]["failed_independent_checker_dispatches"] == [720]
+    assert stage["details"]["self_heal_dispatches"] == []
 
 
 def test_checker_queue_green_when_no_ready_prs(monkeypatch):

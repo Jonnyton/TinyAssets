@@ -472,3 +472,14 @@ Notes:
   PRs with ineligible executor sessions route to an independent checker lane.
 - Ship condition: focused tests pass, PR opened for Cowork/Claude review, no
   merge/approval behavior added.
+
+## Checker Worker Dispatch - 2026-05-09
+
+- 2026-05-09 create `../wf-checker-worker-dispatch` on
+  `codex/checker-worker-dispatch` by codex-gpt5-desktop.
+- Source: host clarified #720 must be fixed by the loop doing checker work, not
+  by operators manually filling the checker role.
+- Purpose: add an automatic checker-worker dispatch/receipt slice above the
+  #728 independent-checker observability state.
+- Ship condition: focused tests pass, PR opened for Cowork/Claude review, #720
+  can route to a checker worker without manual session assignment.

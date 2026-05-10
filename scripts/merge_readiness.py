@@ -43,6 +43,9 @@ HOST_KEY_PATTERNS = (
     "host explicitly turned keys",
 )
 
+CHECKER_VERDICT_MARKER = "workflow-checker-verdict:v1"
+CHECKER_VERDICT_ATTR_RE = re.compile(r"([a-z_]+)=([^\s>]+)")
+
 INDEPENDENT_CHECKER_BLOCKER_TERMS = (
     "independent checker",
     "independent codex checker",
@@ -116,6 +119,7 @@ class PullRequestFacts:
     number: int
     title: str
     state: str = "OPEN"
+    head_oid: str = ""
     merge_state_status: str = "UNKNOWN"
     labels: frozenset[str] = frozenset()
     opposite_family_checker_approved: bool = False
@@ -132,10 +136,12 @@ class PullRequestFacts:
         comments = pr.get("comments", [])
         reviews = pr.get("reviews", [])
         checker_family = _checker_family(labels)
+        head_oid = str(pr.get("headRefOid") or pr.get("head_oid") or pr.get("head_sha") or "")
         return cls(
             number=int(pr["number"]),
             title=str(pr.get("title") or ""),
             state=str(pr.get("state") or "OPEN"),
+            head_oid=head_oid,
             merge_state_status=str(
                 pr.get("merge_state_status")
                 or pr.get("mergeStateStatus")
@@ -144,12 +150,16 @@ class PullRequestFacts:
             ),
             labels=labels,
             opposite_family_checker_approved=bool(
-                pr.get("opposite_family_checker_approved") or _has_required_family_approval(reviews)
+                pr.get("opposite_family_checker_approved")
+                or _has_required_family_approval(reviews)
+                or _has_required_checker_verdict(comments, checker_family, head_oid)
             ),
             host_keyed=bool(pr.get("host_keyed") or _has_host_key_comment(comments)),
             checks_green=pr.get("checks_green"),
             send_back_advisory=bool(
-                pr.get("send_back_advisory") or _has_send_back_advisory(comments)
+                pr.get("send_back_advisory")
+                or _has_send_back_advisory(comments)
+                or _has_checker_send_back_verdict(comments, checker_family, head_oid)
             ),
             precheck_blocked=bool(pr.get("precheck_blocked") or _has_precheck_blocker(comments)),
             checker_executor_ineligible=bool(
@@ -387,6 +397,61 @@ def _has_host_key_comment(comments: Any) -> bool:
     return False
 
 
+def _checker_verdicts(comments: Any) -> list[dict[str, str]]:
+    verdicts: list[dict[str, str]] = []
+    for comment in comments or []:
+        body = comment.get("body") if isinstance(comment, dict) else str(comment)
+        lowered = str(body or "").lower()
+        marker_index = lowered.find(CHECKER_VERDICT_MARKER)
+        if marker_index < 0:
+            continue
+        marker_tail = lowered[marker_index + len(CHECKER_VERDICT_MARKER) :]
+        marker_tail = marker_tail.split("-->", 1)[0]
+        verdicts.append(dict(CHECKER_VERDICT_ATTR_RE.findall(marker_tail)))
+    return verdicts
+
+
+def _head_matches(verdict: dict[str, str], head_oid: Any) -> bool:
+    head = str(head_oid or "").lower()
+    verdict_head = str(verdict.get("head") or "").lower()
+    if not head:
+        return True
+    return bool(verdict_head) and verdict_head == head
+
+
+def _has_required_checker_verdict(
+    comments: Any,
+    checker_family: str | None,
+    head_oid: Any,
+) -> bool:
+    if not checker_family:
+        return False
+    for verdict in _checker_verdicts(comments):
+        if (
+            verdict.get("family") == checker_family
+            and verdict.get("verdict") == "approve"
+            and _head_matches(verdict, head_oid)
+        ):
+            return True
+    return False
+
+
+def _has_checker_send_back_verdict(
+    comments: Any,
+    checker_family: str | None,
+    head_oid: Any,
+) -> bool:
+    for verdict in _checker_verdicts(comments):
+        family_matches = not checker_family or verdict.get("family") == checker_family
+        if (
+            family_matches
+            and verdict.get("verdict") in {"send_back", "reject", "changes_requested"}
+            and _head_matches(verdict, head_oid)
+        ):
+            return True
+    return False
+
+
 def _has_checker_executor_ineligibility(comments: Any, checker_family: str | None) -> bool:
     if not checker_family:
         return False
@@ -499,7 +564,7 @@ def _read_input(path: str | None) -> list[dict[str, Any]]:
 
 
 def _fetch_gh_prs(repo: str, limit: int, hydrate_comments: bool = False) -> list[dict[str, Any]]:
-    fields = "number,state,mergeStateStatus,title,labels"
+    fields = "number,state,mergeStateStatus,title,headRefOid,labels"
     raw = subprocess.check_output(
         ["gh", "pr", "list", "--repo", repo, "--limit", str(limit), "--json", fields],
         text=True,

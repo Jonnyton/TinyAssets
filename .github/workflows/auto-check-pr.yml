@@ -1,0 +1,351 @@
+name: Auto-check PR
+
+# Independent checker worker for ready_for_checker PRs.
+#
+# This workflow is intentionally a checker, not a writer or merge executor.
+# It never commits, pushes, approves through GitHub Review, or merges. It posts
+# a structured PR comment that merge-readiness can tie to the current head SHA.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to check.
+        required: true
+        type: string
+      checker_family:
+        description: Required checker family for this PR.
+        required: true
+        type: choice
+        options:
+          - codex
+          - claude
+      reason:
+        description: Routing reason from merge-readiness.
+        required: false
+        default: checker_queue
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: auto-check-pr-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  codex-check:
+    if: inputs.checker_family == 'codex'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HAS_CODEX_AUTH: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 != '' }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      CHECKER_FAMILY: ${{ inputs.checker_family }}
+      ROUTING_REASON: ${{ inputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Preflight PR
+        id: preflight
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          CHECKER_FAMILY: ${{ env.CHECKER_FAMILY }}
+        with:
+          script: |
+            const prNumber = Number(process.env.PR_NUMBER);
+            const checkerFamily = process.env.CHECKER_FAMILY;
+            const marker = 'workflow-checker-verdict:v1';
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const labels = new Set((pr.labels || []).map((label) => label.name));
+            const head = pr.head?.sha || '';
+            const title = pr.title || '';
+            const url = pr.html_url || '';
+            let skipReason = '';
+            if (pr.state !== 'open') {
+              skipReason = `PR state is ${pr.state}`;
+            } else if (!labels.has('ready_for_checker')) {
+              skipReason = 'missing ready_for_checker label';
+            } else if (!labels.has(`checker:${checkerFamily}`)) {
+              skipReason = `missing checker:${checkerFamily} label`;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => {
+              const body = String(comment.body || '').toLowerCase();
+              return (
+                body.includes(marker) &&
+                body.includes(`family=${checkerFamily}`) &&
+                body.includes(`head=${head.toLowerCase()}`) &&
+                body.includes('verdict=approve')
+              );
+            });
+            if (existing) {
+              skipReason = `current head already has ${checkerFamily} checker verdict`;
+            }
+
+            core.setOutput('skip', skipReason ? 'true' : 'false');
+            core.setOutput('skip_reason', skipReason);
+            core.setOutput('head_sha', head);
+            core.setOutput('title', title);
+            core.setOutput('url', url);
+
+      - name: Skip summary
+        if: steps.preflight.outputs.skip == 'true'
+        run: |
+          {
+            echo "### Auto-check PR skipped"
+            echo ""
+            echo "- PR: #${PR_NUMBER}"
+            echo "- reason: ${{ steps.preflight.outputs.skip_reason }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mark missing Codex auth
+        if: steps.preflight.outputs.skip == 'false' && env.HAS_CODEX_AUTH != 'true'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+        with:
+          script: |
+            const prNumber = Number(process.env.PR_NUMBER);
+            async function ensureLabel(name, color, description) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                  color,
+                  description,
+                });
+              }
+            }
+            await ensureLabel(
+              'auto-checker-auth-missing',
+              'cfd3d7',
+              'Automatic checker worker auth was missing when the PR was last checked.',
+            );
+            await ensureLabel(
+              'auto-checker-failed',
+              'd93f0b',
+              'Automatic checker worker failed or requested send-back.',
+            );
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              labels: ['auto-checker-auth-missing', 'auto-checker-failed'],
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: [
+                '**Auto-check skipped:** independent Codex checker auth is not configured.',
+                '',
+                'The checker worker could not run because `WORKFLOW_CODEX_AUTH_JSON_B64` is not visible to GitHub Actions.',
+              ].join('\n'),
+            });
+
+      - name: Run Codex checker
+        id: codex-review
+        if: steps.preflight.outputs.skip == 'false' && env.HAS_CODEX_AUTH == 'true'
+        continue-on-error: true
+        env:
+          WORKFLOW_CODEX_AUTH_JSON_B64: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 }}
+          HEAD_SHA: ${{ steps.preflight.outputs.head_sha }}
+          PR_TITLE: ${{ steps.preflight.outputs.title }}
+          PR_URL: ${{ steps.preflight.outputs.url }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.codex"
+          printf '%s' "${WORKFLOW_CODEX_AUTH_JSON_B64}" | base64 -d > "$HOME/.codex/auth.json"
+          chmod 600 "$HOME/.codex/auth.json"
+          unset WORKFLOW_CODEX_AUTH_JSON_B64
+          unset OPENAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_BASE_URL GEMINI_API_KEY GROQ_API_KEY XAI_API_KEY
+
+          npm install -g @openai/codex
+          git fetch origin "pull/${PR_NUMBER}/head:pr-${PR_NUMBER}"
+          git checkout --detach "pr-${PR_NUMBER}"
+
+          codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$GITHUB_WORKSPACE" --output-last-message "$RUNNER_TEMP/checker.md" - <<'PROMPT'
+          You are an independent Codex checker for the Workflow community loop.
+
+          Review PR #${{ env.PR_NUMBER }}: ${{ env.PR_TITLE }}
+          URL: ${{ env.PR_URL }}
+          Head SHA: ${{ env.HEAD_SHA }}
+          Routing reason: ${{ env.ROUTING_REASON }}
+
+          You are checking, not writing. Do not commit, push, merge, approve via
+          GitHub Review, or intentionally edit files. Inspect the PR diff, tests,
+          workflow changes, and comments. Use local shell commands as needed.
+
+          Return your final answer with this exact first line:
+          VERDICT: approve
+          or:
+          VERDICT: send_back
+
+          Use approve only when the PR is safe to advance to the next gate for
+          the current head SHA. Use send_back for any blocking issue, missing
+          proof, wrong scope, stale/head mismatch, or unclear risk.
+          PROMPT
+
+          if [ -n "$(git status --porcelain)" ]; then
+            {
+              echo "VERDICT: send_back"
+              echo ""
+              echo "Checker worker left the checkout dirty, so the verdict is not accepted."
+              git status --short
+            } > "$RUNNER_TEMP/checker-dirty.md"
+            mv "$RUNNER_TEMP/checker-dirty.md" "$RUNNER_TEMP/checker.md"
+          fi
+
+          verdict="$(grep -Eim1 '^VERDICT:[[:space:]]*(approve|send_back)[[:space:]]*$' "$RUNNER_TEMP/checker.md" | sed -E 's/^VERDICT:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' || true)"
+          if [ "$verdict" != "approve" ]; then
+            verdict="send_back"
+          fi
+
+          {
+            echo "verdict=${verdict}"
+            echo "summary_path=$RUNNER_TEMP/checker.md"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post Codex checker verdict
+        if: steps.preflight.outputs.skip == 'false' && env.HAS_CODEX_AUTH == 'true'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          HEAD_SHA: ${{ steps.preflight.outputs.head_sha }}
+          VERDICT: ${{ steps.codex-review.outputs.verdict || 'send_back' }}
+          REVIEW_STEP_OUTCOME: ${{ steps.codex-review.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const prNumber = Number(process.env.PR_NUMBER);
+            const reviewSucceeded = process.env.REVIEW_STEP_OUTCOME === 'success';
+            const verdict = reviewSucceeded ? (process.env.VERDICT || 'send_back') : 'send_back';
+            const checkerPath = path.join(process.env.RUNNER_TEMP, 'checker.md');
+            const checkerBody = fs.existsSync(checkerPath)
+              ? fs.readFileSync(checkerPath, 'utf8').slice(0, 12000)
+              : 'VERDICT: send_back\n\nChecker worker did not leave a readable review summary.';
+            async function ensureLabel(name, color, description) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                  color,
+                  description,
+                });
+              }
+            }
+            await ensureLabel(
+              'auto-checker-failed',
+              'd93f0b',
+              'Automatic checker worker failed or requested send-back.',
+            );
+            if (!reviewSucceeded) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: [
+                  '**Auto-check failed:** independent Codex checker worker did not complete cleanly.',
+                  '',
+                  checkerBody,
+                ].join('\n'),
+              });
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels: ['auto-checker-failed'],
+              });
+              return;
+            }
+            const markerVerdict = verdict === 'approve' ? 'approve' : 'send_back';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: [
+                `<!-- workflow-checker-verdict:v1 family=codex verdict=${markerVerdict} head=${process.env.HEAD_SHA} run=${process.env.GITHUB_RUN_ID} -->`,
+                `**Automated independent Codex checker verdict:** ${markerVerdict === 'approve' ? 'approve' : 'send-back/amend'}`,
+                '',
+                checkerBody,
+              ].join('\n'),
+            });
+            if (markerVerdict === 'approve') {
+              for (const label of ['auto-checker-dispatched', 'auto-checker-failed', 'auto-checker-auth-missing']) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber,
+                    name: label,
+                  });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+              }
+            } else {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels: ['auto-checker-failed'],
+              });
+            }
+
+  unsupported-checker:
+    if: inputs.checker_family != 'codex'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record unsupported checker worker family
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          CHECKER_FAMILY: ${{ inputs.checker_family }}
+        with:
+          script: |
+            const prNumber = Number(process.env.PR_NUMBER);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: [
+                `**Auto-check skipped:** checker family \`${process.env.CHECKER_FAMILY}\` is not implemented in this workflow slice.`,
+                '',
+                'Route this PR to the matching external checker lane until the multi-family checker pool lands.',
+              ].join('\n'),
+            });

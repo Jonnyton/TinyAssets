@@ -76,6 +76,86 @@ def test_mixed_provenance_pr_routes_to_independent_checker_when_executor_ineligi
     assert "current executor/session cannot provide checker key" in result.reasons
 
 
+def test_independent_checker_verdict_for_current_head_clears_ineligible_executor_block():
+    result = classify_pr(
+        PullRequestFacts.from_mapping(
+            _claude_pr(
+                headRefOid="abc123",
+                checks_green=True,
+                comments=[
+                    {
+                        "body": (
+                            "Host key recorded: user explicitly said `720 approved`.\n\n"
+                            "This same Codex executor session mechanically opened the PR, "
+                            "so it is not an independent Codex checker path."
+                        )
+                    },
+                    {
+                        "body": (
+                            "<!-- workflow-checker-verdict:v1 "
+                            "family=codex verdict=approve head=abc123 run=42 -->\n"
+                            "**Automated independent Codex checker verdict:** approve"
+                        )
+                    },
+                ],
+            )
+        )
+    )
+
+    assert result.state == "merge_executor_ready"
+    assert result.merge_executor_state == "ready"
+
+
+def test_independent_checker_verdict_for_stale_head_is_ignored():
+    result = classify_pr(
+        PullRequestFacts.from_mapping(
+            _claude_pr(
+                headRefOid="new-head",
+                comments=[
+                    {
+                        "body": (
+                            "Host key recorded: user explicitly said `720 approved`.\n\n"
+                            "This same Codex executor session mechanically opened the PR, "
+                            "so it is not an independent Codex checker path."
+                        )
+                    },
+                    {
+                        "body": (
+                            "<!-- workflow-checker-verdict:v1 "
+                            "family=codex verdict=approve head=old-head run=42 -->\n"
+                            "**Automated independent Codex checker verdict:** approve"
+                        )
+                    },
+                ],
+            )
+        )
+    )
+
+    assert result.state == "needs_independent_codex_checker"
+
+
+def test_structured_checker_send_back_blocks_routing():
+    result = classify_pr(
+        PullRequestFacts.from_mapping(
+            _claude_pr(
+                headRefOid="abc123",
+                comments=[
+                    {
+                        "body": (
+                            "<!-- workflow-checker-verdict:v1 "
+                            "family=codex verdict=send_back head=abc123 run=42 -->\n"
+                            "**Automated independent Codex checker verdict:** send-back/amend"
+                        )
+                    }
+                ],
+            )
+        )
+    )
+
+    assert result.state == "send_back_amend"
+    assert result.next_action == "amend or regenerate before checker review"
+
+
 def test_consensus_send_back_advisory_blocks_checker_routing():
     result = classify_pr(
         PullRequestFacts.from_mapping(

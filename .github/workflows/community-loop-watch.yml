@@ -17,13 +17,14 @@ on:
         required: false
         default: "false"
   workflow_run:
-    workflows: ["Wiki bug sync", "Auto-fix change", "Uptime canary", "tier3-oss-clone-nightly", "deploy-site", "Deploy prod"]
+    workflows: ["Wiki bug sync", "Auto-fix change", "Auto-check PR", "Uptime canary", "tier3-oss-clone-nightly", "deploy-site", "Deploy prod"]
     types: [completed]
   push:
     branches: [main]
     paths:
       - "scripts/community_loop_watch.py"
       - ".github/workflows/community-loop-watch.yml"
+      - ".github/workflows/auto-check-pr.yml"
       - "docs/exec-plans/active/2026-04-30-live-community-reiteration-loop.md"
 
 permissions:
@@ -253,8 +254,87 @@ jobs:
               return dispatched;
             }
 
+            async function ensureLabel(name, color, description) {
+              const existing = await githubCall(`lookup label ${name}`, () => github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name,
+              }));
+              if (existing) {
+                return true;
+              }
+              const created = await githubCall(`create label ${name}`, () => github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name,
+                color,
+                description,
+              }));
+              return Boolean(created);
+            }
+
+            async function dispatchCheckerWorkers() {
+              let status;
+              try {
+                status = JSON.parse(probeMsg);
+              } catch (error) {
+                core.warning(`Could not parse community loop status JSON for checker dispatch: ${error.message}`);
+                return false;
+              }
+
+              const stages = Array.isArray(status.stages) ? status.stages : [];
+              const checkerStage = stages.find((stage) => stage?.name === 'Checker queue');
+              const dispatches = Array.isArray(checkerStage?.details?.self_heal_dispatches)
+                ? checkerStage.details.self_heal_dispatches
+                : [];
+              if (!dispatches.length) {
+                return false;
+              }
+
+              await ensureLabel(
+                'auto-checker-dispatched',
+                '0052cc',
+                'An automatic independent checker worker has been dispatched for this PR.',
+              );
+
+              let dispatched = false;
+              for (const dispatch of dispatches) {
+                const workflowId = dispatch?.workflow_id || 'auto-check-pr.yml';
+                const inputs = dispatch?.inputs || {};
+                const prNumber = Number(dispatch?.pr_number || inputs.pr_number || 0);
+                if (!prNumber || !inputs.pr_number || !inputs.checker_family) {
+                  core.warning(`Skipping malformed checker dispatch: ${JSON.stringify(dispatch)}`);
+                  continue;
+                }
+
+                const result = await githubCall(`dispatch checker worker for PR #${prNumber}`, () => (
+                  github.rest.actions.createWorkflowDispatch({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    workflow_id: workflowId,
+                    ref: 'main',
+                    inputs,
+                  })
+                ));
+                if (!result) {
+                  continue;
+                }
+
+                await githubCall(`mark PR #${prNumber} checker-dispatched`, () => github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['auto-checker-dispatched'],
+                }));
+                console.log(`dispatched ${workflowId} for PR #${prNumber}`);
+                dispatched = true;
+              }
+              return dispatched;
+            }
+
             const dispatchedSelfHeal = await dispatchStaleDependencies();
-            if (dispatchedSelfHeal && !isSelfHealFollowup) {
+            const dispatchedChecker = await dispatchCheckerWorkers();
+            if ((dispatchedSelfHeal || dispatchedChecker) && !isSelfHealFollowup) {
               try {
                 await github.rest.actions.createWorkflowDispatch({
                   owner: context.repo.owner,
