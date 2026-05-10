@@ -38,7 +38,17 @@ def test_auto_check_has_checker_permissions_not_writer_permissions():
 
     assert permissions.get("contents") == "read"
     assert permissions.get("issues") == "write"
-    assert permissions.get("pull-requests") == "read"
+    assert permissions.get("pull-requests") == "write"
+
+
+def test_community_watch_can_mark_checker_prs_without_content_write():
+    wf = yaml.safe_load(COMMUNITY_WATCH.read_text(encoding="utf-8"))
+    permissions = wf.get("permissions", {})
+
+    assert permissions.get("contents") == "read"
+    assert permissions.get("issues") == "write"
+    assert permissions.get("pull-requests") == "write"
+    assert permissions.get("actions") == "write"
 
 
 def test_auto_check_codex_lane_posts_structured_verdict_marker():

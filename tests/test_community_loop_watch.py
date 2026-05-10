@@ -97,10 +97,10 @@ def test_list_open_prs_by_closing_issue_maps_linked_prs(monkeypatch):
     assert result[568][0]["number"] == 598
 
 
-def test_community_loop_watch_workflow_can_read_pull_requests():
+def test_community_loop_watch_workflow_can_mark_pull_requests():
     workflow = Path(".github/workflows/community-loop-watch.yml").read_text(encoding="utf-8")
 
-    assert "pull-requests: read" in workflow
+    assert "pull-requests: write" in workflow
 
 
 def test_workflow_stage_ignores_neutral_skipped_runs(monkeypatch):
