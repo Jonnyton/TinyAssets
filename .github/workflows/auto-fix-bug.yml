@@ -421,15 +421,20 @@ jobs:
                 color: 'd93f0b',
                 description: 'Automated writer auth exists, but the selected provider returned quota/capacity exhaustion.',
               },
-              {
-                name: 'auto-fix-writer-failed',
-                color: 'd93f0b',
-                description: 'Automated writer auth existed, but the selected writer failed before opening a PR.',
-              },
-              {
-                name: 'auto-fix-claude-subscription-missing',
-                color: 'd93f0b',
-                description: 'Preferred subscription-backed Claude Code OAuth token was not visible to GitHub Actions.',
+                {
+                  name: 'auto-fix-writer-failed',
+                  color: 'd93f0b',
+                  description: 'Automated writer auth existed, but the selected writer failed before opening a PR.',
+                },
+                {
+                  name: 'auto-fix-auth-expired',
+                  color: 'd93f0b',
+                  description: 'Subscription-backed writer auth was visible but expired or revoked at invocation time.',
+                },
+                {
+                  name: 'auto-fix-claude-subscription-missing',
+                  color: 'd93f0b',
+                  description: 'Preferred subscription-backed Claude Code OAuth token was not visible to GitHub Actions.',
               },
               {
                 name: 'auto-fix-codex-subscription-missing',
@@ -660,7 +665,13 @@ jobs:
             const issueLabels = (issue.labels || []).map((label) => (
               typeof label === 'string' ? label : label.name
             ));
-            const labelsToClear = ['needs-human', 'auto-fix-auth-missing', 'auto-fix-provider-exhausted'];
+            const labelsToClear = [
+              'needs-human',
+              'auto-fix-auth-missing',
+              'auto-fix-auth-expired',
+              'auto-fix-provider-exhausted',
+              'auto-fix-writer-failed',
+            ];
             if ('${{ steps.auth.outputs.has_claude_oauth }}' === 'true') {
               labelsToClear.push('auto-fix-claude-subscription-missing');
             }
@@ -904,7 +915,8 @@ jobs:
           fi
           unset WORKFLOW_PUSH_TOKEN
 
-          codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$GITHUB_WORKSPACE" --output-last-message "$RUNNER_TEMP/codex-last-message.md" - <<'PROMPT'
+          prompt_file="$RUNNER_TEMP/codex-prompt.md"
+          cat > "$prompt_file" <<'PROMPT'
           You are handling a community change request in the Workflow repository.
 
           Request ID: ${{ steps.meta.outputs.request_id }}
@@ -935,6 +947,35 @@ jobs:
           working tree unchanged and explain why in your final message. Do not guess.
           PROMPT
 
+          codex_log="$RUNNER_TEMP/codex-exec.log"
+          set +e
+          codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$GITHUB_WORKSPACE" --output-last-message "$RUNNER_TEMP/codex-last-message.md" - < "$prompt_file" 2>&1 | tee "$codex_log"
+          codex_status=${PIPESTATUS[0]}
+          set -e
+          if [[ "$codex_status" -ne 0 ]]; then
+            auth_expired=false
+            if grep -Eiq 'refresh_token_reused|token_expired|invalid_grant|auth[^[:space:]]*[[:space:]-]*(expired|revoked)|login required|not logged in' "$codex_log"; then
+              auth_expired=true
+            fi
+            _delim="EOF_$(tr -d '-' < /proc/sys/kernel/random/uuid)"
+            {
+              echo "changed=false"
+              echo "no_change_reason="
+              echo "push_blocked=false"
+              echo "push_block_reason="
+              echo "auth_expired=${auth_expired}"
+              echo "last_message<<${_delim}"
+              if [ -s "$RUNNER_TEMP/codex-last-message.md" ]; then
+                head -c 4000 "$RUNNER_TEMP/codex-last-message.md"
+              else
+                head -c 4000 "$codex_log"
+              fi
+              echo
+              echo "${_delim}"
+            } >> "$GITHUB_OUTPUT"
+            exit "$codex_status"
+          fi
+
           if [ -z "$(git status --porcelain)" ]; then
             reason="blocked"
             message_file="$RUNNER_TEMP/codex-last-message.md"
@@ -948,6 +989,7 @@ jobs:
             {
               echo "changed=false"
               echo "no_change_reason=${reason}"
+              echo "auth_expired=false"
               echo "last_message<<${_delim}"
               if [ -s "$message_file" ]; then
                 head -c 4000 "$message_file"
@@ -1013,6 +1055,7 @@ jobs:
               echo "no_change_reason="
               echo "push_blocked=false"
               echo "push_block_reason="
+              echo "auth_expired=false"
               echo "last_message<<${_delim}"
               head -c 4000 "$verification_log"
               echo
@@ -1038,6 +1081,7 @@ jobs:
                 echo "no_change_reason="
                 echo "push_blocked=true"
                 echo "push_block_reason=github_actions_workflow_permission_missing"
+                echo "auth_expired=false"
               } >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -1048,6 +1092,7 @@ jobs:
             echo "no_change_reason="
             echo "push_blocked=false"
             echo "push_block_reason="
+            echo "auth_expired=false"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create Codex PR
@@ -1549,6 +1594,7 @@ jobs:
           CODEX_PR_BLOCK_REASON: ${{ steps.codex-pr-create.outputs.block_reason }}
           CODEX_PUSH_BLOCKED: ${{ steps.codex-subscription.outputs.push_blocked }}
           CODEX_PUSH_BLOCK_REASON: ${{ steps.codex-subscription.outputs.push_block_reason }}
+          CODEX_AUTH_EXPIRED: ${{ steps.codex-subscription.outputs.auth_expired }}
           WIKI_PATH: ${{ steps.meta.outputs.wiki_path }}
           EXPECTED_BRANCH_TASK: ${{ steps.meta.outputs.expected_branch_task }}
           CLAUDE_OUTCOME: ${{ steps.claude-oauth.outcome }}
@@ -1606,10 +1652,13 @@ jobs:
             const codexPrBlockReason = process.env.CODEX_PR_BLOCK_REASON || '';
             const codexPushBlocked = process.env.CODEX_PUSH_BLOCKED === 'true';
             const codexPushBlockReason = process.env.CODEX_PUSH_BLOCK_REASON || '';
+            const codexAuthExpired = process.env.CODEX_AUTH_EXPIRED === 'true';
             const claudeWriterFailed = mode === 'claude_oauth' && process.env.CLAUDE_OUTCOME === 'failure';
             const codexWriterFailed = mode === 'codex_subscription' && process.env.CODEX_OUTCOME === 'failure';
             const writerFailed = claudeWriterFailed || codexWriterFailed;
-            const terminalOutcome = writerFailed
+            const terminalOutcome = codexAuthExpired
+              ? 'writer-auth-expired-before-pr'
+              : writerFailed
               ? 'writer-failed-before-pr'
               : codexPushBlocked
                 ? 'branch-push-blocked'
@@ -1619,11 +1668,18 @@ jobs:
                     ? `no-change-${codexNoChangeReason}`
                     : 'no-pr-artifact-created';
             const labels = ['needs-human'];
-            if (codexNoChangeReason || codexPrBlocked || codexPushBlocked || writerFailed) {
+            if (codexNoChangeReason || codexPrBlocked || codexPushBlocked || (writerFailed && !codexAuthExpired)) {
               labels.push('auto-fix-reviewed');
             }
             if (writerFailed) {
               labels.push('auto-fix-writer-failed');
+            }
+            if (codexAuthExpired) {
+              labels.push(
+                'auto-fix-auth-missing',
+                'auto-fix-codex-subscription-missing',
+                'auto-fix-auth-expired',
+              );
             }
             if (codexNoChangeReason) {
               labels.push('auto-fix-blocked');
@@ -1688,6 +1744,9 @@ jobs:
                   : '',
                 codexPushBlocked && codexPushBlockReason === 'github_actions_workflow_permission_missing'
                   ? 'Configure `WORKFLOW_PUSH_TOKEN` with repo Contents write, Workflows write, and Pull requests write so automated workflow-file branches can push and loop-created PRs can trigger checks.'
+                  : '',
+                codexAuthExpired
+                  ? 'Remaining blocker: refresh `WORKFLOW_CODEX_AUTH_JSON_B64`; the auth bundle is visible but expired or revoked.'
                   : '',
                 codexPrBlocked && branch
                   ? `Auto-fix branch: https://github.com/${context.repo.owner}/${context.repo.repo}/tree/${branch}`

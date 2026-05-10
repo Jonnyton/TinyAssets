@@ -387,6 +387,18 @@ def test_codex_subscription_step_uses_codex_cli(wf):
     assert "OPENAI_API_KEY" in run_script and "unset OPENAI_API_KEY" in run_script
 
 
+def test_codex_subscription_step_classifies_expired_auth(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
+    assert codex_step is not None, "Must have a Codex subscription writer step"
+    run_script = codex_step.get("run", "")
+    assert "codex-exec.log" in run_script
+    assert "codex_status=${PIPESTATUS[0]}" in run_script
+    assert "refresh_token_reused" in run_script
+    assert "token_expired" in run_script
+    assert "auth_expired=${auth_expired}" in run_script
+
+
 def test_codex_subscription_step_uses_workflow_push_token_for_git_push(wf):
     steps = wf["jobs"]["fix"]["steps"]
     codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
@@ -938,3 +950,33 @@ def test_pr_blocked_label_is_defined(wf):
     assert "GitHub blocked Actions from pushing the branch" in script
     assert "auto-fix-writer-failed" in script
     assert "selected writer failed before opening a PR" in script
+    assert "auto-fix-auth-expired" in script
+    assert "expired or revoked" in script
+
+
+def test_retry_clears_stale_writer_failure_labels(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    clear_step = next(
+        (s for s in steps if s.get("name") == "Clear auth-missing block when auth is visible"),
+        None,
+    )
+    assert clear_step is not None, "Must clear stale failure labels before retry"
+    script = str(clear_step.get("with", {}).get("script", ""))
+    assert "auto-fix-auth-expired" in script
+    assert "auto-fix-writer-failed" in script
+
+
+def test_expired_codex_auth_stays_human_visible_not_reviewed_terminal(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    no_pr_step = next(
+        (s for s in steps if s.get("name") == "Mark needs-human if no PR opened"),
+        None,
+    )
+    assert no_pr_step is not None, "Must mark no-PR outcomes"
+    env = str(no_pr_step.get("env", {}))
+    script = str(no_pr_step.get("with", {}).get("script", ""))
+    assert "CODEX_AUTH_EXPIRED" in env
+    assert "writer-auth-expired-before-pr" in script
+    assert "writerFailed && !codexAuthExpired" in script
+    assert "auto-fix-auth-expired" in script
+    assert "Remaining blocker: refresh `WORKFLOW_CODEX_AUTH_JSON_B64`" in script

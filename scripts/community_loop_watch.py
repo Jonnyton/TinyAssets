@@ -60,6 +60,8 @@ AUTH_MISSING_LABEL = "auto-fix-auth-missing"
 CLAUDE_SUBSCRIPTION_MISSING_LABEL = "auto-fix-claude-subscription-missing"
 CODEX_SUBSCRIPTION_MISSING_LABEL = "auto-fix-codex-subscription-missing"
 PROVIDER_EXHAUSTED_LABEL = "auto-fix-provider-exhausted"
+WRITER_FAILED_LABEL = "auto-fix-writer-failed"
+AUTH_EXPIRED_LABEL = "auto-fix-auth-expired"
 READY_FOR_CHECKER_LABEL = "ready_for_checker"
 CHECKER_CODEX_LABEL = "checker:codex"
 CHECKER_CLAUDE_LABEL = "checker:claude"
@@ -806,6 +808,8 @@ def queue_stage(
     missing_codex_subscription: list[dict[str, Any]] = []
     auth_missing: list[dict[str, Any]] = []
     provider_exhausted: list[dict[str, Any]] = []
+    writer_failed: list[dict[str, Any]] = []
+    auth_expired: list[dict[str, Any]] = []
     pr_blocked: list[dict[str, Any]] = []
     branch_push_blocked: list[dict[str, Any]] = []
     reviewed_terminal: list[dict[str, Any]] = []
@@ -828,6 +832,8 @@ def queue_stage(
             labels.isdisjoint(TERMINAL_REVIEW_LABELS)
             or PR_BLOCKED_LABEL in labels
             or BRANCH_PUSH_BLOCKED_LABEL in labels
+            or WRITER_FAILED_LABEL in labels
+            or AUTH_EXPIRED_LABEL in labels
         ):
             needs_human.append(issue)
             if CLAUDE_SUBSCRIPTION_MISSING_LABEL in labels:
@@ -842,6 +848,10 @@ def queue_stage(
                 branch_push_blocked.append(issue)
             if PROVIDER_EXHAUSTED_LABEL in labels:
                 provider_exhausted.append(issue)
+            if WRITER_FAILED_LABEL in labels:
+                writer_failed.append(issue)
+            if AUTH_EXPIRED_LABEL in labels:
+                auth_expired.append(issue)
         elif COMPLETE_LABEL in labels or not labels.isdisjoint(TERMINAL_REVIEW_LABELS):
             reviewed_terminal.append(issue)
         elif AWAIT_PRIMITIVE_LAYER_LABEL in labels:
@@ -885,6 +895,8 @@ def queue_stage(
         "branch_push_blocked": [issue.get("number") for issue in branch_push_blocked],
         "pr_blocked": [issue.get("number") for issue in pr_blocked],
         "provider_exhausted": [issue.get("number") for issue in provider_exhausted],
+        "writer_failed": [issue.get("number") for issue in writer_failed],
+        "auth_expired": [issue.get("number") for issue in auth_expired],
         "pending": [issue.get("number") for issue in pending],
         "old_pending": [issue.get("number") for issue in old_pending],
         "await_primitive_layer": [issue.get("number") for issue in await_primitive_layer],
@@ -923,8 +935,12 @@ def queue_stage(
             root_cause = "Claude subscription OAuth is not visible to GitHub Actions"
         elif missing_codex_subscription:
             root_cause = "Codex subscription auth bundle is not visible to GitHub Actions"
+        elif auth_expired:
+            root_cause = "subscription-backed writer auth is visible but expired or revoked"
         elif auth_missing:
             root_cause = "approved subscription-backed writer auth is missing"
+        elif writer_failed:
+            root_cause = "approved writer failed before opening a PR"
         elif provider_exhausted:
             root_cause = "approved writer provider returned quota/capacity exhaustion"
         pending_clause = (
