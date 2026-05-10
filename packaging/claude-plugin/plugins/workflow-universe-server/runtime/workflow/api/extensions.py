@@ -276,6 +276,7 @@ def _extensions_impl(
     node_ref_json: str = "",
     intent: str = "",
     node_query: str = "",
+    published_only: bool = False,
     force: bool = False,
     project_id: str = "",
     key: str = "",
@@ -394,6 +395,7 @@ def _extensions_impl(
         "intent": intent,
         "query": node_query,
         "limit": limit,
+        "published_only": published_only,
         "force": force,
     }
     if node_ref_json:

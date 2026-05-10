@@ -517,6 +517,7 @@ def extensions(
     node_ref_json: str = "",
     intent: str = "",
     node_query: str = "",
+    published_only: bool = False,
     force: bool = False,
     project_id: str = "",
     key: str = "",
@@ -598,6 +599,8 @@ def extensions(
     describe_branch, get_branch, run_branch, get_run, wait_for_run,
     judge_run, publish_version, schedule_branch, fork_tree, and search_nodes.
     Pass `action` plus the matching ids or JSON payload fields.
+    Use `published_only=True` with list_branches to show production-ready
+    Branches instead of drafts, probes, and smoke-test branches.
     """
     return _extensions_impl(
         action=action,
@@ -646,6 +649,7 @@ def extensions(
         node_ref_json=node_ref_json,
         intent=intent,
         node_query=node_query,
+        published_only=published_only,
         force=force,
         project_id=project_id,
         key=key,

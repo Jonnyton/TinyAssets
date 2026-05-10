@@ -69,6 +69,38 @@ def test_list_branches_returns_summaries(branch_env):
     assert all("node_count" in b for b in listing["branches"])
 
 
+def test_list_branches_published_only_filter(branch_env):
+    us, _ = branch_env
+    spec = {
+        "name": "Published",
+        "entry_point": "ready",
+        "node_defs": [{
+            "node_id": "ready",
+            "display_name": "Ready",
+            "prompt_template": "Do the work.",
+        }],
+        "edges": [
+            {"from": "START", "to": "ready"},
+            {"from": "ready", "to": "END"},
+        ],
+        "state_schema": [{"name": "x", "type": "str"}],
+    }
+    published = _call(us, "build_branch", spec_json=json.dumps(spec))
+    _call(us, "create_branch", name="Probe draft")
+    patched = _call(
+        us,
+        "patch_branch",
+        branch_def_id=published["branch_def_id"],
+        changes_json=json.dumps([{"op": "set_published", "published": True}]),
+    )
+    assert patched.get("status") != "rejected", patched
+
+    listing = _call(us, "list_branches", published_only=True)
+    assert listing["count"] == 1
+    assert listing["branches"][0]["name"] == "Published"
+    assert listing["branches"][0]["published"] is True
+
+
 def test_list_branches_node_count_matches_node_defs_length(branch_env):
     """list_branches.node_count must equal get_branch.node_defs length.
 
