@@ -784,6 +784,45 @@ def test_queue_stage_counts_pr_blocked_issue_as_needs_human(monkeypatch):
     assert "PR creation was blocked" in stage["summary"]
 
 
+def test_queue_stage_counts_expired_auth_issue_as_needs_human(monkeypatch):
+    now = dt.datetime(2026, 5, 10, 9, 20, tzinfo=dt.timezone.utc)
+
+    def fake_list_loop_issues(*_args, **_kwargs):
+        return [
+            {
+                "number": 745,
+                "title": "Codex auth bundle expired before PR creation",
+                "created_at": "2026-05-10T08:28:00Z",
+                "html_url": "https://example.test/issues/745",
+                "labels": [
+                    {"name": watch.BLOCKED_LABEL},
+                    {"name": watch.ATTEMPTED_LABEL},
+                    {"name": watch.REVIEWED_LABEL},
+                    {"name": watch.WRITER_FAILED_LABEL},
+                    {"name": watch.AUTH_EXPIRED_LABEL},
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(watch, "list_loop_issues", fake_list_loop_issues)
+
+    stage = watch.queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+        now=now,
+        max_pending_age_min=45,
+    )
+
+    assert stage["status"] == "red"
+    assert stage["details"]["needs_human"] == [745]
+    assert stage["details"]["writer_failed"] == [745]
+    assert stage["details"]["auth_expired"] == [745]
+    assert stage["details"]["reviewed_terminal"] == []
+    assert "expired or revoked" in stage["summary"]
+
+
 def test_queue_stage_summarizes_mixed_permission_blocks(monkeypatch):
     now = dt.datetime(2026, 5, 5, 21, 20, tzinfo=dt.timezone.utc)
 
