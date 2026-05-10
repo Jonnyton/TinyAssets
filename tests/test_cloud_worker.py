@@ -123,7 +123,7 @@ def test_state_summary_includes_counters():
 
 
 def test_supervisor_clean_exit_uses_idle_backoff(tmp_path):
-    """Subprocess exits 0 → sleep = idle_backoff (not crash_backoff)."""
+    """First clean exit sleeps idle_backoff (not crash_backoff)."""
     sleep_calls, sleep_fn = _make_sleep_recorder()
 
     def spawn(universe):
@@ -139,9 +139,29 @@ def test_supervisor_clean_exit_uses_idle_backoff(tmp_path):
     )
     assert state.total_clean_exits == 2
     assert state.total_crashes == 0
-    # Both iterations sleep idle_backoff after clean exit.
     assert 7.0 in sleep_calls
     assert 999.0 not in sleep_calls
+
+
+def test_supervisor_consecutive_clean_exits_back_off(tmp_path):
+    """Idle universe-cycle exits should not respawn at a fixed short cadence."""
+    sleep_calls, sleep_fn = _make_sleep_recorder()
+
+    def spawn(universe):
+        return FakeProc(returncode=0, steps_until_exit=0)
+
+    state = cw.run_supervisor(
+        tmp_path,
+        idle_backoff=10.0,
+        backoff_mult=2.0,
+        max_backoff=45.0,
+        max_iterations=4,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 4
+    assert sleep_calls == [10.0, 20.0, 40.0, 45.0]
 
 
 def test_supervisor_crash_uses_exponential_backoff(tmp_path):
@@ -201,6 +221,33 @@ def test_supervisor_crash_followed_by_clean_resets_backoff(tmp_path):
     )
 
 
+def test_supervisor_crash_resets_idle_backoff(tmp_path):
+    """Crash recovery should not inherit the idle no-work backoff streak."""
+    sleep_calls, sleep_fn = _make_sleep_recorder()
+    rc_sequence = [0, 0, 1, 0]
+    iter_idx = {"i": 0}
+
+    def spawn(universe):
+        rc = rc_sequence[iter_idx["i"]]
+        iter_idx["i"] += 1
+        return FakeProc(returncode=rc, steps_until_exit=0)
+
+    state = cw.run_supervisor(
+        tmp_path,
+        idle_backoff=3.0,
+        crash_backoff=11.0,
+        backoff_mult=2.0,
+        max_backoff=100.0,
+        max_iterations=4,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 3
+    assert state.total_crashes == 1
+    assert sleep_calls == [3.0, 6.0, 11.0, 3.0]
+
+
 def test_supervisor_max_iterations_honored(tmp_path):
     sleep_calls, sleep_fn = _make_sleep_recorder()
 
@@ -237,6 +284,33 @@ def test_supervisor_spawn_failure_counted_as_crash(tmp_path):
     assert state.total_crashes == 3
     # Backoff magnitudes: 3, 6, 12.
     assert [d for d in sleep_calls if d in (3.0, 6.0, 12.0)] == [3.0, 6.0, 12.0]
+
+
+def test_supervisor_spawn_failure_resets_idle_backoff(tmp_path):
+    """Spawn failures are crash-path events and reset idle no-work backoff."""
+    sleep_calls, sleep_fn = _make_sleep_recorder()
+    outcomes = iter(["clean", "clean", "spawn-fail", "clean"])
+
+    def spawn(universe):
+        outcome = next(outcomes)
+        if outcome == "spawn-fail":
+            raise OSError("simulated spawn failure")
+        return FakeProc(returncode=0, steps_until_exit=0)
+
+    state = cw.run_supervisor(
+        tmp_path,
+        idle_backoff=3.0,
+        crash_backoff=11.0,
+        backoff_mult=2.0,
+        max_backoff=100.0,
+        max_iterations=4,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 3
+    assert state.total_crashes == 1
+    assert sleep_calls == [3.0, 6.0, 11.0, 3.0]
 
 
 # ---- env construction ---------------------------------------------------

@@ -294,6 +294,7 @@ class SupervisorState:
 
     def __init__(self) -> None:
         self.crash_count = 0
+        self.clean_exit_count = 0
         self.total_spawns = 0
         self.total_clean_exits = 0
         self.total_crashes = 0
@@ -302,9 +303,11 @@ class SupervisorState:
         self.total_spawns += 1
         if returncode == 0:
             self.crash_count = 0
+            self.clean_exit_count += 1
             self.total_clean_exits += 1
         else:
             self.crash_count += 1
+            self.clean_exit_count = 0
             self.total_crashes += 1
 
     def summary(self) -> str:
@@ -335,7 +338,9 @@ def run_supervisor(
       1. Spawn fantasy_daemon against the universe.
       2. Wait for it to exit.
       3. Record exit as clean or crash.
-      4. Sleep idle_backoff (clean) or crash_backoff*mult^(crashes-1) (crash).
+      4. Sleep with exponential backoff after consecutive clean exits or
+         crashes. Clean exits usually mean no active work; backing them off
+         prevents the universe-cycle wrapper from steady polling while idle.
 
     ``max_iterations`` is an injection seam for tests — leave None in
     production for an unbounded loop. ``spawn_fn`` + ``sleep_fn`` are
@@ -383,6 +388,7 @@ def run_supervisor(
         except OSError as exc:
             logger.error("cloud_worker: spawn failed: %s", exc)
             state.crash_count += 1
+            state.clean_exit_count = 0
             state.total_crashes += 1
             delay = _compute_backoff(
                 state.crash_count,
@@ -479,7 +485,10 @@ def run_supervisor(
             break
 
         if returncode == 0:
-            delay = idle_backoff
+            delay = _compute_backoff(
+                state.clean_exit_count,
+                base=idle_backoff, mult=backoff_mult, ceiling=max_backoff,
+            )
         else:
             delay = _compute_backoff(
                 state.crash_count,
