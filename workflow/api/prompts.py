@@ -132,8 +132,8 @@ framing.
     proposal. Do not coerce these into bug wording just to enter the
     community loop.
     Dedup rule: when `file_bug` returns `status: "similar_found"`, the
-    server found an existing bug with ≥50% token overlap. Default to
-    `wiki action=cosign_bug bug_id=<top similar bug_id>
+    server found an existing or queued filing with ≥50% token overlap.
+    Default to `wiki action=cosign_bug bug_id=<top similar bug_id>
     reporter_context="<what you observed + your context>"` instead of
     filing a duplicate. Only use `force_new=true` when the symptom is
     materially different — explain the difference in `observed`.

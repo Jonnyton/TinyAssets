@@ -1590,6 +1590,46 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
     return results
 
 
+def _scan_queued_filings(universe_path: Path, kind: str) -> list[dict[str, Any]]:
+    """Return active queued filings of the requested kind from BranchTask queue."""
+    try:
+        from workflow.branch_tasks import read_queue
+        from workflow.bug_investigation import REQUEST_TYPE_BUG_INVESTIGATION
+    except Exception:  # noqa: BLE001 - queue dedupe is best-effort for filing.
+        return []
+
+    results: list[dict[str, Any]] = []
+    try:
+        queue = read_queue(universe_path)
+    except Exception as exc:  # noqa: BLE001 - corrupt queue should not block filing.
+        _logger_wiki.warning("file_bug queued filing scan failed: %s", exc)
+        return []
+
+    for task in queue:
+        if task.request_type != REQUEST_TYPE_BUG_INVESTIGATION:
+            continue
+        if task.status not in {"pending", "running"}:
+            continue
+        inputs = task.inputs if isinstance(task.inputs, dict) else {}
+        if str(inputs.get("kind") or "bug").strip().lower() != kind:
+            continue
+        bug_id = str(inputs.get("bug_id") or "").strip()
+        title = str(inputs.get("title") or "").strip()
+        observed = str(inputs.get("observed") or "").strip()
+        if not bug_id and not title and not observed:
+            continue
+        results.append({
+            "bug_id": bug_id or task.branch_task_id,
+            "title": title,
+            "status": task.status,
+            "haystack_tokens": _bug_token_set(title + " " + observed[:300]),
+            "path": "",
+            "source": "queue",
+            "dispatcher_request_id": task.branch_task_id,
+        })
+    return results
+
+
 def _wiki_cosign_bug(
     bug_id: str = "",
     reporter_context: str = "",
@@ -1739,14 +1779,18 @@ def _wiki_file_bug(
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slug = _slugify_title(title)
+    universe_id = _default_universe()
+    universe_path = _universe_dir(universe_id)
 
     # Dedup check: scan existing filings of THIS kind for Jaccard similarity
-    # ≥ threshold. Per-kind only — a feature-request shouldn't dedup against
-    # a bug because they're different work surfaces; same title may
-    # legitimately exist as both. Skip when force_new=True.
+    # ≥ threshold, including active queued filings that may not have completed
+    # yet. Per-kind only — a feature-request shouldn't dedup against a bug
+    # because they're different work surfaces; same title may legitimately
+    # exist as both. Skip when force_new=True.
     if not force_new:
         query_tokens = _bug_token_set(title + " " + (observed or ""))
         existing = _scan_existing_bugs(pages_dir)
+        existing.extend(_scan_queued_filings(universe_path, effective_kind))
         scored = []
         for entry in existing:
             sim = _jaccard(query_tokens, entry["haystack_tokens"])
@@ -1760,6 +1804,7 @@ def _wiki_file_bug(
                     "title": e["title"],
                     "similarity": round(s, 3),
                     "status": e["status"],
+                    "source": e.get("source", "wiki"),
                 }
                 for s, e in scored[:3]
             ]
@@ -1835,8 +1880,6 @@ def _wiki_file_bug(
             "repro": repro,
             "workaround": workaround,
         }
-        universe_id = _default_universe()
-        universe_path = _universe_dir(universe_id)
         # Pre-write trigger receipt (status=pending). Read canonical branch_def_id
         # from env so the receipt records what we *expected* to invoke even if the
         # enqueue helper rejects.

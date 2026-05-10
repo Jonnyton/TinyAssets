@@ -269,6 +269,44 @@ def test_file_bug_unrelated_query_does_not_trigger_similar_found(wiki_env):
     )
 
 
+def test_patch_request_dedup_checks_pending_queue(wiki_env, tmp_path, monkeypatch):
+    """Patch requests already queued must block duplicate chatbot filings."""
+    from workflow.branch_tasks import BranchTask, append_task
+
+    universe_dir = tmp_path / "default-universe"
+    universe_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-universe")
+
+    append_task(
+        universe_dir,
+        BranchTask(
+            branch_task_id="queued-pr-task",
+            branch_def_id="change-loop",
+            universe_id="default-universe",
+            request_type="bug_investigation",
+            status="pending",
+            inputs={
+                "bug_id": "PR-099",
+                "kind": "patch_request",
+                "title": "In queue chatbot side patch request dedupe",
+                "observed": "Filing-time Jaccard misses queued patch requests",
+            },
+        ),
+    )
+
+    result = _file_bug(
+        wiki_env,
+        kind="patch_request",
+        title="In queue chatbot side patch request dedupe",
+        observed="Filing-time Jaccard misses queued patch requests before filing",
+    )
+
+    assert result["status"] == "similar_found"
+    assert result["bug_id"] is None
+    assert result["similar"][0]["bug_id"] == "PR-099"
+    assert result["similar"][0]["source"] == "queue"
+
+
 # ── Task #42: threshold edge-cases + adversarial depth ────────────────────────
 
 

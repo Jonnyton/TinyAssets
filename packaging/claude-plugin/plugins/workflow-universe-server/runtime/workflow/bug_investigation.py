@@ -69,6 +69,49 @@ def _format_request_text(payload: dict) -> str:
     return "\n".join(lines).strip()
 
 
+def _request_tokens(text: str) -> set[str]:
+    return {w for w in re.sub(r"[^a-z0-9]+", " ", text.lower()).split() if len(w) > 2}
+
+
+def _request_jaccard(a: set[str], b: set[str]) -> float:
+    if not a and not b:
+        return 1.0
+    union = a | b
+    return len(a & b) / len(union) if union else 0.0
+
+
+def _find_similar_queued_patch_request(base_path: "Path | str", payload: dict) -> str | None:
+    """Return an active duplicate patch-request BranchTask id, if one exists."""
+    if str(payload.get("kind") or "").strip().lower() != "patch_request":
+        return None
+
+    from workflow.branch_tasks import TERMINAL_STATUSES, read_queue
+
+    query_tokens = _request_tokens(
+        str(payload.get("title") or "") + " " + str(payload.get("observed") or "")
+    )
+    try:
+        queue = read_queue(Path(base_path))
+    except Exception as exc:  # noqa: BLE001 - enqueue should still proceed.
+        _logger.warning("queued patch-request dedupe scan failed: %s", exc)
+        return None
+
+    for task in queue:
+        if task.request_type != REQUEST_TYPE_BUG_INVESTIGATION:
+            continue
+        if task.status in TERMINAL_STATUSES:
+            continue
+        inputs = task.inputs if isinstance(task.inputs, dict) else {}
+        if str(inputs.get("kind") or "").strip().lower() != "patch_request":
+            continue
+        haystack_tokens = _request_tokens(
+            str(inputs.get("title") or "") + " " + str(inputs.get("observed") or "")
+        )
+        if _request_jaccard(query_tokens, haystack_tokens) >= 0.5:
+            return task.branch_task_id
+    return None
+
+
 def format_investigation_comment(
     run_id: str = "",
     status: str = "queued",
@@ -235,13 +278,23 @@ def enqueue_investigation_request(
     import uuid
     base = Path(base_path)
     uid = universe_id or base.name
+    payload = build_run_payload(bug_ref)
+    existing_request_id = _find_similar_queued_patch_request(base, payload)
+    if existing_request_id:
+        _logger.info(
+            "enqueue_investigation_request | %s | deduped_to=%s",
+            bug_ref.get("bug_id", "?"),
+            existing_request_id,
+        )
+        return existing_request_id
+
     request_id = str(uuid.uuid4())
 
     task = BranchTask(
         branch_task_id=request_id,
         branch_def_id=canonical_branch_def_id,
         universe_id=uid,
-        inputs=build_run_payload(bug_ref),
+        inputs=payload,
         trigger_source="owner_queued",
         priority_weight=float(priority),
         queued_at=datetime.now(timezone.utc).isoformat(),

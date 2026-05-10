@@ -106,6 +106,45 @@ class TestEnqueueInvestigationRequest:
         queue = read_queue(tmp_path)
         assert queue[0].universe_id == "override-universe"
 
+    def test_duplicate_pending_patch_request_reuses_existing_queue_task(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        append_task(
+            tmp_path,
+            BranchTask(
+                branch_task_id="queued-pr-task",
+                branch_def_id="branch-abc",
+                universe_id="u1",
+                request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+                status="pending",
+                inputs={
+                    "bug_id": "PR-099",
+                    "kind": "patch_request",
+                    "title": "In queue chatbot side patch request dedupe",
+                    "observed": "Filing-time Jaccard misses queued patch requests",
+                },
+            ),
+        )
+
+        request_id = enqueue_investigation_request(
+            bug_ref={
+                "bug_id": "PR-100",
+                "kind": "patch_request",
+                "title": "In queue chatbot side patch request dedupe",
+                "observed": (
+                    "Filing-time Jaccard misses queued patch requests before filing"
+                ),
+            },
+            canonical_branch_def_id="branch-abc",
+            base_path=tmp_path,
+            universe_id="u1",
+        )
+
+        queue = read_queue(tmp_path)
+        assert request_id == "queued-pr-task"
+        assert [task.branch_task_id for task in queue] == ["queued-pr-task"]
+
 
 # ── prefers_request_type / get_request_type_priorities ────────────────────────
 
