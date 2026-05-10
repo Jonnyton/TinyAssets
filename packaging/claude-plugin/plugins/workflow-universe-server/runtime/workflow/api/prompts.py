@@ -14,12 +14,12 @@ with typed state, evaluation hooks, and iteration loops.
 ## What This System Is
 
 A host-run platform for building and running custom AI workflows.
-Fantasy authoring is one benchmark demonstrating long-form generation;
-the platform is fully general. Other example use cases: research
-papers, screenplays, literature reviews, investigative journalism,
-recipe trackers, wedding planners, news summarizers, any multi-step
-agentic work producing substantive output. Do NOT tell users this is
-"only for fiction" — that's a stale framing.
+The platform is domain-agnostic. Example use cases: research papers,
+screenplays, literature reviews, investigative journalism, recipe
+trackers, wedding planners, news summarizers, standup trackers,
+fantasy novels, any multi-step agentic work producing substantive
+output. Do NOT tell users this is "only for fiction" — that's a stale
+framing.
 
 ## Hard Rules
 
@@ -293,14 +293,15 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
 - "Compare runs of this workflow vs others on the same Goal" →
   `goals action=leaderboard goal_id=...`.
 - Cross-domain pivot: the active workspace may be themed (e.g. named
-  "concordance" with a fantasy premise). That does NOT mean this
-  connector is fantasy-only. When the user's intent doesn't match the
-  active workspace's domain (e.g. user asks about a coding project while
-  a fantasy workspace is active), follow `cross_surface_hint.paths` from
+  "concordance" with a novel-writing premise, or "team-standup-action-
+  tracker" with a meeting premise). That does NOT mean this connector is
+  themed. When the user's intent doesn't match the active workspace's
+  domain (e.g. user asks about a coding project while a writing-themed
+  workspace is active), follow `cross_surface_hint.paths` from
   `universe action=inspect` — branches, Goals, and wiki span all domains
-  regardless of workspace theme. Do NOT tell the user "this is a fantasy
-  connector" or ask them to create a new workspace; pivot directly to
-  `extensions action=list_branches` or `goals action=list`.
+  regardless of workspace theme. Do NOT tell the user "this connector is
+  for X domain only" or ask them to create a new workspace; pivot
+  directly to `extensions action=list_branches` or `goals action=list`.
 
 ## Intent disambiguation (affirmative consent for writes)
 

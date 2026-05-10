@@ -105,10 +105,11 @@ mcp = FastMCP(
     instructions=(
         "Workflow is a workflow-builder and long-horizon AI platform. "
         "Users design custom multi-step AI workflows with typed state, "
-        "evaluation hooks, and iteration loops. Fantasy authoring is a "
-        "benchmark, not the exclusive use case; other domains include "
-        "research papers, screenplays, literature reviews, investigative "
-        "journalism, recipe trackers, wedding planners, and news summaries. "
+        "evaluation hooks, and iteration loops. The platform is "
+        "domain-agnostic. Example domains: research papers, screenplays, "
+        "literature reviews, investigative journalism, recipe trackers, "
+        "wedding planners, news summaries, standup trackers, fantasy "
+        "novels. "
         "\n\n"
         "If a user asks about their 'workflow builder', 'custom AI builder', "
         "'universe builder', 'the workflow thing', 'the connector', 'the "
@@ -162,13 +163,12 @@ _LANDING_HTML = """<!doctype html>
 </head>
 <body>
 <h1>Workflow Server</h1>
-<p class="tag">A goal-agnostic daemon engine. You summon it, bind it to a
-domain, and let it drive.</p>
+<p class="tag">A goal-agnostic daemon engine. Bind it to a domain and let it run.</p>
 
 <p>This is the public surface of a local-first platform for building
 custom multi-step AI workflows &mdash; typed state, registered nodes,
 evaluation hooks, iteration loops, paid-market bid/claim mechanics.
-Fantasy authoring is the benchmark domain; the engine is general-purpose.</p>
+The engine is domain-agnostic.</p>
 
 <p>If you arrived here looking for an MCP connector, the live endpoint
 is at <code>/mcp</code>.</p>
@@ -226,9 +226,9 @@ _EXTENSION_GUIDE_PROMPT = """\
 The `extensions` tool is the workflow-builder surface. Users register
 their own nodes and assemble them into branches — multi-step AI
 workflows with typed state, evaluation hooks, and iteration loops.
-This is how the platform supports arbitrary domains (research papers,
-recipe trackers, screenplays, news summarizers, etc.), not just
-fiction. Fantasy authoring is one branch; yours will be another.
+The platform supports arbitrary domains (research papers, recipe
+trackers, screenplays, news summarizers, standup trackers, etc.).
+Build the one you need.
 
 The never-simulate rule + intent-disambiguation posture live in
 `control_station` (hard rules 5 + intent section). When in doubt on
@@ -594,34 +594,10 @@ def extensions(
     Behavioral rules live in `control_station`, `extension_guide`, and
     `branch_design_guide`; this description is the I/O contract.
 
-    Main actions: build_branch, patch_branch, describe_branch, get_branch,
-    list_branches, run_branch, get_run, list_runs, stream_run, cancel_run,
-    get_run_output, attach_existing_child_run, wait_for_run, resume_run,
-    judge_run, compare_runs, schedule_branch, publish_version,
-    validate_ship_packet, and open_auto_ship_pr.
-
-    Action groups:
-    - Registry: register, list, inspect, approve, disable, enable, remove.
-    - Branch atomic: create_branch, list_branches, get_branch,
-      describe_branch, delete_branch, add_node, connect_nodes,
-      set_entry_point, add_state_field, validate_branch, build_branch,
-      patch_branch, patch_nodes, update_node, rollback_node,
-      suggest_node_edit, search_nodes.
-    - Runs: run_branch, list_runs, get_run, get_run_output, stream_run,
-      wait_for_run, cancel_run, resume_run, query_runs, compare_runs,
-      estimate_run_cost, get_node_output, attach_existing_child_run,
-      get_routing_evidence, get_memory_scope_status.
-    - Judgments: judge_run, list_judgments.
-    - Versions: publish_version, list_branch_versions, get_branch_version,
-      run_branch_version, rollback_merge, get_rollback_history,
-      list_node_versions.
-    - Project memory: project_memory_get, project_memory_set,
-      project_memory_list.
-    - Scheduler: schedule_branch, unschedule_branch, subscribe_branch,
-      unsubscribe_branch, list_schedules, list_scheduler_subscriptions.
-    - Provenance: fork_tree.
-
-    Args: pass `action` plus the matching ids or JSON payload fields.
+    Core actions include build_branch, patch_branch, list_branches,
+    describe_branch, get_branch, run_branch, get_run, wait_for_run,
+    judge_run, publish_version, schedule_branch, fork_tree, and search_nodes.
+    Pass `action` plus the matching ids or JSON payload fields.
     """
     return _extensions_impl(
         action=action,
@@ -1090,6 +1066,132 @@ _mcp_get_status = _register_structured_tool(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MCP endpoint discovery (substrate-fix #11 / Family A Phase 1.A)
+# ═══════════════════════════════════════════════════════════════════════════
+# When a browser, recruiter, or fresh AI session GETs /mcp or /mcp-directory
+# with Accept: text/html (no MCP transport handshake), return a discovery
+# page explaining what the endpoint is and how to connect via MCP client.
+# MCP clients (POST with JSON-RPC, GET with text/event-stream for SSE leg,
+# or any request with MCP-Protocol-Version header) pass through unchanged.
+
+_MCP_DISCOVERY_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow MCP Server</title>
+<style>
+ :root { color-scheme: light dark; }
+ body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        max-width: 720px; margin: 4rem auto; padding: 0 1.25rem;
+        line-height: 1.55; }
+ h1 { margin-bottom: 0.3rem; }
+ .tag { color: #666; margin-top: 0; }
+ code { background: rgba(127,127,127,0.15); padding: 2px 6px;
+        border-radius: 3px; font-size: 0.95em; }
+ pre { background: rgba(127,127,127,0.10); padding: 0.75rem 1rem;
+       border-radius: 4px; overflow-x: auto; font-size: 0.85em; }
+ ul { padding-left: 1.2rem; }
+ li { margin-bottom: 0.4rem; }
+ footer { margin-top: 3rem; color: #888; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>Workflow MCP Server</h1>
+<p class="tag">This is the MCP (Model Context Protocol) server endpoint.
+You're seeing this page because you reached this URL in a browser instead
+of via an MCP client.</p>
+
+<p>Workflow is a multi-AI development platform: agents from different
+families (Claude, OpenAI, others) collaborate via this MCP and a durable
+shared brain to ship work through a cross-family consensus gate. The
+engine is domain-agnostic.</p>
+
+<h2>Connect via MCP client</h2>
+
+<p>Configure your client with this URL:</p>
+
+<ul>
+<li><strong>Claude</strong>: Settings → Connectors → Add custom connector
+    → URL: this page's URL</li>
+<li><strong>ChatGPT (Apps SDK)</strong>: Connector URL: this page's URL</li>
+<li><strong>Cursor</strong>: <code>settings.json</code> →
+    <code>mcpServers</code> → <code>workflow</code> → <code>url</code></li>
+<li><strong>Cowork</strong>: Connectors → URL: this page's URL</li>
+</ul>
+
+<p>Or with cURL (technical readers):</p>
+
+<pre>curl -X POST "$REQUEST_URL" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-03-26" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'</pre>
+
+<h2>Project</h2>
+<ul>
+<li><a href="/">Workflow landing page</a></li>
+<li><a href="https://github.com/Jonnyton/Workflow">GitHub repository</a></li>
+</ul>
+
+<footer>
+Workflow MCP Server &middot; Streamable HTTP transport (MCP spec) &middot; 2026
+</footer>
+</body>
+</html>
+"""
+
+
+def _wants_discovery_html(request) -> bool:  # type: ignore[no-untyped-def]
+    """Return True iff this is a browser-style GET that should see the
+    discovery HTML page rather than the MCP transport surface.
+
+    Keep narrow: GET only, Accept includes text/html, NO MCP-Protocol-Version
+    header (real MCP clients send that), Accept does NOT include
+    text/event-stream (real Streamable HTTP clients send that).
+    """
+    if request.method.upper() not in {"GET", "HEAD"}:
+        return False
+    if request.headers.get("mcp-protocol-version"):
+        return False
+    accept = request.headers.get("accept", "")
+    if "text/event-stream" in accept:
+        return False
+    return "text/html" in accept
+
+
+class _MCPDiscoveryMiddleware:
+    """Starlette middleware: serve discovery HTML on /mcp + /mcp-directory
+    GETs from browser-like clients; pass everything else through to the
+    FastMCP Streamable HTTP transport unchanged.
+    """
+
+    def __init__(self, app):  # type: ignore[no-untyped-def]
+        self.app = app
+
+    async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path not in {"/mcp", "/mcp/", "/mcp-directory", "/mcp-directory/"}:
+            await self.app(scope, receive, send)
+            return
+        # Build a Request-like view to inspect headers
+        from starlette.requests import Request
+
+        request = Request(scope, receive=receive)
+        if not _wants_discovery_html(request):
+            await self.app(scope, receive, send)
+            return
+        from starlette.responses import HTMLResponse
+
+        response = HTMLResponse(_MCP_DISCOVERY_HTML)
+        await response(scope, receive, send)
+
+
 def create_streamable_http_app() -> Starlette:
     """Create the production HTTP app with both MCP surfaces.
 
@@ -1120,6 +1222,10 @@ def create_streamable_http_app() -> Starlette:
     )
     app.state.path = "/mcp,/mcp-directory"
     app.state.transport_type = "streamable-http"
+    # Substrate-fix #11 / Family A Phase 1.A: serve discovery HTML to
+    # browser-style GETs on /mcp + /mcp-directory; pass MCP transport
+    # requests through unchanged.
+    app = _MCPDiscoveryMiddleware(app)
     return app
 
 

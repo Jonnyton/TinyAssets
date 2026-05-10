@@ -12,6 +12,7 @@ long as the guarded intents stay present.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from workflow.universe_server import mcp
 
@@ -41,14 +42,11 @@ def test_server_instructions_lead_with_workflow_builder_not_fiction() -> None:
     assert any(d in text for d in example_domains), (
         "server instructions should name at least one non-fiction example"
     )
-    # "NOT the exclusive use case" or similar negation of fiction-only
-    # framing. We look for either the explicit clause or "not just fiction"
-    # style wording.
-    assert (
-        "not the exclusive" in text
-        or "not just fiction" in text
-        or "benchmark" in text
-    ), "instructions must negate fiction-only framing"
+    # General-purpose framing must remain explicit even if the copy no longer
+    # phrases that as a negation of fantasy/fiction.
+    assert "domain-agnostic" in text, (
+        "instructions must explicitly frame Workflow as domain-agnostic"
+    )
 
 
 def test_server_instructions_point_to_control_station_prompt() -> None:
@@ -104,10 +102,11 @@ def test_wiki_tool_description_is_not_a_catchall() -> None:
     tool = next(t for t in _list_tools() if t.name == "wiki")
     text = tool.description or ""
     lower = text.lower()
+    compact = re.sub(r"\s+", " ", lower)
     # Scope negation — wiki is NOT for workflow structure / state.
     assert (
-        "not for workflow" in lower
-        or "save anything" in lower
+        "not for workflow" in compact
+        or "save anything" in compact
     )
     # Explicit routing guidance to `extensions`.
     assert "extensions" in lower
@@ -145,7 +144,12 @@ def test_control_station_prompt_carries_the_rules() -> None:
     text = _CONTROL_STATION_PROMPT.lower()
     # Broad framing.
     assert "workflow builder" in text or "workflow" in text
-    assert "benchmark" in text or "not the exclusive" in text or "fully general" in text
+    assert (
+        "benchmark" in text
+        or "not the exclusive" in text
+        or "fully general" in text
+        or "domain-agnostic" in text
+    )
     # Routing: extensions for workflow design, wiki for knowledge only.
     assert "extensions" in text
     assert "wiki" in text

@@ -1005,8 +1005,9 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
             result["pending_requests"] = len(pending)
 
     # Cross-surface hint — helps chatbots discover cross-domain work even
-    # when the active universe is themed (e.g. fantasy). The workspace is
-    # one container; goals, branches, and wiki span all domains.
+    # when the active universe is themed (e.g. a particular novel or
+    # standup tracker). The workspace is one container; goals, branches,
+    # and wiki span all domains.
     result["cross_surface_hint"] = {
         "note": (
             "This workspace is one container; cross-domain branches and Goals "

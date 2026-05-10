@@ -2157,11 +2157,25 @@ class DaemonController:
                 health = {}
             reason = str(health.get("idle_reason") or "continue")
             stopped = bool(health.get("stopped", False))
+            total_words = output.get("total_words", 0)
+            total_chapters = output.get("total_chapters", 0)
+            # Substrate-fix #12 Family A Phase 1.B: additive neutral fields
+            # alongside the legacy reason for first-observer legibility.
+            # The legacy `reason` field stays for back-compat; consumers can
+            # opt into reason_code / display_reason for domain-neutral text.
+            if stopped and not total_words and not total_chapters:
+                reason_code = "no_active_work"
+                display_reason = "idle_no_active_work"
+            else:
+                reason_code = reason
+                display_reason = reason
             self._combined_log(
                 "Universe cycle wrapper: completed "
                 f"(stopped={stopped}, reason={reason}, "
-                f"words={output.get('total_words', 0)}, "
-                f"chapters={output.get('total_chapters', 0)})"
+                f"reason_code={reason_code}, "
+                f"display_reason={display_reason}, "
+                f"words={total_words}, "
+                f"chapters={total_chapters})"
             )
 
         elif node_name == "reflect":

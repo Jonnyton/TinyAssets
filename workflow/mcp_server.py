@@ -23,12 +23,12 @@ from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 mcp = FastMCP(
-    "fantasy-author",
+    "workflow",
     instructions=(
         "Workflow daemon interface. Use these tools to monitor "
-        "and guide an autonomous fiction-writing daemon through notes. "
+        "and guide an autonomous workflow daemon through notes. "
         "Start with get_status to see the daemon's current phase, then "
-        "use get_progress for a human-readable summary of what's been written."
+        "use get_progress for a human-readable summary of what's been produced."
     ),
     version="0.1.0",
 )
