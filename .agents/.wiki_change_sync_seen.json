@@ -137,6 +137,7 @@
     "pages/patch-requests/pr-092-canary-stages-in-community-loop-watch-py-should-accept-workf.md",
     "pages/patch-requests/pr-093-goals-action-list-mixes-retracted-smoke-disposable-goals-wit.md",
     "pages/patch-requests/pr-094-extensions-action-list-branches-surfaces-35-unpublished-smok.md",
+    "pages/patch-requests/pr-095-statetoactionrepairrouter-emit-deterministic-next-action-own.md",
     "pages/plans/chatbot-builder-behaviors.md",
     "pages/plans/composition-patterns.md",
     "pages/plans/design-validate-branch-collision-admission-test.md",
