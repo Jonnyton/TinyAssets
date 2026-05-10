@@ -175,6 +175,8 @@ class ReadinessResult:
     number: int
     state: str
     next_action: str
+    next_action_owner: str
+    next_action_payload: dict[str, Any]
     risk_class: str
     merge_executor_state: str
     reasons: tuple[str, ...]
@@ -184,6 +186,8 @@ class ReadinessResult:
             "number": self.number,
             "state": self.state,
             "next_action": self.next_action,
+            "next_action_owner": self.next_action_owner,
+            "next_action_payload": self.next_action_payload,
             "risk_class": self.risk_class,
             "merge_executor_state": self.merge_executor_state,
             "reasons": list(self.reasons),
@@ -537,14 +541,49 @@ def _result(
     merge_executor_state: str,
     reasons: list[str],
 ) -> ReadinessResult:
+    next_action_owner = _next_action_owner_for_state(state)
+    next_action_payload = _next_action_payload_for_state(state, reasons)
     return ReadinessResult(
         number=facts.number,
         state=state,
         next_action=next_action,
+        next_action_owner=next_action_owner,
+        next_action_payload=next_action_payload,
         risk_class=risk_class,
         merge_executor_state=merge_executor_state,
         reasons=tuple(reasons),
     )
+
+
+def _next_action_owner_for_state(state: str) -> str:
+    if state in {"not_open", "merge_executor_ready"}:
+        return "none"
+    if state in {"routing_anomaly", "needs_loop_labels"}:
+        return "loop_routing_repair_required"
+    if state in {
+        "blocked_precheck",
+        "blocked_merge_state",
+        "send_back_amend",
+        "needs_green_checks",
+    }:
+        return "writer_repair_required"
+    if state.startswith("needs_independent_") and state.endswith("_checker"):
+        return "independent_checker_required"
+    if state.startswith("needs_") and state.endswith("_checker"):
+        return "checker_required"
+    if state == "consensus_mirror_self_clearance_canary":
+        return "policy_canary_review_required"
+    if state == "needs_host_key":
+        return "host_key_required"
+    if state == "needs_check_evidence":
+        return "check_evidence_required"
+    return "manual_triage_required"
+
+
+def _next_action_payload_for_state(state: str, reasons: list[str]) -> dict[str, Any]:
+    if state == "send_back_amend":
+        return {"blocking_findings": list(reasons)}
+    return {}
 
 
 def _read_input(path: str | None) -> list[dict[str, Any]]:

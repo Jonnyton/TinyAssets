@@ -154,6 +154,10 @@ def test_structured_checker_send_back_blocks_routing():
 
     assert result.state == "send_back_amend"
     assert result.next_action == "amend or regenerate before checker review"
+    assert result.next_action_owner == "writer_repair_required"
+    assert result.next_action_payload == {
+        "blocking_findings": ["consensus or advisory says send-back/amend"],
+    }
 
 
 def test_consensus_send_back_advisory_blocks_checker_routing():
@@ -290,4 +294,9 @@ def test_classify_many_counts_states():
         "blocked_precheck": 1,
         "needs_claude_checker": 1,
         "send_back_amend": 1,
+    }
+    send_back_item = next(item for item in payload["items"] if item["state"] == "send_back_amend")
+    assert send_back_item["next_action_owner"] == "writer_repair_required"
+    assert send_back_item["next_action_payload"] == {
+        "blocking_findings": ["consensus or advisory says send-back/amend"],
     }
