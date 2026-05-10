@@ -594,34 +594,10 @@ def extensions(
     Behavioral rules live in `control_station`, `extension_guide`, and
     `branch_design_guide`; this description is the I/O contract.
 
-    Main actions: build_branch, patch_branch, describe_branch, get_branch,
-    list_branches, run_branch, get_run, list_runs, stream_run, cancel_run,
-    get_run_output, attach_existing_child_run, wait_for_run, resume_run,
-    judge_run, compare_runs, schedule_branch, publish_version,
-    validate_ship_packet, and open_auto_ship_pr.
-
-    Action groups:
-    - Registry: register, list, inspect, approve, disable, enable, remove.
-    - Branch atomic: create_branch, list_branches, get_branch,
-      describe_branch, delete_branch, add_node, connect_nodes,
-      set_entry_point, add_state_field, validate_branch, build_branch,
-      patch_branch, patch_nodes, update_node, rollback_node,
-      suggest_node_edit, search_nodes.
-    - Runs: run_branch, list_runs, get_run, get_run_output, stream_run,
-      wait_for_run, cancel_run, resume_run, query_runs, compare_runs,
-      estimate_run_cost, get_node_output, attach_existing_child_run,
-      get_routing_evidence, get_memory_scope_status.
-    - Judgments: judge_run, list_judgments.
-    - Versions: publish_version, list_branch_versions, get_branch_version,
-      run_branch_version, rollback_merge, get_rollback_history,
-      list_node_versions.
-    - Project memory: project_memory_get, project_memory_set,
-      project_memory_list.
-    - Scheduler: schedule_branch, unschedule_branch, subscribe_branch,
-      unsubscribe_branch, list_schedules, list_scheduler_subscriptions.
-    - Provenance: fork_tree.
-
-    Args: pass `action` plus the matching ids or JSON payload fields.
+    Core actions include build_branch, patch_branch, list_branches,
+    describe_branch, get_branch, run_branch, get_run, wait_for_run,
+    judge_run, publish_version, schedule_branch, fork_tree, and search_nodes.
+    Pass `action` plus the matching ids or JSON payload fields.
     """
     return _extensions_impl(
         action=action,
