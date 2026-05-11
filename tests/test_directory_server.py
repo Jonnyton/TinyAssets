@@ -148,6 +148,16 @@ def test_directory_read_page_schema_advertises_changed_since() -> None:
     assert "changed_since" not in tool.parameters.get("required", [])
 
 
+def test_directory_contract_keeps_rendering_as_graph_composition() -> None:
+    """PR-113: page rendering is a graph composition, not a read.page mode."""
+
+    tools = {tool.name: tool for tool in _list_tools()}
+
+    assert "source pages" in tools["read.page"].description
+    assert "not a renderer" in tools["read.page"].description
+    assert "page-derived rendering branches" in tools["run.graph"].description
+
+
 def test_directory_status_redacts_operator_diagnostics() -> None:
     redacted = _redact_directory_status({
         "active_host": {

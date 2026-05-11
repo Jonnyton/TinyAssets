@@ -305,7 +305,7 @@ def run_graph(
     graph_id: str = "",
     recursion_limit_override: int = 0,
 ) -> str:
-    """Run a Workflow graph branch.
+    """Run a Workflow graph branch, including page-derived rendering branches.
 
     Args:
         branch_def_id: Branch definition identifier to run.
@@ -347,7 +347,7 @@ def read_page(
     changed_since: str = "",
     max_results: int = 10,
 ) -> str:
-    """Read or search Workflow wiki pages.
+    """Read or search source pages; not a renderer.
 
     Args:
         page: Optional wiki page slug or path. Empty searches by query.
