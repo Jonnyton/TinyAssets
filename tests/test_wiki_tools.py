@@ -751,7 +751,11 @@ class TestWikiMCPRegistration:
         wiki_tool = next(t for t in tools if t.name == "wiki")
         properties = wiki_tool.parameters["properties"]
 
-        assert properties["kind"] == {"default": "bug", "type": "string"}
+        assert properties["kind"] == {
+            "default": "bug",
+            "enum": ["bug", "patch_request", "feature", "design"],
+            "type": "string",
+        }
         assert "kind" not in wiki_tool.parameters["required"]
 
     def test_wiki_since_changed_since_field_is_in_mcp_schema(self):

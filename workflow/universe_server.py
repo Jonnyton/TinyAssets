@@ -31,6 +31,7 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
 from inspect import signature
+from typing import Literal
 
 import uvicorn
 from fastmcp import FastMCP
@@ -940,7 +941,7 @@ def wiki(
     observed: str = "",
     expected: str = "",
     workaround: str = "",
-    kind: str = "bug",
+    kind: Literal["bug", "patch_request", "feature", "design"] = "bug",
     tags: str = "",
     force_new: bool = False,
     bug_id: str = "",
