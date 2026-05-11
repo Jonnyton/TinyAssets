@@ -35,7 +35,21 @@ strings.
 
 ## 2. Commit author format — recommendation
 
-**Take option 3 (GitHub-style noreply composite). Format:**
+**Updated by PR-100 v0 (2026-05-11):** take a tiered author format.
+When a request has a linked GitHub identity, emit GitHub's public
+noreply author form:
+
+```
+{login} <{github_user_id}+{login}@users.noreply.github.com>
+```
+
+This is the only v0 path intended to produce real GitHub contribution-graph
+credit for user-chatbot-filed patches. It requires both
+`WORKFLOW_GITHUB_AUTHOR_LOGIN` and `WORKFLOW_GITHUB_AUTHOR_ID`; incomplete
+or invalid linked identity falls through instead of guessing.
+
+When no linked GitHub identity is present, keep the original synthetic
+Workflow-local fallback:
 
 ```
 Workflow User <{slug}@users.noreply.workflow.local>
@@ -48,27 +62,25 @@ to `anonymous` when the actor is empty, "anonymous", or unsafe.
 
 | Actor | Commit author |
 |-------|---------------|
+| linked `alice` + GitHub id `123456` | `alice <123456+alice@users.noreply.github.com>` |
 | `alice` (env var) | `Workflow User <alice@users.noreply.workflow.local>` |
 | `"Alice Smith"` | `Workflow User <alice-smith@users.noreply.workflow.local>` |
 | (empty / unset) | `Workflow User <anonymous@users.noreply.workflow.local>` |
 | `"anonymous"` | `Workflow User <anonymous@users.noreply.workflow.local>` |
 
-**Why this over options 1 and 2:**
+**Why this tier over options 1 and 2:**
 
 - **Always well-formed.** `git commit --author=` is picky about
   `Name <email>` shape; opaque free-form actor strings (option 2
   literal) can fail silently or produce junk. Wrapping in a fixed
   template eliminates a whole failure mode.
-- **Preserves attribution.** Unlike option 1 (single daemon
-  identity), `git log --author=alice` still works and `git blame`
-  still tells the truth about who did what.
+- **Preserves attribution.** Unlike option 1 (single daemon identity),
+  linked users receive GitHub-recognized authorship, and unlinked users
+  still produce searchable synthetic authorship.
 - **Never claims GitHub identity it can't prove.** The
-  `users.noreply.workflow.local` TLD cannot resolve and cannot be a
-  real GitHub account. On public repos this is important — we
-  don't want the daemon to accidentally emit `alice@example.com`
-  and attribute a commit to someone who hasn't authorized it. If
-  a user wants their real GitHub identity on commits, they pass it
-  via the explicit config knob (§5).
+  `users.noreply.github.com` path only activates with both login and
+  numeric GitHub user id. The synthetic `users.noreply.workflow.local`
+  fallback cannot resolve and cannot be a real GitHub account.
 
 **Non-email display name** ("Workflow User") is deliberate: it
 makes "this commit came from the Workflow daemon on behalf of an
@@ -76,9 +88,11 @@ actor" legible in `git log --oneline`'s author column without the
 user having to read the email. The daemon is a participating
 author; the actor is encoded in the email local part.
 
-**Escape hatch for users who want full GitHub attribution:**
-`WORKFLOW_GIT_AUTHOR` env var (§5) overrides the composite format
-entirely and accepts a raw `"Alice <alice@real.email>"` string.
+**Escape hatch for users who want a raw author string:**
+`WORKFLOW_GIT_AUTHOR` env var (§5) overrides the synthetic composite
+format and accepts a raw `"Alice <alice@real.email>"` string. Request-linked
+GitHub author env wins over this host/process override so a chatbot-filed
+patch can credit the requesting user instead of the host.
 
 ## 3. Anonymous / session-less fallback
 
