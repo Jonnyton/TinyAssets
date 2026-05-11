@@ -74,6 +74,49 @@ Depth: lead memory `project_user_capability_axis.md`; host matrix `docs/design-n
 
 ---
 
+## Canonical Work Substrate Vocabulary
+
+**Status: canonical as of 2026-05-10.** Workflow's foundational substrate
+vocabulary is six work concepts plus five permissioned MCP handles. Coding
+sessions should use this vocabulary when naming architecture, docs, tool
+metadata, and future design notes unless a narrower domain term is explicitly
+needed.
+
+The six base concepts describe durable work at the graph layer:
+
+| Concept | Meaning |
+|---|---|
+| `Node` | A typed unit of work, judgment, transformation, or evidence capture. |
+| `Edge` | A declared transition between nodes, including conditional routing and review paths. |
+| `State` | The durable typed record a graph reads, writes, reduces, checkpoints, and resumes. |
+| `Scope` | The authority and context boundary for a work item: user, branch, goal, daemon, host, commons, or other bounded surface. |
+| `Run` | An execution attempt with inputs, outputs, provider traces, checkpoints, and evidence. |
+| `Trigger` | The event or schedule that asks Workflow to start, resume, replay, or route work. |
+
+The five MCP handles describe the small permissioned control surface agents use
+to inspect and act on those concepts:
+
+| Handle | Authority |
+|---|---|
+| `read.graph` | Inspect graph structure, state summaries, lineage, runs, and public metadata. |
+| `write.graph` | Propose or mutate graph definitions, state, scopes, edges, and work artifacts under the caller's authority. |
+| `run.graph` | Start, resume, cancel, replay, or otherwise control graph execution within the caller's scope and confirmation policy. |
+| `read.page` | Read wiki, commons, docs, request, and explanation pages that contextualize the graph. |
+| `write.page` | Draft or update wiki, commons, docs, request, and explanation pages through the same reviewable artifact path. |
+
+These names are substrate vocabulary, not a mandate that every runtime function
+or MCP tool be named exactly this way. Concrete tool names may remain
+client-shaped for compatibility, but they should map back to one or more of
+these handles in docs, permission checks, and tool descriptions. The older
+8-engine-primitive framing in
+`docs/design-notes/2026-04-26-engine-primitive-substrate.md` remains a useful
+historical pressure test over implementation modules; it is no longer the
+canonical primitive count for project architecture. The canonical source for
+the promotion rationale is
+`docs/design-notes/proposed/2026-05-10-promote-work-substrate-vocabulary.md`.
+
+---
+
 ## Cross-Cutting Principles
 
 **Agentic hybrid search is memory.** Durable memory is a policy over multiple stores (KG traversal, vector similarity, hierarchical summaries, notes, world-state, direct tool calls). No single backend owns truth. Routing matters more than any one store.

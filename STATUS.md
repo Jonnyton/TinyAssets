@@ -47,5 +47,5 @@ Run `python scripts/claim_check.py --provider <name>` before claiming. Claim by 
 1. **Current uptime priority 2026-05-02 22:10Z:** Community patch loop ALIVE end-to-end. Substrate stack PASS: FEAT-004 trigger receipts + FEAT-006 provider diagnostics + BUG-009 dispatcher pickup + #205 claim-grace + BUG-045A child spawn. First successful end-to-end run BUG-050 (parent dee755 + child 1cdbd3) at 21:55-21:59. Bottleneck moved from substrate to loop-content (BUG-051: stale caution language in coding_packet/release_gate prompts) + auto-ship policy authoring (PR #198 spec). PR #198 + #206 are design-only, ready to land.
 
 2. **Five Scoping Rules now in PLAN.md** (2026-04-28): minimal-primitives / community-build-over-platform / privacy-via-community-composition / commons-first-architecture / user-capability-axis. Cross-provider source. Depth in lead memory.
-3. **Decision pile awaiting host:** primitive-set §7 + engine substrate §7 + Tomas + A.1 unpack §7 + Phase 6 db rename + parked Q D.
+3. **Decision pile awaiting host:** Tomas + A.1 unpack §7 + Phase 6 db rename + parked Q D.
 4. **No-shims-ever**, platform responsibility model, and public-surface probes after DNS/tunnel/Worker/connector changes are active.
