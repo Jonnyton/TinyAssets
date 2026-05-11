@@ -962,8 +962,12 @@ def wiki(
     the wiki before filing. Before filing, check current repo/PLAN.md
     context via `community_change_context` or direct repo browsing; the
     source repo is https://github.com/Jonnyton/Workflow and PLAN.md is
-    canonical design/scoping truth. If a similar filing exists,
-    it returns status="similar_found" with the existing match.
+    canonical design/scoping truth. If the filing proposes a new MCP action,
+    primitive, tool, or convenience wrapper, include a composition proof:
+    show why it cannot be composed from the 5+2 tool primitives, the E1-E8
+    engine substrate, and the wiki `composition-patterns` catalog. If a
+    similar filing exists, it returns status="similar_found" with the
+    existing match.
 
     Args:
         action: One of — reads: read, search, since, list, lint;

@@ -128,6 +128,22 @@ def test_wiki_tool_description_nudges_plan_check_before_filing() -> None:
     assert "community_change_context" in text
 
 
+def test_wiki_tool_description_requires_primitive_composition_check() -> None:
+    """WIKI-PATCH PR-104: proposed new actions/primitives must show they
+    cannot be composed from the existing minimal primitive surfaces.
+    """
+    tool = next(t for t in _list_tools() if t.name == "wiki")
+    text = tool.description or ""
+    lower = text.lower()
+
+    assert "new mcp action" in lower
+    assert "primitive" in lower
+    assert "composition proof" in lower
+    assert "5+2" in text
+    assert "e1-e8" in lower
+    assert "composition-patterns" in lower
+
+
 def test_universe_tool_description_is_general_not_fiction_only() -> None:
     """#28 post-4ef0769 (universe docstring trimmed to ≤6 lines + Args):
     the multi-domain example list moved to control_station prompt (which
@@ -218,6 +234,24 @@ def test_control_station_tells_chatbots_to_check_repo_plan_before_filing() -> No
     assert "community_change_context" in text
     assert "daemon mini-brain" in lower
     assert re.search(r"not a mirror of the rest of the\s+repository", lower)
+
+
+def test_control_station_requires_primitive_composition_check_before_filing() -> None:
+    """WIKI-PATCH PR-104: filing guidance should reject convenience
+    primitives unless the chatbot records a failed composition attempt.
+    """
+    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+
+    text = _CONTROL_STATION_PROMPT
+    lower = text.lower()
+
+    assert "new mcp action" in lower
+    assert "new primitive" in lower
+    assert "composition proof" in lower
+    assert "5+2" in text
+    assert "e1-e8" in lower
+    assert "composition-patterns" in lower
+    assert "competent chatbot" in lower
 
 
 def test_extension_guide_prompt_points_to_control_station() -> None:

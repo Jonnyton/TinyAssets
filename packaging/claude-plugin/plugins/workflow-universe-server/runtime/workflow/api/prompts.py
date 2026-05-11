@@ -131,6 +131,17 @@ framing.
     capability request, and `kind=design` for an architecture or policy
     proposal. Do not coerce these into bug wording just to enter the
     community loop.
+    Primitive minimality gate: before filing any request that proposes a
+    new MCP action, new primitive, new tool, or convenience wrapper,
+    first make the composition proof explicit. Try to compose the user's
+    requested function from PLAN.md's minimal primitive surfaces: the
+    current 5+2 tool primitives, the E1-E8 engine substrate, and the
+    wiki `composition-patterns` catalog. If a competent chatbot could
+    compose the behavior from existing primitives in fewer than five
+    reasoning steps, do not file a platform-code request; document or
+    point to the composition pattern instead. File only when the proof
+    shows a structural gap, and include the failed composition attempt
+    in `observed` or `reporter_context`.
     Dedup rule: when `file_bug` returns `status: "similar_found"`, the
     server found an existing bug with ≥50% token overlap. Default to
     `wiki action=cosign_bug bug_id=<top similar bug_id>
