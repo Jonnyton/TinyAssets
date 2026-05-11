@@ -26,6 +26,14 @@ TOKEN_ENV_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _AUTO_CHANGE_BRANCH_RE = re.compile(r"^auto-change/[A-Za-z0-9._/-]+$")
+_AMBIENT_ONLY_PR_PATHS = frozenset(
+    {
+        ".agents/activity.log",
+        ".agents/worktrees.md",
+        "REFLECTION.md",
+        "STATUS.md",
+    }
+)
 
 JsonPost = Callable[[str, str, dict[str, Any]], tuple[int, dict[str, Any]]]
 JsonGet = Callable[[str, str], tuple[int, dict[str, Any]]]
@@ -197,6 +205,28 @@ def _head_is_current_with_base(compare: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         return False
     return behind_by == 0 and status in {"ahead", "identical"}
+
+
+def _ambient_only_changed_paths(compare: dict[str, Any]) -> list[str]:
+    files = compare.get("files")
+    if not isinstance(files, list) or not files:
+        return []
+
+    changed_paths: list[str] = []
+    for item in files:
+        if not isinstance(item, dict):
+            return []
+        filename = str(item.get("filename") or "").strip()
+        previous_filename = str(item.get("previous_filename") or "").strip()
+        if not filename:
+            return []
+        changed_paths.append(filename)
+        if previous_filename:
+            changed_paths.append(previous_filename)
+
+    if changed_paths and all(path in _AMBIENT_ONLY_PR_PATHS for path in changed_paths):
+        return sorted(set(changed_paths))
+    return []
 
 
 def open_auto_ship_pr(
@@ -413,6 +443,34 @@ def open_auto_ship_pr(
         result["base_branch"] = base
         result["compare_status"] = status_text
         result["behind_by"] = behind_by
+        return result
+
+    ambient_paths = _ambient_only_changed_paths(compare_response)
+    if ambient_paths:
+        msg = (
+            "auto-change branch changes only coordination/ambient-status files "
+            f"({', '.join(ambient_paths)}); write this state to the brain/coordination "
+            "surface instead of opening a patch PR."
+        )
+        ledger_error = _mark_attempt(
+            universe_path,
+            attempt_id,
+            ship_status="blocked",
+            error_class="pr_create_non_patch_content",
+            error_message=msg,
+        )
+        result = _error_result(
+            ship_attempt_id=attempt_id,
+            ship_status="blocked",
+            error_class="pr_create_non_patch_content",
+            error_message=msg,
+            would_open_pr=True,
+            dry_run=False,
+            ledger_error=ledger_error,
+        )
+        result["head_branch"] = head
+        result["base_branch"] = base
+        result["changed_paths"] = ambient_paths
         return result
 
     pr_title = title.strip() or f"[auto-change] {attempt.request_id or attempt_id}"

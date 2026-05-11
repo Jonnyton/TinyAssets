@@ -278,6 +278,86 @@ def test_enabled_rejects_stale_head_before_pr_creation(tmp_path):
     assert row.error_class == "pr_create_stale_head"
 
 
+def test_enabled_rejects_ambient_inventory_only_branch(tmp_path):
+    attempt_id = _record(tmp_path)
+    calls = []
+
+    def fake_get(url, token):
+        calls.append(("get", url, token))
+        return 200, {
+            "status": "ahead",
+            "behind_by": 0,
+            "files": [{"filename": ".agents/worktrees.md"}],
+        }
+
+    def should_not_post(url, token, payload):  # pragma: no cover - failure path
+        raise AssertionError("ambient-only branches must not create PRs")
+
+    result = open_auto_ship_pr(
+        universe_path=tmp_path,
+        ship_attempt_id=attempt_id,
+        head_branch="auto-change/issue-999-codex-123",
+        title="[auto-change] BUG-999",
+        create_enabled=True,
+        token="gh-token",
+        get_json=fake_get,
+        post_json=should_not_post,
+    )
+
+    assert result["ship_status"] == "blocked"
+    assert result["error_class"] == "pr_create_non_patch_content"
+    assert result["changed_paths"] == [".agents/worktrees.md"]
+    assert "brain/coordination surface" in result["error_message"]
+    assert calls == [(
+        "get",
+        "https://api.github.com/repos/Jonnyton/Workflow/compare/main...auto-change%2Fissue-999-codex-123",
+        "gh-token",
+    )]
+    row = find_attempt(tmp_path, attempt_id)
+    assert row is not None
+    assert row.ship_status == "blocked"
+    assert row.error_class == "pr_create_non_patch_content"
+
+
+def test_enabled_allows_ambient_file_when_branch_has_patch_content(tmp_path):
+    attempt_id = _record(tmp_path)
+    calls = []
+
+    def fake_get(url, token):
+        calls.append(("get", url, token))
+        return 200, {
+            "status": "ahead",
+            "behind_by": 0,
+            "files": [
+                {"filename": ".agents/worktrees.md"},
+                {"filename": "workflow/auto_ship_pr.py"},
+            ],
+        }
+
+    def fake_post(url, token, payload):
+        calls.append(("post", url, token, payload))
+        return 201, {
+            "html_url": "https://github.com/Jonnyton/Workflow/pull/999",
+            "number": 999,
+            "head": {"sha": "abc123"},
+        }
+
+    result = open_auto_ship_pr(
+        universe_path=tmp_path,
+        ship_attempt_id=attempt_id,
+        head_branch="auto-change/issue-999-codex-123",
+        title="[auto-change] BUG-999",
+        create_enabled=True,
+        token="gh-token",
+        get_json=fake_get,
+        post_json=fake_post,
+    )
+
+    assert result["ship_status"] == "opened"
+    assert result["pr_url"] == "https://github.com/Jonnyton/Workflow/pull/999"
+    assert [call[0] for call in calls] == ["get", "post"]
+
+
 def test_blocked_attempt_is_not_eligible_for_pr_creation(tmp_path):
     attempt_id = _record(
         tmp_path,
