@@ -567,7 +567,9 @@ the process was launched from.
 | `UNIVERSE_SERVER_HOST_USER` | Host-identity username used when a request is claimed by the box running the daemon (as opposed to an individual operator). | `host`. |
 | `UNIVERSE_SERVER_AUTH` | Auth mode. `"true"` / `"1"` enables OAuth-gated MCP. Disabled by default for single-operator dev. | `false`. |
 | `UNIVERSE_SERVER_PORT` | Port used by `workflow.auth.wellknown` when emitting OAuth metadata URLs. | `8001`. |
-| `WORKFLOW_GIT_AUTHOR` | Verbatim override for git commit author (e.g. `"Workflow User <user@users.noreply.workflow.local>"`). Highest precedence; falls through to `UNIVERSE_SERVER_USER`-derived synthetic. | Unset (synthetic from `UNIVERSE_SERVER_USER`). |
+| `WORKFLOW_GITHUB_AUTHOR_LOGIN` + `WORKFLOW_GITHUB_AUTHOR_ID` | Request-linked GitHub identity for commit authorship. When both are valid, emits `<id>+<login>@users.noreply.github.com` so user-chatbot-filed patches can receive GitHub contribution-graph credit instead of the host/bot. | Unset. |
+| `WORKFLOW_GIT_AUTHOR` | Verbatim override for git commit author (e.g. `"Workflow User <user@users.noreply.workflow.local>"`). Used when no request-linked GitHub author is present. | Unset. |
+| `WORKFLOW_GITHUB_USERNAME` + `WORKFLOW_GITHUB_USER_ID` | Process-default GitHub identity for local/dev runs, using GitHub noreply author format. Lower precedence than `WORKFLOW_GIT_AUTHOR`; higher than synthetic `UNIVERSE_SERVER_USER`. | Unset. |
 
 ### Feature flags
 

@@ -3,6 +3,8 @@
 Covers the narrow v1 contract in :mod:`workflow.identity`:
 
 - ``WORKFLOW_GIT_AUTHOR`` env var overrides everything (verbatim).
+- linked GitHub env vars can emit the GitHub noreply format for real
+  contribution-graph credit.
 - Otherwise ``actor`` arg or ``UNIVERSE_SERVER_USER`` → slugged
   ``Workflow User <slug@users.noreply.workflow.local>``.
 - Empty/None/invalid slug → ``anonymous``.
@@ -25,6 +27,10 @@ _DISPLAY = "Workflow User"
 def _clean_identity_env(monkeypatch: pytest.MonkeyPatch):
     """Every test starts without Workflow identity env vars set."""
     monkeypatch.delenv("WORKFLOW_GIT_AUTHOR", raising=False)
+    monkeypatch.delenv("WORKFLOW_GITHUB_AUTHOR_LOGIN", raising=False)
+    monkeypatch.delenv("WORKFLOW_GITHUB_AUTHOR_ID", raising=False)
+    monkeypatch.delenv("WORKFLOW_GITHUB_USERNAME", raising=False)
+    monkeypatch.delenv("WORKFLOW_GITHUB_USER_ID", raising=False)
     monkeypatch.delenv("UNIVERSE_SERVER_USER", raising=False)
     yield
 
@@ -54,6 +60,38 @@ def test_workflow_git_author_env_is_verbatim(monkeypatch):
     )
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "would-be-ignored")
     assert git_author() == "Alice Real <alice@example.com>"
+
+
+def test_request_linked_github_author_uses_noreply_credit_email(monkeypatch):
+    monkeypatch.setenv("WORKFLOW_GITHUB_AUTHOR_LOGIN", "alice")
+    monkeypatch.setenv("WORKFLOW_GITHUB_AUTHOR_ID", "123456")
+    monkeypatch.setenv("WORKFLOW_GIT_AUTHOR", "Host <host@example.com>")
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
+
+    assert git_author() == "alice <123456+alice@users.noreply.github.com>"
+
+
+def test_process_github_author_uses_noreply_when_no_request_author(monkeypatch):
+    monkeypatch.setenv("WORKFLOW_GITHUB_USERNAME", "Bob-Dev")
+    monkeypatch.setenv("WORKFLOW_GITHUB_USER_ID", "987654")
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
+
+    assert git_author() == "Bob-Dev <987654+Bob-Dev@users.noreply.github.com>"
+
+
+def test_invalid_request_linked_github_author_falls_through(monkeypatch):
+    monkeypatch.setenv("WORKFLOW_GITHUB_AUTHOR_LOGIN", "-alice")
+    monkeypatch.setenv("WORKFLOW_GITHUB_AUTHOR_ID", "123456")
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "fallback-user")
+
+    assert git_author() == f"{_DISPLAY} <fallback-user@{_DOMAIN}>"
+
+
+def test_incomplete_request_linked_github_author_falls_through(monkeypatch):
+    monkeypatch.setenv("WORKFLOW_GITHUB_AUTHOR_LOGIN", "alice")
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "fallback-user")
+
+    assert git_author() == f"{_DISPLAY} <fallback-user@{_DOMAIN}>"
 
 
 def test_workflow_git_author_env_strips_surrounding_whitespace(monkeypatch):
