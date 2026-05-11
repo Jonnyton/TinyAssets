@@ -232,6 +232,48 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
         })
         augmented["violations"] = violations
         augmented["ledger_error"] = ledger_error
+        return json.dumps(augmented)
+
+    if (
+        decision.get("validation_result") == "passed"
+        and decision.get("would_open_pr") is True
+        and ship_attempt_id
+    ):
+        try:
+            from workflow.auto_ship_pr import open_auto_ship_pr, pr_create_enabled
+        except Exception as exc:  # noqa: BLE001
+            augmented["pr_create_error_class"] = type(exc).__name__
+            augmented["pr_create_error_message"] = (
+                f"auto-ship PR helper import failed: {exc}"
+            )
+            return json.dumps(augmented)
+
+        if pr_create_enabled():
+            head_branch = str(kwargs.get("head_branch") or "").strip()
+            universe_path, error = _resolve_universe_path(
+                str(kwargs.get("universe_id") or "")
+            )
+            if error:
+                augmented["pr_create_error_class"] = "universe_resolve_failed"
+                augmented["pr_create_error_message"] = error
+                return json.dumps(augmented)
+
+            try:
+                pr_result = open_auto_ship_pr(
+                    universe_path=universe_path,
+                    ship_attempt_id=ship_attempt_id,
+                    head_branch=head_branch,
+                    title=str(kwargs.get("title") or ""),
+                    body=str(kwargs.get("body") or ""),
+                    base_branch=str(kwargs.get("base_branch") or "main"),
+                )
+            except Exception as exc:  # noqa: BLE001 - keep MCP response JSON
+                augmented["pr_create_error_class"] = type(exc).__name__
+                augmented["pr_create_error_message"] = (
+                    f"open_auto_ship_pr raised: {exc}"
+                )
+                return json.dumps(augmented)
+            return json.dumps(pr_result)
     return json.dumps(augmented)
 
 

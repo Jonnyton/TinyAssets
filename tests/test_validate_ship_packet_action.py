@@ -280,6 +280,94 @@ class TestDispatchIntegration:
         assert row is not None
         assert row.error_class == "pr_create_disabled"
 
+    def test_validate_ship_packet_opens_pr_when_enabled_after_ledger_record(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression for BUG-078: Loop B's validator action should bridge
+        directly into PR creation once validation passed and the ledger row
+        exists, matching Loop A's auto-change PR behavior.
+        """
+        from workflow.auto_ship_ledger import find_attempt
+        from workflow.auto_ship_pr import PR_CREATE_FLAG
+
+        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "ship-uni")
+        monkeypatch.setenv(PR_CREATE_FLAG, "1")
+        monkeypatch.setenv("GH_TOKEN", "gh-token")
+        universe = tmp_path / "ship-uni"
+        universe.mkdir(parents=True, exist_ok=True)
+
+        calls = []
+
+        def fake_get(url, token):
+            calls.append(("get", url, token))
+            return 200, {"status": "ahead", "behind_by": 0}
+
+        def fake_post(url, token, payload):
+            calls.append(("post", url, token, payload))
+            return 201, {
+                "html_url": "https://github.com/Jonnyton/Workflow/pull/780",
+                "number": 780,
+                "head": {"sha": "abc780"},
+            }
+
+        monkeypatch.setattr("workflow.auto_ship_pr._get_github_json", fake_get)
+        monkeypatch.setattr("workflow.auto_ship_pr._post_github_json", fake_post)
+        packet = {
+            "release_gate_result": "APPROVE_AUTO_SHIP",
+            "ship_class": "docs_canary",
+            "child_keep_reject_decision": "KEEP",
+            "coding_packet": {"status": "KEEP_READY"},
+            "child_score": 9.5,
+            "risk_level": "low",
+            "blocked_execution_record": {},
+            "stable_evidence_handle": "child_run:b:r",
+            "automation_claim_status": "child_attached_with_handle",
+            "rollback_plan": "Revert commit <sha>",
+            "changed_paths": ["docs/autoship-canaries/bug-078.md"],
+            "diff": "+ x\n",
+        }
+
+        result = json.loads(_extensions_impl(
+            action="validate_ship_packet",
+            body_json=json.dumps(packet),
+            record_in_ledger=True,
+            universe_id="ship-uni",
+            request_id="BUG-078",
+            parent_run_id="parent-run",
+            child_run_id="child-run",
+            branch_def_id="change_loop_v1",
+            head_branch="auto-change/issue-771-codex-25647817292",
+            title="[auto-change] BUG-078",
+            pr_body="Auto-ship BUG-078",
+        ))
+
+        assert result["ship_status"] == "opened"
+        assert result["validation_result"] == "passed"
+        assert result["would_open_pr"] is True
+        assert result["dry_run"] is False
+        assert result["pr_url"] == "https://github.com/Jonnyton/Workflow/pull/780"
+        assert result["commit_sha"] == "abc780"
+        assert calls[0][0] == "get"
+        assert calls[1] == (
+            "post",
+            "https://api.github.com/repos/Jonnyton/Workflow/pulls",
+            "gh-token",
+            {
+                "title": "[auto-change] BUG-078",
+                "head": "auto-change/issue-771-codex-25647817292",
+                "base": "main",
+                "body": "Auto-ship BUG-078",
+                "draft": False,
+            },
+        )
+        row = find_attempt(universe, result["ship_attempt_id"])
+        assert row is not None
+        assert row.ship_status == "opened"
+        assert row.pr_url == "https://github.com/Jonnyton/Workflow/pull/780"
+
 
 # ── Wrapper resilience ─────────────────────────────────────────────────────
 
