@@ -163,6 +163,47 @@ def test_patch_nodes_coerces_string_display_name(us_env):
     assert _node(us, bid, "tag")["display_name"] == "renamed"
 
 
+def test_patch_nodes_sets_metadata_from_json_object(us_env):
+    us, _ = us_env
+    bid = _build_three_node_branch(us)
+    result = json.loads(us.extensions(
+        action="patch_nodes", branch_def_id=bid,
+        field="metadata", value=json.dumps({
+            "annotation": "needs cite check",
+            "owner": "research",
+        }),
+        node_ids="capture,tag",
+    ))
+
+    assert result["status"] == "patched"
+    assert result["value"] == {
+        "annotation": "needs cite check",
+        "owner": "research",
+    }
+    assert _node(us, bid, "capture")["metadata"] == {
+        "annotation": "needs cite check",
+        "owner": "research",
+    }
+    assert _node(us, bid, "tag")["metadata"] == {
+        "annotation": "needs cite check",
+        "owner": "research",
+    }
+    assert _node(us, bid, "archive")["metadata"] == {}
+
+
+def test_patch_nodes_rejects_non_object_metadata(us_env):
+    us, _ = us_env
+    bid = _build_three_node_branch(us)
+    result = json.loads(us.extensions(
+        action="patch_nodes", branch_def_id=bid,
+        field="metadata", value="not-json",
+        node_ids="capture",
+    ))
+
+    assert result["status"] == "rejected"
+    assert "metadata" in result["error"].lower()
+
+
 # ─── atomicity + rejections ──────────────────────────────────────────────
 
 

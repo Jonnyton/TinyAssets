@@ -1178,6 +1178,7 @@ def _resolve_node_spec(
         for field_key in (
             "display_name", "description", "phase", "input_keys",
             "output_keys", "source_code", "prompt_template", "author",
+            "metadata",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1243,6 +1244,7 @@ def _lookup_node_body(
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
             "approved": bool(hit.get("approved", False)),
+            "metadata": dict(hit.get("metadata") or {}),
         }, ""
 
     # Otherwise treat `source` as a branch_def_id.
@@ -1270,6 +1272,7 @@ def _lookup_node_body(
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
                 "approved": bool(nd.get("approved", False)),
+                "metadata": dict(nd.get("metadata") or {}),
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
@@ -1322,6 +1325,9 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         invoke_branch_version if isinstance(invoke_branch_version, dict) else None
     )
     await_run_arg = await_run if isinstance(await_run, dict) else None
+    metadata = raw.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return f"node '{nid}' metadata must be an object"
     try:
         node = NodeDefinition(
             node_id=nid,
@@ -1337,6 +1343,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             invoke_branch_spec=invoke_branch_arg,
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
+            metadata=dict(metadata),
         )
     except ValueError as exc:
         return str(exc)
@@ -2077,6 +2084,24 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
                         "error": f"{field} must decode to an object.",
                     })
                 updates[field] = decoded
+        raw_metadata = kwargs.get("metadata")
+        if raw_metadata:
+            if isinstance(raw_metadata, dict):
+                updates["metadata"] = raw_metadata
+            elif isinstance(raw_metadata, str):
+                try:
+                    decoded = json.loads(raw_metadata)
+                except json.JSONDecodeError as exc:
+                    return json.dumps({
+                        "status": "rejected",
+                        "error": f"metadata is not valid JSON: {exc}",
+                    })
+                if not isinstance(decoded, dict):
+                    return json.dumps({
+                        "status": "rejected",
+                        "error": "metadata must decode to an object.",
+                    })
+                updates["metadata"] = decoded
 
     if not updates:
         return json.dumps({
@@ -2176,6 +2201,14 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
                     spec_field,
                     val if isinstance(val, dict) else None,
                 )
+        if "metadata" in updates:
+            metadata_patch = updates["metadata"]
+            if not isinstance(metadata_patch, dict):
+                return json.dumps({
+                    "status": "rejected",
+                    "error": "metadata must be an object.",
+                })
+            target_node.metadata.update(metadata_patch)
     except Exception as exc:
         return json.dumps({
             "status": "rejected",
@@ -2352,6 +2385,7 @@ _PATCH_NODES_FIELDS: dict[str, Any] = {
     "prompt_template": str,
     "source_code": str,
     "model_hint": str,
+    "metadata": dict,
     "timeout_seconds": float,
     "enabled": bool,
 }
@@ -2380,6 +2414,18 @@ def _coerce_patch_nodes_value(
             return float(raw), None
         except (TypeError, ValueError):
             return None, f"Cannot coerce {raw!r} to float."
+    if kind is dict:
+        if isinstance(raw, dict):
+            return dict(raw), None
+        if not isinstance(raw, str):
+            return None, f"Cannot coerce {raw!r} to object."
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return None, f"Cannot parse metadata JSON: {exc}"
+        if not isinstance(decoded, dict):
+            return None, "metadata must be a JSON object."
+        return decoded, None
     return str(raw), None
 
 
@@ -2710,7 +2756,8 @@ extensions action=build_branch spec_json='{
   ],
   "node_defs": [
     {"node_id": "capture", "display_name": "Capture raw recipe",
-     "prompt_template": "Read the user's message and extract recipe name."},
+     "prompt_template": "Read the user's message and extract recipe name.",
+     "metadata": {"annotation": "User says this is the intake node."}},
     {"node_id": "categorize", "display_name": "Categorize recipe",
      "prompt_template": "Classify by cuisine and meal type."},
     {"node_id": "archive", "display_name": "Archive to library",
@@ -2772,6 +2819,7 @@ per-turn tool-call budget is not at risk:
 - `connect_nodes branch_def_id=... from_node=... to_node=...`
 - `set_entry_point branch_def_id=... node_id=...`
 - `add_state_field branch_def_id=... field_name=... field_type=...`
+- `update_node branch_def_id=... node_id=... changes_json='{"metadata": {...}}'`
 - `validate_branch branch_def_id=...`
 - `describe_branch branch_def_id=...`
 

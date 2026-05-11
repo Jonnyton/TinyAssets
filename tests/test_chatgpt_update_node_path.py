@@ -136,6 +136,66 @@ class TestUpdateNodeNameBasedRef:
 
         assert res.get("status") == "updated", res
 
+    def test_update_node_merges_metadata_by_node_id(self, ext_env):
+        """Node metadata is user-extensible state keyed by node_id."""
+        us, base = ext_env
+        bid, nid = _build(us, name="metadata-workflow")
+
+        first = _call(
+            us,
+            "extensions",
+            "update_node",
+            branch_def_id=bid,
+            node_id=nid,
+            changes_json=json.dumps({
+                "metadata": {
+                    "annotation": "needs legal review",
+                    "risk": "medium",
+                },
+            }),
+        )
+        assert first.get("status") == "updated", first
+
+        second = _call(
+            us,
+            "extensions",
+            "update_node",
+            branch_def_id=bid,
+            node_id=nid,
+            changes_json=json.dumps({
+                "metadata": {
+                    "risk": "low",
+                    "reviewer": "alex",
+                },
+            }),
+        )
+        assert second.get("status") == "updated", second
+
+        from workflow.daemon_server import get_branch_definition
+        branch = get_branch_definition(base, branch_def_id=bid)
+        node = next(n for n in branch["node_defs"] if n["node_id"] == nid)
+        assert node["metadata"] == {
+            "annotation": "needs legal review",
+            "risk": "low",
+            "reviewer": "alex",
+        }
+
+    def test_update_node_rejects_non_object_metadata(self, ext_env):
+        us, _ = ext_env
+        bid, nid = _build(us, name="bad-metadata-workflow")
+
+        res = _call(
+            us,
+            "extensions",
+            "update_node",
+            branch_def_id=bid,
+            node_id=nid,
+            changes_json=json.dumps({"metadata": "not-an-object"}),
+        )
+
+        assert res.get("status") == "rejected", res
+        assert "metadata" in res["error"].lower()
+
 
 class TestPatchBranchNameBasedRef:
     """patch_branch must resolve branch names, not just UUIDs."""

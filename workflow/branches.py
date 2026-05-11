@@ -344,6 +344,10 @@ class NodeDefinition:
 
     # Quality
     evaluation_criteria: list[dict[str, str]] = field(default_factory=list)
+    # User-extensible annotations keyed to this node. This is deliberately
+    # runtime-neutral: graph execution ignores it, while authoring/review
+    # surfaces can attach arbitrary JSON-object state by node_id.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     # Sub-branch invocation (invoke_branch node kind).
     # When set this node spawns a child branch run rather than executing an
@@ -422,6 +426,13 @@ class NodeDefinition:
                         f"[{idx}] must be a string, got "
                         f"{type(item).__name__}",
                     )
+        if self.metadata is None:
+            self.metadata = {}
+        if not isinstance(self.metadata, dict):
+            raise NodeDefinitionValidationError(
+                "metadata",
+                f"must be an object, got {type(self.metadata).__name__}",
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
