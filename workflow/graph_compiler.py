@@ -583,6 +583,119 @@ def _state_type_map(state_schema: list[dict[str, Any]]) -> dict[str, str]:
     return types
 
 
+def _state_constraint_map(
+    state_schema: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    constraints: dict[str, list[dict[str, Any]]] = {}
+    for field in state_schema or []:
+        if not isinstance(field, dict):
+            continue
+        name = (field.get("name") or "").strip()
+        raw = field.get("constraints") or []
+        if name and isinstance(raw, list):
+            constraints[name] = [c for c in raw if isinstance(c, dict)]
+    return constraints
+
+
+def _is_non_empty(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _apply_state_constraints(
+    updates: dict[str, Any],
+    constraints_by_key: dict[str, list[dict[str, Any]]],
+    *,
+    node_id: str,
+) -> dict[str, Any]:
+    for key, value in updates.items():
+        for constraint in constraints_by_key.get(key, []):
+            trigger = (constraint.get("trigger") or "write").strip().lower()
+            if trigger != "write":
+                continue
+            ctype = (
+                constraint.get("type") or constraint.get("kind") or ""
+            ).strip().lower()
+            if ctype == "non_empty":
+                if not _is_non_empty(value):
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' violated "
+                        "write constraint 'non_empty'."
+                    )
+            elif ctype in {"min", "max", "range"}:
+                if not isinstance(value, int | float) or isinstance(value, bool):
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' violated "
+                        f"write constraint '{ctype}': value must be numeric."
+                    )
+                min_value = constraint.get("min")
+                max_value = constraint.get("max")
+                if ctype in {"min", "range"} and (
+                    not isinstance(min_value, int | float)
+                    or isinstance(min_value, bool)
+                ):
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' has malformed "
+                        f"write constraint '{ctype}': min must be numeric."
+                    )
+                if ctype in {"max", "range"} and (
+                    not isinstance(max_value, int | float)
+                    or isinstance(max_value, bool)
+                ):
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' has malformed "
+                        f"write constraint '{ctype}': max must be numeric."
+                    )
+                if ctype in {"min", "range"} and value < min_value:
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' violated "
+                        f"write constraint '{ctype}': {value!r} < {min_value!r}."
+                    )
+                if ctype in {"max", "range"} and value > max_value:
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' violated "
+                        f"write constraint '{ctype}': {value!r} > {max_value!r}."
+                    )
+            elif ctype == "one_of":
+                values = constraint.get("values") or []
+                if value not in values:
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' violated "
+                        f"write constraint 'one_of': {value!r} not in {values!r}."
+                    )
+            elif ctype in {"min_length", "max_length"}:
+                try:
+                    length = len(value)
+                except TypeError as exc:
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' violated "
+                        f"write constraint '{ctype}': value has no length."
+                    ) from exc
+                limit = constraint.get(ctype)
+                if not isinstance(limit, int) or limit < 0:
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' has malformed "
+                        f"write constraint '{ctype}': limit must be a "
+                        "non-negative integer."
+                    )
+                if ctype == "min_length" and length < limit:
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' violated "
+                        f"write constraint 'min_length': {length} < {limit}."
+                    )
+                if ctype == "max_length" and length > limit:
+                    raise CompilerError(
+                        f"Node '{node_id}' output_key '{key}' violated "
+                        f"write constraint 'max_length': {length} > {limit}."
+                    )
+    return updates
+
+
 def _needs_json_contract(
     node: NodeDefinition, state_types: dict[str, str],
 ) -> bool:
@@ -734,6 +847,7 @@ def _build_prompt_template_node(
     strict_isolation = bool(getattr(node, "strict_input_isolation", True))
     declared_inputs = list(node.input_keys)
     state_types = _state_type_map(state_schema or [])
+    state_constraints = _state_constraint_map(state_schema or [])
     needs_json = _needs_json_contract(node, state_types)
     json_suffix = _json_contract_suffix(node, state_types) if needs_json else ""
     effective_policy: dict[str, Any] | None = llm_policy
@@ -963,9 +1077,13 @@ def _build_prompt_template_node(
                         f"coercion to '{t}' failed: {exc}. "
                         f"Got: {parsed[key]!r}."
                     ) from exc
-            return result
+            return _apply_state_constraints(
+                result, state_constraints, node_id=node.node_id,
+            )
 
-        return {output_key: response}
+        return _apply_state_constraints(
+            {output_key: response}, state_constraints, node_id=node.node_id,
+        )
 
     return _fn
 
@@ -1130,6 +1248,24 @@ def _build_opaque_node(
         return result
 
     return _fn
+
+
+def _wrap_with_state_constraints(
+    inner_fn: Callable[[dict[str, Any]], dict[str, Any]],
+    node: NodeDefinition,
+    state_schema: list[dict[str, Any]] | None,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    constraints = _state_constraint_map(state_schema or [])
+    if not constraints:
+        return inner_fn
+
+    def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
+        result = inner_fn(state)
+        return _apply_state_constraints(
+            result, constraints, node_id=node.node_id,
+        )
+
+    return _node_fn
 
 
 def _checkpoint_predicate_matches(
@@ -1817,6 +1953,7 @@ def _build_node(
         inner = _build_source_code_node(
             node, event_sink=event_sink, concurrency_tracker=concurrency_tracker,
         )
+        inner = _wrap_with_state_constraints(inner, node, state_schema)
         return _wrap_with_checkpoints(inner, node, event_sink)
     if has_template:
         inner = _build_prompt_template_node(
@@ -1824,11 +1961,13 @@ def _build_node(
             state_schema=state_schema, llm_policy=llm_policy,
             concurrency_tracker=concurrency_tracker,
         )
+        inner = _wrap_with_state_constraints(inner, node, state_schema)
         return _wrap_with_checkpoints(inner, node, event_sink)
     if domain_id:
         opaque = resolve_domain_callable(domain_id, node.node_id)
         if opaque is not None:
             inner = _build_opaque_node(node, opaque, event_sink=event_sink)
+            inner = _wrap_with_state_constraints(inner, node, state_schema)
             return _wrap_with_checkpoints(inner, node, event_sink)
     if node.invoke_branch_spec is not None:
         if base_path is None:
@@ -1842,6 +1981,7 @@ def _build_node(
             parent_run_id=parent_run_id,
             depth=invocation_depth,
         )
+        inner = _wrap_with_state_constraints(inner, node, state_schema)
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.invoke_branch_version_spec is not None:
         if base_path is None:
@@ -1855,6 +1995,7 @@ def _build_node(
             parent_run_id=parent_run_id,
             depth=invocation_depth,
         )
+        inner = _wrap_with_state_constraints(inner, node, state_schema)
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.await_run_spec is not None:
         if base_path is None:
@@ -1865,6 +2006,7 @@ def _build_node(
         inner = _build_await_branch_run_node(
             node, base_path=base_path, event_sink=event_sink,
         )
+        inner = _wrap_with_state_constraints(inner, node, state_schema)
         return _wrap_with_checkpoints(inner, node, event_sink)
     # Fallback: a genuine body-less node in a non-domain-trusted
     # context is a malformed Branch. Preserve the CompilerError

@@ -212,6 +212,58 @@ def test_add_state_field_duplicate_rejected(branch_env):
     assert "error" in dup
 
 
+def test_add_state_field_accepts_write_constraints(branch_env):
+    us, _ = branch_env
+    bid = _call(us, "create_branch", name="X")["branch_def_id"]
+    added = _call(
+        us,
+        "add_state_field",
+        branch_def_id=bid,
+        field_name="score",
+        field_type="int",
+        constraints_json=json.dumps([{
+            "trigger": "write",
+            "type": "range",
+            "min": 0,
+            "max": 100,
+        }]),
+    )
+    assert added["status"] == "added"
+
+    got = _call(us, "get_branch", branch_def_id=bid)
+    assert got["state_schema"][0]["constraints"] == [{
+        "trigger": "write",
+        "type": "range",
+        "min": 0,
+        "max": 100,
+    }]
+
+
+def test_build_branch_rejects_invalid_write_constraint(branch_env):
+    us, _ = branch_env
+    spec = {
+        "name": "Invalid constraints",
+        "entry_point": "n1",
+        "node_defs": [{
+            "node_id": "n1",
+            "display_name": "n1",
+            "prompt_template": "Do it.",
+        }],
+        "edges": [
+            {"from": "START", "to": "n1"},
+            {"from": "n1", "to": "END"},
+        ],
+        "state_schema": [{
+            "name": "score",
+            "type": "int",
+            "constraints": [{"trigger": "read", "type": "range", "min": 0}],
+        }],
+    }
+    result = _call(us, "build_branch", spec_json=json.dumps(spec))
+    assert result["status"] == "rejected"
+    assert any("trigger 'read' is invalid" in err for err in result["errors"])
+
+
 def test_validate_reports_errors_on_empty_branch(branch_env):
     us, _ = branch_env
     bid = _call(us, "create_branch", name="Empty")["branch_def_id"]

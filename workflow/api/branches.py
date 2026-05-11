@@ -643,6 +643,13 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
     default = kwargs.get("field_default", "")
     if default != "":
         field_entry["default"] = default
+    constraints, constraints_error = _coerce_state_constraints(
+        kwargs.get("constraints", kwargs.get("constraints_json", "")),
+    )
+    if constraints_error:
+        return json.dumps({"error": constraints_error})
+    if constraints:
+        field_entry["constraints"] = constraints
 
     branch.state_schema.append(field_entry)
     try:
@@ -1012,6 +1019,34 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 
 
 _VALID_STATE_TYPES = {"str", "int", "float", "bool", "list", "dict", "any"}
+
+
+def _coerce_state_constraints(raw: Any) -> tuple[list[dict[str, Any]], str]:
+    if raw in (None, ""):
+        return [], ""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return [], f"constraints must be JSON when passed as a string: {exc}"
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return [], "constraints must be a list of constraint objects"
+
+    from workflow.branches import _validate_state_constraint_shape
+
+    constraints: list[dict[str, Any]] = []
+    for idx, constraint in enumerate(raw):
+        if not isinstance(constraint, dict):
+            return [], f"constraint[{idx}] must be an object"
+        errors = _validate_state_constraint_shape(
+            constraint, field_name="<new>", index=idx,
+        )
+        if errors:
+            return [], errors[0]
+        constraints.append(dict(constraint))
+    return constraints, ""
 
 
 def _suggest_entry_point(branch: Any) -> str:
@@ -1413,6 +1448,13 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     default = raw.get("default", raw.get("field_default", ""))
     if default != "":
         entry["default"] = default
+    constraints, constraints_error = _coerce_state_constraints(
+        raw.get("constraints", raw.get("constraints_json", "")),
+    )
+    if constraints_error:
+        return constraints_error
+    if constraints:
+        entry["constraints"] = constraints
     branch.state_schema.append(entry)
     if ftype_raw.lower() not in _VALID_STATE_TYPES:
         return (
@@ -2725,7 +2767,10 @@ extensions action=build_branch spec_json='{
   "state_schema": [
     {"name": "raw_recipe", "type": "str"},
     {"name": "category", "type": "str"},
-    {"name": "archived", "type": "bool", "default": false}
+    {"name": "archived", "type": "bool", "default": false},
+    {"name": "quality_score", "type": "int",
+     "constraints": [{"trigger": "write", "type": "range",
+                      "min": 0, "max": 100}]}
   ]
 }'
 ```
@@ -2772,6 +2817,8 @@ per-turn tool-call budget is not at risk:
 - `connect_nodes branch_def_id=... from_node=... to_node=...`
 - `set_entry_point branch_def_id=... node_id=...`
 - `add_state_field branch_def_id=... field_name=... field_type=...`
+  with optional `constraints_json` for write-time invariants such as
+  `non_empty`, `range`, `one_of`, `min_length`, and `max_length`.
 - `validate_branch branch_def_id=...`
 - `describe_branch branch_def_id=...`
 

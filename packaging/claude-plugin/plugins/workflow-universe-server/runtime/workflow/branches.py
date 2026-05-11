@@ -202,6 +202,79 @@ VALID_FIELD_TYPES = {"string", "number", "boolean", "list", "dict", "any"}
 # Valid reducer strategies — maps to how LangGraph merges parallel updates.
 VALID_REDUCERS = {"overwrite", "append", "merge"}
 
+# Per-field write-time constraints. These remain data-only so Branch authors
+# can compose invariants without shipping executable validator code.
+VALID_CONSTRAINT_TRIGGERS = {"write"}
+VALID_CONSTRAINT_TYPES = {
+    "non_empty",
+    "min",
+    "max",
+    "range",
+    "one_of",
+    "min_length",
+    "max_length",
+}
+
+
+def _validate_state_constraint_shape(
+    constraint: Any,
+    *,
+    field_name: str,
+    index: int,
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(constraint, dict):
+        return [
+            f"State field '{field_name}' constraint[{index}] must be an object."
+        ]
+
+    trigger = (constraint.get("trigger") or "write").strip().lower()
+    if trigger not in VALID_CONSTRAINT_TRIGGERS:
+        errors.append(
+            f"State field '{field_name}' constraint[{index}] trigger "
+            f"'{trigger}' is invalid; expected 'write'."
+        )
+
+    ctype = (constraint.get("type") or constraint.get("kind") or "").strip().lower()
+    if ctype not in VALID_CONSTRAINT_TYPES:
+        errors.append(
+            f"State field '{field_name}' constraint[{index}] type "
+            f"'{ctype or '<missing>'}' is invalid; expected one of "
+            f"{', '.join(sorted(VALID_CONSTRAINT_TYPES))}."
+        )
+        return errors
+
+    min_value = constraint.get("min")
+    max_value = constraint.get("max")
+    if ctype in {"min", "range"} and (
+        not isinstance(min_value, int | float) or isinstance(min_value, bool)
+    ):
+        errors.append(
+            f"State field '{field_name}' constraint[{index}] type '{ctype}' "
+            "requires numeric 'min'."
+        )
+    if ctype in {"max", "range"} and (
+        not isinstance(max_value, int | float) or isinstance(max_value, bool)
+    ):
+        errors.append(
+            f"State field '{field_name}' constraint[{index}] type '{ctype}' "
+            "requires numeric 'max'."
+        )
+    if ctype == "one_of" and not isinstance(constraint.get("values"), list):
+        errors.append(
+            f"State field '{field_name}' constraint[{index}] type 'one_of' "
+            "requires list 'values'."
+        )
+    for key in ("min_length", "max_length"):
+        if ctype == key:
+            value = constraint.get(key)
+            if not isinstance(value, int) or value < 0:
+                errors.append(
+                    f"State field '{field_name}' constraint[{index}] type "
+                    f"'{key}' requires non-negative integer '{key}'."
+                )
+    return errors
+
 
 @dataclass
 class StateFieldDecl:
@@ -224,6 +297,7 @@ class StateFieldDecl:
     default_value: Any = None
     reducer: str = "overwrite"
     description: str = ""
+    constraints: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.type not in VALID_FIELD_TYPES:
@@ -236,6 +310,12 @@ class StateFieldDecl:
                 f"Invalid reducer '{self.reducer}'. "
                 f"Must be one of: {', '.join(sorted(VALID_REDUCERS))}"
             )
+        for idx, constraint in enumerate(self.constraints):
+            errors = _validate_state_constraint_shape(
+                constraint, field_name=self.name, index=idx,
+            )
+            if errors:
+                raise ValueError(errors[0])
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1082,7 +1162,12 @@ class BranchDefinition:
         # and do not collide with LangGraph node names. StateGraph rejects
         # adding a node whose name is already present in the state schema.
         field_names: set[str] = set()
-        for f in self.state_schema:
+        for field_idx, f in enumerate(self.state_schema):
+            if not isinstance(f, dict):
+                errors.append(
+                    f"state_schema[{field_idx}] must be an object."
+                )
+                continue
             name = f.get("name", "")
             if name:
                 if name in field_names:
@@ -1094,6 +1179,20 @@ class BranchDefinition:
                         "node ID. Rename the state field or node before "
                         "running this branch."
                     )
+            constraints = f.get("constraints", [])
+            if constraints:
+                if not isinstance(constraints, list):
+                    errors.append(
+                        f"State field '{name or field_idx}' constraints "
+                        "must be a list."
+                    )
+                else:
+                    for constraint_idx, constraint in enumerate(constraints):
+                        errors.extend(_validate_state_constraint_shape(
+                            constraint,
+                            field_name=name or str(field_idx),
+                            index=constraint_idx,
+                        ))
 
         try:
             normalize_branch_skill_snapshots(self.skills)

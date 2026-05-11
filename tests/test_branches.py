@@ -601,6 +601,31 @@ class TestBranchDefinition:
         b2 = BranchDefinition.from_dict(d)
         assert b2.state_schema == b.state_schema
 
+    def test_validate_accepts_write_constraints(self):
+        b = _make_sample_branch()
+        b.state_schema.append({
+            "name": "quality_score",
+            "type": "int",
+            "constraints": [{
+                "trigger": "write",
+                "type": "range",
+                "min": 0,
+                "max": 100,
+            }],
+        })
+        assert not b.validate()
+
+    def test_validate_rejects_invalid_write_constraint_shape(self):
+        b = _make_sample_branch()
+        b.state_schema.append({
+            "name": "quality_score",
+            "type": "int",
+            "constraints": [{"trigger": "read", "type": "range", "min": 0}],
+        })
+        errors = b.validate()
+        assert any("trigger 'read' is invalid" in err for err in errors)
+        assert any("requires numeric 'max'" in err for err in errors)
+
     def test_from_dict_does_not_mutate_input(self):
         """from_dict must not modify the caller's dict."""
         data = {

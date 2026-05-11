@@ -29,10 +29,12 @@ import pytest
 from workflow.branches import NodeDefinition
 from workflow.graph_compiler import (
     CompilerError,
+    _apply_state_constraints,
     _build_prompt_template_node,
     _coerce_value,
     _extract_json_object,
     _needs_json_contract,
+    _state_constraint_map,
     _state_type_map,
 )
 
@@ -194,6 +196,62 @@ def test_typed_output_wrong_type_raises():
         fn({})
     assert "count" in str(exc_info.value)
     assert "int" in str(exc_info.value)
+
+
+def test_write_constraint_non_empty_rejects_empty_prompt_output():
+    node = NodeDefinition(
+        node_id="n1", display_name="n1",
+        input_keys=[], output_keys=["title"],
+        prompt_template="write a title",
+    )
+    state_schema = [{
+        "name": "title",
+        "type": "str",
+        "constraints": [{"trigger": "write", "type": "non_empty"}],
+    }]
+    fn = _make_fn(node, response="   ", state_schema=state_schema)
+    with pytest.raises(CompilerError) as exc_info:
+        fn({})
+    assert "non_empty" in str(exc_info.value)
+
+
+def test_write_constraint_range_allows_valid_typed_output():
+    node = NodeDefinition(
+        node_id="n1", display_name="n1",
+        input_keys=[], output_keys=["score"],
+        prompt_template="score this",
+    )
+    state_schema = [{
+        "name": "score",
+        "type": "int",
+        "constraints": [{
+            "trigger": "write",
+            "type": "range",
+            "min": 0,
+            "max": 100,
+        }],
+    }]
+    fn = _make_fn(node, response='{"score": 87}', state_schema=state_schema)
+    assert fn({}) == {"score": 87}
+
+
+def test_write_constraint_range_rejects_invalid_typed_output():
+    constraints = _state_constraint_map([{
+        "name": "score",
+        "type": "int",
+        "constraints": [{
+            "trigger": "write",
+            "type": "range",
+            "min": 0,
+            "max": 100,
+        }],
+    }])
+    with pytest.raises(CompilerError) as exc_info:
+        _apply_state_constraints(
+            {"score": 101}, constraints, node_id="scorer",
+        )
+    assert "range" in str(exc_info.value)
+    assert "score" in str(exc_info.value)
 
 
 def test_malformed_json_raises():
