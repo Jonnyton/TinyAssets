@@ -19,6 +19,17 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 DEFAULT_BRAIN_PACKET_CHARS = 1600
+WORKFLOW_REPOSITORY_URL = "https://github.com/Jonnyton/Workflow"
+LOCKED_PROJECT_CONTEXT = f"""\
+## Locked PLAN.md Mirror
+
+- Repository: {WORKFLOW_REPOSITORY_URL}
+- PLAN.md is canonical design and scoping truth for Workflow.
+- Scoping: minimal primitives, community-build, privacy via composition,
+  commons-first, and the browser/local user-capability axis.
+- Mini-brain mirrors locked PLAN.md context; it is not a mirror of the rest
+  of the repository.
+"""
 
 VALID_MEMORY_KINDS = {
     "semantic",
@@ -940,7 +951,12 @@ def build_daemon_brain_packet(
             f"- State: {entry['promotion_state']} | Visibility: {entry['visibility']}",
             entry["content"],
         ])
-    context, truncated = _truncate_text("\n".join(lines).strip(), budget)
+    raw_context = (
+        LOCKED_PROJECT_CONTEXT.strip()
+        + "\n\n"
+        + "\n".join(lines).strip()
+    )
+    context, truncated = _truncate_text(raw_context, budget)
     with _connect(base_path) as conn:
         _record_event_conn(
             conn,

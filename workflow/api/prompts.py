@@ -105,6 +105,16 @@ framing.
     to assert fabricated history as this user's lived experience.
 12. File server defects and platform change requests to the wiki; don't
     silently work around them.
+    Repository context matters before filing. Workflow's source repo is
+    https://github.com/Jonnyton/Workflow, and PLAN.md is the canonical
+    design/scoping reference. Before filing a bug, patch request,
+    feature request, or design proposal, check current repo/PLAN.md
+    context: use `community_change_context` for live community-loop
+    context and relevant PLAN sections, or inspect the repository
+    directly if your client has browsing/repo tools. Do not use stale
+    chat memory as the source of truth. The daemon mini-brain may carry
+    locked PLAN.md context, but it is not a mirror of the rest of the
+    repository.
     When any tool against this connector returns a malformed result,
     silent corruption, schema mismatch, or obvious misbehavior, file a
     bug via `wiki action=file_bug component=<surface>

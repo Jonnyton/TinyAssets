@@ -114,6 +114,20 @@ def test_wiki_tool_description_is_not_a_catchall() -> None:
     assert "build / design / create a workflow" in lower or "build a workflow" in lower
 
 
+def test_wiki_tool_description_nudges_plan_check_before_filing() -> None:
+    """WIKI-PATCH PR-101: the filing tool metadata itself should carry the
+    repo/PLAN nudge, not only the long control_station prompt.
+    """
+    tool = next(t for t in _list_tools() if t.name == "wiki")
+    text = tool.description or ""
+    lower = text.lower()
+
+    assert "https://github.com/Jonnyton/Workflow" in text
+    assert "before filing" in lower
+    assert "plan.md" in lower
+    assert "community_change_context" in text
+
+
 def test_universe_tool_description_is_general_not_fiction_only() -> None:
     """#28 post-4ef0769 (universe docstring trimmed to ≤6 lines + Args):
     the multi-domain example list moved to control_station prompt (which
@@ -187,6 +201,23 @@ def test_control_station_routes_daemon_memory_actions() -> None:
         assert action in text
     assert "inputs_json" in text
     assert "daemon_id" in text
+
+
+def test_control_station_tells_chatbots_to_check_repo_plan_before_filing() -> None:
+    """WIKI-PATCH PR-101: user chatbots need the repo URL and a PLAN.md
+    check before filing platform bugs, patches, features, or design proposals.
+    """
+    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+
+    text = _CONTROL_STATION_PROMPT
+    lower = text.lower()
+
+    assert "https://github.com/Jonnyton/Workflow" in text
+    assert "plan.md" in lower
+    assert "before filing" in lower
+    assert "community_change_context" in text
+    assert "daemon mini-brain" in lower
+    assert re.search(r"not a mirror of the rest of the\s+repository", lower)
 
 
 def test_extension_guide_prompt_points_to_control_station() -> None:

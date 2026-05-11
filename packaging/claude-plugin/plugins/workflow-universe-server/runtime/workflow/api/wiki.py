@@ -1705,6 +1705,12 @@ def _wiki_file_bug(
     ``force_new`` skips the similarity check and always mints a new id.
     When omitted, a Jaccard similarity ≥ 0.5 against an existing bug's
     title+body returns {status: "similar_found"} instead of filing.
+
+    Chatbot callers should check current repository/PLAN.md context before
+    filing platform changes. The source repo is
+    https://github.com/Jonnyton/Workflow; PLAN.md is canonical design and
+    scoping truth. This does not require a wiki duplicate search because the
+    server performs filing deduplication.
     """
     if not title or not component or not severity:
         return json.dumps({

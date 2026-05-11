@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from workflow.daemon_brain import (
@@ -106,6 +107,14 @@ def test_daemon_brain_smoke_roundtrip(tmp_path: Path) -> None:
         daemon_id=ada["daemon_id"],
         query="daemon routing executor identity",
         max_chars=700,
+    )
+    assert "## Locked PLAN.md Mirror" in brain_packet["context"]
+    assert "https://github.com/Jonnyton/Workflow" in brain_packet["context"]
+    assert "PLAN.md" in brain_packet["context"]
+    assert "minimal primitives" in brain_packet["context"]
+    assert re.search(
+        r"not a mirror of the rest\s+of the repository",
+        brain_packet["context"],
     )
     assert first["entry_id"] in brain_packet["context"]
     assert len(brain_packet["context"]) <= 700
