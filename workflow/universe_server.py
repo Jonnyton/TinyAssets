@@ -31,6 +31,7 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
 from inspect import signature
+from typing import Any
 
 import uvicorn
 from fastmcp import FastMCP
@@ -491,7 +492,7 @@ def extensions(
     field_name: str = "",
     field_type: str = "",
     reducer: str = "",
-    field_default: str = "",
+    field_default: Any = "",
     run_id: str = "",
     inputs_json: str = "",
     run_name: str = "",

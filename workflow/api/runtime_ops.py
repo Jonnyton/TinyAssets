@@ -229,11 +229,15 @@ def _apply_patch_ops(
                 if nd.get("node_id") == nid:
                     nd.update({k: v for k, v in op.items() if k not in ("op",)})
         elif op_name == "add_state_field":
+            from workflow.api.branches import _coerce_state_json_value
+
+            default = op.get("field_default", "")
+            field_type = op.get("field_type", "str")
             branch_dict.setdefault("state_schema", []).append({
                 "name": op.get("field_name", ""),
-                "type": op.get("field_type", "str"),
+                "type": field_type,
                 "reducer": op.get("reducer", ""),
-                "default": op.get("field_default", ""),
+                "default": _coerce_state_json_value(default, field_type),
             })
         elif op_name == "remove_state_field":
             fn = op.get("field_name", "")
@@ -562,4 +566,3 @@ _SCHEDULER_ACTIONS: dict[str, Any] = {
     "unpause_schedule": _action_unpause_schedule,
     "list_scheduler_subscriptions": _action_list_scheduler_subscriptions,
 }
-

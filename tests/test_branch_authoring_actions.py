@@ -212,6 +212,43 @@ def test_add_state_field_duplicate_rejected(branch_env):
     assert "error" in dup
 
 
+def test_add_state_field_preserves_json_typed_defaults(branch_env):
+    us, _ = branch_env
+    bid = _call(us, "create_branch", name="Typed defaults")["branch_def_id"]
+
+    for field_name, field_type, field_default in (
+        ("done", "bool", "false"),
+        ("attempts", "int", 3),
+        ("score", "float", "2.5"),
+        ("tags", "list", '["alpha", "beta"]'),
+        ("settings", "dict", '{"mode": "fast"}'),
+        ("literal_false", "str", '"false"'),
+        ("literal_number", "str", "123"),
+    ):
+        result = _call(
+            us,
+            "add_state_field",
+            branch_def_id=bid,
+            field_name=field_name,
+            field_type=field_type,
+            field_default=field_default,
+        )
+        assert result["status"] == "added"
+
+    got = _call(us, "get_branch", branch_def_id=bid)
+    defaults = {field["name"]: field["default"] for field in got["state_schema"]}
+
+    assert defaults == {
+        "done": False,
+        "attempts": 3,
+        "score": 2.5,
+        "tags": ["alpha", "beta"],
+        "settings": {"mode": "fast"},
+        "literal_false": "false",
+        "literal_number": "123",
+    }
+
+
 def test_validate_reports_errors_on_empty_branch(branch_env):
     us, _ = branch_env
     bid = _call(us, "create_branch", name="Empty")["branch_def_id"]

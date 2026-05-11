@@ -162,6 +162,33 @@ def _coerce_node_keys(
     )
 
 
+def _coerce_state_json_value(value: Any, type_name: str) -> Any:
+    """Preserve JSON-typed state values accepted through chat tool args."""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        if parsed is None:
+            return value
+        expected = _closest_state_type(type_name)
+        if expected == "str":
+            return parsed if isinstance(parsed, str) else value
+        if expected == "int":
+            return parsed if isinstance(parsed, int) and not isinstance(parsed, bool) else value
+        if expected == "float":
+            is_number = isinstance(parsed, (int, float)) and not isinstance(parsed, bool)
+            return parsed if is_number else value
+        if expected == "bool":
+            return parsed if isinstance(parsed, bool) else value
+        if expected == "list":
+            return parsed if isinstance(parsed, list) else value
+        if expected == "dict":
+            return parsed if isinstance(parsed, dict) else value
+        return parsed
+    return value
+
+
 def _append_global_ledger(
     action: str,
     *,
@@ -642,7 +669,7 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
         field_entry["reducer"] = reducer
     default = kwargs.get("field_default", "")
     if default != "":
-        field_entry["default"] = default
+        field_entry["default"] = _coerce_state_json_value(default, ftype)
 
     branch.state_schema.append(field_entry)
     try:
@@ -1412,7 +1439,7 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
         entry["reducer"] = raw["reducer"]
     default = raw.get("default", raw.get("field_default", ""))
     if default != "":
-        entry["default"] = default
+        entry["default"] = _coerce_state_json_value(default, ftype)
     branch.state_schema.append(entry)
     if ftype_raw.lower() not in _VALID_STATE_TYPES:
         return (
