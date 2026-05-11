@@ -145,9 +145,11 @@ class TestDispatchIntegration:
         monkeypatch,
     ):
         from workflow.auto_ship_ledger import read_attempts
+        from workflow.auto_ship_pr import PR_CREATE_FLAG
 
         monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
+        monkeypatch.setenv(PR_CREATE_FLAG, "true")
         universe = tmp_path / "ledger-uni"
         universe.mkdir(parents=True, exist_ok=True)
         packet = {
@@ -205,9 +207,11 @@ class TestDispatchIntegration:
         """The public MCP wrapper forwards ledger fields to the action."""
         from workflow import universe_server as us
         from workflow.auto_ship_ledger import read_attempts
+        from workflow.auto_ship_pr import PR_CREATE_FLAG
 
         monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
+        monkeypatch.setenv(PR_CREATE_FLAG, "true")
         universe = tmp_path / "wrapper-uni"
         universe.mkdir(parents=True, exist_ok=True)
         packet = {
@@ -311,11 +315,11 @@ class TestLedgerRecording:
     is opt-in: when omitted (or falsy) the response is byte-identical
     to the pre-wire-up behavior (no extra keys, no IO).
 
-    When opt-in, every validator outcome — passed OR blocked — produces
-    one row in the ledger keyed by ``ship_attempt_id``, and the response
-    is augmented with that id. Failure to write the row surfaces as
-    ``ledger_error`` so callers see the problem without losing the
-    decision payload.
+    When opt-in, a passed validator outcome produces one row in the
+    ledger only while the auto-ship feature flag is enabled. Blocked
+    outcomes and disabled flags remain dry-run-only and do not open PRs.
+    Failure to write a requested row surfaces as ``ledger_error`` so
+    callers see the problem without losing the decision payload.
     """
 
     @staticmethod
@@ -345,6 +349,11 @@ class TestLedgerRecording:
         (Path(tmp_path) / name).mkdir(parents=True, exist_ok=True)
         return Path(tmp_path) / name
 
+    @staticmethod
+    def _enable_record_gate(monkeypatch):
+        from workflow.auto_ship_pr import PR_CREATE_FLAG
+        monkeypatch.setenv(PR_CREATE_FLAG, "true")
+
     def test_record_off_response_is_byte_identical_to_pr224(self, tmp_path, monkeypatch):
         self._setup_universe(tmp_path, monkeypatch)
         from workflow.auto_ship_ledger import read_attempts
@@ -360,6 +369,13 @@ class TestLedgerRecording:
     def test_record_on_passed_writes_skipped_row(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
         from workflow.auto_ship_ledger import read_attempts
+        self._enable_record_gate(monkeypatch)
+        monkeypatch.setattr(
+            "workflow.auto_ship_pr.open_auto_ship_pr",
+            lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("validate_ship_packet must not open a PR")
+            ),
+        )
         result = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet()),
             "record_in_ledger": True,
@@ -387,9 +403,31 @@ class TestLedgerRecording:
         # Rollback handle carried from validator's rollback_handle
         assert row.rollback_handle.startswith("revert:")
 
-    def test_record_on_blocked_writes_blocked_row_with_violations(self, tmp_path, monkeypatch):
+    def test_record_on_disabled_feature_flag_skips_ledger(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
         from workflow.auto_ship_ledger import read_attempts
+        from workflow.auto_ship_pr import PR_CREATE_FLAG
+        monkeypatch.delenv(PR_CREATE_FLAG, raising=False)
+
+        result = json.loads(_action_validate_ship_packet({
+            "body_json": json.dumps(self._packet()),
+            "record_in_ledger": True,
+            "request_id": "REQ-FLAG-OFF",
+        }))
+        assert result.get("ledger_error") is None
+        assert "ship_attempt_id" not in result
+        assert result["validation_result"] == "passed"
+        assert result["would_open_pr"] is True
+        assert read_attempts(u) == []
+
+    def test_record_on_blocked_validation_skips_ledger_even_when_flag_enabled(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        u = self._setup_universe(tmp_path, monkeypatch)
+        from workflow.auto_ship_ledger import read_attempts
+        self._enable_record_gate(monkeypatch)
         result = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet(release_gate_result="HOLD")),
             "record_in_ledger": True,
@@ -397,14 +435,11 @@ class TestLedgerRecording:
         }))
         assert result.get("ledger_error") is None
         rows = read_attempts(u)
-        assert len(rows) == 1
-        row = rows[0]
-        assert row.ship_status == "blocked"
-        assert row.would_open_pr is False
-        assert "release_gate_not_approved" in row.error_class
-        # error_message is the violations payload as JSON
-        violations = json.loads(row.error_message)
-        assert any(v["rule_id"] == "release_gate_not_approved" for v in violations)
+        assert rows == []
+        assert "ship_attempt_id" not in result
+        assert result["validation_result"] == "blocked"
+        assert result["would_open_pr"] is False
+        assert any(v["rule_id"] == "release_gate_not_approved" for v in result["violations"])
 
     def test_explicit_universe_id_overrides_default(self, tmp_path, monkeypatch):
         from pathlib import Path
@@ -412,6 +447,7 @@ class TestLedgerRecording:
         from workflow.auto_ship_ledger import read_attempts
         monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
+        self._enable_record_gate(monkeypatch)
         (Path(tmp_path) / "default-uni").mkdir(parents=True, exist_ok=True)
         (Path(tmp_path) / "other-uni").mkdir(parents=True, exist_ok=True)
 
@@ -429,6 +465,7 @@ class TestLedgerRecording:
     def test_string_truthy_record_flag_enables_recording(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
         from workflow.auto_ship_ledger import read_attempts
+        self._enable_record_gate(monkeypatch)
         result = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet()),
             "record_in_ledger": "true",
@@ -451,6 +488,7 @@ class TestLedgerRecording:
     def test_changed_paths_json_kwarg_overrides_packet_paths(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
         from workflow.auto_ship_ledger import read_attempts
+        self._enable_record_gate(monkeypatch)
         json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet(
                 changed_paths=["docs/autoship-canaries/from-packet.md"],
@@ -473,6 +511,7 @@ class TestLedgerRecording:
     def test_malformed_changed_paths_json_falls_back_to_packet(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
         from workflow.auto_ship_ledger import read_attempts
+        self._enable_record_gate(monkeypatch)
         json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet(changed_paths=["docs/autoship-canaries/x.md"])),
             "record_in_ledger": True,
@@ -488,6 +527,7 @@ class TestLedgerRecording:
         blocks acceptance and surfaces ledger_error."""
         monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
+        self._enable_record_gate(monkeypatch)
         # No universe directories exist; helper falls back to "default-universe"
         # which doesn't exist as a dir. record_attempt creates it via mkdir —
         # so we instead force a path-traversal validation error.
@@ -524,6 +564,7 @@ class TestLedgerRecording:
 
         monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
+        self._enable_record_gate(monkeypatch)
         (tmp_path / "default-uni").mkdir(parents=True, exist_ok=True)
 
         result = json.loads(_extensions_impl(
@@ -547,6 +588,7 @@ class TestLedgerRecording:
         trail rather than collapsing identical packets."""
         u = self._setup_universe(tmp_path, monkeypatch)
         from workflow.auto_ship_ledger import read_attempts
+        self._enable_record_gate(monkeypatch)
         result_a = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet()),
             "record_in_ledger": True,

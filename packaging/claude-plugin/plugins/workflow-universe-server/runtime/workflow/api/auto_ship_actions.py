@@ -3,8 +3,9 @@
 Exposes the auto-ship dry-run validator as a callable MCP action so the
 loop's release_safety_gate prompt (and chatbots / canaries) can reach it
 via tool. Pure-Python wrapper; the only IO beyond JSON parse happens when
-``record_in_ledger`` is set, in which case the decision is also written
-to ``workflow.auto_ship_ledger`` via ``record_attempt``.
+``record_in_ledger`` is set, validation passes, and the auto-ship feature
+flag is enabled, in which case the decision is also written to
+``workflow.auto_ship_ledger`` via ``record_attempt``.
 
 Sequencing:
 - PR #223 added ``workflow/auto_ship.py`` with ``validate_ship_request`` —
@@ -14,9 +15,10 @@ Sequencing:
   loop's release_safety_gate prompt can now call it.
 - PR #226 added ``workflow.auto_ship_ledger`` (Slice A of option-2 lane).
 - THIS REVISION adds opt-in ledger recording: pass ``record_in_ledger=true``
-  to record every validator outcome (passed → ship_status="skipped" row,
-  blocked → ship_status="blocked" row with violations encoded). Recording
-  is OFF by default so existing PR #224 callers keep their exact shape.
+  to record passed validator outcomes as ``ship_status="skipped"`` rows
+  when ``WORKFLOW_AUTO_SHIP_PR_CREATE_ENABLED`` is explicitly truthy.
+  Recording is OFF by default so existing PR #224 callers keep their exact
+  shape.
 - PR #243 / slice #3 adds ``open_auto_ship_pr``: a feature-flagged PR-open
   action that takes an existing passed ledger row and opens a PR from an
   ``auto-change/*`` branch only when ``WORKFLOW_AUTO_SHIP_PR_CREATE_ENABLED``
@@ -45,6 +47,21 @@ def _record_in_ledger_enabled(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in _FALSEY_RECORD_FLAGS
     return bool(value)
+
+
+def _auto_ship_record_gate_enabled() -> bool:
+    """Return whether passed validations may create ledger rows.
+
+    This intentionally shares the PR-create feature flag without opening
+    PRs here. The validator action remains ledger-only; PR creation still
+    lives behind the separate ``open_auto_ship_pr`` action.
+    """
+    try:
+        from workflow.auto_ship_pr import pr_create_enabled
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("auto-ship record gate import failed: %s", exc)
+        return False
+    return pr_create_enabled()
 
 
 def _maybe_record_attempt(
@@ -112,19 +129,20 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
 
     Args (passed via kwargs from the extensions dispatch):
         body_json: JSON-serialized coding_packet to validate. Required.
-        record_in_ledger (optional, default False): when truthy, the
-            decision is also written to the auto-ship ledger as a single
-            row. The response gains a ``ship_attempt_id`` field (the
-            new row's id) and, on write failure, a ``ledger_error`` field
-            describing what went wrong. The validator decision is
+        record_in_ledger (optional, default False): when truthy, validation
+            passes, and ``WORKFLOW_AUTO_SHIP_PR_CREATE_ENABLED`` is truthy,
+            the decision is also written to the auto-ship ledger as a
+            single row. The response gains a ``ship_attempt_id`` field
+            (the new row's id) and, on write failure, a ``ledger_error``
+            field describing what went wrong. The validator decision is
             returned regardless of ledger outcome.
-        universe_id (optional): when ``record_in_ledger`` is truthy,
+        universe_id (optional): when a ledger row will be recorded,
             the universe whose data dir to write to. Defaults to
             ``_default_universe()``.
         request_id, parent_run_id, child_run_id, branch_def_id,
         release_gate_result, ship_class, stable_evidence_handle,
         changed_paths_json (optional): call-site context propagated
-            into the ledger row when ``record_in_ledger`` is truthy.
+            into the ledger row when recording is gated on.
             All default to empty strings / empty list. The validator
             does not read these — they are pure ledger metadata so the
             audit trail can be joined back to the parent run.
@@ -133,7 +151,7 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
         JSON-serialized ship_decision dict. Shape per
         ``workflow.auto_ship.validate_ship_request`` docstring:
         ``{ship_status, would_open_pr, validation_result, violations,
-        rollback_handle, dry_run}``. When ``record_in_ledger`` is truthy,
+        rollback_handle, dry_run}``. When recording is gated on,
         the response is augmented with ``ship_attempt_id`` (str | null)
         and may include ``ledger_error`` (str) if the write failed.
 
@@ -174,6 +192,12 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
     # the response is exactly the validator's decision dict, byte-for-byte
     # identical to PR #224.
     if not _record_in_ledger_enabled(kwargs.get("record_in_ledger")):
+        return json.dumps(decision)
+
+    if (
+        decision.get("validation_result") != "passed"
+        or not _auto_ship_record_gate_enabled()
+    ):
         return json.dumps(decision)
 
     # Resolve call-site context for the ledger row. All optional with
