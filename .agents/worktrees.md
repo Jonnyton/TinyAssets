@@ -36,6 +36,23 @@ Format for future entries:
 
 ---
 
+## 2026-05-11 16:15 - create wiki-delete-page
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/wiki-delete-page
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-wiki-delete-page
+- STATUS/Issue/PR: host-directed cleanup after misframed PR-106..115 pages
+- PLAN refs: wiki as coordination surface; 6+5 primitive framing
+- Purpose: expose safe wiki page deletion so mistaken brain pages can be removed instead of preserved.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-wiki-delete-page\_PURPOSE.md
+- Memory refs: pages/notes/handoff-to-codex-pages-as-state-architectural-decision-2026-05-11.md
+- Related implications: retracted PR-106..115 pages; closed GitHub PRs #809/#810/#812-#819
+- Idea feed refs: none
+- Ship/abandon: PR pending; abandon if equivalent safe wiki delete lands first
+
+---
+
 ## 2026-05-07 19:50 - create loop-watch-skip-receipts
 
 - Provider: codex-gpt5-desktop

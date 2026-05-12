@@ -31,10 +31,12 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
 from inspect import signature
+from typing import Annotated
 
 import uvicorn
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import Field
 from starlette.applications import Starlette
 
 from workflow.api.branches import _branch_design_guide_prompt
@@ -945,7 +947,16 @@ def wiki(
     force_new: bool = False,
     bug_id: str = "",
     reporter_context: str = "",
-    changed_since: str = "",
+    changed_since: Annotated[
+        str,
+        Field(
+            description=(
+                'Optional ISO timestamp for action="read" ambient feed and '
+                'required ISO timestamp for action="since"; only pages updated '
+                "after this timestamp are returned."
+            ),
+        ),
+    ] = "",
 ) -> str:
     """Read, write, and manage the cross-project knowledge wiki.
 
@@ -964,13 +975,15 @@ def wiki(
 
     Args:
         action: One of — reads: read, search, since, list, lint;
-            writes: write, patch, consolidate, promote, ingest, supersede,
+            writes: write, patch, delete, consolidate, promote, ingest, supersede,
             sync_projects, file_bug, cosign_bug.
             `search` is lexical best-effort, not a completeness proof; use
             `since` with `changed_since` to review pages updated after a known
             timestamp, then `read` the candidate pages.
         old_text/new_text: For action="patch", exact text to replace server-side.
-        expected_sha256: Optional full-page hash guard for action="patch".
+        expected_sha256: Optional full-page hash guard for action="patch" or
+            action="delete".
+        reason: Required for action="delete" when dry_run=false.
         changed_since: Optional ISO timestamp for action="read" ambient feed
             and required ISO timestamp for action="since"; only pages updated
             after this timestamp are returned.
@@ -1017,7 +1030,7 @@ _mcp_wiki = _register_structured_tool(
     annotations=ToolAnnotations(
         title="Wiki Knowledge Base",
         readOnlyHint=False,
-        destructiveHint=False,
+        destructiveHint=True,
         idempotentHint=False,
         openWorldHint=True,
     ),

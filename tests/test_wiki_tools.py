@@ -294,6 +294,81 @@ class TestWikiWrite:
         )
 
 
+class TestWikiDelete:
+    def test_delete_dry_run_default_does_not_delete(self, wiki_dir):
+        target = wiki_dir / "pages" / "projects" / "test-project.md"
+        assert target.exists()
+
+        result = json.loads(wiki("delete", page="pages/projects/test-project.md"))
+
+        assert result["status"] == "dry_run"
+        assert result["would_delete"] is True
+        assert result["path"] == "pages/projects/test-project.md"
+        assert "sha256" in result
+        assert target.exists()
+
+    def test_delete_requires_reason_when_not_dry_run(self, wiki_dir):
+        target = wiki_dir / "pages" / "projects" / "test-project.md"
+
+        result = json.loads(
+            wiki("delete", page="pages/projects/test-project.md", dry_run=False)
+        )
+
+        assert result["error"] == "reason is required when dry_run=false."
+        assert target.exists()
+
+    def test_delete_rejects_hash_mismatch(self, wiki_dir):
+        target = wiki_dir / "pages" / "projects" / "test-project.md"
+
+        result = json.loads(
+            wiki(
+                "delete",
+                page="pages/projects/test-project.md",
+                reason="stale test cleanup",
+                expected_sha256="wrong",
+                dry_run=False,
+            )
+        )
+
+        assert result["status"] == "conflict"
+        assert result["error"] == "content hash mismatch"
+        assert target.exists()
+
+    def test_delete_removes_exact_patch_request_page_and_logs(self, wiki_dir):
+        patch_dir = wiki_dir / "pages" / "patch-requests"
+        patch_dir.mkdir(parents=True)
+        target = patch_dir / "pr-106-bad-filing.md"
+        target.write_text(
+            "---\ntitle: Bad filing\ntype: patch_request\n---\n\nDelete me.\n",
+            encoding="utf-8",
+        )
+
+        dry_run = json.loads(wiki("delete", page="pages/patch-requests/pr-106-bad-filing.md"))
+        result = json.loads(
+            wiki(
+                "delete",
+                page="pages/patch-requests/pr-106-bad-filing.md",
+                reason="misframed patch request",
+                expected_sha256=dry_run["sha256"],
+                dry_run=False,
+            )
+        )
+
+        assert result["status"] == "deleted"
+        assert result["path"] == "pages/patch-requests/pr-106-bad-filing.md"
+        assert not target.exists()
+        assert "misframed patch request" in (wiki_dir / "log.md").read_text(
+            encoding="utf-8"
+        )
+
+    def test_delete_rejects_protected_anchor_page(self, wiki_dir):
+        result = json.loads(wiki("delete", page="index"))
+
+        assert result["status"] == "protected"
+        assert "protected" in result["error"]
+        assert (wiki_dir / "index.md").exists()
+
+
 class TestWikiPromote:
     def test_promote_valid_draft(self, wiki_dir):
         # Write a draft with valid frontmatter and wikilinks

@@ -827,6 +827,107 @@ def _wiki_patch(
         return json.dumps({"error": f"Failed to patch: {exc}"})
 
 
+def _resolve_delete_page(page: str) -> tuple[Path | None, str | None, str]:
+    requested = page.strip().replace("\\", "/")
+    if not requested:
+        return None, "page parameter is required.", "error"
+    if requested.startswith("/") or any(part in {"", ".", ".."} for part in requested.split("/")):
+        return None, "page must be a wiki-relative page path or unique slug.", "error"
+
+    clean = requested.removesuffix(".md")
+    if clean.lower() in {"index", "log", "schema"} or requested.lower() in {
+        "index.md",
+        "log.md",
+        "wiki.md",
+    }:
+        return None, "protected wiki anchor pages cannot be deleted.", "protected"
+
+    parts = requested.split("/")
+    if parts[0] in {"pages", "drafts"}:
+        if len(parts) != 3:
+            return None, (
+                "page must be an exact path like pages/<category>/<slug>.md "
+                "or drafts/<category>/<slug>.md."
+            ), "error"
+        base = _wiki_pages_dir() if parts[0] == "pages" else _wiki_drafts_dir()
+        slug = parts[2].removesuffix(".md")
+        if not slug:
+            return None, "page slug is required.", "error"
+        candidate = base / parts[1] / (slug + ".md")
+        if not candidate.exists():
+            return None, f"Page not found: {requested}", "not_found"
+        return candidate, None, ""
+
+    if len(parts) != 1:
+        return None, (
+            "page must be an exact path like pages/<category>/<slug>.md "
+            "or a unique slug."
+        ), "error"
+
+    slug = requested.removesuffix(".md")
+    matches = [
+        path for path in (
+            _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
+        ) if path.stem == slug
+    ]
+    if not matches:
+        return None, f"Page not found: {requested}", "not_found"
+    if len(matches) > 1:
+        return None, (
+            "page slug is ambiguous; use an exact path. Matches: "
+            + ", ".join(_page_rel_path(path) for path in matches)
+        ), "ambiguous"
+    return matches[0], None, ""
+
+
+def _wiki_delete(
+    page: str = "",
+    reason: str = "",
+    expected_sha256: str = "",
+    dry_run: bool = True,
+    **_kwargs: Any,
+) -> str:
+    resolved, error, status = _resolve_delete_page(page)
+    if error or resolved is None:
+        response = {"error": error or "Page not found."}
+        if status:
+            response["status"] = status
+        return json.dumps(response)
+
+    text = _read_text(resolved)
+    old_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    rel = _page_rel_path(resolved)
+    response = {
+        "path": rel,
+        "sha256": old_sha,
+        "total_chars": len(text),
+    }
+
+    if expected_sha256 and expected_sha256 != old_sha:
+        response.update({
+            "error": "content hash mismatch",
+            "status": "conflict",
+            "expected_sha256": expected_sha256,
+            "actual_sha256": old_sha,
+        })
+        return json.dumps(response)
+
+    if dry_run:
+        response.update({"status": "dry_run", "would_delete": True})
+        return json.dumps(response)
+
+    if not reason.strip():
+        return json.dumps({"error": "reason is required when dry_run=false."})
+
+    try:
+        resolved.unlink()
+        _append_wiki_log(f"delete | {rel} | {reason.strip()}")
+        response.update({"status": "deleted"})
+        return json.dumps(response)
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to delete: {exc}"})
+
+
 def _wiki_consolidate(
     similarity_threshold: float = 0.25,
     dry_run: bool = True,
@@ -2038,6 +2139,7 @@ def wiki(
         "lint": _wiki_lint,
         "write": _wiki_write,
         "patch": _wiki_patch,
+        "delete": _wiki_delete,
         "consolidate": _wiki_consolidate,
         "promote": _wiki_promote,
         "ingest": _wiki_ingest,
