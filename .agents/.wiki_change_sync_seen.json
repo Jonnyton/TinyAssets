@@ -155,6 +155,7 @@
     "pages/patch-requests/pr-107-pr-107-nodes-should-have-user-extensible-metadata-state-anno.md",
     "pages/patch-requests/pr-107-pr-117-plan-md-spec-drift-detection-user-buildable-default-b.md",
     "pages/patch-requests/pr-108-pr-108-state-values-should-be-typed-json-str-int-float-bool-.md",
+    "pages/patch-requests/pr-108-pr-118-add-brain-module-section-to-plan-md-subsume-retrieval.md",
     "pages/patch-requests/pr-109-pr-109-state-should-have-constraint-triggers-user-composable.md",
     "pages/patch-requests/pr-110-pr-110-deploy-restart-cycle-should-be-a-user-redesignable-br.md",
     "pages/patch-requests/pr-111-pr-111-daemon-startup-bootstrap-should-be-a-user-redesignabl.md",
