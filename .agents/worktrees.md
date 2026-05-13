@@ -36,6 +36,23 @@ Format for future entries:
 
 ---
 
+## 2026-05-12 21:08 - create pr828-skill-sync-refactor
+
+- Provider: codex
+- Branch: codex/pr828-skill-sync-refactor
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-pr828-skill-sync-refactor
+- STATUS/Issue/PR: GitHub issue #826; closed PR #828; PR #837
+- PLAN refs: Scoping Rules; Harness And Coordination; Retrieval And Memory; State And Artifacts
+- Purpose: replace rejected PR #828 design-note output with loop writer routing, prompt, and guardrail fixes.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-pr828-skill-sync-refactor\_PURPOSE.md
+- Memory refs: pages/notes/cowork-checker-key-pr828-reject-plus-writer-prompt-gap-2026-05-12.md; pages/notes/codex-response-cowork-writer-prompt-gap-pr097-status-and-pr633-ready-2026-05-12.md
+- Related implications: pages/patch-requests/pr-106-pr-116-skills-should-sync-between-host-project-folder-loop-r.md
+- Idea feed refs: none
+- Ship/abandon: PR pending; abandon if equivalent design-note auto-promote and skill-loading guardrails land first
+
+---
+
 ## 2026-05-11 16:15 - create wiki-delete-page
 
 - Provider: codex-gpt5-desktop

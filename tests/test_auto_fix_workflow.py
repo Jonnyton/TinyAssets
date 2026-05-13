@@ -517,7 +517,7 @@ def test_ready_for_checker_label_is_defined(wf):
     script = str(labels_step.get("with", {}).get("script", ""))
     assert "ready_for_checker" in script
     assert (
-        "matured through source, duplicate, stale-base, and scope-split "
+        "matured through source, duplicate, stale-base, design-note, and scope-split "
         "pre-checks before checker escalation"
     ) in script
 
@@ -634,7 +634,7 @@ def test_branch_naming_convention(wf):
     assert oauth_step is not None, "Must have a Claude OAuth step"
     meta_script = str(meta_step.get("with", {}).get("script", ""))
     assert "const branchPrefix" in meta_script
-    assert "design-note-draft/" in meta_script
+    assert "design-note-draft/" not in meta_script
     assert "auto-change/" in meta_script
     assert "core.setOutput('branch_prefix', branchPrefix)" in meta_script
     with_block = oauth_step.get("with", {})
@@ -673,13 +673,13 @@ def test_pr_title_prefix_uses_filing_shape(wf):
     assert meta_step is not None
     script = str(meta_step.get("with", {}).get("script", ""))
     assert "const filingShape" in script
-    assert "'[design-note]'" in script
     assert "'[auto-change]'" in script
+    assert "'[design-note]'" not in script
     assert "core.setOutput('filing_shape', filingShape)" in script
     assert "prTitlePrefix" in script
 
 
-def test_architectural_prompt_routes_to_design_note_draft(wf):
+def test_project_design_prompt_uses_skills_and_brain_pages(wf):
     steps = wf["jobs"]["fix"]["steps"]
     oauth_step = next((s for s in steps if s.get("id") == "claude-oauth"), None)
     codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
@@ -688,10 +688,40 @@ def test_architectural_prompt_routes_to_design_note_draft(wf):
     oauth_prompt = str(oauth_step.get("with", {}).get("prompt", ""))
     codex_prompt = str(codex_step.get("run", ""))
     for prompt in (oauth_prompt, codex_prompt):
+        assert ".agents/skills/using-agent-skills/SKILL.md" in prompt
+        assert ".agents/skills/<skill>/SKILL.md" in prompt
         assert "Filing shape:" in prompt
         assert "architectural/project-design filings" in prompt
-        assert "docs/design-notes/proposed/" in prompt
-        assert "do not make runtime code changes" in prompt
+        assert "do not draft `docs/design-notes/proposed/` by default" in prompt
+        assert "pages/concepts/" in prompt
+        assert "pages/plans/" in prompt
+
+
+def test_project_design_branches_use_auto_change_not_design_note(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    meta_step = next((s for s in steps if s.get("id") == "meta"), None)
+    assert meta_step is not None
+    script = str(meta_step.get("with", {}).get("script", ""))
+    assert "const architecturalKinds = new Set(['project-design'])" in script
+    assert "const branchPrefix = 'auto-change/'" in script
+    assert "const prTitlePrefix = '[auto-change]'" in script
+    assert "design-note-draft/" not in script
+
+
+def test_ready_for_checker_blocks_project_design_design_note_autopromote(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    codex_pr_step = next((s for s in steps if s.get("id") == "codex-pr-create"), None)
+    claude_pr_step = next((s for s in steps if s.get("id") == "claude-pr"), None)
+    assert codex_pr_step is not None, "Must create a PR for Codex-authored changes"
+    assert claude_pr_step is not None, "Must find and label Claude-created PRs"
+    for step in (codex_pr_step, claude_pr_step):
+        script = str(step.get("with", {}).get("script", ""))
+        assert "compare.files" in script
+        assert "docs/design-notes/proposed/" in script
+        assert "project-design requests must not auto-promote" in script
+        assert "pages/concepts/" in script
+        assert "pages/plans/" in script
+        assert "runtime guardrail" in script
 
 
 def test_meta_step_fetches_recent_issue_comments_for_feedback(wf):

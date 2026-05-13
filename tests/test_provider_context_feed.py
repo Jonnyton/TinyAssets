@@ -183,6 +183,31 @@ def test_short_feed_caps_each_source_type_so_exec_plans_do_not_saturate(tmp_path
     assert any(item.source_type == "provider-memory" for item in candidates)
 
 
+def test_brain_pages_are_shared_context_sources(tmp_path: Path) -> None:
+    concept = tmp_path / "pages" / "concepts" / "skill-sync.md"
+    concept.parent.mkdir(parents=True)
+    concept.write_text(
+        "Next action: sync project skills through brain pages before runtime pickup.\n",
+        encoding="utf-8",
+    )
+    plan = tmp_path / "pages" / "plans" / "brain-module.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text(
+        "Proposal: branch brain pages into accepted skill records.\n",
+        encoding="utf-8",
+    )
+
+    candidates = provider_context_feed.collect_candidates(
+        tmp_path,
+        provider="codex",
+        phase="plan",
+        limit=None,
+    )
+
+    assert any(item.source_type == "brain-concept" for item in candidates)
+    assert any(item.source_type == "brain-plan" for item in candidates)
+
+
 def test_absolute_worktree_purpose_directory_is_safe(tmp_path: Path) -> None:
     root = tmp_path / "Workflow"
     root.mkdir()

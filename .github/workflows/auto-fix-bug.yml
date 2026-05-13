@@ -38,8 +38,10 @@ name: Auto-fix change
 # Variable-based toggle preserves the secrets; no data loss.
 #
 # Branch naming:
-#   mechanical filings:    auto-change/issue-<N>
-#   architectural filings: design-note-draft/issue-<N>
+#   all filings: auto-change/issue-<N>
+# Project-design requests are not design-note drafts. They either update a
+# brain page under pages/concepts|plans, implement a runtime guardrail, or
+# leave a no-change explanation.
 # PR title/body are requested in the prompt because claude-code-action@v1 no
 # longer accepts the v0 `pr_title` / `pr_body` inputs.
 
@@ -484,7 +486,7 @@ jobs:
               {
                 name: 'ready_for_checker',
                 color: '0e8a16',
-                description: 'Loop PR matured through source, duplicate, stale-base, and scope-split pre-checks before checker escalation.',
+                description: 'Loop PR matured through source, duplicate, stale-base, design-note, and scope-split pre-checks before checker escalation.',
               },
               {
                 name: 'writer:claude',
@@ -745,8 +747,8 @@ jobs:
             const requestKind = requestKindLabel ? requestKindLabel.replace('request:', '') : 'change';
             const architecturalKinds = new Set(['project-design']);
             const filingShape = architecturalKinds.has(requestKind) ? 'architectural' : 'mechanical';
-            const branchPrefix = filingShape === 'architectural' ? 'design-note-draft/' : 'auto-change/';
-            const prTitlePrefix = filingShape === 'architectural' ? '[design-note]' : '[auto-change]';
+            const branchPrefix = 'auto-change/';
+            const prTitlePrefix = '[auto-change]';
             const wikiPathMatch = body.match(/\*\*Wiki path:\*\*\s*`([^`]+)`/i);
             const wikiPath = wikiPathMatch ? wikiPathMatch[1] : '';
 
@@ -857,10 +859,10 @@ jobs:
             ${{ steps.meta.outputs.issue_comments }}
 
             Instructions:
-            1. Read AGENTS.md and STATUS.md for project context.
+            1. Read AGENTS.md, STATUS.md, and `.agents/skills/using-agent-skills/SKILL.md` for project context and skill routing. Then load the relevant `.agents/skills/<skill>/SKILL.md` files before editing.
             2. Classify the request as bug, patch, feature, docs/ops, branch refinement, or project design.
             3. For bugs, reproduce or reason about the root cause. For non-bug requests, identify the smallest useful project change.
-            3a. For architectural/project-design filings, draft or update a design note under `docs/design-notes/proposed/`; do not make runtime code changes unless the issue explicitly asks for implementation.
+            3a. For architectural/project-design filings, do not draft `docs/design-notes/proposed/` by default. Prefer a brain page under `pages/concepts/` or `pages/plans/`, or implement the smallest runtime guardrail when the issue asks for substrate behavior.
             4. Implement a minimal, targeted change; no refactoring beyond what's needed.
             5. Add or update tests/docs/checks appropriate to the risk.
             6. If recent comments mention verification failures or review blockers, address those failures first.
@@ -931,10 +933,10 @@ jobs:
           ${{ steps.meta.outputs.issue_comments }}
 
           Instructions:
-          1. Read AGENTS.md and STATUS.md for project context.
+          1. Read AGENTS.md, STATUS.md, and `.agents/skills/using-agent-skills/SKILL.md` for project context and skill routing. Then load the relevant `.agents/skills/<skill>/SKILL.md` files before editing.
           2. Classify the request as bug, patch, feature, docs/ops, branch refinement, or project design.
           3. For bugs, reproduce or reason about the root cause. For non-bug requests, identify the smallest useful project change.
-          3a. For architectural/project-design filings, draft or update a design note under `docs/design-notes/proposed/`; do not make runtime code changes unless the issue explicitly asks for implementation.
+          3a. For architectural/project-design filings, do not draft `docs/design-notes/proposed/` by default. Prefer a brain page under `pages/concepts/` or `pages/plans/`, or implement the smallest runtime guardrail when the issue asks for substrate behavior.
           4. Implement a minimal, targeted change; no refactoring beyond what's needed.
           5. Add or update tests/docs/checks appropriate to the risk.
           6. If recent comments mention verification failures or review blockers, address those failures first.
@@ -1136,10 +1138,7 @@ jobs:
               if (headRef !== expectedRoot && !headRef.startsWith(expectedPrefix)) {
                 failures.push(`scope-split check failed: branch ${headRef} does not match ${expectedRoot}*`);
               }
-              if (
-                (filingShape === 'mechanical' && branchPrefix !== 'auto-change/') ||
-                (filingShape === 'architectural' && branchPrefix !== 'design-note-draft/')
-              ) {
+              if (branchPrefix !== 'auto-change/') {
                 failures.push(`scope-split check failed: filing shape ${filingShape} uses branch prefix ${branchPrefix}`);
               }
               try {
@@ -1154,6 +1153,15 @@ jobs:
                 ) {
                   failures.push(
                     `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
+                  );
+                }
+                const changedFiles = (compare.files || []).map((file) => file.filename || '');
+                const designNoteFiles = changedFiles.filter((filename) =>
+                  filename.startsWith('docs/design-notes/proposed/')
+                );
+                if (filingShape === 'architectural' && designNoteFiles.length) {
+                  failures.push(
+                    `scope-split check failed: project-design requests must not auto-promote docs/design-notes/proposed (${designNoteFiles.join(', ')}); use pages/concepts/, pages/plans/, or a runtime guardrail`
                   );
                 }
               } catch (error) {
@@ -1455,10 +1463,7 @@ jobs:
               if (headRef !== expectedRoot && !headRef.startsWith(expectedPrefix)) {
                 failures.push(`scope-split check failed: branch ${headRef} does not match ${expectedRoot}*`);
               }
-              if (
-                (filingShape === 'mechanical' && branchPrefix !== 'auto-change/') ||
-                (filingShape === 'architectural' && branchPrefix !== 'design-note-draft/')
-              ) {
+              if (branchPrefix !== 'auto-change/') {
                 failures.push(`scope-split check failed: filing shape ${filingShape} uses branch prefix ${branchPrefix}`);
               }
               try {
@@ -1473,6 +1478,15 @@ jobs:
                 ) {
                   failures.push(
                     `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
+                  );
+                }
+                const changedFiles = (compare.files || []).map((file) => file.filename || '');
+                const designNoteFiles = changedFiles.filter((filename) =>
+                  filename.startsWith('docs/design-notes/proposed/')
+                );
+                if (filingShape === 'architectural' && designNoteFiles.length) {
+                  failures.push(
+                    `scope-split check failed: project-design requests must not auto-promote docs/design-notes/proposed (${designNoteFiles.join(', ')}); use pages/concepts/, pages/plans/, or a runtime guardrail`
                   );
                 }
               } catch (error) {
