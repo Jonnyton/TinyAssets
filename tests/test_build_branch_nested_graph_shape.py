@@ -183,3 +183,40 @@ def test_round_trip_get_branch_then_build_branch_works(ext_env):
     assert res_b.get("edge_count") == res_a.get("edge_count")
     assert res_b.get("entry_point") == res_a.get("entry_point")
     assert res_b.get("node_count") == res_a.get("node_count")
+
+
+def test_build_branch_fork_from_seeds_from_published_version(ext_env):
+    """`fork_from` alone should create a usable fork from the version snapshot.
+
+    `fork_from` remains immutable lineage metadata after creation; this guards
+    the authoring path where a non-author follows the fork hint and supplies a
+    published branch_version_id instead of manually copying every node.
+    """
+    us = ext_env
+    source = _call(
+        us,
+        action="build_branch",
+        spec_json=json.dumps(_two_node_spec_nested_graph()),
+    )
+    assert source.get("status") == "built", source
+    version = _call(
+        us,
+        action="publish_version",
+        branch_def_id=source["branch_def_id"],
+    )
+    assert version.get("branch_version_id"), version
+
+    fork_spec = {
+        "name": "pr-109-version-seeded-fork",
+        "fork_from": version["branch_version_id"],
+    }
+    forked = _call(us, action="build_branch", spec_json=json.dumps(fork_spec))
+
+    assert forked.get("status") == "built", forked
+    assert forked.get("branch_def_id") != source["branch_def_id"]
+    assert forked.get("node_count") == source["node_count"]
+    assert forked.get("edge_count") == source["edge_count"]
+    assert forked.get("entry_point") == source["entry_point"]
+
+    readback = _call(us, action="get_branch", branch_def_id=forked["branch_def_id"])
+    assert readback.get("fork_from") == version["branch_version_id"]

@@ -69,6 +69,7 @@ symbols from this module). ``_gates_enabled`` is also lazy-imported, but from
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -1014,6 +1015,50 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 _VALID_STATE_TYPES = {"str", "int", "float", "bool", "list", "dict", "any"}
 
 
+def _spec_with_fork_snapshot_defaults(
+    spec: dict[str, Any],
+    fork_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Seed omitted branch content from a published fork source snapshot.
+
+    `fork_from` remains lineage metadata on the saved branch. This helper only
+    uses the immutable version snapshot as a creation-time copy source when the
+    caller follows the fork path without manually re-submitting every node.
+    Explicit caller fields keep precedence.
+    """
+    seeded = dict(spec)
+    graph = spec.get("graph") if isinstance(spec.get("graph"), dict) else None
+
+    if not (spec.get("node_defs") or spec.get("nodes")):
+        source_nodes = fork_snapshot.get("node_defs") or fork_snapshot.get("nodes")
+        if source_nodes:
+            seeded["node_defs"] = copy.deepcopy(source_nodes)
+
+    if graph is None and isinstance(fork_snapshot.get("graph"), dict):
+        seeded["graph"] = copy.deepcopy(fork_snapshot["graph"])
+
+    for key in (
+        "description",
+        "domain_id",
+        "tags",
+        "skills",
+        "state_schema",
+        "edges",
+        "conditional_edges",
+        "entry_point",
+    ):
+        if seeded.get(key) in (None, "", []):
+            value = fork_snapshot.get(key)
+            if value not in (None, "", []):
+                seeded[key] = copy.deepcopy(value)
+
+    if not (seeded.get("name") or "").strip():
+        source_name = (fork_snapshot.get("name") or "forked branch").strip()
+        seeded["name"] = f"{source_name} (fork)"
+
+    return seeded
+
+
 def _suggest_entry_point(branch: Any) -> str:
     if not branch.graph_nodes:
         return ""
@@ -1559,14 +1604,21 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             }],
         })
 
+    fork_version = None
+    fork_from_raw = (spec.get("fork_from") or "").strip()
+    if fork_from_raw:
+        from workflow.branch_versions import get_branch_version
+        fork_version = get_branch_version(_base_path(), fork_from_raw)
+        if fork_version is not None:
+            spec = _spec_with_fork_snapshot_defaults(spec, fork_version.snapshot)
+
     branch, staging_errors = _staged_branch_from_spec(spec)
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
 
     # Validate fork_from points to a real branch_version_id.
     if branch.fork_from:
-        from workflow.branch_versions import get_branch_version
-        if get_branch_version(_base_path(), branch.fork_from) is None:
+        if fork_version is None:
             errors.append(
                 f"fork_from '{branch.fork_from}' is not a known branch_version_id. "
                 "Pass a published branch_version_id, not a branch_def_id."
