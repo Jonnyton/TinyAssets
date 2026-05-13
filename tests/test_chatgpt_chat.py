@@ -86,6 +86,68 @@ def test_subcommands_registered() -> None:
         assert hasattr(mod, attr), f"missing {attr} for subcommand {name!r}"
 
 
+class _RecordingKeyboard:
+    """Captures Playwright keyboard calls for the multiline-send test."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str]] = []
+
+    def type(self, text: str, *, delay: int = 0) -> None:  # noqa: ARG002
+        # Record one event per character so a stray newline shows up as
+        # ("type", "\n") and fails the assertion below.
+        for ch in text:
+            self.events.append(("type", ch))
+
+    def press(self, key: str) -> None:
+        self.events.append(("press", key))
+
+
+class _FakePage:
+    def __init__(self) -> None:
+        self.keyboard = _RecordingKeyboard()
+
+
+def test_type_multiline_never_emits_plain_newline_via_type() -> None:
+    """Regression guard: multi-paragraph messages must NOT produce a typed '\\n'.
+
+    A plain newline typed into ChatGPT's composer fires Send and truncates
+    the message. The fix is to split on '\\n' and emit 'Shift+Enter' as a
+    keyboard.press between chunks. This test asserts the helper never
+    routes a literal newline through keyboard.type.
+    """
+    mod = _load_module()
+    page = _FakePage()
+    message = "para one\npara two\n\nfinal paragraph"
+    mod._type_multiline(page, message)
+    # No "type" event may ever carry "\n" — that's the failure mode that
+    # caused truncated sends.
+    bad = [e for e in page.keyboard.events if e[0] == "type" and e[1] == "\n"]
+    assert not bad, f"plain newline typed via keyboard.type: {bad}"
+    # Between each newline-separated chunk, exactly one Shift+Enter must
+    # be pressed. Three '\n' in the message → three Shift+Enter presses.
+    shift_enters = [e for e in page.keyboard.events if e == ("press", "Shift+Enter")]
+    assert len(shift_enters) == 3, (
+        f"expected 3 Shift+Enter presses for 3 '\\n' separators, "
+        f"got {len(shift_enters)}: {page.keyboard.events}"
+    )
+    # Final reconstructed text (typed chars only, in order) must equal
+    # the original chunks joined by empty string (newlines are separator
+    # presses, not typed).
+    typed = "".join(ch for kind, ch in page.keyboard.events if kind == "type")
+    assert typed == message.replace("\n", ""), (
+        f"reconstructed typed text mismatch: {typed!r} vs {message.replace(chr(10), '')!r}"
+    )
+
+
+def test_type_multiline_single_line_emits_no_shift_enter() -> None:
+    """Single-line messages should not trigger any Shift+Enter presses."""
+    mod = _load_module()
+    page = _FakePage()
+    mod._type_multiline(page, "just one line, no breaks")
+    shift_enters = [e for e in page.keyboard.events if e == ("press", "Shift+Enter")]
+    assert not shift_enters
+
+
 def test_log_notepad_handles_missing_dir(tmp_path, monkeypatch) -> None:
     """_log_notepad must never raise even if the notepad path is bogus."""
     mod = _load_module()

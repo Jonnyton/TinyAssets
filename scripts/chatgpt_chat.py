@@ -378,6 +378,54 @@ def _first_visible(page, selectors):
     return None
 
 
+def _type_multiline(page, message: str, *, per_char_delay_ms: int = 5) -> None:
+    """Type ``message`` into the focused composer, preserving newlines.
+
+    ChatGPT's composer treats plain Enter as Send. A naive
+    ``page.keyboard.type(message)`` for a multi-paragraph brief would
+    therefore fire Send the moment it typed the first ``\\n``, truncating
+    the message to its first paragraph. This helper splits on newlines and
+    emits ``Shift+Enter`` between chunks so the composer stays in compose
+    mode until the caller explicitly clicks Send.
+
+    Per-char delay is intentionally short (5ms vs claude_chat.py's 15ms)
+    because long briefs are common in dev-partner mode and 15ms × 3,000
+    chars = 45 seconds of typing for a single message.
+    """
+    chunks = message.split("\n")
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            # Shift+Enter inserts a newline in the composer without firing
+            # Send. Works for both contenteditable composers and
+            # <textarea> shells.
+            page.keyboard.press("Shift+Enter")
+        if chunk:
+            page.keyboard.type(chunk, delay=per_char_delay_ms)
+
+
+def _wait_for_send_button_ready(page, *, timeout_s: int = 10):
+    """Return a visible & enabled Send button locator, or None on timeout.
+
+    Defensive guard: composer state machines occasionally show the Send
+    button before they've accepted typed input. Clicking too early sends
+    an empty (or partial) message. We poll until the button reports
+    ``aria-disabled`` != "true" and ``disabled`` is not set.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        btn = _first_visible(page, SEND_BUTTON_SELECTORS)
+        if btn is not None:
+            try:
+                aria_disabled = (btn.get_attribute("aria-disabled") or "").lower()
+                disabled_attr = btn.get_attribute("disabled")
+                if aria_disabled != "true" and disabled_attr is None:
+                    return btn
+            except Exception:
+                return btn
+        time.sleep(0.15)
+    return _first_visible(page, SEND_BUTTON_SELECTORS)  # final best-effort
+
+
 def _first_usable_input(page):
     """Visible composer input that's not locked / disabled."""
     for sel in INPUT_SELECTORS:
@@ -557,12 +605,24 @@ def cmd_ask(message: str) -> int:
                 )
             except Exception:
                 pass
-        page.keyboard.type(message, delay=15)
-        send = _first_visible(page, SEND_BUTTON_SELECTORS)
+        # CRITICAL: ChatGPT's composer sends on plain Enter. A naive
+        # `keyboard.type(message)` for a multi-paragraph brief would fire
+        # Send on the first paragraph break, truncating the message. Split
+        # on newlines and emit Shift+Enter between chunks so the composer
+        # stays in compose mode until we explicitly click Send.
+        _type_multiline(page, message)
+        # Defensive: wait briefly for the composer to register the typed
+        # text and for the send button to become enabled before clicking,
+        # so we don't fire on a half-typed message.
+        send = _wait_for_send_button_ready(page, timeout_s=10)
         if send is not None:
             send.click()
         else:
-            page.keyboard.press("Enter")
+            # Last-resort fallback: use the platform's "send" keystroke.
+            # ChatGPT respects Ctrl/Cmd+Enter on long messages even when
+            # the visible button isn't found.
+            modifier = "Meta" if sys.platform == "darwin" else "Control"
+            page.keyboard.press(f"{modifier}+Enter")
 
         _append_trace("USER -> CHATGPT", message)
         response, timed_out = _wait_for_response_complete(page, prev)
