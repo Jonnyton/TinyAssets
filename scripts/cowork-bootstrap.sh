@@ -3,6 +3,15 @@
 # Reads GH_TOKEN from the environment or .cowork-bootstrap/github.token
 # (gitignored) and configures ~/.git-credentials so Cowork's Linux
 # sandbox can push.
+#
+# Required PAT scopes for full operation:
+#   - contents: write   (push commits)
+#   - pull-requests: write   (open/update PRs via gh)
+#   - workflows: write   (only needed if pushing .github/workflows/* edits;
+#                         omit if the sandbox should NOT touch CI config)
+# A token without `workflows:write` will fail with
+# `github_actions_workflow_permission_missing` when the writer tries to
+# push workflow-file changes.
 set -euo pipefail
 SECRETS="$(cd "$(dirname "$0")/.." && pwd)/.cowork-bootstrap"
 tok="${GH_TOKEN:-}"
