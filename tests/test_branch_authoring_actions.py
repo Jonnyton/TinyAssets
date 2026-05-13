@@ -58,15 +58,45 @@ def test_create_branch_requires_name(branch_env):
 
 
 def test_list_branches_returns_summaries(branch_env):
+    """All-branches listing for callers that explicitly opt in.
+
+    PR-094 flipped the MCP-tool default of ``published_only`` from False
+    to True so fresh-user chatbots see only forkable production-ready
+    branches by default. Callers wanting all branches (drafts, probes,
+    smoke tests) must explicitly pass ``published_only=False``.
+    """
     us, _ = branch_env
     _call(us, "create_branch", name="A")
     _call(us, "create_branch", name="B")
 
-    listing = _call(us, "list_branches")
+    listing = _call(us, "list_branches", published_only=False)
     assert listing["count"] == 2
     names = sorted(b["name"] for b in listing["branches"])
     assert names == ["A", "B"]
     assert all("node_count" in b for b in listing["branches"])
+
+
+def test_list_branches_default_filters_to_published(branch_env):
+    """PR-094: the MCP-tool default for list_branches is now
+    ``published_only=True``. Fresh-user chatbots calling without args
+    see only forkable production-ready branches — not the 35 smoke /
+    probe / test artifacts that accumulate during substrate development.
+
+    Repro: create 2 unpublished draft branches; default list_branches
+    must return 0. Explicitly request all-branches with
+    ``published_only=False`` to retrieve them.
+    """
+    us, _ = branch_env
+    _call(us, "create_branch", name="DraftOne")
+    _call(us, "create_branch", name="DraftTwo")
+
+    # Default — chatbot caller sees only published.
+    default_listing = _call(us, "list_branches")
+    assert default_listing["count"] == 0
+
+    # Explicit opt-in — gets the drafts back.
+    all_listing = _call(us, "list_branches", published_only=False)
+    assert all_listing["count"] == 2
 
 
 def test_list_branches_published_only_filter(branch_env):
@@ -129,7 +159,9 @@ def test_list_branches_node_count_matches_node_defs_length(branch_env):
     )
 
     # list_branches.node_count must match.
-    listing = _call(us, "list_branches")
+    # PR-094: default flipped to published_only=True; this draft branch
+    # is unpublished so we must explicitly opt into all-branches.
+    listing = _call(us, "list_branches", published_only=False)
     entry = next(b for b in listing["branches"] if b["branch_def_id"] == bid)
     assert entry["node_count"] == expected, (
         f"list_branches.node_count ({entry['node_count']}) "

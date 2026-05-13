@@ -259,7 +259,13 @@ def test_list_branches_goal_id_filter(p5_env):
     _call(us, "goals", "bind", branch_def_id=b2, goal_id=gid1)
     _call(us, "goals", "bind", branch_def_id=b3, goal_id=gid2)
 
-    result = _call(us, "extensions", "list_branches", goal_id=gid1)
+    # PR-094: list_branches MCP-tool default is published_only=True;
+    # these test branches are drafts so we must explicitly opt into
+    # all-branches via published_only=False.
+    result = _call(
+        us, "extensions", "list_branches",
+        goal_id=gid1, published_only=False,
+    )
     assert result["count"] == 2
     ids = {b["branch_def_id"] for b in result["branches"]}
     assert ids == {b1, b2}

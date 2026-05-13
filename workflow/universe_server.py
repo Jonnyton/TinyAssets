@@ -520,7 +520,12 @@ def extensions(
     node_ref_json: str = "",
     intent: str = "",
     node_query: str = "",
-    published_only: bool = False,
+    # PR-094: default flipped to True so fresh-user chatbots calling
+    # list_branches without args see only forkable production-ready
+    # branches, not the 35+ smoke/probe/test artifacts that accumulate
+    # during substrate development. Callers wanting all branches must
+    # pass published_only=False explicitly.
+    published_only: bool = True,
     force: bool = False,
     project_id: str = "",
     key: str = "",
