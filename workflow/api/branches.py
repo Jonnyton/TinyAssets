@@ -1939,6 +1939,31 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     saved = save_branch_definition(_base_path(), branch_def=staging.to_dict())
     persisted = BranchDefinition.from_dict(saved)
 
+    # BUG-080: snapshot the post-patch state as an immutable
+    # branch_version_id so callers can compare before/after, roll back
+    # via fork_from, and reason about which historical version produced
+    # a given run. Previous behavior was in-place mutation with no
+    # version preservation, which broke the "fork → compare → keep
+    # best" promise the autoresearch lab itself is built on. Skip the
+    # snapshot when ops_applied == 0 (no-op patches don't deserve a
+    # new version).
+    new_version_id = None
+    if len(changes) > 0:
+        try:
+            from workflow.branch_versions import publish_branch_version
+            new_version = publish_branch_version(
+                _base_path(),
+                saved,
+                notes="auto-snapshot from patch_branch (BUG-080)",
+            )
+            new_version_id = new_version.branch_version_id
+        except Exception as exc:  # noqa: BLE001 — snapshot is best-effort
+            # If the version store is unavailable for any reason,
+            # patch_branch still succeeds — the mutation is the primary
+            # contract. The snapshot is observability; log the failure
+            # in the response but don't fail the patch.
+            new_version_id = f"snapshot_failed: {exc.__class__.__name__}"
+
     _SKIP_DIFF = {"updated_at", "created_at", "node_defs", "edges",
                   "conditional_edges", "graph_nodes", "state_schema", "stats"}
     patched_fields = [
@@ -1984,6 +2009,7 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         "name_updated": name_updated,
         "new_name": persisted.name,
         "post_patch": post_patch,
+        "branch_version_id": new_version_id,
     }
     if verbose:
         patch_payload["branch"] = saved
