@@ -196,6 +196,58 @@ jobs:
                sudo install -m 0644 -o root -g root /tmp/workflow-daemon.service /etc/systemd/system/workflow-daemon.service; \
                sudo systemctl daemon-reload"
 
+      - name: Preflight droplet disk before image pull
+        id: disk-preflight
+        run: |
+          # A full root volume can make both the forward deploy and the rollback
+          # fail while the live daemon is already down. Reclaim disposable state
+          # before touching WORKFLOW_IMAGE or pulling the new image.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+
+          threshold=85
+          fail_threshold=90
+
+          max_disk_pct() {
+            max=0
+            for path in / /var/lib/docker /data; do
+              [ -e "$path" ] || continue
+              pct="$(df -P "$path" | awk 'NR==2 {gsub("%", "", $5); print $5}')"
+              case "$pct" in
+                ''|*[!0-9]*) pct=0 ;;
+              esac
+              if [ "$pct" -gt "$max" ]; then
+                max="$pct"
+              fi
+            done
+            echo "$max"
+          }
+
+          echo "disk preflight before cleanup:"
+          df -h / /var/lib/docker /data 2>&1 || true
+
+          before="$(max_disk_pct)"
+          if [ "$before" -ge "$threshold" ]; then
+            echo "::warning::disk usage ${before}% >= ${threshold}%; pruning disposable Docker/build/journal state before deploy"
+            docker system prune -af 2>&1 | tail -80 || true
+            docker builder prune -af 2>&1 | tail -80 || true
+            journalctl --vacuum-time=3d 2>&1 | tail -20 || true
+          else
+            echo "disk usage ${before}% < ${threshold}%; no pre-deploy prune needed"
+          fi
+
+          echo "disk preflight after cleanup:"
+          df -h / /var/lib/docker /data 2>&1 || true
+
+          after="$(max_disk_pct)"
+          if [ "$after" -ge "$fail_threshold" ]; then
+            echo "::error::disk usage still ${after}% >= ${fail_threshold}% after prune; refusing deploy before image pull/restart"
+            exit 1
+          fi
+          SH
+
       - name: Deploy new image
         id: deploy
         env:
