@@ -1445,17 +1445,36 @@ def _staged_branch_from_spec(
     except ValueError as exc:
         errors.append(str(exc))
 
+    # PR-037: accept the nested `graph` shape that `get_branch` RETURNS.
+    # Without this, a user trying to fork by mirroring a live branch's
+    # response shape (`{"graph": {"edges": [...], "conditional_edges":
+    # [...], "entry_point": "..."}}`) has their edges silently dropped
+    # during staging. The validator then reports "node not reachable
+    # from entry point" — diagnostics that contradict what the submitted
+    # spec literally contains. This mirrors what
+    # `BranchDefinition.from_dict` already does for the DB-row path.
+    graph_blob = spec.get("graph") if isinstance(spec.get("graph"), dict) else None
+
+    def _spec_get(key: str, default=None):
+        """Top-level key wins; otherwise fall back to graph_blob[key]."""
+        top = spec.get(key)
+        if top is not None:
+            return top
+        if graph_blob is not None and graph_blob.get(key) is not None:
+            return graph_blob.get(key)
+        return default
+
     for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
         err = _apply_node_spec(branch, raw)
         if err:
             errors.append(f"node[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("edges") or []):
+    for idx, raw in enumerate(_spec_get("edges") or []):
         err = _apply_edge_spec(branch, raw)
         if err:
             errors.append(f"edge[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("conditional_edges") or []):
+    for idx, raw in enumerate(_spec_get("conditional_edges") or []):
         err = _apply_conditional_edge_spec(branch, raw)
         if err:
             errors.append(f"conditional_edge[{idx}]: {err}")
@@ -1466,6 +1485,8 @@ def _staged_branch_from_spec(
             errors.append(f"state_schema[{idx}]: {err}")
 
     entry = (spec.get("entry_point") or "").strip()
+    if not entry and graph_blob is not None:
+        entry = (graph_blob.get("entry_point") or "").strip()
     if entry:
         branch.entry_point = entry
 
