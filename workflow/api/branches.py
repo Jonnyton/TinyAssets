@@ -1903,6 +1903,32 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "error": f"Branch '{bid}' not found.",
         })
 
+    # BUG-081: author-gate. Reject patch_branch on a non-author branch
+    # unless the caller explicitly passes force=true. The previous shape
+    # accepted any caller against any public branch, conflating
+    # `visibility=public` (discoverable + readable) with mutation
+    # authority. Slice-0 substrate-readiness probe 2026-05-13 demonstrated
+    # the gap by mutating a chatgpt-community-builder-authored branch
+    # from a non-author session. See pages/bugs/bug-081-... for the
+    # filing.
+    from workflow.api.engine_helpers import _current_actor
+    branch_author = (source.get("author") or "").strip()
+    caller = (_current_actor() or "").strip()
+    force_mutate = bool(kwargs.get("force", False))
+    if branch_author and caller and branch_author != caller and not force_mutate:
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                f"patch_branch denied: branch '{bid}' is authored by "
+                f"'{branch_author}'; caller is '{caller}'. Pass "
+                "force=true to mutate another author's branch, or fork "
+                "it (publish_version + build_branch with fork_from) and "
+                "amend your own copy. See BUG-081."
+            ),
+            "branch_author": branch_author,
+            "caller": caller,
+        })
+
     old_name = source.get("name", "")
     staging = BranchDefinition.from_dict(source)
 

@@ -37,11 +37,22 @@ def _call_patch(branch_before, branch_after, changes_json):
 
     save_mock = MagicMock(return_value=branch_after)
 
+    # BUG-081: patch_branch now author-gates non-author callers. These
+    # tests build a branch with author="tester" but don't set
+    # UNIVERSE_SERVER_USER — so _current_actor() returns "anonymous"
+    # by default and the gate would reject. Mock _current_actor to
+    # return the branch's author so the readback-shape assertions are
+    # not contaminated by the auth check. Tests covering the auth
+    # behavior itself live in test_patch_branch_auth_gate.py.
     with (
         patch("workflow.daemon_server.get_branch_definition", return_value=branch_before),
         patch("workflow.daemon_server.save_branch_definition", save_mock),
         patch("workflow.api.helpers._base_path", return_value="/fake"),
         patch("workflow.branches.BranchDefinition.validate", return_value=[]),
+        patch(
+            "workflow.api.engine_helpers._current_actor",
+            return_value=branch_before.get("author", "tester"),
+        ),
     ):
         result = _ext_branch_patch({
             "branch_def_id": branch_before["branch_def_id"],

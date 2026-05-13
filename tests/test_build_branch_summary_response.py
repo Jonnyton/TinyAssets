@@ -98,11 +98,22 @@ def _call_patch(branch_before, branch_after, changes_json, verbose=None):
     if verbose is not None:
         kwargs["verbose"] = str(verbose).lower()
 
+    # BUG-081: patch_branch author-gates non-author callers. These tests
+    # don't set UNIVERSE_SERVER_USER, so _current_actor() returns
+    # "anonymous" and the gate would reject mutations against a branch
+    # authored by "tester". Mock _current_actor to match the branch's
+    # author so the response-shape assertions aren't contaminated by the
+    # auth check. Auth-gate semantics are covered in
+    # test_patch_branch_auth_gate.py.
     with (
         patch("workflow.daemon_server.get_branch_definition", return_value=branch_before),
         patch("workflow.daemon_server.save_branch_definition", save_mock),
         patch("workflow.api.helpers._base_path", return_value="/fake"),
         patch("workflow.branches.BranchDefinition.validate", return_value=[]),
+        patch(
+            "workflow.api.engine_helpers._current_actor",
+            return_value=branch_before.get("author", "tester"),
+        ),
     ):
         result = _ext_branch_patch(kwargs)
     return json.loads(result)
