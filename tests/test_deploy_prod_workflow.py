@@ -10,6 +10,7 @@ Covers:
   (g) Rollback step present and conditioned on failure
   (h) CF Access gate step blocks deploy on 200 (Access broken); advisory on tunnel-down
   (i) Optional Codex subscription auth bundle is synced without API-key fallback
+  (j) Droplet disk pressure is pruned before image pull/restart
 """
 
 from __future__ import annotations
@@ -256,6 +257,46 @@ def test_deploy_syncs_runtime_compose_and_systemd_files():
     assert "/etc/systemd/system/workflow-daemon.service" in run_script
     assert "systemctl daemon-reload" in run_script
     assert "vector-entrypoint.sh" in run_script
+
+
+# ---------------------------------------------------------------------------
+# (j) Disk preflight before image pull/restart
+# ---------------------------------------------------------------------------
+
+
+def test_disk_preflight_runs_before_deploy_image_pull():
+    wf = _load()
+    steps = _steps(wf)
+    names = [s.get("name", "") for s in steps]
+    preflight_idx = next(
+        i for i, name in enumerate(names)
+        if name == "Preflight droplet disk before image pull"
+    )
+    deploy_idx = next(
+        i for i, step in enumerate(steps)
+        if step.get("id") == "deploy"
+    )
+
+    assert preflight_idx < deploy_idx, (
+        "disk preflight must happen before WORKFLOW_IMAGE is changed, "
+        "docker pull runs, or systemd restart can take the live daemon down"
+    )
+
+
+def test_disk_preflight_prunes_disposable_state_and_fails_before_restart():
+    wf = _load()
+    step = next(
+        s for s in _steps(wf)
+        if s.get("name") == "Preflight droplet disk before image pull"
+    )
+    run_script = step.get("run", "") or ""
+
+    assert "df -h / /var/lib/docker /data" in run_script
+    assert "docker system prune -af" in run_script
+    assert "docker builder prune -af" in run_script
+    assert "journalctl --vacuum-time=3d" in run_script
+    assert "fail_threshold=90" in run_script
+    assert "refusing deploy before image pull/restart" in run_script
 
 
 def test_deploy_scrubs_stdio_only_workflow_universe_from_cloud_env():
