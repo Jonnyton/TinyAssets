@@ -45,7 +45,13 @@ def test_path_size_bytes_directory_recursive(tmp_path):
 # ── get_status patches per-universe subsystems ────────────────────────────────
 
 
-def _make_universe(tmp_path: Path, *, log_bytes: int, output_bytes: int) -> tuple[Path, str]:
+def _make_universe(
+    tmp_path: Path,
+    *,
+    log_bytes: int,
+    output_bytes: int,
+    checkpoint_bytes: int = 0,
+) -> tuple[Path, str]:
     """Create a minimal universe directory with activity.log and output/."""
     uid = "test-universe"
     udir = tmp_path / uid
@@ -54,6 +60,8 @@ def _make_universe(tmp_path: Path, *, log_bytes: int, output_bytes: int) -> tupl
     out = udir / "output"
     out.mkdir()
     (out / "chapter1.txt").write_bytes(b"O" * output_bytes)
+    if checkpoint_bytes:
+        (udir / "checkpoints.db").write_bytes(b"C" * checkpoint_bytes)
     return udir, uid
 
 
@@ -104,6 +112,39 @@ def test_get_status_universe_outputs_bytes_nonzero(tmp_path, monkeypatch):
     )
 
 
+def test_get_status_checkpoint_db_bytes_nonzero_and_cap_current(
+    tmp_path,
+    monkeypatch,
+):
+    """get_status must report the active universe checkpoint DB, not root."""
+    from workflow.universe_server import get_status
+
+    udir, uid = _make_universe(
+        tmp_path,
+        log_bytes=10,
+        output_bytes=20,
+        checkpoint_bytes=4096,
+    )
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("WORKFLOW_CAP_CHECKPOINTS_BYTES", "10000")
+
+    _cfg = _minimal_cfg()
+    with (
+        patch("workflow.dispatcher.load_dispatcher_config", return_value=_cfg),
+        patch("workflow.dispatcher.paid_market_enabled", return_value=False),
+        patch("workflow.api.helpers._default_universe", return_value=uid),
+        patch("workflow.api.helpers._universe_dir", return_value=udir),
+    ):
+        raw = get_status(universe_id=uid)
+
+    result = json.loads(raw)
+    su = result.get("storage_utilization", {})
+    checkpoint_entry = su["per_subsystem"].get("checkpoint_db", {})
+    assert checkpoint_entry.get("bytes", 0) == 4096
+    assert uid in checkpoint_entry.get("path", "")
+    assert su["subsystem_caps"]["checkpoints"]["current_bytes"] == 4096
+
+
 def test_get_status_activity_log_path_points_into_udir(tmp_path, monkeypatch):
     """The reported path for activity_log must be inside udir, not data_dir root."""
     from workflow.universe_server import get_status
@@ -128,7 +169,9 @@ def test_get_status_activity_log_path_points_into_udir(tmp_path, monkeypatch):
 
 def test_get_status_missing_log_and_output_still_reports_zero_not_error(tmp_path, monkeypatch):
     """Missing activity.log + output/ must yield bytes=0, not crash."""
-    from workflow.universe_server import get_status  # Universe dir exists but no activity.log or output/
+    from workflow.universe_server import get_status
+
+    # Universe dir exists but has no activity.log or output/.
     uid = "empty-universe"
     udir = tmp_path / uid
     udir.mkdir()

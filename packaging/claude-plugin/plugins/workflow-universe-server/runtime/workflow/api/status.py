@@ -675,6 +675,11 @@ def get_status(universe_id: str = "") -> str:
         # directory, not at data_dir() root; patch the per-subsystem byte
         # counts using the already-resolved udir.
         if "per_subsystem" in storage_utilization:
+            checkpoint_bytes = path_size_bytes(udir / "checkpoints.db")
+            storage_utilization["per_subsystem"]["checkpoint_db"] = {
+                "bytes": checkpoint_bytes,
+                "path": str(udir / "checkpoints.db"),
+            }
             storage_utilization["per_subsystem"]["activity_log"] = {
                 "bytes": path_size_bytes(udir / "activity.log"),
                 "path": str(udir / "activity.log"),
@@ -683,6 +688,20 @@ def get_status(universe_id: str = "") -> str:
                 "bytes": path_size_bytes(udir / "output"),
                 "path": str(udir / "output"),
             }
+            try:
+                from workflow.storage.caps import subsystem_cap_snapshot
+
+                storage_utilization["subsystem_caps"] = subsystem_cap_snapshot({
+                    "checkpoints": checkpoint_bytes,
+                    "logs": storage_utilization["per_subsystem"]
+                    .get("activity_log", {})
+                    .get("bytes", 0),
+                    "run_artifacts": storage_utilization["per_subsystem"]
+                    .get("run_transcripts", {})
+                    .get("bytes", 0),
+                })
+            except Exception:  # noqa: BLE001 — keep status best-effort
+                pass
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         storage_utilization = {
             "error": "inspect_failed",

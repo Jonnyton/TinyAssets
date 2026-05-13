@@ -60,6 +60,7 @@ from fantasy_daemon.providers.claude_provider import ClaudeProvider  # noqa: E40
 from fantasy_daemon.providers.codex_provider import CodexProvider  # noqa: E402
 from fantasy_daemon.providers.ollama_provider import OllamaProvider  # noqa: E402
 from fantasy_daemon.providers.router import ProviderRouter  # noqa: E402
+from workflow.checkpointing import apply_configured_checkpoint_retention  # noqa: E402
 
 logger = logging.getLogger("fantasy_author")
 
@@ -1676,6 +1677,26 @@ class DaemonController:
                                 "trigger_source": claimed_task.trigger_source,
                             },
                         )
+                try:
+                    prune_result = apply_configured_checkpoint_retention(
+                        checkpointer,
+                        universe_id,
+                    )
+                    if prune_result and prune_result.checkpoints_deleted:
+                        logger.info(
+                            "checkpoint_retention: thread=%s keep_last=%d "
+                            "deleted_checkpoints=%d deleted_writes=%d",
+                            prune_result.thread_id,
+                            prune_result.keep_last_n,
+                            prune_result.checkpoints_deleted,
+                            prune_result.writes_deleted,
+                        )
+                except Exception:  # noqa: BLE001 — retention is protective
+                    logger.warning(
+                        "checkpoint_retention: pruning failed for %s",
+                        universe_id,
+                        exc_info=True,
+                    )
                 self._cleanup()
 
                 # Handle cross-universe synthesis switch

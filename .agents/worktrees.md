@@ -500,3 +500,14 @@ Notes:
   #728 independent-checker observability state.
 - Ship condition: focused tests pass, PR opened for Cowork/Claude review, #720
   can route to a checker worker without manual session assignment.
+
+## Checkpoint Retention - 2026-05-12
+
+- 2026-05-12 create `../wf-checkpoint-retention` on
+  `codex/checkpoint-retention` by codex-gpt5-desktop.
+- Source: production disk triage found `concordance/checkpoints.db` at ~6.5 GiB
+  with 2,915 retained checkpoints and no free-list space.
+- Purpose: cap LangGraph checkpoint retention and surface active-universe
+  checkpoint DB size in storage status before it becomes a disk-full outage.
+- Ship condition: focused tests pass, ruff passes, PR opened for Claude/Cowork
+  review.
