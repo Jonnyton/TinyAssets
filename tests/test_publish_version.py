@@ -32,6 +32,11 @@ def _make_branch_dict(branch_id: str = "b1", name: str = "Test") -> dict:
         entry_point="n1",
         node_defs=[nd],
         state_schema=[{"name": "output", "type": "str"}],
+        skills=[{
+            "skill_id": "branch-rubric",
+            "name": "Branch Rubric",
+            "body": "Use the branch-specific rubric.",
+        }],
     )
     return branch.to_dict()
 
@@ -134,6 +139,19 @@ class TestPublishBranchVersion:
         assert "edges" in v.snapshot
         assert "entry_point" in v.snapshot
         assert "state_schema" in v.snapshot
+        assert v.snapshot["skills"] == d["skills"]
+
+    def test_skill_change_gives_different_version_id(self, tmp_path):
+        d1 = _make_branch_dict()
+        d2 = _make_branch_dict()
+        d2["skills"] = [{
+            "skill_id": "branch-rubric",
+            "name": "Branch Rubric",
+            "body": "Use a changed rubric.",
+        }]
+        v1 = publish_branch_version(tmp_path, d1)
+        v2 = publish_branch_version(tmp_path, d2)
+        assert v1.branch_version_id != v2.branch_version_id
 
     def test_db_row_graph_shape_preserves_topology(self, tmp_path):
         """Publishing a live DB-row branch must not drop graph topology."""

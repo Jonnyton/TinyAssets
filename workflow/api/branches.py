@@ -1464,6 +1464,45 @@ def _staged_branch_from_spec(
             return graph_blob.get(key)
         return default
 
+    def _spec_has_graph_key(key: str) -> bool:
+        return key in spec or (
+            graph_blob is not None and graph_blob.get(key) is not None
+        )
+
+    if branch.fork_from:
+        from workflow.branch_versions import get_branch_version
+
+        parent_version = get_branch_version(_base_path(), branch.fork_from)
+        if parent_version is not None:
+            parent = BranchDefinition.from_dict(parent_version.snapshot)
+            parent_copy = BranchDefinition.from_dict(parent.to_dict())
+            parent_skills = parent_copy.skills
+            if not parent_skills and parent.branch_def_id:
+                from workflow.daemon_server import get_branch_definition
+
+                try:
+                    parent_def = get_branch_definition(
+                        _base_path(), branch_def_id=parent.branch_def_id,
+                    )
+                except KeyError:
+                    parent_def = {}
+                if parent_def:
+                    parent_skills = BranchDefinition.from_dict(parent_def).skills
+            branch.parent_def_id = parent.branch_def_id
+            if "skills" not in spec:
+                branch.skills = parent_skills
+            if "node_defs" not in spec and "nodes" not in spec:
+                branch.node_defs = parent_copy.node_defs
+                branch.graph_nodes = parent_copy.graph_nodes
+            if not _spec_has_graph_key("edges"):
+                branch.edges = parent_copy.edges
+            if not _spec_has_graph_key("conditional_edges"):
+                branch.conditional_edges = parent_copy.conditional_edges
+            if not _spec_has_graph_key("entry_point"):
+                branch.entry_point = parent_copy.entry_point
+            if "state_schema" not in spec:
+                branch.state_schema = list(parent_copy.state_schema)
+
     for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
         err = _apply_node_spec(branch, raw)
         if err:
