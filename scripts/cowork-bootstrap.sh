@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 # Wire Cowork's git push + gh CLI access on session start.
-# Reads .cowork-bootstrap/github.token (gitignored) and configures
-# ~/.git-credentials so Cowork's Linux sandbox can push.
+# Reads GH_TOKEN from the environment or .cowork-bootstrap/github.token
+# (gitignored) and configures ~/.git-credentials so Cowork's Linux
+# sandbox can push.
+#
+# Required PAT scopes for full operation:
+#   - contents: write   (push commits)
+#   - pull-requests: write   (open/update PRs via gh)
+#   - workflows: write   (only needed if pushing .github/workflows/* edits;
+#                         omit if the sandbox should NOT touch CI config)
+# A token without `workflows:write` will fail with
+# `github_actions_workflow_permission_missing` when the writer tries to
+# push workflow-file changes.
 set -euo pipefail
 SECRETS="$(cd "$(dirname "$0")/.." && pwd)/.cowork-bootstrap"
-if [ ! -f "$SECRETS/github.token" ]; then
-  echo "::warning::no $SECRETS/github.token — Cowork stays read-only"
+tok="${GH_TOKEN:-}"
+if [ -z "$tok" ] && [ -f "$SECRETS/github.token" ]; then
+  tok="$(cat "$SECRETS/github.token")"
+fi
+if [ -z "$tok" ]; then
+  echo "::warning::no GH_TOKEN or $SECRETS/github.token — Cowork stays read-only"
   exit 0
 fi
-tok="$(cat "$SECRETS/github.token")"
 git config --global credential.helper store
 printf 'https://Jonnyton:%s@github.com\n' "$tok" > "$HOME/.git-credentials"
 chmod 600 "$HOME/.git-credentials"
