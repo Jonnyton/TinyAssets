@@ -13,7 +13,7 @@ The human host is watching the browser tab. Your job is to look like a naive, cu
 
 - **Codex / OpenAI-family route:** use the Codex in-app browser to open or continue `https://claude.ai/`. If the app context already shows a Claude.ai conversation, use that visible tab. Do not block this route on `scripts/claude_chat.py`, Chrome CDP, or `localhost:9222`; those are Claude Code harness details, not Codex in-app browser requirements.
 - **Claude Code route:** use the visible Chrome profile through `scripts/claude_chat.py`. This remains the default route for Claude team user-sim. Host-login Claude.ai access is not the proof requirement; Claude.ai is valid when a real browser session can use the Workflow connector.
-- **Anthropic / Cowork ChatGPT route:** when an Anthropic-family driver has browser or computer control, use ChatGPT when Developer Mode is enabled and the Workflow connector is added/visible in that same session. Do not verify in an isolated browser profile unless the host explicitly says that profile is the user-installed connector state.
+- **Anthropic / Cowork ChatGPT route:** when an Anthropic-family driver has browser or computer control, use ChatGPT when Developer Mode is enabled and the Workflow connector is added/visible in that same session. Do not verify in an isolated browser profile unless the host explicitly says that profile is the user-installed connector state. Claude Code on Windows can drive this route via `scripts/chatgpt_chat.py` (sibling of `claude_chat.py`, same CDP at `localhost:9222`, reuses the Chrome profile).
 
 ## Proof standard
 
