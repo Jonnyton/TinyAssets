@@ -1839,6 +1839,10 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
 
 
 def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
+    import copy
+
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.branch_versions import publish_branch_version
     from workflow.branches import BranchDefinition
     from workflow.daemon_server import (
         get_branch_definition,
@@ -1883,7 +1887,7 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         })
 
     old_name = source.get("name", "")
-    staging = BranchDefinition.from_dict(source)
+    staging = BranchDefinition.from_dict(copy.deepcopy(source))
 
     per_op_errors: list[dict[str, Any]] = []
     for idx, op in enumerate(changes):
@@ -1936,8 +1940,37 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "suggestions": suggestions,
         })
 
+    actor = _current_actor()
+    try:
+        parent_version = publish_branch_version(
+            _base_path(),
+            source,
+            publisher=actor,
+            notes="patch_branch pre-patch snapshot",
+        )
+    except (KeyError, ValueError) as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Could not snapshot pre-patch branch: {exc}",
+        })
+
     saved = save_branch_definition(_base_path(), branch_def=staging.to_dict())
     persisted = BranchDefinition.from_dict(saved)
+    try:
+        branch_version = publish_branch_version(
+            _base_path(),
+            saved,
+            publisher=actor,
+            notes="patch_branch post-patch snapshot",
+            parent_version_id=parent_version.branch_version_id,
+        )
+    except (KeyError, ValueError) as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Patch saved but post-patch version snapshot failed: {exc}",
+            "branch_def_id": persisted.branch_def_id,
+            "parent_version_id": parent_version.branch_version_id,
+        })
 
     _SKIP_DIFF = {"updated_at", "created_at", "node_defs", "edges",
                   "conditional_edges", "graph_nodes", "state_schema", "stats"}
@@ -1961,6 +1994,7 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         f"**Patched branch '{persisted.name}'**: applied {len(changes)} op(s). "
         f"{len(persisted.node_defs)} nodes, {len(persisted.edges)} edges, "
         f"{len(persisted.skills)} skills, entry=`{persisted.entry_point}`.",
+        f"Published version `{branch_version.branch_version_id}`.",
     ]
     if patched_fields:
         text_lines += ["", f"Changed fields: {', '.join(patched_fields)}."]
@@ -1976,6 +2010,10 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         "text": "\n".join(text_lines),
         "status": "patched",
         "branch_def_id": persisted.branch_def_id,
+        "branch_version_id": branch_version.branch_version_id,
+        "content_hash": branch_version.content_hash,
+        "published_at": branch_version.published_at,
+        "parent_version_id": branch_version.parent_version_id,
         "ops_applied": len(changes),
         "node_count": len(persisted.node_defs),
         "edge_count": len(persisted.edges),

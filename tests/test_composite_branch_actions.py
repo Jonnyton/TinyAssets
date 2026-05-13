@@ -221,6 +221,42 @@ def test_patch_branch_batch_succeeds(comp_env):
     assert any(n["node_id"] == "novelty_check" for n in got["node_defs"])
 
 
+def test_patch_branch_publishes_versioned_snapshot(comp_env):
+    us, base = comp_env
+    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    bid = built["branch_def_id"]
+
+    result = _call(
+        us,
+        "patch_branch",
+        branch_def_id=bid,
+        changes_json=json.dumps([
+            {
+                "op": "add_state_field",
+                "name": "review_output",
+                "type": "str",
+            },
+        ]),
+    )
+
+    assert result["status"] == "patched", result
+    assert result["branch_version_id"]
+    assert result["parent_version_id"]
+
+    from workflow.branch_versions import get_branch_version
+
+    parent = get_branch_version(base, result["parent_version_id"])
+    version = get_branch_version(base, result["branch_version_id"])
+    assert parent is not None
+    assert version is not None
+    assert parent.branch_version_id != version.branch_version_id
+    assert version.parent_version_id == parent.branch_version_id
+    assert parent.snapshot["branch_def_id"] == bid
+    assert version.snapshot["branch_def_id"] == bid
+    assert all(f["name"] != "review_output" for f in parent.snapshot["state_schema"])
+    assert any(f["name"] == "review_output" for f in version.snapshot["state_schema"])
+
+
 def test_patch_branch_rollback_on_any_op_failure(comp_env):
     """AC #3 — if op 3 is invalid, zero rows mutated. All errors reported."""
     us, _ = comp_env
