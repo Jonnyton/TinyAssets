@@ -2158,7 +2158,21 @@ def list_branch_definitions(
     params: list[Any] = []
 
     if published_only:
-        clauses.append("published = 1")
+        # BUG-082: "published_only" must match branches that EITHER have
+        # the branch-level published flag set OR have at least one
+        # published version snapshot in the branch_versions table. The
+        # branch-level flag is not auto-flipped by publish_branch_version
+        # (separate write path), so a flag-only filter silently misses
+        # version-stamped branches like the autoresearch lab after its
+        # first publish_version call.
+        from workflow.branch_versions import list_versioned_branch_def_ids
+        versioned_ids = list_versioned_branch_def_ids(base_path)
+        if versioned_ids:
+            placeholders = ",".join("?" * len(versioned_ids))
+            clauses.append(f"(published = 1 OR branch_def_id IN ({placeholders}))")
+            params.extend(sorted(versioned_ids))
+        else:
+            clauses.append("published = 1")
     if author:
         clauses.append("author = ?")
         params.append(author)

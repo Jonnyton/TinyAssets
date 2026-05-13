@@ -195,6 +195,37 @@ class TestListAndFilter:
         assert len(results) == 1
         assert results[0]["name"] == "alpha-branch"
 
+    def test_filter_published_includes_versioned_without_branch_flag(
+        self, db_path: Path
+    ):
+        """BUG-082 regression: branches with a published version_id but no
+        branch-level published flag must still appear in
+        ``published_only=True`` listings.
+
+        Repro shape from the slice-0 substrate-readiness probe (2026-05-13):
+        ``publish_branch_version`` mints a permanent ``branch_version_id``
+        in the branch_versions table but does not flip the branch-level
+        ``published`` flag, so the discovery filter missed branches the
+        substrate had genuinely version-stamped.
+        """
+        from workflow.branch_versions import publish_branch_version
+
+        # Reuse the insert-two helper: alpha-branch has published=1 (the
+        # already-covered legacy path); beta-branch has published=0.
+        self._insert_two(db_path)
+
+        # Mint a real published version for beta-branch — the version
+        # store records it, the branch-level flag stays False.
+        beta_def = get_branch_definition(db_path, branch_def_id="second-id")
+        publish_branch_version(db_path, beta_def)
+
+        results = list_branch_definitions(db_path, published_only=True)
+        names = sorted(item["name"] for item in results)
+        assert names == ["alpha-branch", "beta-branch"], (
+            "published_only must include a branch with a published "
+            "version_id even when its branch-level published flag is False"
+        )
+
     def test_filter_author(self, db_path: Path):
         self._insert_two(db_path)
         results = list_branch_definitions(db_path, author="bob")

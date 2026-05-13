@@ -379,6 +379,24 @@ def get_branch_version(
     return _row_to_version(row)
 
 
+def list_versioned_branch_def_ids(base_path: str | Path) -> set[str]:
+    """Return the set of branch_def_ids that have at least one published version.
+
+    Used by ``list_branch_definitions(published_only=True)`` to include
+    branches whose first version was published but whose top-level
+    ``published`` column was never auto-flipped — see BUG-082. The version
+    store and the branch-definitions store are separate SQLite databases,
+    so this helper does the lookup as a distinct query and the caller
+    composes the result back into its main predicate.
+    """
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT branch_def_id FROM branch_versions"
+        ).fetchall()
+    return {row["branch_def_id"] for row in rows}
+
+
 def list_branch_versions(
     base_path: str | Path,
     branch_def_id: str,
