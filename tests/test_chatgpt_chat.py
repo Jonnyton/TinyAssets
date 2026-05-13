@@ -74,7 +74,7 @@ def test_subcommands_registered() -> None:
     import argparse  # noqa: PLC0415 — local import keeps test hermetic
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
-    expected = {"ask", "read", "new-chat", "status", "dismiss-dialogs", "tabs"}
+    expected = {"ask", "read", "new-chat", "status", "dismiss-dialogs", "tabs", "inspect"}
     # Parse each expected subcommand against the module's main() through
     # argparse only — we use a dry-run by intercepting before any cmd_* call.
     # The cheap way: confirm each name appears in the --help text. That's

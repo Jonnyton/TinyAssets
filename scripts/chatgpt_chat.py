@@ -779,6 +779,128 @@ def cmd_status() -> int:
         pw.stop()
 
 
+def cmd_inspect() -> int:
+    """Dump current ChatGPT page state for debugging the driver.
+
+    Reports: URL, user messages count + lengths, assistant messages count
+    + per-turn boundaries, latest assistant text, visible composer text,
+    visible send/stop button state, any visible permission-dialog buttons
+    (Deny / Review Context / Allow), and any error text on the page.
+
+    UTF-8 safe because chatgpt_chat.py forces utf-8 stdio at import time;
+    avoids the cp1252 'charmap' codec crash that scratch probe scripts
+    keep hitting on Windows (same flavor as BUG-074).
+    """
+    try:
+        pw, browser = _connect(auto_launch=False)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    try:
+        page = _find_chatgpt_page(browser)
+        if page is None:
+            print("CDP reachable; no chatgpt.com tab found.")
+            return 1
+        print(f"URL: {page.url}")
+        users = page.evaluate(
+            """
+            () => {
+              const nodes = document.querySelectorAll(
+                '[data-message-author-role="user"]'
+              );
+              return Array.from(nodes).map(n =>
+                ((n.innerText || '').slice(0, 200))
+              );
+            }
+            """
+        ) or []
+        print(f"\nUSER MESSAGES: {len(users)}")
+        for i, m in enumerate(users):
+            print(f"  [{i}] len={len(m)}: {m!r}")
+        turns = page.evaluate(
+            """
+            () => {
+              const out = [];
+              for (const t of document.querySelectorAll(
+                '[data-testid^=\"conversation-turn\"]'
+              )) {
+                const assistants = t.querySelectorAll(
+                  '[data-message-author-role=\"assistant\"]'
+                );
+                if (!assistants.length) continue;
+                const texts = Array.from(assistants).map(a =>
+                  ((a.innerText || '').trim())
+                );
+                out.push({chunks: texts.length, total_len:
+                  texts.reduce((a, b) => a + b.length, 0)});
+              }
+              return out;
+            }
+            """
+        ) or []
+        print(f"\nASSISTANT TURNS: {len(turns)}")
+        for i, t in enumerate(turns):
+            print(f"  [{i}] chunks={t['chunks']} total_len={t['total_len']}")
+        print("\nLATEST ASSISTANT (joined):")
+        print(_read_last_assistant_text(page) or "(none)")
+        composer = page.evaluate(
+            """
+            () => {
+              const el = document.querySelector(
+                'div#prompt-textarea[contenteditable=\"true\"], '
+                + 'textarea#prompt-textarea, '
+                + '[data-testid=\"prompt-textarea\"]'
+              );
+              if (!el) return null;
+              return (el.innerText || el.value || '').slice(0, 240);
+            }
+            """
+        )
+        print(f"\nCOMPOSER TEXT: {composer!r}")
+        send_state = page.evaluate(
+            """
+            () => {
+              const b = document.querySelector(
+                'button[data-testid=\"send-button\"]'
+              );
+              if (!b) return null;
+              return {
+                visible: b.getBoundingClientRect().width > 0,
+                disabled: b.disabled,
+                aria_disabled: b.getAttribute('aria-disabled'),
+                aria_label: b.getAttribute('aria-label'),
+              };
+            }
+            """
+        )
+        print(f"SEND BUTTON: {send_state}")
+        dlg_buttons = page.evaluate(
+            """
+            () => {
+              const out = [];
+              const re = new RegExp(
+                '^(deny|review context|allow|approve|always allow|'
+                + 'use this connector|cancel|continue|confirm)',
+                'i'
+              );
+              for (const b of document.querySelectorAll('button')) {
+                const t = (b.innerText || '').trim();
+                if (!re.test(t)) continue;
+                const r = b.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) continue;
+                out.push(t);
+              }
+              return out;
+            }
+            """
+        ) or []
+        print(f"DIALOG-LIKE BUTTONS VISIBLE: {dlg_buttons}")
+        return 0
+    finally:
+        browser.close()
+        pw.stop()
+
+
 def cmd_tabs() -> int:
     """Report open-tab count + URLs. Enforces per-chatgpt tab hygiene only."""
     try:
@@ -817,6 +939,7 @@ def main() -> int:
     sub.add_parser("status")
     sub.add_parser("dismiss-dialogs")
     sub.add_parser("tabs")
+    sub.add_parser("inspect")
     ns = p.parse_args()
 
     if ns.cmd == "ask":
@@ -831,6 +954,8 @@ def main() -> int:
         return cmd_dismiss_dialogs()
     if ns.cmd == "tabs":
         return cmd_tabs()
+    if ns.cmd == "inspect":
+        return cmd_inspect()
     return 1
 
 
