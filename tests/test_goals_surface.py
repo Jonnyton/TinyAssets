@@ -259,7 +259,9 @@ def test_list_branches_goal_id_filter(p5_env):
     _call(us, "goals", "bind", branch_def_id=b2, goal_id=gid1)
     _call(us, "goals", "bind", branch_def_id=b3, goal_id=gid2)
 
-    result = _call(us, "extensions", "list_branches", goal_id=gid1)
+    # scope="all" so unpublished drafts built by _build_branch are included
+    # (default scope="published" would filter them out).
+    result = _call(us, "extensions", "list_branches", goal_id=gid1, scope="all")
     assert result["count"] == 2
     ids = {b["branch_def_id"] for b in result["branches"]}
     assert ids == {b1, b2}

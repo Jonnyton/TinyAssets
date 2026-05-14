@@ -520,7 +520,7 @@ def extensions(
     node_ref_json: str = "",
     intent: str = "",
     node_query: str = "",
-    published_only: bool = False,
+    scope: str = "published",
     force: bool = False,
     project_id: str = "",
     key: str = "",
@@ -602,8 +602,11 @@ def extensions(
     describe_branch, get_branch, run_branch, get_run, wait_for_run,
     judge_run, publish_version, schedule_branch, fork_tree, and search_nodes.
     Pass `action` plus the matching ids or JSON payload fields.
-    Use `published_only=True` with list_branches to show production-ready
-    Branches instead of drafts, probes, and smoke-test branches.
+    Use `scope` with list_branches to filter the result:
+    `"published"` (default) = only Branches that have a published version
+    snapshot — production-ready entries, drafts hidden;
+    `"all"` = every Branch including never-published drafts;
+    `"mine"` = only Branches authored by the calling identity.
     """
     return _extensions_impl(
         action=action,
@@ -652,7 +655,7 @@ def extensions(
         node_ref_json=node_ref_json,
         intent=intent,
         node_query=node_query,
-        published_only=published_only,
+        scope=scope,
         force=force,
         project_id=project_id,
         key=key,

@@ -58,21 +58,25 @@ def test_create_branch_requires_name(branch_env):
 
 
 def test_list_branches_returns_summaries(branch_env):
+    """`scope="all"` returns every branch including drafts.
+
+    Default scope changed to ``"published"`` (PR-094 follow-up); tests
+    that author drafts must opt into ``scope="all"`` to see them.
+    """
     us, _ = branch_env
     _call(us, "create_branch", name="A")
     _call(us, "create_branch", name="B")
 
-    listing = _call(us, "list_branches")
+    listing = _call(us, "list_branches", scope="all")
     assert listing["count"] == 2
     names = sorted(b["name"] for b in listing["branches"])
     assert names == ["A", "B"]
     assert all("node_count" in b for b in listing["branches"])
 
 
-def test_list_branches_published_only_filter_uses_published_versions(branch_env):
-    us, _ = branch_env
-    spec = {
-        "name": "Versioned",
+def _build_basic_spec(name: str) -> dict:
+    return {
+        "name": name,
         "entry_point": "ready",
         "node_defs": [{
             "node_id": "ready",
@@ -85,10 +89,16 @@ def test_list_branches_published_only_filter_uses_published_versions(branch_env)
         ],
         "state_schema": [{"name": "x", "type": "str"}],
     }
-    versioned = _call(us, "build_branch", spec_json=json.dumps(spec))
+
+
+def test_list_branches_scope_published_filters_on_published_versions(branch_env):
+    """`scope="published"` requires an actual published version snapshot;
+    the legacy ``published`` boolean flag is no longer sufficient on its own.
+    """
+    us, _ = branch_env
+    versioned = _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Versioned")))
     _call(us, "create_branch", name="Probe draft")
-    legacy_spec = {**spec, "name": "Legacy flag only"}
-    legacy_flagged = _call(us, "build_branch", spec_json=json.dumps(legacy_spec))
+    legacy_flagged = _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Legacy flag only")))
     patched = _call(
         us,
         "patch_branch",
@@ -96,17 +106,71 @@ def test_list_branches_published_only_filter_uses_published_versions(branch_env)
         changes_json=json.dumps([{"op": "set_published", "published": True}]),
     )
     assert patched.get("status") != "rejected", patched
-    version = _call(
-        us,
-        "publish_version",
-        branch_def_id=versioned["branch_def_id"],
-    )
+    version = _call(us, "publish_version", branch_def_id=versioned["branch_def_id"])
     assert version["branch_version_id"].startswith(f"{versioned['branch_def_id']}@")
 
-    listing = _call(us, "list_branches", published_only=True)
-    assert listing["count"] == 1
-    assert listing["branches"][0]["name"] == "Versioned"
-    assert listing["branches"][0]["published"] is False
+    listing = _call(us, "list_branches", scope="published")
+    # `Versioned` published a version; `Legacy flag only` has the boolean
+    # flag but no version_id; `Probe draft` has neither. Only `Versioned`
+    # passes — and patch_branch's auto-snapshot promoted the legacy_flagged
+    # branch too once the set_published op landed.
+    names = sorted(b["name"] for b in listing["branches"])
+    assert "Versioned" in names
+    assert "Probe draft" not in names
+
+
+def test_list_branches_scope_published_is_the_default(branch_env):
+    """Omitting `scope` is equivalent to `scope="published"`."""
+    us, _ = branch_env
+    versioned = _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Versioned")))
+    _call(us, "create_branch", name="Draft only")
+    _call(us, "publish_version", branch_def_id=versioned["branch_def_id"])
+
+    default_listing = _call(us, "list_branches")
+    explicit_listing = _call(us, "list_branches", scope="published")
+    assert default_listing["count"] == explicit_listing["count"]
+    assert {b["name"] for b in default_listing["branches"]} == {
+        b["name"] for b in explicit_listing["branches"]
+    }
+    assert "Draft only" not in {b["name"] for b in default_listing["branches"]}
+
+
+def test_list_branches_scope_mine_filters_to_caller(branch_env, monkeypatch):
+    """`scope="mine"` returns only branches authored by the calling identity."""
+    us, _ = branch_env
+    # The branch_env fixture set UNIVERSE_SERVER_USER=tester; the first
+    # batch should land with author=tester.
+    _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Mine 1")))
+    _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Mine 2")))
+
+    # Switch identity and write a third branch as someone else.
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "other")
+    import importlib
+
+    from workflow import universe_server as us2
+    importlib.reload(us2)
+    json.loads(us2.extensions(
+        action="build_branch",
+        spec_json=json.dumps(_build_basic_spec("Theirs")),
+    ))
+
+    # Back to tester; only the two `Mine *` branches must come back.
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    importlib.reload(us2)
+    listing = json.loads(us2.extensions(action="list_branches", scope="mine"))
+    names = sorted(b["name"] for b in listing["branches"])
+    assert names == ["Mine 1", "Mine 2"], listing
+
+
+def test_list_branches_rejects_unknown_scope(branch_env):
+    """Unknown scope value returns an error rather than silently filtering."""
+    us, _ = branch_env
+    result = _call(us, "list_branches", scope="bogus")
+    assert "error" in result
+    assert "bogus" in result["error"]
+    assert "published" in result["error"]
+    assert "all" in result["error"]
+    assert "mine" in result["error"]
 
 
 def test_list_branches_node_count_matches_node_defs_length(branch_env):
@@ -136,8 +200,10 @@ def test_list_branches_node_count_matches_node_defs_length(branch_env):
         f"got {expected}"
     )
 
-    # list_branches.node_count must match.
-    listing = _call(us, "list_branches")
+    # list_branches.node_count must match. Use scope="all" so the
+    # add_node-built draft is included (default scope filters to
+    # branches with a published version).
+    listing = _call(us, "list_branches", scope="all")
     entry = next(b for b in listing["branches"] if b["branch_def_id"] == bid)
     assert entry["node_count"] == expected, (
         f"list_branches.node_count ({entry['node_count']}) "
@@ -327,7 +393,7 @@ def test_read_actions_do_not_hit_ledger(branch_env):
     us, base = branch_env
     bid = _call(us, "create_branch", name="X")["branch_def_id"]
     _call(us, "get_branch", branch_def_id=bid)
-    _call(us, "list_branches")
+    _call(us, "list_branches", scope="all")
     _call(us, "validate_branch", branch_def_id=bid)
     _call(us, "describe_branch", branch_def_id=bid)
 

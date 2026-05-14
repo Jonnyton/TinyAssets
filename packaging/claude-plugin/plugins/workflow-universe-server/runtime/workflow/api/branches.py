@@ -371,11 +371,23 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     return json.dumps(branch, default=str)
 
 
+_VALID_BRANCH_LIST_SCOPES = {"published", "all", "mine"}
+
+
 def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     from workflow.api.engine_helpers import _current_actor
     from workflow.daemon_server import list_branch_definitions
 
-    published_only = bool(kwargs.get("published_only", False))
+    scope = (kwargs.get("scope") or "published").strip().lower()
+    if scope not in _VALID_BRANCH_LIST_SCOPES:
+        return json.dumps({
+            "error": (
+                f"unknown scope '{scope}'. "
+                f"Valid scopes: {sorted(_VALID_BRANCH_LIST_SCOPES)}."
+            ),
+        })
+
+    actor = _current_actor()
 
     # Phase 6.2.2 — visibility-aware listing. Viewer sees public
     # Branches and any private Branches they authored.
@@ -384,7 +396,7 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         domain_id=kwargs.get("domain_id", ""),
         author=kwargs.get("author", ""),
         goal_id=kwargs.get("goal_id", ""),
-        viewer=_current_actor(),
+        viewer=actor,
     )
 
     # requires_sandbox filter: "none" = design-only branches only (no node
@@ -394,10 +406,13 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
 
     summaries = []
     for r in rows:
-        if published_only:
+        if scope == "published":
             from workflow.branch_versions import list_branch_versions
 
             if not list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1):
+                continue
+        elif scope == "mine":
+            if (r.get("author") or "") != actor:
                 continue
         node_defs = r.get("node_defs", [])
         has_sandbox_nodes = any(nd.get("requires_sandbox") for nd in node_defs)
