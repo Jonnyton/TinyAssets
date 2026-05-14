@@ -381,7 +381,6 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     # Branches and any private Branches they authored.
     rows = list_branch_definitions(
         _base_path(),
-        published_only=published_only,
         domain_id=kwargs.get("domain_id", ""),
         author=kwargs.get("author", ""),
         goal_id=kwargs.get("goal_id", ""),
@@ -395,8 +394,11 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
 
     summaries = []
     for r in rows:
-        if published_only and not r.get("published", False):
-            continue
+        if published_only:
+            from workflow.branch_versions import list_branch_versions
+
+            if not list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1):
+                continue
         node_defs = r.get("node_defs", [])
         has_sandbox_nodes = any(nd.get("requires_sandbox") for nd in node_defs)
         if rs_filter == "none" and has_sandbox_nodes:

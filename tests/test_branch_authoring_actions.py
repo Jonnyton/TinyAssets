@@ -69,10 +69,10 @@ def test_list_branches_returns_summaries(branch_env):
     assert all("node_count" in b for b in listing["branches"])
 
 
-def test_list_branches_published_only_filter(branch_env):
+def test_list_branches_published_only_filter_uses_published_versions(branch_env):
     us, _ = branch_env
     spec = {
-        "name": "Published",
+        "name": "Versioned",
         "entry_point": "ready",
         "node_defs": [{
             "node_id": "ready",
@@ -85,20 +85,28 @@ def test_list_branches_published_only_filter(branch_env):
         ],
         "state_schema": [{"name": "x", "type": "str"}],
     }
-    published = _call(us, "build_branch", spec_json=json.dumps(spec))
+    versioned = _call(us, "build_branch", spec_json=json.dumps(spec))
     _call(us, "create_branch", name="Probe draft")
+    legacy_spec = {**spec, "name": "Legacy flag only"}
+    legacy_flagged = _call(us, "build_branch", spec_json=json.dumps(legacy_spec))
     patched = _call(
         us,
         "patch_branch",
-        branch_def_id=published["branch_def_id"],
+        branch_def_id=legacy_flagged["branch_def_id"],
         changes_json=json.dumps([{"op": "set_published", "published": True}]),
     )
     assert patched.get("status") != "rejected", patched
+    version = _call(
+        us,
+        "publish_version",
+        branch_def_id=versioned["branch_def_id"],
+    )
+    assert version["branch_version_id"].startswith(f"{versioned['branch_def_id']}@")
 
     listing = _call(us, "list_branches", published_only=True)
     assert listing["count"] == 1
-    assert listing["branches"][0]["name"] == "Published"
-    assert listing["branches"][0]["published"] is True
+    assert listing["branches"][0]["name"] == "Versioned"
+    assert listing["branches"][0]["published"] is False
 
 
 def test_list_branches_node_count_matches_node_defs_length(branch_env):
