@@ -213,6 +213,7 @@ def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
     normalized = BranchDefinition.from_dict(branch_dict).to_dict()
     return {
         "branch_def_id": normalized.get("branch_def_id", ""),
+        "tags": normalized.get("tags", []),
         "skills": normalized.get("skills", []),
         "entry_point": normalized.get("entry_point", ""),
         "graph_nodes": normalized.get("graph_nodes", []),

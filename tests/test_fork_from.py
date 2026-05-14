@@ -34,6 +34,53 @@ def _seed_branch(base_path, branch_id: str = "b1", name: str = "Branch") -> dict
     return save_branch_definition(base_path, branch_def=branch.to_dict())
 
 
+def _seed_clone_source(base_path, branch_id: str = "source") -> dict:
+    from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+
+    initialize_author_server(base_path)
+    branch = BranchDefinition(
+        branch_def_id=branch_id,
+        name="Clone Source",
+        tags=["substrate", "clone"],
+        skills=[{
+            "name": "analysis-skill",
+            "description": "Analyze the request",
+            "body": "Use focused reasoning.",
+        }],
+        graph_nodes=[
+            GraphNodeRef(id="experiment_designer", node_def_id="experiment_designer"),
+            GraphNodeRef(id="reviewer", node_def_id="reviewer", position=1),
+        ],
+        edges=[
+            EdgeDefinition(from_node="experiment_designer", to_node="reviewer"),
+            EdgeDefinition(from_node="reviewer", to_node="END"),
+        ],
+        entry_point="experiment_designer",
+        node_defs=[
+            NodeDefinition(
+                node_id="experiment_designer",
+                display_name="Experiment Designer",
+                input_keys=["request"],
+                output_keys=["design"],
+                prompt_template="Design an experiment for {request}",
+            ),
+            NodeDefinition(
+                node_id="reviewer",
+                display_name="Reviewer",
+                input_keys=["design"],
+                output_keys=["review"],
+                prompt_template="Review {design}",
+            ),
+        ],
+        state_schema=[
+            {"name": "request", "type": "str"},
+            {"name": "design", "type": "str"},
+            {"name": "review", "type": "str"},
+        ],
+    )
+    return save_branch_definition(base_path, branch_def=branch.to_dict())
+
+
 def _publish(base_path, branch_id: str) -> str:
     from workflow.daemon_server import get_branch_definition
 
@@ -107,6 +154,78 @@ class TestForkFromField:
         result = json.loads(_ext_branch_build({"spec_json": spec}))
         assert result["status"] == "rejected"
         assert any("fork_from" in e for e in result["errors"])
+
+    def test_build_branch_fork_from_empty_node_overrides_clones_parent(
+        self, tmp_path, monkeypatch
+    ):
+        from workflow.api.branches import _ext_branch_build
+        from workflow.daemon_server import get_branch_definition
+
+        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        parent = _seed_clone_source(tmp_path)
+        bvid = _publish(tmp_path, "source")
+        parent_before = get_branch_definition(tmp_path, branch_def_id="source")
+
+        result = json.loads(_ext_branch_build({
+            "spec_json": json.dumps({
+                "name": "Inherited Clone",
+                "fork_from": bvid,
+                "node_overrides": {},
+            }),
+            "verbose": "true",
+        }))
+
+        assert result["status"] == "built", result
+        clone = result["branch"]
+        assert clone["fork_from"] == bvid
+        assert clone["parent_def_id"] == "source"
+        assert clone["node_defs"] == parent["node_defs"]
+        assert clone["graph"] == parent["graph"]
+        assert clone["entry_point"] == parent["entry_point"]
+        assert clone["state_schema"] == parent["state_schema"]
+        assert clone["skills"] == parent["skills"]
+        assert clone["tags"] == parent["tags"]
+        assert get_branch_definition(tmp_path, branch_def_id="source") == parent_before
+
+    def test_build_branch_fork_from_node_overrides_one_node_preserves_siblings(
+        self, tmp_path, monkeypatch
+    ):
+        from workflow.api.branches import _ext_branch_build
+
+        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        parent = _seed_clone_source(tmp_path)
+        bvid = _publish(tmp_path, "source")
+
+        result = json.loads(_ext_branch_build({
+            "spec_json": json.dumps({
+                "name": "Prompt Variant",
+                "fork_from": bvid,
+                "node_overrides": {
+                    "experiment_designer": {
+                        "prompt_template": "Design a tighter experiment for {request}",
+                    },
+                },
+            }),
+            "verbose": "true",
+        }))
+
+        assert result["status"] == "built", result
+        clone_nodes = {
+            node["node_id"]: node for node in result["branch"]["node_defs"]
+        }
+        parent_nodes = {node["node_id"]: node for node in parent["node_defs"]}
+        assert (
+            clone_nodes["experiment_designer"]["prompt_template"]
+            == "Design a tighter experiment for {request}"
+        )
+        inherited_designer = dict(parent_nodes["experiment_designer"])
+        inherited_designer["prompt_template"] = (
+            "Design a tighter experiment for {request}"
+        )
+        assert clone_nodes["experiment_designer"] == inherited_designer
+        assert clone_nodes["reviewer"] == parent_nodes["reviewer"]
+        assert result["branch"]["graph"] == parent["graph"]
+        assert result["branch"]["state_schema"] == parent["state_schema"]
 
 
 class TestSetForkFromPatchOp:

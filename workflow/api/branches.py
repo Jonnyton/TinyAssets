@@ -1424,6 +1424,50 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     return ""
 
 
+def _apply_node_overrides(branch: Any, raw: Any) -> list[str]:
+    from workflow.branches import NodeDefinition
+
+    if not isinstance(raw, dict):
+        return ["node_overrides must be an object keyed by inherited node_id."]
+
+    errors: list[str] = []
+    nodes_by_id = {node.node_id: node for node in branch.node_defs}
+    for node_id, override in raw.items():
+        if not isinstance(node_id, str) or not node_id.strip():
+            errors.append("node_overrides keys must be non-empty node_id strings.")
+            continue
+        if not isinstance(override, dict):
+            errors.append(f"node_overrides[{node_id!r}] must be an object.")
+            continue
+        inherited = nodes_by_id.get(node_id)
+        if inherited is None:
+            errors.append(
+                f"node_overrides[{node_id!r}] does not match an inherited node."
+            )
+            continue
+        if "node_id" in override and override.get("node_id") != node_id:
+            errors.append(
+                f"node_overrides[{node_id!r}] cannot change inherited node_id."
+            )
+            continue
+
+        merged = inherited.to_dict()
+        merged.update(override)
+        merged["node_id"] = node_id
+        try:
+            nodes_by_id[node_id] = NodeDefinition.from_dict(merged)
+        except (TypeError, ValueError) as exc:
+            errors.append(f"node_overrides[{node_id!r}]: {exc}")
+
+    if errors:
+        return errors
+
+    branch.node_defs = [
+        nodes_by_id.get(node.node_id, node) for node in branch.node_defs
+    ]
+    return []
+
+
 def _staged_branch_from_spec(
     spec: dict[str, Any],
 ) -> tuple[Any, list[str]]:
@@ -1479,7 +1523,8 @@ def _staged_branch_from_spec(
             parent = BranchDefinition.from_dict(parent_version.snapshot)
             parent_copy = BranchDefinition.from_dict(parent.to_dict())
             parent_skills = parent_copy.skills
-            if not parent_skills and parent.branch_def_id:
+            parent_tags = list(parent_copy.tags)
+            if (not parent_skills or not parent_tags) and parent.branch_def_id:
                 from workflow.daemon_server import get_branch_definition
 
                 try:
@@ -1489,8 +1534,13 @@ def _staged_branch_from_spec(
                 except KeyError:
                     parent_def = {}
                 if parent_def:
-                    parent_skills = BranchDefinition.from_dict(parent_def).skills
+                    parent_def_branch = BranchDefinition.from_dict(parent_def)
+                    parent_skills = parent_def_branch.skills
+                    if not parent_tags:
+                        parent_tags = list(parent_def_branch.tags)
             branch.parent_def_id = parent.branch_def_id
+            if "tags" not in spec:
+                branch.tags = parent_tags
             if "skills" not in spec:
                 branch.skills = parent_skills
             if "node_defs" not in spec and "nodes" not in spec:
@@ -1504,6 +1554,16 @@ def _staged_branch_from_spec(
                 branch.entry_point = parent_copy.entry_point
             if "state_schema" not in spec:
                 branch.state_schema = list(parent_copy.state_schema)
+
+    if "node_overrides" in spec:
+        if not branch.fork_from:
+            errors.append("node_overrides requires fork_from.")
+        elif "node_defs" in spec or "nodes" in spec:
+            errors.append(
+                "node_overrides cannot be combined with node_defs or nodes."
+            )
+        else:
+            errors.extend(_apply_node_overrides(branch, spec.get("node_overrides")))
 
     for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
         err = _apply_node_spec(branch, raw)
@@ -1956,7 +2016,6 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     # the gap by mutating a chatgpt-community-builder-authored branch
     # from a non-author session. See pages/bugs/bug-081-... for the
     # filing.
-    from workflow.api.engine_helpers import _current_actor
     branch_author = (source.get("author") or "").strip()
     caller = (_current_actor() or "").strip()
     force_mutate = bool(kwargs.get("force", False))
