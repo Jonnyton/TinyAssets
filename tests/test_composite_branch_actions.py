@@ -301,6 +301,47 @@ def test_patch_branch_publishes_versioned_snapshot(comp_env):
     assert any(f["name"] == "review_output" for f in version.snapshot["state_schema"])
 
 
+def test_patch_branch_metadata_patch_bumps_version_and_snapshots_tags(comp_env):
+    us, base = comp_env
+    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    bid = built["branch_def_id"]
+
+    before = _call(us, "get_branch", branch_def_id=bid)
+    assert before["version"] == 1
+    assert "probe-touch" not in before["tags"]
+
+    result = _call(
+        us,
+        "patch_branch",
+        branch_def_id=bid,
+        changes_json=json.dumps([
+            {"op": "set_tags", "tags": ["recipes", "probe-touch"]},
+        ]),
+    )
+
+    assert result["status"] == "patched", result
+    assert result["branch_version_id"]
+    assert result["parent_version_id"]
+    assert result["branch_version_id"] != result["parent_version_id"]
+    assert result["version_before"] == 1
+    assert result["version_after"] == 2
+
+    after = _call(us, "get_branch", branch_def_id=bid)
+    assert after["version"] == 2
+    assert after["tags"] == ["recipes", "probe-touch"]
+
+    from workflow.branch_versions import get_branch_version
+
+    parent = get_branch_version(base, result["parent_version_id"])
+    version = get_branch_version(base, result["branch_version_id"])
+    assert parent is not None
+    assert version is not None
+    assert parent.snapshot["version"] == 1
+    assert version.snapshot["version"] == 2
+    assert parent.snapshot["tags"] == []
+    assert version.snapshot["tags"] == ["recipes", "probe-touch"]
+
+
 def test_patch_branch_rollback_on_any_op_failure(comp_env):
     """AC #3 — if op 3 is invalid, zero rows mutated. All errors reported."""
     us, _ = comp_env

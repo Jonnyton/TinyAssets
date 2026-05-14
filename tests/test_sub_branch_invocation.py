@@ -1422,7 +1422,7 @@ class TestInvokeBranchDesignUsedEmit:
 
 class TestInvokeBranchVersionDesignUsedEmit:
     """invoke_branch_version_spec emits design_used keyed by the resolved
-    branch_def_id (since branch_version snapshot is topology-only)."""
+    branch_def_id (author attribution stays on the live BranchDefinition)."""
 
     def test_emits_design_used_for_version_blocking_success(self, tmp_path):
         from workflow.branch_versions import (

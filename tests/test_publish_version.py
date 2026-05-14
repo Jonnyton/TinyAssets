@@ -59,14 +59,14 @@ class TestComputeContentHash:
         h2 = compute_content_hash(_canonical_snapshot(d2))
         assert h1 != h2
 
-    def test_metadata_change_does_not_affect_hash(self):
-        """Only topology fields contribute to the hash, not name/author."""
+    def test_stable_metadata_change_affects_hash(self):
+        """Branch metadata participates in version identity."""
         d1 = _make_branch_dict(name="Version Alpha")
         d2 = _make_branch_dict(name="Version Beta")
         from workflow.branch_versions import _canonical_snapshot
         h1 = compute_content_hash(_canonical_snapshot(d1))
         h2 = compute_content_hash(_canonical_snapshot(d2))
-        assert h1 == h2
+        assert h1 != h2
 
     def test_hash_is_64_hex_chars(self):
         d = _make_branch_dict()
@@ -132,9 +132,12 @@ class TestPublishBranchVersion:
         child = publish_branch_version(tmp_path, d2, parent_version_id=parent.branch_version_id)
         assert child.parent_version_id == parent.branch_version_id
 
-    def test_snapshot_contains_topology_fields(self, tmp_path):
+    def test_snapshot_contains_stable_metadata_and_topology_fields(self, tmp_path):
         d = _make_branch_dict()
         v = publish_branch_version(tmp_path, d)
+        assert v.snapshot["name"] == d["name"]
+        assert v.snapshot["tags"] == d["tags"]
+        assert v.snapshot["version"] == d["version"]
         assert "node_defs" in v.snapshot
         assert "edges" in v.snapshot
         assert "entry_point" in v.snapshot
@@ -175,12 +178,13 @@ class TestPublishBranchVersion:
         assert row_version.snapshot["graph_nodes"] == d["graph_nodes"]
         assert row_version.snapshot["edges"] == d["edges"]
 
-    def test_snapshot_excludes_metadata_fields(self, tmp_path):
+    def test_snapshot_excludes_unstable_and_attribution_fields(self, tmp_path):
         d = _make_branch_dict()
         v = publish_branch_version(tmp_path, d)
-        assert "name" not in v.snapshot
         assert "author" not in v.snapshot
         assert "stats" not in v.snapshot
+        assert "created_at" not in v.snapshot
+        assert "updated_at" not in v.snapshot
 
 
 # ─── get_branch_version ───────────────────────────────────────────────────────

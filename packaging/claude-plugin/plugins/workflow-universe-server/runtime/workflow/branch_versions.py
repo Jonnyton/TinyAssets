@@ -3,9 +3,10 @@
 Spec: docs/vetted-specs.md §publish_version.
 Rollback design: docs/design-notes/2026-04-25-surgical-rollback-proposal.md.
 
-A published version is a write-once snapshot of a BranchDefinition's full
-topology (node_defs, edges, conditional_edges, state_schema, entry_point)
-at the moment of publish. It is immutable after creation.
+A published version is a write-once snapshot of a BranchDefinition's stable
+branch metadata and full topology (node_defs, edges, conditional_edges,
+state_schema, entry_point) at the moment of publish. It is immutable after
+creation.
 
 ``publish_version`` mints a new ``branch_version_id`` of the form
 ``<branch_def_id>@<sha256_prefix8>`` and stores the canonical JSON in
@@ -207,19 +208,31 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
 
 
 def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
-    """Extract fields that define published branch behavior."""
+    """Extract stable fields that define a comparable branch version."""
     from workflow.branches import BranchDefinition
 
     normalized = BranchDefinition.from_dict(branch_dict).to_dict()
     return {
         "branch_def_id": normalized.get("branch_def_id", ""),
+        "name": normalized.get("name", ""),
+        "description": normalized.get("description", ""),
+        "domain_id": normalized.get("domain_id", ""),
+        "goal_id": normalized.get("goal_id", ""),
+        "tags": normalized.get("tags", []),
+        "version": normalized.get("version", 1),
         "skills": normalized.get("skills", []),
+        "parent_def_id": normalized.get("parent_def_id"),
+        "fork_from": normalized.get("fork_from"),
         "entry_point": normalized.get("entry_point", ""),
+        "published": normalized.get("published", False),
+        "visibility": normalized.get("visibility", "public"),
         "graph_nodes": normalized.get("graph_nodes", []),
         "edges": normalized.get("edges", []),
         "conditional_edges": normalized.get("conditional_edges", []),
         "node_defs": normalized.get("node_defs", []),
         "state_schema": normalized.get("state_schema", []),
+        "default_llm_policy": normalized.get("default_llm_policy"),
+        "concurrency_budget": normalized.get("concurrency_budget"),
     }
 
 

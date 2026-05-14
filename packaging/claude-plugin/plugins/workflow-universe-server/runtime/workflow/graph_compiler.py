@@ -1635,8 +1635,8 @@ def _build_invoke_branch_version_node(
         def _resolve_branch_def_id_for_author() -> str:
             """Map child_branch_version_id → branch_def_id for author lookup.
 
-            ``branch_versions.snapshot`` is topology-only; author lives on the
-            live BranchDefinition. ``get_branch_version`` returns None on
+            Author attribution lives on the live BranchDefinition, not the
+            branch_versions snapshot. ``get_branch_version`` returns None on
             missing — return "" so emit silently skips (orphan-row prevention).
             """
             from workflow.branch_versions import get_branch_version

@@ -189,12 +189,10 @@ class TestExecuteBranchVersionAsync:
             tmp_path, branch_version_id=bvid, inputs={},
         )
         assert outcome.run_id
-        # Note: snapshot's NAME is not retained in branch_versions.snapshot
-        # (only topology fields per _canonical_snapshot). But the bvid the
-        # run was tagged with is stable, so the immutability invariant we
-        # actually test is that the run record carries the published bvid
-        # — not whatever bvid a fresh publish_version on the edited def
-        # would mint.
+        # The bvid the run was tagged with is stable, so the immutability
+        # invariant we test is that the run record carries the published bvid
+        # — not whatever bvid a fresh publish_version on the edited def would
+        # mint.
         wait_for(outcome.run_id, timeout=10.0)
         record = get_run(tmp_path, outcome.run_id)
         assert record is not None

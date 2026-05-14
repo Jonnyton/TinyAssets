@@ -1956,7 +1956,6 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     # the gap by mutating a chatgpt-community-builder-authored branch
     # from a non-author session. See pages/bugs/bug-081-... for the
     # filing.
-    from workflow.api.engine_helpers import _current_actor
     branch_author = (source.get("author") or "").strip()
     caller = (_current_actor() or "").strip()
     force_mutate = bool(kwargs.get("force", False))
@@ -2042,7 +2041,11 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "error": f"Could not snapshot pre-patch branch: {exc}",
         })
 
-    saved = save_branch_definition(_base_path(), branch_def=staging.to_dict())
+    old_version = int(source.get("version") or 1)
+    new_version = old_version + 1
+    staging_dict = staging.to_dict()
+    staging_dict["version"] = new_version
+    saved = save_branch_definition(_base_path(), branch_def=staging_dict)
     persisted = BranchDefinition.from_dict(saved)
     try:
         branch_version = publish_branch_version(
@@ -2103,6 +2106,8 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         "published_at": branch_version.published_at,
         "parent_version_id": branch_version.parent_version_id,
         "ops_applied": len(changes),
+        "version_before": old_version,
+        "version_after": new_version,
         "node_count": len(persisted.node_defs),
         "edge_count": len(persisted.edges),
         "skill_count": len(persisted.skills),
