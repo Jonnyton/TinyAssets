@@ -70,7 +70,7 @@ def test_list_branches_returns_summaries(branch_env):
 
 
 def test_list_branches_published_only_filter_uses_published_versions(branch_env):
-    us, _ = branch_env
+    us, base = branch_env
     spec = {
         "name": "Versioned",
         "entry_point": "ready",
@@ -89,19 +89,34 @@ def test_list_branches_published_only_filter_uses_published_versions(branch_env)
     _call(us, "create_branch", name="Probe draft")
     legacy_spec = {**spec, "name": "Legacy flag only"}
     legacy_flagged = _call(us, "build_branch", spec_json=json.dumps(legacy_spec))
-    patched = _call(
-        us,
-        "patch_branch",
+
+    # Seed the old mutable flag shape directly. patch_branch is not suitable
+    # for this setup because it mints immutable pre/post branch versions.
+    from workflow.daemon_server import get_branch_definition, save_branch_definition
+
+    legacy_raw = get_branch_definition(
+        base,
         branch_def_id=legacy_flagged["branch_def_id"],
-        changes_json=json.dumps([{"op": "set_published", "published": True}]),
     )
-    assert patched.get("status") != "rejected", patched
+    legacy_raw["published"] = True
+    save_branch_definition(base, branch_def=legacy_raw)
+
+    from workflow.branch_versions import list_branch_versions
+
+    assert list_branch_versions(base, legacy_flagged["branch_def_id"]) == []
+
     version = _call(
         us,
         "publish_version",
         branch_def_id=versioned["branch_def_id"],
     )
     assert version["branch_version_id"].startswith(f"{versioned['branch_def_id']}@")
+    assert _call(
+        us,
+        "get_branch",
+        branch_def_id=versioned["branch_def_id"],
+        select="published",
+    )["published"] is False
 
     listing = _call(us, "list_branches", published_only=True)
     assert listing["count"] == 1
