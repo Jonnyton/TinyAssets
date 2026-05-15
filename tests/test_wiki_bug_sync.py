@@ -16,6 +16,7 @@ from wiki_bug_sync import (  # noqa: E402
     create_gh_change_issue,
     create_gh_issue,
     fetch_bug_detail,
+    find_existing_gh_issue,
     list_new_bugs,
     list_new_change_requests,
     priority_labels_for_request,
@@ -414,6 +415,171 @@ def test_create_gh_issue_no_token_raises():
             body_md="desc", dry_run=False,
         )
     assert exc_info.value.code == 3
+
+
+# ---------------------------------------------------------------------------
+# find_existing_gh_issue — GitHub-side dedup safety net
+# ---------------------------------------------------------------------------
+
+
+class _MockHTTPResponse:
+    """Context-manager-friendly stand-in for urllib.request.urlopen result."""
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode()
+
+
+def _make_opener(payload: dict | None = None, raise_exc: Exception | None = None):
+    calls = []
+
+    def _opener(req, timeout=None):
+        calls.append({"url": req.full_url, "headers": dict(req.headers)})
+        if raise_exc is not None:
+            raise raise_exc
+        return _MockHTTPResponse(payload or {"items": []})
+
+    _opener.calls = calls
+    return _opener
+
+
+def test_find_existing_gh_issue_returns_url_on_prefix_match():
+    opener = _make_opener({
+        "items": [
+            {"title": "[BUG-080] some title", "html_url": "https://example/issues/851"},
+        ],
+    })
+    url = find_existing_gh_issue(
+        token="tok", repo="owner/repo", title_prefix="[BUG-080]",
+        opener=opener,
+    )
+    assert url == "https://example/issues/851"
+    assert len(opener.calls) == 1
+    assert "search/issues" in opener.calls[0]["url"]
+    assert "%5BBUG-080%5D" in opener.calls[0]["url"]  # url-encoded "[BUG-080]"
+
+
+def test_find_existing_gh_issue_returns_none_on_no_match():
+    opener = _make_opener({"items": []})
+    assert find_existing_gh_issue(
+        token="tok", repo="owner/repo", title_prefix="[BUG-999]",
+        opener=opener,
+    ) is None
+
+
+def test_find_existing_gh_issue_filters_post_hoc_for_exact_prefix():
+    """GitHub's `in:title` matches any token, so the helper must post-filter
+    on exact prefix match — otherwise a `BUG-080` search would falsely
+    return a `BUG-8000` issue whose title also contains the token."""
+    opener = _make_opener({
+        "items": [
+            {"title": "[BUG-8000] unrelated bug", "html_url": "https://example/issues/9000"},
+            {"title": "[BUG-080] real match", "html_url": "https://example/issues/851"},
+        ],
+    })
+    url = find_existing_gh_issue(
+        token="tok", repo="owner/repo", title_prefix="[BUG-080]",
+        opener=opener,
+    )
+    assert url == "https://example/issues/851"
+
+
+def test_find_existing_gh_issue_returns_none_on_network_error():
+    import urllib.error
+
+    opener = _make_opener(raise_exc=urllib.error.URLError("dns fail"))
+    # Best-effort: must not raise; falling through to create-path is the
+    # correct safety posture so a transient API blip never silently drops
+    # a needed filing.
+    assert find_existing_gh_issue(
+        token="tok", repo="owner/repo", title_prefix="[BUG-080]",
+        opener=opener,
+    ) is None
+
+
+def test_find_existing_gh_issue_returns_none_without_token():
+    """No GITHUB_TOKEN → can't search, so return None and fall through."""
+    opener = _make_opener({"items": []})
+    assert find_existing_gh_issue(
+        token="", repo="owner/repo", title_prefix="[BUG-080]",
+        opener=opener,
+    ) is None
+    # MUST NOT have called the opener — no token means no GH API hit at all.
+    assert opener.calls == []
+
+
+def test_create_gh_issue_skips_when_existing_issue_found(monkeypatch, capsys):
+    """The recurrence pattern from 2026-05-14 (#840+#851 etc.): wiki-bug-sync
+    must not re-file an issue when one with the same `[BUG-NNN]` prefix
+    already exists, even when the cursor would otherwise advance past it."""
+    import wiki_bug_sync as wbs
+
+    captured = {}
+
+    def fake_find(token, repo, title_prefix, **kwargs):
+        captured["title_prefix"] = title_prefix
+        return "https://example/issues/851"
+
+    monkeypatch.setattr(wbs, "find_existing_gh_issue", fake_find)
+
+    # If we *did* fall through to creation it would raise on the urlopen
+    # POST; the dedup short-circuit prevents that. Wrap urlopen so a
+    # missed short-circuit produces a clear failure.
+    def boom(*_a, **_kw):
+        raise AssertionError("create_gh_issue should not POST when dedup hits")
+
+    monkeypatch.setattr(wbs.urllib.request, "urlopen", boom)
+
+    url = create_gh_issue(
+        token="tok", repo="owner/repo",
+        bug_id="BUG-080", title="Test", severity="major", component="x",
+        body_md="desc", dry_run=False,
+    )
+    assert url == "https://example/issues/851"
+    assert captured["title_prefix"] == "[BUG-080]"
+    out = capsys.readouterr().out
+    assert "BUG-080 skipped" in out
+    assert "https://example/issues/851" in out
+
+
+def test_create_gh_change_issue_skips_when_existing_issue_found(monkeypatch, capsys):
+    """Same dedup safety net for non-bug change requests. The full
+    `[WIKI-PATCH] <title>` is used (not just `[WIKI-PATCH]`) so distinct
+    patches with the same prefix don't false-positive each other."""
+    import wiki_bug_sync as wbs
+
+    captured = {}
+
+    def fake_find(token, repo, title_prefix, **kwargs):
+        captured["title_prefix"] = title_prefix
+        return "https://example/issues/855"
+
+    monkeypatch.setattr(wbs, "find_existing_gh_issue", fake_find)
+
+    def boom(*_a, **_kw):
+        raise AssertionError("create_gh_change_issue should not POST when dedup hits")
+
+    monkeypatch.setattr(wbs.urllib.request, "urlopen", boom)
+
+    url = create_gh_change_issue(
+        token="tok", repo="owner/repo",
+        request_kind="patch",
+        title="Move A — clone-with-inherit",
+        path="pages/patch-requests/pr-110-move-a.md",
+        body_md="desc", dry_run=False,
+    )
+    assert url == "https://example/issues/855"
+    # Must search on the full title prefix, not just `[WIKI-PATCH]`, to
+    # avoid matching unrelated WIKI-PATCH issues.
+    assert captured["title_prefix"].startswith("[WIKI-PATCH] Move A")
 
 
 def test_fetch_bug_detail_reads_with_page_not_path():

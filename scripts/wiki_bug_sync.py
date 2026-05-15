@@ -40,6 +40,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -505,6 +506,61 @@ def _gh_ensure_label(
         pass  # best-effort
 
 
+def find_existing_gh_issue(
+    token: str,
+    repo: str,
+    title_prefix: str,
+    gh_api: str = GITHUB_API,
+    timeout: float = 20.0,
+    opener=None,
+) -> str | None:
+    """Return URL of an existing issue whose title starts with ``title_prefix``.
+
+    Checks both open and closed issues — even a closed/landed prior filing
+    for the same wiki bug means we should not re-file. Returns None on no
+    match, malformed response, or network/HTTP error; the caller falls
+    through to its create-path so a transient API blip never silently
+    drops a needed filing. Pass ``opener`` for testability — it must
+    behave like ``urllib.request.urlopen``.
+
+    Today's recurrence pattern (2026-05-14) is multiple GitHub issues
+    referencing the same wiki BUG/PR-NNN: the cursor + change-seen state
+    is a write-side advance marker and cannot detect issues filed by a
+    different mechanism (host manual filing, earlier ad-hoc runs). This
+    check is a final safety net independent of the state files.
+    """
+    if not token:
+        return None
+    # The GitHub search API's `in:title` matches any token in the title,
+    # so we still need a post-filter for exact-prefix.
+    query = f'repo:{repo} is:issue in:title "{title_prefix}"'
+    search_url = (
+        f"{gh_api}/search/issues?q={urllib.parse.quote(query)}&per_page=10"
+    )
+    req = urllib.request.Request(
+        search_url,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "workflow-wiki-bug-sync/1.0",
+        },
+    )
+    _open = opener or urllib.request.urlopen
+    try:
+        with _open(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError,
+            json.JSONDecodeError):
+        return None
+    for item in data.get("items", []):
+        title = item.get("title", "")
+        if title.startswith(title_prefix):
+            return item.get("html_url")
+    return None
+
+
 def _label_color(label: str) -> str:
     if label == _AUTO_LABEL:
         return "0075ca"
@@ -591,6 +647,15 @@ def create_gh_issue(
     if not token:
         raise SyncError(3, "GITHUB_TOKEN is not set — cannot create GH Issues")
 
+    existing = find_existing_gh_issue(
+        token, repo, f"[{bug_id}]", gh_api=gh_api, timeout=timeout,
+    )
+    if existing:
+        print(
+            f"[wiki-bug-sync] {bug_id} skipped — existing issue at {existing}"
+        )
+        return existing
+
     # Ensure labels exist
     for label in labels:
         _gh_ensure_label(
@@ -659,6 +724,15 @@ def create_gh_change_issue(
 
     if not token:
         raise SyncError(3, "GITHUB_TOKEN is not set — cannot create GH Issues")
+
+    existing = find_existing_gh_issue(
+        token, repo, title_str, gh_api=gh_api, timeout=timeout,
+    )
+    if existing:
+        print(
+            f"[wiki-bug-sync] {prefix}:{path} skipped — existing issue at {existing}"
+        )
+        return existing
 
     for label in labels:
         _gh_ensure_label(
