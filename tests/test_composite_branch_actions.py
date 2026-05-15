@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
 
 @pytest.fixture
@@ -95,6 +96,57 @@ def test_build_branch_persists(comp_env):
     # Atomic get_branch returns the same branch.
     got = _call(us, "get_branch", branch_def_id=bid)
     assert got["name"] == "Recipe tracker"
+
+
+def test_build_branch_preserves_explicit_non_strict_input_isolation(comp_env):
+    us, _ = comp_env
+    spec = {
+        **RECIPE_SPEC,
+        "node_defs": [{
+            "node_id": "capture",
+            "display_name": "Capture raw recipe",
+            "input_keys": ["raw_recipe"],
+            "output_keys": ["capture_output"],
+            "prompt_template": "Extract {raw_recipe} using {style_guide}",
+            "strict_input_isolation": False,
+        }],
+        "edges": [
+            {"from": "START", "to": "capture"},
+            {"from": "capture", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": "raw_recipe", "type": "str"},
+            {"name": "style_guide", "type": "str"},
+            {"name": "capture_output", "type": "str"},
+        ],
+    }
+
+    built = _call(us, "build_branch", spec_json=json.dumps(spec))
+
+    assert built["status"] == "built", built
+    got = _call(us, "get_branch", branch_def_id=built["branch_def_id"])
+    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
+    assert capture["strict_input_isolation"] is False
+
+    from workflow.branches import BranchDefinition
+    from workflow.graph_compiler import compile_branch
+
+    prompts: list[str] = []
+
+    def provider(prompt, system="", *, role="writer", fallback_response=None):
+        prompts.append(prompt)
+        return "captured"
+
+    branch = BranchDefinition.from_dict(got)
+    app = compile_branch(branch, provider_call=provider).graph.compile(
+        checkpointer=InMemorySaver(),
+    )
+    result = app.invoke(
+        {"raw_recipe": "pasta", "style_guide": "terse"},
+        config={"configurable": {"thread_id": "non-strict-build-branch"}},
+    )
+    assert prompts == ["Extract pasta using terse"]
+    assert result["capture_output"] == "captured"
 
 
 def test_build_branch_fork_from_inherits_parent_topology(comp_env):
