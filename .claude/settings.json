@@ -4,6 +4,7 @@
     "CLAUDE_CODE_TEAMMATE_MODE": "in-process"
   },
   "permissions": {
+    "defaultMode": "auto",
     "allow": [
       "Bash(*)",
       "Read(*)",
