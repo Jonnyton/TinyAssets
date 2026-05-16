@@ -119,6 +119,19 @@ the promotion rationale is
 
 ## Cross-Cutting Principles
 
+## Brain Module
+
+Workflow's Brain module is the composition layer for retrieval, memory, and durable state. It subsumes the older "Retrieval And Memory" and "State And Artifacts" framings into one discipline: every agent step should know what to read, what state to trust, what artifact to update, and what prior art to consult before it invents a new pattern.
+
+Reference implementations worth studying before changing Brain-shaped systems include OB1-style operator memory and the Karpathy LLM Wiki pattern: small, inspectable pages that compress lessons into reusable working context instead of burying them in transcripts. Workflow should apply the same consult-prior-art habit to public commons pages, branch state, notes, and run artifacts.
+
+Design implications:
+
+- Brain is a policy over existing primitives (`read.page`, `write.page`, `read.graph`, `write.graph`, `run.graph`), not a new monolithic tool.
+- Retrieval, memory, notes, state, artifacts, and wiki pages are one working set with different trust and freshness properties.
+- Before adding a Brain primitive, first show why current graph/page primitives cannot compose the behavior.
+- Every Brain write-back should be reviewable, attributable, and reusable by future daemons.
+
 **Agentic hybrid search is memory.** Durable memory is a policy over multiple stores (KG traversal, vector similarity, hierarchical summaries, notes, world-state, direct tool calls). No single backend owns truth. Routing matters more than any one store.
 
 **Context is a managed working set.** Prompts are lossy projections over durable state. The goal is not "pack more context" but "give the model the smallest high-signal working set for the current step."
