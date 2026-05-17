@@ -273,6 +273,62 @@ def test_goal_pool_valid_task_emits_branch_task(repo_root, universe_dir):
     assert out[0].status == "pending"
 
 
+def test_goal_pool_emits_goal_ladder_rung_claim_recommendations(
+    repo_root, universe_dir,
+):
+    from workflow.daemon_server import save_goal
+
+    save_goal(
+        universe_dir.parent,
+        goal={
+            "goal_id": "maintenance",
+            "name": "Maintenance",
+            "author": "host",
+            "gate_ladder": [
+                {
+                    "rung_key": "pr_ready",
+                    "label": "PR ready",
+                    "description": "Patch and tests are ready.",
+                    "branch_requirements": {
+                        "allowed_writer_families": ["claude", "codex"],
+                        "forbid_same_family_checker": True,
+                    },
+                    "bounty_requirements": {
+                        "settlement_gate": "pr_ready",
+                    },
+                },
+            ],
+        },
+    )
+    _write_pool_yaml(repo_root, "maintenance", "loop_2_task")
+
+    out = GoalPoolProducer().produce(
+        universe_dir, subscribed_goals=["maintenance"],
+    )
+
+    assert len(out) == 1
+    assert out[0].rung_claim_recommendations == [
+        {
+            "goal_id": "maintenance",
+            "rung_key": "pr_ready",
+            "label": "PR ready",
+            "description": "Patch and tests are ready.",
+            "branch_requirements": {
+                "allowed_writer_families": ["claude", "codex"],
+                "forbid_same_family_checker": True,
+            },
+            "bounty_requirements": {
+                "settlement_gate": "pr_ready",
+            },
+            "claim_action": (
+                "gates action=claim "
+                "branch_def_id=fantasy_author:universe_cycle_wrapper "
+                "rung_key=pr_ready evidence_url=<evidence_url>"
+            ),
+        },
+    ]
+
+
 def test_goal_pool_rescan_idempotency(repo_root, universe_dir):
     """Invariant 4: re-running produces same tasks, not duplicates."""
     for i in range(3):

@@ -97,6 +97,7 @@ class BranchTask:
     lease_expires_at: str = ""
     heartbeat_at: str = ""
     last_progress_at: str = ""
+    rung_claim_recommendations: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -39,6 +39,7 @@ def test_branch_task_lease_fields_default_and_roundtrip() -> None:
     assert task.lease_expires_at == ""
     assert task.heartbeat_at == ""
     assert task.last_progress_at == ""
+    assert task.rung_claim_recommendations == []
     assert BranchTask.from_dict(task.to_dict()) == task
 
 

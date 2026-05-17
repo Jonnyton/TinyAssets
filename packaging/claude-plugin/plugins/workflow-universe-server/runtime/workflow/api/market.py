@@ -26,11 +26,11 @@ Public surface (back-compat re-exported via ``workflow.universe_server``):
     Attribution handlers:
         _action_record_remix / _action_get_provenance
 
-    Goal handlers (9):
+    Goal handlers (10):
         _action_goal_propose / _action_goal_update / _action_goal_bind /
         _action_goal_list / _action_goal_get / _action_goal_search /
         _action_goal_leaderboard / _action_goal_common_nodes /
-        _action_goal_set_canonical
+        _action_goal_archive_consultation / _action_goal_set_canonical
 
     Gates handlers (9 + 6 gate_event):
         _action_gates_define_ladder / _action_gates_get_ladder /
@@ -609,7 +609,8 @@ _ATTRIBUTION_ACTIONS: dict[str, Any] = {
 # Phase 5 per docs/specs/community_branches_phase5.md. A Goal is the
 # intent a Branch serves — "produce a research paper", "plan a
 # wedding". Many Branches bind to one Goal. 8 actions: propose,
-# update, bind, list, get, search, leaderboard, common_nodes.
+# update, bind, list, get, search, leaderboard, common_nodes,
+# archive_consultation.
 # Storage in workflow/author_server.py.
 
 
@@ -1349,6 +1350,76 @@ def _action_goal_common_nodes(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_goal_archive_consultation(kwargs: dict[str, Any]) -> str:
+    from workflow.api.branches import _ensure_workflow_db
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.daemon_server import get_goal, goal_archive_consultation
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if not gid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "goal_id is required.",
+        })
+    _ensure_workflow_db()
+    try:
+        goal = get_goal(_base_path(), goal_id=gid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Goal '{gid}' not found.",
+        })
+
+    query = (kwargs.get("query") or "").strip()
+    consultation = goal_archive_consultation(
+        _base_path(),
+        goal_id=gid,
+        query=query,
+        limit=int(kwargs.get("limit", 20) or 20),
+        viewer=_current_actor(),
+    )
+    candidates = consultation["candidates"]
+    lines = [
+        f"**Archive consultation for Goal '{goal['name']}'**",
+        (
+            "Parent candidates are ranked with quality, diversity, "
+            "and the gate leaderboard outcome signal."
+        ),
+        "",
+    ]
+    if candidates:
+        for candidate in candidates[:12]:
+            outcome = candidate.get("outcome_signal") or {}
+            lines.append(
+                f"{candidate['rank']}. **{candidate['name']}** · "
+                f"score={candidate['parent_rank_score']} · "
+                f"quality={candidate['quality_score']} · "
+                f"outcome={candidate['outcome_score']} "
+                f"(`{outcome.get('highest_rung_key', '')}`) · "
+                f"diversity={candidate['diversity_score']} · "
+                f"`{candidate['branch_def_id']}`"
+            )
+    else:
+        if query:
+            lines.append("_No bound Branches match that archive query._")
+        else:
+            lines.append(
+                "_No Branches are bound to this Goal yet. Bind existing "
+                "Branches before selecting fork parents._"
+            )
+
+    return json.dumps({
+        "status": "ok",
+        "text": "\n".join(lines),
+        "goal_id": gid,
+        "query": query,
+        "candidates": candidates,
+        "outcome_leaderboard": consultation["outcome_leaderboard"],
+        "selection_basis": consultation["selection_basis"],
+        "count": len(candidates),
+    }, default=str)
+
+
 def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     from workflow.api.branches import _ensure_workflow_db
     from workflow.api.engine_helpers import (
@@ -1416,6 +1487,7 @@ _GOAL_ACTIONS: dict[str, Any] = {
     "search": _action_goal_search,
     "leaderboard": _action_goal_leaderboard,
     "common_nodes": _action_goal_common_nodes,
+    "archive_consultation": _action_goal_archive_consultation,
     "set_canonical": _action_goal_set_canonical,
 }
 
@@ -1549,6 +1621,9 @@ def goals(
                    this when helping a user decide "is there already
                    a node that does X somewhere on this server?" even
                    if they haven't committed to a Goal yet.
+      archive_consultation Rank bound Branches as fork parents using
+                   quality, diversity, and gates leaderboard outcome
+                   signal. Optional query filters the candidate space.
 
     Args:
       action: see above.

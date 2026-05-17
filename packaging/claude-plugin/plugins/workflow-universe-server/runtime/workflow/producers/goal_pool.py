@@ -58,6 +58,54 @@ _REJECTED_INPUT_KEYS = frozenset({
 })
 
 
+def _rung_claim_recommendations(
+    universe_path: Path,
+    goal_id: str,
+    branch_def_id: str = "",
+) -> list[dict]:
+    """Return claim recommendations copied from the bound Goal ladder."""
+    if not goal_id:
+        return []
+    try:
+        from workflow.daemon_server import get_goal_ladder
+        from workflow.storage import base_path_from_universe
+
+        ladder = get_goal_ladder(
+            base_path_from_universe(universe_path),
+            goal_id=goal_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "goal_pool: no gate ladder recommendations for %s: %s",
+            goal_id,
+            exc,
+        )
+        return []
+
+    recommendations: list[dict] = []
+    for rung in ladder:
+        if not isinstance(rung, dict):
+            continue
+        rung_key = str(rung.get("rung_key") or "").strip()
+        if not rung_key:
+            continue
+        label = rung.get("label") or rung.get("name") or rung_key
+        recommendations.append({
+            "goal_id": goal_id,
+            "rung_key": rung_key,
+            "label": label,
+            "description": rung.get("description", ""),
+            "branch_requirements": dict(rung.get("branch_requirements") or {}),
+            "bounty_requirements": dict(rung.get("bounty_requirements") or {}),
+            "claim_action": (
+                "gates action=claim "
+                f"branch_def_id={branch_def_id or '<branch_def_id>'} "
+                f"rung_key={rung_key} evidence_url=<evidence_url>"
+            ),
+        })
+    return recommendations
+
+
 def repo_root_path(universe_path: Path) -> Path:
     """Resolve the shared pool location. Preflight §4.1 #7 order:
 
@@ -209,7 +257,13 @@ class GoalPoolProducer:
             if not goal_dir.is_dir():
                 continue
             out.extend(
-                self._scan_goal_dir(goal_dir, goal, accessible, max_per_cycle - len(out))
+                self._scan_goal_dir(
+                    goal_dir,
+                    goal,
+                    accessible,
+                    max_per_cycle - len(out),
+                    universe_path=Path(universe_path),
+                )
             )
             if len(out) >= max_per_cycle:
                 break
@@ -221,6 +275,8 @@ class GoalPoolProducer:
         goal_id: str,
         accessible_slugs: set[str],
         budget: int,
+        *,
+        universe_path: Path,
     ) -> list[BranchTask]:
         if budget <= 0:
             return []
@@ -231,7 +287,12 @@ class GoalPoolProducer:
             return []
         cached_mtime = self._mtime_cache.get(goal_dir)
         if cached_mtime is not None and cached_mtime == current_mtime:
-            return list(self._result_cache.get(goal_dir, [])[:budget])
+            cached = list(self._result_cache.get(goal_dir, [])[:budget])
+            for task in cached:
+                task.rung_claim_recommendations = _rung_claim_recommendations(
+                    universe_path, goal_id, task.branch_def_id,
+                )
+            return cached
 
         import yaml
 
@@ -253,6 +314,9 @@ class GoalPoolProducer:
                 continue
             task = self._parse_pool_yaml(data, yaml_path, goal_id, accessible_slugs)
             if task is not None:
+                task.rung_claim_recommendations = _rung_claim_recommendations(
+                    universe_path, goal_id, task.branch_def_id,
+                )
                 tasks.append(task)
             if len(tasks) >= budget:
                 break

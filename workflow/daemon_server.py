@@ -2763,6 +2763,172 @@ def branches_for_goal(
     )[:max(1, int(limit))]
 
 
+def _branch_feature_tokens(branch: dict[str, Any]) -> set[str]:
+    """Return coarse feature tokens for parent diversity ranking."""
+    fields: list[str] = [
+        branch.get("name") or "",
+        branch.get("description") or "",
+        branch.get("author") or "",
+        " ".join(branch.get("tags") or []),
+    ]
+    for node in branch.get("node_defs") or []:
+        if not isinstance(node, dict):
+            continue
+        fields.extend([
+            node.get("node_id") or "",
+            node.get("display_name") or "",
+        ])
+    return set(_goal_search_tokens(" ".join(fields)))
+
+
+def _branch_quality_score(branch: dict[str, Any]) -> float:
+    stats = branch.get("stats") or {}
+    try:
+        score = float(stats.get("avg_quality_score", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        score = 0.0
+    return max(0.0, min(1.0, score))
+
+
+def _feature_distance(tokens: set[str], selected: list[set[str]]) -> float:
+    if not selected:
+        return 1.0
+    if not tokens:
+        return 0.0
+    max_similarity = 0.0
+    for other in selected:
+        if not other:
+            continue
+        union = tokens | other
+        if not union:
+            continue
+        max_similarity = max(max_similarity, len(tokens & other) / len(union))
+    return max(0.0, min(1.0, 1.0 - max_similarity))
+
+
+def goal_archive_consultation(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    query: str = "",
+    limit: int = 20,
+    viewer: str = "",
+) -> dict[str, Any]:
+    """Rank Goal-bound Branches as fork parents with gate outcome signal."""
+    branches = branches_for_goal(
+        base_path,
+        goal_id=goal_id,
+        limit=500,
+        viewer=viewer,
+    )
+    query_tokens = set(_goal_search_tokens(query or ""))
+    outcome_entries = gates_leaderboard(
+        base_path,
+        goal_id=goal_id,
+        limit=500,
+    )
+    outcome_by_branch = {
+        entry["branch_def_id"]: entry
+        for entry in outcome_entries
+        if entry.get("branch_def_id")
+    }
+    ladder_len = len(get_goal_ladder(base_path, goal_id=goal_id))
+    max_rung_index = max(0, ladder_len - 1)
+
+    pool: list[dict[str, Any]] = []
+    for branch in branches:
+        feature_tokens = _branch_feature_tokens(branch)
+        if query_tokens and not (query_tokens & feature_tokens):
+            continue
+        outcome = outcome_by_branch.get(branch["branch_def_id"], {})
+        try:
+            rung_index = int(outcome.get("highest_rung_index", -1))
+        except (TypeError, ValueError):
+            rung_index = -1
+        outcome_score = (
+            max(0.0, min(1.0, rung_index / max_rung_index))
+            if max_rung_index > 0 else 0.0
+        )
+        pool.append({
+            "branch": branch,
+            "feature_tokens": feature_tokens,
+            "quality_score": _branch_quality_score(branch),
+            "outcome_score": outcome_score,
+            "outcome_signal": {
+                "highest_rung_key": outcome.get("highest_rung_key", ""),
+                "highest_rung_index": rung_index,
+                "claimed_at": outcome.get("claimed_at", ""),
+                "evidence_url": outcome.get("evidence_url", ""),
+            },
+        })
+
+    selected_tokens: list[set[str]] = []
+    ranked: list[dict[str, Any]] = []
+    remaining = pool[:]
+    while remaining and len(ranked) < max(1, int(limit)):
+        best_index = 0
+        best_payload: dict[str, Any] | None = None
+        for index, item in enumerate(remaining):
+            diversity = _feature_distance(item["feature_tokens"], selected_tokens)
+            score = (
+                0.4 * item["quality_score"]
+                + 0.4 * item["outcome_score"]
+                + 0.2 * diversity
+            )
+            payload = {
+                **item["branch"],
+                "quality_score": round(item["quality_score"], 3),
+                "outcome_score": round(item["outcome_score"], 3),
+                "diversity_score": round(diversity, 3),
+                "parent_rank_score": round(score, 3),
+                "outcome_signal": item["outcome_signal"],
+                "selection_basis": (
+                    "0.4 quality + 0.4 gate leaderboard outcome + "
+                    "0.2 diversity"
+                ),
+            }
+            if best_payload is None:
+                best_index = index
+                best_payload = payload
+                continue
+            current_key = (
+                payload["parent_rank_score"],
+                payload["outcome_score"],
+                payload["quality_score"],
+                payload.get("updated_at") or "",
+                payload.get("branch_def_id") or "",
+            )
+            best_key = (
+                best_payload["parent_rank_score"],
+                best_payload["outcome_score"],
+                best_payload["quality_score"],
+                best_payload.get("updated_at") or "",
+                best_payload.get("branch_def_id") or "",
+            )
+            if current_key > best_key:
+                best_index = index
+                best_payload = payload
+        chosen = remaining.pop(best_index)
+        selected_tokens.append(chosen["feature_tokens"])
+        if best_payload is not None:
+            best_payload["rank"] = len(ranked) + 1
+            ranked.append(best_payload)
+
+    visible_ids = {entry["branch_def_id"] for entry in ranked}
+    visible_outcomes = [
+        entry for entry in outcome_entries
+        if entry.get("branch_def_id") in visible_ids
+    ]
+    return {
+        "candidates": ranked,
+        "outcome_leaderboard": visible_outcomes,
+        "selection_basis": (
+            "parent candidates ranked by quality, gates leaderboard "
+            "outcome, and diversity"
+        ),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase 6: Outcome gates — ladder on goals, claims per branch
 # ═══════════════════════════════════════════════════════════════════════════
