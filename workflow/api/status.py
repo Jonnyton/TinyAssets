@@ -304,7 +304,9 @@ def _compute_supervisor_liveness(
             "succeeded": 0,
             "failed": 0,
             "cancelled": 0,
+            "policy_parked_pending": 0,
             "stuck_pending_max_age_s": 0,
+            "policy_parked_pending_max_age_s": 0,
             "stuck_running_max_age_s": 0,
         },
         "running_tasks_lease": [],
@@ -324,8 +326,16 @@ def _compute_supervisor_liveness(
     if not queue:
         return out
 
+    try:
+        from workflow.dispatcher import load_dispatcher_config
+        dispatcher_config = load_dispatcher_config(Path(udir))
+    except Exception as exc:  # noqa: BLE001 — status must remain best-effort
+        dispatcher_config = None
+        out["warnings"].append(f"dispatcher_config_read_failed: {exc}")
+
     any_lease_field_seen = False
     pending_ages: list[float] = []
+    policy_parked_pending_ages: list[float] = []
     running_ages: list[float] = []
 
     for task in queue:
@@ -339,7 +349,15 @@ def _compute_supervisor_liveness(
         queued_ts = _parse_iso_to_epoch(queued_at) if queued_at else None
         if status == "pending" and queued_ts is not None:
             age = max(0.0, now_ts - queued_ts)
-            pending_ages.append(age)
+            trigger_source = getattr(task, "trigger_source", "") or ""
+            if (
+                dispatcher_config is not None
+                and not dispatcher_config.tier_enabled(trigger_source)
+            ):
+                out["queue_state"]["policy_parked_pending"] += 1
+                policy_parked_pending_ages.append(age)
+            else:
+                pending_ages.append(age)
 
         if status != "running":
             continue
@@ -418,6 +436,10 @@ def _compute_supervisor_liveness(
 
     if pending_ages:
         out["queue_state"]["stuck_pending_max_age_s"] = int(max(pending_ages))
+    if policy_parked_pending_ages:
+        out["queue_state"]["policy_parked_pending_max_age_s"] = int(
+            max(policy_parked_pending_ages)
+        )
     if running_ages:
         out["queue_state"]["stuck_running_max_age_s"] = int(max(running_ages))
 
