@@ -162,6 +162,18 @@ def _coerce_node_keys(
     )
 
 
+def _coerce_bool(value: Any, field_name: str) -> tuple[bool, str]:
+    if isinstance(value, bool):
+        return value, ""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True, ""
+        if normalized in ("false", "0", "no", "off"):
+            return False, ""
+    return False, f"{field_name} must be true or false"
+
+
 def _append_global_ledger(
     action: str,
     *,
@@ -1195,6 +1207,7 @@ def _resolve_node_spec(
         for field_key in (
             "display_name", "description", "phase", "input_keys",
             "output_keys", "source_code", "prompt_template", "author",
+            "host_controlled",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1259,6 +1272,7 @@ def _lookup_node_body(
             "source_code": hit.get("source_code", ""),
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
+            "host_controlled": bool(hit.get("host_controlled", False)),
             "approved": bool(hit.get("approved", False)),
         }, ""
 
@@ -1286,6 +1300,7 @@ def _lookup_node_body(
                 "source_code": nd.get("source_code", ""),
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
+                "host_controlled": bool(nd.get("host_controlled", False)),
                 "approved": bool(nd.get("approved", False)),
             }, ""
     return {}, (
@@ -1351,6 +1366,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             prompt_template=prompt_template,
             author=raw.get("author") or _current_actor(),
             approved=bool(raw.get("approved", False)),
+            host_controlled=bool(raw.get("host_controlled", False)),
             invoke_branch_spec=invoke_branch_arg,
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
@@ -1771,6 +1787,10 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     n.prompt_template = op["prompt_template"]
                 if "source_code" in op:
                     n.source_code = op["source_code"]
+                if "host_controlled" in op:
+                    if not isinstance(op["host_controlled"], bool):
+                        return "update_node host_controlled must be true or false"
+                    n.host_controlled = op["host_controlled"]
                 if "input_keys" in op:
                     keys, err = _coerce_node_keys(
                         op["input_keys"], "input_keys",
@@ -1971,7 +1991,6 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     # the gap by mutating a chatgpt-community-builder-authored branch
     # from a non-author session. See pages/bugs/bug-081-... for the
     # filing.
-    from workflow.api.engine_helpers import _current_actor
     branch_author = (source.get("author") or "").strip()
     caller = (_current_actor() or "").strip()
     force_mutate = bool(kwargs.get("force", False))
@@ -2184,6 +2203,11 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
         ):
             if kwargs.get(field):
                 updates[field] = kwargs[field]
+        if "host_controlled" in kwargs:
+            value, err = _coerce_bool(kwargs.get("host_controlled"), "host_controlled")
+            if err:
+                return json.dumps({"status": "rejected", "error": err})
+            updates["host_controlled"] = value
         if kwargs.get("input_keys"):
             updates["input_keys"] = kwargs["input_keys"]
         if kwargs.get("output_keys"):
@@ -2287,6 +2311,13 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             target_node.source_code = updates["source_code"]
             if target_node.source_code:
                 target_node.prompt_template = ""
+        if "host_controlled" in updates:
+            if not isinstance(updates["host_controlled"], bool):
+                return json.dumps({
+                    "status": "rejected",
+                    "error": "host_controlled must be true or false.",
+                })
+            target_node.host_controlled = updates["host_controlled"]
         if "input_keys" in updates:
             keys, err = _coerce_node_keys(
                 updates["input_keys"], "input_keys",

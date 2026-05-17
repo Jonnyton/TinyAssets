@@ -51,6 +51,36 @@ def test_create_branch_round_trips(branch_env):
     assert got["description"] == "Capture recipes"
 
 
+def test_build_branch_accepts_host_controlled_node_flag(branch_env):
+    us, _ = branch_env
+    spec = _build_basic_spec("Privileged")
+    spec["node_defs"][0]["host_controlled"] = True
+
+    built = _call(us, "build_branch", spec_json=json.dumps(spec))
+    got = _call(us, "get_branch", branch_def_id=built["branch_def_id"])
+
+    assert built["status"] == "built", built
+    assert got["node_defs"][0]["host_controlled"] is True
+
+
+def test_patch_branch_updates_host_controlled_node_flag(branch_env):
+    us, _ = branch_env
+    built = _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Privileged")))
+
+    patched = _call(
+        us,
+        "patch_branch",
+        branch_def_id=built["branch_def_id"],
+        changes_json=json.dumps([
+            {"op": "update_node", "node_id": "ready", "host_controlled": True},
+        ]),
+    )
+    got = _call(us, "get_branch", branch_def_id=built["branch_def_id"])
+
+    assert patched["status"] == "patched", patched
+    assert got["node_defs"][0]["host_controlled"] is True
+
+
 def test_create_branch_requires_name(branch_env):
     us, _ = branch_env
     result = _call(us, "create_branch", name="")

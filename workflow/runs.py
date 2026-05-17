@@ -2735,6 +2735,7 @@ def _invoke_graph_resume(
             branch,
             provider_call=provider_call,
             event_sink=_on_node,
+            base_path=base_path,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(

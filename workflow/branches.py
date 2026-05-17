@@ -328,6 +328,11 @@ class NodeDefinition:
     # host's sandbox probe fails. Default False preserves back-compat.
     requires_sandbox: bool = False
 
+    # Host-controlled nodes keep their public NodeDefinition as a proposal
+    # surface while live execution must use a host-private runtime body.
+    # The private body is intentionally not stored on the public branch row.
+    host_controlled: bool = False
+
     # Partial-credit checkpoints authored into node_def.
     # Each entry: {
     #   "checkpoint_id": str (unique within node),
@@ -448,6 +453,7 @@ class NodeDefinition:
             "output_keys": self.output_keys,
             "source_code": self.source_code,
             "dependencies": self.dependencies,
+            "host_controlled": self.host_controlled,
             "author": self.author,
             "registered_at": self.registered_at,
             "enabled": self.enabled,

@@ -95,6 +95,7 @@ class TestNodeDefinition:
         assert n.timeout_seconds == 300.0
         assert n.retry_policy == {"max_retries": 0, "backoff_seconds": 1.0}
         assert n.evaluation_criteria == []
+        assert n.host_controlled is False
         assert n.author == "anonymous"
         assert n.enabled is True
         assert n.approved is False
@@ -123,6 +124,7 @@ class TestNodeDefinition:
             dependencies=["requests"],
             timeout_seconds=60.0,
             retry_policy={"max_retries": 2, "backoff_seconds": 5.0},
+            host_controlled=True,
             evaluation_criteria=[
                 {"name": "accuracy", "description": "Are the facts correct?"}
             ],
@@ -140,6 +142,7 @@ class TestNodeDefinition:
         assert n2.tools_allowed == n.tools_allowed
         assert n2.timeout_seconds == n.timeout_seconds
         assert n2.retry_policy == n.retry_policy
+        assert n2.host_controlled is True
         assert n2.evaluation_criteria == n.evaluation_criteria
 
     def test_to_node_registration_compat(self):

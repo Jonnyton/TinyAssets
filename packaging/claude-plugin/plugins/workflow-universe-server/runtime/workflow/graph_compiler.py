@@ -1879,6 +1879,76 @@ def _build_node(
     )
 
 
+def _host_controlled_node_path(
+    base_path: str | Path,
+    branch_def_id: str,
+    node_id: str,
+) -> Path:
+    return Path(base_path) / ".host_controlled_nodes" / branch_def_id / f"{node_id}.json"
+
+
+def _load_host_controlled_node(
+    public_node: NodeDefinition,
+    *,
+    branch_def_id: str,
+    base_path: str | Path | None,
+) -> NodeDefinition:
+    """Load the host-private runtime body for a host-controlled node.
+
+    Public branch rows keep the proposal body users can fork/amend. Live
+    execution must resolve a local host-private JSON file, so a missing
+    file fails loudly instead of running proposal text as production
+    behavior.
+    """
+    if base_path is None:
+        raise CompilerError(
+            f"Node '{public_node.node_id}' is host_controlled, but "
+            "compile_branch was not given base_path to resolve the "
+            "host-private runtime body."
+        )
+    if not branch_def_id:
+        raise CompilerError(
+            f"Node '{public_node.node_id}' is host_controlled, but the "
+            "branch has no branch_def_id for host-private runtime lookup."
+        )
+
+    path = _host_controlled_node_path(
+        base_path, branch_def_id, public_node.node_id,
+    )
+    if not path.exists():
+        raise CompilerError(
+            f"Node '{public_node.node_id}' is host_controlled, but no "
+            f"host-private runtime body exists at {path}."
+        )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CompilerError(
+            f"Host-private runtime body for node '{public_node.node_id}' "
+            f"is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise CompilerError(
+            f"Host-private runtime body for node '{public_node.node_id}' "
+            "must be a JSON object."
+        )
+
+    raw = dict(raw)
+    raw.setdefault("node_id", public_node.node_id)
+    raw.setdefault("display_name", public_node.display_name)
+    raw.setdefault("input_keys", list(public_node.input_keys))
+    raw.setdefault("output_keys", list(public_node.output_keys))
+    raw["host_controlled"] = False
+    private_node = NodeDefinition.from_dict(raw)
+    if private_node.node_id != public_node.node_id:
+        raise CompilerError(
+            f"Host-private runtime body for node '{public_node.node_id}' "
+            f"declares node_id '{private_node.node_id}'. The private "
+            "runtime node_id must match the public proposal node_id."
+        )
+    return private_node
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Conditional edge predicate
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2060,12 +2130,21 @@ def compile_branch(
                 f"Graph node '{gn.id}' references unknown node_def_id "
                 f"'{def_id}'."
             )
+        runtime_node_def = (
+            _load_host_controlled_node(
+                node_def,
+                branch_def_id=branch.branch_def_id,
+                base_path=base_path,
+            )
+            if getattr(node_def, "host_controlled", False)
+            else node_def
+        )
         # Effective llm_policy: node-level takes precedence over branch default.
-        effective_policy = node_def.llm_policy or getattr(
+        effective_policy = runtime_node_def.llm_policy or getattr(
             branch, "default_llm_policy", None,
         )
         fn = _build_node(
-            node_def,
+            runtime_node_def,
             provider_call=provider_call,
             event_sink=event_sink,
             domain_id=branch.domain_id,
