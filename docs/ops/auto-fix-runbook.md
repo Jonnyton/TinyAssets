@@ -145,6 +145,16 @@ rule in the PR body.
 
 PRs require review before merge. Host reviews the diff.
 
+## Autonomous spend boundary
+
+The reference writer runs in logged/proposed-only mode for spend-affecting
+work. It may use the already-approved subscription-backed writer lane to inspect
+and patch the repo, but it must not add or activate real billing, bounty
+settlement, paid provider execution, cloud-plan upgrades, wallet transfers, or
+new subscription/API-key spend paths. If a daemon request needs spend behavior,
+the writer should limit the patch to local guardrails, docs, tests, or proposal
+records that a later reviewed change can implement.
+
 ## What the writer is asked to do
 
 1. Read `AGENTS.md` and `STATUS.md` for project context.
@@ -154,7 +164,10 @@ PRs require review before merge. Host reviews the diff.
 5. Run `ruff` on touched Python files.
 6. If canonical `workflow/*` runtime files change, run
    `python packaging/claude-plugin/build_plugin.py` and include the mirror.
-7. If not confident, leave a clear comment and exit gracefully. Never guess.
+7. Keep autonomous spend logged/proposed-only; do not add or activate real
+   billing, bounty settlement, paid provider execution, cloud-plan upgrades,
+   wallet transfers, or new subscription/API-key spend paths.
+8. If not confident, leave a clear comment and exit gracefully. Never guess.
 
 ## Manual trigger
 

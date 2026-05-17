@@ -876,18 +876,19 @@ jobs:
             6. If recent comments mention verification failures or review blockers, address those failures first.
             7. Run `python -m ruff check` on touched Python files and the relevant focused tests for changed test files; fix failures before finishing.
             8. If you edit canonical `workflow/*` runtime files, run `python packaging/claude-plugin/build_plugin.py` and commit the plugin mirror changes.
-            9. If you make changes, open a pull request titled:
+            9. Autonomous spend is logged/proposed-only. Do not add or activate real billing, bounty settlement, paid provider execution, cloud-plan upgrades, wallet transfers, or subscription/API-key spend paths. If the request needs spend behavior, limit the patch to local guardrails, docs, tests, or proposal records.
+            10. If you make changes, open a pull request titled:
                ${{ steps.meta.outputs.pr_title }}
-            10. The PR body must start with:
+            11. The PR body must start with:
                ${{ steps.meta.outputs.issue_link_line }}
-            11. Include a `Request artifact reconciliation` section that lists:
+            12. Include a `Request artifact reconciliation` section that lists:
                - Wiki page: `${{ steps.meta.outputs.wiki_path || 'not declared' }}`
                - GitHub issue: `#${{ steps.meta.outputs.issue_number }}`
                - Branch task: `${{ steps.meta.outputs.expected_branch_task }}`
                - PR artifact: this PR
-            12. Include `Writer family: Claude` and `Required checker family: Codex`.
-            13. Include a short fix summary, tests run, and any remaining risks.
-            14. Do not redesign community-authored branches unless the issue explicitly asks for that.
+            13. Include `Writer family: Claude` and `Required checker family: Codex`.
+            14. Include a short fix summary, tests run, and any remaining risks.
+            15. Do not redesign community-authored branches unless the issue explicitly asks for that.
 
             If you cannot find a safe targeted change or are not confident, leave a
             comment in the code and exit gracefully. Do not guess.
@@ -957,8 +958,9 @@ jobs:
           6. If recent comments mention verification failures or review blockers, address those failures first.
           7. Run `python -m ruff check` on touched Python files and the relevant focused tests for changed test files; fix failures before finishing.
           8. If you edit canonical `workflow/*` runtime files, run `python packaging/claude-plugin/build_plugin.py` and leave the plugin mirror changes in the working tree.
-          9. Do not commit, push, or open a PR. Leave any changes in the working tree for this workflow to commit.
-          10. Do not redesign community-authored branches unless the issue explicitly asks for that.
+          9. Autonomous spend is logged/proposed-only. Do not add or activate real billing, bounty settlement, paid provider execution, cloud-plan upgrades, wallet transfers, or subscription/API-key spend paths. If the request needs spend behavior, limit the patch to local guardrails, docs, tests, or proposal records.
+          10. Do not commit, push, or open a PR. Leave any changes in the working tree for this workflow to commit.
+          11. Do not redesign community-authored branches unless the issue explicitly asks for that.
 
           If you cannot find a safe targeted change or are not confident, leave the
           working tree unchanged and explain why in your final message. Do not guess.
