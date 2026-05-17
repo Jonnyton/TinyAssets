@@ -1194,7 +1194,8 @@ def _resolve_node_spec(
         merged["node_id"] = nid or ref_nid
         for field_key in (
             "display_name", "description", "phase", "input_keys",
-            "output_keys", "source_code", "prompt_template", "author",
+            "output_keys", "strict_input_isolation", "source_code",
+            "prompt_template", "author",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1256,6 +1257,9 @@ def _lookup_node_body(
             "phase": hit.get("phase", "custom"),
             "input_keys": list(hit.get("input_keys") or []),
             "output_keys": list(hit.get("output_keys") or []),
+            "strict_input_isolation": bool(
+                hit.get("strict_input_isolation", True),
+            ),
             "source_code": hit.get("source_code", ""),
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
@@ -1283,6 +1287,9 @@ def _lookup_node_body(
                 "phase": nd.get("phase", "custom"),
                 "input_keys": list(nd.get("input_keys") or []),
                 "output_keys": list(nd.get("output_keys") or []),
+                "strict_input_isolation": bool(
+                    nd.get("strict_input_isolation", True),
+                ),
                 "source_code": nd.get("source_code", ""),
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
@@ -1314,6 +1321,12 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         return (
             f"node '{nid}' has both source_code and prompt_template — "
             "pick one."
+        )
+    strict_input_isolation = raw.get("strict_input_isolation", True)
+    if not isinstance(strict_input_isolation, bool):
+        return (
+            f"node '{nid}' strict_input_isolation must be a JSON boolean "
+            "(true or false)."
         )
 
     phase = (raw.get("phase") or "").strip() or "custom"
@@ -1347,6 +1360,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             phase=phase,
             input_keys=in_keys,
             output_keys=out_keys,
+            strict_input_isolation=strict_input_isolation,
             source_code=source_code,
             prompt_template=prompt_template,
             author=raw.get("author") or _current_actor(),
@@ -1971,7 +1985,6 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     # the gap by mutating a chatgpt-community-builder-authored branch
     # from a non-author session. See pages/bugs/bug-081-... for the
     # filing.
-    from workflow.api.engine_helpers import _current_actor
     branch_author = (source.get("author") or "").strip()
     caller = (_current_actor() or "").strip()
     force_mutate = bool(kwargs.get("force", False))
