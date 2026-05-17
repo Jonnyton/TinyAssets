@@ -20,25 +20,40 @@ from typing import Any
 SCHEMA_VERSION = 1
 DEFAULT_BRAIN_PACKET_CHARS = 1600
 
-VALID_MEMORY_KINDS = {
-    "semantic",
-    "episodic",
-    "procedural",
-    "policy",
-    "claim",
-    "preference",
-    "failure_mode",
-    "open_loop",
-    "contradiction",
-    "soul_proposal",
+MEMORY_KIND_REGISTRY = {
+    "semantic": "Stable facts, concepts, and durable domain knowledge.",
+    "episodic": "Specific observed events, runs, and source episodes.",
+    "procedural": "How-to knowledge, repeatable workflows, and operating steps.",
+    "policy": "Rules, constraints, and decision policies the daemon should follow.",
+    "claim": "A checkable assertion that may need provenance or later revision.",
+    "preference": "Host, user, or role preferences that steer behavior.",
+    "failure_mode": "Known ways work fails and the guardrails that prevent repeats.",
+    "open_loop": "Unresolved follow-up, watch item, or incomplete learning thread.",
+    "contradiction": "Conflicting claims or evidence that require reconciliation.",
+    "soul_proposal": "Candidate change to the daemon's identity or role contract.",
 }
-VALID_PROMOTION_STATES = {
-    "candidate",
-    "accepted",
-    "promoted",
-    "superseded",
-    "rejected",
+VALID_MEMORY_KINDS = frozenset(MEMORY_KIND_REGISTRY)
+DEFAULT_MEMORY_KIND = "semantic"
+
+PROMOTION_STATE_REGISTRY = {
+    "candidate": "Captured but not yet reviewed.",
+    "accepted": "Reviewed as useful and eligible for prompt retrieval or promotion.",
+    "promoted": "Curated into the daemon wiki face.",
+    "superseded": "Replaced by a newer entry; retained for audit history.",
+    "rejected": "Reviewed and rejected; retained for audit history.",
 }
+VALID_PROMOTION_STATES = frozenset(PROMOTION_STATE_REGISTRY)
+DEFAULT_PROMOTION_STATE = "candidate"
+PROMOTION_TRANSITIONS = {
+    "candidate": frozenset({"accepted", "promoted", "rejected", "superseded"}),
+    "accepted": frozenset({"promoted", "rejected", "superseded"}),
+    "promoted": frozenset({"superseded"}),
+    "rejected": frozenset(),
+    "superseded": frozenset(),
+}
+TERMINAL_PROMOTION_STATES = frozenset(
+    state for state, targets in PROMOTION_TRANSITIONS.items() if not targets
+)
 VALID_VISIBILITIES = {
     "host_private",
     "borrowable_role_context",
@@ -213,6 +228,42 @@ def _validate_choice(value: str, choices: set[str], field: str) -> str:
     return normalized
 
 
+def _validate_promotion_transition(current_state: str, next_state: str) -> None:
+    current = _validate_choice(
+        current_state,
+        VALID_PROMOTION_STATES,
+        "current promotion_state",
+    )
+    target = _validate_choice(next_state, VALID_PROMOTION_STATES, "promotion_state")
+    if current == target:
+        return
+    if target not in PROMOTION_TRANSITIONS[current]:
+        raise ValueError(
+            f"cannot transition promotion_state from {current} to {target}"
+        )
+
+
+def daemon_memory_registry() -> dict[str, Any]:
+    """Return daemon mini-brain memory kinds and promotion lifecycle metadata."""
+    return {
+        "memory_kinds": [
+            {"kind": kind, "description": MEMORY_KIND_REGISTRY[kind]}
+            for kind in sorted(MEMORY_KIND_REGISTRY)
+        ],
+        "default_memory_kind": DEFAULT_MEMORY_KIND,
+        "promotion_states": [
+            {"state": state, "description": PROMOTION_STATE_REGISTRY[state]}
+            for state in sorted(PROMOTION_STATE_REGISTRY)
+        ],
+        "default_promotion_state": DEFAULT_PROMOTION_STATE,
+        "promotion_transitions": {
+            state: sorted(targets)
+            for state, targets in sorted(PROMOTION_TRANSITIONS.items())
+        },
+        "terminal_promotion_states": sorted(TERMINAL_PROMOTION_STATES),
+    }
+
+
 def _require_text(value: str, field: str) -> str:
     cleaned = str(value or "").strip()
     if not cleaned:
@@ -363,7 +414,7 @@ def capture_daemon_memory(
     *,
     daemon_id: str,
     content: str,
-    memory_kind: str = "semantic",
+    memory_kind: str = DEFAULT_MEMORY_KIND,
     source_type: str = "manual",
     source_id: str = "manual",
     source_path: str = "",
@@ -375,7 +426,7 @@ def capture_daemon_memory(
     importance: float = 0.5,
     sensitivity_tier: str = "normal",
     visibility: str = "host_private",
-    promotion_state: str = "candidate",
+    promotion_state: str = DEFAULT_PROMOTION_STATE,
     supersedes_entry_id: str | None = None,
     metadata: dict[str, Any] | None = None,
     embedding: Sequence[float] | None = None,
@@ -1166,6 +1217,8 @@ def promote_daemon_memory_to_wiki(
         missing = [entry_id for entry_id in clean_ids if entry_id not in found]
         if missing:
             raise ValueError(f"entries not found for daemon: {', '.join(missing)}")
+        for entry in entries:
+            _validate_promotion_transition(entry["promotion_state"], "promoted")
         conn.execute(
             f"""
             UPDATE daemon_brain_entries
@@ -1334,6 +1387,7 @@ def review_daemon_memory(
                 raise ValueError("superseded_by_entry_id not found for daemon")
         else:
             replacement_id = None
+        _validate_promotion_transition(entry["promotion_state"], state)
 
         entry_metadata = dict(entry.get("metadata") or {})
         review_record = {
@@ -1453,4 +1507,5 @@ def memory_observability_status(
         "promotion_states": states,
         "event_types": events,
         "candidate_backlog": int(states.get("candidate", 0) + states.get("accepted", 0)),
+        "registry": daemon_memory_registry(),
     }

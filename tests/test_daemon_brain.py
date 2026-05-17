@@ -7,9 +7,11 @@ from pathlib import Path
 from workflow.daemon_brain import (
     build_daemon_brain_packet,
     capture_daemon_memory,
+    daemon_memory_registry,
     list_daemon_memory,
     memory_observability_status,
     promote_daemon_memory_to_wiki,
+    review_daemon_memory,
     search_daemon_memory,
 )
 from workflow.daemon_memory import build_daemon_memory_packet
@@ -135,3 +137,54 @@ def test_daemon_brain_smoke_roundtrip(tmp_path: Path) -> None:
     status = memory_observability_status(tmp_path, daemon_id=ada["daemon_id"])
     assert status["entry_count"] == 1
     assert status["event_count"] >= 5
+
+
+def test_daemon_memory_registry_describes_kinds_and_lifecycle() -> None:
+    registry = daemon_memory_registry()
+
+    assert "failure_mode" in {item["kind"] for item in registry["memory_kinds"]}
+    assert registry["default_memory_kind"] == "semantic"
+    assert registry["default_promotion_state"] == "candidate"
+    assert registry["promotion_transitions"]["candidate"] == [
+        "accepted",
+        "promoted",
+        "rejected",
+        "superseded",
+    ]
+    assert registry["promotion_transitions"]["promoted"] == ["superseded"]
+    assert registry["terminal_promotion_states"] == ["rejected", "superseded"]
+
+
+def test_daemon_memory_lifecycle_blocks_invalid_transitions(tmp_path: Path) -> None:
+    daemon = _create_daemon(tmp_path, "Lifecycle Daemon")
+
+    entry = capture_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        memory_kind="policy",
+        content="Rejected memories must not be promoted later.",
+        source_type="manual",
+        source_id="pytest-lifecycle",
+        reliability="host_observed",
+        language_type="policy",
+    )
+    rejected = review_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        entry_id=entry["entry_id"],
+        decision="reject",
+        note="Not stable enough.",
+    )
+    assert rejected["entry"]["promotion_state"] == "rejected"
+
+    try:
+        promote_daemon_memory_to_wiki(
+            tmp_path,
+            daemon_id=daemon["daemon_id"],
+            entry_ids=[entry["entry_id"]],
+            summary="This should not promote.",
+        )
+    except ValueError as exc:
+        assert "cannot transition promotion_state from rejected to promoted" in str(exc)
+    else:
+        raise AssertionError("rejected memory was promoted")
