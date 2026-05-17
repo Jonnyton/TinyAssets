@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from workflow.api.status import (
     _HEARTBEAT_STALE_THRESHOLD_S,
     _STUCK_PENDING_THRESHOLD_S,
@@ -20,7 +18,6 @@ from workflow.api.status import (
     _parse_iso_to_epoch,
 )
 from workflow.branch_tasks import BranchTask, append_task
-
 
 # ── _parse_iso_to_epoch unit ───────────────────────────────────────────────
 
@@ -108,6 +105,53 @@ def test_stuck_pending_above_threshold_emits_warning(tmp_path):
     append_task(tmp_path, t)
     out = _compute_supervisor_liveness(tmp_path)
     assert out["queue_state"]["stuck_pending_max_age_s"] >= 600
+    assert any("stuck_pending" in w for w in out["warnings"])
+
+
+def test_policy_parked_pending_does_not_emit_stuck_pending_warning(tmp_path):
+    old = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    t = BranchTask(
+        branch_task_id="bt-policy-parked",
+        branch_def_id="branch-1",
+        universe_id="u",
+        trigger_source="goal_pool",
+        status="pending",
+        queued_at=old,
+    )
+    append_task(tmp_path, t)
+
+    out = _compute_supervisor_liveness(tmp_path)
+
+    assert out["queue_state"]["pending"] == 1
+    assert out["queue_state"]["policy_parked_pending"] == 1
+    assert out["queue_state"]["policy_parked_pending_max_age_s"] >= 600
+    assert out["queue_state"]["stuck_pending_max_age_s"] == 0
+    assert not any("stuck_pending" in w for w in out["warnings"])
+
+
+def test_enabled_pending_still_warns_when_policy_parked_pending_exists(tmp_path):
+    now = datetime.now(timezone.utc)
+    append_task(tmp_path, BranchTask(
+        branch_task_id="bt-policy-parked",
+        branch_def_id="branch-1",
+        universe_id="u",
+        trigger_source="goal_pool",
+        status="pending",
+        queued_at=(now - timedelta(minutes=10)).isoformat(),
+    ))
+    append_task(tmp_path, BranchTask(
+        branch_task_id="bt-stuck-enabled",
+        branch_def_id="branch-1",
+        universe_id="u",
+        trigger_source="user_request",
+        status="pending",
+        queued_at=(now - timedelta(minutes=5)).isoformat(),
+    ))
+
+    out = _compute_supervisor_liveness(tmp_path)
+
+    assert out["queue_state"]["policy_parked_pending"] == 1
+    assert 300 <= out["queue_state"]["stuck_pending_max_age_s"] < 600
     assert any("stuck_pending" in w for w in out["warnings"])
 
 
@@ -262,6 +306,7 @@ def test_running_task_without_lease_fields_emits_lease_unavailable_warning(tmp_p
 
 def test_get_status_response_includes_supervisor_liveness(tmp_path, monkeypatch):
     import json
+
     from workflow.api.status import get_status
 
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
@@ -278,6 +323,7 @@ def test_get_status_response_includes_supervisor_liveness(tmp_path, monkeypatch)
 
 def test_get_status_supervisor_liveness_reflects_stuck_pending(tmp_path, monkeypatch):
     import json
+
     from workflow.api.status import get_status
 
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
