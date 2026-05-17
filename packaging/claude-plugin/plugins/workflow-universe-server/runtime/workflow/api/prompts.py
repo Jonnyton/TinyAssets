@@ -221,6 +221,8 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
    |                                | bound workflows + daemon + run counts)  |
    | Compare workflows on a Goal    | `goals action=leaderboard goal_id=...   |
    |                                | metric=run_count`                       |
+   | Pick a fork parent             | `goals action=parent_candidates         |
+   |                                | goal_id=...`                            |
    | Find reusable nodes            | `goals action=common_nodes scope=all`   |
    |                                | (across all Goals) or                   |
    |                                | `extensions action=search_nodes`        |
@@ -292,6 +294,8 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
   existing one anchors the work and lets future users find prior art.
 - "Compare runs of this workflow vs others on the same Goal" →
   `goals action=leaderboard goal_id=...`.
+- "Which existing workflow should I fork or improve next?" →
+  `goals action=parent_candidates goal_id=...`.
 - Cross-domain pivot: the active workspace may be themed (e.g. named
   "concordance" with a novel-writing premise, or "team-standup-action-
   tracker" with a meeting premise). That does NOT mean this connector is

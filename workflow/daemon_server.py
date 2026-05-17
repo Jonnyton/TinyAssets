@@ -2763,6 +2763,124 @@ def branches_for_goal(
     )[:max(1, int(limit))]
 
 
+def _branch_feature_tokens(branch: dict[str, Any]) -> set[str]:
+    """Return coarse feature tokens for parent diversity ranking."""
+    fields: list[str] = [
+        branch.get("name") or "",
+        branch.get("description") or "",
+        branch.get("author") or "",
+        " ".join(branch.get("tags") or []),
+    ]
+    for node in branch.get("node_defs") or []:
+        if not isinstance(node, dict):
+            continue
+        fields.extend([
+            node.get("node_id") or "",
+            node.get("display_name") or "",
+        ])
+    return set(_goal_search_tokens(" ".join(fields)))
+
+
+def _branch_quality_score(branch: dict[str, Any]) -> float:
+    stats = branch.get("stats") or {}
+    try:
+        score = float(stats.get("avg_quality_score", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        score = 0.0
+    return max(0.0, min(1.0, score))
+
+
+def _feature_distance(tokens: set[str], selected: list[set[str]]) -> float:
+    if not selected:
+        return 1.0
+    if not tokens:
+        return 0.0
+    max_similarity = 0.0
+    for other in selected:
+        if not other:
+            continue
+        union = tokens | other
+        if not union:
+            continue
+        max_similarity = max(max_similarity, len(tokens & other) / len(union))
+    return max(0.0, min(1.0, 1.0 - max_similarity))
+
+
+def goal_parent_candidates(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    query: str = "",
+    limit: int = 20,
+    viewer: str = "",
+) -> list[dict[str, Any]]:
+    """Rank bound Branches as fork parents using quality + diversity.
+
+    This is a bounded read-side archive view over existing Goal-bound
+    Branches. It does not create a separate archive table; it turns the
+    current bound set into a navigable parent-selection space.
+    """
+    branches = branches_for_goal(
+        base_path,
+        goal_id=goal_id,
+        limit=500,
+        viewer=viewer,
+    )
+    query_tokens = set(_goal_search_tokens(query or ""))
+    pool: list[dict[str, Any]] = []
+    for branch in branches:
+        feature_tokens = _branch_feature_tokens(branch)
+        if query_tokens and not (query_tokens & feature_tokens):
+            continue
+        pool.append({
+            "branch": branch,
+            "feature_tokens": feature_tokens,
+            "quality_score": _branch_quality_score(branch),
+        })
+
+    selected_tokens: list[set[str]] = []
+    ranked: list[dict[str, Any]] = []
+    remaining = pool[:]
+    while remaining and len(ranked) < max(1, int(limit)):
+        best_index = 0
+        best_payload: dict[str, Any] | None = None
+        for index, item in enumerate(remaining):
+            diversity = _feature_distance(item["feature_tokens"], selected_tokens)
+            score = (0.7 * item["quality_score"]) + (0.3 * diversity)
+            payload = {
+                **item["branch"],
+                "quality_score": round(item["quality_score"], 3),
+                "diversity_score": round(diversity, 3),
+                "parent_rank_score": round(score, 3),
+                "selection_basis": "0.7 quality + 0.3 diversity",
+            }
+            if best_payload is None:
+                best_index = index
+                best_payload = payload
+                continue
+            current_key = (
+                payload["parent_rank_score"],
+                payload["quality_score"],
+                payload.get("updated_at") or "",
+                payload.get("branch_def_id") or "",
+            )
+            best_key = (
+                best_payload["parent_rank_score"],
+                best_payload["quality_score"],
+                best_payload.get("updated_at") or "",
+                best_payload.get("branch_def_id") or "",
+            )
+            if current_key > best_key:
+                best_index = index
+                best_payload = payload
+        chosen = remaining.pop(best_index)
+        selected_tokens.append(chosen["feature_tokens"])
+        if best_payload is not None:
+            best_payload["rank"] = len(ranked) + 1
+            ranked.append(best_payload)
+    return ranked
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase 6: Outcome gates — ladder on goals, claims per branch
 # ═══════════════════════════════════════════════════════════════════════════

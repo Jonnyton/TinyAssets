@@ -50,11 +50,11 @@ def test_module_exposes_expected_public_names():
         "_action_get_outcome",
         # Attribution handlers
         "_action_record_remix", "_action_get_provenance",
-        # Goal handlers (9)
+        # Goal handlers (10)
         "_action_goal_propose", "_action_goal_update", "_action_goal_bind",
         "_action_goal_list", "_action_goal_get", "_action_goal_search",
         "_action_goal_leaderboard", "_action_goal_common_nodes",
-        "_action_goal_set_canonical",
+        "_action_goal_parent_candidates", "_action_goal_set_canonical",
         # Gates main handlers (9)
         "_action_gates_define_ladder", "_action_gates_get_ladder",
         "_action_gates_claim", "_action_gates_retract",
@@ -109,14 +109,14 @@ def test_attribution_actions_keys():
 # ── _GOAL_ACTIONS dispatch table ────────────────────────────────────────────
 
 
-def test_goal_actions_table_has_9_handlers():
-    assert len(_GOAL_ACTIONS) == 9
+def test_goal_actions_table_has_10_handlers():
+    assert len(_GOAL_ACTIONS) == 10
 
 
 def test_goal_actions_keys():
     expected = {
         "propose", "update", "bind", "list", "get", "search",
-        "leaderboard", "common_nodes", "set_canonical",
+        "leaderboard", "common_nodes", "parent_candidates", "set_canonical",
     }
     assert set(_GOAL_ACTIONS.keys()) == expected
 
@@ -132,7 +132,10 @@ def test_goal_write_actions_includes_state_mutators():
 
 
 def test_goal_read_actions_excluded_from_write_set():
-    for r in ("list", "get", "search", "leaderboard", "common_nodes"):
+    for r in (
+        "list", "get", "search", "leaderboard", "common_nodes",
+        "parent_candidates",
+    ):
         assert r not in _GOAL_WRITE_ACTIONS
 
 

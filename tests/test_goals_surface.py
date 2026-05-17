@@ -406,6 +406,77 @@ def test_leaderboard_forks_counts_parent_chain(p5_env):
     assert ranked.get(parent_bid) == 2
 
 
+def test_parent_candidates_balances_quality_and_diversity(p5_env):
+    us, _ = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+
+    from workflow.daemon_server import update_branch_definition
+
+    def candidate(name, tags, node_ids, avg_quality_score):
+        spec = {
+            "name": name,
+            "entry_point": node_ids[0],
+            "tags": tags,
+            "goal_id": gid,
+            "node_defs": [
+                {"node_id": node_id, "display_name": node_id.title(),
+                 "prompt_template": "{x}"}
+                for node_id in node_ids
+            ],
+            "edges": (
+                [{"from": "START", "to": node_ids[0]}]
+                + [
+                    {"from": left, "to": right}
+                    for left, right in zip(node_ids, node_ids[1:])
+                ]
+                + [{"from": node_ids[-1], "to": "END"}]
+            ),
+            "state_schema": [{"name": "x", "type": "str"}],
+        }
+        built = _call(us, "extensions", "build_branch", spec_json=json.dumps(spec))
+        update_branch_definition(
+            _helpers_base_path(),
+            branch_def_id=built["branch_def_id"],
+            updates={"stats": {
+                "fork_count": 0,
+                "run_count": 1,
+                "avg_quality_score": avg_quality_score,
+            }},
+        )
+        return built["branch_def_id"]
+
+    alpha = candidate("Alpha", ["research", "search"], ["search", "summarize"], 0.9)
+    beta = candidate("Beta", ["research", "search"], ["search", "summarize"], 0.85)
+    gamma = candidate("Gamma", ["simulation", "solver"], ["simulate", "score"], 0.7)
+
+    result = _call(us, "goals", "parent_candidates", goal_id=gid, limit=3)
+
+    ids = [entry["branch_def_id"] for entry in result["candidates"]]
+    assert ids[0] == alpha
+    assert ids[1] == gamma
+    assert ids[2] == beta
+    assert result["candidates"][1]["diversity_score"] > result["candidates"][2]["diversity_score"]
+    assert result["candidates"][0]["quality_score"] == 0.9
+    assert "quality" in result["text"].lower()
+    assert "diversity" in result["text"].lower()
+
+
+def test_parent_candidates_query_filters_bound_branches(p5_env):
+    us, _ = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+    _build_branch(us, name="Literature Review")
+    target = _build_branch(us, name="Simulation Solver")
+    for branch in _call(us, "extensions", "list_branches", scope="all")["branches"]:
+        _call(us, "goals", "bind", branch_def_id=branch["branch_def_id"], goal_id=gid)
+
+    result = _call(
+        us, "goals", "parent_candidates", goal_id=gid, query="simulation",
+    )
+
+    assert result["count"] == 1
+    assert result["candidates"][0]["branch_def_id"] == target
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # common_nodes
 # ─────────────────────────────────────────────────────────────────────────────
@@ -597,9 +668,11 @@ def test_reads_do_not_ledger(p5_env):
     _call(us, "goals", "search", query="G")
     _call(us, "goals", "leaderboard", goal_id=gid, metric="run_count")
     _call(us, "goals", "common_nodes", goal_id=gid)
+    _call(us, "goals", "parent_candidates", goal_id=gid)
     ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
     read_actions = {"goals.list", "goals.get", "goals.search",
-                    "goals.leaderboard", "goals.common_nodes"}
+                    "goals.leaderboard", "goals.common_nodes",
+                    "goals.parent_candidates"}
     for e in ledger:
         assert e["action"] not in read_actions
 
@@ -615,7 +688,8 @@ def test_unknown_action_lists_available(p5_env):
     assert "error" in result
     avail = result.get("available_actions", [])
     for a in ("propose", "update", "bind", "list", "get",
-              "search", "leaderboard", "common_nodes"):
+              "search", "leaderboard", "common_nodes",
+              "parent_candidates"):
         assert a in avail
 
 

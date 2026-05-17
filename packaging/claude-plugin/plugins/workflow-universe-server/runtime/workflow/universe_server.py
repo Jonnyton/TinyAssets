@@ -788,6 +788,8 @@ def goals(
                    tags. Needs query.
       leaderboard  Rank bound Branches by metric (run_count/forks/outcome).
       common_nodes Nodes appearing in >=`min_branches` Branches.
+      parent_candidates Rank bound Branches as fork parents using
+                   quality + diversity. Optional query filters first.
 
     """
     return _goals_impl(
