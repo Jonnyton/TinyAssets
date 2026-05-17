@@ -234,3 +234,28 @@ def test_attach_existing_child_run_rejects_parent_not_receipt_waiting(attach_env
     result = _attach(parent_id, child_id)
 
     assert result["error_code"] == "parent_not_receipt_waiting"
+
+
+def test_attach_existing_child_run_reclaims_child_invocation_receipt_waiting_parent(attach_env):
+    parent_id = _make_run(
+        attach_env,
+        branch_def_id="parent-branch",
+        status="interrupted",
+        output={
+            "parent_loop_status": "receipt_waiting",
+            "selected_child_status": "child_invocation_receipt_waiting",
+            "selected_branch_state": "child_invocation_receipt_waiting",
+            "selected_child_branch_def_id": "child-branch",
+            "child_invocation_receipt_gate": {
+                "status": "receipt_waiting",
+                "reclaim_action": "attach_existing_child_run",
+            },
+        },
+    )
+    child_id = _completed_child(attach_env)
+
+    result = _attach(parent_id, child_id)
+
+    assert result["status"] == "attached"
+    assert result["automation_claim_status"] == "child_attached_with_handle"
+    assert result["stable_evidence_handle"].startswith("run-attachment:")

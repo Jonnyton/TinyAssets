@@ -1572,6 +1572,25 @@ class ChildFailure:
     partial_output: dict[str, Any] | None = None
 
 
+class ChildRunAwaitTimeout(TimeoutError):
+    """Raised when an awaited child run is still non-terminal at the ceiling."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: str,
+        child_status: str,
+        child_branch_def_id: str,
+        timeout_seconds: float,
+    ) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.child_status = child_status
+        self.child_branch_def_id = child_branch_def_id
+        self.timeout_seconds = timeout_seconds
+
+
 @dataclass
 class RunOutcome:
     run_id: str
@@ -1929,6 +1948,44 @@ def _invoke_graph(
             run_id=run_id, status=RUN_STATUS_FAILED,
             output={}, error=msg,
             child_failures=[failure] if failure is not None else [],
+        )
+    except ChildRunAwaitTimeout as exc:
+        msg = (
+            f"Child invocation receipt gate timed out after "
+            f"{exc.timeout_seconds}s while child run '{exc.run_id}' was "
+            f"still {exc.child_status}; parent is receipt-waiting and can be "
+            "reclaimed with attach_existing_child_run."
+        )
+        output = {
+            "parent_loop_status": "receipt_waiting",
+            "selected_child_status": "child_invocation_receipt_waiting",
+            "selected_branch_state": "child_invocation_receipt_waiting",
+            "automation_claim_status": "child_invocation_receipt_waiting",
+            "child_run_id": exc.run_id,
+            "selected_child_run_id": exc.run_id,
+            "selected_child_branch_def_id": exc.child_branch_def_id,
+            "child_invocation_receipt_gate": {
+                "status": "receipt_waiting",
+                "reason": "child_run_still_running_after_timeout",
+                "child_run_id": exc.run_id,
+                "child_status": exc.child_status,
+                "child_branch_def_id": exc.child_branch_def_id,
+                "timeout_seconds": exc.timeout_seconds,
+                "reclaim_action": "attach_existing_child_run",
+            },
+        }
+        update_run_status(
+            base_path, run_id,
+            status=RUN_STATUS_INTERRUPTED,
+            output=output,
+            error=msg,
+            finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id,
+            status=RUN_STATUS_INTERRUPTED,
+            output=output,
+            error=msg,
         )
     except Exception as exc:
         # GraphRecursionError: structured error naming the applied limit.
@@ -3087,9 +3144,13 @@ def poll_child_run_status(
             return record
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError(
+            raise ChildRunAwaitTimeout(
                 f"await_branch_run: child run '{run_id}' did not complete "
-                f"within {timeout_seconds}s."
+                f"within {timeout_seconds}s.",
+                run_id=run_id,
+                child_status=str(record.get("status") or ""),
+                child_branch_def_id=str(record.get("branch_def_id") or ""),
+                timeout_seconds=timeout_seconds,
             )
         time.sleep(min(poll_interval, remaining))
 
@@ -3294,6 +3355,7 @@ ACTIONABLE_BY: dict[str, str] = {
     "compile_error": "chatbot",
     "snapshot_schema_drift": "chatbot",
     "interrupted": "chatbot",
+    "child_receipt_waiting": "chatbot",
     # user — opaque/internal; chatbot escalates raw error for human judgment
     "unknown": "user",
     "error": "user",
@@ -3316,6 +3378,11 @@ def _classify_failure(run: dict) -> str:
     if status == RUN_STATUS_CANCELLED:
         return "cancelled"
     if status == RUN_STATUS_INTERRUPTED:
+        output = run.get("output") or {}
+        if isinstance(output, dict):
+            gate = output.get("child_invocation_receipt_gate")
+            if isinstance(gate, dict) and gate.get("status") == "receipt_waiting":
+                return "child_receipt_waiting"
         return "interrupted"
     if not error:
         return ""
@@ -3401,6 +3468,11 @@ def list_recent_runs(
             suggested_action = "Run was cancelled by request."
         elif failure_class == "interrupted":
             suggested_action = "Run was interrupted; use resume_run to continue."
+        elif failure_class == "child_receipt_waiting":
+            suggested_action = (
+                "Wait for the child run to complete, then call "
+                "attach_existing_child_run with the recorded child_run_id."
+            )
         elif failure_class == "error":
             suggested_action = "Check error field for details; re-run after fixing root cause."
 
@@ -3446,6 +3518,7 @@ __all__ = [
     "NODE_STATUS_FAILED",
     "ACTIONABLE_BY",
     "ChildRunAttachmentError",
+    "ChildRunAwaitTimeout",
     "RunCancelledError",
     "RunOutcome",
     "RunStepEvent",
