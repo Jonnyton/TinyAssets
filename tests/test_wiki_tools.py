@@ -741,6 +741,58 @@ class TestWikiFileBugDispatch:
         assert out["bug_id"].startswith("BUG-")
         assert "path" in out
 
+    def test_file_bug_flags_patch_request_ghost_risk_attention(self, wiki_dir):
+        (wiki_dir / "pages" / "patch-requests").mkdir(parents=True, exist_ok=True)
+        (wiki_dir / "drafts" / "patch-requests").mkdir(parents=True, exist_ok=True)
+
+        out = json.loads(
+            wiki(
+                "file_bug",
+                component="community_loop.classifier",
+                severity="minor",
+                title="Filing-time effort-class prediction circuit-breaker classifier",
+                observed=(
+                    "Mechanical filing cites MSR prior art with AUC 0.96 on "
+                    "33K agent PRs and needs opposite-family checker attention."
+                ),
+                expected="Carrier attention lands before stall.",
+                kind="patch_request",
+                tags="mechanical",
+            )
+        )
+
+        assert out["status"] == "filed"
+        effort = out["effort_classification"]
+        assert effort["effort_class"] == "ghost-risk"
+        assert effort["attention"] == "carrier-review-before-daemon-pickup"
+        assert "research_prior_art" in effort["signals"]
+        body = (wiki_dir / out["path"]).read_text(encoding="utf-8")
+        assert "effort_class: ghost-risk" in body
+        assert "effort_attention: carrier-review-before-daemon-pickup" in body
+
+    def test_file_bug_flags_patch_request_merge_instant(self, wiki_dir):
+        (wiki_dir / "pages" / "patch-requests").mkdir(parents=True, exist_ok=True)
+        (wiki_dir / "drafts" / "patch-requests").mkdir(parents=True, exist_ok=True)
+
+        out = json.loads(
+            wiki(
+                "file_bug",
+                component="docs",
+                severity="cosmetic",
+                title="Fix typo in connector docs",
+                observed="Mechanical docs-only copy edit with no runtime behavior change.",
+                kind="patch_request",
+            )
+        )
+
+        assert out["status"] == "filed"
+        effort = out["effort_classification"]
+        assert effort["effort_class"] == "merge-instant"
+        assert effort["attention"] == "normal-review-gates"
+        assert "mechanical_shape" in effort["signals"]
+        body = (wiki_dir / out["path"]).read_text(encoding="utf-8")
+        assert "effort_class: merge-instant" in body
+
     def test_file_bug_accepts_tags_via_public_wrapper(self, wiki_dir):
         """BUG-040: public wiki wrapper must pass tags through to file_bug."""
         (wiki_dir / "pages" / "bugs").mkdir(parents=True, exist_ok=True)

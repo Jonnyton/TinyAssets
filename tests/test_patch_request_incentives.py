@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from workflow.api.market import classify_filing_effort
 from workflow.branch_tasks import BranchTask, read_queue
 from workflow.dispatcher import DispatcherConfig, score_task
 from workflow.work_targets import (
@@ -194,6 +195,40 @@ def test_submit_request_classifies_access_meaning_and_authority(
         queue[0].inputs["request_classification"]
         == response["request_classification"]
     )
+
+
+def test_filing_effort_classifier_flags_research_ghost_risk():
+    result = classify_filing_effort(
+        title=(
+            "Filing-time effort-class prediction circuit-breaker classifier "
+            "for MSR prior art"
+        ),
+        kind="patch_request",
+        observed=(
+            "Mechanical filing cites AUC 0.96 on 33K agent PRs and requires "
+            "opposite-family checker attention before stall."
+        ),
+        tags="mechanical",
+    )
+
+    assert result["effort_class"] == "ghost-risk"
+    assert result["attention"] == "carrier-review-before-daemon-pickup"
+    assert "research_prior_art" in result["signals"]
+    assert "review_gate" in result["signals"]
+    assert result["authority_boundary"]["affects_merge"] is False
+
+
+def test_filing_effort_classifier_flags_merge_instant_without_ghost_signals():
+    result = classify_filing_effort(
+        title="Fix typo in connector docs",
+        kind="patch_request",
+        observed="Mechanical docs-only copy edit with no runtime behavior change.",
+    )
+
+    assert result["effort_class"] == "merge-instant"
+    assert result["attention"] == "normal-review-gates"
+    assert "mechanical_shape" in result["signals"]
+    assert "low_runtime_risk" in result["signals"]
 
 
 def test_requester_directed_daemon_requires_ownership(

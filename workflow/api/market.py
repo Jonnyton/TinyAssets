@@ -88,6 +88,79 @@ _REQUEST_TYPE_MEANING: dict[str, str] = {
     "revision": "patch",
     "scene_direction": "branch_refinement",
 }
+_GHOST_RISK_SIGNALS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "research_prior_art",
+        (
+            "prior art",
+            "paper",
+            "benchmark",
+            "auc",
+            "msr",
+            "dataset",
+            "classifier",
+            "prediction",
+            "model",
+            "33k",
+        ),
+    ),
+    (
+        "review_gate",
+        (
+            "opposite-family",
+            "opposite family",
+            "checker",
+            "gate requirement",
+            "gate ladder",
+            "review blocker",
+        ),
+    ),
+    (
+        "stall_language",
+        (
+            "ghost-risk",
+            "ghost risk",
+            "stall",
+            "carrier attention",
+            "before stall",
+        ),
+    ),
+)
+_MERGE_INSTANT_SIGNALS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "mechanical_shape",
+        (
+            "mechanical",
+            "typo",
+            "copy edit",
+            "copy-edit",
+            "formatting",
+            "format-only",
+            "rename only",
+            "one-line",
+        ),
+    ),
+    (
+        "low_runtime_risk",
+        (
+            "docs only",
+            "docs-only",
+            "documentation only",
+            "no runtime",
+            "no behavior change",
+            "comment only",
+        ),
+    ),
+    (
+        "merge_instant_language",
+        (
+            "merge-instant",
+            "merge instant",
+            "safe to merge",
+            "trivial patch",
+        ),
+    ),
+)
 
 
 def classify_patch_request(
@@ -123,6 +196,72 @@ def classify_patch_request(
             "scope": authority_scope,
             "boundary": dict(PATCH_REQUEST_AUTHORITY_BOUNDARY),
         },
+    }
+
+
+def classify_filing_effort(
+    *,
+    title: str,
+    component: str = "",
+    severity: str = "",
+    kind: str = "bug",
+    repro: str = "",
+    observed: str = "",
+    expected: str = "",
+    workaround: str = "",
+    tags: str = "",
+) -> dict[str, Any]:
+    """Classify filing attention needs while the wiki entry is created.
+
+    This is a deterministic circuit-breaker, not a merge decision. It gives
+    carriers a pickup signal for filings likely to stall despite looking
+    mechanical, while keeping merge authority with the normal review gates.
+    """
+    haystack = " ".join(
+        str(part or "")
+        for part in (
+            title,
+            component,
+            severity,
+            kind,
+            repro,
+            observed,
+            expected,
+            workaround,
+            tags,
+        )
+    ).lower()
+
+    def _matched_signals(catalog: tuple[tuple[str, tuple[str, ...]], ...]) -> list[str]:
+        return [
+            signal
+            for signal, keywords in catalog
+            if any(keyword in haystack for keyword in keywords)
+        ]
+
+    ghost_signals = _matched_signals(_GHOST_RISK_SIGNALS)
+    merge_instant_signals = _matched_signals(_MERGE_INSTANT_SIGNALS)
+    if ghost_signals:
+        effort_class = "ghost-risk"
+        attention = "carrier-review-before-daemon-pickup"
+        signals = ghost_signals + [
+            signal for signal in merge_instant_signals if signal not in ghost_signals
+        ]
+    elif merge_instant_signals:
+        effort_class = "merge-instant"
+        attention = "normal-review-gates"
+        signals = merge_instant_signals
+    else:
+        effort_class = "standard"
+        attention = "normal-review-gates"
+        signals = []
+
+    return {
+        "effort_class": effort_class,
+        "attention": attention,
+        "signals": signals,
+        "confidence": "heuristic",
+        "authority_boundary": dict(PATCH_REQUEST_AUTHORITY_BOUNDARY),
     }
 
 

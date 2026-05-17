@@ -1589,12 +1589,25 @@ def _render_bug_markdown(
     first_seen_date: str,
     kind: str = "bug",
     extra_tags: list[str] | None = None,
+    effort_classification: dict[str, Any] | None = None,
 ) -> str:
     comp_tag = component.split(".")[0] if component else "unknown"
     base_tags = [kind, comp_tag]
     if extra_tags:
         base_tags.extend(t for t in extra_tags if t not in base_tags)
     tags_str = ", ".join(base_tags)
+    effort_frontmatter = ""
+    if effort_classification:
+        effort_class = str(effort_classification.get("effort_class") or "standard")
+        attention = str(effort_classification.get("attention") or "normal-review-gates")
+        raw_signals = effort_classification.get("signals") or []
+        signals = [str(signal) for signal in raw_signals if str(signal)]
+        signals_str = ", ".join(signals)
+        effort_frontmatter = (
+            f"effort_class: {effort_class}\n"
+            f"effort_attention: {attention}\n"
+            f"effort_signals: [{signals_str}]\n"
+        )
     return (
         f"---\n"
         f"id: {bug_id}\n"
@@ -1607,6 +1620,7 @@ def _render_bug_markdown(
         f"severity: {severity}\n"
         f"status: open\n"
         f"reported_by: chatbot\n"
+        f"{effort_frontmatter}"
         f"tags: [{tags_str}]\n"
         f"---\n\n"
         f"# {bug_id}: {title}\n\n"
@@ -1834,6 +1848,19 @@ def _wiki_file_bug(
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slug = _slugify_title(title)
+    from workflow.api.market import classify_filing_effort
+
+    effort_classification = classify_filing_effort(
+        title=title,
+        component=component,
+        severity=severity,
+        kind=effective_kind,
+        repro=repro,
+        observed=observed,
+        expected=expected,
+        workaround=workaround,
+        tags=tags,
+    )
 
     # Dedup check: scan existing filings of THIS kind for Jaccard similarity
     # ≥ threshold. Per-kind only — a feature-request shouldn't dedup against
@@ -1862,6 +1889,7 @@ def _wiki_file_bug(
                 "status": "similar_found",
                 "bug_id": None,
                 "similar": top3,
+                "effort_classification": effort_classification,
                 "hint": (
                     "Similar filings exist. Use cosign_bug to add your context "
                     "to the top match, or set force_new=true if the symptom is "
@@ -1885,6 +1913,7 @@ def _wiki_file_bug(
             first_seen_date=today,
             kind=effective_kind,
             extra_tags=[t.strip() for t in tags.split(",") if t.strip()],
+            effort_classification=effort_classification,
         )
         try:
             with open(target, "x", encoding="utf-8") as fh:
@@ -2040,6 +2069,7 @@ def _wiki_file_bug(
         "kind": effective_kind,
         "severity": severity,
         "component": component,
+        "effort_classification": effort_classification,
         "investigation": investigation,
         "note": "Filing sent to navigator triage pipeline. "
                 f"Use `wiki action=list category={category_dir}` to view.",
