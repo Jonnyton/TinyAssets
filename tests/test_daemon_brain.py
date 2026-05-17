@@ -7,9 +7,11 @@ from pathlib import Path
 from workflow.daemon_brain import (
     build_daemon_brain_packet,
     capture_daemon_memory,
+    daemon_memory_value_layer_registry,
     list_daemon_memory,
     memory_observability_status,
     promote_daemon_memory_to_wiki,
+    review_daemon_memory,
     search_daemon_memory,
 )
 from workflow.daemon_memory import build_daemon_memory_packet
@@ -135,3 +137,73 @@ def test_daemon_brain_smoke_roundtrip(tmp_path: Path) -> None:
     status = memory_observability_status(tmp_path, daemon_id=ada["daemon_id"])
     assert status["entry_count"] == 1
     assert status["event_count"] >= 5
+    assert status["value_layer_registry"]["valid_memory_kinds"]
+
+
+def test_daemon_memory_value_layer_registry_describes_kinds_and_lifecycle() -> None:
+    registry = daemon_memory_value_layer_registry()
+
+    kinds = registry["memory_kinds"]
+    assert kinds["failure_mode"]["description"]
+    assert kinds["failure_mode"]["value_layer"] == "runtime_learning"
+    assert sorted(kinds) == registry["valid_memory_kinds"]
+
+    lifecycle = registry["promotion_lifecycle"]
+    assert lifecycle["candidate"]["initial"] is True
+    assert lifecycle["candidate"]["allowed_next_states"] == [
+        "accepted",
+        "promoted",
+        "rejected",
+        "superseded",
+    ]
+    assert lifecycle["rejected"]["terminal"] is True
+    assert lifecycle["superseded"]["allowed_next_states"] == []
+
+
+def test_daemon_memory_promotion_lifecycle_rejects_invalid_transitions(tmp_path: Path) -> None:
+    ada = _create_daemon(tmp_path, "Test Ada")
+    first = capture_daemon_memory(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        memory_kind="semantic",
+        content="Rejected memories must not be silently revived.",
+        source_type="manual",
+        source_id="pytest-source",
+        reliability="host_observed",
+        language_type="policy",
+    )
+
+    rejected = review_daemon_memory(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        entry_id=first["entry_id"],
+        decision="reject",
+        reviewer_id="pytest",
+        note="bad extraction",
+    )
+    assert rejected["entry"]["promotion_state"] == "rejected"
+
+    try:
+        review_daemon_memory(
+            tmp_path,
+            daemon_id=ada["daemon_id"],
+            entry_id=first["entry_id"],
+            decision="accept",
+            reviewer_id="pytest",
+        )
+    except ValueError as exc:
+        assert "invalid promotion transition" in str(exc)
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("rejected memory was accepted")
+
+    try:
+        promote_daemon_memory_to_wiki(
+            tmp_path,
+            daemon_id=ada["daemon_id"],
+            entry_ids=[first["entry_id"]],
+            summary="Should not promote rejected entries.",
+        )
+    except ValueError as exc:
+        assert "invalid promotion transition" in str(exc)
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("rejected memory was promoted")

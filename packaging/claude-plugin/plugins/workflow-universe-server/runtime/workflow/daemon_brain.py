@@ -12,7 +12,7 @@ import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,25 +20,78 @@ from typing import Any
 SCHEMA_VERSION = 1
 DEFAULT_BRAIN_PACKET_CHARS = 1600
 
-VALID_MEMORY_KINDS = {
-    "semantic",
-    "episodic",
-    "procedural",
-    "policy",
-    "claim",
-    "preference",
-    "failure_mode",
-    "open_loop",
-    "contradiction",
-    "soul_proposal",
+MEMORY_KIND_REGISTRY: dict[str, dict[str, str]] = {
+    "semantic": {
+        "value_layer": "knowledge",
+        "description": "Stable conceptual knowledge extracted from daemon work.",
+    },
+    "episodic": {
+        "value_layer": "experience",
+        "description": "Specific observed events with source provenance.",
+    },
+    "procedural": {
+        "value_layer": "practice",
+        "description": "Repeatable how-to guidance learned from execution.",
+    },
+    "policy": {
+        "value_layer": "governance",
+        "description": "Normative operating rules or host-approved constraints.",
+    },
+    "claim": {
+        "value_layer": "knowledge",
+        "description": "A truth-bearing assertion that needs reliability context.",
+    },
+    "preference": {
+        "value_layer": "relationship",
+        "description": "Host, project, or collaborator preference signals.",
+    },
+    "failure_mode": {
+        "value_layer": "runtime_learning",
+        "description": "Known ways a daemon or workflow can fail and how to notice them.",
+    },
+    "open_loop": {
+        "value_layer": "coordination",
+        "description": "Unresolved follow-up, blocker, or watch item.",
+    },
+    "contradiction": {
+        "value_layer": "integrity",
+        "description": "A conflict between memories, sources, or current evidence.",
+    },
+    "soul_proposal": {
+        "value_layer": "identity",
+        "description": "A proposed update to the daemon's role, self-model, or soul.",
+    },
 }
-VALID_PROMOTION_STATES = {
-    "candidate",
-    "accepted",
-    "promoted",
-    "superseded",
-    "rejected",
+VALID_MEMORY_KINDS = frozenset(MEMORY_KIND_REGISTRY)
+
+PROMOTION_LIFECYCLE: dict[str, dict[str, Any]] = {
+    "candidate": {
+        "initial": True,
+        "terminal": False,
+        "allowed_next_states": ("accepted", "promoted", "rejected", "superseded"),
+    },
+    "accepted": {
+        "initial": False,
+        "terminal": False,
+        "allowed_next_states": ("promoted", "rejected", "superseded"),
+    },
+    "promoted": {
+        "initial": False,
+        "terminal": False,
+        "allowed_next_states": ("superseded",),
+    },
+    "superseded": {
+        "initial": False,
+        "terminal": True,
+        "allowed_next_states": (),
+    },
+    "rejected": {
+        "initial": False,
+        "terminal": True,
+        "allowed_next_states": (),
+    },
 }
+VALID_PROMOTION_STATES = frozenset(PROMOTION_LIFECYCLE)
 VALID_VISIBILITIES = {
     "host_private",
     "borrowable_role_context",
@@ -206,11 +259,45 @@ def _clamp(value: float, *, default: float) -> float:
     return max(0.0, min(1.0, parsed))
 
 
-def _validate_choice(value: str, choices: set[str], field: str) -> str:
+def _validate_choice(value: str, choices: Collection[str], field: str) -> str:
     normalized = str(value or "").strip()
     if normalized not in choices:
         raise ValueError(f"{field} must be one of {sorted(choices)}")
     return normalized
+
+
+def _validate_promotion_transition(current_state: str, next_state: str) -> str:
+    current = _validate_choice(current_state, VALID_PROMOTION_STATES, "current promotion_state")
+    normalized_next = _validate_choice(next_state, VALID_PROMOTION_STATES, "promotion_state")
+    if current == normalized_next:
+        return normalized_next
+    allowed = PROMOTION_LIFECYCLE[current]["allowed_next_states"]
+    if normalized_next not in allowed:
+        raise ValueError(
+            "invalid promotion transition: "
+            f"{current} -> {normalized_next}; allowed next states: {list(allowed)}"
+        )
+    return normalized_next
+
+
+def daemon_memory_value_layer_registry() -> dict[str, Any]:
+    """Return the daemon memory kind registry and promotion lifecycle contract."""
+    return {
+        "memory_kinds": {
+            key: dict(MEMORY_KIND_REGISTRY[key])
+            for key in sorted(MEMORY_KIND_REGISTRY)
+        },
+        "valid_memory_kinds": sorted(VALID_MEMORY_KINDS),
+        "promotion_lifecycle": {
+            state: {
+                "initial": bool(spec["initial"]),
+                "terminal": bool(spec["terminal"]),
+                "allowed_next_states": list(spec["allowed_next_states"]),
+            }
+            for state, spec in sorted(PROMOTION_LIFECYCLE.items())
+        },
+        "valid_promotion_states": sorted(VALID_PROMOTION_STATES),
+    }
 
 
 def _require_text(value: str, field: str) -> str:
@@ -1166,6 +1253,8 @@ def promote_daemon_memory_to_wiki(
         missing = [entry_id for entry_id in clean_ids if entry_id not in found]
         if missing:
             raise ValueError(f"entries not found for daemon: {', '.join(missing)}")
+        for entry in entries:
+            _validate_promotion_transition(entry["promotion_state"], "promoted")
         conn.execute(
             f"""
             UPDATE daemon_brain_entries
@@ -1241,6 +1330,10 @@ def _supersede_conn(
     superseded_by_entry_id: str,
     trace_id: str,
 ) -> None:
+    entry = _fetch_entry(conn, entry_id)
+    if entry is None or entry["daemon_id"] != daemon_id:
+        raise ValueError("entry_id not found for daemon")
+    _validate_promotion_transition(entry["promotion_state"], "superseded")
     conn.execute(
         """
         UPDATE daemon_brain_entries
@@ -1327,6 +1420,7 @@ def review_daemon_memory(
         entry = _fetch_entry(conn, entry_id)
         if entry is None or entry["daemon_id"] != daemon_id:
             raise ValueError("entry_id not found for daemon")
+        _validate_promotion_transition(entry["promotion_state"], state)
         if state == "superseded":
             replacement_id = str(superseded_by_entry_id or "").strip()
             replacement = _fetch_entry(conn, replacement_id)
@@ -1453,4 +1547,5 @@ def memory_observability_status(
         "promotion_states": states,
         "event_types": events,
         "candidate_backlog": int(states.get("candidate", 0) + states.get("accepted", 0)),
+        "value_layer_registry": daemon_memory_value_layer_registry(),
     }
