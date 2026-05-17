@@ -7,9 +7,11 @@ from pathlib import Path
 from workflow.daemon_brain import (
     build_daemon_brain_packet,
     capture_daemon_memory,
+    daemon_memory_cost_ledger_status,
     daemon_memory_registry,
     list_daemon_memory,
     memory_observability_status,
+    open_brain_status_surface,
     promote_daemon_memory_to_wiki,
     review_daemon_memory,
     search_daemon_memory,
@@ -137,6 +139,8 @@ def test_daemon_brain_smoke_roundtrip(tmp_path: Path) -> None:
     status = memory_observability_status(tmp_path, daemon_id=ada["daemon_id"])
     assert status["entry_count"] == 1
     assert status["event_count"] >= 5
+    assert status["cost_ledger"]["read_only"] is True
+    assert status["cost_ledger"]["estimated_total_tokens"] > 0
 
 
 def test_daemon_memory_registry_describes_kinds_and_lifecycle() -> None:
@@ -188,3 +192,62 @@ def test_daemon_memory_lifecycle_blocks_invalid_transitions(tmp_path: Path) -> N
         assert "cannot transition promotion_state from rejected to promoted" in str(exc)
     else:
         raise AssertionError("rejected memory was promoted")
+
+def test_daemon_memory_cost_ledger_is_read_only_status(tmp_path: Path) -> None:
+    ada = _create_daemon(tmp_path, "Cost Ada")
+    capture_daemon_memory(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        memory_kind="policy",
+        content="Track prompt budget costs before promoting open-brain memories.",
+        source_type="manual",
+        source_id="pytest-cost-ledger",
+        reliability="host_observed",
+        temporal_bounds={"valid_from": "2026-05-17"},
+        language_type="policy",
+        confidence=0.8,
+        importance=0.7,
+    )
+    search_daemon_memory(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        query="prompt budget",
+        limit=2,
+    )
+
+    ledger = daemon_memory_cost_ledger_status(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        recent_limit=2,
+    )
+
+    assert ledger["read_only"] is True
+    assert ledger["ledger_available"] is True
+    assert ledger["entry_count"] == 1
+    assert ledger["event_count"] >= 2
+    assert ledger["estimated_total_tokens"] > 0
+    assert ledger["entries_by_kind"] == {"policy": 1}
+    assert "daemon.memory.write_candidate" in ledger["events_by_type"]
+    assert ledger["recent_events"][0]["estimated_tokens"] >= 0
+
+
+def test_open_brain_status_surface_summarizes_soul_daemons(tmp_path: Path) -> None:
+    ada = _create_daemon(tmp_path, "Surface Ada")
+    capture_daemon_memory(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        memory_kind="failure_mode",
+        content="Surface mini-brain cost without triggering autonomous cleanup.",
+        source_type="manual",
+        source_id="pytest-open-brain-status",
+        reliability="host_observed",
+        temporal_bounds={"valid_from": "2026-05-17"},
+        language_type="policy",
+    )
+
+    status = open_brain_status_surface(tmp_path)
+
+    assert status["read_only"] is True
+    assert status["daemon_count"] == 1
+    assert status["daemons"][0]["daemon_id"] == ada["daemon_id"]
+    assert status["daemons"][0]["cost_ledger"]["estimated_total_tokens"] > 0

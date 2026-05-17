@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from workflow.api.helpers import _default_universe, _universe_dir
+from workflow.api.helpers import _base_path, _default_universe, _universe_dir
 from workflow.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 
 
@@ -836,6 +836,20 @@ def get_status(universe_id: str = "") -> str:
             "ledger_available": False,
         }
 
+    # open_brain — PR-119 Slice C. Read-only status surface over daemon
+    # mini-brain cost ledgers. This only derives estimates from existing
+    # entries/events; it does not trigger memory capture, review, promotion,
+    # compaction, or any autonomous scheduling decision.
+    try:
+        from workflow.daemon_brain import open_brain_status_surface
+        open_brain = open_brain_status_surface(_base_path())
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        open_brain = {
+            "error": "compute_failed",
+            "detail": str(exc),
+            "read_only": True,
+        }
+
     response = {
         "schema_version": 1,
         "active_host": policy_payload["active_host"],
@@ -857,6 +871,7 @@ def get_status(universe_id: str = "") -> str:
         "missing_data_files": missing_data_files,
         "supervisor_liveness": supervisor_liveness,
         "auto_ship_health": auto_ship_health,
+        "open_brain": open_brain,
         "universe_id": uid,
         "universe_exists": universe_exists,
     }

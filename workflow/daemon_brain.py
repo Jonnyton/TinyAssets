@@ -193,6 +193,24 @@ def _json_loads(value: str, default: Any) -> Any:
         return default
 
 
+def _estimate_tokens(value: Any) -> int:
+    """Cheap deterministic token estimate for read-only cost surfaces."""
+    return max(0, len(str(value or "")) // 4)
+
+
+def _connect_existing_read_only(base_path: str | Path) -> sqlite3.Connection | None:
+    db_path = daemon_brain_db_path(base_path)
+    if not db_path.exists():
+        return None
+    conn = sqlite3.connect(
+        f"file:{db_path.as_posix()}?mode=ro",
+        timeout=30.0,
+        uri=True,
+    )
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _clean_content(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
@@ -1592,4 +1610,213 @@ def memory_observability_status(
         "event_types": events,
         "candidate_backlog": int(states.get("candidate", 0) + states.get("accepted", 0)),
         "registry": daemon_memory_registry(),
+        "cost_ledger": daemon_memory_cost_ledger_status(
+            base_path,
+            daemon_id=daemon_id,
+            recent_limit=5,
+        ),
+    }
+
+
+def _daemon_cost_ledger_from_conn(
+    conn: sqlite3.Connection,
+    *,
+    daemon_id: str,
+    recent_limit: int,
+) -> dict[str, Any]:
+    entry_rows = conn.execute(
+        """
+        SELECT memory_kind, content, metadata_json, temporal_bounds_json,
+               source_type, source_id
+        FROM daemon_brain_entries
+        WHERE daemon_id = ?
+        """,
+        (daemon_id,),
+    ).fetchall()
+    event_rows = conn.execute(
+        """
+        SELECT event_id, event_type, source_type, source_id, query_text,
+               entry_ids_json, metadata_json, created_at
+        FROM daemon_memory_events
+        WHERE daemon_id = ?
+        ORDER BY created_at DESC, event_id DESC
+        """,
+        (daemon_id,),
+    ).fetchall()
+
+    entry_tokens = 0
+    tokens_by_kind: dict[str, int] = {}
+    entries_by_kind: dict[str, int] = {}
+    for row in entry_rows:
+        kind = str(row["memory_kind"])
+        estimate = (
+            _estimate_tokens(row["content"])
+            + _estimate_tokens(row["metadata_json"])
+            + _estimate_tokens(row["temporal_bounds_json"])
+            + _estimate_tokens(row["source_type"])
+            + _estimate_tokens(row["source_id"])
+        )
+        entry_tokens += estimate
+        tokens_by_kind[kind] = tokens_by_kind.get(kind, 0) + estimate
+        entries_by_kind[kind] = entries_by_kind.get(kind, 0) + 1
+
+    event_tokens = 0
+    tokens_by_event_type: dict[str, int] = {}
+    events_by_type: dict[str, int] = {}
+    recent_events: list[dict[str, Any]] = []
+    for idx, row in enumerate(event_rows):
+        event_type = str(row["event_type"])
+        estimate = (
+            _estimate_tokens(row["query_text"])
+            + _estimate_tokens(row["metadata_json"])
+            + _estimate_tokens(row["entry_ids_json"])
+            + _estimate_tokens(row["source_type"])
+            + _estimate_tokens(row["source_id"])
+        )
+        event_tokens += estimate
+        tokens_by_event_type[event_type] = (
+            tokens_by_event_type.get(event_type, 0) + estimate
+        )
+        events_by_type[event_type] = events_by_type.get(event_type, 0) + 1
+        if idx < recent_limit:
+            entry_ids = _json_loads(row["entry_ids_json"], [])
+            recent_events.append({
+                "event_id": row["event_id"],
+                "event_type": event_type,
+                "created_at": row["created_at"],
+                "source_type": row["source_type"],
+                "source_id": row["source_id"],
+                "entry_count": len(entry_ids) if isinstance(entry_ids, list) else 0,
+                "estimated_tokens": estimate,
+            })
+
+    return {
+        "daemon_id": daemon_id,
+        "schema_version": SCHEMA_VERSION,
+        "read_only": True,
+        "entry_count": len(entry_rows),
+        "event_count": len(event_rows),
+        "estimated_entry_tokens": entry_tokens,
+        "estimated_event_tokens": event_tokens,
+        "estimated_total_tokens": entry_tokens + event_tokens,
+        "entries_by_kind": entries_by_kind,
+        "estimated_tokens_by_kind": tokens_by_kind,
+        "events_by_type": events_by_type,
+        "estimated_tokens_by_event_type": tokens_by_event_type,
+        "recent_events": recent_events,
+    }
+
+
+def daemon_memory_cost_ledger_status(
+    base_path: str | Path,
+    *,
+    daemon_id: str,
+    recent_limit: int = 5,
+) -> dict[str, Any]:
+    """Return a read-only estimated-cost ledger for one daemon brain.
+
+    This derives cost from existing daemon brain entries and memory events. It
+    never writes rows and never makes autonomous retention/promotion decisions.
+    """
+    limit = max(0, min(int(recent_limit), 20))
+    conn = _connect_existing_read_only(base_path)
+    if conn is None:
+        return {
+            "daemon_id": daemon_id,
+            "schema_version": SCHEMA_VERSION,
+            "read_only": True,
+            "ledger_available": False,
+            "reason": "daemon_brain_db_missing",
+            "entry_count": 0,
+            "event_count": 0,
+            "estimated_total_tokens": 0,
+            "recent_events": [],
+        }
+    try:
+        out = _daemon_cost_ledger_from_conn(
+            conn,
+            daemon_id=daemon_id,
+            recent_limit=limit,
+        )
+    finally:
+        conn.close()
+    out["ledger_available"] = True
+    return out
+
+
+def open_brain_status_surface(
+    base_path: str | Path,
+    *,
+    recent_limit: int = 3,
+    daemon_limit: int = 10,
+) -> dict[str, Any]:
+    """Compact read-only daemon brain status for public status probes."""
+    from workflow.storage import db_path
+
+    author_db = db_path(base_path)
+    if not author_db.exists():
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "read_only": True,
+            "daemon_count": 0,
+            "daemons": [],
+            "warnings": ["daemon_registry_db_missing"],
+        }
+
+    conn = sqlite3.connect(
+        f"file:{author_db.as_posix()}?mode=ro",
+        timeout=30.0,
+        uri=True,
+    )
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT author_id, display_name, soul_text, metadata_json
+            FROM author_definitions
+            ORDER BY created_at, author_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    daemons: list[dict[str, Any]] = []
+    for row in rows:
+        metadata = _json_loads(row["metadata_json"], {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        soul_mode = str(metadata.get("daemon_soul_mode") or "").strip()
+        if soul_mode != "soul":
+            continue
+        author_id = str(row["author_id"])
+        daemon_id = (
+            "daemon::" + author_id[len("author::"):]
+            if author_id.startswith("author::")
+            else author_id
+        )
+        daemons.append({
+            "daemon_id": daemon_id,
+            "display_name": str(row["display_name"]),
+            "has_soul": True,
+        })
+    out_daemons: list[dict[str, Any]] = []
+    for daemon in daemons[: max(0, int(daemon_limit))]:
+        ledger = daemon_memory_cost_ledger_status(
+            base_path,
+            daemon_id=str(daemon["daemon_id"]),
+            recent_limit=recent_limit,
+        )
+        out_daemons.append({
+            "daemon_id": daemon["daemon_id"],
+            "display_name": daemon["display_name"],
+            "has_soul": daemon["has_soul"],
+            "cost_ledger": ledger,
+        })
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "read_only": True,
+        "daemon_count": len(daemons),
+        "returned_daemon_count": len(out_daemons),
+        "daemons": out_daemons,
+        "warnings": [],
     }

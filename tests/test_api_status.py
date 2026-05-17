@@ -91,6 +91,9 @@ def test_get_status_returns_versioned_contract_keys(status_env):
         "per_provider_cooldown_remaining",
         "sandbox_status",
         "missing_data_files",
+        "supervisor_liveness",
+        "auto_ship_health",
+        "open_brain",
         "universe_id",
         "universe_exists",
     }
@@ -113,6 +116,40 @@ def test_get_status_evidence_includes_policy_hash(status_env):
     h = parsed["evidence"]["policy_hash"]
     assert isinstance(h, str)
     assert len(h) == 64
+
+
+def test_get_status_includes_read_only_open_brain_surface(status_env, tmp_path):
+    from workflow.daemon_brain import capture_daemon_memory
+    from workflow.daemon_registry import create_daemon
+
+    daemon = create_daemon(
+        tmp_path,
+        display_name="Status Brain Daemon",
+        created_by="pytest",
+        soul_mode="soul",
+        soul_text="Status Brain Daemon observes memory cost.",
+    )
+    capture_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        memory_kind="policy",
+        content="Report open-brain token cost as status, not as a decision.",
+        source_type="pytest",
+        source_id="get-status-open-brain",
+        reliability="test_observed",
+        temporal_bounds={"valid_from": "2026-05-17"},
+        language_type="policy",
+    )
+
+    parsed = json.loads(get_status())
+
+    assert parsed["open_brain"]["read_only"] is True
+    assert parsed["open_brain"]["daemon_count"] == 1
+    assert parsed["open_brain"]["daemons"][0]["daemon_id"] == daemon["daemon_id"]
+    assert (
+        parsed["open_brain"]["daemons"][0]["cost_ledger"]["estimated_total_tokens"]
+        > 0
+    )
 
 
 def test_get_status_explicit_universe_id_overrides_default(status_env, tmp_path):
