@@ -1869,6 +1869,22 @@ def _action_daemon_memory_status(
     return json.dumps(result, default=str)
 
 
+def _action_treasury_status(
+    universe_id: str = "",
+    limit: Any = 10,
+    **_kwargs: Any,
+) -> str:
+    from workflow.treasury import treasury_status
+
+    uid = universe_id or _default_universe()
+    try:
+        result = treasury_status(_base_path(), limit=int(limit))
+    except (ValueError, TypeError) as exc:
+        return json.dumps({"universe_id": uid, "error": str(exc)})
+    result["universe_id"] = uid
+    return json.dumps(result, default=str)
+
+
 # ---------------------------------------------------------------------------
 # Phase H — daemon_overview + set_tier_config (aggregated MCP surface)
 # ---------------------------------------------------------------------------
@@ -4304,6 +4320,7 @@ def _universe_impl(
         "daemon_memory_review": _action_daemon_memory_review,
         "daemon_memory_promote": _action_daemon_memory_promote,
         "daemon_memory_status": _action_daemon_memory_status,
+        "treasury_status": _action_treasury_status,
         "set_tier_config": _action_set_tier_config,
     }
 

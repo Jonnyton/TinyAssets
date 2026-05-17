@@ -189,6 +189,16 @@ def test_control_station_routes_daemon_memory_actions() -> None:
     assert "daemon_id" in text
 
 
+def test_control_station_routes_treasury_status_as_read_only() -> None:
+    """Treasury/cost-ledger status must be discoverable as a read-only route."""
+    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+
+    text = _CONTROL_STATION_PROMPT
+    assert "treasury_status" in text
+    assert "read-only" in text.lower()
+    assert "no autonomous spend" in text.lower()
+
+
 def test_extension_guide_prompt_points_to_control_station() -> None:
     """#15 (post-c97feac): _EXTENSION_GUIDE_PROMPT no longer dup'd the
     NO SIMULATION block. It now points to control_station as the
