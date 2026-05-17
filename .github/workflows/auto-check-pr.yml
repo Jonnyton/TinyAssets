@@ -204,11 +204,15 @@ jobs:
           Return your final answer with this exact first line:
           VERDICT: approve
           or:
+          VERDICT: approve_with_amendment
+          or:
           VERDICT: send_back
 
           Use approve only when the PR is safe to advance to the next gate for
-          the current head SHA. Use send_back for any blocking issue, missing
-          proof, wrong scope, stale/head mismatch, or unclear risk.
+          the current head SHA. Use approve_with_amendment only when the PR is
+          acceptable but needs an operator to decompose required follow-up work
+          before merge. Use send_back for any blocking issue, missing proof,
+          wrong scope, stale/head mismatch, or unclear risk.
           PROMPT
 
           if [ -n "$(git status --porcelain)" ]; then
@@ -221,8 +225,8 @@ jobs:
             mv "$RUNNER_TEMP/checker-dirty.md" "$RUNNER_TEMP/checker.md"
           fi
 
-          verdict="$(grep -Eim1 '^VERDICT:[[:space:]]*(approve|send_back)[[:space:]]*$' "$RUNNER_TEMP/checker.md" | sed -E 's/^VERDICT:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' || true)"
-          if [ "$verdict" != "approve" ]; then
+          verdict="$(grep -Eim1 '^VERDICT:[[:space:]]*(approve|approve_with_amendment|send_back)[[:space:]]*$' "$RUNNER_TEMP/checker.md" | sed -E 's/^VERDICT:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' || true)"
+          if [ "$verdict" != "approve" ] && [ "$verdict" != "approve_with_amendment" ]; then
             verdict="send_back"
           fi
 
@@ -273,6 +277,11 @@ jobs:
               'd93f0b',
               'Automatic checker worker failed or requested send-back.',
             );
+            await ensureLabel(
+              'auto-checker-amendment-required',
+              'fbca04',
+              'Checker approved with amendment; operator decomposition is required before merge.',
+            );
             if (!reviewSucceeded) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -292,19 +301,41 @@ jobs:
               });
               return;
             }
-            const markerVerdict = verdict === 'approve' ? 'approve' : 'send_back';
+            const markerVerdict = verdict === 'approve'
+              ? 'approve'
+              : verdict === 'approve_with_amendment'
+                ? 'approve_with_amendment'
+                : 'send_back';
+            const renderedVerdict = markerVerdict === 'approve'
+              ? 'approve'
+              : markerVerdict === 'approve_with_amendment'
+                ? 'approve-with-amendment'
+                : 'send-back/amend';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: [
                 `<!-- workflow-checker-verdict:v1 family=codex verdict=${markerVerdict} head=${process.env.HEAD_SHA} run=${process.env.GITHUB_RUN_ID} -->`,
-                `**Automated independent Codex checker verdict:** ${markerVerdict === 'approve' ? 'approve' : 'send-back/amend'}`,
+                `**Automated independent Codex checker verdict:** ${renderedVerdict}`,
                 '',
                 checkerBody,
               ].join('\n'),
             });
             if (markerVerdict === 'approve') {
+              for (const label of ['auto-checker-dispatched', 'auto-checker-failed', 'auto-checker-auth-missing', 'auto-checker-amendment-required']) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber,
+                    name: label,
+                  });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+              }
+            } else if (markerVerdict === 'approve_with_amendment') {
               for (const label of ['auto-checker-dispatched', 'auto-checker-failed', 'auto-checker-auth-missing']) {
                 try {
                   await github.rest.issues.removeLabel({
@@ -317,6 +348,12 @@ jobs:
                   if (error.status !== 404) throw error;
                 }
               }
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels: ['auto-checker-amendment-required'],
+              });
             } else {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,

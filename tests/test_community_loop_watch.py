@@ -1158,6 +1158,55 @@ def test_checker_queue_surfaces_failed_checker_dispatch(monkeypatch):
     assert stage["details"]["self_heal_dispatches"] == []
 
 
+def test_checker_queue_surfaces_approve_with_amendment_decomposition(monkeypatch):
+    def fake_list_open_issues_by_label(*_args, **_kwargs):
+        return [
+            {
+                "number": 720,
+                "title": "Recruiter-readiness bundle",
+                "state": "open",
+                "html_url": "https://example.test/pull/720",
+                "pull_request": {},
+                "labels": [
+                    {"name": "writer:claude"},
+                    {"name": "checker:codex"},
+                    {"name": watch.READY_FOR_CHECKER_LABEL},
+                    {"name": "priority:urgent"},
+                ],
+            }
+        ]
+
+    def fake_gh_get_paginated(path, **_kwargs):
+        if path == "/repos/owner/repo/issues/720/comments":
+            return [
+                {
+                    "body": (
+                        "<!-- workflow-checker-verdict:v1 family=codex "
+                        "verdict=approve_with_amendment head=abc123 run=42 -->\n"
+                        "**Automated independent Codex checker verdict:** "
+                        "approve-with-amendment"
+                    )
+                }
+            ]
+        raise AssertionError(path)
+
+    monkeypatch.setattr(watch, "list_open_issues_by_label", fake_list_open_issues_by_label)
+    monkeypatch.setattr(watch, "_gh_get_paginated", fake_gh_get_paginated)
+
+    stage = watch.checker_queue_stage(
+        "owner/repo",
+        api="https://api.github.test",
+        token=None,
+        timeout=1,
+    )
+
+    assert stage["status"] == "yellow"
+    assert "operator decomposition" in stage["summary"]
+    assert stage["details"]["by_state"] == {"needs_operator_decomposition": [720]}
+    assert stage["details"]["operator_decomposition_required"] == [720]
+    assert stage["details"]["self_heal_dispatches"] == []
+
+
 def test_checker_queue_green_when_no_ready_prs(monkeypatch):
     monkeypatch.setattr(watch, "list_open_issues_by_label", lambda *_args, **_kwargs: [])
 

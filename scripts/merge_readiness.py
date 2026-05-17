@@ -126,6 +126,7 @@ class PullRequestFacts:
     host_keyed: bool = False
     checks_green: bool | None = None
     send_back_advisory: bool = False
+    approve_with_amendment: bool = False
     precheck_blocked: bool = False
     checker_executor_ineligible: bool = False
     consensus_mirror: ConsensusMirrorFacts = ConsensusMirrorFacts()
@@ -160,6 +161,14 @@ class PullRequestFacts:
                 pr.get("send_back_advisory")
                 or _has_send_back_advisory(comments)
                 or _has_checker_send_back_verdict(comments, checker_family, head_oid)
+            ),
+            approve_with_amendment=bool(
+                pr.get("approve_with_amendment")
+                or _has_checker_approve_with_amendment_verdict(
+                    comments,
+                    checker_family,
+                    head_oid,
+                )
             ),
             precheck_blocked=bool(pr.get("precheck_blocked") or _has_precheck_blocker(comments)),
             checker_executor_ineligible=bool(
@@ -261,6 +270,16 @@ def classify_pr(facts: PullRequestFacts) -> ReadinessResult:
             risk_class,
             "blocked",
             ["consensus or advisory says send-back/amend"],
+        )
+
+    if facts.approve_with_amendment:
+        return _result(
+            facts,
+            "needs_operator_decomposition",
+            "decompose checker amendment into follow-up work",
+            risk_class,
+            "blocked_operator_decomposition",
+            ["checker approved with amendment; operator decomposition required"],
         )
 
     if READY_FOR_CHECKER_LABEL not in facts.labels:
@@ -456,6 +475,22 @@ def _has_checker_send_back_verdict(
     return False
 
 
+def _has_checker_approve_with_amendment_verdict(
+    comments: Any,
+    checker_family: str | None,
+    head_oid: Any,
+) -> bool:
+    for verdict in _checker_verdicts(comments):
+        family_matches = not checker_family or verdict.get("family") == checker_family
+        if (
+            family_matches
+            and verdict.get("verdict") == "approve_with_amendment"
+            and _head_matches(verdict, head_oid)
+        ):
+            return True
+    return False
+
+
 def _has_checker_executor_ineligibility(comments: Any, checker_family: str | None) -> bool:
     if not checker_family:
         return False
@@ -573,6 +608,8 @@ def _next_action_owner_for_state(state: str) -> str:
         return "checker_required"
     if state == "consensus_mirror_self_clearance_canary":
         return "policy_canary_review_required"
+    if state == "needs_operator_decomposition":
+        return "operator_decomposition_required"
     if state == "needs_host_key":
         return "host_key_required"
     if state == "needs_check_evidence":
@@ -583,6 +620,8 @@ def _next_action_owner_for_state(state: str) -> str:
 def _next_action_payload_for_state(state: str, reasons: list[str]) -> dict[str, Any]:
     if state == "send_back_amend":
         return {"blocking_findings": list(reasons)}
+    if state == "needs_operator_decomposition":
+        return {"amendment_findings": list(reasons)}
     return {}
 
 
