@@ -1,9 +1,17 @@
 # External-write authority, idempotency, and reward release
 
-**Status:** DRAFT — needs host steering before implementation.
+**Status:** APPROVED 2026-05-19 — design steering locked; ready for implementation slicing.
 **Author:** claude-opus-4-7, 2026-05-19.
 **Replaces:** PR #893's narrow framing of "external-write primitive for Loop 2."
 **Touches:** Brain module, Goals, Gates, Attribution, Royalties, Treasury, Bounties.
+
+**Steering locks (2026-05-19 host session):**
+- **Idempotency keys are strict.** No dispatch without one.
+- **Manifest format:** both shapes ship; Goal owner picks at creation (structured JSON OR natural-language wiki page).
+- **Multi-actor approval:** NOT a platform primitive. Composed from `actor_id` + node typed-evidence + gates. Wiki page documents the composition pattern; community evolves variants per Goal.
+- **Brain authority-condition policy:** PERMISSIVE ONLY. Brain emits structured caveats (self-auditing-tools pattern). Strict mode is community-composed via gates that read caveats. No platform strict-mode flag.
+- **Oracle trust:** oracle REGISTRATION is the only platform primitive. Trust policy (single oracle, N-of-M quorum, weighted, time-windowed, reputation-adjusted) is community-composed per Goal via gates that read oracle facts.
+- **Idempotency window:** each connector declares its own window at registration; platform refuses to register a connector without one. No global default.
 
 ---
 
@@ -268,44 +276,86 @@ attribution + Brain.
 
 ---
 
-## Open design questions for host steering
+## Design decisions (resolved 2026-05-19)
 
-1. **Goal scope manifest format** — JSON schema or natural-language?
-   (Recommendation: structured JSON for the connector-binding part,
-   free-text annotation for the rung-to-write mapping.)
+The questions raised during drafting were resolved in the 2026-05-19 host
+session. The five substantive answers reshape what the platform builds vs.
+what the community composes. All five tilt platform shape toward minimum
+primitive surface; all five reflect Scoping Rules 1 + 2 (minimal primitives
++ community-build).
 
-2. **N-of-M contributor signing on scientific publication** — built as a
-   first-class gate evidence type, or as a generic "multi-actor
-   approval" primitive that other surfaces can reuse?
-   (Recommendation: generic multi-actor approval; scientific publication
-   is the first consumer but moderation, founder-vote, and treasury
-   multisig will all want the same thing.)
+### 1. Goal scope manifest format — DUAL
 
-3. **Brain authority-condition policy** — how aggressively should the
-   Brain *deny* writes based on past signal? Two ends:
-   - Permissive: Brain logs and hints, doesn't block.
-   - Strict: Brain can refuse to authorize a write that contradicts its
-     state.
-   (Recommendation: start permissive, advance to strict only with an
-   explicit opt-in flag per Goal, so universes can decide.)
+Both shapes ship; Goal owner picks at Goal creation:
+- **Structured JSON** for the connector-binding part (typed; platform-parseable).
+- **Natural-language wiki page** for owners who want chatbot-friendly authoring.
 
-4. **Evidence-oracle trust** — when an oracle says "the paper is
-   accepted at NeurIPS," who validates the oracle? Multi-oracle quorum?
-   Host signature?
-   (Recommendation: multi-oracle quorum for reward release ≥ $X
-   threshold; single-oracle below. Threshold configurable per universe.)
+Implementation note: parser layer normalizes both into the same internal
+representation before dispatch; the dispatcher does not care which shape
+the manifest came from.
 
-5. **Idempotency-key window granularity** — per-hour is the default
-   above; some surfaces (treasury operations) want per-day or never-
-   collapse; some (chat posts) want per-minute.
-   (Recommendation: window is per-connector, declared at connector
-   registration time.)
+### 2. Multi-actor approval — COMMUNITY-COMPOSED, NOT A PRIMITIVE
 
-6. **What does Loop 2 actually fire as its first external write?** PR
-   #893's original framing was "Loop 2 emits PRs." Is "emit PR to
-   project repo" the right first external write to ship, or is something
-   smaller (e.g., "Loop 2 emits a draft wiki page that humans then
-   promote") safer for the first slice?
+Rejected the "generic multi-actor approval primitive" framing. Multi-actor
+approval is composed from existing primitives:
+- `actor_id` (identity, already exists)
+- Node typed-evidence (an actor records an attestation on a node, already exists)
+- Gates that read evidence counts (already exists)
+
+Wiki page in commons documents the composition pattern. Variations (N-of-M,
+weighted votes, weighted-by-reputation, time-windowed quorums, founder vote
+with infinite shape variations) are community-evolved per Goal.
+
+No new platform code ships for this concern. The deliverable is a wiki
+page, not a primitive.
+
+### 3. Brain authority-condition policy — PERMISSIVE ONLY
+
+Brain ships exactly one behavior: structured caveats (the self-auditing-
+tools pattern). Brain does not refuse writes. If a Goal owner wants
+enforcement, they wire a gate that reads Brain caveats and refuses
+dispatch.
+
+No "strict mode" flag ships in the platform. Strict-vs-permissive is a
+community-composed policy via gate composition. Variations (block-on-
+revert-history, block-on-mod-rejection, soft-warn-only, escalate-to-
+founder) are per-Goal.
+
+### 4. Evidence-oracle trust — REGISTRATION IS THE ONLY PRIMITIVE
+
+Platform ships: register an oracle as a recognized external connector
+with a typed read interface. That's the entire platform surface.
+
+Trust policy is community-composed per Goal via gates that consume oracle
+facts:
+- Single-oracle trust → one-oracle gate.
+- N-of-M quorum → multi-oracle gate (composed exactly like multi-actor
+  approval from §2).
+- Weighted-by-reputation, time-windowed, geo-distributed, zk-proof-
+  backed — all gate compositions.
+
+The platform does NOT ship a "multi-oracle quorum gate" convenience type.
+That convenience would pre-pick one trust shape; community-build is
+positive-sum (the first universe to write a quorum gate creates a wiki
+pattern that others remix).
+
+Oracle definitions may include a self-declared confidence field so gates
+can read it during composition. That field is part of the oracle primitive
+itself; it does not encode a trust policy.
+
+### 5. Idempotency-key window — PER-CONNECTOR, MANDATORY DECLARATION
+
+Each connector declares its own window at registration. The platform
+refuses to register a connector without an explicit window declaration.
+No global default. Same shape as the `idempotency_key_constructor`
+requirement already locked above — window is part of the connector's
+primitive definition.
+
+Variations: Twitter declares per-minute, treasury declares never-collapse,
+email declares per-hour, chat posts declare per-minute. Goal owners may
+optionally TIGHTEN (never loosen) the connector's declared window for a
+specific Goal via the manifest — that's an additive policy on top of the
+primitive, not a default override.
 
 ---
 
@@ -319,22 +369,41 @@ attribution + Brain.
   (memory_kinds), B (soul-guided dispatch), C (treasury status read),
   D (bounded spend) are in place. The write-path treasury work is
   net-new and follows from this note.
-- **Brain module in PLAN.md (PR #873)** — this note assumes the Brain
-  module exists in PLAN.md and references it. PR #873's restructure
-  should leave room for Brain to host the authority-conditioning policy
-  described here.
+- **Brain module in PLAN.md (PR #915, supersedes #873)** — Brain module
+  in PLAN.md hosts the structured-caveat read path described here. The
+  Brain Module's "Out of scope" explicitly excludes the strict mode that
+  was rejected in §3 above; gates own enforcement, not Brain.
 
 ---
 
 ## Next steps
 
-1. Host reviews this draft; answers the 6 open questions OR steers to
-   different defaults.
-2. Promote to `docs/design-notes/` (out of `/proposed/`) once approved.
-3. Replace PR #893 — close it, open a sibling PR that points here as
-   the spec.
-4. Land Brain module in PLAN.md (PR #873 work) with a hook for this
-   authority-conditioning policy.
-5. First implementation slice: the idempotency contract + connector
-   registration gate, since that's a hard prerequisite for any other
-   external write to land safely.
+1. Land this note (out of `/proposed/`, into `docs/design-notes/`).
+2. Wiki page in commons documenting the multi-actor approval composition
+   pattern from §2. This is the FIRST deliverable, ahead of any platform
+   code, because it sets the pattern that scientific publication / founder
+   vote / moderation / treasury multisig all reuse.
+3. Connector registration primitive — `idempotency_key_constructor` +
+   `idempotency_window` declarations are mandatory at registration time.
+   Registration without either is refused.
+4. Oracle registration as a connector subtype with a typed read interface.
+5. Goal scope manifest parser — dual shape (JSON or natural-language),
+   normalizes to the same internal representation.
+6. Sequencing of further work is not pre-committed to a "first consumer"
+   slice — the substrate ships whole, consumers compose against it.
+
+## What this note does NOT specify
+
+Reflecting the steering locks above, several things are intentionally
+absent from this design:
+
+- **No platform multi-actor approval primitive.** Composed from existing
+  primitives + a wiki pattern.
+- **No platform strict-mode flag on Brain.** Composed via gates per Goal.
+- **No platform multi-oracle quorum gate.** Composed via gates per Goal.
+- **No global idempotency window default.** Each connector declares.
+- **No "first external write consumer" pick.** Substrate ships whole.
+
+These absences are load-bearing. They are why this design respects
+Scoping Rules 1 + 2 and leaves community evolution intact instead of
+crowding it out with frozen platform taxonomy.
