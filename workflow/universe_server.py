@@ -362,7 +362,8 @@ def universe(
             daemon_update_behavior, daemon_control_status,
             control_daemon; daemon memory: daemon_memory_capture,
             daemon_memory_search, daemon_memory_list, daemon_memory_review,
-            daemon_memory_promote, daemon_memory_status; config: set_tier_config;
+            daemon_memory_promote, daemon_memory_status; economy reads:
+            treasury_status; config: set_tier_config;
         universe_id: Target universe. Defaults to the active universe.
         text/path/filter_text: Action-specific content, file path, or filter.
         branch_id/request_type: Request routing fields.

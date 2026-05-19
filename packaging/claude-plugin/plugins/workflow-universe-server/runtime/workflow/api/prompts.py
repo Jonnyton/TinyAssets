@@ -282,6 +282,10 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
   `daemon_memory_review` for accept/reject/supersede, and
   `daemon_memory_promote` only when the user wants a curated daemon-wiki
   review note.
+- "Show costs / ledger / treasury / bounty pool / settlement totals" ->
+  use `universe action="treasury_status"`. This is a read-only status
+  surface with no autonomous spend: it may summarize existing ledger rows
+  but must not lock, release, refund, batch, settle, or spend funds.
 - `wiki` is strictly for knowledge and reference content. It is NOT the
   save-anything surface for workflow structure, workflow state, task
   lists, or artifacts that need to be queried as structured data.

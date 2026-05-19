@@ -256,7 +256,7 @@ class TestDDLIntegration:
             """INSERT INTO treasury_balance
                (entry_id, source_tx_id, amount, take_rate_bp, fee_collected,
                 bounty_share, recorded_at)
-               VALUES ('t1','tx-1',1_000_000,100,10_000,5_000,'2026-04-24T00:00:00Z')"""
+               VALUES ('t1','tx-1',1000000,100,10000,5000,'2026-04-24T00:00:00Z')"""
         )
         db.execute(
             """INSERT INTO bounty_pool_balance
@@ -290,7 +290,7 @@ class TestDDLIntegration:
                 """INSERT INTO treasury_balance
                    (entry_id, source_tx_id, amount, take_rate_bp, fee_collected,
                     bounty_share, recorded_at)
-                   VALUES ('t1','tx-1',-1,100,10_000,5_000,'2026-04-24T00:00:00Z')"""
+                   VALUES ('t1','tx-1',-1,100,10000,5000,'2026-04-24T00:00:00Z')"""
             )
 
     def test_invalid_status_rejected(self, db):
@@ -319,7 +319,7 @@ class TestDDLIntegration:
             """INSERT INTO treasury_balance
                (entry_id, source_tx_id, amount, take_rate_bp, fee_collected,
                 bounty_share, recorded_at, note)
-               VALUES ('t1','tx-1',2_000_000,100,20_000,10_000,'2026-04-24T00:00:00Z','test')"""
+               VALUES ('t1','tx-1',2000000,100,20000,10000,'2026-04-24T00:00:00Z','test')"""
         )
         db.commit()
         row = dict(db.execute("SELECT * FROM treasury_balance WHERE entry_id='t1'").fetchone())

@@ -67,6 +67,7 @@ def test_module_exposes_expected_public_names() -> None:
         "_action_daemon_memory_capture", "_action_daemon_memory_search",
         "_action_daemon_memory_list", "_action_daemon_memory_review",
         "_action_daemon_memory_promote", "_action_daemon_memory_status",
+        "_action_treasury_status",
         "_action_set_tier_config", "_action_queue_cancel",
         "_action_subscribe_goal", "_action_unsubscribe_goal",
         "_action_list_subscriptions", "_action_post_to_goal_pool",

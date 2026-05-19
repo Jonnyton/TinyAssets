@@ -2,7 +2,7 @@
 
 Schema (schema.py): treasury_balance / bounty_pool_balance / royalty_payout DDL.
 Distribution math (distribution.py): pure functions, no I/O.
-Persistence wiring + MCP surface come in follow-ups post-sweep.
+Status (status.py): read-only cost-ledger + treasury summaries.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from workflow.treasury.schema import (
     TreasuryEntry,
     migrate_treasury_schema,
 )
+from workflow.treasury.status import treasury_status
 
 __all__ = [
     # distribution.py
@@ -43,4 +44,6 @@ __all__ = [
     "RoyaltyPayment",
     "TreasuryEntry",
     "migrate_treasury_schema",
+    # status.py
+    "treasury_status",
 ]
