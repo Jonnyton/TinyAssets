@@ -160,6 +160,39 @@ def test_structured_checker_send_back_blocks_routing():
     }
 
 
+def test_structured_checker_approve_with_amendment_routes_to_operator_decomposition():
+    result = classify_pr(
+        PullRequestFacts.from_mapping(
+            _claude_pr(
+                headRefOid="abc123",
+                comments=[
+                    {
+                        "body": (
+                            "<!-- workflow-checker-verdict:v1 "
+                            "family=codex verdict=approve_with_amendment "
+                            "head=abc123 run=42 -->\n"
+                            "**Automated independent Codex checker verdict:** "
+                            "approve-with-amendment\n\n"
+                            "Operator decomposition required: split follow-up "
+                            "docs from runtime changes before merge."
+                        )
+                    }
+                ],
+            )
+        )
+    )
+
+    assert result.state == "needs_operator_decomposition"
+    assert result.merge_executor_state == "blocked_operator_decomposition"
+    assert result.next_action == "decompose checker amendment into follow-up work"
+    assert result.next_action_owner == "operator_decomposition_required"
+    assert result.next_action_payload == {
+        "amendment_findings": [
+            "checker approved with amendment; operator decomposition required"
+        ],
+    }
+
+
 def test_consensus_send_back_advisory_blocks_checker_routing():
     result = classify_pr(
         PullRequestFacts.from_mapping(

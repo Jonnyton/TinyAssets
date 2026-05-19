@@ -662,6 +662,9 @@ def checker_queue_stage(
         for result in results
         if result.state in {"needs_codex_checker", "needs_claude_checker"}
     ]
+    operator_decomposition_required = [
+        result for result in results if result.state == "needs_operator_decomposition"
+    ]
     details = {
         "ready_for_checker_prs": [pr.get("number") for pr in prs],
         "by_state": by_state,
@@ -669,6 +672,9 @@ def checker_queue_stage(
         "self_heal_dispatches": self_heal_dispatches,
         "already_dispatched_independent_checkers": already_dispatched,
         "failed_independent_checker_dispatches": failed_dispatches,
+        "operator_decomposition_required": [
+            result.number for result in operator_decomposition_required
+        ],
     }
     if self_heal_dispatches:
         first = independent_blockers[0]
@@ -706,6 +712,17 @@ def checker_queue_stage(
                 "to independent checker workers"
             ),
             evidence=f"PR #{first.number}: waiting on dispatched independent checker",
+            url=first_pr.get("html_url"),
+            details=details,
+        )
+    if operator_decomposition_required:
+        first = operator_decomposition_required[0]
+        first_pr = next((pr for pr in prs if pr.get("number") == first.number), {})
+        return _stage(
+            "Checker queue",
+            "yellow",
+            f"{len(operator_decomposition_required)} ready PR(s) need operator decomposition",
+            evidence=f"PR #{first.number}: {first.next_action}",
             url=first_pr.get("html_url"),
             details=details,
         )
