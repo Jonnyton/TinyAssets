@@ -16,9 +16,25 @@ rewrites.
 ### 1. Orient on live truth
 
 - Read `STATUS.md` first.
-- Load only the relevant `PLAN.md` sections or design notes for the area.
+- **Read the relevant `## Module:` section in `PLAN.md`** before auditing
+  any code in that module's footprint. PLAN.md is the working theory of
+  what each module owns; the audit measures actual code against it.
 - If a documented principle conflicts with the current code, surface the
-  contradiction before proposing changes.
+  contradiction before proposing changes — that contradiction is the
+  audit's primary finding.
+
+### 1a. Run the stale-audit check
+
+Before claiming any module is fine, run:
+
+```
+python scripts/plan_module_audit.py
+```
+
+This lists `_Last audited: YYYY-MM-DD_` stamps per module plus any
+substrate paths that no longer exist on disk (drift). A module's last
+audit is the prior anchor; this audit either confirms the prior shape
+or records what changed.
 
 ### 2. Build the map
 
@@ -89,10 +105,26 @@ change except where intended.
 Start with findings, highest severity first. Use file references and concrete
 failure modes, not vague talk about "clean architecture."
 
+## After the audit — stamp + ratchet
+
+Two final steps that close the loop with PLAN.md and the prevention
+ladder:
+
+1. **Update the `_Last audited:` stamp.** In the module's section in
+   `PLAN.md`, set the date to today's audit. This is the visible signal
+   for the next session that the module was just reviewed.
+2. **Check for recurrence.** If a smell found in this audit was also
+   found in the *previous* audit of the same module (per git history
+   of PLAN.md or per audit doc trail), invoke the `auto-iterate` skill.
+   Two consecutive audits with the same finding = ratchet the
+   prevention layer (doc → script → hook → gate).
+
 ## Verification
 
 - [ ] Findings map to named module boundaries, not vibes
 - [ ] Recommended changes are incremental and testable
 - [ ] Changed boundaries have tests or existing tests proving behavior
-- [ ] Docs or `STATUS.md` are updated when a contradiction matters
+- [ ] PLAN.md module section reflects any architectural decisions the audit produced
+- [ ] `_Last audited:` stamp updated in PLAN.md
+- [ ] `STATUS.md` is updated when a contradiction matters
 - [ ] No unrelated cleanup leaked into the implementation
