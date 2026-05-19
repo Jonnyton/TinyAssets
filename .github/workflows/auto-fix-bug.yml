@@ -366,6 +366,7 @@ jobs:
     needs: discover
     if: needs.discover.outputs.matrix != '[]'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -858,6 +859,13 @@ jobs:
             Recent issue comments and loop feedback:
             ${{ steps.meta.outputs.issue_comments }}
 
+            Autonomous spend guardrails:
+            - This invocation is logged/proposed mode for a single issue.
+            - Spend only the bounded subscription-backed writer time in this job.
+            - Do not start background jobs, recursive workflow_dispatch runs, external paid services, or open-ended searches.
+            - Produce at most one narrow working-tree patch/PR proposal.
+            - If safe completion needs broader execution, leave the working tree unchanged and explain the blocker.
+
             Instructions:
             1. Read AGENTS.md, STATUS.md, and `.agents/skills/using-agent-skills/SKILL.md` for project context and skill routing. Then load the relevant `.agents/skills/<skill>/SKILL.md` files before editing.
             2. Classify the request as bug, patch, feature, docs/ops, branch refinement, or project design.
@@ -931,6 +939,13 @@ jobs:
 
           Recent issue comments and loop feedback:
           ${{ steps.meta.outputs.issue_comments }}
+
+          Autonomous spend guardrails:
+          - This invocation is logged/proposed mode for a single issue.
+          - Spend only the bounded subscription-backed writer time in this job.
+          - Do not start background jobs, recursive workflow_dispatch runs, external paid services, or open-ended searches.
+          - Produce at most one narrow working-tree patch/PR proposal.
+          - If safe completion needs broader execution, leave the working tree unchanged and explain the blocker.
 
           Instructions:
           1. Read AGENTS.md, STATUS.md, and `.agents/skills/using-agent-skills/SKILL.md` for project context and skill routing. Then load the relevant `.agents/skills/<skill>/SKILL.md` files before editing.

@@ -91,6 +91,13 @@ def test_concurrency_scoped_to_issue(wf):
     )
 
 
+def test_fix_job_has_bounded_runtime(wf):
+    fix_job = wf["jobs"]["fix"]
+    assert fix_job.get("timeout-minutes") == 45, (
+        "Automated writer spend must be bounded per issue attempt"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Job filter
 # ---------------------------------------------------------------------------
@@ -846,6 +853,24 @@ def test_writer_prompts_include_recent_feedback_and_focused_verification(wf):
         assert "verification failures" in prompt
         assert "python -m ruff check" in prompt
         assert "focused tests" in prompt
+
+
+def test_writer_prompts_enforce_bounded_logged_proposed_mode(wf):
+    steps = wf["jobs"]["fix"]["steps"]
+    oauth_step = next((s for s in steps if s.get("id") == "claude-oauth"), None)
+    codex_step = next((s for s in steps if s.get("id") == "codex-subscription"), None)
+    assert oauth_step is not None, "Must have a Claude OAuth step"
+    assert codex_step is not None, "Must have a Codex subscription step"
+    oauth_prompt = str(oauth_step.get("with", {}).get("prompt", ""))
+    codex_prompt = str(codex_step.get("run", ""))
+    for prompt in (oauth_prompt, codex_prompt):
+        assert "Autonomous spend guardrails" in prompt
+        assert "logged/proposed mode" in prompt
+        assert "single issue" in prompt
+        assert "Do not start background jobs" in prompt
+        assert "recursive workflow_dispatch" in prompt
+        assert "external paid services" in prompt
+        assert "at most one narrow working-tree patch" in prompt
 
 
 def test_codex_step_enforces_post_generation_verification(wf):

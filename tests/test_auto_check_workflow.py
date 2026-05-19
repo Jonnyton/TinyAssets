@@ -61,6 +61,16 @@ def test_auto_check_codex_lane_posts_structured_verdict_marker():
     assert "Do not commit, push, merge" in text
 
 
+def test_auto_check_codex_lane_enforces_bounded_logged_review_mode():
+    text = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Bounded logged review mode" in text
+    assert "single PR head" in text
+    assert "Do not trigger recursive workflow_dispatch" in text
+    assert "Do not use external paid services" in text
+    assert "finish with send_back" in text
+
+
 def test_community_watch_dispatches_auto_check_workflow():
     text = COMMUNITY_WATCH.read_text(encoding="utf-8")
 

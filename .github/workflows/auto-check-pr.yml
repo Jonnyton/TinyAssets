@@ -201,6 +201,12 @@ jobs:
           GitHub Review, or intentionally edit files. Inspect the PR diff, tests,
           workflow changes, and comments. Use local shell commands as needed.
 
+          Bounded logged review mode:
+          - This invocation covers one single PR head only.
+          - Do not trigger recursive workflow_dispatch runs or start background jobs.
+          - Do not use external paid services.
+          - If the review cannot be completed within this checker job, finish with send_back.
+
           Return your final answer with this exact first line:
           VERDICT: approve
           or:
