@@ -941,6 +941,90 @@ def list_daemon_memory(
     }
 
 
+def read_daemon_brain_dispatch_hints(
+    base_path: str | Path,
+    *,
+    daemon_id: str,
+    query: str = "",
+    limit: int = 3,
+) -> dict[str, Any]:
+    """Read open mini-brain entries for dispatch scoring without writes.
+
+    This is intentionally narrower than ``search_daemon_memory``: it opens the
+    brain database read-only when present and does not record query/retrieval
+    events. Dispatch can use the result as advisory context, but this function
+    never claims work, mutates memory, or exposes a write surface.
+    """
+    _validate_daemon(base_path, daemon_id)
+    bounded_limit = max(0, min(20, int(limit)))
+    db_path = daemon_brain_db_path(base_path)
+    if bounded_limit == 0 or not db_path.exists():
+        return {
+            "daemon_id": daemon_id,
+            "host_local": True,
+            "query": str(query or "").strip(),
+            "count": 0,
+            "entries": [],
+            "read_only": True,
+        }
+
+    clean_query = str(query or "").strip()
+    tokens = _tokens(clean_query)
+    like_sql = ""
+    like_params: list[str] = []
+    if tokens:
+        like_sql = " AND (" + " OR ".join("LOWER(content) LIKE ?" for _ in tokens) + ")"
+        like_params = [f"%{token}%" for token in tokens]
+
+    uri = f"file:{db_path.as_posix()}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.OperationalError:
+        return {
+            "daemon_id": daemon_id,
+            "host_local": True,
+            "query": clean_query,
+            "count": 0,
+            "entries": [],
+            "read_only": True,
+        }
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM daemon_brain_entries
+            WHERE daemon_id = ?
+                AND visibility IN ('borrowable_role_context', 'published')
+                AND promotion_state IN ('accepted', 'promoted')
+                AND memory_kind IN ('policy', 'preference', 'failure_mode', 'claim')
+                {like_sql}
+            ORDER BY importance DESC, updated_at DESC
+            LIMIT ?
+            """,
+            [daemon_id, *like_params, bounded_limit],
+        ).fetchall()
+    finally:
+        conn.close()
+    entries = []
+    token_count = max(1, len(tokens))
+    for row in rows:
+        entry = _row_to_entry(row)
+        content = str(entry["content"]).lower()
+        hits = sum(1 for token in tokens if token in content)
+        entry["retrieval_score"] = hits / token_count if tokens else entry["importance"]
+        entry["retrieval_source"] = "dispatch_read_only"
+        entries.append(entry)
+    return {
+        "daemon_id": daemon_id,
+        "host_local": True,
+        "query": clean_query,
+        "count": len(entries),
+        "entries": entries,
+        "read_only": True,
+    }
+
+
 def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
