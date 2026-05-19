@@ -44,6 +44,15 @@ Reach for this skill when **any** of these is true:
   hook) is warranted instead.
 - Two similar incidents reach two different fixes. That divergence is
   the signal to consolidate behind a hook.
+- **The `improve-codebase-architecture` skill finds the same smell in
+  two consecutive audits of the same module.** Two consecutive matches
+  is the recurrence signal for module-shape drift. Ratchet via this
+  skill — the next rung depends on which already exists (PLAN.md
+  description → audit-script flag → pre-commit gate).
+- **`scripts/plan_module_audit.py` reports drift in the same module's
+  substrate paths across runs.** PLAN.md's working theory is diverging
+  from the code; either the code moved (update PLAN.md) or PLAN.md was
+  aspirational (decide: build it or remove the citation).
 
 **Not for:** one-shot code bugs in a feature branch. Use
 `debugging-and-error-recovery` for those. Use `auto-iterate` only when
