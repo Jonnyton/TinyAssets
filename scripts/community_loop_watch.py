@@ -73,6 +73,7 @@ ALREADY_FIXED_LABEL = "auto-fix-already-fixed"
 BLOCKED_REVIEWED_LABEL = "auto-fix-blocked"
 PR_BLOCKED_LABEL = "auto-fix-pr-blocked"
 BRANCH_PUSH_BLOCKED_LABEL = "auto-fix-branch-push-blocked"
+EXHAUSTED_LABEL = "auto-fix-exhausted"
 TERMINAL_REVIEW_LABELS = frozenset(
     {
         REVIEWED_LABEL,
@@ -80,6 +81,7 @@ TERMINAL_REVIEW_LABELS = frozenset(
         BLOCKED_REVIEWED_LABEL,
         PR_BLOCKED_LABEL,
         BRANCH_PUSH_BLOCKED_LABEL,
+        EXHAUSTED_LABEL,
     }
 )
 

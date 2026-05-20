@@ -98,7 +98,16 @@ jobs:
               'priority:primitive-layer',
               'priority:primitive-surface',
             ];
-            const skipLabels = ['await-primitive-layer', 'complete'];
+            const skipLabels = ['await-primitive-layer', 'complete', 'auto-fix-exhausted'];
+            const MAX_RETRIES = Number(process.env.LOOP_MAX_RETRIES || '5');
+
+            function retryCountForIssue(issue) {
+              const match = (issue.labels || [])
+                .map((label) => (typeof label === 'string' ? label : label.name || ''))
+                .map((name) => /^auto-fix-retries-(\d+)$/.exec(name))
+                .find(Boolean);
+              return match ? Number(match[1]) : 0;
+            }
             const hasWriterAuth = process.env.HAS_WRITER_AUTH === 'true';
             const hasWorkflowPushToken = process.env.HAS_WORKFLOW_PUSH_TOKEN === 'true';
             const autoFixDisabled = process.env.AUTO_FIX_DISABLED === 'true';
@@ -310,6 +319,18 @@ jobs:
                     direction: 'asc',
                     per_page: 100,
                   });
+                  // Tier fairness: deprioritize needs-human issues that have been retried many
+                  // times so a perpetually-retrying-but-failing issue can't starve fresh
+                  // candidates in the same tier (#918→#922 head-of-line blocking pattern).
+                  // Within retried set, sort by ascending retry count, then ascending issue#.
+                  issues.sort((a, b) => {
+                    const aRetries = retryCountForIssue(a);
+                    const bRetries = retryCountForIssue(b);
+                    if (aRetries !== bRetries) {
+                      return aRetries - bRetries;
+                    }
+                    return (a.number || 0) - (b.number || 0);
+                  });
                   core.info(`Scanning ${issues.length} open issue(s) for labels ${labelNames.join(',')}.`);
                   for (const issue of issues) {
                     if (
@@ -468,6 +489,11 @@ jobs:
                 name: 'auto-fix-blocked',
                 color: 'd93f0b',
                 description: 'Automated writer inspected the request but found no safe autonomous patch.',
+              },
+              {
+                name: 'auto-fix-exhausted',
+                color: '5319e7',
+                description: 'Automated writer exhausted its retry budget; the loop will not retry without explicit host re-open.',
               },
               {
                 name: 'auto-fix-pr-blocked',
@@ -1698,7 +1724,38 @@ jobs:
                   : codexNoChangeReason
                     ? `no-change-${codexNoChangeReason}`
                     : 'no-pr-artifact-created';
-            const labels = ['needs-human'];
+            // Retry-exhaustion: read the current retry counter from labels (label series
+            // `auto-fix-retries-N`), then either bump it or escalate to terminal
+            // `auto-fix-exhausted` if MAX_RETRIES is exceeded. Exhausted issues drop out of
+            // the discover step's active scan (see skipLabels) so a perpetually-failing
+            // request can't starve its tier. Host can re-open by clearing the exhausted
+            // label or via the loop-consent PR reopen path (Slice C).
+            const MAX_RETRIES = Number(process.env.LOOP_MAX_RETRIES || '5');
+            const { data: currentIssue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+            });
+            const retryRe = /^auto-fix-retries-(\d+)$/;
+            const currentLabelNames = (currentIssue.labels || []).map((label) =>
+              typeof label === 'string' ? label : label.name || ''
+            );
+            let currentRetries = 0;
+            for (const name of currentLabelNames) {
+              const m = retryRe.exec(name);
+              if (m) {
+                currentRetries = Math.max(currentRetries, Number(m[1]));
+              }
+            }
+            const nextRetries = currentRetries + 1;
+            const exhausted = nextRetries > MAX_RETRIES;
+
+            const labels = [];
+            if (exhausted) {
+              labels.push('auto-fix-exhausted');
+            } else {
+              labels.push('needs-human', `auto-fix-retries-${nextRetries}`);
+            }
             if (codexNoChangeReason || codexPrBlocked || codexPushBlocked || (writerFailed && !codexAuthExpired)) {
               labels.push('auto-fix-reviewed');
             }
@@ -1726,18 +1783,55 @@ jobs:
               labels.push('auto-fix-codex-subscription-missing');
             }
 
+            // Remove the prior retry label (if any) so only one auto-fix-retries-N sticks.
+            if (currentRetries > 0) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  name: `auto-fix-retries-${currentRetries}`,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+            // On exhaustion, drop needs-human so the discover step doesn't re-pick.
+            if (exhausted && currentLabelNames.includes('needs-human')) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  name: 'needs-human',
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
               labels,
             });
+            const headlineRetry = exhausted
+              ? `**Auto-fix exhausted** - retry budget burned after ${currentRetries} attempt(s); MAX_RETRIES=${MAX_RETRIES}.`
+              : '**Auto-fix needs human review** - approved writer auth was present, but no automated PR was opened.';
+            const retryLine = exhausted
+              ? `- Retry budget: \`exhausted\` (${currentRetries}/${MAX_RETRIES} attempts; loop will not retry)`
+              : `- Retry counter: \`${nextRetries}/${MAX_RETRIES}\` (loop will retry when root cause clears)`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
               body: [
-                '**Auto-fix needs human review** - approved writer auth was present, but no automated PR was opened.',
+                headlineRetry,
                 '',
                 '## Request artifact reconciliation',
                 '',
@@ -1747,6 +1841,7 @@ jobs:
                 '- PR artifact: `not created`',
                 `- Child invocation receipt: ${runUrl}`,
                 `- Terminal outcome: \`${terminalOutcome}\``,
+                retryLine,
                 '',
                 `Detected auth mode: \`${{ steps.auth.outputs.mode }}\``,
                 `Claude OAuth present: \`${{ steps.auth.outputs.has_claude_oauth }}\``,
@@ -1796,7 +1891,13 @@ jobs:
                   ? 'No approved subscription-backed daemon lane was visible to GitHub Actions.'
                   : '',
                 'API-key billing lanes are intentionally not used for default daemon writers.',
-                'The issue is marked `needs-human` so it does not loop silently.',
+                exhausted
+                  ? 'The issue is marked `auto-fix-exhausted` and removed from the active scan. Host can re-open by removing the `auto-fix-exhausted` label, or via the loop-consent PR reopen path.'
+                  : 'The issue is marked `needs-human` so it does not loop silently.',
               ].filter(Boolean).join('\n'),
             });
-            core.warning('approved writer auth was present, but no auto-fix PR was opened');
+            core.warning(
+              exhausted
+                ? `auto-fix exhausted after ${currentRetries} retries; marked auto-fix-exhausted`
+                : 'approved writer auth was present, but no auto-fix PR was opened'
+            );

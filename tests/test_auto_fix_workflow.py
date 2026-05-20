@@ -1035,3 +1035,116 @@ def test_expired_codex_auth_stays_human_visible_not_reviewed_terminal(wf):
     assert "writerFailed && !codexAuthExpired" in script
     assert "auto-fix-auth-expired" in script
     assert "Remaining blocker: refresh `WORKFLOW_CODEX_AUTH_JSON_B64`" in script
+
+
+# ---------------------------------------------------------------------------
+# Slice B: retry-exhaustion + tier-fairness
+# ---------------------------------------------------------------------------
+
+
+def test_discover_treats_exhausted_label_as_terminal_skip(wf):
+    """Issues labeled auto-fix-exhausted must be skipped by the discover scan."""
+    discover_step = wf["jobs"]["discover"]["steps"][0]
+    script = str(discover_step.get("with", {}).get("script", ""))
+    assert "'auto-fix-exhausted'" in script
+    # The skipLabels constant must include the exhausted label so shouldSkipIssue rejects it.
+    assert (
+        "const skipLabels = ['await-primitive-layer', 'complete', 'auto-fix-exhausted']" in script
+    ), "auto-fix-exhausted must be in skipLabels so exhausted issues drop from active scan"
+
+
+def test_discover_sorts_needs_human_retries_to_back_for_tier_fairness(wf):
+    """Within a label tier, needs-human retries should sort by ascending retry count so they
+    don't starve fresh candidates (the #918→#922 head-of-line blocking pattern)."""
+    discover_step = wf["jobs"]["discover"]["steps"][0]
+    script = str(discover_step.get("with", {}).get("script", ""))
+    assert "function retryCountForIssue(issue)" in script
+    assert "auto-fix-retries-(\\d+)" in script or "auto-fix-retries-" in script
+    assert "issues.sort(" in script
+    assert "retryCountForIssue(a)" in script
+    assert "retryCountForIssue(b)" in script
+    # Tier fairness comment must explain the rationale.
+    lower = script.lower()
+    assert "head-of-line" in lower or "starv" in lower or "fairness" in lower
+
+
+def test_no_pr_step_reads_current_retry_count_and_computes_next(wf):
+    """The needs-human terminal step must compute the next retry count and decide whether to
+    exhaust based on MAX_RETRIES."""
+    steps = wf["jobs"]["fix"]["steps"]
+    no_pr_step = next(
+        (s for s in steps if s.get("name") == "Mark needs-human if no PR opened"),
+        None,
+    )
+    assert no_pr_step is not None
+    script = str(no_pr_step.get("with", {}).get("script", ""))
+    assert "MAX_RETRIES" in script
+    assert "process.env.LOOP_MAX_RETRIES" in script
+    assert "github.rest.issues.get" in script  # must refetch to read current labels
+    assert "auto-fix-retries-" in script
+    assert "nextRetries = currentRetries + 1" in script
+    assert "exhausted = nextRetries > MAX_RETRIES" in script
+
+
+def test_no_pr_step_applies_exhausted_label_when_budget_burned(wf):
+    """At MAX_RETRIES, the step must label auto-fix-exhausted and drop needs-human so the
+    discover scan stops re-picking the issue."""
+    steps = wf["jobs"]["fix"]["steps"]
+    no_pr_step = next(
+        (s for s in steps if s.get("name") == "Mark needs-human if no PR opened"),
+        None,
+    )
+    assert no_pr_step is not None
+    script = str(no_pr_step.get("with", {}).get("script", ""))
+    # exhausted branch applies auto-fix-exhausted instead of needs-human
+    assert "labels.push('auto-fix-exhausted')" in script
+    assert "labels.push('needs-human', `auto-fix-retries-${nextRetries}`)" in script
+    # needs-human must be removed on exhaustion so retry-condition can't fire on next scan
+    assert "removeLabel" in script
+    assert "name: 'needs-human'" in script
+
+
+def test_no_pr_step_removes_prior_retry_label_to_keep_series_unique(wf):
+    """Only one auto-fix-retries-N label should be live at a time — bumping requires removing
+    the prior label before adding the new one. Otherwise the regex max() would pick the wrong
+    value over time and counters would drift."""
+    steps = wf["jobs"]["fix"]["steps"]
+    no_pr_step = next(
+        (s for s in steps if s.get("name") == "Mark needs-human if no PR opened"),
+        None,
+    )
+    assert no_pr_step is not None
+    script = str(no_pr_step.get("with", {}).get("script", ""))
+    assert "name: `auto-fix-retries-${currentRetries}`" in script
+    # 404 (label not present) must be tolerated, not thrown.
+    assert "error.status !== 404" in script
+
+
+def test_no_pr_step_comment_records_retry_count_and_exhaustion_status(wf):
+    """The comment posted on each retry/exhaustion event must surface the retry counter so
+    host can see it without inspecting labels."""
+    steps = wf["jobs"]["fix"]["steps"]
+    no_pr_step = next(
+        (s for s in steps if s.get("name") == "Mark needs-human if no PR opened"),
+        None,
+    )
+    assert no_pr_step is not None
+    script = str(no_pr_step.get("with", {}).get("script", ""))
+    assert "Auto-fix exhausted" in script
+    assert "Retry budget" in script or "Retry counter" in script
+    assert "loop will retry when root cause clears" in script
+    assert "loop-consent PR" in script or "host can re-open" in script.lower()
+
+
+def test_ensure_labels_step_defines_auto_fix_exhausted(wf):
+    """The label management step must pre-declare auto-fix-exhausted with a stable color and
+    description so GH Actions doesn't have to invent one on first apply."""
+    steps = wf["jobs"]["fix"]["steps"]
+    ensure_step = next(
+        (s for s in steps if s.get("name") == "Ensure automation labels"),
+        None,
+    )
+    assert ensure_step is not None
+    script = str(ensure_step.get("with", {}).get("script", ""))
+    assert "name: 'auto-fix-exhausted'" in script
+    assert "exhausted its retry budget" in script
