@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from scripts import community_loop_watch as watch
 
@@ -868,6 +869,246 @@ def test_queue_stage_summarizes_mixed_permission_blocks(monkeypatch):
     assert stage["details"]["branch_push_blocked"] == [87]
     assert stage["details"]["pr_blocked"] == [70]
     assert "branch-push and PR-creation permission blocks" in stage["summary"]
+
+
+def _productive_writer_workflow_runs(now: dt.datetime) -> dict[str, dict[str, Any]]:
+    """Build a Writer-workflow run set where schedule is stale but workflow_run is fresh.
+
+    Mirrors the 2026-05-19 live state where auto-fix-bug.yml schedule lagged its threshold
+    but workflow_run-triggered runs were succeeding inside the productivity window.
+    """
+    stale_schedule = {
+        "id": 1001,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": (now - dt.timedelta(minutes=120)).isoformat().replace("+00:00", "Z"),
+        "updated_at": (now - dt.timedelta(minutes=120)).isoformat().replace("+00:00", "Z"),
+        "event": "schedule",
+        "html_url": "https://example.test/writer-schedule-stale",
+    }
+    fresh_workflow_run = {
+        "id": 1002,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": (now - dt.timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+        "updated_at": (now - dt.timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+        "event": "workflow_run",
+        "html_url": "https://example.test/writer-workflow-run-fresh",
+    }
+    return {"stale_schedule": stale_schedule, "fresh_workflow_run": fresh_workflow_run}
+
+
+def _build_status_with_loop_issues_and_runs(monkeypatch, *, loop_issues, writer_runs, now):
+    def fake_recent_workflow_runs(_repo, workflow_id, **kwargs):
+        if workflow_id == watch.WORKFLOWS["writer"]:
+            if kwargs.get("event") == "schedule":
+                return [writer_runs["stale_schedule"]]
+            return [writer_runs["fresh_workflow_run"], writer_runs["stale_schedule"]]
+        # other workflows: keep them green for this test surface
+        return [
+            {
+                "id": 5000,
+                "status": "completed",
+                "conclusion": "success",
+                "created_at": (now - dt.timedelta(minutes=5))
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "updated_at": (now - dt.timedelta(minutes=5))
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "event": "schedule",
+                "html_url": "https://example.test/other-workflow",
+            }
+        ]
+
+    monkeypatch.setattr(watch, "_recent_workflow_runs", fake_recent_workflow_runs)
+    monkeypatch.setattr(watch, "list_loop_issues", lambda *_args, **_kwargs: list(loop_issues))
+    monkeypatch.setattr(watch, "list_open_issues_by_label", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        watch,
+        "list_open_prs_by_closing_issue",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(watch, "_github_token", lambda _args: None)
+    return watch.build_status(
+        argparse.Namespace(
+            repo="owner/repo",
+            api="https://api.github.test",
+            token=None,
+            timeout=1,
+            max_sync_age_min=90,
+            max_writer_age_min=90,
+            max_observation_age_min=90,
+            max_pending_age_min=45,
+        ),
+        now=now,
+    )
+
+
+def _needs_human_issue(number: int, *, created_at: str) -> dict[str, Any]:
+    return {
+        "number": number,
+        "title": f"writer auth expired before PR creation #{number}",
+        "created_at": created_at,
+        "html_url": f"https://example.test/issues/{number}",
+        "labels": [
+            {"name": watch.BLOCKED_LABEL},
+            {"name": watch.ATTEMPTED_LABEL},
+            {"name": watch.WRITER_FAILED_LABEL},
+            {"name": watch.AUTH_EXPIRED_LABEL},
+        ],
+    }
+
+
+def test_build_status_downgrades_writer_queue_when_loop_is_productive(monkeypatch):
+    """Locks in the 2026-05-19 live false-red: 1 needs-human + fresh workflow_run → yellow.
+
+    Reproduces #918 sitting needs-human while auto-fix-bug.yml workflow_run-triggered runs
+    succeed every cycle. Watcher must report yellow, not red, because the loop is doing what
+    the loop should do (escalate transient failures while continuing to process).
+    """
+
+    now = dt.datetime(2026, 5, 20, 2, 0, tzinfo=dt.timezone.utc)
+    status = _build_status_with_loop_issues_and_runs(
+        monkeypatch,
+        loop_issues=[
+            _needs_human_issue(918, created_at="2026-05-19T20:56:53Z"),
+        ],
+        writer_runs=_productive_writer_workflow_runs(now),
+        now=now,
+    )
+
+    queue_stage = [stage for stage in status["stages"] if stage["name"] == "Writer queue"][0]
+    writer_stage = [stage for stage in status["stages"] if stage["name"] == "Writer workflow"][0]
+    assert queue_stage["status"] == "yellow"
+    assert writer_stage["status"] in ("green", "yellow")
+    assert queue_stage["details"]["needs_human"] == [918]
+    assert queue_stage["details"]["needs_human_ok_threshold"] == 3
+    assert "productive" in queue_stage["details"]["productive_loop_downgrade"]
+    assert status["overall"] != "red"
+
+
+def test_build_status_keeps_writer_queue_red_when_needs_human_exceeds_threshold(monkeypatch):
+    """Escalation overflow stays red even when the processor is productive."""
+
+    now = dt.datetime(2026, 5, 20, 2, 0, tzinfo=dt.timezone.utc)
+    issues = [
+        _needs_human_issue(n, created_at="2026-05-19T20:56:53Z")
+        for n in (901, 902, 903, 904)
+    ]
+    status = _build_status_with_loop_issues_and_runs(
+        monkeypatch,
+        loop_issues=issues,
+        writer_runs=_productive_writer_workflow_runs(now),
+        now=now,
+    )
+
+    queue_stage = [stage for stage in status["stages"] if stage["name"] == "Writer queue"][0]
+    assert queue_stage["status"] == "red"
+    assert "productive_loop_downgrade" not in queue_stage.get("details", {})
+
+
+def test_build_status_keeps_writer_queue_red_when_processor_is_not_productive(monkeypatch):
+    """If the Writer workflow is itself red, needs-human is not downgraded — loop may be dead."""
+
+    now = dt.datetime(2026, 5, 20, 2, 0, tzinfo=dt.timezone.utc)
+    very_stale = {
+        "id": 2001,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-05-18T00:00:00Z",
+        "updated_at": "2026-05-18T00:00:00Z",
+        "event": "schedule",
+        "html_url": "https://example.test/dead-schedule",
+    }
+
+    def fake_recent_workflow_runs(_repo, workflow_id, **kwargs):
+        if workflow_id == watch.WORKFLOWS["writer"]:
+            return [very_stale]
+        return [very_stale]
+
+    monkeypatch.setattr(watch, "_recent_workflow_runs", fake_recent_workflow_runs)
+    monkeypatch.setattr(
+        watch,
+        "list_loop_issues",
+        lambda *_args, **_kwargs: [_needs_human_issue(918, created_at="2026-05-19T20:56:53Z")],
+    )
+    monkeypatch.setattr(watch, "list_open_issues_by_label", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        watch,
+        "list_open_prs_by_closing_issue",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(watch, "_github_token", lambda _args: None)
+
+    status = watch.build_status(
+        argparse.Namespace(
+            repo="owner/repo",
+            api="https://api.github.test",
+            token=None,
+            timeout=1,
+            max_sync_age_min=90,
+            max_writer_age_min=90,
+            max_observation_age_min=90,
+            max_pending_age_min=45,
+        ),
+        now=now,
+    )
+
+    queue_stage = [stage for stage in status["stages"] if stage["name"] == "Writer queue"][0]
+    assert queue_stage["status"] == "red"
+    assert "productive_loop_downgrade" not in queue_stage.get("details", {})
+
+
+def test_build_status_keeps_writer_queue_red_when_old_pending_also_present(monkeypatch):
+    """An old_pending escalation co-existing with needs_human keeps the stage red.
+
+    needs_human alone is by-design escalation; pending requests aging past the threshold are
+    a real backlog signal and must keep tripping red regardless of productivity.
+    """
+
+    now = dt.datetime(2026, 5, 20, 2, 0, tzinfo=dt.timezone.utc)
+    issues = [
+        _needs_human_issue(918, created_at="2026-05-19T20:56:53Z"),
+        {
+            "number": 757,
+            "title": "stale pending request never picked up",
+            "created_at": "2026-04-01T00:00:00Z",
+            "html_url": "https://example.test/issues/757",
+            "labels": [{"name": "daemon-request"}],
+        },
+    ]
+    status = _build_status_with_loop_issues_and_runs(
+        monkeypatch,
+        loop_issues=issues,
+        writer_runs=_productive_writer_workflow_runs(now),
+        now=now,
+    )
+
+    queue_stage = [stage for stage in status["stages"] if stage["name"] == "Writer queue"][0]
+    assert queue_stage["status"] == "red"
+    assert "productive_loop_downgrade" not in queue_stage.get("details", {})
+    assert queue_stage["details"]["old_pending"] == [757]
+
+
+def test_build_status_threshold_is_env_overridable(monkeypatch):
+    """LOOP_WATCH_NEEDS_HUMAN_OK_THRESHOLD env var raises/lowers the bar for downgrade."""
+
+    monkeypatch.setenv("LOOP_WATCH_NEEDS_HUMAN_OK_THRESHOLD", "1")
+    now = dt.datetime(2026, 5, 20, 2, 0, tzinfo=dt.timezone.utc)
+    issues = [
+        _needs_human_issue(n, created_at="2026-05-19T20:56:53Z") for n in (918, 920)
+    ]
+    status = _build_status_with_loop_issues_and_runs(
+        monkeypatch,
+        loop_issues=issues,
+        writer_runs=_productive_writer_workflow_runs(now),
+        now=now,
+    )
+
+    queue_stage = [stage for stage in status["stages"] if stage["name"] == "Writer queue"][0]
+    assert queue_stage["status"] == "red"
+    assert queue_stage["details"]["needs_human"] == [918, 920]
 
 
 def test_queue_stage_treats_attempted_loop_smoke_as_not_waiting(monkeypatch):

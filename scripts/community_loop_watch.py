@@ -95,6 +95,24 @@ WRITER_ELIGIBLE_QUEUE_DETAIL_KEYS = (
     "attempted_with_open_pr",
     "pending",
 )
+WRITER_QUEUE_RED_BLOCKING_DETAIL_KEYS = (
+    "old_pending",
+    "stale_gate",
+    "branch_push_blocked",
+    "pr_blocked",
+    "attempted_with_open_pr",
+)
+
+
+def _needs_human_ok_threshold() -> int:
+    """Read NEEDS_HUMAN_OK_THRESHOLD from env each call so tests can override it."""
+
+    raw = os.environ.get("LOOP_WATCH_NEEDS_HUMAN_OK_THRESHOLD", "3")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 3
+    return value if value >= 0 else 3
 
 
 class WatchError(Exception):
@@ -1114,6 +1132,46 @@ def _is_stale_writer_schedule_stage(stage: dict[str, Any]) -> bool:
     )
 
 
+def _writer_queue_red_only_for_needs_human(stage: dict[str, Any]) -> bool:
+    """True when Writer queue is red and the *only* populated red-causing bucket is needs_human.
+
+    `needs_human` is the loop's correct escalation behavior — by-design pause when a writer
+    hit a transient block. It should not flip the loop overall red on its own, as long as the
+    population is bounded and no harder failure mode is also present.
+    """
+
+    if stage.get("name") != "Writer queue":
+        return False
+    if stage.get("status") != "red":
+        return False
+    details = stage.get("details")
+    if not isinstance(details, dict):
+        return False
+    needs_human = details.get("needs_human") or []
+    if not needs_human:
+        return False
+    if len(needs_human) > _needs_human_ok_threshold():
+        return False
+    for key in WRITER_QUEUE_RED_BLOCKING_DETAIL_KEYS:
+        if details.get(key):
+            return False
+    return True
+
+
+def _writer_workflow_is_productive(stage: dict[str, Any] | None) -> bool:
+    """True when the Writer workflow stage shows recent processor activity.
+
+    Green means scheduled success is fresh; yellow means scheduled success is stale but
+    a fallback event (workflow_run / workflow_dispatch / issues) succeeded recently. Either
+    is sufficient evidence that auto-fix-bug.yml is firing and the loop processor is alive.
+    Red on Writer workflow means no recent success at all — productivity is not proven.
+    """
+
+    if stage is None:
+        return False
+    return stage.get("status") in ("green", "yellow")
+
+
 def incident_stage(
     repo: str,
     *,
@@ -1320,6 +1378,34 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
         details = writer_workflow.get("details")
         if isinstance(details, dict):
             details["queue_downgrade"] = downgrade_reason
+    if (
+        writer_queue is not None
+        and _writer_queue_red_only_for_needs_human(writer_queue)
+        and _writer_workflow_is_productive(writer_workflow)
+    ):
+        details = writer_queue.get("details") or {}
+        needs_human_count = len(details.get("needs_human") or [])
+        threshold = _needs_human_ok_threshold()
+        workflow_status = writer_workflow.get("status") if writer_workflow else "unknown"
+        downgrade_reason = (
+            f"loop processor is productive (Writer workflow status={workflow_status}); "
+            f"{needs_human_count} needs-human escalation(s) within threshold {threshold} "
+            "are the loop's correct escalation behavior, not a stuck queue"
+        )
+        writer_queue["status"] = "yellow"
+        existing_summary = writer_queue.get("summary") or ""
+        writer_queue["summary"] = (
+            f"{existing_summary}; {downgrade_reason}" if existing_summary else downgrade_reason
+        )
+        existing_evidence = writer_queue.get("evidence")
+        writer_queue["evidence"] = (
+            f"{existing_evidence}; {downgrade_reason}"
+            if existing_evidence
+            else downgrade_reason
+        )
+        if isinstance(details, dict):
+            details["productive_loop_downgrade"] = downgrade_reason
+            details["needs_human_ok_threshold"] = threshold
     overall = classify(stages)
     return {
         "version": 1,
