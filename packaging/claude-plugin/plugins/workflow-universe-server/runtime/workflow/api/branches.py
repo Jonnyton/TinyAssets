@@ -657,8 +657,13 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
     reducer = kwargs.get("reducer", "").strip()
     if reducer:
         field_entry["reducer"] = reducer
-    default = kwargs.get("field_default", "")
+    # BUG-094: also accept canonical ``default_value`` (StateFieldDecl) and
+    # write both keys so PR #932's ``_state_schema_defaults`` seeding finds it.
+    default = kwargs.get(
+        "default_value", kwargs.get("field_default", ""),
+    )
     if default != "":
+        field_entry["default_value"] = default
         field_entry["default"] = default
 
     branch.state_schema.append(field_entry)
@@ -1441,8 +1446,18 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     }
     if raw.get("reducer"):
         entry["reducer"] = raw["reducer"]
-    default = raw.get("default", raw.get("field_default", ""))
+    # BUG-094: ``default_value`` is the canonical StateFieldDecl key
+    # (workflow/branches.py:224). Read it first, fall back to the legacy
+    # ``default`` / ``field_default`` spec shapes. Write to ``default_value``
+    # so PR #932's ``_state_schema_defaults`` finds the seed value at runtime;
+    # also dual-write ``default`` for back-compat with any reader that still
+    # uses the legacy storage key.
+    default = raw.get(
+        "default_value",
+        raw.get("default", raw.get("field_default", "")),
+    )
     if default != "":
+        entry["default_value"] = default
         entry["default"] = default
     branch.state_schema.append(entry)
     if ftype_raw.lower() not in _VALID_STATE_TYPES:

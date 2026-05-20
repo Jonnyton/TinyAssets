@@ -345,3 +345,248 @@ def test_state_schema_defaults_returns_independent_copies_per_call():
     a["tally"]["b"] = 2
     assert b["items"] == [1, 2, 3]
     assert b["tally"] == {"a": 1}
+
+
+# ─── BUG-094: default_value key alignment (spec ↔ storage ↔ runtime) ───
+#
+# Triple-key mismatch before this fix:
+#   - StateFieldDecl canonical key:        ``default_value``
+#   - ``_apply_state_field_spec`` reads:   ``default`` / ``field_default``
+#   - ``_apply_state_field_spec`` writes:  ``default``
+#   - PR #932's ``_state_schema_defaults`` reads: ``default_value``
+#
+# Net effect: a build_branch spec with ``default_value`` was silently
+# dropped on the way to storage, so PR #932's seeding path found nothing
+# at runtime and strict-isolation prompts that legitimately relied on a
+# schema default failed with the partition error.
+
+
+def test_state_schema_defaults_reads_legacy_default_storage_key():
+    """Back-compat: branches stored before the key alignment carry the
+    field default under the legacy ``default`` storage key. PR #932's
+    seeding must still find those values without a data migration."""
+    schema = [{"name": "lab_policy", "default": "PROBE"}]
+    assert _state_schema_defaults(schema) == {"lab_policy": "PROBE"}
+
+
+def test_state_schema_defaults_prefers_default_value_over_legacy_default():
+    """When both keys are present (dual-write path) ``default_value`` is
+    canonical and wins."""
+    schema = [
+        {"name": "lab_policy", "default_value": "NEW", "default": "OLD"},
+    ]
+    assert _state_schema_defaults(schema) == {"lab_policy": "NEW"}
+
+
+def test_state_schema_defaults_still_reads_canonical_default_value():
+    """The canonical path remains intact: ``default_value`` alone works."""
+    schema = [{"name": "lab_policy", "default_value": "PROBE"}]
+    assert _state_schema_defaults(schema) == {"lab_policy": "PROBE"}
+
+
+def test_apply_state_field_spec_canonical_default_value_preserved():
+    """A build_branch spec entry using the canonical ``default_value``
+    key must round-trip through ``_apply_state_field_spec`` into storage
+    in a shape that ``_state_schema_defaults`` can read."""
+    from workflow.api.branches import _apply_state_field_spec
+
+    class _StubBranch:
+        def __init__(self) -> None:
+            self.state_schema: list[dict] = []
+
+    branch = _StubBranch()
+    err = _apply_state_field_spec(
+        branch, {"name": "lab_policy", "type": "str",
+                 "default_value": "PROBE"},
+    )
+    assert err == ""
+    # Storage must carry the canonical key so the runtime seed path finds it.
+    assert branch.state_schema[0]["default_value"] == "PROBE"
+    # And ``_state_schema_defaults`` agrees end-to-end.
+    assert _state_schema_defaults(branch.state_schema) == {
+        "lab_policy": "PROBE",
+    }
+
+
+def test_apply_state_field_spec_legacy_default_spec_still_works():
+    """The legacy ``default`` spec shape continues to work — older
+    callers (and earlier tests) that pass ``default`` should still
+    produce a runtime-seedable schema entry."""
+    from workflow.api.branches import _apply_state_field_spec
+
+    class _StubBranch:
+        def __init__(self) -> None:
+            self.state_schema: list[dict] = []
+
+    branch = _StubBranch()
+    err = _apply_state_field_spec(
+        branch, {"name": "lab_policy", "type": "str", "default": "PROBE"},
+    )
+    assert err == ""
+    assert _state_schema_defaults(branch.state_schema) == {
+        "lab_policy": "PROBE",
+    }
+
+
+def test_apply_state_field_spec_field_default_legacy_spec_still_works():
+    """The other legacy spec shape ``field_default`` (used by
+    fine-grained ``add_state_field``) also keeps working."""
+    from workflow.api.branches import _apply_state_field_spec
+
+    class _StubBranch:
+        def __init__(self) -> None:
+            self.state_schema: list[dict] = []
+
+    branch = _StubBranch()
+    err = _apply_state_field_spec(
+        branch,
+        {"name": "lab_policy", "type": "str", "field_default": "PROBE"},
+    )
+    assert err == ""
+    assert _state_schema_defaults(branch.state_schema) == {
+        "lab_policy": "PROBE",
+    }
+
+
+def test_build_branch_default_value_preserved_through_get_branch(
+    tmp_path, monkeypatch,
+):
+    """Round-trip: build_branch with state_schema ``default_value`` →
+    get_branch returns the value preserved. This is the canonical
+    BUG-094 reproduction — before the fix, get_branch returned the
+    state_schema entry stripped of any default."""
+    import importlib
+    import json as _json
+
+    base = tmp_path / "output"
+    base.mkdir()
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    from workflow import universe_server as us
+
+    importlib.reload(us)
+    try:
+        spec = {
+            "name": "BUG-094 round-trip",
+            "entry_point": "n1",
+            "node_defs": [
+                {"node_id": "n1", "display_name": "n1",
+                 "input_keys": ["topic"],
+                 "prompt_template": "{topic} {lab_policy}"},
+            ],
+            "edges": [
+                {"from": "START", "to": "n1"},
+                {"from": "n1", "to": "END"},
+            ],
+            "state_schema": [
+                {"name": "topic", "type": "str"},
+                {"name": "lab_policy", "type": "str",
+                 "default_value": "PROBE"},
+            ],
+        }
+
+        built = _json.loads(us.extensions(
+            action="build_branch", spec_json=_json.dumps(spec),
+        ))
+        assert built["status"] == "built", built
+        bid = built["branch_def_id"]
+
+        got = _json.loads(us.extensions(
+            action="get_branch", branch_def_id=bid,
+        ))
+        lab_field = next(
+            f for f in got["state_schema"] if f["name"] == "lab_policy"
+        )
+        # Canonical key must be set so the runtime seed path finds it.
+        assert lab_field.get("default_value") == "PROBE", lab_field
+    finally:
+        importlib.reload(us)
+
+
+def test_build_branch_state_schema_default_seeded_to_strict_prompt(
+    tmp_path, monkeypatch,
+):
+    """End-to-end M3 proof: build_branch with state_schema default →
+    run_branch with only ``topic`` in inputs → strict-isolation prompt
+    captures BOTH ``topic`` AND the seeded ``lab_policy`` default.
+
+    This is the BUG-094 + BUG-085-M3 full chain. Before the fix the
+    default was stripped at build time, the seeding path found nothing,
+    and the prompt invocation failed with the partition error citing
+    ``{lab_policy} outside declared input_keys``.
+    """
+    import importlib
+    import json as _json
+
+    base = tmp_path / "output"
+    base.mkdir()
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    from workflow import universe_server as us
+
+    importlib.reload(us)
+    try:
+        spec = {
+            "name": "BUG-094 M3 round-trip",
+            "entry_point": "n1",
+            "node_defs": [
+                {"node_id": "n1", "display_name": "n1",
+                 "input_keys": ["topic"],
+                 "output_keys": ["draft"],
+                 "prompt_template": "{topic} :: {lab_policy}",
+                 "strict_input_isolation": True},
+            ],
+            "edges": [
+                {"from": "START", "to": "n1"},
+                {"from": "n1", "to": "END"},
+            ],
+            "state_schema": [
+                {"name": "topic", "type": "str"},
+                {"name": "draft", "type": "str"},
+                {"name": "lab_policy", "type": "str",
+                 "default_value": "PROBE"},
+            ],
+        }
+        built = _json.loads(us.extensions(
+            action="build_branch", spec_json=_json.dumps(spec),
+        ))
+        assert built["status"] == "built", built
+        bid = built["branch_def_id"]
+
+        got = _json.loads(us.extensions(
+            action="get_branch", branch_def_id=bid,
+        ))
+
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        from workflow.branches import BranchDefinition
+        from workflow.graph_compiler import (
+            compile_branch,
+            seed_initial_state,
+        )
+
+        prompts: list[str] = []
+
+        def provider(prompt, system="", *, role="writer",
+                     fallback_response=None):
+            prompts.append(prompt)
+            return "drafted"
+
+        branch = BranchDefinition.from_dict(got)
+        app = compile_branch(branch, provider_call=provider).graph.compile(
+            checkpointer=InMemorySaver(),
+        )
+        # ``seed_initial_state`` is the canonical entry point — defaults
+        # merge UNDER caller inputs, mirroring the runtime path.
+        initial = seed_initial_state(
+            {"topic": "hello"}, branch.state_schema,
+        )
+        result = app.invoke(
+            initial,
+            config={"configurable": {"thread_id": "bug-094-m3"}},
+        )
+        # The strict-isolation prompt must have seen BOTH keys.
+        assert prompts == ["hello :: PROBE"], prompts
+        assert result["draft"] == "drafted"
+    finally:
+        importlib.reload(us)

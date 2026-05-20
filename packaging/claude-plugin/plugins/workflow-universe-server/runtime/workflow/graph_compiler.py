@@ -607,9 +607,16 @@ def _state_schema_defaults(
         name = (field.get("name") or "").strip()
         if not name:
             continue
-        if "default_value" not in field:
+        # BUG-094: prefer canonical ``default_value`` key (StateFieldDecl),
+        # fall back to legacy storage key ``default`` so existing branches
+        # built before the key alignment still seed correctly without
+        # requiring a data migration.
+        if "default_value" in field:
+            value = field.get("default_value")
+        elif "default" in field:
+            value = field.get("default")
+        else:
             continue
-        value = field.get("default_value")
         if value is None:
             continue
         defaults[name] = copy.deepcopy(value)
