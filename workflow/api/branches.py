@@ -1357,6 +1357,19 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         invoke_branch_version if isinstance(invoke_branch_version, dict) else None
     )
     await_run_arg = await_run if isinstance(await_run, dict) else None
+    # PR-122 Phase 1: ``effects`` declares external-write sinks the node's
+    # outputs should be routed to after the run completes. Validated by
+    # NodeDefinition.__post_init__ (list of strings) — same partition
+    # pattern as input_keys/output_keys plumbing.
+    effects_raw = raw.get("effects", [])
+    if effects_raw is None:
+        effects_arg: list[str] = []
+    elif isinstance(effects_raw, list):
+        effects_arg = list(effects_raw)
+    else:
+        return (
+            f"node '{nid}' effects must be a JSON array of strings"
+        )
     try:
         node = NodeDefinition(
             node_id=nid,
@@ -1373,6 +1386,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             invoke_branch_spec=invoke_branch_arg,
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
+            effects=effects_arg,
         )
     except ValueError as exc:
         return str(exc)
