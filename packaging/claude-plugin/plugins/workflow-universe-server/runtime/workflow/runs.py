@@ -43,6 +43,7 @@ from workflow.graph_compiler import (
     NodeTimeoutError,
     UnapprovedNodeError,
     compile_branch,
+    seed_initial_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -1895,8 +1896,14 @@ def _invoke_graph(
         Path(saver_path).parent.mkdir(parents=True, exist_ok=True)
         with SqliteSaver.from_conn_string(saver_path) as checkpointer:
             app = compiled.graph.compile(checkpointer=checkpointer)
+            # BUG-085 M3: seed state_schema defaults UNDER caller inputs so
+            # state_schema-declared fields with defaults are available to
+            # strict-isolation prompt placeholders from step 1.
+            initial_state = seed_initial_state(
+                dict(inputs), getattr(branch, "state_schema", None),
+            )
             result = app.invoke(
-                dict(inputs),
+                initial_state,
                 config={
                     "configurable": {"thread_id": thread_id},
                     "recursion_limit": recursion_limit,
