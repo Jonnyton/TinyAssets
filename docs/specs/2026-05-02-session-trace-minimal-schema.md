@@ -29,7 +29,7 @@ The structured fields are stored in the existing `metadata_json` column. Free-fo
 | `artifact_refs` | list[string] | optional | URIs of raw artifacts the summary cites: `evalresult://<eval-id>`, `output://claude_chat_trace.md`, `wiki://bug-NNN`, `run://<run-id>`, etc. The summary REFERENCES; the raw artifacts stay where they are. |
 | `attribution_refs` | list[string] | optional | Actors involved: `author::<id>`, `daemon::<id>`. Uses existing `author_id`/`author_kind` discriminator. |
 | `evidence_tier` | enum | optional | One of: `direct` (summary author saw the session), `secondary` (summary derived from artifacts only), `synthesized` (multi-session merge). Helps reviewer judge trustworthiness. |
-| `visibility` | enum | required | One of: `host_only` (stays host-side; never even candidates for commons), `universe_only` (candidates for promotion to the universe's wiki only; no cross-universe commons), `commons_candidate` (eligible for cross-universe commons promotion if review approves), `public` (already promoted to commons). |
+| `visibility` | enum | required | One of the existing `VALID_VISIBILITIES` values from `workflow/daemon_brain.py`: `host_private` (default; stays host-side unless promoted via the universe's own gate composition), `borrowable_role_context` (readable by other branches inside the universe), `published` (already promoted to commons wiki). Universe-specific promotion gates are community-composed; see `pages/plans/composing-session-trace-summaries.md`. |
 | `privacy_notes` | string | optional | Free-text note about redaction state, sensitive fields touched, reviewer cautions. Replaces the rejected `TracePrivacyReview` typed surface. |
 | `cost_estimate` | object | optional | Optional cost data: `{tokens: <int>, provider_cost_usd: <float|null>, wall_time_seconds: <int>}`. Aligns with cost-ledger READ surface (#906/04b5e86). |
 | `superseded_by` | string | optional | Set on `superseded` state transitions; references the entry_id of the newer summary. |
@@ -67,16 +67,27 @@ Terminal states: `rejected`, `superseded`. From `promoted`, only `superseded` is
 
 ## Visibility-state interaction
 
-`visibility` and promotion `state` are orthogonal but interact:
+`visibility` and promotion `state` are orthogonal. Both move independently; the platform ships no built-in enforcement coupling them.
 
 | visibility | candidate | accepted | promoted | rejected | superseded |
 |---|---|---|---|---|---|
-| `host_only` | OK | OK | **NOT ALLOWED** (host_only means never promoted) | OK | OK |
-| `universe_only` | OK | OK | OK (visible in universe wiki only) | OK | OK |
-| `commons_candidate` | OK | OK | OK (visible cross-universe via commons wiki search) | OK | OK |
-| `public` | already-promoted state; not used as starting visibility | already-promoted | sticky `promoted` | n/a | OK |
+| `host_private` (default) | OK | OK | OK (universe's gate may refuse) | OK | OK |
+| `borrowable_role_context` | OK | OK | OK | OK | OK |
+| `published` | OK | OK | OK (sticky once promoted) | OK | OK |
 
-Enforcement: when a write attempts to set state=`promoted` on an entry with visibility=`host_only`, the platform refuses the write with a clear error message. This is the only new enforcement primitive — and it's a single conditional in the existing state-transition path, not a new surface.
+**Enforcement is community-composed per Goal**, NOT a platform primitive. (Retracted from the initial Slice 1 draft of this spec; see "Retracted enforcement rule" section below.) If a universe wants summaries with visibility=`host_private` to NEVER promote, the universe owner wires a gate on the Goal's ladder that refuses promotion when visibility=`host_private`. Per Scoping Rules 2 + 3, the platform ships the visibility tag; the universe ships the enforcement gate that fits its own privacy model.
+
+The canonical composition pattern lives at `pages/plans/composing-session-trace-summaries.md`. See § "Visibility values (community-composed per Goal)" + § "Why visibility enforcement is NOT a platform primitive."
+
+## Retracted enforcement rule
+
+The initial Slice 1 draft of this spec (landed via #931) proposed: "when a write attempts to set state=`promoted` on an entry with visibility=`host_only`, the platform refuses the write." Slice 2 implementation (#933 / 65087dc) discovered two reasons to retract:
+
+1. **Implementation conflict.** The default visibility for new memories is `host_private` (per `workflow/daemon_brain.py:446`). Every normal promotion flow today walks through `host_private → promoted`. Enforcing the proposed rule would break universal promotion behavior for all memory_kinds, not just `session_trace_summary`. The existing `test_daemon_brain_smoke_roundtrip` smoke test failed against the enforcement.
+
+2. **Scoping rules.** Per Scoping Rule 2 (community-build over platform-build) and Rule 3 (no platform privacy taxonomy), visibility enforcement IS the kind of policy community evolves per Goal. The platform ships the tag; the universe composes the gate. Even my own ADAPT-narrowed proposal overshipped here.
+
+The retraction is itself a worked example of Scoping-Rule-2 discipline: spec proposed enforcement; implementation found it broke existing flows AND violated the principle anyway; the enforcement is community-composed via gates.
 
 ## Cross-link to the Brain Module spec
 
@@ -110,7 +121,7 @@ A complete example for the Markovic worked-example from the design note:
       "author::codex-cli"
     ],
     "evidence_tier": "direct",
-    "visibility": "commons_candidate",
+    "visibility": "borrowable_role_context",
     "privacy_notes": "Patient placeholders synthetic; reviewer confirmed no PHI in summary text or referenced artifacts.",
     "cost_estimate": {
       "tokens": 84320,
@@ -126,11 +137,10 @@ A complete example for the Markovic worked-example from the design note:
 
 A Slice 1 implementation passes acceptance when:
 
-- [ ] `session_trace_summary` appears in `workflow/daemon_brain.py::MEMORY_KIND_REGISTRY` with one-line description.
-- [ ] Plugin mirror at `packaging/claude-plugin/.../runtime/workflow/daemon_brain.py` has the identical entry.
-- [ ] Existing promotion state machine accepts the new kind unchanged.
-- [ ] One enforcement rule: `promoted` state requires `visibility != "host_only"`. Refusal path tested.
-- [ ] At least one test in `tests/test_daemon_brain.py` covers write → promote → supersede lifecycle on the new kind.
+- [x] `session_trace_summary` appears in `workflow/daemon_brain.py::MEMORY_KIND_REGISTRY` with one-line description. *(Shipped via #933 / 65087dc.)*
+- [x] Plugin mirror at `packaging/claude-plugin/.../runtime/workflow/daemon_brain.py` has the identical entry. *(Shipped via #933.)*
+- [x] Existing promotion state machine accepts the new kind unchanged. *(Verified via the new lifecycle test.)*
+- [x] At least one test in `tests/test_daemon_brain.py` covers candidate → accepted → promoted lifecycle on the new kind. *(Shipped via #933: `test_session_trace_summary_is_recognized_kind_with_full_lifecycle`.)*
 - [ ] No new MCP actions added.
 - [ ] No new SQL tables added.
 - [ ] No platform-side public export of any session_trace_summary content.
