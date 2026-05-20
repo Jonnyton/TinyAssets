@@ -193,6 +193,61 @@ def test_daemon_memory_lifecycle_blocks_invalid_transitions(tmp_path: Path) -> N
     else:
         raise AssertionError("rejected memory was promoted")
 
+def test_session_trace_summary_is_recognized_kind_with_full_lifecycle(
+    tmp_path: Path,
+) -> None:
+    """Slice 2 of PrivateTraceCommons (per docs/design-notes/2026-05-02-private-trace-commons.md).
+
+    Verifies session_trace_summary is a recognized memory_kind that moves
+    through the existing promotion state machine like any other kind:
+    candidate (capture) → accepted (review) → promoted (publish to wiki).
+
+    Slice 1 spec proposed a `host_private`-blocks-promotion enforcement;
+    Slice 2 implementation found that contradicts the existing default
+    visibility semantics (host_private is the DEFAULT for new entries, and
+    every normal promotion flow today walks through host_private →
+    promoted). Per Scoping Rules 2 + 3, visibility enforcement is
+    community-composed via gates anyway, not a platform primitive. The
+    enforcement is intentionally NOT shipped; visibility tagging
+    + community-composed gate enforcement is the path. Follow-up filing
+    will retract that part of the Slice 1 spec.
+    """
+    daemon = _create_daemon(tmp_path, "Trace Daemon")
+
+    entry = capture_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        memory_kind="session_trace_summary",
+        content=(
+            "Run of branch X completed. 3 artifacts captured. "
+            "No sensitive content exposed."
+        ),
+        source_type="run",
+        source_id="run-abc123",
+        reliability="host_observed",
+        language_type="summary",
+        visibility="borrowable_role_context",
+    )
+    assert entry["memory_kind"] == "session_trace_summary"
+    assert entry["promotion_state"] == "candidate"
+
+    review_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        entry_id=entry["entry_id"],
+        decision="accept",
+        note="Summary reviewed; safe to surface.",
+    )
+
+    result = promote_daemon_memory_to_wiki(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        entry_ids=[entry["entry_id"]],
+        summary="Session trace summary promotion sanity check.",
+    )
+    assert result["promoted_count"] == 1
+
+
 def test_daemon_memory_cost_ledger_is_read_only_status(tmp_path: Path) -> None:
     ada = _create_daemon(tmp_path, "Cost Ada")
     capture_daemon_memory(
