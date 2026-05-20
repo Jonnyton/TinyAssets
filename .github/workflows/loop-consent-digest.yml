@@ -1,0 +1,82 @@
+name: Loop consent digest
+
+# Slice C of the loop-discipline arc: surface the loop's autonomous abandonment decisions
+# (auto-fix-exhausted / auto-fix-blocked / auto-fix-pr-blocked / auto-fix-branch-push-blocked
+# / auto-fix-already-fixed) through the same merge-key gesture the host already uses for code
+# PRs. Merging this PR records host consent. Closing without merge + commenting
+# `reopen #N #M ...` on the PR re-opens those issues (see loop-consent-reopen.yml).
+
+on:
+  schedule:
+    - cron: "30 14 * * *"  # daily at 14:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+concurrency:
+  group: loop-consent-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Configure git identity
+        run: |
+          git config user.name 'loop-consent-bot'
+          git config user.email 'noreply@anthropic.com'
+      - name: Generate digest
+        id: digest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y-%m-%d)
+          OUT_PATH="docs/loop-decisions/${DATE}.md"
+          mkdir -p docs/loop-decisions
+          if python scripts/loop_consent_digest.py \
+              --repo "${GITHUB_REPOSITORY}" \
+              --out "${OUT_PATH}" \
+              --print-pr-body > /tmp/pr-body.md 2> /tmp/digest-stderr.log; then
+            cat /tmp/digest-stderr.log
+          else
+            echo "digest script failed"
+            cat /tmp/digest-stderr.log
+            exit 1
+          fi
+          if [[ ! -f "${OUT_PATH}" ]]; then
+            echo "no decisions to consent to; skipping PR open"
+            echo "should_open=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "should_open=true" >> "$GITHUB_OUTPUT"
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "out_path=${OUT_PATH}" >> "$GITHUB_OUTPUT"
+      - name: Branch + commit + open PR
+        if: steps.digest.outputs.should_open == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DATE="${{ steps.digest.outputs.date }}"
+          OUT_PATH="${{ steps.digest.outputs.out_path }}"
+          BRANCH="loop-consent/${DATE}"
+          git switch -c "${BRANCH}"
+          git add "${OUT_PATH}"
+          git commit -m "loop-consent: abandonment decisions digest ${DATE}"
+          git push -u origin "${BRANCH}"
+          gh pr create \
+            --title "[loop-consent] Abandonment decisions — ${DATE}" \
+            --body-file /tmp/pr-body.md \
+            --label loop-consent \
+            --base main
