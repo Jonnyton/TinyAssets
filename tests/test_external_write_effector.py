@@ -1,22 +1,26 @@
-"""PR-122 Phase 1 — ``effects`` attribute + GitHub PR effector.
+"""PR-122 Phase 1 round 3 — ``effects`` attribute + GitHub PR effector.
+
+Round-3 scope: Phase 1 is **dry-run-only at the code level**. The
+effector never invokes ``gh``. Real-write authority is deferred to
+Phase 2 with proper capability-token + idempotency-store + consent
+design. See drafts/concepts/external-write-phase-2-authority.md.
 
 Locks in the smallest-viable-slice contract:
 
 - ``NodeDefinition.effects`` round-trips through ``to_dict`` / ``from_dict``.
 - ``effects`` survives the ``build_branch`` → ``get_branch`` storage path.
 - The effector parses ``external_write_packet`` shapes out of run state.
-- Dry-run mode returns intent without invoking ``gh``.
-- Real-run mode shells to ``gh pr create`` (subprocess mocked) and
-  parses ``pr_url`` / ``pr_number`` out of stdout.
+- The effector NEVER invokes ``subprocess.run`` under ANY env combination.
 - Errors are surfaced as structured evidence, never raised.
 - Nodes without ``effects`` are not touched.
+- The runtime quarantines branch-authored ``external_write_*`` keys so
+  forged receipts cannot win at the canonical key (kept for Phase 2).
 """
 
 from __future__ import annotations
 
 import importlib
 import json
-import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -28,7 +32,6 @@ from workflow.effectors import (
     run_effects_for_branch,
     run_github_pr_effector,
 )
-from workflow.effectors.github_pr import PHASE_1_IDEMPOTENCY_ACK
 
 # ─── 1. NodeDefinition.effects round-trip ─────────────────────────────────
 
@@ -73,6 +76,7 @@ def comp_env(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
     from workflow import universe_server as us
 
     importlib.reload(us)
@@ -128,7 +132,6 @@ def test_build_branch_rejects_non_list_effects(comp_env):
         {**spec["node_defs"][0], "effects": "github_pull_request"},
     ]
     result = _call(us, "build_branch", spec_json=json.dumps(spec))
-    # Either status=invalid OR an explicit error string surfaces.
     text = json.dumps(result)
     assert "effects" in text, result
 
@@ -150,44 +153,20 @@ _PACKET = {
     "expected_evidence_keys": ["pr_number", "pr_url"],
 }
 
-# PR-122 Phase 1 round-2: real-write paths require explicit ack until
-# Phase 2 ships real idempotency. Existing real-run tests pass the ack
-# so they exercise the gh-invocation code path.
-_ACKED_PACKET = {**_PACKET, "idempotency_ack": PHASE_1_IDEMPOTENCY_ACK}
 
-
-def test_effector_dry_run_returns_intent_without_invoking_gh():
+def test_effector_returns_dry_run_intent_when_packet_present():
     out_state = {"pr_packet": _PACKET}
     with patch("workflow.effectors.github_pr.subprocess.run") as mock_run:
         result = run_github_pr_effector(
             node_id="draft",
             output_keys=["pr_packet"],
             run_state=out_state,
-            dry_run=True,
         )
     mock_run.assert_not_called()
     assert result["dry_run"] is True
+    assert result["phase"] == "phase_1"
     assert result["intent"]["sink"] == EXTERNAL_WRITE_SINK_GITHUB_PR
     assert result["matched_output_key"] == "pr_packet"
-
-
-def test_effector_dry_run_env_flag_also_engages(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", "1")
-    branch = SimpleNamespace(
-        node_defs=[
-            NodeDefinition(
-                node_id="draft",
-                display_name="Draft",
-                output_keys=["pr_packet"],
-                effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
-            ),
-        ],
-    )
-    run_state = {"pr_packet": _PACKET}
-    with patch("workflow.effectors.github_pr.subprocess.run") as mock_run:
-        ev_map = run_effects_for_branch(branch=branch, run_state=run_state)
-    mock_run.assert_not_called()
-    assert ev_map["draft"][EXTERNAL_WRITE_SINK_GITHUB_PR]["dry_run"] is True
 
 
 def test_effector_parses_json_string_packet():
@@ -199,7 +178,6 @@ def test_effector_parses_json_string_packet():
         node_id="draft",
         output_keys=["pr_packet"],
         run_state=out_state,
-        dry_run=True,
     )
     assert result["dry_run"] is True
     assert result["intent"]["payload"]["title"].startswith("Loop 2")
@@ -216,84 +194,9 @@ def test_effector_skips_non_packet_output_values():
         node_id="draft",
         output_keys=["summary", "pr_packet"],
         run_state=out_state,
-        dry_run=True,
     )
     assert result["dry_run"] is True
     assert result["matched_output_key"] == "pr_packet"
-
-
-def test_effector_real_run_invokes_gh_pr_create_and_parses_evidence():
-    out_state = {"pr_packet": _ACKED_PACKET}
-    fake_completed = SimpleNamespace(
-        returncode=0,
-        stdout="https://github.com/owner/repo/pull/4242\n",
-        stderr="",
-    )
-    with patch(
-        "workflow.effectors.github_pr.shutil.which",
-        return_value="/usr/bin/gh",
-    ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
-        return_value=fake_completed,
-    ) as mock_run:
-        result = run_github_pr_effector(
-            node_id="draft",
-            output_keys=["pr_packet"],
-            run_state=out_state,
-            dry_run=False,
-        )
-    assert mock_run.called
-    cmd = mock_run.call_args.args[0]
-    assert cmd[:3] == ["gh", "pr", "create"]
-    assert "--title" in cmd
-    assert "--draft" in cmd
-    assert "--head" in cmd
-    assert "auto/loop-2/cycle-001" in cmd
-    assert result["pr_url"] == "https://github.com/owner/repo/pull/4242"
-    assert result["pr_number"] == 4242
-    assert "error" not in result
-
-
-def test_effector_returns_error_when_gh_missing():
-    out_state = {"pr_packet": _ACKED_PACKET}
-    with patch(
-        "workflow.effectors.github_pr.shutil.which",
-        return_value=None,
-    ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
-    ) as mock_run:
-        result = run_github_pr_effector(
-            node_id="draft",
-            output_keys=["pr_packet"],
-            run_state=out_state,
-            dry_run=False,
-        )
-    mock_run.assert_not_called()
-    assert result["error_kind"] == "gh_not_installed"
-
-
-def test_effector_returns_error_when_gh_exits_nonzero():
-    out_state = {"pr_packet": _ACKED_PACKET}
-    fake_completed = SimpleNamespace(
-        returncode=1,
-        stdout="",
-        stderr="fatal: branch already exists\n",
-    )
-    with patch(
-        "workflow.effectors.github_pr.shutil.which",
-        return_value="/usr/bin/gh",
-    ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
-        return_value=fake_completed,
-    ):
-        result = run_github_pr_effector(
-            node_id="draft",
-            output_keys=["pr_packet"],
-            run_state=out_state,
-            dry_run=False,
-        )
-    assert result["error_kind"] == "gh_nonzero_exit"
-    assert "branch already exists" in result["error"]
 
 
 def test_effector_returns_error_when_no_matching_packet():
@@ -302,53 +205,97 @@ def test_effector_returns_error_when_no_matching_packet():
         node_id="draft",
         output_keys=["pr_packet"],
         run_state=out_state,
-        dry_run=True,
     )
     assert result["error_kind"] == "no_matching_packet"
 
 
-def test_effector_returns_error_when_payload_missing_title():
-    bad_packet = {
-        "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,
-        "payload": {"body": "no title"},
-        "idempotency_ack": PHASE_1_IDEMPOTENCY_ACK,
-    }
-    out_state = {"pr_packet": bad_packet}
-    with patch(
-        "workflow.effectors.github_pr.shutil.which",
-        return_value="/usr/bin/gh",
-    ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
-    ) as mock_run:
-        result = run_github_pr_effector(
-            node_id="draft",
-            output_keys=["pr_packet"],
-            run_state=out_state,
-            dry_run=False,
+# ─── 4. Phase 1 round-3 cut — NEVER invoke gh under any env combination ────
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"WORKFLOW_EXTERNAL_WRITE_ENABLED": "1"},
+        {"WORKFLOW_EXTERNAL_WRITE_ENABLED": "true"},
+        {"WORKFLOW_EXTERNAL_WRITE_DRY_RUN": "1"},
+        {
+            "WORKFLOW_EXTERNAL_WRITE_ENABLED": "1",
+            "WORKFLOW_EXTERNAL_WRITE_DRY_RUN": "1",
+        },
+    ],
+)
+def test_effector_never_invokes_subprocess_run_under_any_env(env, monkeypatch):
+    """Phase 1 is dry-run-only AT THE CODE LEVEL. No combination of env
+    vars, no packet-key, no caller flag can result in an actual
+    ``subprocess.run`` invocation. This is the round-3 response to
+    Codex's self-mintable-authority + no-idempotency findings.
+
+    Real-write authority is deferred to Phase 2 — see
+    drafts/concepts/external-write-phase-2-authority.md.
+    """
+    for k in ("WORKFLOW_EXTERNAL_WRITE_ENABLED", "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    # Try packets with assorted "ack-like" keys that previous rounds
+    # might have honored. None of them can mint authority now.
+    packets = [
+        _PACKET,
+        {**_PACKET, "idempotency_ack": "caller_handled_externally_phase_1_temporary_unsafe"},
+        {**_PACKET, "idempotency_ack": "anything"},
+        {**_PACKET, "force_real_write": True},
+    ]
+    for packet in packets:
+        branch = SimpleNamespace(
+            node_defs=[
+                NodeDefinition(
+                    node_id="draft",
+                    display_name="Draft",
+                    output_keys=["pr_packet"],
+                    effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
+                ),
+            ],
         )
-    mock_run.assert_not_called()
-    assert result["error_kind"] == "invalid_payload"
+        with patch(
+            "workflow.effectors.github_pr.subprocess.run",
+        ) as mock_run:
+            ev_map = run_effects_for_branch(
+                branch=branch, run_state={"pr_packet": packet},
+            )
+        mock_run.assert_not_called()
+        ev = ev_map["draft"][EXTERNAL_WRITE_SINK_GITHUB_PR]
+        assert ev["dry_run"] is True
+        assert ev["phase"] == "phase_1"
 
 
-def test_effector_returns_error_when_subprocess_raises():
-    out_state = {"pr_packet": _ACKED_PACKET}
-    with patch(
-        "workflow.effectors.github_pr.shutil.which",
-        return_value="/usr/bin/gh",
-    ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=60.0),
-    ):
-        result = run_github_pr_effector(
-            node_id="draft",
-            output_keys=["pr_packet"],
-            run_state=out_state,
-            dry_run=False,
-        )
-    assert result["error_kind"] == "gh_invocation_failed"
+def test_effector_evidence_mode_reflects_enable_env_as_phase_2_hook(monkeypatch):
+    """``WORKFLOW_EXTERNAL_WRITE_ENABLED`` is preserved as a Phase-2 hook:
+    when truthy, evidence carries ``mode="dry_run_phase_1"``. When
+    unset, evidence carries ``mode="dry_run_default"``. Phase 1 still
+    emits dry-run regardless — the env is a signal, not a switch."""
+    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
+    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    result = run_github_pr_effector(
+        node_id="draft",
+        output_keys=["pr_packet"],
+        run_state={"pr_packet": _PACKET},
+    )
+    assert result["mode"] == "dry_run_default"
+    assert result["enabled_explicit"] is False
+
+    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", "1")
+    result = run_github_pr_effector(
+        node_id="draft",
+        output_keys=["pr_packet"],
+        run_state={"pr_packet": _PACKET},
+    )
+    assert result["mode"] == "dry_run_phase_1"
+    assert result["enabled_explicit"] is True
 
 
-# ─── 4. Branch-level dispatch ─────────────────────────────────────────────
+# ─── 5. Branch-level dispatch ─────────────────────────────────────────────
 
 
 def test_run_effects_for_branch_skips_nodes_without_effects():
@@ -372,7 +319,7 @@ def test_run_effects_for_branch_skips_nodes_without_effects():
         "pr_packet": _PACKET,
     }
     ev_map = run_effects_for_branch(
-        branch=branch, run_state=run_state, dry_run=True,
+        branch=branch, run_state=run_state,
     )
     assert set(ev_map.keys()) == {"emit"}
 
@@ -388,7 +335,7 @@ def test_run_effects_for_branch_no_op_when_no_effects_declared():
         ],
     )
     ev_map = run_effects_for_branch(
-        branch=branch, run_state={"summary": "x"}, dry_run=True,
+        branch=branch, run_state={"summary": "x"},
     )
     assert ev_map == {}
 
@@ -405,12 +352,12 @@ def test_run_effects_for_branch_records_unknown_sink():
         ],
     )
     ev_map = run_effects_for_branch(
-        branch=branch, run_state={"packet": "x"}, dry_run=True,
+        branch=branch, run_state={"packet": "x"},
     )
     assert ev_map["emit"]["twitter_post"]["error_kind"] == "unknown_sink"
 
 
-# ─── 5. Error collection helper ───────────────────────────────────────────
+# ─── 6. Error collection helper ───────────────────────────────────────────
 
 
 def test_collect_external_write_errors_flattens_error_rows():
@@ -419,8 +366,8 @@ def test_collect_external_write_errors_flattens_error_rows():
     evidence = {
         "draft": {
             EXTERNAL_WRITE_SINK_GITHUB_PR: {
-                "error": "gh CLI not installed",
-                "error_kind": "gh_not_installed",
+                "error": "no_matching_packet",
+                "error_kind": "no_matching_packet",
             },
         },
         "other": {
@@ -431,160 +378,25 @@ def test_collect_external_write_errors_flattens_error_rows():
         },
         "ok": {
             EXTERNAL_WRITE_SINK_GITHUB_PR: {
-                "pr_url": "https://example/pr/1",
-                "pr_number": 1,
+                "dry_run": True,
+                "intent": {"sink": EXTERNAL_WRITE_SINK_GITHUB_PR},
             },
         },
     }
     errors = _collect_external_write_errors(evidence)
     kinds = {(row["node_id"], row["sink"], row["error_kind"]) for row in errors}
     assert kinds == {
-        ("draft", EXTERNAL_WRITE_SINK_GITHUB_PR, "gh_not_installed"),
+        ("draft", EXTERNAL_WRITE_SINK_GITHUB_PR, "no_matching_packet"),
         ("other", "twitter_post", "unknown_sink"),
     }
 
 
-# ─── 6. BranchDefinition node_defs roundtrip through full to_dict path ────
-
-
-# ─── 7. PR-122 Phase 1 round-2 — Codex review hardening ───────────────────
-# Default dry-run, explicit-enable-required, idempotency-ack-required,
-# system-authoritative receipts. See PR #955 review thread for the
-# verbatim findings.
-
-
-def test_effector_defaults_to_dry_run_without_explicit_enable(monkeypatch):
-    """Out of the box (no env vars set), the effector returns dry-run
-    intent — no subprocess.run call.
-
-    Codex finding #1: external writes must default to dry-run with an
-    explicit consent gate."""
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    branch = SimpleNamespace(
-        node_defs=[
-            NodeDefinition(
-                node_id="draft",
-                display_name="Draft",
-                output_keys=["pr_packet"],
-                effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
-            ),
-        ],
-    )
-    with patch("workflow.effectors.github_pr.subprocess.run") as mock_run:
-        ev_map = run_effects_for_branch(
-            branch=branch, run_state={"pr_packet": _ACKED_PACKET},
-        )
-    mock_run.assert_not_called()
-    ev = ev_map["draft"][EXTERNAL_WRITE_SINK_GITHUB_PR]
-    assert ev["dry_run"] is True
-    assert ev["enabled_explicit"] is False
-    assert "WORKFLOW_EXTERNAL_WRITE_ENABLED" in ev["reason"]
-
-
-def test_effector_real_write_requires_explicit_enable_env(monkeypatch):
-    """When WORKFLOW_EXTERNAL_WRITE_ENABLED is truthy AND the packet
-    carries the idempotency ack, the effector invokes gh pr create."""
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", "1")
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    branch = SimpleNamespace(
-        node_defs=[
-            NodeDefinition(
-                node_id="draft",
-                display_name="Draft",
-                output_keys=["pr_packet"],
-                effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
-            ),
-        ],
-    )
-    fake_completed = SimpleNamespace(
-        returncode=0,
-        stdout="https://github.com/owner/repo/pull/77\n",
-        stderr="",
-    )
-    with patch(
-        "workflow.effectors.github_pr.shutil.which",
-        return_value="/usr/bin/gh",
-    ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
-        return_value=fake_completed,
-    ) as mock_run:
-        ev_map = run_effects_for_branch(
-            branch=branch, run_state={"pr_packet": _ACKED_PACKET},
-        )
-    assert mock_run.called
-    ev = ev_map["draft"][EXTERNAL_WRITE_SINK_GITHUB_PR]
-    assert ev["pr_number"] == 77
-    assert ev["enabled_explicit"] is True
-
-
-def test_effector_real_write_requires_idempotency_ack(monkeypatch):
-    """Even with WORKFLOW_EXTERNAL_WRITE_ENABLED set, a packet without
-    the explicit idempotency ack must NOT shell to gh.
-
-    Codex finding #3: duplicate PR risk in Phase 1 — block real writes
-    behind explicit acknowledgement until Phase 2 ships dedupe."""
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", "1")
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    branch = SimpleNamespace(
-        node_defs=[
-            NodeDefinition(
-                node_id="draft",
-                display_name="Draft",
-                output_keys=["pr_packet"],
-                effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
-            ),
-        ],
-    )
-    # _PACKET has NO idempotency_ack.
-    with patch(
-        "workflow.effectors.github_pr.shutil.which",
-        return_value="/usr/bin/gh",
-    ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
-    ) as mock_run:
-        ev_map = run_effects_for_branch(
-            branch=branch, run_state={"pr_packet": _PACKET},
-        )
-    mock_run.assert_not_called()
-    ev = ev_map["draft"][EXTERNAL_WRITE_SINK_GITHUB_PR]
-    assert ev["error_kind"] == "idempotency_phase_1_guard"
-    assert ev["dry_run"] is True
-    assert PHASE_1_IDEMPOTENCY_ACK in ev["message"]
-
-
-def test_effector_legacy_dry_run_env_still_forces_dry_run(monkeypatch):
-    """Back-compat: when the legacy WORKFLOW_EXTERNAL_WRITE_DRY_RUN is
-    truthy, it forces dry-run even if WORKFLOW_EXTERNAL_WRITE_ENABLED is
-    also set. Preserves intent for operators who set the old gate."""
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", "1")
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", "1")
-    branch = SimpleNamespace(
-        node_defs=[
-            NodeDefinition(
-                node_id="draft",
-                display_name="Draft",
-                output_keys=["pr_packet"],
-                effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
-            ),
-        ],
-    )
-    with patch("workflow.effectors.github_pr.subprocess.run") as mock_run:
-        ev_map = run_effects_for_branch(
-            branch=branch, run_state={"pr_packet": _ACKED_PACKET},
-        )
-    mock_run.assert_not_called()
-    ev = ev_map["draft"][EXTERNAL_WRITE_SINK_GITHUB_PR]
-    assert ev["dry_run"] is True
+# ─── 7. Runtime quarantine of branch-authored external-write keys ────────
+# Kept from round 2 — still correct for Phase 2. A branch must never be
+# able to forge a receipt at the canonical system key.
 
 
 def test_runs_moves_branch_authored_external_write_results_to_quarantine():
-    """If a branch's output already contains ``external_write_results``,
-    that value must be quarantined to ``_branch_authored_*`` BEFORE the
-    effector runs.
-
-    Codex finding #2: external-write receipts must be
-    system-authoritative; a user-authored receipt cannot win."""
     from workflow.runs import _quarantine_branch_authored_external_write_keys
 
     output = {
@@ -599,7 +411,6 @@ def test_runs_moves_branch_authored_external_write_results_to_quarantine():
 
 
 def test_runs_moves_branch_authored_external_write_errors_to_quarantine():
-    """Same quarantine treatment for the errors key."""
     from workflow.runs import _quarantine_branch_authored_external_write_keys
 
     output = {
@@ -613,8 +424,6 @@ def test_runs_moves_branch_authored_external_write_errors_to_quarantine():
 
 
 def test_runs_quarantine_no_op_when_keys_absent():
-    """When the branch did not pre-populate either key, quarantine is
-    a no-op — no spurious keys appear."""
     from workflow.runs import _quarantine_branch_authored_external_write_keys
 
     output = {"summary": "x"}
@@ -635,15 +444,17 @@ def test_runs_external_write_results_overwrites_quarantined_value():
         "external_write_results": {"fake": "forgery"},
         "external_write_errors": [{"fake": "row"}],
     }
-    # Simulate the start_run / resume_run sequence:
     _quarantine_branch_authored_external_write_keys(output)
-    fake_system_evidence = {"draft": {"github_pull_request": {"pr_number": 99}}}
+    fake_system_evidence = {"draft": {"github_pull_request": {"dry_run": True}}}
     output["external_write_results"] = fake_system_evidence  # unconditional
     assert output["external_write_results"] == fake_system_evidence
     assert output["_branch_authored_external_write_results"] == {
         "fake": "forgery",
     }
     assert output["_branch_authored_external_write_errors"] == [{"fake": "row"}]
+
+
+# ─── 8. BranchDefinition node_defs roundtrip through full to_dict path ────
 
 
 def test_branch_definition_node_def_effects_survive_branch_to_dict():

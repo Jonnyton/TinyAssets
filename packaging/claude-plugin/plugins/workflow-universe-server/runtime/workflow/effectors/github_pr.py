@@ -1,9 +1,9 @@
-"""GitHub PR substrate effector — PR-122 Phase 1 milestone M1.
+"""GitHub PR substrate effector — PR-122 Phase 1 milestone M1 (round 3).
 
 Reads ``external_write_packet`` shapes from a completed run's final state
 for any node whose ``effects`` declaration includes
-``"github_pull_request"``, and invokes ``gh pr create`` to open a draft
-PR for each.
+``"github_pull_request"``, and returns **dry-run evidence** describing
+what *would* have been done.
 
 Packet shape (convention — documented in
 drafts/concepts/external-write-packet-shape.md):
@@ -24,32 +24,34 @@ drafts/concepts/external-write-packet-shape.md):
       "expected_evidence_keys": ["pr_number", "pr_url"]
     }
 
-Authentication: re-uses the host's existing ``gh`` CLI credentials.
-No new credential resolver in this slice (see PR-122 follow-ons).
+Phase 1 scope — round 3 cut
+---------------------------
 
-Safety defaults (PR-122 Phase 1, round-2 response to Codex review of
-PR #955):
+Phase 1's goal is to land the **effects vocabulary** and an **effector
+entry point**: a place in the run-completion path that walks
+``NodeDefinition.effects`` and resolves matching outputs to a typed
+"intent" record. Phase 1 deliberately ships **no real-write
+authority**.
 
-- **Default is dry-run.** The effector only invokes ``gh pr create``
-  when ``WORKFLOW_EXTERNAL_WRITE_ENABLED`` is truthy. Without that
-  explicit opt-in, the effector returns the parsed intent and never
-  shells out. This satisfies the consent-gate requirement: an
-  out-of-the-box install can have a branch declare
-  ``effects=["github_pull_request"]`` and the operator will see the
-  intent in run output without any risk of an accidental PR.
-- ``WORKFLOW_EXTERNAL_WRITE_DRY_RUN`` (the legacy env) is still
-  honored as a back-compat alias: when truthy it forces dry-run
-  regardless of the enable flag. Since dry-run is now the safe default
-  the alias is essentially a no-op for new installs, but it preserves
-  intent for any operator that set it explicitly.
-- The caller can also pass ``dry_run=True``; that wins over both env
-  vars.
-- Even when ``WORKFLOW_EXTERNAL_WRITE_ENABLED`` is set, the effector
-  refuses to call ``gh`` unless the packet includes
-  ``idempotency_ack='caller_handled_externally_phase_1_temporary_unsafe'``.
-  Phase 1 ships no real idempotency check; the ack phrase makes the
-  caller name the risk before duplicate-PR potential is enabled.
-  Phase 2 replaces this guard with a real dedupe layer.
+Per Codex round-2 review of PR #955 (verdict 2026-05-20T06:46Z):
+
+- A public static "idempotency_ack" string in the branch-authored packet
+  was self-mintable authority, not real authority.
+- Phase 1 also lacks any idempotency store, so the previous "ack to
+  acknowledge duplicate-PR risk" path could fire ``gh pr create`` twice
+  with the same packet on retry.
+
+Round-3 response: Phase 1 is **dry-run-only at the code level**. The
+effector never invokes ``gh``. The ``WORKFLOW_EXTERNAL_WRITE_ENABLED``
+env is preserved as a hook for Phase 2 — when truthy the evidence
+records ``mode="dry_run_phase_1"`` instead of ``"dry_run_default"`` so
+operators can see the future-enabled signal, but no subprocess fires.
+
+Real-write authority is deferred to Phase 2, which must ship:
+capability-token isolation (daemon-side, never branch-author-mintable),
+an idempotency store keyed by ``idempotency_hint`` + existing-remote
+branch lookup, and a per-destination consent surface. See
+``drafts/concepts/external-write-phase-2-authority.md``.
 
 Errors are captured and returned in the evidence map; the function
 never raises to the run-completion path. Hard-rule #8 (fail loudly)
@@ -61,26 +63,19 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
-import shutil
-import subprocess
+import subprocess  # noqa: F401 — kept importable so tests can patch and assert never-called
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 EXTERNAL_WRITE_SINK_GITHUB_PR = "github_pull_request"
-_DRY_RUN_ENV = "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"
 _ENABLE_ENV = "WORKFLOW_EXTERNAL_WRITE_ENABLED"
-_GH_TIMEOUT_SECONDS = 60.0
-
-# Phase 1 explicit-acknowledgement phrase. The caller must opt into
-# the duplicate-PR risk by hand until Phase 2 lands real idempotency.
-PHASE_1_IDEMPOTENCY_ACK = "caller_handled_externally_phase_1_temporary_unsafe"
+# Legacy env name retained only as recognized-input — has no effect in
+# Phase 1 round 3 since the code path is dry-run-only regardless.
+_DRY_RUN_ENV = "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
-
-_PR_URL_RE = re.compile(r"https?://[^\s]+/pull/(\d+)")
 
 
 def _env_truthy(name: str) -> bool:
@@ -88,22 +83,16 @@ def _env_truthy(name: str) -> bool:
     return val.strip().lower() in _TRUTHY
 
 
-def _dry_run_from_env() -> bool:
-    """Return True when the environment requests dry-run mode.
+def _phase_1_mode() -> str:
+    """Return the Phase 1 dry-run mode label for evidence records.
 
-    Dry-run is the safe default. The effector only goes live when
-    ``WORKFLOW_EXTERNAL_WRITE_ENABLED`` is truthy AND
-    ``WORKFLOW_EXTERNAL_WRITE_DRY_RUN`` is NOT truthy (the legacy alias
-    still wins so an operator that explicitly set it keeps their
-    intent). Returning ``True`` here means "force dry-run".
+    - ``"dry_run_phase_1"`` when ``WORKFLOW_EXTERNAL_WRITE_ENABLED`` is
+      truthy. The env var is preserved as a Phase-2 hook — operators
+      who set it are signalling "I want real writes once they're safe".
+      Phase 1 still emits dry-run evidence.
+    - ``"dry_run_default"`` otherwise.
     """
-    # Legacy dry-run alias always forces dry-run when set.
-    if _env_truthy(_DRY_RUN_ENV):
-        return True
-    # New default: dry-run unless explicit enable.
-    if not _env_truthy(_ENABLE_ENV):
-        return True
-    return False
+    return "dry_run_phase_1" if _env_truthy(_ENABLE_ENV) else "dry_run_default"
 
 
 def _parse_packet(value: Any) -> dict[str, Any] | None:
@@ -131,122 +120,38 @@ def _parse_packet(value: Any) -> dict[str, Any] | None:
     return packet
 
 
-def _parse_pr_evidence(stdout: str) -> dict[str, Any]:
-    """Extract ``pr_url`` + ``pr_number`` from ``gh pr create`` stdout.
-
-    ``gh pr create`` prints the PR URL on the last non-empty line.
-    """
-    if not stdout:
-        return {}
-    last = ""
-    for line in stdout.splitlines():
-        stripped = line.strip()
-        if stripped:
-            last = stripped
-    evidence: dict[str, Any] = {}
-    if last:
-        evidence["pr_url"] = last
-        match = _PR_URL_RE.search(last)
-        if match is not None:
-            try:
-                evidence["pr_number"] = int(match.group(1))
-            except (TypeError, ValueError):
-                pass
-    return evidence
-
-
-def _invoke_gh_pr_create(packet: dict[str, Any]) -> dict[str, Any]:
-    """Invoke ``gh pr create`` against the host's credentials.
-
-    Returns an evidence dict including ``pr_url`` / ``pr_number`` on
-    success, or ``error`` on failure. Never raises.
-    """
-    if shutil.which("gh") is None:
-        return {
-            "error": "gh CLI not installed",
-            "error_kind": "gh_not_installed",
-        }
-    payload = packet.get("payload") or {}
-    if not isinstance(payload, dict):
-        return {
-            "error": "payload must be a JSON object",
-            "error_kind": "invalid_payload",
-        }
-    title = (payload.get("title") or "").strip()
-    body = payload.get("body") or ""
-    if not title:
-        return {
-            "error": "payload.title is required",
-            "error_kind": "invalid_payload",
-        }
-    cmd = ["gh", "pr", "create", "--title", title, "--body", body]
-    head = payload.get("head_branch")
-    if isinstance(head, str) and head.strip():
-        cmd.extend(["--head", head.strip()])
-    base = payload.get("base_branch")
-    if isinstance(base, str) and base.strip():
-        cmd.extend(["--base", base.strip()])
-    if payload.get("draft", True):
-        cmd.append("--draft")
-    labels = payload.get("labels") or []
-    if isinstance(labels, list):
-        for label in labels:
-            if isinstance(label, str) and label.strip():
-                cmd.extend(["--label", label.strip()])
-    try:
-        result = subprocess.run(  # noqa: S603 — gh CLI; args explicit
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_GH_TIMEOUT_SECONDS,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return {
-            "error": f"gh pr create invocation failed: {exc}",
-            "error_kind": "gh_invocation_failed",
-        }
-    if result.returncode != 0:
-        return {
-            "error": (
-                f"gh pr create exited rc={result.returncode}: "
-                f"{(result.stderr or result.stdout or '').strip()}"
-            ),
-            "error_kind": "gh_nonzero_exit",
-            "stderr": (result.stderr or "").strip(),
-        }
-    evidence = _parse_pr_evidence(result.stdout or "")
-    evidence.setdefault("stdout", (result.stdout or "").strip())
-    return evidence
-
-
 def run_github_pr_effector(
     *,
     node_id: str,
     output_keys: list[str],
     run_state: dict[str, Any],
-    dry_run: bool = False,
+    dry_run: bool = True,  # retained for signature compat — ignored
 ) -> dict[str, Any]:
-    """Run the GitHub-PR effector for a single node.
+    """Run the GitHub-PR effector for a single node (Phase 1: dry-run).
 
     Scans ``output_keys`` for a value that parses as an
     ``external_write_packet`` with ``sink == "github_pull_request"``.
     The first matching key wins; non-matching keys are skipped silently
     (they are normal output fields, not packets).
 
+    Phase 1 always returns a dry-run evidence record — the effector
+    never invokes ``gh``. The ``dry_run`` parameter is retained for
+    signature compatibility but is no-op in Phase 1.
+
     Returns one of:
 
-    - ``{"dry_run": True, "intent": <packet>}`` when ``dry_run`` is set.
-    - ``{"pr_url": "...", "pr_number": N, ...}`` on a successful real
-      invocation.
-    - ``{"error": "...", "error_kind": "..."}`` when something went
-      wrong (no matching packet, gh missing, gh non-zero exit, etc.).
+    - ``{"dry_run": True, "mode": "dry_run_default"|"dry_run_phase_1",
+       "intent": <packet>, "matched_output_key": <key>}`` when a packet
+       was found and parsed.
+    - ``{"error": "...", "error_kind": "no_matching_packet"}`` when no
+      output key held a packet-shaped value.
 
     Per the PR-122 contract, this function never raises — all failure
     modes are returned as structured evidence and surfaced into the run
     record's ``external_write_errors`` metadata so authors can debug
     without crashing the run.
     """
+    del dry_run  # retained for signature compat; Phase 1 is dry-run-only
     matched_key: str | None = None
     packet: dict[str, Any] | None = None
     for key in output_keys or []:
@@ -271,46 +176,21 @@ def run_github_pr_effector(
             ),
             "error_kind": "no_matching_packet",
         }
-    if dry_run:
-        return {
-            "dry_run": True,
-            "enabled_explicit": _env_truthy(_ENABLE_ENV),
-            "intent": packet,
-            "matched_output_key": matched_key,
-            "reason": (
-                "WORKFLOW_EXTERNAL_WRITE_ENABLED not set"
-                if not _env_truthy(_ENABLE_ENV)
-                else "dry_run forced by caller or WORKFLOW_EXTERNAL_WRITE_DRY_RUN"
-            ),
-        }
-    # Phase 1 idempotency guard. Even when the operator has explicitly
-    # enabled real writes via WORKFLOW_EXTERNAL_WRITE_ENABLED, we
-    # refuse to call ``gh pr create`` unless the packet contains a
-    # specific acknowledgement phrase that names the duplicate-PR risk.
-    # Phase 2 replaces this guard with real dedupe (idempotency_hint
-    # derivation + existing-PR lookup + run-evidence consultation).
-    ack = packet.get("idempotency_ack")
-    if ack != PHASE_1_IDEMPOTENCY_ACK:
-        return {
-            "node_id": node_id,
-            "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,
-            "dry_run": True,
-            "error": "idempotency_not_implemented",
-            "error_kind": "idempotency_phase_1_guard",
-            "message": (
-                "Phase 1 has no idempotency check. Pass "
-                f"idempotency_ack={PHASE_1_IDEMPOTENCY_ACK!r} in the "
-                "packet to acknowledge the duplicate-PR risk and "
-                "proceed. Real idempotency derivation lands in a "
-                "follow-on PR."
-            ),
-            "intent": packet,
-            "matched_output_key": matched_key,
-        }
-    evidence = _invoke_gh_pr_create(packet)
-    evidence["matched_output_key"] = matched_key
-    evidence["enabled_explicit"] = True
-    return evidence
+    mode = _phase_1_mode()
+    return {
+        "dry_run": True,
+        "mode": mode,
+        "phase": "phase_1",
+        "enabled_explicit": _env_truthy(_ENABLE_ENV),
+        "intent": packet,
+        "matched_output_key": matched_key,
+        "reason": (
+            "PR-122 Phase 1 is dry-run-only at the code level. Real-write "
+            "authority is deferred to Phase 2 (capability tokens + "
+            "idempotency store + per-destination consent). See "
+            "drafts/concepts/external-write-phase-2-authority.md."
+        ),
+    }
 
 
 def run_effects_for_branch(
@@ -326,16 +206,14 @@ def run_effects_for_branch(
     effector (one currently — github_pull_request). Nodes without
     ``effects`` are skipped entirely.
 
-    ``dry_run`` precedence: explicit kwarg wins; otherwise read the
-    ``WORKFLOW_EXTERNAL_WRITE_DRY_RUN`` env var.
+    ``dry_run`` is accepted for signature compatibility but ignored —
+    Phase 1 round 3 is dry-run-only at the code level.
 
     Never raises. Errors are folded into the per-node evidence so the
     caller can log them as ``external_write_errors`` and otherwise
     complete the run normally.
     """
-    effective_dry_run = (
-        dry_run if dry_run is not None else _dry_run_from_env()
-    )
+    del dry_run  # retained for signature compat; Phase 1 is dry-run-only
     evidence_map: dict[str, Any] = {}
     node_defs = getattr(branch, "node_defs", None) or []
     for node in node_defs:
@@ -352,7 +230,6 @@ def run_effects_for_branch(
                         node_id=node_id,
                         output_keys=output_keys,
                         run_state=run_state,
-                        dry_run=effective_dry_run,
                     )
                 except Exception as exc:  # defensive — never raise
                     logger.exception(
