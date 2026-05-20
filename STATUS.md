@@ -2,51 +2,76 @@
 
 Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online.
 
+**Scope (2026-05-19 reframe):** STATUS.md is for project-folder-access AIs (Claude Code, Codex CLI, Cursor sessions). Substantive work flows through the live MCP brain — wiki + dispatcher + auto-change loop. Use STATUS.md for cross-session coordination state that does not have a wiki home; check the live brain (PR-###, BUG-### in wiki) for active work.
+
 ## Concerns
 
-- **[P0 filed:2026-04-23]** Revert-loop daemon PAUSED; auto-recovery outran pruner. Trace: `docs/audits/2026-04-23-p0-auto-recovery-trace.md`.
-- [filed:2026-04-22 verified:2026-04-25] `/etc/workflow/env` mode flip: Fix A landed bc079a0; host installer review pending.
-- [filed:2026-04-20 verified:2026-04-27] `test_node_eval` roundtrip flake: Fix B landed 16d4823; watch ≥30d.
-- [filed:2026-04-18 verified:2026-04-28] `add_canon_from_path` sensitivity: host Qs reframed by commons-first audit F3.
-- [filed:2026-04-24] Task #9 host Qs: GH Actions GROQ/GEMINI/XAI secrets + rotation e2e after deploy step.
-- [filed:2026-04-28] Claude card matcher cleanup conflicts with legacy connector fallback test.
-- **[P1 filed:2026-04-30]** Castles II run `28479d8ddfb44488` failed `provider_exhausted` at discovery; blocks branch-run proof (BUG-038).
+- [filed:2026-04-17 verified:2026-04-28] Privacy mode: 2 of 3 host-Qs OBVIATED by community-build (per-conversation chatbot composes); Q6.3 STILL-PLATFORM (third-party providers in fallback chain — `workflow/providers/router.py`).
+- [filed:2026-04-18 verified:2026-04-28] `add_canon_from_path` sensitivity: 3 host-Qs REFRAMED by commons-first audit F3 (self-auditing-tools structured caveats).
+- [filed:2026-04-24] Task #9 host Qs: GROQ/GEMINI/XAI GH Actions secrets present + rotation e2e validated after deploy step ships.
+- **[P1 filed:2026-04-30]** Castles II live run `28479d8ddfb44488` failed `provider_exhausted` at `candidate_discovery` (see BUG-038); blocks branch-run proof. Companion: BUG-039 (Echoes intake same root cause).
+- [filed:2026-04-30 reframed:2026-05-19] Classic-game v0 desktop shortcut concern: now PR-131 in dispatcher queue (`bc6ed9df-e764-495a-b466-c5c86d7e0e2e`); user-canary packet `tiberian_sun_host_local_effect_packet_v1` built with correct idempotency_key + asset policy. First consumer of #914 external-write design.
+- [filed:2026-05-19] Wiki has shifted toward multi-agent shared scratch space — 81% of post-2026-05-01 notes (495 of 614) are Codex/Cowork/Claude agent-coordination. Volume risks drowning out chatbot discovery/remix. Worth a host conversation on whether to split coordination off the knowledge wiki.
+
+## Approved Specs
+
+Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never wiki. On land, delete row + H2 section together.
+
+| Spec | Status |
+|---|---|
+| [deferred] Daemon roster + node/gate soul policy + ledger/attribution/royalty/outcome/bounty/fair-distribution items | needs-scoping; soul-guided dispatch READ landed via open-brain v2 slice B (#900); host corrected 2026-05-01: many-daemon fleets + warning-only same-provider capacity estimates |
 
 ## Work
 
-Path: #18 cleared 2026-05-02 -> Arc C cleared -> Phase 6 db rename cleared. universe_server.py: 14012 -> 972 LOC live in main.
+universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11 modules (#915, 41569b5) — Brain Module + skills tie-in + plan_module_audit script LANDED 2026-05-19. External-write authority design locked + on main (#914, e2c20f4).
 
-Run `python scripts/claim_check.py --provider <name>` before claiming. Claim by setting Status to `claimed:<name>`.
+**Multi-provider note:** any provider runs `python scripts/claim_check.py --provider <yourname>` to discover what's safe to claim. AGENTS.md §"Parallel Dispatch" has the full ritual.
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| PR #837 / PR #828 skill-sync refactor — replace rejected design-note route with project-design brain-page/skill-loading loop guardrails; refs issue #826 + Cowork reject note. | `.github/workflows/auto-fix-bug.yml`, `scripts/provider_context_feed.py`, `tests/test_auto_fix_workflow.py`, `tests/test_provider_context_feed.py`, `pages/concepts/skill-sync-via-brain-pages.md`, `.agents/worktrees.md` | - | dev-ready |
-| Phase 3 merge-readiness classifier — read-only `RiskClassedMergeReadiness` / `MergeExecutorState` first slice; no merge/approval/close/rebase mutations. | `scripts/merge_readiness.py`, `tests/test_merge_readiness.py` | PR #617 landed; Phase 0-4 consensus notes | claimed:codex-gpt5-desktop ACTIVE 2026-05-08 |
-| Community loop watch false-red alignment — live run 25533591057 still red after stale-gate batch because label floods hide schedule runs and `complete`/`await-primitive-layer` skip issues count stale. | `scripts/community_loop_watch.py`, `tests/test_community_loop_watch.py` | PR #594/#597 landed | claimed:codex-gpt5-desktop ACTIVE 2026-05-07 |
-| BUG-068 Phase A loop self-learning — blocked-patterns brain page + pre-claim read/evidence convention; opposite-family review needed. | `workflow/daemon_wiki.py`, `workflow/daemon_memory.py`, `tests/test_daemon_wiki.py`, docs/spec notes | BUG-049 for closed-loop trigger proof | dev-ready |
-| Scorched exact-original proof - mount guard green; needs rights-cleared Kickstart + input/sound/tank-hit acceptance. | WebSite/site/static/play/scorched-tanks/licensed/kickstart-a500-1.3.rom (deployment-only; do not commit ROM) | rights-cleared Kickstart | host-action |
-| OpenAI/Claude directory submission host actions - dashboard `/mcp-directory` green, domain verified, Claude UI read proof captured; ChatGPT DEV still `/mcp` as of 2026-05-02T15:37; needs directory-safe web/mobile proof after re-register, logo/publisher/legal/mature approvals, Claude form submit, final submit. | OpenAI Apps dashboard; ChatGPT dev/mobile app; Claude directory form | action-time approval for uploads/legal/final submit/custom MCP warning | host-action |
-| Community loop ALIVE end-to-end 2026-05-02 — BUG-050 first successful run post-#205 claim-grace; PR #198 (auto-ship canary v0 spec) + #206 (daemon-liveness watchdog spec) design-only, ready. Next: loop-content fix (BUG-051) + auto-ship canary build-out. | docs/milestones/auto-ship-canary-v0.md, docs/specs/daemon-liveness-watchdog.md | PR #198, #206 | review/landd, .agents/uptime.log, MCP live branches fd5c66b1d87d/e019229850f9 | deploy of `d897177` | claimed:codex-loop-uptime-chatgpt |
-| Daemon soul followups - flagship core routing + host review/editor. | workflow/daemon_{registry,wiki,memory}.py, workflow/dispatcher.py, workflow/api/universe.py, fantasy_daemon/api.py, tests/ | - | dev-ready |
-| Enable Actions PR creation for auto-fix - repo has read-only workflow perms; permission flip needs action-time confirmation. | GitHub repo settings | PR #100/#104 show branch push works | host-action |
-| R7 closure pass — items 6+7 obviated; 1-5 cover Arc B/C; 8 by #25. | docs/exec-plans/active/2026-04-19-rename-end-state.md | #25 | nav-then-dev |
-| #28 domain extraction host questions — #29 decomposition is done; remaining Qs are tool shape, upload-policy placement, registration hook. | `docs/audits/2026-04-25-engine-domain-api-separation.md` | rename locks | host-review |
-| Wiki #32 — loop-owned cleanup: lowercase BUG-003/023 rm + BUG-018 old-canonical cleanup. | wiki droplet + MCP | loop dev | claimed:loop-dev |
-| Loop action: `rm pages/bugs/bug-003-...md` + `rm pages/bugs/bug-023-...md` (lowercase duplicates) | wiki droplet | Wiki #32 | claimed:loop-dev |
-| Loop action: BUG-018 cleanup — fix old canonical before promoting/merging cleaned slug. | wiki droplet + MCP | Wiki #32 | claimed:loop-dev |
-| Arch audit residual — R7 `daemon_server.py` storage split + `catalog/backend.py` service-layer inversion remain. | `docs/design-notes/2026-04-{24-architecture-audit,25-arch-audit-5-r7-split-scoping}.md` | Arc B | host-review |
-| Layer-3 design session | `docs/design-notes/2026-04-23-layer-3-design-session-*.md` | host schedules | half-day |
+| **#906 host merge key** — Open-brain v2 slice C cost-ledger READ surface; Claude checker APPROVED 2026-05-19 | workflow/daemon_brain.py, workflow/api/status.py + plugin mirrors | - | host-action |
+| **#907 host merge key** — Bounded autonomous spend CI writer-prompt guardrail; Claude checker APPROVED 2026-05-19 | .github/workflows/auto-fix-bug.yml, docs/ops/auto-fix-runbook.md | - | host-action |
+| Claude review gate: ExperiencePool + GroupEvolutionRun frontier (audit doc absent on disk) | docs/audits/2026-05-02-experience-pool-claude-review.md | - | dev-ready |
+| Claude review gate: AgencyBench acceptance scenario (audit doc absent on disk) | docs/audits/2026-05-02-agencybench-claude-review.md | - | dev-ready |
+| Claude review gate: OpenTraces private trace commons (audit doc absent on disk) | docs/audits/2026-05-02-opentraces-claude-review.md | - | dev-ready |
+| Claude review gate: Origin Quantum optional capability pack (audit doc absent on disk; navigator memory flagged DEFER) | docs/audits/2026-05-02-origin-quantum-claude-review.md | - | dev-ready |
+| Review-blocked worktree lane: ExperiencePool + GroupEvolutionRun Slice 1 | docs/design-notes/2026-05-02-experience-pool-and-group-evolution.md | review approve/adapt | pending |
+| Review-blocked worktree lane: Acceptance Scenario Packs Slice 1 | docs/design-notes/2026-05-02-acceptance-scenario-packs.md | review approve/adapt | pending |
+| Review-blocked worktree lane: Private Trace Commons Slice 1 | docs/design-notes/2026-05-02-private-trace-commons.md | review approve/adapt | pending |
+| Review-blocked worktree lane: Origin Quantum Slice Q0/Q1 | docs/design-notes/proposed/2026-05-02-origin-quantum-workflow-integration.md, workflow/quantum/ | review approve/adapt; post-uptime | pending |
+| External directory acceptance — PRs landed, public canaries green 2026-05-02T12:34-07:00; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |
+| OpenAI app submission hardening — docs/code never landed; chatgpt-app-submission.json absent on disk | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT approval/mobile proof | dev-ready |
+| **#23 Arc B phase 2** — `codex/old-session-consolidation` at c967272; focused gates green | tests/, workflow/api/runs.py, fantasy_daemon/api.py | - | host-review |
+| **#25 Arc B phase 3** — `codex/arc-b-phase3` at 1ae48ef; stacked on #23 | workflow/_rename_compat.py, fantasy_author/, domains/fantasy_author/ | #23 | host-review |
+| **#24 Arc C** — env-var deprecation aliases (UNIVERSE_SERVER_BASE, WIKI_PATH) | workflow/storage/__init__.py | #25 | dev-ready |
+| **Phase 6** — `.workflow.db`, `db_path()` fn, Option A migration, 30s restart, plugin minor-bump | workflow/storage/__init__.py + plugin mirror, tests/ | #24 | dev-ready |
+| `run_branch resume_from=<run_id>` param (F2 ACCEPTED 2026-04-28) | workflow/api/runs.py, tests/ | #23 | dev-ready |
+| Site wiki+loop lane — PR #158 was CLOSED not merged; site-wiki-live-lens branch work orphan; /loop redesign unbuilt | WebSite/site/src/routes/wiki/+page.svelte, WebSite/site/src/routes/loop/+page.svelte | - | dev-ready |
+| Windows full-suite backup.sh path fix | tests/test_backup_script.py | #18,#23 | dev-ready |
+| Clean-clone MCP config test mismatch | tests/test_mcp_server.py, .mcp.example.json | #18,#23 | dev-ready |
+| Card-matcher cleanup vs legacy-connector fallback contract | scripts/claude_chat.py, tests/test_claude_chat_inline_dismiss.py | - | dev-ready |
+| Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | host | host-decision |
+| Host decision: BUG-018 canonical filename trailing-hyphen — rename canonical to drop, or `wiki action=promote` draft to overwrite? | wiki | - | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
-| Mission 10 retest | user-sim | host watches browser | claimed:user |
-| Host-action: re-register `Workflow DEV` ChatGPT connector to `/mcp-directory`; verified 2026-05-02T15:37 current ChatGPT DEV points to `/mcp` and exposes legacy `get_status`. | ChatGPT Apps settings | custom MCP warning approval | host-action |
-| Memory-scope Stage 2c flag — watch started 2026-04-16; earliest flip 2026-05-16. | `docs/exec-plans/active/2026-04-27-memory-scope-stage-2c-flip-prep.md` | date gate | monitoring |
-| Provider/DO key exposure audit — no concrete tokens found 2026-05-01; remaining DO refs are GH secret names for DR/P0 workflows. | `deploy/*`, `.github/workflows/{dr-drill,p0-outage-triage}.yml` | host decision | host-decision |
-| Site cert flip — GitHub Pages still says "certificate does not exist yet"; CF edge green via MCP canaries + in-app smoke. | - | - | monitoring |
+| Host-action: re-register `Workflow DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
+| Memory-scope Stage 2c flag | - | 30d clean | monitoring |
+| Remove provider+DO keys from persistent uptime surfaces | `deploy/*` | host Qs answered | host->e2e |
+
+## Live brain notes (informational; not work rows)
+
+Substantive work flowing through the live MCP brain — not duplicated here. Currently active:
+
+- **PR-129** (filed 2026-05-19) — Goal-bound branch protocols / ordered branch family runbook with typed artifact handoffs. Real community-build case (chatbot already composed manually via wiki prose; needs first-class durability). Dispatcher `ec15c952-aefa-42ab-b50b-eee1524d3ef9` queued.
+- **PR-131** (filed 2026-05-19) — Host-local Windows desktop effect adapter; closes BUG-043 generalized. First consumer of #914 external-write design. Dispatcher `bc6ed9df-e764-495a-b466-c5c86d7e0e2e` queued.
+- **PR-130** (Markovic) — peer-reviewed simulation-biology publication strategy.
+- **New universes in flight:** Meridian Ashes (fantasy prose-lab), Etsy Printify v2 (commerce via effect packets), Markovic (scientific publication).
+
+For full live-brain enumeration see `.claude/agent-memory/navigator/wiki_sweep_cursor.md` (refreshed 2026-05-19: 890 promoted + 134 drafts + theme distribution).
 
 ## Next
 
-1. **Current uptime priority 2026-05-02 22:10Z:** Community patch loop ALIVE end-to-end. Substrate stack PASS: FEAT-004 trigger receipts + FEAT-006 provider diagnostics + BUG-009 dispatcher pickup + #205 claim-grace + BUG-045A child spawn. First successful end-to-end run BUG-050 (parent dee755 + child 1cdbd3) at 21:55-21:59. Bottleneck moved from substrate to loop-content (BUG-051: stale caution language in coding_packet/release_gate prompts) + auto-ship policy authoring (PR #198 spec). PR #198 + #206 are design-only, ready to land.
-
-2. **Five Scoping Rules now in PLAN.md** (2026-04-28): minimal-primitives / community-build-over-platform / privacy-via-community-composition / commons-first-architecture / user-capability-axis. Cross-provider source. Depth in lead memory.
-3. **Decision pile awaiting host:** Tomas + A.1 unpack §7 + Phase 6 db rename + parked Q D.
-4. **No-shims-ever**, platform responsibility model, and public-surface probes after DNS/tunnel/Worker/connector changes are active.
+1. **Live brain is primary** for substantive work flow — wiki + dispatcher + auto-change loop. STATUS.md is the project-folder-access coordination layer; check both.
+2. **PRs in your queue:** #906 + #907 (Claude APPROVED 2026-05-19, awaiting host merge key).
+3. **4 review-gate audits never written** — ExperiencePool, AgencyBench, OpenTraces, Origin Quantum. Each blocks a worktree lane.
+4. **No-shims-ever rule active** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
+5. **Scoping rules apply to design questions themselves** (per `feedback_design_questions_apply_scoping_rules_first.md`) — if X composes from primitives or has open-ended variations, do NOT present "platform builds it" as an option when steering.
