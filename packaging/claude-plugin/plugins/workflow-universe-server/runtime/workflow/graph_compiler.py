@@ -45,7 +45,24 @@ logger = logging.getLogger(__name__)
 
 
 class CompilerError(Exception):
-    """Raised when the compiler cannot produce a runnable graph."""
+    """Raised when the compiler cannot produce a runnable graph.
+
+    FEAT-006: optionally carries the structured ``chain_state`` and
+    ``attempts`` from an underlying ``AllProvidersExhaustedError`` so
+    chatbots and the auto-fix loop can see *why* the chain exhausted
+    without having to walk ``__cause__`` themselves.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        chain_state: dict | None = None,
+        attempts: list | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.chain_state = chain_state
+        self.attempts = attempts
 
 
 class BranchValidationError(CompilerError, ValueError):
@@ -227,20 +244,78 @@ def _emit_failed_event(
     node_id: str,
     exc: BaseException,
 ) -> None:
-    """Emit a terminal failed event before re-raising CompilerError."""
+    """Emit a terminal failed event before re-raising CompilerError.
+
+    FEAT-006: when the underlying exception carries ``chain_state``
+    (an ``AllProvidersExhaustedError``), forward it as a structured
+    ``provider_chain`` field on the event so downstream consumers
+    (chatbots, auto-fix loop, get_run.events) can read per-provider
+    skip reasons without parsing the human-readable error string.
+    """
     if event_sink is None:
         return
+    chain_state = getattr(exc, "chain_state", None)
+    kwargs: dict[str, Any] = {
+        "node_id": node_id,
+        "phase": "failed",
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+    }
+    if chain_state is not None:
+        kwargs["provider_chain"] = chain_state
     try:
-        event_sink(
-            node_id=node_id,
-            phase="failed",
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
+        event_sink(**kwargs)
+    except TypeError:
+        # Older event_sink signatures may not accept `provider_chain`;
+        # retry without it so a kwarg-mismatch never blocks the failed event.
+        try:
+            event_sink(
+                node_id=node_id,
+                phase="failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+        except Exception as sink_exc:  # noqa: BLE001
+            if _is_cancel_exception(sink_exc):
+                raise
+            logger.exception("event_sink raised in %s (failed)", node_id)
     except Exception as sink_exc:  # noqa: BLE001
         if _is_cancel_exception(sink_exc):
             raise
         logger.exception("event_sink raised in %s (failed)", node_id)
+
+
+def _wrap_provider_failure(node_id: str, exc: BaseException) -> "CompilerError":
+    """Wrap a provider-side exception into a ``CompilerError``.
+
+    FEAT-006: when the cause carries ``chain_state`` / ``attempts``
+    (an ``AllProvidersExhaustedError`` from the router), copy them
+    onto the new ``CompilerError`` and append a compact JSON suffix
+    to the error message so chatbots and the auto-fix loop can see
+    per-provider skip reasons without walking ``__cause__``.
+
+    Without this, the wrap stringifies the cause to just
+    ``"All providers exhausted for role=writer. Daemon should retry
+    with backoff."`` and the structured diagnostics are silently
+    dropped — the failure mode that makes BUG-097's investigation
+    daemon recursively self-block on the same opaque error.
+    """
+    chain_state = getattr(exc, "chain_state", None)
+    attempts = getattr(exc, "attempts", None)
+    base_msg = f"Provider call failed in node '{node_id}': {exc}"
+    if chain_state is not None:
+        try:
+            suffix = json.dumps(chain_state, default=str, separators=(",", ":"))
+            base_msg = f"{base_msg} [chain_state]: {suffix}"
+        except Exception:  # noqa: BLE001
+            # Never let a serialization edge case prevent the wrap.
+            # `default=str` can re-enter into arbitrary user objects whose
+            # ``__repr__`` raises, so the catch must be broad.
+            logger.exception(
+                "Failed to serialize chain_state on provider failure in %s",
+                node_id,
+            )
+    return CompilerError(base_msg, chain_state=chain_state, attempts=attempts)
 
 
 def _dict_merge(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
@@ -987,9 +1062,7 @@ def _build_prompt_template_node(
                 except Exception as exc:
                     logger.exception("Policy provider call failed in %s", node.node_id)
                     _emit_failed_event(event_sink, node.node_id, exc)
-                    raise CompilerError(
-                        f"Provider call failed in node '{node.node_id}': {exc}"
-                    ) from exc
+                    raise _wrap_provider_failure(node.node_id, exc) from exc
             else:
                 try:
                     response = _run_with_timeout(
@@ -1004,9 +1077,7 @@ def _build_prompt_template_node(
                 except Exception as exc:
                     logger.exception("Provider call failed in %s", node.node_id)
                     _emit_failed_event(event_sink, node.node_id, exc)
-                    raise CompilerError(
-                        f"Provider call failed in node '{node.node_id}': {exc}"
-                    ) from exc
+                    raise _wrap_provider_failure(node.node_id, exc) from exc
         finally:
             if concurrency_tracker is not None:
                 concurrency_tracker.release()
