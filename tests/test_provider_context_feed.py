@@ -331,3 +331,153 @@ def test_hook_render_context_is_compact_and_actionable() -> None:
 
     assert "Provider-context feed checkpoint: build" in rendered
     assert "STATUS/worktree/PR" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Dead-lane pruning (kills the SessionStart-feed staleness problem where
+# every candidate worktree pointed to already-merged work).
+# ---------------------------------------------------------------------------
+
+
+def test_parse_worktree_branches_extracts_branch_per_worktree() -> None:
+    porcelain = (
+        "worktree C:/repo\n"
+        "HEAD aaaaaaa\n"
+        "branch refs/heads/main\n"
+        "\n"
+        "worktree C:/repo/.claude/worktrees/feature-x\n"
+        "HEAD bbbbbbb\n"
+        "branch refs/heads/worktree-feature-x\n"
+        "\n"
+        "worktree C:/repo/.claude/worktrees/detached\n"
+        "HEAD ccccccc\n"
+        "detached\n"
+    )
+    result = provider_context_feed._parse_worktree_branches(porcelain)
+    branches = {str(path).replace("\\", "/"): branch for path, branch in result.items()}
+    assert any(b == "worktree-feature-x" for b in branches.values())
+    assert any(b == "main" for b in branches.values())
+    # detached worktrees omit the branch line and are skipped
+    assert "ref/heads/detached" not in branches
+    assert all("detached" not in b for b in branches.values())
+
+
+def test_drop_dead_lane_purposes_filters_merged_branches(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A _PURPOSE.md sitting in a worktree whose branch is already an ancestor of
+    origin/main is no longer actionable — the lead does not need to see it as a
+    candidate lane."""
+    dead_wt = tmp_path / "wf-dead"
+    live_wt = tmp_path / "wf-live"
+    dead_wt.mkdir()
+    live_wt.mkdir()
+    dead_purpose = dead_wt / "_PURPOSE.md"
+    live_purpose = live_wt / "_PURPOSE.md"
+    dead_purpose.write_text("Purpose: this lane was already merged.\n", encoding="utf-8")
+    live_purpose.write_text("Purpose: this lane still has unmerged work.\n", encoding="utf-8")
+
+    branch_map = {
+        dead_wt.resolve(): "codex/dead-lane",
+        live_wt.resolve(): "codex/live-lane",
+    }
+
+    def fake_is_merged(branch: str, root: Path, base: str = "origin/main") -> bool:
+        return branch == "codex/dead-lane"
+
+    monkeypatch.setattr(provider_context_feed, "_branch_is_merged_to", fake_is_merged)
+
+    kept = provider_context_feed._drop_dead_lane_purposes(
+        [dead_purpose, live_purpose],
+        branch_map=branch_map,
+        root=tmp_path,
+    )
+
+    assert live_purpose in kept
+    assert dead_purpose not in kept
+
+
+def test_drop_dead_lane_purposes_passes_through_when_env_flag_set(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`WORKFLOW_FEED_INCLUDE_DEAD_LANES=1` lets archaeologists see everything."""
+    dead_wt = tmp_path / "wf-dead"
+    dead_wt.mkdir()
+    dead_purpose = dead_wt / "_PURPOSE.md"
+    dead_purpose.write_text("Purpose: merged lane.\n", encoding="utf-8")
+    branch_map = {dead_wt.resolve(): "codex/dead-lane"}
+
+    monkeypatch.setattr(
+        provider_context_feed, "_branch_is_merged_to", lambda *_a, **_kw: True
+    )
+    monkeypatch.setenv("WORKFLOW_FEED_INCLUDE_DEAD_LANES", "1")
+
+    kept = provider_context_feed._drop_dead_lane_purposes(
+        [dead_purpose], branch_map=branch_map, root=tmp_path
+    )
+
+    assert dead_purpose in kept
+
+
+def test_drop_dead_lane_purposes_keeps_paths_outside_any_worktree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A _PURPOSE.md that isn't under any tracked worktree (e.g. an ad-hoc origin/
+    snapshot) should pass through untouched — we only prune when we have confident
+    branch info."""
+    stranger_dir = tmp_path / "origin" / "ad-hoc"
+    stranger_dir.mkdir(parents=True)
+    stranger_purpose = stranger_dir / "_PURPOSE.md"
+    stranger_purpose.write_text("Purpose: not a worktree.\n", encoding="utf-8")
+
+    dead_wt = tmp_path / "wf-dead"
+    dead_wt.mkdir()
+    dead_purpose = dead_wt / "_PURPOSE.md"
+    dead_purpose.write_text("Purpose: merged lane.\n", encoding="utf-8")
+
+    branch_map = {dead_wt.resolve(): "codex/dead-lane"}
+
+    monkeypatch.setattr(
+        provider_context_feed, "_branch_is_merged_to", lambda *_a, **_kw: True
+    )
+
+    kept = provider_context_feed._drop_dead_lane_purposes(
+        [stranger_purpose, dead_purpose],
+        branch_map=branch_map,
+        root=tmp_path,
+    )
+
+    assert stranger_purpose in kept
+    assert dead_purpose not in kept
+
+
+def test_closest_worktree_ancestor_picks_deepest_match(tmp_path: Path) -> None:
+    """If a purpose path lives several directories deep inside a worktree, the
+    matching worktree must still be detected as its ancestor."""
+    worktree = tmp_path / "wf-foo"
+    nested_purpose = worktree / "sub" / "dir" / "_PURPOSE.md"
+    nested_purpose.parent.mkdir(parents=True)
+    nested_purpose.write_text("anything", encoding="utf-8")
+
+    other_worktree = tmp_path / "wf-bar"
+    other_worktree.mkdir()
+
+    ancestor = provider_context_feed._closest_worktree_ancestor(
+        nested_purpose, [other_worktree, worktree]
+    )
+
+    assert ancestor == worktree.resolve()
+
+
+def test_drop_dead_lane_purposes_returns_input_when_branch_map_empty(
+    tmp_path: Path,
+) -> None:
+    """If we couldn't read the worktree porcelain (empty branch_map), passthrough."""
+    purpose = tmp_path / "_PURPOSE.md"
+    purpose.write_text("anything", encoding="utf-8")
+
+    kept = provider_context_feed._drop_dead_lane_purposes(
+        [purpose], branch_map={}, root=tmp_path
+    )
+
+    assert kept == [purpose]

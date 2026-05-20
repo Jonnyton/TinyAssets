@@ -202,6 +202,23 @@ def default_specs(root: Path) -> list[SourceSpec]:
 def _worktree_purpose_paths(root: Path) -> list[Path]:
     candidates: set[Path] = set()
 
+    porcelain = _git_worktree_porcelain(root)
+    branch_map = _parse_worktree_branches(porcelain)
+    for worktree_path in branch_map:
+        candidates.add(worktree_path / "_PURPOSE.md")
+
+    if root.parent.is_dir():
+        for pattern in ("wf-*/_PURPOSE.md", "Workflow*/_PURPOSE.md"):
+            candidates.update(root.parent.glob(pattern))
+    candidates.update((root / ".claude" / "worktrees").glob("*/_PURPOSE.md"))
+    candidates.update((root / "origin").glob("*/_PURPOSE.md"))
+
+    existing = sorted(path.resolve() for path in candidates if path.is_file())
+    return _drop_dead_lane_purposes(existing, branch_map=branch_map, root=root)
+
+
+def _git_worktree_porcelain(root: Path) -> str:
+    """Raw output of `git worktree list --porcelain` (empty string on failure)."""
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
@@ -211,19 +228,119 @@ def _worktree_purpose_paths(root: Path) -> list[Path]:
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
-        result = subprocess.CompletedProcess([], 1, "", "")
-    if result.returncode == 0:
-        for line in result.stdout.splitlines():
-            if line.startswith("worktree "):
-                candidates.add(Path(line[len("worktree ") :]) / "_PURPOSE.md")
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout
 
-    if root.parent.is_dir():
-        for pattern in ("wf-*/_PURPOSE.md", "Workflow*/_PURPOSE.md"):
-            candidates.update(root.parent.glob(pattern))
-    candidates.update((root / ".claude" / "worktrees").glob("*/_PURPOSE.md"))
-    candidates.update((root / "origin").glob("*/_PURPOSE.md"))
 
-    return sorted(path.resolve() for path in candidates if path.is_file())
+def _parse_worktree_branches(porcelain: str) -> dict[Path, str]:
+    """Parse `git worktree list --porcelain` into a {worktree_path: branch_name} dict.
+
+    The porcelain format emits one block per worktree, blank-line separated. Each block
+    starts with a `worktree <path>` line and (for branch worktrees) carries a
+    `branch refs/heads/<name>` line. Detached worktrees omit the branch line; we skip those.
+    """
+    out: dict[Path, str] = {}
+    current: Path | None = None
+    for raw in porcelain.splitlines():
+        line = raw.rstrip()
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree "):])
+        elif line.startswith("branch ") and current is not None:
+            ref = line[len("branch "):].strip()
+            branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+            try:
+                key = current.resolve()
+            except OSError:
+                key = current
+            out[key] = branch
+            current = None
+        elif not line:
+            current = None
+    return out
+
+
+def _branch_is_merged_to(branch: str, root: Path, base: str = "origin/main") -> bool:
+    """True iff `branch` is fully an ancestor of `base` (no unmerged commits ahead).
+
+    Used to identify dead lanes — a worktree whose branch is already merged into main is
+    not a place for the lead to look for new work. Returns False on any error so the feed
+    defaults to surfacing candidates rather than silently hiding them.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", branch, base],
+            capture_output=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _drop_dead_lane_purposes(
+    paths: list[Path],
+    *,
+    branch_map: dict[Path, str],
+    root: Path,
+) -> list[Path]:
+    """Filter _PURPOSE.md candidates to only those belonging to live (unmerged) worktrees.
+
+    Worktrees whose branch is fully an ancestor of origin/main represent landed work and
+    should not surface as actionable lanes for the lead. Set
+    `WORKFLOW_FEED_INCLUDE_DEAD_LANES=1` to bypass this filter (useful for archaeology).
+    """
+    import os as _os
+
+    if _os.environ.get("WORKFLOW_FEED_INCLUDE_DEAD_LANES", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return paths
+    if not branch_map:
+        return paths
+    dead_worktrees: set[Path] = set()
+    merge_cache: dict[str, bool] = {}
+    for worktree_path, branch in branch_map.items():
+        if branch not in merge_cache:
+            merge_cache[branch] = _branch_is_merged_to(branch, root)
+        if merge_cache[branch]:
+            dead_worktrees.add(worktree_path)
+    if not dead_worktrees:
+        return paths
+    live: list[Path] = []
+    for path in paths:
+        ancestor = _closest_worktree_ancestor(path, branch_map.keys())
+        if ancestor is not None and ancestor in dead_worktrees:
+            continue
+        live.append(path)
+    return live
+
+
+def _closest_worktree_ancestor(path: Path, worktrees: Iterable[Path]) -> Path | None:
+    """Pick the deepest worktree path that contains `path`."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    best: Path | None = None
+    best_len = -1
+    for wt in worktrees:
+        try:
+            wt_resolved = wt if wt.is_absolute() else wt.resolve()
+        except OSError:
+            continue
+        try:
+            resolved.relative_to(wt_resolved)
+        except ValueError:
+            continue
+        length = len(str(wt_resolved))
+        if length > best_len:
+            best = wt_resolved
+            best_len = length
+    return best
 
 
 def _is_text_path(path: Path) -> bool:
