@@ -1096,10 +1096,10 @@ _mcp_get_status = _register_structured_tool(
 # MCP endpoint discovery (substrate-fix #11 / Family A Phase 1.A)
 # ═══════════════════════════════════════════════════════════════════════════
 # When a browser, recruiter, or fresh AI session GETs /mcp or /mcp-directory
-# with Accept: text/html (no MCP transport handshake), return a discovery
-# page explaining what the endpoint is and how to connect via MCP client.
+# without an MCP transport handshake, return discovery metadata explaining
+# what the endpoint is and how to connect via MCP client.
 # MCP clients (POST with JSON-RPC, GET with text/event-stream for SSE leg,
-# or any request with MCP-Protocol-Version header) pass through unchanged.
+# or any request with MCP transport/session headers) pass through unchanged.
 
 _MCP_DISCOVERY_HTML = """<!doctype html>
 <html lang="en">
@@ -1169,32 +1169,56 @@ Workflow MCP Server &middot; Streamable HTTP transport (MCP spec) &middot; 2026
 """
 
 
-def _wants_discovery_html(request) -> bool:  # type: ignore[no-untyped-def]
-    """Return True iff this is a browser-style GET that should see the
-    discovery HTML page rather than the MCP transport surface.
+_MCP_DISCOVERY_JSON = {
+    "name": "workflow",
+    "type": "mcp_server_endpoint",
+    "transport": "streamable-http",
+    "description": (
+        "Workflow is a domain-agnostic multi-step AI workflow platform. "
+        "This URL is an MCP endpoint, not a normal JSON API route."
+    ),
+    "how_to_connect": {
+        "url": "https://tinyassets.io/mcp",
+        "client_accept_header": "application/json, text/event-stream",
+        "protocol_header": "MCP-Protocol-Version: 2025-03-26",
+        "method": "POST JSON-RPC initialize, then MCP Streamable HTTP",
+    },
+    "related": {
+        "landing_page": "https://tinyassets.io/",
+        "source": "https://github.com/Jonnyton/Workflow",
+        "directory_endpoint": "https://tinyassets.io/mcp-directory",
+    },
+}
 
-    Keep narrow: GET only, Accept includes text/html, NO MCP-Protocol-Version
-    header (real MCP clients send that), Accept does NOT include
-    text/event-stream (real Streamable HTTP clients send that).
-    """
+
+def _is_mcp_transport_request(request) -> bool:  # type: ignore[no-untyped-def]
     if request.method.upper() not in {"GET", "HEAD"}:
-        return False
+        return True
     if request.headers.get("mcp-protocol-version"):
-        return False
-    accept = request.headers.get("accept", "")
-    if "text/event-stream" in accept:
-        return False
+        return True
+    if request.headers.get("mcp-session-id"):
+        return True
+    accept = request.headers.get("accept", "").lower()
+    return "text/event-stream" in accept
+
+
+def _wants_discovery_html(request) -> bool:  # type: ignore[no-untyped-def]
+    accept = request.headers.get("accept", "").lower()
     return "text/html" in accept
 
 
 class _MCPDiscoveryMiddleware:
-    """Starlette middleware: serve discovery HTML on /mcp + /mcp-directory
-    GETs from browser-like clients; pass everything else through to the
-    FastMCP Streamable HTTP transport unchanged.
+    """Serve discovery output on non-transport /mcp + /mcp-directory GETs.
+
+    Browser-like clients receive HTML. Default curl and JSON probes receive
+    compact JSON. FastMCP transport traffic passes through unchanged.
     """
 
     def __init__(self, app):  # type: ignore[no-untyped-def]
         self.app = app
+
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        return getattr(self.app, name)
 
     async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
         if scope.get("type") != "http":
@@ -1208,12 +1232,15 @@ class _MCPDiscoveryMiddleware:
         from starlette.requests import Request
 
         request = Request(scope, receive=receive)
-        if not _wants_discovery_html(request):
+        if _is_mcp_transport_request(request):
             await self.app(scope, receive, send)
             return
-        from starlette.responses import HTMLResponse
+        from starlette.responses import HTMLResponse, JSONResponse
 
-        response = HTMLResponse(_MCP_DISCOVERY_HTML)
+        if _wants_discovery_html(request):
+            response = HTMLResponse(_MCP_DISCOVERY_HTML)
+        else:
+            response = JSONResponse(_MCP_DISCOVERY_JSON)
         await response(scope, receive, send)
 
 
