@@ -213,3 +213,135 @@ def test_strict_isolation_state_schema_default_available_to_placeholder():
     initial_state = seed_initial_state({}, schema)
     out = fn(initial_state)
     assert out == {"draft": "RENDERED::Style: formal"}
+
+
+# ─── Codex checker finding 1: defaulted-but-not-in-input_keys is allowed ──
+
+
+def test_strict_isolation_schema_default_not_in_input_keys_renders():
+    """Codex repro (finding 1): ``state_schema=[{"name":"style",
+    "default_value":"formal"}]``, node ``input_keys=["topic"]``, prompt
+    ``{topic} {style}`` — must compile, seed ``style``, and render with
+    ``style`` populated from defaults. Previously failed at runtime
+    with ``style outside declared input_keys ['topic']``.
+
+    The fix treats schema-defaulted keys as effectively-declared input
+    for both the render allow-list and the truly_outside partition.
+    """
+    schema = [
+        {"name": "style", "default_value": "formal"},
+    ]
+    node = NodeDefinition(
+        node_id="n1",
+        display_name="n1",
+        input_keys=["topic"],  # 'style' NOT duplicated into input_keys
+        output_keys=["draft"],
+        prompt_template="{topic} {style}",
+        strict_input_isolation=True,
+    )
+    fn = _build_prompt_template_node(
+        node,
+        provider_call=lambda prompt, system, role="writer": (
+            f"RENDERED::{prompt}"
+        ),
+        event_sink=None,
+        state_schema=schema,
+    )
+    initial_state = seed_initial_state({"topic": "whales"}, schema)
+    out = fn(initial_state)
+    assert out == {"draft": "RENDERED::whales formal"}
+
+
+def test_strict_isolation_schema_default_referenced_but_missing_state_is_unavailable_not_outside():
+    """A schema-defaulted key referenced in the prompt but absent from
+    state (caller bypassed ``seed_initial_state``) must report as
+    "not present in state", NOT as "outside declared input_keys".
+    Schema defaults count as effectively-declared, so this is an
+    unavailability problem, not an isolation violation.
+    """
+    schema = [
+        {"name": "style", "default_value": "formal"},
+    ]
+    node = NodeDefinition(
+        node_id="n1",
+        display_name="n1",
+        input_keys=["topic"],
+        output_keys=["draft"],
+        prompt_template="{topic} {style}",
+        strict_input_isolation=True,
+    )
+    fn = _build_prompt_template_node(
+        node,
+        provider_call=lambda prompt, system, role="writer": (
+            f"RENDERED::{prompt}"
+        ),
+        event_sink=None,
+        state_schema=schema,
+    )
+    with pytest.raises(CompilerError) as exc:
+        fn({"topic": "whales"})  # state lacks 'style'; no seed call
+    msg = str(exc.value)
+    # 'style' is schema-defaulted ⇒ effectively-declared ⇒ NOT outside.
+    assert "outside declared input_keys" not in msg, msg
+    assert "not present in state" in msg
+    assert "style" in msg
+
+
+# ─── Codex checker finding 2: mutable defaults don't leak across runs ──
+
+
+def test_seed_initial_state_mutable_list_default_does_not_leak():
+    """Codex repro (finding 2): ``schema=[{"name":"items",
+    "default_value":[]}]``; call ``seed_initial_state``, append to
+    ``items``, call again — the second initial state must have an
+    EMPTY ``items`` list. Previously, the shallow copy of the defaults
+    dict reused the same list object, so mutation leaked across runs.
+    """
+    schema = [{"name": "items", "default_value": []}]
+    first = seed_initial_state({}, schema)
+    first["items"].append("leaked")
+    second = seed_initial_state({}, schema)
+    assert second["items"] == []
+    # And the two list objects must be distinct.
+    assert first["items"] is not second["items"]
+
+
+def test_seed_initial_state_mutable_dict_default_does_not_leak():
+    """Mirror of the list-default repro but for dict defaults."""
+    schema = [{"name": "tally", "default_value": {}}]
+    first = seed_initial_state({}, schema)
+    first["tally"]["count"] = 1
+    second = seed_initial_state({}, schema)
+    assert second["tally"] == {}
+    assert first["tally"] is not second["tally"]
+
+
+def test_seed_initial_state_nested_mutable_default_does_not_leak():
+    """Nested-structure default (list-of-dicts) — deepcopy must isolate
+    every level, not just the top container."""
+    schema = [
+        {"name": "rows", "default_value": [{"v": 1}, {"v": 2}]},
+    ]
+    first = seed_initial_state({}, schema)
+    first["rows"][0]["v"] = 999
+    second = seed_initial_state({}, schema)
+    assert second["rows"] == [{"v": 1}, {"v": 2}]
+    assert first["rows"][0] is not second["rows"][0]
+
+
+def test_state_schema_defaults_returns_independent_copies_per_call():
+    """Direct test of ``_state_schema_defaults`` — the canonical
+    "fresh defaults" entry point. Two calls must return independent
+    objects for every mutable default."""
+    schema = [
+        {"name": "items", "default_value": [1, 2, 3]},
+        {"name": "tally", "default_value": {"a": 1}},
+    ]
+    a = _state_schema_defaults(schema)
+    b = _state_schema_defaults(schema)
+    assert a["items"] is not b["items"]
+    assert a["tally"] is not b["tally"]
+    a["items"].append(99)
+    a["tally"]["b"] = 2
+    assert b["items"] == [1, 2, 3]
+    assert b["tally"] == {"a": 1}

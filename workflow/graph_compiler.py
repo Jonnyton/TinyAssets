@@ -26,6 +26,7 @@ Design rules (from `docs/specs/community_branches_phase3.md`):
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import json
 import logging
 import operator
@@ -593,6 +594,11 @@ def _state_schema_defaults(
     available to strict-isolation prompt placeholders even when the
     caller didn't pass them in ``inputs``. Callers merge this dict UNDER
     user-provided inputs so explicit caller values still win.
+
+    Codex checker finding 2: each call returns FRESH deepcopies of the
+    default values so mutable defaults (``[]``, ``{}``) cannot leak
+    mutation across runs. This makes ``_state_schema_defaults`` the
+    canonical "fresh defaults" entry point.
     """
     defaults: dict[str, Any] = {}
     for field in state_schema or []:
@@ -606,7 +612,7 @@ def _state_schema_defaults(
         value = field.get("default_value")
         if value is None:
             continue
-        defaults[name] = value
+        defaults[name] = copy.deepcopy(value)
     return defaults
 
 
@@ -776,6 +782,14 @@ def _build_prompt_template_node(
     timeout_s = float(node.timeout_seconds or 300.0)
     strict_isolation = bool(getattr(node, "strict_input_isolation", True))
     declared_inputs = list(node.input_keys)
+    # BUG-085 (Codex checker finding 1): state_schema fields carrying a
+    # default_value count as effectively-declared input. Without this,
+    # the strict render filter drops seeded defaults when the node
+    # declares any explicit input_keys, and the truly_outside partition
+    # falsely flags defaulted-but-referenced keys as isolation
+    # violations. Compute the union ONCE at closure-build time.
+    schema_defaulted_keys = set(_state_schema_defaults(state_schema).keys())
+    effective_declared = set(declared_inputs) | schema_defaulted_keys
     state_types = _state_type_map(state_schema or [])
     needs_json = _needs_json_contract(node, state_types)
     json_suffix = _json_contract_suffix(node, state_types) if needs_json else ""
@@ -801,8 +815,11 @@ def _build_prompt_template_node(
         # placeholders then trip the missing-state-keys check below
         # and raise CompilerError — never silently read leaked state.
         if strict_isolation and declared_inputs:
+            # BUG-085: include state_schema-defaulted keys in the render
+            # allow-list so seeded defaults are visible to the prompt
+            # even when not duplicated into the node's input_keys.
             render_state: dict[str, Any] = {
-                k: state[k] for k in declared_inputs if k in state
+                k: state[k] for k in effective_declared if k in state
             }
         else:
             render_state = state
@@ -838,10 +855,15 @@ def _build_prompt_template_node(
                 # keys that ARE in the declared list but simply aren't in
                 # state yet (upstream node hasn't produced them, or a
                 # state_schema default wasn't seeded).
-                declared_set = set(declared_inputs)
-                truly_outside = [k for k in missing if k not in declared_set]
+                # state_schema-defaulted keys count as effectively-declared
+                # (Codex checker finding 1) — a referenced default key
+                # that simply isn't in state at execution time is NOT an
+                # isolation violation, it's an unavailability problem.
+                truly_outside = [
+                    k for k in missing if k not in effective_declared
+                ]
                 declared_but_unavailable = [
-                    k for k in missing if k in declared_set
+                    k for k in missing if k in effective_declared
                 ]
                 # Prioritize the actionable "outside" diagnosis when both
                 # categories are present — that's the real isolation
