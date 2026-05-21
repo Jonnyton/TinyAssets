@@ -4,8 +4,8 @@ Before the fix, every call to `wiki action=file_bug` minted a fresh BUG-NNN
 even when an identical or near-identical bug already existed. At scale this
 floods the bugs directory with duplicates.
 
-Fix: server-side Jaccard similarity check (threshold 0.5) against existing
-bugs before allocating a new id. When a similar bug exists, return
+Fix: server-side token-overlap similarity check (threshold 0.5) against
+existing bugs before allocating a new id. When a similar bug exists, return
 `status: "similar_found"` with the top-3 matches. The caller can then use
 `wiki action=cosign_bug` to add context without creating a duplicate.
 `force_new=true` overrides the check and always mints a new id.
@@ -266,6 +266,30 @@ def test_file_bug_unrelated_query_does_not_trigger_similar_found(wiki_env):
     # Completely different domain — should not trigger dedup
     assert result.get("status") == "filed", (
         f"Unrelated bug should file cleanly, got: {result}"
+    )
+
+
+def test_long_form_existing_filing_matches_concise_technical_core(wiki_env):
+    """Long framing prose must not hide a substantive duplicate core."""
+    long_framing = " ".join(f"contexttoken{i}" for i in range(40))
+    core = (
+        "wiki file bug jaccard duplicate detection misses substantive overlap "
+        "framing prose dilutes technical core"
+    )
+    _seed_bug(
+        wiki_env,
+        title="Wiki filing duplicate detector misses overlap",
+        observed=f"{long_framing} {core}",
+    )
+
+    result = _file_bug(
+        wiki_env,
+        title="Jaccard duplicate detection misses substantive overlap",
+        observed=core,
+    )
+
+    assert result.get("status") == "similar_found", (
+        f"Expected similar_found for shared technical core, got: {result}"
     )
 
 

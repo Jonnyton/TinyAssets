@@ -1635,6 +1635,9 @@ def _render_bug_markdown(
 
 _VALID_BUG_KINDS = frozenset({"bug", "feature", "design", "patch_request"})
 _BUG_DEDUP_THRESHOLD = 0.5
+_BUG_DEDUP_CONTAINMENT_THRESHOLD = 0.8
+_BUG_DEDUP_MIN_SHARED_TOKENS = 6
+_BUG_DEDUP_SECTION_CHAR_LIMIT = 4000
 
 
 def _bug_token_set(text: str) -> set[str]:
@@ -1649,11 +1652,29 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(union) if union else 0.0
 
 
+def _containment(a: set[str], b: set[str]) -> float:
+    if not a and not b:
+        return 1.0
+    smaller = min(len(a), len(b))
+    return len(a & b) / smaller if smaller else 0.0
+
+
+def _bug_duplicate_similarity(a: set[str], b: set[str]) -> float:
+    """Score filing overlap without letting long framing prose dilute the core."""
+    jaccard = _jaccard(a, b)
+    if len(a & b) < _BUG_DEDUP_MIN_SHARED_TOKENS:
+        return jaccard
+    containment = _containment(a, b)
+    if containment >= _BUG_DEDUP_CONTAINMENT_THRESHOLD:
+        return max(jaccard, containment)
+    return jaccard
+
+
 def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
     """Return a list of {bug_id, title, status, haystack_tokens} for all existing bugs.
 
-    Haystack uses only frontmatter title + "What happened" section to avoid
-    dilution from markdown scaffolding tokens (dates, template headings, etc.).
+    Haystack uses only frontmatter title + a bounded "What happened" section
+    to avoid dilution from markdown scaffolding tokens (dates, headings, etc.).
     """
     if not bugs_dir.is_dir():
         return []
@@ -1692,9 +1713,11 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
                         in_observed = False
                     else:
                         observed_text += " " + line
-                if len(observed_text) > 300:
+                if len(observed_text) > _BUG_DEDUP_SECTION_CHAR_LIMIT:
                     break
-        haystack = _bug_token_set(fm_title + " " + observed_text[:300])
+        haystack = _bug_token_set(
+            fm_title + " " + observed_text[:_BUG_DEDUP_SECTION_CHAR_LIMIT]
+        )
         results.append({
             "bug_id": f"{m.group(1).upper()}-{m.group(2)}",
             "title": fm_title,
@@ -1818,8 +1841,8 @@ def _wiki_file_bug(
     create guards against concurrent file_bug races.
 
     ``force_new`` skips the similarity check and always mints a new id.
-    When omitted, a Jaccard similarity ≥ 0.5 against an existing bug's
-    title+body returns {status: "similar_found"} instead of filing.
+    When omitted, a token-overlap similarity score ≥ 0.5 against an existing
+    bug's title+body returns {status: "similar_found"} instead of filing.
     """
     if not title or not component or not severity:
         return json.dumps({
@@ -1871,7 +1894,7 @@ def _wiki_file_bug(
         existing = _scan_existing_bugs(pages_dir)
         scored = []
         for entry in existing:
-            sim = _jaccard(query_tokens, entry["haystack_tokens"])
+            sim = _bug_duplicate_similarity(query_tokens, entry["haystack_tokens"])
             if sim >= _BUG_DEDUP_THRESHOLD:
                 scored.append((sim, entry))
         if scored:
