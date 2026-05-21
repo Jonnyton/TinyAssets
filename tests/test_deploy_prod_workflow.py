@@ -510,3 +510,245 @@ def test_codex_volume_step_migrates_from_running_container_once():
     assert "docker cp workflow-worker:/app/.codex/auth.json" in run_script
     assert 'chown "$WORKFLOW_UID:$WORKFLOW_GID" "$VOLUME_DIR/auth.json"' in run_script
     assert 'chmod 600 "$VOLUME_DIR/auth.json"' in run_script
+
+
+# ---------------------------------------------------------------------------
+# PR-128 — Phase 2 capability map sync into /etc/workflow/env
+# ---------------------------------------------------------------------------
+
+
+def test_deploy_job_env_has_github_pr_capability_flag():
+    """The job-level env block must surface ``HAS_GITHUB_PR_CAPABILITY``
+    so the Deploy step + summary can branch on whether the secret is
+    visible to this run. Pattern mirrors ``HAS_CODEX_AUTH_BUNDLE``."""
+    wf = _load()
+    job_env = (wf.get("jobs", {}).get("deploy", {}) or {}).get("env") or {}
+    assert "HAS_GITHUB_PR_CAPABILITY" in job_env, (
+        "deploy job env must expose HAS_GITHUB_PR_CAPABILITY so the "
+        "Deploy step and summary can branch on capability visibility"
+    )
+    raw_value = str(job_env["HAS_GITHUB_PR_CAPABILITY"])
+    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value, (
+        "HAS_GITHUB_PR_CAPABILITY must be derived from the "
+        "WORKFLOW_GITHUB_PR_CAPABILITIES secret presence check"
+    )
+    assert "!= ''" in raw_value, (
+        "HAS_GITHUB_PR_CAPABILITY must use a non-empty-string check, "
+        "matching the HAS_CODEX_AUTH_BUNDLE pattern"
+    )
+
+
+def test_deploy_step_env_imports_github_pr_capabilities_secret():
+    """The Deploy step's local env block must import the capability
+    map secret so the inline ssh-piping path can read it."""
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None, "deploy job must have a deploy step"
+    step_env = deploy_step.get("env") or {}
+    assert "WORKFLOW_GITHUB_PR_CAPABILITIES" in step_env, (
+        "Deploy step env must import WORKFLOW_GITHUB_PR_CAPABILITIES "
+        "from secrets so the inline ssh sync can pipe the value"
+    )
+    raw_value = str(step_env["WORKFLOW_GITHUB_PR_CAPABILITIES"])
+    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value
+
+
+def test_deploy_step_syncs_github_pr_capabilities_when_set():
+    """When ``HAS_GITHUB_PR_CAPABILITY=true``, the Deploy step must
+    pipe the secret into install-workflow-env.sh via the same atomic
+    helper used for WORKFLOW_CODEX_AUTH_JSON_B64."""
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None
+    run_script = deploy_step.get("run", "") or ""
+
+    # Required-shape assertions: the conditional, the pipe, the helper
+    # invocation, and the warning surface for the missing-secret case.
+    assert 'if [ "${HAS_GITHUB_PR_CAPABILITY}" = "true" ]' in run_script, (
+        "deploy must gate the WORKFLOW_GITHUB_PR_CAPABILITIES sync on "
+        "HAS_GITHUB_PR_CAPABILITY=true so absence is a warning, not "
+        "an unbound-variable failure"
+    )
+    assert (
+        'printf \'%s\' "${WORKFLOW_GITHUB_PR_CAPABILITIES}"'
+        in run_script
+    ), (
+        "deploy must pipe the secret via printf '%s' so the value is "
+        "never echoed to the GH Actions log (matches the codex-auth "
+        "pattern)"
+    )
+    assert (
+        "install-workflow-env.sh set WORKFLOW_GITHUB_PR_CAPABILITIES"
+        in run_script
+    ), (
+        "deploy must call the atomic install-workflow-env.sh helper "
+        "(the same path that enforces root:workflow 640 + post-write "
+        "readability) to write the capability map"
+    )
+    assert (
+        "WORKFLOW_GITHUB_PR_CAPABILITIES is not visible to deploy"
+        in run_script
+    ), (
+        "deploy must emit a structured ::warning:: when the secret is "
+        "absent so the operator notices before chatbots try real-PR "
+        "emission and see missing_capability dry-run evidence"
+    )
+
+
+def test_deploy_step_summary_reports_github_pr_capability_visibility():
+    """The GH Actions step summary must surface whether the capability
+    was synced this run so the operator can confirm post-deploy."""
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None
+    run_script = deploy_step.get("run", "") or ""
+    assert (
+        "WORKFLOW_GITHUB_PR_CAPABILITIES visible to deploy"
+        in run_script
+    ), (
+        "deploy step summary must report the capability-map visibility "
+        "alongside the codex-auth visibility line so the operator can "
+        "verify both auth surfaces from one place"
+    )
+
+
+def test_github_pr_capability_sync_runs_after_codex_auth_sync():
+    """Determinism: both sync blocks live in the same Deploy step, and
+    the capability sync must run AFTER the codex-auth sync so the
+    summary order matches the operator's mental model (codex first,
+    capability second)."""
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None
+    run_script = deploy_step.get("run", "") or ""
+    codex_marker = "set WORKFLOW_CODEX_AUTH_JSON_B64"
+    cap_marker = "set WORKFLOW_GITHUB_PR_CAPABILITIES"
+    codex_idx = run_script.find(codex_marker)
+    cap_idx = run_script.find(cap_marker)
+    assert codex_idx != -1, "codex-auth sync block must be present"
+    assert cap_idx != -1, "capability sync block must be present"
+    assert codex_idx < cap_idx, (
+        "capability sync must run after the codex-auth sync — both "
+        "live in the same Deploy step and the operator-facing summary "
+        "lists them in that order"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Round-2 (Codex round-1 finding) — capability-revoke must actually revoke
+# ---------------------------------------------------------------------------
+
+
+def test_deploy_step_deletes_github_pr_capability_when_secret_absent():
+    """Round-2 regression guard. Round-1 logged a warning when
+    ``WORKFLOW_GITHUB_PR_CAPABILITIES`` was absent but did NOT remove
+    the existing key from ``/etc/workflow/env``, so deleting the GH
+    Actions secret to revoke had no effect — the next deploy
+    restarted the daemon with the OLD capability still active.
+
+    The fix: when ``HAS_GITHUB_PR_CAPABILITY=false`` (or unset), the
+    Deploy step must issue an explicit
+    ``install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES``
+    call so the effector observes ``missing_capability`` on its next
+    read. The documented contract ("absence -> dry-run") was being
+    silently violated; this test gates the fix.
+    """
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None
+    run_script = deploy_step.get("run", "") or ""
+    assert (
+        "install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES"
+        in run_script
+    ), (
+        "Deploy step must issue an explicit `install-workflow-env.sh "
+        "delete WORKFLOW_GITHUB_PR_CAPABILITIES` call when the secret "
+        "is absent so revoking the GH Actions secret actually "
+        "revokes capability on the droplet (round-2 fix for PR #980 "
+        "Codex finding)."
+    )
+
+
+def test_capability_delete_is_gated_on_else_branch():
+    """The delete call must live inside the ``else`` branch of the
+    ``HAS_GITHUB_PR_CAPABILITY`` conditional — never run when the
+    secret IS present. A naive fix that placed the delete
+    unconditionally would clobber the value the previous ``set``
+    call just installed."""
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None
+    run_script = deploy_step.get("run", "") or ""
+
+    # Anchor the conditional. The set call must come before the
+    # else+delete tail.
+    set_marker = "install-workflow-env.sh set WORKFLOW_GITHUB_PR_CAPABILITIES"
+    delete_marker = (
+        "install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES"
+    )
+    set_idx = run_script.find(set_marker)
+    delete_idx = run_script.find(delete_marker)
+    assert set_idx != -1, "set call must remain in the truthy branch"
+    assert delete_idx != -1, "delete call must be present in else branch"
+    assert set_idx < delete_idx, (
+        "set call (truthy branch) must precede delete call (else "
+        "branch) in the source — confirms the delete lives in the "
+        "ELSE arm of the HAS_GITHUB_PR_CAPABILITY conditional"
+    )
+
+    # Walk the lines between the two markers and assert an ``else``
+    # token sits between them. This is the regression guard: a future
+    # refactor that flattens the conditional without re-checking would
+    # fail this assertion.
+    between = run_script[set_idx + len(set_marker):delete_idx]
+    assert "else" in between, (
+        "An `else` keyword must appear between the set call and the "
+        "delete call. If a refactor restructures the conditional, the "
+        "delete must remain inside an else-gated branch — never run "
+        "unconditionally."
+    )
+
+
+def test_capability_delete_warning_explains_revocation():
+    """The warning line on the else branch must convey that the
+    revocation actually happens (removing the prior key), not just
+    that the secret is absent — operators need to know the deploy
+    actively cleaned up the env."""
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None
+    run_script = deploy_step.get("run", "") or ""
+    assert "::warning::" in run_script
+    # The warning must reference removing/deleting the prior value so
+    # an operator skimming GH Actions logs can tell the difference
+    # between "noop because never set" and "actually revoked".
+    assert (
+        "removing any prior" in run_script
+        or "remove any prior" in run_script
+        or "delete WORKFLOW_GITHUB_PR_CAPABILITIES" in run_script
+    ), (
+        "the absence warning must describe the revocation action so "
+        "operators can confirm capability was actually cleared from "
+        "/etc/workflow/env, not just absent from GH Actions"
+    )

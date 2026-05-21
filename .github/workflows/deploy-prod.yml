@@ -22,6 +22,14 @@ name: Deploy prod
 #   WORKFLOW_CODEX_AUTH_JSON_B64 - base64-encoded ~/.codex/auth.json.
 #   When present, deploy syncs it into /etc/workflow/env without printing it
 #   and forces WORKFLOW_ALLOW_API_KEY_PROVIDERS=0 for the public daemon.
+#
+# Optional PR-122 Phase 2 capability secret (PR-128):
+#   WORKFLOW_GITHUB_PR_CAPABILITIES - JSON object mapping
+#   "<owner>/<repo>" -> "<token>". Read by
+#   workflow.effectors.github_pr at invocation time; never echoed
+#   into branch-visible run state. When unset, the effector emits
+#   error_kind="missing_capability" dry-run evidence on real-PR
+#   attempts.
 
 on:
   workflow_run:
@@ -61,6 +69,14 @@ jobs:
     timeout-minutes: 15
     env:
       HAS_CODEX_AUTH_BUNDLE: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 != '' }}
+      # PR-128 — PR-122 Phase 2 capability map sync. When the
+      # WORKFLOW_GITHUB_PR_CAPABILITIES GH Actions secret is set
+      # (JSON object keyed by "<owner>/<repo>" -> "<token>"), the
+      # deploy step installs it into /etc/workflow/env so the Phase 2
+      # effector can pass its capability gate. Without this the
+      # effector emits error_kind="missing_capability" and stays in
+      # dry-run for real-PR attempts.
+      HAS_GITHUB_PR_CAPABILITY: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -314,6 +330,11 @@ jobs:
         id: deploy
         env:
           WORKFLOW_CODEX_AUTH_JSON_B64: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 }}
+          # PR-128 — Phase 2 effector capability map. JSON object
+          # mapping "<owner>/<repo>" -> "<token>" (round-2 P1.2
+          # shape). Read by workflow.effectors.github_pr at
+          # invocation time; never echoed into branch-visible state.
+          WORKFLOW_GITHUB_PR_CAPABILITIES: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES }}
         run: |
           NEW_IMAGE="${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}"
           echo "Deploying: ${NEW_IMAGE}"
@@ -342,11 +363,46 @@ jobs:
           else
             echo "::warning::WORKFLOW_CODEX_AUTH_JSON_B64 is not visible to deploy; leaving any existing droplet subscription auth untouched."
           fi
+          # PR-128 — sync the Phase 2 effector capability map. Same
+          # install-workflow-env.sh helper, same atomic write
+          # contract. The map MUST decode to a JSON object keyed by
+          # "<owner>/<repo>" -> "<token>"; the effector
+          # (workflow.effectors.github_pr) validates the shape and
+          # logs loudly on malformed JSON. When the secret is unset,
+          # the effector returns missing_capability dry-run evidence
+          # — emit a deploy-time warning so the operator notices
+          # before chatbots start filing for real-write attempts.
+          if [ "${HAS_GITHUB_PR_CAPABILITY}" = "true" ]; then
+            echo "Deploy-visible WORKFLOW_GITHUB_PR_CAPABILITIES found; syncing GitHub PR capability map."
+            printf '%s' "${WORKFLOW_GITHUB_PR_CAPABILITIES}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-workflow-env.sh set WORKFLOW_GITHUB_PR_CAPABILITIES"
+          else
+            # Round-2 fix (Codex round-1 finding on PR #980): the
+            # documented contract is "absence -> dry-run". Round-1
+            # logged a warning but left any prior
+            # WORKFLOW_GITHUB_PR_CAPABILITIES value in
+            # /etc/workflow/env, which meant deleting the GH Actions
+            # secret to revoke had no effect — the next deploy
+            # restarted the daemon with the OLD capability still
+            # active. Fix: when the secret is absent, explicitly
+            # delete the key from the droplet env so the effector
+            # observes "missing capability" on its next read. The
+            # install-workflow-env.sh helper's `delete` subcommand is
+            # a no-op when the key is already absent (assert_readable
+            # still passes), so re-running this on a clean droplet
+            # is safe.
+            echo "::warning::WORKFLOW_GITHUB_PR_CAPABILITIES is not visible to deploy; removing any prior capability from /etc/workflow/env so effects emission stays dry-run with error_kind=missing_capability."
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES"
+          fi
           {
             echo "## Deploy subscription auth"
             echo ""
             echo "- WORKFLOW_CODEX_AUTH_JSON_B64 visible to deploy: \`${HAS_CODEX_AUTH_BUNDLE}\`"
             echo "- API-key providers forced off when the Codex subscription bundle is synced."
+            echo "- WORKFLOW_GITHUB_PR_CAPABILITIES visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
           # Pull + restart via the systemd unit (which runs docker
           # compose down + up with the new env).
