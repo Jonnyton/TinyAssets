@@ -66,6 +66,7 @@ from workflow.api.evaluation import (
     _JUDGMENT_ACTIONS,
     _dispatch_judgment_action,
 )
+from workflow.api.extensions_consent_actions import _EFFECTOR_CONSENT_ACTIONS
 from workflow.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
 from workflow.api.helpers import _base_path, _read_json
 from workflow.api.market import (
@@ -622,6 +623,22 @@ def _extensions_impl(
         }
         return outcome_handler(oc_kwargs)
 
+    # ── Effector consent grants (PR-122 Phase 2 Slice 1) ───────────────────
+    consent_handler = _EFFECTOR_CONSENT_ACTIONS.get(action)
+    if consent_handler is not None:
+        # Field reuse: ``intent`` carries the sink name and ``project_id``
+        # carries the destination, so chatbots can call this without
+        # adding new tool-signature kwargs. Slice-2 may add dedicated
+        # ``sink`` / ``destination`` arg names; for now reuse the
+        # existing slots to keep the MCP surface stable.
+        consent_kwargs: dict[str, Any] = {
+            "sink": intent or "",
+            "destination": project_id or "",
+            "granted_by": author or "",
+            "active_only": active_only,
+        }
+        return consent_handler(consent_kwargs)
+
     # ── Attribution chain ──────────────────────────────────────────────────
     attribution_handler = _ATTRIBUTION_ACTIONS.get(action)
     if attribution_handler is not None:
@@ -681,6 +698,8 @@ def _extensions_impl(
             "record_outcome", "list_outcomes", "get_outcome",
             "record_remix", "get_provenance",
             "quality_leaderboard", "recommended_parent_for_fork",
+            "grant_effector_consent", "revoke_effector_consent",
+            "list_effector_consents",
         ],
     })
 

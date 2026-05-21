@@ -267,7 +267,19 @@ def test_effector_never_invokes_subprocess_run_under_any_env(env, monkeypatch):
         mock_run.assert_not_called()
         ev = ev_map["draft"][EXTERNAL_WRITE_SINK_GITHUB_PR]
         assert ev["dry_run"] is True
-        assert ev["phase"] == "phase_1"
+        # Phase-1-shaped packet (no destination) returns
+        # phase="phase_1" by default. When DRY_RUN=1 is also set, the
+        # operator kill switch (round-3 P1 fix for PR #969 Codex
+        # round-2) fires FIRST and returns phase="phase_2" with
+        # reason="operator_kill_switch_active" — that's a stricter
+        # safety surface, NOT a regression. The invariant the test
+        # protects is "no subprocess.run invocation under any env
+        # combination," which assert_not_called above covers.
+        if (ev.get("reason") == "operator_kill_switch_active"):
+            assert ev.get("phase") == "phase_2"
+            assert ev.get("kill_switch_env") == "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"
+        else:
+            assert ev["phase"] == "phase_1"
 
 
 def test_effector_evidence_mode_reflects_enable_env_as_phase_2_hook(monkeypatch):
