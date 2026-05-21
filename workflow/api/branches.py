@@ -1341,6 +1341,11 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     out_keys, err = _coerce_node_keys(raw.get("output_keys"), "output_keys")
     if err:
         return err
+    tools_allowed, err = _coerce_node_keys(
+        raw.get("tools_allowed"), "tools_allowed",
+    )
+    if err:
+        return err
     # BUG-045: thread the three sub-branch / sibling-run spec fields. The
     # compiler reads them (workflow/graph_compiler.py:_build_invoke_branch /
     # invoke_branch_version / await_run callables) and NodeDefinition
@@ -1378,6 +1383,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             phase=phase,
             input_keys=in_keys,
             output_keys=out_keys,
+            tools_allowed=tools_allowed,
             strict_input_isolation=strict_input_isolation,
             source_code=source_code,
             prompt_template=prompt_template,
@@ -1828,6 +1834,13 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     if err:
                         return err
                     n.output_keys = keys
+                if "tools_allowed" in op:
+                    tools_allowed, err = _coerce_node_keys(
+                        op["tools_allowed"], "tools_allowed",
+                    )
+                    if err:
+                        return err
+                    n.tools_allowed = tools_allowed
                 return ""
         return f"update_node: node '{nid}' not found"
     if name == "add_skill":
