@@ -1845,6 +1845,57 @@ def _validate_evidence_url(url: str) -> str:
     )
 
 
+def _validate_publication_readiness_for_claim(
+    *,
+    base_path: str | Path,
+    readiness_id: str,
+    goal_id: str,
+    branch_def_id: str,
+    rung_key: str,
+) -> dict[str, Any] | None:
+    from workflow.publication_readiness import get_publication_readiness
+
+    readiness = get_publication_readiness(base_path, readiness_id)
+    if readiness is None:
+        return {
+            "status": "rejected",
+            "error": "publication_readiness_not_found",
+            "publication_readiness_id": readiness_id,
+        }
+    if readiness.goal_id != goal_id:
+        return {
+            "status": "rejected",
+            "error": "publication_readiness_goal_mismatch",
+            "publication_readiness_id": readiness_id,
+            "expected_goal_id": goal_id,
+            "actual_goal_id": readiness.goal_id,
+        }
+    if readiness.branch_def_id and readiness.branch_def_id != branch_def_id:
+        return {
+            "status": "rejected",
+            "error": "publication_readiness_branch_mismatch",
+            "publication_readiness_id": readiness_id,
+            "expected_branch_def_id": branch_def_id,
+            "actual_branch_def_id": readiness.branch_def_id,
+        }
+    if readiness.target_rung and readiness.target_rung != rung_key:
+        return {
+            "status": "rejected",
+            "error": "publication_readiness_rung_mismatch",
+            "publication_readiness_id": readiness_id,
+            "expected_rung_key": rung_key,
+            "actual_target_rung": readiness.target_rung,
+        }
+    if readiness.status != "ready":
+        return {
+            "status": "rejected",
+            "error": "publication_readiness_blocked",
+            "publication_readiness_id": readiness_id,
+            "blockers": readiness.blockers,
+        }
+    return None
+
+
 def _action_gates_define_ladder(kwargs: dict[str, Any]) -> str:
     from workflow.api.branches import _ensure_workflow_db
     from workflow.api.engine_helpers import (
@@ -2052,6 +2103,31 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
             "error": "unknown_rung",
             "available_rungs": available,
         })
+    from workflow.publication_readiness import rung_requires_publication_readiness
+
+    publication_readiness_id = (
+        kwargs.get("publication_readiness_id") or ""
+    ).strip()
+    if rung_requires_publication_readiness(rung_key, ladder):
+        if not publication_readiness_id:
+            return json.dumps({
+                "status": "rejected",
+                "error": "publication_readiness_required",
+                "rung_key": rung_key,
+                "hint": (
+                    "Record a ready publication-readiness manifest first "
+                    "and pass publication_readiness_id with this claim."
+                ),
+            })
+        readiness_error = _validate_publication_readiness_for_claim(
+            base_path=_base_path(),
+            readiness_id=publication_readiness_id,
+            goal_id=goal_id,
+            branch_def_id=bid,
+            rung_key=rung_key,
+        )
+        if readiness_error is not None:
+            return json.dumps(readiness_error)
     from workflow.daemon_server import BranchRebindError
 
     goal_slug = slugify(goal.get("name") or goal_id)
@@ -2063,6 +2139,7 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
             rung_key=rung_key,
             evidence_url=evidence_url,
             evidence_note=kwargs.get("evidence_note", ""),
+            publication_readiness_id=publication_readiness_id,
             claimed_by=_current_actor_or_anon(),
             goal_slug=goal_slug,
             branch_slug=branch_slug,
@@ -2290,6 +2367,11 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
         "rung_key": rung_key,
         "evidence_url": evidence_url,
         "evidence_note": evidence_note,
+        "publication_readiness_id": (
+            kwargs.get("publication_readiness_id")
+            or output.get("publication_readiness_id")
+            or ""
+        ),
         "force": bool(kwargs.get("force", False)),
     }
     response_json = _action_gates_claim(claim_kwargs)
@@ -2802,6 +2884,111 @@ def _action_list_gate_events(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_record_publication_readiness(kwargs: dict[str, Any]) -> str:
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.daemon_server import get_branch_definition, get_goal
+    from workflow.publication_readiness import record_publication_readiness
+
+    goal_id = (kwargs.get("goal_id") or "").strip()
+    branch_def_id = (kwargs.get("branch_def_id") or "").strip()
+    manifest_raw = (kwargs.get("readiness_json") or "").strip()
+    target_rung = (kwargs.get("rung_key") or "").strip()
+    if not manifest_raw:
+        return json.dumps({
+            "status": "rejected",
+            "error": "readiness_json is required.",
+        })
+    try:
+        manifest = json.loads(manifest_raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"readiness_json is not valid JSON: {exc}",
+        })
+    if not isinstance(manifest, dict):
+        return json.dumps({
+            "status": "rejected",
+            "error": "readiness_json must be a JSON object.",
+        })
+    if not goal_id:
+        return json.dumps({"status": "rejected", "error": "goal_id is required."})
+    try:
+        get_goal(_base_path(), goal_id=goal_id)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Goal '{goal_id}' not found.",
+        })
+    if branch_def_id:
+        try:
+            branch = get_branch_definition(_base_path(), branch_def_id=branch_def_id)
+        except KeyError:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"Branch '{branch_def_id}' not found.",
+            })
+        if (branch.get("goal_id") or "") != goal_id:
+            return json.dumps({
+                "status": "rejected",
+                "error": "branch_goal_mismatch",
+                "goal_id": goal_id,
+                "branch_goal_id": branch.get("goal_id") or "",
+            })
+    try:
+        readiness = record_publication_readiness(
+            _base_path(),
+            goal_id=goal_id,
+            branch_def_id=branch_def_id,
+            target_rung=target_rung,
+            manifest=manifest,
+            created_by=_current_actor(),
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "rejected", "error": str(exc)})
+    return json.dumps({
+        "status": "recorded",
+        "publication_readiness": readiness.to_dict(),
+    }, default=str)
+
+
+def _action_get_publication_readiness(kwargs: dict[str, Any]) -> str:
+    from workflow.publication_readiness import get_publication_readiness
+
+    readiness_id = (kwargs.get("publication_readiness_id") or "").strip()
+    if not readiness_id:
+        return json.dumps({
+            "status": "rejected",
+            "error": "publication_readiness_id is required.",
+        })
+    readiness = get_publication_readiness(_base_path(), readiness_id)
+    if readiness is None:
+        return json.dumps({
+            "status": "rejected",
+            "error": "publication_readiness_not_found",
+            "publication_readiness_id": readiness_id,
+        })
+    return json.dumps({
+        "status": "ok",
+        "publication_readiness": readiness.to_dict(),
+    }, default=str)
+
+
+def _action_list_publication_readiness(kwargs: dict[str, Any]) -> str:
+    from workflow.publication_readiness import list_publication_readiness
+
+    records = list_publication_readiness(
+        _base_path(),
+        goal_id=(kwargs.get("goal_id") or "").strip(),
+        branch_def_id=(kwargs.get("branch_def_id") or "").strip(),
+        limit=int(kwargs.get("limit") or 50),
+    )
+    return json.dumps({
+        "status": "ok",
+        "count": len(records),
+        "publication_readiness": [record.to_dict() for record in records],
+    }, default=str)
+
+
 _GATE_EVENT_ACTIONS: dict[str, Any] = {
     "attest_gate_event": _action_attest_gate_event,
     "verify_gate_event": _action_verify_gate_event,
@@ -2827,6 +3014,9 @@ _GATES_ACTIONS: dict[str, Any] = {
     "get_ladder": _action_gates_get_ladder,
     "claim": _action_gates_claim,
     "claim_from_branch_run": _action_gates_claim_from_branch_run,
+    "record_publication_readiness": _action_record_publication_readiness,
+    "get_publication_readiness": _action_get_publication_readiness,
+    "list_publication_readiness": _action_list_publication_readiness,
     "retract": _action_gates_retract,
     "list_claims": _action_gates_list_claims,
     "leaderboard": _action_gates_leaderboard,
@@ -2855,6 +3045,8 @@ def gates(
     node_last_claimer: str = "",
     node_id: str = "",
     run_id: str = "",
+    readiness_json: str = "",
+    publication_readiness_id: str = "",
 ) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
@@ -2976,6 +3168,8 @@ def gates(
         "node_last_claimer": node_last_claimer,
         "node_id": node_id,
         "run_id": run_id,
+        "readiness_json": readiness_json,
+        "publication_readiness_id": publication_readiness_id,
     }
     try:
         return handler(kwargs)
