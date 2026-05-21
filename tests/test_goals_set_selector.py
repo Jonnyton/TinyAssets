@@ -324,3 +324,261 @@ def test_set_selector_unbind_path_does_not_check_effects(env):
     )
     assert result["status"] == "ok"
     assert result["selector_branch_version_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# DESIGN-008 round 3 P1.B — child-branch invocation rejected at bind time
+# ---------------------------------------------------------------------------
+
+
+def _publish_branch_with_invoke_branch_spec(base, name="invoking-selector"):
+    """Publish a branch_version with no direct effects but a node
+    that invokes a child branch via ``invoke_branch_spec``.
+
+    Round-3 P1.B: the round-2 purity scan only inspected direct
+    ``effects`` on node_defs. A selector with no direct effects can
+    still spawn a child run via invoke_branch_spec — the child's
+    completion fires the child's effectors. Bind must reject.
+    """
+    from workflow.branch_versions import publish_branch_version
+    from workflow.daemon_server import (
+        get_branch_definition,
+        save_branch_definition,
+    )
+    bid = "invoking_rank_branch"
+    save_branch_definition(
+        base,
+        branch_def=dict(
+            branch_def_id=bid,
+            name=name,
+            description="",
+            author="alice",
+            tags=[],
+            graph_nodes=[
+                {
+                    "id": "rank",
+                    "type": "prompt",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                },
+            ],
+            edges=[
+                {"from": "START", "to": "rank"},
+                {"from": "rank", "to": "END"},
+            ],
+            state_schema=[
+                {"name": "candidate_branches", "type": "str"},
+                {"name": "ranked_entries", "type": "str"},
+            ],
+            entry_point="rank",
+            published=True,
+            visibility="public",
+            node_defs=[
+                {
+                    "node_id": "rank",
+                    "display_name": "Rank",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                    # No direct effects, but it invokes a child
+                    # branch — that child's completion path fires
+                    # ITS effectors. P1.B fail-trigger.
+                    "invoke_branch_spec": {
+                        "branch_def_id": "some_effectful_child",
+                        "inputs_mapping": {},
+                        "output_mapping": {"ranked_entries": "result"},
+                        "wait_mode": "blocking",
+                    },
+                },
+            ],
+        ),
+    )
+    branch_dict = get_branch_definition(base, branch_def_id=bid)
+    version = publish_branch_version(base, branch_dict, publisher="alice")
+    return version.branch_version_id
+
+
+def _publish_branch_with_invoke_branch_version_spec(
+    base, name="version-invoking-selector",
+):
+    """Same idea but using ``invoke_branch_version_spec`` (frozen
+    child snapshot) instead of ``invoke_branch_spec``."""
+    from workflow.branch_versions import publish_branch_version
+    from workflow.daemon_server import (
+        get_branch_definition,
+        save_branch_definition,
+    )
+    bid = "version_invoking_rank_branch"
+    save_branch_definition(
+        base,
+        branch_def=dict(
+            branch_def_id=bid,
+            name=name,
+            description="",
+            author="alice",
+            tags=[],
+            graph_nodes=[
+                {
+                    "id": "rank",
+                    "type": "prompt",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                },
+            ],
+            edges=[
+                {"from": "START", "to": "rank"},
+                {"from": "rank", "to": "END"},
+            ],
+            state_schema=[
+                {"name": "candidate_branches", "type": "str"},
+                {"name": "ranked_entries", "type": "str"},
+            ],
+            entry_point="rank",
+            published=True,
+            visibility="public",
+            node_defs=[
+                {
+                    "node_id": "rank",
+                    "display_name": "Rank",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                    "invoke_branch_version_spec": {
+                        "branch_version_id": "child@deadbeef",
+                        "inputs_mapping": {},
+                        "output_mapping": {"ranked_entries": "result"},
+                        "wait_mode": "blocking",
+                    },
+                },
+            ],
+        ),
+    )
+    branch_dict = get_branch_definition(base, branch_def_id=bid)
+    version = publish_branch_version(base, branch_dict, publisher="alice")
+    return version.branch_version_id
+
+
+def test_set_selector_rejects_invoke_branch_spec(env):
+    """P1.B — selector with invoke_branch_spec rejected at bind."""
+    us, base = env
+    gid = _seed_goal(us)
+    bvid = _publish_branch_with_invoke_branch_spec(base)
+    result = _call(
+        us, "goals", "set_selector",
+        goal_id=gid, branch_version_id=bvid,
+    )
+    assert result["status"] == "rejected"
+    assert result.get("error_kind") == "selector_has_effects"
+    err = result["error"].lower()
+    assert "child" in err or "invoke_branch_spec" in err
+    # Names the offending node so the operator can fix it.
+    assert "rank" in result["error"]
+
+
+def test_set_selector_rejects_invoke_branch_version_spec(env):
+    """P1.B — same guard covers the version-spec sibling."""
+    us, base = env
+    gid = _seed_goal(us)
+    bvid = _publish_branch_with_invoke_branch_version_spec(base)
+    result = _call(
+        us, "goals", "set_selector",
+        goal_id=gid, branch_version_id=bvid,
+    )
+    assert result["status"] == "rejected"
+    assert result.get("error_kind") == "selector_has_effects"
+    err = result["error"].lower()
+    assert "child" in err or "invoke_branch_version_spec" in err
+
+
+def test_set_selector_storage_layer_raises_on_child_invoker(env):
+    """Direct storage-layer assertion that the new purity guard fires
+    on a branch that has no direct effects but invokes children."""
+    us, base = env
+    gid = _seed_goal(us)
+    bvid = _publish_branch_with_invoke_branch_spec(base)
+    from workflow.daemon_server import (
+        SelectorHasEffectsError,
+        set_selector_branch,
+    )
+    with pytest.raises(SelectorHasEffectsError) as exc_info:
+        set_selector_branch(
+            base, goal_id=gid,
+            branch_version_id=bvid, set_by="host",
+        )
+    msg = str(exc_info.value).lower()
+    assert "child" in msg or "invoke" in msg
+
+
+def test_set_selector_rejects_branch_with_both_effects_and_invoke(env):
+    """A branch with both direct effects AND a child invoker must
+    surface both violation classes in the error message."""
+    from workflow.branch_versions import publish_branch_version
+    from workflow.daemon_server import (
+        get_branch_definition,
+        save_branch_definition,
+    )
+    us, base = env
+    gid = _seed_goal(us)
+    bid = "double_violation_branch"
+    save_branch_definition(
+        base,
+        branch_def=dict(
+            branch_def_id=bid,
+            name="double",
+            description="",
+            author="alice",
+            tags=[],
+            graph_nodes=[
+                {
+                    "id": "n1",
+                    "type": "prompt",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                },
+            ],
+            edges=[
+                {"from": "START", "to": "n1"},
+                {"from": "n1", "to": "END"},
+            ],
+            state_schema=[
+                {"name": "candidate_branches", "type": "str"},
+                {"name": "ranked_entries", "type": "str"},
+            ],
+            entry_point="n1",
+            published=True,
+            visibility="public",
+            node_defs=[
+                {
+                    "node_id": "n1",
+                    "display_name": "Double Violator",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                    "prompt_template": "rank {candidate_branches}",
+                    "effects": ["github_pull_request"],
+                    "invoke_branch_spec": {
+                        "branch_def_id": "child",
+                        "inputs_mapping": {},
+                        "output_mapping": {"ranked_entries": "result"},
+                        "wait_mode": "blocking",
+                    },
+                },
+            ],
+        ),
+    )
+    branch_dict = get_branch_definition(base, branch_def_id=bid)
+    bvid = publish_branch_version(
+        base, branch_dict, publisher="alice",
+    ).branch_version_id
+    result = _call(
+        us, "goals", "set_selector",
+        goal_id=gid, branch_version_id=bvid,
+    )
+    assert result["status"] == "rejected"
+    assert result.get("error_kind") == "selector_has_effects"
+    err = result["error"].lower()
+    assert "effects" in err
+    assert "child" in err or "invoke" in err

@@ -2841,14 +2841,29 @@ def delete_goal(
 
 
 class SelectorHasEffectsError(ValueError):
-    """Raised when a selector branch declares external-write effects.
+    """Raised when a selector branch is not pure / read-only.
 
-    DESIGN-008 round-2 P1.3 guard: selector branches run on every
+    DESIGN-008 round-2/3 purity guard: selector branches run on every
     leaderboard read (``quality_leaderboard`` /
-    ``recommend_parent_for_fork``). If their nodes declare
-    ``effects`` (e.g. ``github_pull_request``), every read silently
-    fires real external writes — reads becoming writes. Bind-time
-    rejection is the loud + early gate.
+    ``recommend_parent_for_fork``). The substrate forbids any selector
+    branch that could trigger external writes, including transitively:
+
+    * **Round 2 P1.3** — node declares non-empty ``effects``
+      (e.g. ``github_pull_request``). Each read would fire the
+      effector directly.
+    * **Round 3 P1.B** — node declares ``invoke_branch_spec`` or
+      ``invoke_branch_version_spec``. The child run executes through
+      the normal graph path, and child completion fires the child's
+      effectors — bypassing the direct-effects scan. Worse,
+      ``invoke_branch_spec`` resolves at run time against a live
+      ``branch_def_id`` that the operator can mutate AFTER bind, so
+      transitive scanning at bind time is not a reliable safeguard.
+      Reject child-invocation nodes outright; a pure selector is a
+      single graph.
+
+    Bind-time rejection is the loud + early gate. The single error
+    type covers both classes because the failure mode is the same:
+    "read became a write."
     """
 
 
@@ -2907,26 +2922,74 @@ def set_selector_branch(
                 f"status={version_status!r}; only versions with "
                 "status='active' may be promoted to selector."
             )
-        # P1.3 — selector branches MUST NOT declare ``effects``.
-        # A selector runs on every leaderboard read; nodes with
-        # effects would turn each read into a real external write.
+        # Selector purity scan (rounds 2 + 3). Selector branches run
+        # on every leaderboard read; the substrate forbids ANY shape
+        # that could result in a real external write, directly or
+        # transitively.
         node_defs = (version.snapshot or {}).get("node_defs") or []
+        # P1.3 (round 2) — direct effects declarations.
         effectful: list[str] = []
+        # P1.B (round 3) — child-branch invocation specs. A node with
+        # invoke_branch_spec / invoke_branch_version_spec spawns a
+        # child run; the child's normal completion path fires its
+        # OWN effectors, bypassing the direct-effects scan above.
+        # ``invoke_branch_spec`` resolves at run time against a live
+        # branch_def_id that operators can mutate AFTER bind, so
+        # transitive scanning of the bind-time graph is not reliable.
+        # Reject child-invocation outright — selectors must be a
+        # single graph.
+        child_invokers: list[str] = []
         for nd in node_defs:
             if not isinstance(nd, dict):
                 continue
+            node_id = nd.get("node_id") or "(unnamed)"
             effects = nd.get("effects") or []
             if effects:
-                node_id = nd.get("node_id") or "(unnamed)"
                 effectful.append(f"{node_id}:{list(effects)}")
+            ibs = nd.get("invoke_branch_spec")
+            if ibs:
+                target = ""
+                if isinstance(ibs, dict):
+                    target = ibs.get("branch_def_id") or ""
+                child_invokers.append(
+                    f"{node_id}:invoke_branch_spec"
+                    + (f"({target})" if target else "")
+                )
+            ivs = nd.get("invoke_branch_version_spec")
+            if ivs:
+                target = ""
+                if isinstance(ivs, dict):
+                    target = ivs.get("branch_version_id") or ""
+                child_invokers.append(
+                    f"{node_id}:invoke_branch_version_spec"
+                    + (f"({target})" if target else "")
+                )
+        # Both classes route through the same error type because the
+        # failure mode is identical: "read became a write."
+        violations: list[str] = []
         if effectful:
+            violations.append(
+                "declares external-write effects "
+                f"({', '.join(effectful)})"
+            )
+        if child_invokers:
+            violations.append(
+                "declares child-branch invocation "
+                f"({', '.join(child_invokers)})"
+            )
+        if violations:
             raise SelectorHasEffectsError(
                 f"branch_version_id {branch_version_id!r} cannot be "
                 "bound as a selector: selector branches run on every "
-                "leaderboard read and MUST NOT declare external-write "
-                f"effects. Offending nodes: {', '.join(effectful)}. "
-                "Remove the effects field on those nodes (or fork into "
-                "a non-effectful selector branch) before binding."
+                "leaderboard read and MUST be pure (no external "
+                "writes, no child-branch invocation). Violations: "
+                + "; ".join(violations)
+                + ". Remove the offending fields on those nodes (or "
+                "fork into a pure selector branch) before binding. "
+                "If you need rich ranking that requires running other "
+                "graphs, build a selector that emits a recommendation "
+                "and let a separate Goal / canonical handler perform "
+                "the side-effecting work."
             )
 
     with _connect(base_path) as conn:

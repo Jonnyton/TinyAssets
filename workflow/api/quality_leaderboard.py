@@ -241,6 +241,12 @@ def build_quality_leaderboard(
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
     phantom_ids: list[str] = []
+    # P1.A (DESIGN-008 round 3): track selector-emitted version_id
+    # mismatches against the candidate set's authoritative version.
+    # The selector's value is always ignored; this list surfaces the
+    # spoof attempts so audit tools can detect a misbehaving /
+    # adversarial selector without scraping logs.
+    selector_bvid_spoofs: list[dict[str, str]] = []
     # Rank is assigned post-filter so phantom/dupe/blank rows do
     # not leave gaps in the user-facing rank sequence.
     for raw in raw_entries:
@@ -263,13 +269,40 @@ def build_quality_leaderboard(
         seen.add(bid)
         meta = branch_meta_by_id[bid]
         signals = signals_by_branch.get(bid, {})
+        # P1.A (DESIGN-008 round 3): the selector MUST NOT influence
+        # which branch_version_id surfaces in the leaderboard. The
+        # candidate set already carries the authoritative latest
+        # active version per def_id (resolved from
+        # ``branch_versions.status='active'`` at signal collection
+        # time). Trusting ``raw.get("branch_version_id")`` would let
+        # a selector return a real visible def_id paired with a
+        # private / rolled-back / fabricated version id, and the
+        # chatbot would surface it via recommend_parent_for_fork.
+        # The selector's emitted version_id is ignored — only the
+        # candidate set's authoritative bvid is surfaced. A future
+        # slice may allow selectors to pin a specific historical
+        # version, but it must come through a separate validated
+        # mechanism (e.g. selector claims a version, substrate
+        # checks visibility + status='active'), not blind passthrough.
+        spoof_attempt = (raw.get("branch_version_id") or "").strip()
+        authoritative_bvid = (meta.get("branch_version_id") or "")
+        if spoof_attempt and spoof_attempt != authoritative_bvid:
+            logger.warning(
+                "selector emitted branch_version_id=%r for "
+                "branch_def_id=%r that disagrees with the "
+                "authoritative active version %r (goal=%s "
+                "selector=%s); selector value ignored",
+                spoof_attempt, bid, authoritative_bvid, goal_id,
+                dispatch_result.get("branch_version_id"),
+            )
+            selector_bvid_spoofs.append({
+                "branch_def_id": bid,
+                "selector_emitted": spoof_attempt,
+                "authoritative": authoritative_bvid,
+            })
         entries.append({
             "branch_def_id": bid,
-            "branch_version_id": (
-                raw.get("branch_version_id")
-                or meta.get("branch_version_id")
-                or ""
-            ),
+            "branch_version_id": authoritative_bvid,
             "name": meta.get("name", ""),
             "author": meta.get("author", ""),
             "description": meta.get("description", ""),
@@ -307,6 +340,11 @@ def build_quality_leaderboard(
         # tools) can detect a misbehaving selector without scraping
         # logs. Empty list when the selector is well-behaved.
         "phantom_branch_def_ids": phantom_ids,
+        # P1.A (round 3) — surface selector-emitted branch_version_id
+        # spoof attempts. Each entry: {branch_def_id, selector_emitted,
+        # authoritative}. Empty list when the selector is well-behaved.
+        # Selector values are ALWAYS ignored regardless; this is audit.
+        "selector_bvid_spoofs": selector_bvid_spoofs,
         "selector": {
             "branch_version_id": dispatch_result.get("branch_version_id"),
             "source": dispatch_result.get("source"),

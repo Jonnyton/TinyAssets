@@ -815,6 +815,131 @@ def test_substrate_logs_phantom_attempts(base_path, caplog):
 
 
 # ---------------------------------------------------------------------------
+# DESIGN-008 round 3 P1.A — selector-emitted branch_version_id is ignored
+# ---------------------------------------------------------------------------
+
+
+def test_substrate_ignores_selector_emitted_branch_version_id(base_path):
+    """Round-3 P1.A regression guard.
+
+    A selector that returns a real visible ``branch_def_id`` paired
+    with an arbitrary (private / rolled-back / fabricated)
+    ``branch_version_id`` must NOT have that version id surface in
+    the leaderboard. The candidate set's authoritative bvid is the
+    only one the substrate trusts.
+    """
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    # Selector tries to spoof the bvid for the real def_id.
+    spoofed = [
+        {
+            "branch_def_id": "b1",
+            "branch_version_id": "private-or-wrong@deadbeef",
+            "score": 7.0,
+            "rationale": "spoof attempt",
+        },
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=spoofed),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is True
+    assert len(board["entries"]) == 1
+    entry = board["entries"][0]
+    assert entry["branch_def_id"] == "b1"
+    # The selector's emitted bvid MUST NOT appear. The authoritative
+    # value from branch_meta_by_id is what surfaces (empty string in
+    # this test because no version has been published for b1 yet).
+    assert entry["branch_version_id"] != "private-or-wrong@deadbeef"
+    # Spoof attempt surfaces in the audit list on the response.
+    assert len(board["selector_bvid_spoofs"]) == 1
+    spoof = board["selector_bvid_spoofs"][0]
+    assert spoof["branch_def_id"] == "b1"
+    assert spoof["selector_emitted"] == "private-or-wrong@deadbeef"
+
+
+def test_substrate_logs_selector_bvid_spoof_attempt(base_path, caplog):
+    """Spoof attempts must be logged at WARNING so operators can
+    detect a misbehaving / adversarial selector."""
+    import logging
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    spoofed = [
+        {
+            "branch_def_id": "b1",
+            "branch_version_id": "evil_spoof@99999999",
+            "score": 7.0,
+        },
+    ]
+    with caplog.at_level(
+        logging.WARNING, logger="workflow.api.quality_leaderboard",
+    ):
+        with patch(
+            "workflow.api.quality_leaderboard.dispatch_selector",
+            side_effect=_mock_dispatch_selector(ranked_entries=spoofed),
+        ):
+            build_quality_leaderboard(
+                base_path, goal_id="g1", viewer="",
+            )
+    matching = [
+        rec for rec in caplog.records
+        if rec.levelno >= logging.WARNING
+        and "evil_spoof@99999999" in str(rec.getMessage())
+    ]
+    assert matching, (
+        "expected WARNING log naming the spoofed bvid; "
+        f"got records: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_substrate_accepts_selector_matching_authoritative_bvid(base_path):
+    """When the selector's emitted bvid matches the authoritative
+    candidate-set bvid, no spoof is recorded. (Authoritative value
+    is still used either way — this test just locks the no-spoof
+    path so the spoof-list doesn't generate false positives when a
+    well-behaved selector echoes the input bvid back.)"""
+    from workflow.branch_versions import publish_branch_version
+    from workflow.daemon_server import get_branch_definition
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    branch_dict = get_branch_definition(base_path, branch_def_id="b1")
+    branch_dict["name"] = "b1"
+    branch_dict["graph_nodes"] = [
+        {"id": "n1", "type": "prompt", "input_keys": [], "output_keys": ["x"]},
+    ]
+    branch_dict["edges"] = [
+        {"from": "START", "to": "n1"},
+        {"from": "n1", "to": "END"},
+    ]
+    branch_dict["state_schema"] = [{"name": "x", "type": "str"}]
+    branch_dict["entry_point"] = "n1"
+    version = publish_branch_version(base_path, branch_dict, publisher="host")
+    authoritative = version.branch_version_id
+
+    echoed = [
+        {
+            "branch_def_id": "b1",
+            "branch_version_id": authoritative,
+            "score": 7.0,
+        },
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=echoed),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is True
+    assert board["entries"][0]["branch_version_id"] == authoritative
+    # No spoof recorded — selector and authoritative agree.
+    assert board["selector_bvid_spoofs"] == []
+
+
+# ---------------------------------------------------------------------------
 # Determinism — same inputs + mock -> same ranking
 # ---------------------------------------------------------------------------
 
