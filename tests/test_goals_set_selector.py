@@ -206,3 +206,121 @@ def test_set_selector_nonexistent_version_rejected(env):
     )
     assert result["status"] == "rejected"
     assert "not found" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# DESIGN-008 round 2 P1.3 — bind rejects effectful selector branches
+# ---------------------------------------------------------------------------
+
+
+def _publish_effectful_branch(base, name="effectful-selector"):
+    """Publish a branch_version whose snapshot declares effects.
+
+    Selector branches that declare ``effects`` (e.g. github_pull_request)
+    would silently fire external writes on every leaderboard read —
+    set_selector_branch must reject the bind.
+    """
+    from workflow.branch_versions import publish_branch_version
+    from workflow.daemon_server import (
+        get_branch_definition,
+        save_branch_definition,
+    )
+    bid = "effectful_rank_branch"
+    save_branch_definition(
+        base,
+        branch_def=dict(
+            branch_def_id=bid,
+            name=name,
+            description="",
+            author="alice",
+            tags=[],
+            graph_nodes=[
+                {
+                    "id": "rank",
+                    "type": "prompt",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                },
+            ],
+            edges=[
+                {"from": "START", "to": "rank"},
+                {"from": "rank", "to": "END"},
+            ],
+            state_schema=[
+                {"name": "candidate_branches", "type": "list"},
+                {"name": "ranked_entries", "type": "list"},
+            ],
+            entry_point="rank",
+            published=True,
+            visibility="public",
+            node_defs=[
+                {
+                    "node_id": "rank",
+                    "display_name": "Rank",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                    "prompt_template": "rank {candidate_branches}",
+                    # P1.3 fail-trigger: this node declares an effect.
+                    "effects": ["github_pull_request"],
+                },
+            ],
+        ),
+    )
+    branch_dict = get_branch_definition(base, branch_def_id=bid)
+    version = publish_branch_version(base, branch_dict, publisher="alice")
+    return version.branch_version_id
+
+
+def test_set_selector_rejects_branch_with_effects(env):
+    """P1.3 — a selector that declares effects would turn every
+    leaderboard read into a silent external write. Substrate rejects
+    the bind."""
+    us, base = env
+    gid = _seed_goal(us)
+    bvid = _publish_effectful_branch(base)
+    result = _call(
+        us, "goals", "set_selector",
+        goal_id=gid, branch_version_id=bvid,
+    )
+    assert result["status"] == "rejected"
+    assert result.get("error_kind") == "selector_has_effects"
+    assert "effects" in result["error"].lower()
+    # Error message must name the offending node so the operator
+    # can fix it.
+    assert "rank" in result["error"]
+
+
+def test_set_selector_storage_layer_raises_selector_has_effects(env):
+    """Storage-layer regression — set_selector_branch raises
+    SelectorHasEffectsError on an effectful version, no MCP wrapper
+    involved."""
+    us, base = env
+    gid = _seed_goal(us)
+    bvid = _publish_effectful_branch(base)
+    from workflow.daemon_server import (
+        SelectorHasEffectsError,
+        set_selector_branch,
+    )
+    with pytest.raises(SelectorHasEffectsError) as exc_info:
+        set_selector_branch(
+            base, goal_id=gid,
+            branch_version_id=bvid, set_by="host",
+        )
+    assert "effects" in str(exc_info.value).lower()
+
+
+def test_set_selector_unbind_path_does_not_check_effects(env):
+    """Unbind passes branch_version_id=None which short-circuits the
+    effects check entirely — the operator must always be able to
+    unbind back to the platform default selector regardless of
+    whatever was previously bound."""
+    us, _ = env
+    gid = _seed_goal(us)
+    result = _call(
+        us, "goals", "set_selector",
+        goal_id=gid, branch_version_id="",
+    )
+    assert result["status"] == "ok"
+    assert result["selector_branch_version_id"] is None

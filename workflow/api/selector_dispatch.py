@@ -100,7 +100,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from pathlib import Path
 from typing import Any
 
@@ -329,10 +328,20 @@ def _build_default_selector_branch_dict() -> dict[str, Any]:
             {"from": "rank", "to": "END"},
         ],
         "node_defs": [node],
+        # state_schema types are intentionally all ``str``: the
+        # ``ranked_entries`` output is emitted as a JSON-string by the
+        # prompt-template node, then the substrate parses it via
+        # ``_parse_ranked_entries`` (which tolerates JSON-string +
+        # markdown-fence shapes). Declaring ``list`` here would force
+        # the graph_compiler's JSON-contract code path on the response,
+        # which assumes native structured-output and rejects any
+        # provider that returns the JSON as a plain string. Selectors
+        # talk to many providers (CLI-wrapped Claude / codex / ollama)
+        # where structured-output isn't wirable.
         "state_schema": [
             {"name": "goal_id", "type": "str"},
-            {"name": "candidate_branches", "type": "list"},
-            {"name": "ranked_entries", "type": "list"},
+            {"name": "candidate_branches", "type": "str"},
+            {"name": "ranked_entries", "type": "str"},
         ],
         "published": True,
         "visibility": "public",
@@ -381,11 +390,19 @@ run but high judgment_score_avg can still rank well.
 
 ## Output
 
-Emit ONLY a JSON object on a single line (no markdown fence, no
-prose before or after) with the following shape:
+Emit ONLY a JSON object (no markdown fence, no prose before or
+after) with the following shape:
 
 ```
-{{"ranked_entries":[{{"branch_def_id":"...","branch_version_id":"...","score":<float>,"rationale":"<one sentence>"}},...]}}
+{{"ranked_entries":[
+  {{
+    "branch_def_id":"...",
+    "branch_version_id":"...",
+    "score":<float>,
+    "rationale":"<one sentence>"
+  }},
+  ...
+]}}
 ```
 
 Order entries best-first. Use the `branch_version_id` from each
@@ -410,6 +427,7 @@ def dispatch_selector(
     candidate_branches: list[dict[str, Any]],
     actor: str = "anonymous",
     timeout_s: float | None = None,
+    provider_call: Any = None,
 ) -> dict[str, Any]:
     """Run the selector branch synchronously + return its ``ranked_entries``.
 
@@ -485,48 +503,122 @@ def dispatch_selector(
         "candidate_branches": candidate_branches,
     }
 
-    # Lazy import to avoid pulling in the run executor at module
-    # import time (matches the rest of the workflow.api seam).
-    from workflow.runs import (
-        SnapshotSchemaDrift,
-        execute_branch_version_async,
-        get_run,
-        wait_for,
-    )
+    # Reconstruct the selector branch from the immutable snapshot +
+    # the live branch_definitions row's identity metadata.
+    #
+    # P1.1 fix (DESIGN-008 round 2): ``publish_branch_version`` ->
+    # ``_canonical_snapshot`` deliberately strips name / description /
+    # author from the immutable snapshot — only graph behavior fields
+    # survive. Reconstructing via ``BranchDefinition.from_dict(snapshot)``
+    # alone yields an empty name and ``validate()`` rejects with
+    # "Branch name is required" before compile.
+    #
+    # We enrich here by reading the parent ``branch_definitions``
+    # row (same branch_def_id) and merging name / description /
+    # author / visibility back in. Effects + node graph + state
+    # schema still come from the IMMUTABLE snapshot, so the
+    # selector's actual behavior matches what was published — only
+    # the identity/UI fields come from the mutable parent row.
+    from workflow.branch_versions import get_branch_version
+    from workflow.branches import BranchDefinition
+    from workflow.daemon_server import get_branch_definition
+    from workflow.runs import _execute_branch_core
 
     try:
-        from domains.fantasy_daemon.phases._provider_stub import (
-            call_provider as provider_call,
+        bv = get_branch_version(base_path, bvid)
+    except Exception as exc:
+        logger.exception(
+            "selector dispatch | get_branch_version crashed | "
+            "goal=%s bvid=%s", goal_id, bvid,
         )
-    except ImportError:
-        provider_call = None
-
-    try:
-        outcome = execute_branch_version_async(
-            base_path,
-            branch_version_id=bvid,
-            inputs=inputs,
-            run_name=f"selector_dispatch_for_{goal_id}",
-            actor=actor,
-            provider_call=provider_call,
-        )
-    except KeyError as exc:
+        return {
+            "ok": False,
+            "error_kind": "selector_dispatch_failed",
+            "error": str(exc),
+            "branch_version_id": bvid,
+        }
+    if bv is None:
         return {
             "ok": False,
             "error_kind": "selector_not_published",
             "error": (
-                f"selector branch_version_id {bvid!r} not found "
-                f"in branch_versions: {exc}"
+                f"selector branch_version_id {bvid!r} not found in "
+                "branch_versions."
             ),
             "branch_version_id": bvid,
         }
-    except SnapshotSchemaDrift as exc:
+
+    snapshot = dict(bv.snapshot or {})
+    parent_def_id = snapshot.get("branch_def_id") or ""
+    parent_row: dict[str, Any] | None = None
+    if parent_def_id:
+        try:
+            parent_row = get_branch_definition(
+                base_path, branch_def_id=parent_def_id,
+            )
+        except KeyError:
+            parent_row = None
+        except Exception:
+            logger.exception(
+                "selector dispatch | parent branch_definitions read "
+                "crashed | goal=%s bvid=%s parent=%s",
+                goal_id, bvid, parent_def_id,
+            )
+            parent_row = None
+
+    # Merge identity fields. Snapshot wins on graph fields; parent
+    # row wins on identity fields (name/description/author). If the
+    # parent row is missing (rare — could happen if the def was
+    # purged but the version row remains), fall back to a synthetic
+    # name derived from the branch_def_id so validate() passes and
+    # the selector can still run.
+    enriched: dict[str, Any] = dict(snapshot)
+    if parent_row:
+        for k in ("name", "description", "author", "visibility",
+                  "domain_id", "tags"):
+            if not enriched.get(k) and parent_row.get(k) is not None:
+                enriched[k] = parent_row[k]
+    if not enriched.get("name"):
+        enriched["name"] = parent_def_id or f"selector_{bvid}"
+
+    try:
+        branch_def = BranchDefinition.from_dict(enriched)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
         return {
             "ok": False,
             "error_kind": "selector_snapshot_drift",
-            "error": str(exc),
+            "error": (
+                f"selector snapshot {bvid!r} cannot be reconstructed: "
+                f"{exc}. Republish at the current schema version."
+            ),
             "branch_version_id": bvid,
         }
+
+    # Provider resolution: explicit ``provider_call`` kwarg wins
+    # (tests inject a deterministic stub); otherwise fall back to
+    # the fantasy-daemon provider stub, which routes to the
+    # configured Workflow provider chain (Anthropic / Codex /
+    # Ollama / etc.). Same fallback shape as
+    # ``_action_run_branch_version``.
+    if provider_call is None:
+        try:
+            from domains.fantasy_daemon.phases._provider_stub import (
+                call_provider as _default_provider_call,
+            )
+            provider_call = _default_provider_call
+        except ImportError:
+            provider_call = None
+
+    try:
+        outcome = _execute_branch_core(
+            base_path,
+            branch=branch_def,
+            inputs=inputs,
+            run_name=f"selector_dispatch_for_{goal_id}",
+            actor=actor,
+            provider_call=provider_call,
+            branch_version_id=bvid,
+        )
     except Exception as exc:
         logger.exception(
             "selector dispatch failed for goal=%s bvid=%s",
@@ -545,6 +637,7 @@ def dispatch_selector(
     # ``_execute_branch_core`` completed inline (small graphs or test
     # paths where the executor pool ran synchronously); otherwise it
     # waits up to ``timeout`` for the worker to finish.
+    from workflow.runs import get_run, wait_for
     try:
         wait_for(run_id, timeout=timeout)
     except Exception as exc:

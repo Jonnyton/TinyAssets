@@ -110,10 +110,11 @@ def test_attribution_actions_keys():
 # ── _GOAL_ACTIONS dispatch table ────────────────────────────────────────────
 
 
-def test_goal_actions_table_has_11_handlers():
+def test_goal_actions_table_has_12_handlers():
     # 9 base actions + archive_consultation (pre-existing on main) +
-    # run_canonical (PR-127 M6 cutover Step 4) = 11.
-    assert len(_GOAL_ACTIONS) == 11
+    # run_canonical (PR-127 M6 cutover Step 4) +
+    # set_selector (DESIGN-008 user-buildable selector primitive) = 12.
+    assert len(_GOAL_ACTIONS) == 12
 
 
 def test_goal_actions_keys():
@@ -123,6 +124,8 @@ def test_goal_actions_keys():
         "archive_consultation",
         # PR-127 — leaderboard-driven canonical dispatch.
         "run_canonical",
+        # DESIGN-008 — user-buildable selector primitive.
+        "set_selector",
     }
     assert set(_GOAL_ACTIONS.keys()) == expected
 

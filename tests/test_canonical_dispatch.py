@@ -83,6 +83,7 @@ def _mock_selector_passthrough(monkeypatch):
         candidate_branches,
         actor="anonymous",
         timeout_s=None,
+        **_extra,
     ):
         def _key(c):
             sigs = c.get("signals") or {}

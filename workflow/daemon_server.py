@@ -2840,6 +2840,18 @@ def delete_goal(
     )
 
 
+class SelectorHasEffectsError(ValueError):
+    """Raised when a selector branch declares external-write effects.
+
+    DESIGN-008 round-2 P1.3 guard: selector branches run on every
+    leaderboard read (``quality_leaderboard`` /
+    ``recommend_parent_for_fork``). If their nodes declare
+    ``effects`` (e.g. ``github_pull_request``), every read silently
+    fires real external writes — reads becoming writes. Bind-time
+    rejection is the loud + early gate.
+    """
+
+
 def set_selector_branch(
     base_path: str | Path,
     *,
@@ -2868,10 +2880,16 @@ def set_selector_branch(
         ``'active'`` (defense in depth — rolled-back / superseded
         versions cannot be promoted to selector, mirroring the
         PR-127 round-2 P1.1 contract on ``set_canonical_branch``).
+    SelectorHasEffectsError
+        ``branch_version_id`` is provided but the snapshot contains
+        a node with non-empty ``effects`` (DESIGN-008 round-2 P1.3).
+        Reads must not silently fire external writes.
     """
     initialize_author_server(base_path)
     now = _now()
-    goal = get_goal(base_path, goal_id=goal_id)
+    # Validate goal exists — get_goal raises KeyError when missing.
+    # Authority enforcement is the caller's responsibility (see docstring).
+    get_goal(base_path, goal_id=goal_id)
 
     if branch_version_id is not None:
         from workflow.branch_versions import get_branch_version
@@ -2888,6 +2906,27 @@ def set_selector_branch(
                 f"branch_version_id {branch_version_id!r} has "
                 f"status={version_status!r}; only versions with "
                 "status='active' may be promoted to selector."
+            )
+        # P1.3 — selector branches MUST NOT declare ``effects``.
+        # A selector runs on every leaderboard read; nodes with
+        # effects would turn each read into a real external write.
+        node_defs = (version.snapshot or {}).get("node_defs") or []
+        effectful: list[str] = []
+        for nd in node_defs:
+            if not isinstance(nd, dict):
+                continue
+            effects = nd.get("effects") or []
+            if effects:
+                node_id = nd.get("node_id") or "(unnamed)"
+                effectful.append(f"{node_id}:{list(effects)}")
+        if effectful:
+            raise SelectorHasEffectsError(
+                f"branch_version_id {branch_version_id!r} cannot be "
+                "bound as a selector: selector branches run on every "
+                "leaderboard read and MUST NOT declare external-write "
+                f"effects. Offending nodes: {', '.join(effectful)}. "
+                "Remove the effects field on those nodes (or fork into "
+                "a non-effectful selector branch) before binding."
             )
 
     with _connect(base_path) as conn:

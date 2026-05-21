@@ -1584,7 +1584,11 @@ def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
     """
     from workflow.api.branches import _ensure_workflow_db
     from workflow.api.engine_helpers import _current_actor
-    from workflow.daemon_server import get_goal, set_selector_branch
+    from workflow.daemon_server import (
+        SelectorHasEffectsError,
+        get_goal,
+        set_selector_branch,
+    )
 
     gid = (kwargs.get("goal_id") or "").strip()
     if not gid:
@@ -1621,6 +1625,15 @@ def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
             _base_path(), goal_id=gid,
             branch_version_id=branch_version_id, set_by=actor,
         )
+    except SelectorHasEffectsError as exc:
+        # P1.3 — surface the effects rejection with a structured
+        # error_kind so chatbots can route the operator to the fix
+        # path ("remove effects on offending nodes, then re-bind").
+        return json.dumps({
+            "status": "rejected",
+            "error_kind": "selector_has_effects",
+            "error": str(exc),
+        })
     except ValueError as exc:
         return json.dumps({"status": "rejected", "error": str(exc)})
 

@@ -106,6 +106,7 @@ def build_quality_leaderboard(
     goal_id: str,
     viewer: str,
     now: float | None = None,
+    provider_call: Any = None,
 ) -> dict[str, Any]:
     """Compute the ranked list of branches bound to ``goal_id``.
 
@@ -214,6 +215,7 @@ def build_quality_leaderboard(
         goal_id=goal_id,
         candidate_branches=candidates,
         actor=viewer or "anonymous",
+        provider_call=provider_call,
     )
 
     if not dispatch_result.get("ok"):
@@ -238,18 +240,30 @@ def build_quality_leaderboard(
     raw_entries = dispatch_result.get("ranked_entries") or []
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for rank_idx, raw in enumerate(raw_entries, start=1):
+    phantom_ids: list[str] = []
+    # Rank is assigned post-filter so phantom/dupe/blank rows do
+    # not leave gaps in the user-facing rank sequence.
+    for raw in raw_entries:
         bid = (raw.get("branch_def_id") or "").strip()
         if not bid or bid in seen:
             # Skip dupes / blanks defensively — the selector should
             # not emit them, but a misbehaving selector shouldn't
             # corrupt the response.
             continue
+        # P1.2 (DESIGN-008 round 2): selector output can fabricate
+        # branch_def_ids — including private ones the viewer cannot
+        # see — and inject them into the leaderboard. Reject any
+        # branch_def_id that was not in the input candidate set.
+        # ``branch_meta_by_id`` is the authoritative source of
+        # visible candidates (already filtered by viewer +
+        # include_private=False at list_branch_definitions).
+        if bid not in branch_meta_by_id:
+            phantom_ids.append(bid)
+            continue
         seen.add(bid)
-        meta = branch_meta_by_id.get(bid, {})
+        meta = branch_meta_by_id[bid]
         signals = signals_by_branch.get(bid, {})
         entries.append({
-            "rank": rank_idx,
             "branch_def_id": bid,
             "branch_version_id": (
                 raw.get("branch_version_id")
@@ -267,12 +281,32 @@ def build_quality_leaderboard(
             # "why this ranked here" without re-querying storage.
             "signals": signals,
         })
+    # Assign ranks now that phantom entries have been filtered out.
+    for rank_idx, entry in enumerate(entries, start=1):
+        entry["rank"] = rank_idx
+    # Emit a structured warning when the selector tried to inject
+    # phantom IDs. The operator can spot a misbehaving (or
+    # adversarial) selector in their logs / event feed.
+    if phantom_ids:
+        logger.warning(
+            "selector fabricated %d phantom branch_def_id(s) for goal=%s "
+            "selector=%s: %s — entries dropped",
+            len(phantom_ids),
+            goal_id,
+            dispatch_result.get("branch_version_id"),
+            phantom_ids,
+        )
 
     return {
         "ok": True,
         "goal_id": goal_id,
         "goal": goal_row,
         "entries": entries,
+        # P1.2 — surface phantom branch_def_id rejections in the
+        # structured payload so programmatic consumers (and audit
+        # tools) can detect a misbehaving selector without scraping
+        # logs. Empty list when the selector is well-behaved.
+        "phantom_branch_def_ids": phantom_ids,
         "selector": {
             "branch_version_id": dispatch_result.get("branch_version_id"),
             "source": dispatch_result.get("source"),
@@ -288,6 +322,7 @@ def recommend_parent_for_fork(
     goal_id: str,
     viewer: str,
     now: float | None = None,
+    provider_call: Any = None,
 ) -> dict[str, Any]:
     """Return the top selector-ranked entry plus its rationale.
 
@@ -324,6 +359,7 @@ def recommend_parent_for_fork(
         goal_id=goal_id,
         viewer=viewer,
         now=now,
+        provider_call=provider_call,
     )
     if not board.get("ok"):
         return {

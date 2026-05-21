@@ -47,13 +47,11 @@ from workflow.daemon_server import (
 )
 from workflow.runs import (
     RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
     add_judgment,
     create_run,
     initialize_runs_db,
     update_run_status,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures + helpers
@@ -181,6 +179,7 @@ def _mock_dispatch_selector(
         candidate_branches,
         actor="anonymous",
         timeout_s=None,
+        **_extra,
     ):
         if fail_with is not None:
             return dict(fail_with)
@@ -363,6 +362,7 @@ def test_substrate_passes_signal_bundle_to_selector(base_path):
         candidate_branches,
         actor="anonymous",
         timeout_s=None,
+        **_extra,
     ):
         captured["candidate_branches"] = candidate_branches
         return {
@@ -421,7 +421,7 @@ def test_other_numeric_tags_bucketed_separately(base_path):
 
     def _capturing(
         base_path, *, goal_id, candidate_branches, actor="anonymous",
-        timeout_s=None,
+        timeout_s=None, **_extra,
     ):
         captured["candidates"] = candidate_branches
         return {
@@ -460,7 +460,7 @@ def test_non_numeric_tags_ignored(base_path):
 
     def _capturing(
         base_path, *, goal_id, candidate_branches, actor="anonymous",
-        timeout_s=None,
+        timeout_s=None, **_extra,
     ):
         captured["candidates"] = candidate_branches
         return {
@@ -506,7 +506,7 @@ def test_fork_count_signal_present(base_path):
 
     def _capturing(
         base_path, *, goal_id, candidate_branches, actor="anonymous",
-        timeout_s=None,
+        timeout_s=None, **_extra,
     ):
         captured["candidates"] = candidate_branches
         return {
@@ -544,7 +544,7 @@ def test_safe_to_publish_signal_from_branch_stats(base_path):
 
     def _capturing(
         base_path, *, goal_id, candidate_branches, actor="anonymous",
-        timeout_s=None,
+        timeout_s=None, **_extra,
     ):
         captured["candidates"] = candidate_branches
         return {
@@ -592,7 +592,7 @@ def test_gate_rung_signal_populates_when_claim_present(base_path):
 
     def _capturing(
         base_path, *, goal_id, candidate_branches, actor="anonymous",
-        timeout_s=None,
+        timeout_s=None, **_extra,
     ):
         captured["candidates"] = candidate_branches
         return {
@@ -717,6 +717,104 @@ def test_substrate_filters_duplicate_entries_from_selector_output(base_path):
 
 
 # ---------------------------------------------------------------------------
+# DESIGN-008 round 2 P1.2 — substrate rejects fabricated branch_def_ids
+# ---------------------------------------------------------------------------
+
+
+def test_substrate_drops_phantom_branch_def_ids_from_selector(base_path):
+    """Round-2 P1.2 regression guard.
+
+    A selector that fabricates a branch_def_id (private branch the
+    viewer cannot see, made-up id, etc.) must NOT inject the entry
+    into the leaderboard. Substrate filters by candidate set
+    membership.
+    """
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    # Selector returns one real id + one fabricated id (a private
+    # branch the viewer can't see, or just made up).
+    poisoned = [
+        {"branch_def_id": "phantom_private_branch", "score": 99.0,
+         "rationale": "fabricated"},
+        {"branch_def_id": "b1", "score": 5.0, "rationale": "real one"},
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=poisoned),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is True
+    # Only the real branch survives.
+    bids = [e["branch_def_id"] for e in board["entries"]]
+    assert bids == ["b1"]
+    # Phantom id surfaces in the structured payload so audit tools
+    # / chatbots can detect a misbehaving selector.
+    assert board["phantom_branch_def_ids"] == ["phantom_private_branch"]
+    # Rank starts at 1 for the surviving entry (no rank gap).
+    assert board["entries"][0]["rank"] == 1
+
+
+def test_substrate_phantom_filter_does_not_leave_rank_gaps(base_path):
+    """When the selector emits a mix of real + phantom ids,
+    ranks are reassigned post-filter so the user sees a clean
+    sequence (1, 2, 3) not (1, 3, 5)."""
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    _make_branch(base_path, branch_def_id="b2", goal_id="g1")
+    interleaved = [
+        {"branch_def_id": "phantom_a", "score": 10.0},
+        {"branch_def_id": "b1", "score": 8.0},
+        {"branch_def_id": "phantom_b", "score": 7.0},
+        {"branch_def_id": "b2", "score": 5.0},
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=interleaved),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    ranks = [e["rank"] for e in board["entries"]]
+    bids = [e["branch_def_id"] for e in board["entries"]]
+    assert ranks == [1, 2]
+    assert bids == ["b1", "b2"]
+    assert set(board["phantom_branch_def_ids"]) == {"phantom_a", "phantom_b"}
+
+
+def test_substrate_logs_phantom_attempts(base_path, caplog):
+    """Phantom rejections must be logged so an operator can detect a
+    misbehaving (or adversarial) selector in their logs."""
+    import logging
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    poisoned = [
+        {"branch_def_id": "evil_phantom", "score": 99.0,
+         "rationale": "private leak attempt"},
+        {"branch_def_id": "b1", "score": 5.0},
+    ]
+    with caplog.at_level(logging.WARNING, logger="workflow.api.quality_leaderboard"):
+        with patch(
+            "workflow.api.quality_leaderboard.dispatch_selector",
+            side_effect=_mock_dispatch_selector(ranked_entries=poisoned),
+        ):
+            build_quality_leaderboard(
+                base_path, goal_id="g1", viewer="",
+            )
+    # Find at least one warning mentioning the phantom id.
+    matching = [
+        rec for rec in caplog.records
+        if rec.levelno >= logging.WARNING
+        and "evil_phantom" in str(rec.getMessage())
+    ]
+    assert matching, (
+        "expected a WARNING log entry naming the phantom id; "
+        f"got records: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Determinism — same inputs + mock -> same ranking
 # ---------------------------------------------------------------------------
 
@@ -789,7 +887,7 @@ def test_realistic_goal_with_eighteen_entries_under_mock_selector(base_path):
         )
     def _ranker(
         base_path, *, goal_id, candidate_branches, actor="anonymous",
-        timeout_s=None,
+        timeout_s=None, **_extra,
     ):
         ordered = sorted(
             candidate_branches, key=lambda c: c["branch_def_id"],
@@ -841,7 +939,7 @@ def test_goal_binding_takes_precedence_over_default(base_path):
 
     def _capturing(
         base_path, *, goal_id, candidate_branches, actor="anonymous",
-        timeout_s=None,
+        timeout_s=None, **_extra,
     ):
         captured["goal_id"] = goal_id
         return {

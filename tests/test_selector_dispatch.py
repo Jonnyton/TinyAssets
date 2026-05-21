@@ -334,3 +334,180 @@ def test_resolve_timeout_clamps_to_min_one_second(monkeypatch):
     from workflow.api.selector_dispatch import _resolve_timeout
     assert _resolve_timeout(0.0) == 1.0
     assert _resolve_timeout(-5) == 1.0
+
+
+# ---------------------------------------------------------------------------
+# End-to-end integration — round 2 P1.1 regression guard
+#
+# Build + publish a real selector branch, bind it on a real Goal, call
+# recommend_parent_for_fork without mocking dispatch_selector. Asserts:
+# selector ran via _execute_branch_core, leaderboard non-empty,
+# selector source = "goal_binding", rationale is selector-emitted.
+# ---------------------------------------------------------------------------
+
+
+def _selector_stub_provider(*, candidate_ids: list[str]):
+    """Build a stub provider_call that emits a valid selector JSON
+    payload covering the given candidate ids.
+
+    Used by the e2e regression tests: no real LLM, but the substrate
+    runs the published selector branch through ``_execute_branch_core``
+    and the parser unwraps the JSON string the stub emits — proving
+    snapshot reconstruction + graph compile + node dispatch + output
+    parsing all wire correctly.
+    """
+    import json as _json
+
+    def _call(prompt, system="", *, role=""):
+        ranked = [
+            {
+                "branch_def_id": cid,
+                "branch_version_id": "",
+                "score": 5.0 - i,
+                "rationale": f"stub ranked {cid} at position {i + 1}",
+            }
+            for i, cid in enumerate(candidate_ids)
+        ]
+        return _json.dumps({"ranked_entries": ranked})
+
+    return _call
+
+
+def test_end_to_end_selector_dispatch_with_real_published_branch(base_path):
+    """Round-2 P1.1 regression guard.
+
+    Round-1 monkeypatched ``dispatch_selector`` everywhere, so the
+    snapshot reconstruction bug (immutable snapshot strips ``name``
+    → ``validate()`` rejects with "Branch name is required") was
+    never caught. This test exercises the full path: real selector
+    branch + real Goal + a deterministic provider stub →
+    ``recommend_parent_for_fork`` returns a non-empty leaderboard
+    backed by a real ``_execute_branch_core`` selector run.
+
+    ``dispatch_selector`` is NOT mocked. Only ``provider_call`` is
+    threaded as a stub (the substrate's own injection point — same
+    as ``_action_run_branch_version`` accepts). This is the seam
+    real production code uses to bind providers.
+    """
+    from workflow.api.quality_leaderboard import recommend_parent_for_fork
+    from workflow.api.selector_dispatch import (
+        ensure_default_selector_published,
+    )
+    from workflow.daemon_server import (
+        save_branch_definition,
+        save_goal,
+        update_goal,
+    )
+
+    save_goal(
+        base_path,
+        goal=dict(
+            goal_id="g-e2e",
+            name="E2E Goal",
+            description="",
+            author="host",
+            tags=[],
+            visibility="public",
+        ),
+    )
+    save_branch_definition(
+        base_path,
+        branch_def=dict(
+            branch_def_id="b-e2e",
+            name="b-e2e",
+            description="end-to-end candidate",
+            author="alice",
+            tags=[],
+            graph_nodes=[],
+            edges=[],
+            state_schema=[],
+            entry_point="",
+            published=True,
+            goal_id="g-e2e",
+        ),
+    )
+
+    # Bind the platform default selector explicitly so we exercise
+    # the goal_binding resolution path (not just the lazy
+    # platform_default fallback).
+    default_bvid = ensure_default_selector_published(base_path)
+    update_goal(
+        base_path,
+        goal_id="g-e2e",
+        updates={"selector_branch_version_id": default_bvid},
+    )
+
+    # Provider stub returns valid selector JSON for the candidate
+    # set. The substrate threads it all the way through compile +
+    # node dispatch + output parsing.
+    stub = _selector_stub_provider(candidate_ids=["b-e2e"])
+    result = recommend_parent_for_fork(
+        base_path, goal_id="g-e2e", viewer="", provider_call=stub,
+    )
+
+    assert result.get("ok") is True, result
+    assert result.get("error_kind") is None
+    assert result["leaderboard_size"] == 1
+    parent = result["recommended_parent"]
+    assert parent is not None
+    assert parent["branch_def_id"] == "b-e2e"
+    assert result["selector"]["source"] == "goal_binding"
+    assert result["selector"]["branch_version_id"] == default_bvid
+    # Real run_id (non-empty string) — proves _execute_branch_core
+    # actually ran the selector graph.
+    assert result["selector"]["run_id"]
+    # Selector emitted the stub rationale verbatim.
+    assert "stub ranked b-e2e" in result["rationale"]
+
+
+def test_end_to_end_platform_default_fallback(base_path):
+    """Same end-to-end shape but with NO explicit selector binding.
+
+    The leaderboard caller resolves to the platform default selector
+    on the fly and the substrate publishes it lazily. Asserts the
+    no-binding fallback path also runs end-to-end without snapshot
+    reconstruction errors.
+    """
+    from workflow.api.quality_leaderboard import recommend_parent_for_fork
+    from workflow.daemon_server import save_branch_definition, save_goal
+
+    save_goal(
+        base_path,
+        goal=dict(
+            goal_id="g-fallback",
+            name="Fallback Goal",
+            description="",
+            author="host",
+            tags=[],
+            visibility="public",
+        ),
+    )
+    save_branch_definition(
+        base_path,
+        branch_def=dict(
+            branch_def_id="b-fallback",
+            name="b-fallback",
+            description="",
+            author="alice",
+            tags=[],
+            graph_nodes=[],
+            edges=[],
+            state_schema=[],
+            entry_point="",
+            published=True,
+            goal_id="g-fallback",
+        ),
+    )
+
+    stub = _selector_stub_provider(candidate_ids=["b-fallback"])
+    result = recommend_parent_for_fork(
+        base_path, goal_id="g-fallback", viewer="",
+        provider_call=stub,
+    )
+
+    assert result.get("ok") is True, result
+    assert result["recommended_parent"]["branch_def_id"] == "b-fallback"
+    # Source is platform_default because no explicit binding existed.
+    assert result["selector"]["source"] == "platform_default"
+    # Stub rationale flowed through.
+    assert "stub ranked b-fallback" in result["rationale"]
