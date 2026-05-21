@@ -378,7 +378,24 @@ jobs:
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo bash /tmp/install-workflow-env.sh set WORKFLOW_GITHUB_PR_CAPABILITIES"
           else
-            echo "::warning::WORKFLOW_GITHUB_PR_CAPABILITIES is not visible to deploy; effects emission will remain dry-run with error_kind=missing_capability."
+            # Round-2 fix (Codex round-1 finding on PR #980): the
+            # documented contract is "absence -> dry-run". Round-1
+            # logged a warning but left any prior
+            # WORKFLOW_GITHUB_PR_CAPABILITIES value in
+            # /etc/workflow/env, which meant deleting the GH Actions
+            # secret to revoke had no effect — the next deploy
+            # restarted the daemon with the OLD capability still
+            # active. Fix: when the secret is absent, explicitly
+            # delete the key from the droplet env so the effector
+            # observes "missing capability" on its next read. The
+            # install-workflow-env.sh helper's `delete` subcommand is
+            # a no-op when the key is already absent (assert_readable
+            # still passes), so re-running this on a clean droplet
+            # is safe.
+            echo "::warning::WORKFLOW_GITHUB_PR_CAPABILITIES is not visible to deploy; removing any prior capability from /etc/workflow/env so effects emission stays dry-run with error_kind=missing_capability."
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES"
           fi
           {
             echo "## Deploy subscription auth"
