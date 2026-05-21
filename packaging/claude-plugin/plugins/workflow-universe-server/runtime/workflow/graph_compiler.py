@@ -33,6 +33,7 @@ import operator
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Callable
@@ -40,8 +41,11 @@ from typing import Annotated, Any, Callable
 from langgraph.graph import END, START, StateGraph
 
 from workflow.branches import BranchDefinition, GraphNodeRef, NodeDefinition
+from workflow.exceptions import AllProvidersExhaustedError
 
 logger = logging.getLogger(__name__)
+
+_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS = (2.0, 4.0)
 
 
 class CompilerError(Exception):
@@ -207,6 +211,32 @@ def _run_with_timeout(
             "its own subprocess/HTTP timeout is the backstop.",
             node_id=node_id,
         ) from exc
+
+
+def _call_policy_router_with_retry(
+    router: Any,
+    *,
+    role: str,
+    prompt: str,
+    system: str,
+    policy: dict[str, Any],
+) -> tuple[str, str]:
+    """Retry policy-aware provider dispatch on transient chain exhaustion."""
+    attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
+    for attempt_index in range(attempts):
+        try:
+            return router.call_with_policy_sync(role, prompt, system, policy)
+        except AllProvidersExhaustedError:
+            if attempt_index == attempts - 1:
+                raise
+            delay = _POLICY_PROVIDER_RETRY_BACKOFF_SECONDS[attempt_index]
+            logger.warning(
+                "Policy provider chain exhausted for role=%s; retrying in %.1fs",
+                role,
+                delay,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable policy provider retry state")
 
 
 _DANGEROUS_PATTERNS = (
@@ -1038,8 +1068,12 @@ def _build_prompt_template_node(
                     )
                     if _policy_router is not None and router_has_providers:
                         def _policy_call() -> tuple[str, str]:
-                            return _policy_router.call_with_policy_sync(
-                                role, prompt, "", effective_policy,
+                            return _call_policy_router_with_retry(
+                                _policy_router,
+                                role=role,
+                                prompt=prompt,
+                                system="",
+                                policy=effective_policy,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,
