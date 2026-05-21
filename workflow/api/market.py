@@ -32,12 +32,12 @@ Public surface (back-compat re-exported via ``workflow.universe_server``):
         _action_goal_leaderboard / _action_goal_common_nodes /
         _action_goal_archive_consultation / _action_goal_set_canonical
 
-    Gates handlers (9 + 6 gate_event):
+    Gates handlers (10 + 6 gate_event):
         _action_gates_define_ladder / _action_gates_get_ladder /
-        _action_gates_claim / _action_gates_retract /
-        _action_gates_list_claims / _action_gates_leaderboard /
-        _action_gates_stake_bonus / _action_gates_unstake_bonus /
-        _action_gates_release_bonus
+        _action_gates_claim / _action_gates_claim_from_branch_run /
+        _action_gates_retract / _action_gates_list_claims /
+        _action_gates_leaderboard / _action_gates_stake_bonus /
+        _action_gates_unstake_bonus / _action_gates_release_bonus
         _action_attest_gate_event / _action_verify_gate_event /
         _action_dispute_gate_event / _action_retract_gate_event /
         _action_get_gate_event / _action_list_gate_events
@@ -2092,6 +2092,225 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
+    """PR-126 M5 — claim a gate rung from a completed run's final state.
+
+    Reads the run's ``output["recommended_rung_claim"]`` and validates
+    the rung_key against the bound Goal's ladder before delegating to
+    ``_action_gates_claim`` for the actual write. Keeps the substrate
+    convention crisp:
+
+      * Branch authors emit ``recommended_rung_claim`` (a rung_key
+        matching the bound Goal's ladder) in the run's final output.
+      * Optionally, branches emit ``recommended_rung_claim_evidence_url``
+        and ``recommended_rung_claim_evidence_note`` for the supporting
+        evidence the gate machinery requires. Either field can be
+        overridden by the caller of this action.
+
+    Required kwargs:
+      * ``run_id`` — the completed run to read the recommendation from.
+
+    Optional kwargs:
+      * ``evidence_url`` — overrides any branch-supplied evidence URL.
+      * ``evidence_note`` — overrides any branch-supplied evidence note.
+      * ``force`` — passthrough to the underlying ``gates.claim``.
+
+    Failure shapes (``status="rejected"``):
+      * ``run_not_found`` — no run row for ``run_id``.
+      * ``run_not_completed`` — run.status is not ``completed``.
+      * ``branch_not_found`` — run references a deleted branch.
+      * ``branch_not_bound_to_goal`` — branch has no ``goal_id``.
+      * ``missing_recommended_rung_claim`` — run output has no
+        ``recommended_rung_claim`` (or it's empty / non-string).
+      * ``unknown_rung`` — the recommended rung is not in the bound
+        Goal's ladder; ``available_rungs`` lists what the branch
+        SHOULD have emitted.
+      * ``missing_evidence_url`` — neither the branch nor the caller
+        supplied an evidence URL.
+      * Any other ``status`` shape returned by ``_action_gates_claim``
+        propagates verbatim (e.g. ``branch_rebound``,
+        ``local_edit_conflict``).
+    """
+    from workflow.daemon_server import (
+        get_branch_definition,
+        get_goal_ladder,
+    )
+    from workflow.runs import RUN_STATUS_COMPLETED, get_run
+
+    rid = (kwargs.get("run_id") or "").strip()
+    if not rid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "run_id is required for claim_from_branch_run.",
+        })
+
+    run = get_run(_base_path(), rid)
+    if run is None:
+        return json.dumps({
+            "status": "rejected",
+            "error": "run_not_found",
+            "run_id": rid,
+        })
+
+    if run.get("status") != RUN_STATUS_COMPLETED:
+        return json.dumps({
+            "status": "rejected",
+            "error": "run_not_completed",
+            "run_id": rid,
+            "run_status": run.get("status"),
+            "hint": (
+                "Only runs in 'completed' status can claim a rung. "
+                "Re-run the branch or `wait_for_run` before claiming."
+            ),
+        })
+
+    bid = (run.get("branch_def_id") or "").strip()
+    if not bid:
+        # Defensive — runs always carry a branch_def_id; included so the
+        # response is debuggable if the schema ever drifts.
+        return json.dumps({
+            "status": "rejected",
+            "error": "branch_not_found",
+            "hint": "Run row is missing branch_def_id.",
+        })
+    try:
+        branch = get_branch_definition(_base_path(), branch_def_id=bid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": "branch_not_found",
+            "branch_def_id": bid,
+        })
+
+    goal_id = (branch.get("goal_id") or "").strip()
+    if not goal_id:
+        return json.dumps({
+            "status": "rejected",
+            "error": "branch_not_bound_to_goal",
+            "branch_def_id": bid,
+            "hint": (
+                "Bind the branch to a Goal via "
+                "`goals action=bind` before claiming a rung from a run."
+            ),
+        })
+
+    output = run.get("output") or {}
+    if not isinstance(output, dict):
+        output = {}
+    raw_rung = output.get("recommended_rung_claim")
+    rung_key = raw_rung.strip() if isinstance(raw_rung, str) else ""
+    if not rung_key:
+        return json.dumps({
+            "status": "rejected",
+            "error": "missing_recommended_rung_claim",
+            "run_id": rid,
+            "branch_def_id": bid,
+            "goal_id": goal_id,
+            "hint": (
+                "The branch must emit a non-empty string field named "
+                "'recommended_rung_claim' in the run's final output. "
+                "The value must match a rung_key in the bound Goal's "
+                "ladder (read it via `goals action=get goal_id=...` "
+                "or `gates action=get_ladder goal_id=...`)."
+            ),
+        })
+
+    try:
+        ladder = get_goal_ladder(_base_path(), goal_id=goal_id)
+    except KeyError:
+        # Branch was bound to a now-deleted Goal. Surface explicitly.
+        return json.dumps({
+            "status": "rejected",
+            "error": "branch_not_bound_to_goal",
+            "branch_def_id": bid,
+            "goal_id": goal_id,
+            "hint": (
+                "Branch references a Goal that no longer exists. "
+                "Rebind via `goals action=bind`."
+            ),
+        })
+    available_rungs = [
+        r.get("rung_key") for r in ladder if r.get("rung_key")
+    ]
+    if rung_key not in available_rungs:
+        return json.dumps({
+            "status": "rejected",
+            "error": "unknown_rung",
+            "run_id": rid,
+            "branch_def_id": bid,
+            "goal_id": goal_id,
+            "recommended_rung_claim": rung_key,
+            "available_rungs": available_rungs,
+            "hint": (
+                "The branch's recommended_rung_claim does not match "
+                "any rung in the bound Goal's ladder. Branch authors "
+                "must emit a rung_key from the ladder vocabulary."
+            ),
+        })
+
+    # Evidence resolution: caller override > branch-supplied output >
+    # nothing. We do NOT auto-synthesize a workflow:run:<id> URL because
+    # the existing claim path validates http(s) only — failing fast
+    # forces branch authors to publish a real artifact URL.
+    evidence_url = (kwargs.get("evidence_url") or "").strip()
+    if not evidence_url:
+        branch_url = output.get("recommended_rung_claim_evidence_url")
+        if isinstance(branch_url, str):
+            evidence_url = branch_url.strip()
+    if not evidence_url:
+        return json.dumps({
+            "status": "rejected",
+            "error": "missing_evidence_url",
+            "run_id": rid,
+            "branch_def_id": bid,
+            "goal_id": goal_id,
+            "recommended_rung_claim": rung_key,
+            "hint": (
+                "Supply evidence_url=<https://...> to this action, or "
+                "have the branch emit "
+                "'recommended_rung_claim_evidence_url' in the run's "
+                "final output. The URL must be http(s)."
+            ),
+        })
+
+    evidence_note = (kwargs.get("evidence_note") or "").strip()
+    if not evidence_note:
+        branch_note = output.get("recommended_rung_claim_evidence_note")
+        if isinstance(branch_note, str):
+            evidence_note = branch_note.strip()
+    if not evidence_note:
+        # Default note ties the claim back to the run so a downstream
+        # auditor can trace the chain. Non-empty by construction so
+        # the gates.claim handler never sees an empty note from this
+        # path — branch-authored notes still win when present.
+        evidence_note = f"Auto-claim from completed run {rid}"
+
+    claim_kwargs: dict[str, Any] = {
+        "branch_def_id": bid,
+        "rung_key": rung_key,
+        "evidence_url": evidence_url,
+        "evidence_note": evidence_note,
+        "force": bool(kwargs.get("force", False)),
+    }
+    response_json = _action_gates_claim(claim_kwargs)
+    try:
+        response = json.loads(response_json)
+    except (TypeError, ValueError):
+        # Defensive — the inner handler should always return JSON.
+        return response_json
+    # Decorate the response so the caller sees the run origin and the
+    # rung that was claimed, without losing any of the existing
+    # gates.claim fields (status, claim, hints, error structure).
+    response.setdefault("run_id", rid)
+    response.setdefault("source", "claim_from_branch_run")
+    if response.get("status") == "claimed":
+        # Surface the rung that was claimed at top level so the chatbot
+        # can render "Branch X reached rung Y" without parsing the
+        # nested claim dict.
+        response.setdefault("rung_key", rung_key)
+    return json.dumps(response, default=str)
+
+
 def _action_gates_retract(kwargs: dict[str, Any]) -> str:
     from workflow.api.branches import _ensure_workflow_db
     from workflow.api.engine_helpers import (
@@ -2607,6 +2826,7 @@ _GATES_ACTIONS: dict[str, Any] = {
     "define_ladder": _action_gates_define_ladder,
     "get_ladder": _action_gates_get_ladder,
     "claim": _action_gates_claim,
+    "claim_from_branch_run": _action_gates_claim_from_branch_run,
     "retract": _action_gates_retract,
     "list_claims": _action_gates_list_claims,
     "leaderboard": _action_gates_leaderboard,
@@ -2634,6 +2854,7 @@ def gates(
     eval_verdict: str = "",
     node_last_claimer: str = "",
     node_id: str = "",
+    run_id: str = "",
 ) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
@@ -2653,6 +2874,14 @@ def gates(
       get_ladder    Read a Goal's ladder. Needs goal_id.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url. Idempotent on (branch, rung).
+      claim_from_branch_run
+                    Claim a rung whose key + (optionally) evidence URL
+                    came from a completed run's final output state.
+                    Needs run_id. The branch's
+                    ``recommended_rung_claim`` output field selects the
+                    rung; this action validates it against the bound
+                    Goal's ladder before delegating to ``claim``. PR-126
+                    M5 (Loop 1 retirement roadmap).
       retract       Soft-delete a claim. Needs branch_def_id, rung_key,
                     reason. Claim author, Goal owner, or host can
                     retract.
@@ -2704,6 +2933,9 @@ def gates(
       node_last_claimer: actor_id of the node fulfiller who receives
                          payout on a "pass" release_bonus verdict.
       node_id: node target for stake_bonus.
+      run_id: completed-run target for claim_from_branch_run; the run's
+              final-state ``recommended_rung_claim`` selects the rung
+              and (optionally) the supporting evidence URL.
     """
     from workflow.api.engine_helpers import (
         _format_dirty_file_conflict,
@@ -2743,6 +2975,7 @@ def gates(
         "eval_verdict": eval_verdict,
         "node_last_claimer": node_last_claimer,
         "node_id": node_id,
+        "run_id": run_id,
     }
     try:
         return handler(kwargs)

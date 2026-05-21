@@ -848,6 +848,7 @@ def gates(
     eval_verdict: str = "",
     node_last_claimer: str = "",
     node_id: str = "",
+    run_id: str = "",
 ) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
@@ -867,6 +868,12 @@ def gates(
       get_ladder    Read a Goal's ladder. Needs goal_id.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url.
+      claim_from_branch_run
+                    Claim a rung whose key (and optionally evidence
+                    URL) came from a completed run's final output.
+                    Needs run_id. The branch's
+                    ``recommended_rung_claim`` field selects the rung;
+                    validated against the bound Goal's ladder.
       retract       Soft-delete a claim. Needs branch_def_id, rung_key,
                     reason.
       list_claims   Browse claims. Provide exactly one of branch_def_id
@@ -899,6 +906,7 @@ def gates(
         eval_verdict=eval_verdict,
         node_last_claimer=node_last_claimer,
         node_id=node_id,
+        run_id=run_id,
     )
 
 

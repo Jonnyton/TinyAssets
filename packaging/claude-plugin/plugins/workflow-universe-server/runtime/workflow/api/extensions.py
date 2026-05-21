@@ -67,6 +67,7 @@ from workflow.api.evaluation import (
     _dispatch_judgment_action,
 )
 from workflow.api.extensions_consent_actions import _EFFECTOR_CONSENT_ACTIONS
+from workflow.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
 from workflow.api.helpers import _base_path, _read_json
 from workflow.api.market import (
     _ATTRIBUTION_ACTIONS,
@@ -652,6 +653,20 @@ def _extensions_impl(
         }
         return attribution_handler(attr_kwargs)
 
+    # ── Quality leaderboard / parent selection (PR-123 substrate M2) ───────
+    leaderboard_handler = _LEADERBOARD_ACTIONS.get(action)
+    if leaderboard_handler is not None:
+        # P1.1 fix (round 2) — the dispatch MUST NOT forward
+        # caller-supplied ``author`` / ``force`` into the leaderboard
+        # handler's visibility surface. Round-1 mapped
+        # ``author -> viewer`` and ``force -> include_private``, which
+        # let an MCP caller see private branches authored by anyone
+        # they could name. The handler now resolves viewer identity
+        # server-side via ``_current_actor()``; visibility is
+        # public-or-author-owned for the actual caller, never the
+        # caller-named identity.
+        return leaderboard_handler({"goal_id": goal_id})
+
     return json.dumps({
         "error": f"Unknown action '{action}'.",
         "available_actions": [
@@ -682,6 +697,7 @@ def _extensions_impl(
             "pause_schedule", "unpause_schedule", "list_scheduler_subscriptions",
             "record_outcome", "list_outcomes", "get_outcome",
             "record_remix", "get_provenance",
+            "quality_leaderboard", "recommended_parent_for_fork",
             "grant_effector_consent", "revoke_effector_consent",
             "list_effector_consents",
         ],

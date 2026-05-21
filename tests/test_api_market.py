@@ -55,9 +55,10 @@ def test_module_exposes_expected_public_names():
         "_action_goal_list", "_action_goal_get", "_action_goal_search",
         "_action_goal_leaderboard", "_action_goal_common_nodes",
         "_action_goal_set_canonical",
-        # Gates main handlers (9)
+        # Gates main handlers (10)
         "_action_gates_define_ladder", "_action_gates_get_ladder",
-        "_action_gates_claim", "_action_gates_retract",
+        "_action_gates_claim", "_action_gates_claim_from_branch_run",
+        "_action_gates_retract",
         "_action_gates_list_claims", "_action_gates_leaderboard",
         "_action_gates_stake_bonus", "_action_gates_unstake_bonus",
         "_action_gates_release_bonus",
@@ -180,8 +181,8 @@ def test_goals_unknown_action_lists_directory_aliases():
 # ── _GATES_ACTIONS dispatch table ───────────────────────────────────────────
 
 
-def test_gates_actions_table_has_10_handlers():
-    assert len(_GATES_ACTIONS) == 10
+def test_gates_actions_table_has_11_handlers():
+    assert len(_GATES_ACTIONS) == 11
 
 
 def test_gates_actions_keys():
@@ -189,6 +190,8 @@ def test_gates_actions_keys():
         "define_ladder", "get_ladder", "claim", "retract", "list",
         "list_claims", "leaderboard",
         "stake_bonus", "unstake_bonus", "release_bonus",
+        # PR-126 M5 — claim from completed run's recommended_rung_claim.
+        "claim_from_branch_run",
     }
     assert set(_GATES_ACTIONS.keys()) == expected
 
