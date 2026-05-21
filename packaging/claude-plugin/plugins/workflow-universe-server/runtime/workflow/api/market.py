@@ -1979,15 +1979,36 @@ def _gates_enabled() -> bool:
     }
 
 
+_WORKFLOW_RUN_EVIDENCE_PREFIXES = (
+    "workflow:run:",
+    "run:",
+    "run-attachment:",
+    "child_run:",
+)
+
+
+def _is_workflow_run_evidence_handle(value: str) -> bool:
+    """Return True for opaque run evidence handles issued by Workflow."""
+    if any(char.isspace() for char in value):
+        return False
+    return any(
+        value.startswith(prefix) and len(value) > len(prefix)
+        for prefix in _WORKFLOW_RUN_EVIDENCE_PREFIXES
+    )
+
+
 def _validate_evidence_url(url: str) -> str:
     from urllib.parse import urlparse
 
     parsed = urlparse(url or "")
     if parsed.scheme in {"http", "https"} and parsed.netloc:
         return ""
+    if _is_workflow_run_evidence_handle(url or ""):
+        return ""
     return (
         "evidence_url must be an http(s) URL with a host "
-        "(e.g. https://example.com/path)."
+        "(e.g. https://example.com/path) or a Workflow run evidence "
+        "handle (e.g. workflow:run:<run_id>)."
     )
 
 
@@ -2395,29 +2416,15 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
         })
 
     # Evidence resolution: caller override > branch-supplied output >
-    # nothing. We do NOT auto-synthesize a workflow:run:<id> URL because
-    # the existing claim path validates http(s) only — failing fast
-    # forces branch authors to publish a real artifact URL.
+    # internal run handle. A completed run is valid local evidence even
+    # when no public artifact URL exists yet.
     evidence_url = (kwargs.get("evidence_url") or "").strip()
     if not evidence_url:
         branch_url = output.get("recommended_rung_claim_evidence_url")
         if isinstance(branch_url, str):
             evidence_url = branch_url.strip()
     if not evidence_url:
-        return json.dumps({
-            "status": "rejected",
-            "error": "missing_evidence_url",
-            "run_id": rid,
-            "branch_def_id": bid,
-            "goal_id": goal_id,
-            "recommended_rung_claim": rung_key,
-            "hint": (
-                "Supply evidence_url=<https://...> to this action, or "
-                "have the branch emit "
-                "'recommended_rung_claim_evidence_url' in the run's "
-                "final output. The URL must be http(s)."
-            ),
-        })
+        evidence_url = f"workflow:run:{rid}"
 
     evidence_note = (kwargs.get("evidence_note") or "").strip()
     if not evidence_note:
@@ -3049,8 +3056,9 @@ def gates(
                     claim_id, eval_verdict ("pass"|"fail"|"skip"),
                     node_last_claimer (recipient on pass).
 
-    Evidence URL must be http(s) with a host; content is not fetched
-    (local-first). Social accountability handles fraud in v1.
+    Evidence URL must be http(s) with a host or a Workflow run
+    evidence handle such as ``workflow:run:<run_id>``; content is not
+    fetched (local-first). Social accountability handles fraud in v1.
 
     Args:
       action: see Actions above.
@@ -3058,7 +3066,8 @@ def gates(
       branch_def_id: Branch that's claiming / retracting / listing.
       rung_key: matches a ladder entry's rung_key.
       ladder: JSON list string for define_ladder.
-      evidence_url: http(s) URL pointing at the claim's evidence.
+      evidence_url: http(s) URL or Workflow run evidence handle
+                    pointing at the claim's evidence.
       evidence_note: optional human summary.
       reason: retract reason (required for retract, non-empty).
       include_retracted: list_claims filter (default False).
@@ -3081,7 +3090,9 @@ def gates(
       node_id: node target for stake_bonus.
       run_id: completed-run target for claim_from_branch_run; the run's
               final-state ``recommended_rung_claim`` selects the rung
-              and (optionally) the supporting evidence URL.
+              and (optionally) the supporting evidence URL. When no
+              evidence URL is supplied, the claim uses
+              ``workflow:run:<run_id>``.
     """
     from workflow.api.engine_helpers import (
         _format_dirty_file_conflict,

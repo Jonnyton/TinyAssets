@@ -11,12 +11,13 @@ Failure shapes covered:
   * branch_not_bound_to_goal
   * missing_recommended_rung_claim
   * unknown_rung
-  * missing_evidence_url
 
 Happy path covered:
   * Branch supplies recommended_rung_claim + evidence_url in output -> claimed.
   * Branch supplies only recommended_rung_claim; caller supplies evidence_url
     -> claimed.
+  * Branch supplies only recommended_rung_claim; action falls back to an
+    internal Workflow run evidence handle -> claimed.
   * Caller's evidence_url overrides branch-supplied URL.
   * Re-running the action with the same (branch, rung) is idempotent
     (no duplicate claim, no error) — matches `gates.claim` semantics.
@@ -313,11 +314,11 @@ def test_rung_validation_is_case_sensitive(us_env):
 
 
 # ---------------------------------------------------------------------------
-# Evidence URL resolution
+# Evidence resolution
 # ---------------------------------------------------------------------------
 
 
-def test_missing_evidence_url_when_branch_and_caller_both_silent(us_env):
+def test_missing_evidence_url_falls_back_to_workflow_run_handle(us_env):
     us, base = us_env
     gid = _seed_goal_with_ladder(us)
     bid = _seed_branch_bound_to_goal(us, gid)
@@ -329,8 +330,30 @@ def test_missing_evidence_url_when_branch_and_caller_both_silent(us_env):
     result = _call(
         us, "gates", "claim_from_branch_run", run_id=run_id,
     )
-    assert result["status"] == "rejected"
-    assert result["error"] == "missing_evidence_url"
+    assert result["status"] == "claimed"
+    assert result["claim"]["evidence_url"] == f"workflow:run:{run_id}"
+
+
+def test_branch_supplied_workflow_run_evidence_handle_used(us_env):
+    us, base = us_env
+    gid = _seed_goal_with_ladder(us)
+    bid = _seed_branch_bound_to_goal(us, gid)
+    run_id = _seed_completed_run(
+        base,
+        branch_def_id=bid,
+        output={
+            "recommended_rung_claim": "draft_ready",
+            "recommended_rung_claim_evidence_url":
+                "run-attachment:parent-run:child-run:abc123",
+        },
+    )
+    result = _call(
+        us, "gates", "claim_from_branch_run", run_id=run_id,
+    )
+    assert result["status"] == "claimed"
+    assert result["claim"]["evidence_url"] == (
+        "run-attachment:parent-run:child-run:abc123"
+    )
 
 
 def test_branch_supplied_evidence_url_used(us_env):
