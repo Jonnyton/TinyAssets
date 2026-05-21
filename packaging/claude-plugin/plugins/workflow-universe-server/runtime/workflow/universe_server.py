@@ -766,6 +766,7 @@ def goals(
     limit: int = 50,
     scope: str = "",
     production_only: bool = False,
+    protocol_json: str = "",
     force: bool = False,
 ) -> str:
     """Goals — first-class shared primitives above workflow Branches.
@@ -780,6 +781,11 @@ def goals(
                    tags, visibility.
       bind         Attach a Branch to a Goal. Pass goal_id="" to
                    unbind. Needs branch_def_id.
+      define_protocol Attach an ordered Goal runbook. Needs goal_id and
+                   protocol_json, a JSON list of step objects whose
+                   branch_def_id values are already bound to this Goal.
+      get_protocol Read a Goal's ordered Branch protocol/runbook.
+                   Needs goal_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
                    branch. Author-only or host-only.
       run_canonical Dispatch a run on the Goal's canonical
@@ -813,6 +819,7 @@ def goals(
         limit=limit,
         scope=scope,
         production_only=production_only,
+        protocol_json=protocol_json,
         force=force,
     )
 

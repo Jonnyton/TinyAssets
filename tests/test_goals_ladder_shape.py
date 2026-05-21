@@ -68,6 +68,25 @@ _FANTASY_LADDER = [
 ]
 
 
+def _build_branch(us, name: str) -> str:
+    spec = {
+        "name": name,
+        "entry_point": "n",
+        "node_defs": [{
+            "node_id": "n",
+            "display_name": "N",
+            "prompt_template": "Input: {x}",
+        }],
+        "edges": [
+            {"from": "START", "to": "n"},
+            {"from": "n", "to": "END"},
+        ],
+        "state_schema": [{"name": "x", "type": "str"}],
+    }
+    return _call(us, "extensions", "build_branch",
+                 spec_json=json.dumps(spec))["branch_def_id"]
+
+
 # ---------------------------------------------------------------------------
 # `goals action=get` carries gate_ladder
 # ---------------------------------------------------------------------------
@@ -116,6 +135,101 @@ def test_gates_get_ladder_returns_same_shape(us_env):
     via_gates = _call(us, "gates", "get_ladder", goal_id=gid)
     via_goals = _call(us, "goals", "get", goal_id=gid)
     assert via_gates["gate_ladder"] == via_goals["goal"]["gate_ladder"]
+
+
+def test_goal_branch_protocol_round_trips_ordered_handoffs(us_env):
+    us, _ = us_env
+    gid = _call(us, "goals", "propose", name="Meridian opening")[
+        "goal"
+    ]["goal_id"]
+    architect = _build_branch(us, "Opening Architect")
+    compressor = _build_branch(us, "Opening Compressor")
+    _call(us, "goals", "bind", branch_def_id=architect, goal_id=gid)
+    _call(us, "goals", "bind", branch_def_id=compressor, goal_id=gid)
+
+    protocol = [
+        {
+            "order": 2,
+            "step_id": "compress",
+            "branch_def_id": compressor,
+            "source_label": "Opening Compressor",
+            "input_artifact_labels": ["architecture_plan"],
+            "output_artifact_labels": ["compression_blueprint"],
+            "required_rung_key": "review_passed",
+            "rollback_policy": "supersede prior blueprint",
+            "status": "pending",
+        },
+        {
+            "order": 1,
+            "step_id": "architect",
+            "branch_def_id": architect,
+            "source_label": "Opening Architect",
+            "output_artifact_labels": ["architecture_plan"],
+            "status": "completed",
+        },
+    ]
+
+    defined = _call(
+        us, "goals", "define_protocol",
+        goal_id=gid, protocol_json=json.dumps(protocol),
+    )
+
+    assert defined["status"] == "defined"
+    assert [step["step_id"] for step in defined["branch_protocol"]] == [
+        "architect", "compress",
+    ]
+    assert defined["current_protocol_step"]["step_id"] == "compress"
+    assert defined["branch_protocol"][1]["input_artifact_labels"] == [
+        "architecture_plan",
+    ]
+
+    via_get = _call(us, "goals", "get", goal_id=gid)
+    assert via_get["goal"]["branch_protocol"] == defined["branch_protocol"]
+    assert via_get["branch_protocol"] == defined["branch_protocol"]
+    assert via_get["current_protocol_step"]["step_id"] == "compress"
+    assert "Branch protocol" in via_get["text"]
+
+    via_protocol = _call(us, "goals", "get_protocol", goal_id=gid)
+    assert via_protocol["count"] == 2
+    assert via_protocol["current_protocol_step"]["branch_def_id"] == compressor
+
+
+def test_goal_branch_protocol_rejects_unbound_branch(us_env):
+    us, _ = us_env
+    gid = _call(us, "goals", "propose", name="Runbook goal")[
+        "goal"
+    ]["goal_id"]
+    unbound = _build_branch(us, "Unbound branch")
+
+    result = _call(
+        us, "goals", "define_protocol",
+        goal_id=gid,
+        protocol_json=json.dumps([{"branch_def_id": unbound}]),
+    )
+
+    assert result["status"] == "rejected"
+    assert "not bound" in result["error"]
+
+
+def test_goal_branch_protocol_rejects_bad_order(us_env):
+    us, _ = us_env
+    gid = _call(us, "goals", "propose", name="Ordered goal")[
+        "goal"
+    ]["goal_id"]
+    branch_id = _build_branch(us, "Ordered branch")
+    _call(us, "goals", "bind", branch_def_id=branch_id, goal_id=gid)
+
+    result = _call(
+        us, "goals", "define_protocol",
+        goal_id=gid,
+        protocol_json=json.dumps([{
+            "branch_def_id": branch_id,
+            "order": "first",
+        }]),
+    )
+
+    assert result["status"] == "rejected"
+    assert "order must be an integer" in result["error"]
 
 
 # ---------------------------------------------------------------------------

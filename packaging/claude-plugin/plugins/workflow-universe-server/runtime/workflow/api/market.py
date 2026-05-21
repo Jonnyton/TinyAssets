@@ -1128,6 +1128,11 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
         gate_summary = goal_gate_summary(_base_path(), goal_id=gid)
     else:
         gate_summary = {"status": "gates_disabled"}
+    protocol = list(goal.get("branch_protocol") or [])
+    current_protocol_step = None
+    if protocol:
+        from workflow.daemon_server import current_goal_protocol_step
+        current_protocol_step = current_goal_protocol_step(protocol)
 
     lines = [
         f"**Goal: {goal['name']}**",
@@ -1139,6 +1144,21 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
         lines.append("")
         lines.append(goal["description"])
     lines.append("")
+    if protocol:
+        lines.append(f"**Branch protocol** ({len(protocol)} step(s)):")
+        for step in protocol[:12]:
+            marker = " ← current" if step == current_protocol_step else ""
+            lines.append(
+                f"- {step.get('order')}. `{step.get('branch_def_id')}` · "
+                f"{step.get('source_label') or step.get('step_id')}"
+                f" · {step.get('status', 'pending')}{marker}"
+            )
+        if len(protocol) > 12:
+            lines.append(
+                f"- … and {len(protocol) - 12} more. Use "
+                f"`goals action=get_protocol goal_id={gid}`."
+            )
+        lines.append("")
     if branches:
         lines.append(
             f"**{len(branches)} Branch(es)** bound to this Goal:"
@@ -1173,6 +1193,144 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
         "branches": branches,
         "branch_count": len(branches),
         "gate_summary": gate_summary,
+        "branch_protocol": protocol,
+        "current_protocol_step": current_protocol_step,
+    }, default=str)
+
+
+def _action_goal_define_protocol(kwargs: dict[str, Any]) -> str:
+    from workflow.api.branches import _ensure_workflow_db
+    from workflow.api.engine_helpers import (
+        _current_actor,
+        _format_commit_failed,
+        _storage_backend,
+    )
+    from workflow.daemon_server import (
+        current_goal_protocol_step,
+        get_goal,
+        set_goal_branch_protocol,
+    )
+    from workflow.identity import git_author
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if not gid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "goal_id is required.",
+        })
+    protocol_raw = kwargs.get("protocol_json", "")
+    if not protocol_raw:
+        return json.dumps({
+            "status": "rejected",
+            "error": "protocol_json is required.",
+        })
+    _ensure_workflow_db()
+    try:
+        current = get_goal(_base_path(), goal_id=gid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Goal '{gid}' not found.",
+        })
+    actor = _current_actor_or_anon()
+    if current["author"] != actor and actor != "host":
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                f"Goal '{gid}' is owned by '{current['author']}'. "
+                "Only the author can define its Branch protocol."
+            ),
+        })
+    try:
+        protocol = json.loads(protocol_raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"protocol_json must be valid JSON: {exc.msg}",
+        })
+    if not isinstance(protocol, list):
+        return json.dumps({
+            "status": "rejected",
+            "error": "protocol_json must decode to a list of step objects.",
+        })
+    try:
+        updated = set_goal_branch_protocol(
+            _base_path(),
+            goal_id=gid,
+            protocol=protocol,
+        )
+    except ValueError as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": str(exc),
+        })
+    try:
+        saved, _commit = _storage_backend().save_goal_and_commit(
+            updated,
+            author=git_author(_current_actor()),
+            message=f"goals.define_protocol: {gid}",
+            force=bool(kwargs.get("force", False)),
+        )
+    except CommitFailedError as exc:
+        return json.dumps(_format_commit_failed(exc))
+    current_step = current_goal_protocol_step(saved.get("branch_protocol") or [])
+    return json.dumps({
+        "text": (
+            f"**Defined Branch protocol for Goal '{saved['name']}'.** "
+            f"{len(saved.get('branch_protocol') or [])} step(s)."
+        ),
+        "status": "defined",
+        "goal_id": gid,
+        "branch_protocol": saved.get("branch_protocol") or [],
+        "current_protocol_step": current_step,
+        "goal": saved,
+    }, default=str)
+
+
+def _action_goal_get_protocol(kwargs: dict[str, Any]) -> str:
+    from workflow.api.branches import _ensure_workflow_db
+    from workflow.daemon_server import (
+        current_goal_protocol_step,
+        get_goal,
+        get_goal_branch_protocol,
+    )
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if not gid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "goal_id is required.",
+        })
+    _ensure_workflow_db()
+    try:
+        goal = get_goal(_base_path(), goal_id=gid)
+        protocol = get_goal_branch_protocol(_base_path(), goal_id=gid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Goal '{gid}' not found.",
+        })
+    current_step = current_goal_protocol_step(protocol)
+    if protocol:
+        lines = [f"**Branch protocol for Goal '{goal['name']}':**", ""]
+        for step in protocol:
+            marker = " ← current" if step == current_step else ""
+            lines.append(
+                f"- {step.get('order')}. `{step.get('branch_def_id')}` · "
+                f"{step.get('source_label') or step.get('step_id')} · "
+                f"{step.get('status', 'pending')}{marker}"
+            )
+    else:
+        lines = [
+            f"Goal '{goal['name']}' has no Branch protocol yet.",
+            "Define one with `goals action=define_protocol protocol_json=...`.",
+        ]
+    return json.dumps({
+        "text": "\n".join(lines),
+        "goal_id": gid,
+        "branch_protocol": protocol,
+        "current_protocol_step": current_step,
+        "count": len(protocol),
     }, default=str)
 
 
@@ -1759,6 +1917,8 @@ _GOAL_ACTIONS: dict[str, Any] = {
     "common_nodes": _action_goal_common_nodes,
     "archive_consultation": _action_goal_archive_consultation,
     "set_canonical": _action_goal_set_canonical,
+    "define_protocol": _action_goal_define_protocol,
+    "get_protocol": _action_goal_get_protocol,
     # PR-127 (M6 cutover Step 4) — leaderboard-driven canonical
     # dispatch. Honors auto_canonical_via_leaderboard + threshold +
     # in-flight gate; delegates the actual run to run_branch_version.
@@ -1775,7 +1935,7 @@ _GOAL_ACTION_ALIASES: dict[str, str] = {
 }
 
 _GOAL_WRITE_ACTIONS: frozenset[str] = frozenset({
-    "propose", "update", "bind", "set_canonical",
+    "propose", "update", "bind", "set_canonical", "define_protocol",
 })
 
 
@@ -1857,6 +2017,7 @@ def goals(
     limit: int = 50,
     scope: str = "",
     production_only: bool = False,
+    protocol_json: str = "",
     force: bool = False,
 ) -> str:
     """Goals — first-class shared primitives above workflow Branches.
@@ -1874,6 +2035,15 @@ def goals(
                    a new Goal instead.
       bind         Attach a Branch to a Goal. Pass goal_id="" to
                    unbind. Needs branch_def_id.
+      define_protocol Attach an ordered Goal runbook. Needs goal_id and
+                   protocol_json, a JSON list of step objects. Each
+                   step references a Branch already bound to this Goal
+                   and may carry input_artifact_labels,
+                   output_artifact_labels, source_label,
+                   required_rung_key, required_verdict,
+                   rollback_policy, and next_step_conditions.
+      get_protocol Read a Goal's ordered Branch protocol/runbook.
+                   Needs goal_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
                    (best-known) branch. Author-only or host-only.
                    Pass branch_version_id="" to unset.
@@ -1926,6 +2096,7 @@ def goals(
         to one Goal; 'all' aggregates cross-Goal.
       production_only: list filter for fresh-user discovery. Keeps
         public Goals and filters RETRACTED/smoke/disposable entries.
+      protocol_json: JSON list for define_protocol.
       author: list filter.
       limit: cap on returned rows.
       force: override `local_edit_conflict` refusal on propose/update/bind
@@ -1951,6 +2122,7 @@ def goals(
         "limit": limit,
         "scope": scope,
         "production_only": production_only,
+        "protocol_json": protocol_json,
         "force": force,
     }
     canonical_action = _canonical_goal_action(action)

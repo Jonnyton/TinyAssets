@@ -441,6 +441,14 @@ def initialize_author_server(base_path: str | Path) -> Path:
                 "ALTER TABLE goals ADD COLUMN gate_ladder_json "
                 "TEXT NOT NULL DEFAULT '[]'"
             )
+        # PR-129: ordered branch-family protocol/runbook on a Goal.
+        # Stored as JSON so it composes with existing Goal + Branch
+        # primitives without introducing a new top-level object.
+        if "branch_protocol_json" not in goal_cols:
+            conn.execute(
+                "ALTER TABLE goals ADD COLUMN branch_protocol_json "
+                "TEXT NOT NULL DEFAULT '[]'"
+            )
         # fork_from migration: content-addressed lineage tracking.
         if "fork_from" not in existing_cols:
             conn.execute(
@@ -2433,6 +2441,10 @@ def _goal_from_row(row: sqlite3.Row) -> dict[str, Any]:
     except (IndexError, KeyError):
         ladder_raw = "[]"
     try:
+        protocol_raw = row["branch_protocol_json"]
+    except (IndexError, KeyError):
+        protocol_raw = "[]"
+    try:
         canonical_bvid = row["canonical_branch_version_id"]
     except (IndexError, KeyError):
         canonical_bvid = None
@@ -2461,6 +2473,7 @@ def _goal_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "gate_ladder": _json_loads(ladder_raw or "[]", []),
+        "branch_protocol": _json_loads(protocol_raw or "[]", []),
         "canonical_branch_version_id": canonical_bvid,
         "canonical_branch_history": _json_loads(
             canonical_history_raw or "[]", []
@@ -2484,8 +2497,9 @@ def save_goal(
             """
             INSERT OR REPLACE INTO goals (
                 goal_id, name, description, author, tags_json,
-                visibility, created_at, updated_at, gate_ladder_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                visibility, created_at, updated_at, gate_ladder_json,
+                branch_protocol_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 goal_id,
@@ -2497,6 +2511,7 @@ def save_goal(
                 goal.get("created_at", now),
                 now,
                 _json_dumps(list(goal.get("gate_ladder", []) or [])),
+                _json_dumps(list(goal.get("branch_protocol", []) or [])),
             ),
         )
     return get_goal(base_path, goal_id=goal_id)
@@ -2547,6 +2562,9 @@ def update_goal(
     if "tags" in updates:
         sets.append("tags_json = ?")
         params.append(_json_dumps(list(updates["tags"] or [])))
+    if "branch_protocol" in updates:
+        sets.append("branch_protocol_json = ?")
+        params.append(_json_dumps(list(updates["branch_protocol"] or [])))
     # PR-127 — leaderboard-driven canonical opt-in + threshold knob.
     # Booleans land as 0/1 to match the SQLite INTEGER column.
     if "auto_canonical_via_leaderboard" in updates:
@@ -3053,6 +3071,88 @@ def get_goal_ladder(
     """Return the ladder attached to a Goal (may be empty)."""
     goal = get_goal(base_path, goal_id=goal_id)
     return list(goal.get("gate_ladder") or [])
+
+
+_PROTOCOL_COMPLETED_STATES = {"completed", "skipped", "superseded"}
+
+
+def current_goal_protocol_step(protocol: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the first protocol step that is not terminal."""
+    for step in protocol:
+        status = str(step.get("status") or "pending").strip().lower()
+        if status not in _PROTOCOL_COMPLETED_STATES:
+            return step
+    return None
+
+
+def set_goal_branch_protocol(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    protocol: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Replace a Goal's ordered Branch protocol/runbook.
+
+    Each step references an existing Branch already bound to the Goal.
+    The step payload remains lightweight and domain-agnostic: labels,
+    required gate/verdict hints, rollback policy, and next-step
+    conditions are carried as JSON for the chatbot/daemon runbook layer.
+    """
+    initialize_author_server(base_path)
+    get_goal(base_path, goal_id=goal_id)
+    normalized: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(protocol or [], start=1):
+        if not isinstance(raw_step, dict):
+            raise ValueError(f"protocol step {index} must be an object")
+        branch_def_id = str(raw_step.get("branch_def_id") or "").strip()
+        if not branch_def_id:
+            raise ValueError(f"protocol step {index} missing branch_def_id")
+        try:
+            branch = get_branch_definition(base_path, branch_def_id=branch_def_id)
+        except KeyError as exc:
+            raise ValueError(
+                f"protocol step {index} references missing Branch '{branch_def_id}'"
+            ) from exc
+        if branch.get("goal_id") != goal_id:
+            raise ValueError(
+                f"protocol step {index} Branch '{branch_def_id}' is not bound "
+                f"to Goal '{goal_id}'"
+            )
+        try:
+            order = int(raw_step.get("order") or index)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"protocol step {index} order must be an integer"
+            ) from exc
+        step = dict(raw_step)
+        step["order"] = order
+        step["branch_def_id"] = branch_def_id
+        step.setdefault("step_id", f"step-{index}")
+        step.setdefault("status", "pending")
+        step.setdefault("input_artifact_labels", [])
+        step.setdefault("output_artifact_labels", [])
+        step.setdefault("source_label", "")
+        step.setdefault("required_rung_key", "")
+        step.setdefault("required_verdict", "")
+        step.setdefault("rollback_policy", "")
+        step.setdefault("next_step_conditions", [])
+        normalized.append(step)
+    normalized.sort(key=lambda item: int(item.get("order") or 0))
+    return update_goal(
+        base_path,
+        goal_id=goal_id,
+        updates={"branch_protocol": normalized},
+    )
+
+
+def get_goal_branch_protocol(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+) -> list[dict[str, Any]]:
+    """Return the ordered Branch protocol attached to a Goal."""
+    goal = get_goal(base_path, goal_id=goal_id)
+    return list(goal.get("branch_protocol") or [])
 
 
 class BranchRebindError(Exception):

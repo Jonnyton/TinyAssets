@@ -286,8 +286,10 @@ def goal_to_yaml_payload(goal: dict[str, Any]) -> dict[str, Any]:
     """Serialize a Goal dict (flat, no dataclass) to the YAML shape.
 
     Phase 6.3: ``gate_ladder`` rides through as a list-of-dicts under
-    ``goals/<slug>.yaml#/gate_ladder``. Empty list omitted so goals
-    without a ladder keep a minimal YAML diff.
+    ``goals/<slug>.yaml#/gate_ladder``. PR-129 adds
+    ``branch_protocol`` for ordered Goal-bound Branch runbooks. Empty
+    lists are omitted so goals without these optional structures keep a
+    minimal YAML diff.
     """
     payload: dict[str, Any] = {
         "id": goal.get("goal_id", ""),
@@ -302,6 +304,9 @@ def goal_to_yaml_payload(goal: dict[str, Any]) -> dict[str, Any]:
     ladder = list(goal.get("gate_ladder", []) or [])
     if ladder:
         payload["gate_ladder"] = ladder
+    protocol = list(goal.get("branch_protocol", []) or [])
+    if protocol:
+        payload["branch_protocol"] = protocol
     return payload
 
 
@@ -320,6 +325,7 @@ def goal_from_yaml_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "created_at": payload.get("created_at", 0.0),
         "updated_at": payload.get("updated_at", 0.0),
         "gate_ladder": list(payload.get("gate_ladder", []) or []),
+        "branch_protocol": list(payload.get("branch_protocol", []) or []),
     }
 
 
