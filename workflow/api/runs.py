@@ -362,6 +362,48 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     return None
 
 
+def _provider_chain_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the first structured provider_chain recorded on failed events."""
+    for event in reversed(events):
+        detail = event.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        provider_chain = detail.get("provider_chain")
+        if isinstance(provider_chain, dict):
+            return provider_chain
+    return None
+
+
+def _provider_chain_from_error(error: str) -> dict[str, Any] | None:
+    """Parse graph_compiler's compact ``[chain_state]:`` diagnostic suffix."""
+    marker = "[chain_state]:"
+    if marker not in (error or ""):
+        return None
+    suffix = error.rsplit(marker, 1)[1].strip()
+    if not suffix:
+        return None
+    try:
+        parsed = json.loads(suffix)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _run_error_detail(
+    run_record: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build structured error detail for failed run snapshots."""
+    detail: dict[str, Any] = {}
+    provider_chain = (
+        _provider_chain_from_events(events)
+        or _provider_chain_from_error(run_record.get("error", ""))
+    )
+    if provider_chain:
+        detail["provider_chain"] = provider_chain
+    return detail
+
+
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
     """Execute a branch once.
 
@@ -679,6 +721,9 @@ def _compose_run_snapshot(
             snapshot["failure_class"] = error_annotation[0]
             snapshot["suggested_action"] = error_annotation[1]
             snapshot["actionable_by"] = _actionable_by(error_annotation[0])
+        error_detail = _run_error_detail(run_record, events)
+        if error_detail:
+            snapshot["error_detail"] = error_detail
     return snapshot
 
 
