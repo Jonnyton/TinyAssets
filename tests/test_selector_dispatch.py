@@ -105,17 +105,31 @@ def test_default_selector_branch_def_exists_after_publish(base_path):
 
 
 def test_resolve_returns_goal_binding_when_set(base_path):
-    # Bind the goal to a deliberately-fake bvid so we don't accidentally
-    # publish a default; we just want to confirm the resolver prefers
-    # the explicit binding.
+    """Resolver prefers explicit ``selector_branch_version_id`` over
+    the platform default.
+
+    Round 4 (P1.C): the resolver now also verifies the bound version
+    is still active. The binding must point at a REAL active version
+    — a fake bvid would correctly fall back to platform default (see
+    ``test_resolve_falls_back_when_bound_selector_version_missing``).
+    Publish a custom selector via the default-selector helper, then
+    bind to it.
+    """
+    from workflow.api.selector_dispatch import (
+        ensure_default_selector_published,
+        resolve_selector_branch_version_id,
+    )
+    # Publish a real active selector (the platform default itself is
+    # fine for this test — we just need a known-active bvid for the
+    # binding to point at).
+    bvid = ensure_default_selector_published(base_path)
     _make_goal(
         base_path, "g1",
-        selector_branch_version_id="some_branch@deadbeef",
+        selector_branch_version_id=bvid,
     )
-    from workflow.api.selector_dispatch import resolve_selector_branch_version_id
     result = resolve_selector_branch_version_id(base_path, goal_id="g1")
     assert result["ok"] is True
-    assert result["branch_version_id"] == "some_branch@deadbeef"
+    assert result["branch_version_id"] == bvid
     assert result["source"] == "goal_binding"
 
 
@@ -511,3 +525,295 @@ def test_end_to_end_platform_default_fallback(base_path):
     assert result["selector"]["source"] == "platform_default"
     # Stub rationale flowed through.
     assert "stub ranked b-fallback" in result["rationale"]
+
+
+# ---------------------------------------------------------------------------
+# DESIGN-008 round 4 P1.C — rolled-back selector cannot keep dispatching
+# ---------------------------------------------------------------------------
+
+
+def _flip_branch_version_status(base_path, branch_version_id, status):
+    """Direct SQL flip of ``branch_versions.status`` for test setup.
+
+    Simulates the post-bind state where a rollback (or any other
+    lifecycle operation) marks the version as no longer ``active``.
+    """
+    from workflow.branch_versions import _connect
+    with _connect(base_path) as conn:
+        conn.execute(
+            "UPDATE branch_versions SET status = ? "
+            "WHERE branch_version_id = ?",
+            (status, branch_version_id),
+        )
+
+
+def _publish_custom_selector(
+    base_path, branch_def_id="custom_test_selector",
+):
+    """Publish a custom selector branch_version distinct from the
+    platform default so tests can flip ITS status without disturbing
+    the fallback target."""
+    from workflow.branch_versions import publish_branch_version
+    from workflow.daemon_server import (
+        get_branch_definition,
+        save_branch_definition,
+    )
+    save_branch_definition(
+        base_path,
+        branch_def=dict(
+            branch_def_id=branch_def_id,
+            name=branch_def_id,
+            description="",
+            author="alice",
+            tags=[],
+            graph_nodes=[
+                {
+                    "id": "rank",
+                    "type": "prompt",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                },
+            ],
+            edges=[
+                {"from": "START", "to": "rank"},
+                {"from": "rank", "to": "END"},
+            ],
+            state_schema=[
+                {"name": "candidate_branches", "type": "str"},
+                {"name": "ranked_entries", "type": "str"},
+            ],
+            entry_point="rank",
+            published=True,
+            node_defs=[
+                {
+                    "node_id": "rank",
+                    "display_name": "Rank",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                    "prompt_template": "rank {candidate_branches}",
+                },
+            ],
+        ),
+    )
+    branch_dict = get_branch_definition(
+        base_path, branch_def_id=branch_def_id,
+    )
+    version = publish_branch_version(
+        base_path, branch_dict, publisher="alice",
+    )
+    return version.branch_version_id
+
+
+def test_resolve_falls_back_when_bound_selector_is_rolled_back(base_path):
+    """Round-4 P1.C — bound selector version flipped to rolled_back
+    AFTER bind must NOT keep being returned as goal_binding. Resolver
+    falls back to platform default with a ``fellback_from`` diagnostic.
+
+    Uses a CUSTOM selector so the rollback doesn't disturb the
+    platform-default fallback target.
+    """
+    _make_goal(base_path, "g1")
+    custom_bvid = _publish_custom_selector(base_path)
+    from workflow.api.selector_dispatch import (
+        resolve_selector_branch_version_id,
+    )
+    from workflow.daemon_server import update_goal
+    update_goal(
+        base_path,
+        goal_id="g1",
+        updates={"selector_branch_version_id": custom_bvid},
+    )
+    # Simulate rollback of the bound selector.
+    _flip_branch_version_status(base_path, custom_bvid, "rolled_back")
+
+    result = resolve_selector_branch_version_id(base_path, goal_id="g1")
+    assert result["ok"] is True
+    assert result["source"] == "platform_default", (
+        "resolver must fall back to platform default when the bound "
+        "selector is no longer active; got "
+        f"source={result.get('source')!r}"
+    )
+    assert "fellback_from" in result
+    fb = result["fellback_from"]
+    assert fb["branch_version_id"] == custom_bvid
+    assert fb["reason"] == "selector_version_inactive"
+    assert fb["status"] == "rolled_back"
+
+
+def test_resolve_falls_back_when_bound_selector_version_missing(base_path):
+    """Defense in depth — bound version row missing from branch_versions
+    (e.g. hard-deleted by an administrator). Resolver falls back +
+    surfaces a different ``reason`` so audit tools can distinguish."""
+    _make_goal(base_path, "g1")
+    from workflow.api.selector_dispatch import resolve_selector_branch_version_id
+    from workflow.daemon_server import update_goal
+    update_goal(
+        base_path,
+        goal_id="g1",
+        updates={"selector_branch_version_id": "phantom@deadbeef"},
+    )
+    result = resolve_selector_branch_version_id(base_path, goal_id="g1")
+    assert result["ok"] is True
+    assert result["source"] == "platform_default"
+    assert result["fellback_from"]["reason"] == "selector_version_not_found"
+
+
+def test_resolve_logs_fallback_with_clear_operator_guidance(
+    base_path, caplog,
+):
+    """Stale binding must emit a WARNING naming the goal + bvid +
+    status so operators can find it in logs and re-bind."""
+    import logging
+    _make_goal(base_path, "g-stale")
+    custom_bvid = _publish_custom_selector(
+        base_path, branch_def_id="stale_test_selector",
+    )
+    from workflow.api.selector_dispatch import resolve_selector_branch_version_id
+    from workflow.daemon_server import update_goal
+    update_goal(
+        base_path,
+        goal_id="g-stale",
+        updates={"selector_branch_version_id": custom_bvid},
+    )
+    _flip_branch_version_status(base_path, custom_bvid, "rolled_back")
+    with caplog.at_level(
+        logging.WARNING, logger="workflow.api.selector_dispatch",
+    ):
+        resolve_selector_branch_version_id(base_path, goal_id="g-stale")
+    matching = [
+        rec for rec in caplog.records
+        if rec.levelno >= logging.WARNING
+        and "g-stale" in str(rec.getMessage())
+        and custom_bvid in str(rec.getMessage())
+    ]
+    assert matching, (
+        "expected WARNING naming goal + bvid; got "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_dispatch_threads_fallback_diagnostic_to_caller(base_path):
+    """End-to-end: bind a CUSTOM selector → flip it to rolled_back →
+    dispatch must run the platform default fallback AND surface
+    ``fellback_from`` on the dispatch result for the leaderboard
+    caller to render.
+
+    Uses a CUSTOM selector so that flipping its status to rolled_back
+    leaves the platform default's deterministic active version
+    untouched (and available as the fallback target).
+    """
+    _make_goal(base_path, "g1")
+    from workflow.branch_versions import publish_branch_version
+    from workflow.daemon_server import (
+        get_branch_definition,
+        save_branch_definition,
+        update_goal,
+    )
+    # Candidate branch the leaderboard will rank.
+    save_branch_definition(
+        base_path,
+        branch_def=dict(
+            branch_def_id="b1",
+            name="b1",
+            description="",
+            author="alice",
+            tags=[],
+            graph_nodes=[],
+            edges=[],
+            state_schema=[],
+            entry_point="",
+            published=True,
+            goal_id="g1",
+        ),
+    )
+    # Publish a CUSTOM selector branch (distinct from platform
+    # default) so we can flip ITS status without disturbing the
+    # fallback target.
+    save_branch_definition(
+        base_path,
+        branch_def=dict(
+            branch_def_id="custom_selector_for_test",
+            name="custom selector",
+            description="",
+            author="alice",
+            tags=[],
+            graph_nodes=[
+                {
+                    "id": "rank",
+                    "type": "prompt",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                },
+            ],
+            edges=[
+                {"from": "START", "to": "rank"},
+                {"from": "rank", "to": "END"},
+            ],
+            state_schema=[
+                {"name": "candidate_branches", "type": "str"},
+                {"name": "ranked_entries", "type": "str"},
+            ],
+            entry_point="rank",
+            published=True,
+            node_defs=[
+                {
+                    "node_id": "rank",
+                    "display_name": "Rank",
+                    "phase": "custom",
+                    "input_keys": ["candidate_branches"],
+                    "output_keys": ["ranked_entries"],
+                    "prompt_template": "rank {candidate_branches}",
+                },
+            ],
+        ),
+    )
+    custom_branch_dict = get_branch_definition(
+        base_path, branch_def_id="custom_selector_for_test",
+    )
+    custom_version = publish_branch_version(
+        base_path, custom_branch_dict, publisher="alice",
+    )
+    custom_bvid = custom_version.branch_version_id
+
+    update_goal(
+        base_path,
+        goal_id="g1",
+        updates={"selector_branch_version_id": custom_bvid},
+    )
+    _flip_branch_version_status(base_path, custom_bvid, "rolled_back")
+
+    from workflow.api.selector_dispatch import (
+        DEFAULT_SELECTOR_BRANCH_DEF_ID,
+        dispatch_selector,
+    )
+    stub = _selector_stub_provider(candidate_ids=["b1"])
+    candidates = [{
+        "branch_def_id": "b1",
+        "branch_version_id": "",
+        "name": "b1",
+        "author": "alice",
+        "description": "",
+        "signals": {},
+    }]
+    result = dispatch_selector(
+        base_path,
+        goal_id="g1",
+        candidate_branches=candidates,
+        provider_call=stub,
+    )
+    assert result["ok"] is True, result
+    # Substrate fell back to platform default; the rolled-back custom
+    # selector was NOT dispatched.
+    assert result["source"] == "platform_default"
+    assert result["branch_version_id"].startswith(
+        DEFAULT_SELECTOR_BRANCH_DEF_ID + "@",
+    )
+    assert result["branch_version_id"] != custom_bvid
+    # Diagnostic carries the stale binding so callers can prompt the
+    # operator to re-bind.
+    assert result["fellback_from"]["branch_version_id"] == custom_bvid
+    assert result["fellback_from"]["reason"] == "selector_version_inactive"
+    assert result["fellback_from"]["status"] == "rolled_back"
+
+

@@ -163,6 +163,61 @@ def resolve_selector_branch_version_id(
         }
 
     explicit = (goal.get("selector_branch_version_id") or "").strip() or None
+    # P1.C (DESIGN-008 round 4) — re-check the bound version's status
+    # at READ/DISPATCH time. Bind-time enforces ``status='active'`` (see
+    # ``set_selector_branch``), but the version can be rolled back AFTER
+    # bind by a separate ``branch_versions.status`` flip or by a
+    # rollback operation. Without this re-check, a rolled-back selector
+    # keeps running on every leaderboard read — exactly the bug Codex
+    # round 3 caught. Mirrors the round-2 P1.1 contract on
+    # ``set_canonical_branch`` / ``_latest_published_version_id``.
+    #
+    # When the bound version is no longer active, fall back to the
+    # platform default with a structured ``fellback_from`` diagnostic
+    # so the chatbot / audit tools can flag the stale binding and the
+    # operator can re-bind or unbind.
+    fellback_from: dict[str, str] | None = None
+    if explicit:
+        try:
+            from workflow.branch_versions import get_branch_version
+            version = get_branch_version(base_path, explicit)
+        except Exception:
+            logger.exception(
+                "resolve_selector | get_branch_version crashed for "
+                "goal=%s explicit=%s", goal_id, explicit,
+            )
+            version = None
+        if version is None:
+            fellback_from = {
+                "branch_version_id": explicit,
+                "reason": "selector_version_not_found",
+            }
+            logger.warning(
+                "selector binding for goal=%s points at "
+                "branch_version_id=%r which is no longer in "
+                "branch_versions; falling back to platform default",
+                goal_id, explicit,
+            )
+            explicit = None
+        else:
+            status = getattr(version, "status", "active") or "active"
+            if status != "active":
+                fellback_from = {
+                    "branch_version_id": explicit,
+                    "reason": "selector_version_inactive",
+                    "status": status,
+                }
+                logger.warning(
+                    "selector binding for goal=%s points at "
+                    "branch_version_id=%r with status=%r "
+                    "(active-only required); falling back to "
+                    "platform default. Operator: re-bind via "
+                    "goals action=set_selector with an active "
+                    "version, or unbind with branch_version_id=''",
+                    goal_id, explicit, status,
+                )
+                explicit = None
+
     if explicit:
         return {
             "ok": True,
@@ -170,7 +225,9 @@ def resolve_selector_branch_version_id(
             "source": "goal_binding",
         }
 
-    # Fall back to the platform default selector.
+    # Fall back to the platform default selector. This path is
+    # reached for: no explicit binding, OR an explicit binding that
+    # is no longer active (see fellback_from above).
     try:
         default_bvid = ensure_default_selector_published(base_path)
     except Exception as exc:
@@ -189,11 +246,17 @@ def resolve_selector_branch_version_id(
                 "published; no fallback selector available."
             ),
         }
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "branch_version_id": default_bvid,
         "source": "platform_default",
     }
+    if fellback_from is not None:
+        # Distinguish "no binding" platform_default from "binding
+        # invalidated by rollback" platform_default. Programmatic
+        # consumers can spot stale bindings without scraping logs.
+        result["fellback_from"] = fellback_from
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +555,11 @@ def dispatch_selector(
         }
     bvid = resolution["branch_version_id"]
     source = resolution["source"]
+    # P1.C (round 4) — when the bound version was found inactive at
+    # resolve time and the substrate fell back to platform default,
+    # propagate that diagnostic to the leaderboard caller so the
+    # response shape carries it. Empty / None when not applicable.
+    fellback_from = resolution.get("fellback_from")
 
     timeout = _resolve_timeout(timeout_s)
 
@@ -704,13 +772,16 @@ def dispatch_selector(
 
     parsed = _parse_ranked_entries(output)
     if parsed.get("ok"):
-        return {
+        result: dict[str, Any] = {
             "ok": True,
             "branch_version_id": bvid,
             "source": source,
             "run_id": run_id,
             "ranked_entries": parsed["ranked_entries"],
         }
+        if fellback_from is not None:
+            result["fellback_from"] = fellback_from
+        return result
     return {
         "ok": False,
         "error_kind": parsed.get(

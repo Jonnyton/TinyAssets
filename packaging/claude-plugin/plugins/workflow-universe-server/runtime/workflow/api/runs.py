@@ -1525,6 +1525,16 @@ def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
             f"Re-pointed canonical bindings on {repointed_count} Goal(s) "
             "to nearest non-rolled-back ancestor."
         )
+    # DESIGN-008 round 4 — selector bindings are cleared (not walked up)
+    # so the leaderboard read path falls back to the platform default.
+    selector_repoint = result.get("selector_repoint", {})
+    selector_repointed_count = selector_repoint.get("repointed_count", 0)
+    if selector_repointed_count:
+        text_lines.append(
+            f"Cleared selector bindings on {selector_repointed_count} "
+            "Goal(s); leaderboard falls back to platform default until "
+            "operator re-binds via `goals action=set_selector`."
+        )
     return json.dumps({
         "text": "\n".join(text_lines),
         **result,

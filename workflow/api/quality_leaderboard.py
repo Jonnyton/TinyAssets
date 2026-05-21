@@ -349,6 +349,12 @@ def build_quality_leaderboard(
             "branch_version_id": dispatch_result.get("branch_version_id"),
             "source": dispatch_result.get("source"),
             "run_id": dispatch_result.get("run_id"),
+            # P1.C (round 4) — when the bound selector_branch_version_id
+            # was inactive at dispatch time, the substrate fell back to
+            # the platform default. ``fellback_from`` carries the old
+            # binding + reason so the chatbot can prompt the operator
+            # to re-bind. None when no fallback happened.
+            "fellback_from": dispatch_result.get("fellback_from"),
         },
         "generated_at": now,
     }
