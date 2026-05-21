@@ -144,7 +144,7 @@ A Slice 1 implementation passes acceptance when:
 - [ ] No new MCP actions added.
 - [ ] No new SQL tables added.
 - [ ] No platform-side public export of any session_trace_summary content.
-- [ ] Wiki composition-pattern page (`pages/plans/composing-session-trace-summaries.md`) exists with the Markovic worked example.
+- [x] Wiki composition-pattern page (`pages/plans/composing-session-trace-summaries.md`) exists with the Markovic worked example. *(Shipped via #952.)*
 
 ## What is NOT in this spec
 
