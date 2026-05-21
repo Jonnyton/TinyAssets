@@ -1,10 +1,13 @@
-# external_write_packet shape (draft — PR-122 Phase 1)
+# external_write_packet shape (draft — PR-122 Phase 1 + Phase 2 Slice 1)
 
 **Status:** draft authored alongside PR-122 Phase 1 implementation
-(branch `claude/pr-122-phase-1-effects-attribute-github-pr-effector`).
-Promotion path: this draft is the seed for a canonical wiki page once
-the first real Loop 2 PR emission lands. Not yet a stable contract —
-fields may add, not remove, until a v1 cut is declared.
+(branch `claude/pr-122-phase-1-effects-attribute-github-pr-effector`),
+extended in PR-122 Phase 2 Slice 1 (branch
+`claude/pr-122-phase-2-authority-idempotency-consent`) to add the
+``destination`` field. Promotion path: this draft is the seed for a
+canonical wiki page once the first real Loop 2 PR emission lands. Not
+yet a stable contract — fields may add, not remove, until a v1 cut is
+declared.
 
 ## What this is
 
@@ -23,6 +26,7 @@ as a packet whose `sink` matches the declared effect.
 ```json
 {
   "sink": "github_pull_request",
+  "destination": "Jonnyton/Workflow",
   "payload": {
     "title": "PR title — required.",
     "body":  "PR body — required, may be empty string.",
@@ -38,18 +42,30 @@ as a packet whose `sink` matches the declared effect.
 
 ### Fields
 
-- **`sink`** (string, required) — names the external destination. The
+- **`sink`** (string, required) — names the external destination type. The
   effector dispatches on this value. Today: `"github_pull_request"`.
   Future: `"twitter_post"`, `"discord_message"`, `"webhook"`, etc.
   Unknown sinks return `error_kind="unknown_sink"` instead of writing.
+- **`destination`** (string, required for real writes in Phase 2) —
+  per-sink destination identifier. For ``github_pull_request`` this is
+  the ``owner/repo`` slug, e.g. ``"Jonnyton/Workflow"``. The Phase 2
+  authority gates (capability env + consent grant) key off this value
+  exactly; no wildcard or case-insensitive match. **Backward compat:**
+  packets that OMIT `destination` continue to land on the Phase-1
+  dry-run-only path. They cannot mint a real write regardless of
+  capability/consent state — this is the migration grace path for
+  existing Phase-1 packets.
 - **`payload`** (object, required) — sink-specific instructions. For
   GitHub PR: see the `payload` keys above. The effector validates
   required sub-keys (`title`) and rejects with `error_kind=
   "invalid_payload"` when missing.
 - **`idempotency_hint`** (string, optional) — caller's suggested
-  collision key. In Phase 1 this is a passthrough; the effector does
-  not derive its own key yet. A future slice may sha256 the payload
-  plus the head_branch for a canonical key (named PR-122 follow-on).
+  collision key. The Phase 2 effector treats this as the deduplication
+  key against ``external_write_receipts``: a hit returns the recorded
+  evidence with ``idempotency_dedup_hit=true`` instead of firing again.
+  Omitting the field opts out of dedup (every invocation runs). A
+  future slice may sha256 the payload plus the head_branch for a
+  canonical caller-independent key.
 - **`expected_evidence_keys`** (list of strings, optional) — names the
   evidence fields the caller hopes to see back. Documentary today; a
   future slice may add validation that the effector populated all
@@ -87,6 +103,35 @@ Evidence (failure): `{"error": "...", "error_kind": "..."}` plus
 - `no_matching_packet`
 - `unknown_sink`
 - `effector_crashed`
+
+Evidence (Phase 2 dry-run from a closed gate):
+
+```json
+{
+  "dry_run": true,
+  "phase": "phase_2",
+  "reason": "missing_capability" | "missing_consent",
+  "destination": "Jonnyton/Workflow",
+  "capability_env_key": "WORKFLOW_GITHUB_PR_CAPABILITY_REPO_JONNYTON_WORKFLOW",
+  "intent": <packet>,
+  "matched_output_key": "..."
+}
+```
+
+Evidence (Phase 2 idempotency dedup hit):
+
+```json
+{
+  "idempotency_dedup_hit": true,
+  "phase": "phase_2",
+  "destination": "Jonnyton/Workflow",
+  "matched_output_key": "...",
+  "evidence": <recorded-evidence>,
+  "recorded_run_id": "<original run that produced the PR>",
+  "recorded_at": <unix-ts>,
+  "idempotency_hint": "..."
+}
+```
 
 ## Dry run
 

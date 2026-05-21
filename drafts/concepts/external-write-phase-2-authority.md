@@ -1,9 +1,11 @@
-# External-write Phase 2 — real-write authority (draft concept)
+# External-write Phase 2 — real-write authority
 
-**Status:** draft / concept. Not a vetted spec. Descendant of PR-122
-Phase 1; tracks the requirements that must be satisfied before the
-GitHub PR substrate effector (and any future sink) may actually invoke
-``gh pr create`` / equivalent side-effect.
+**Status:** **shipped in PR-122 Phase 2 Slice 1.** Branch:
+``claude/pr-122-phase-2-authority-idempotency-consent``. This file
+records the requirements and the as-shipped Slice-1 implementation
+shape. Future slices (Option B capability, multi-sink, wildcard grants)
+will update this document in-place rather than spawning new design
+notes.
 
 **Why this doc exists.** PR-122 Phase 1 round-3 (PR #955) deliberately
 cut the effector to dry-run-only at the code level. Round-2's
@@ -102,22 +104,47 @@ refinement once we see real grant-list shape.
 
 ## 4. Phase 1 → Phase 2 migration checklist
 
-When Phase 2 lands the changes above:
+Slice-1 status (all checked items shipped in this slice):
 
-- [ ] Re-introduce `_invoke_gh_pr_create` (or equivalent) in
+- [x] Re-introduce `_invoke_gh_pr_create` in
       ``workflow/effectors/github_pr.py``.
-- [ ] Add the capability-token check (Option A or B; pick at landing).
-- [ ] Add the idempotency-store check before any `gh pr create` call.
-- [ ] Add the `effector_consents` table + migration.
-- [ ] Add MCP actions to grant/revoke consent.
-- [ ] Update `drafts/concepts/external-write-packet-shape.md` to add
-      the `destination` field.
-- [ ] Migrate ``WORKFLOW_EXTERNAL_WRITE_ENABLED`` from "Phase-2 hook
-      signal" to "actual write enable" (or retire entirely if Option B
-      makes it redundant).
-- [ ] Keep the runtime quarantine helper
-      (``_quarantine_branch_authored_external_write_keys``) — it is
-      independent of the authority gate and remains correct.
+- [x] Add the capability-token check (**Option A — env-sourced**; the
+      per-destination env-key shape is
+      ``WORKFLOW_GITHUB_PR_CAPABILITY_REPO_<OWNER>_<REPO>`` with
+      non-alphanumeric runs collapsed to ``_`` and uppercased).
+- [x] Add the idempotency-store check before any `gh pr create` call.
+      Storage: ``workflow/storage/external_write_receipts.py``.
+- [x] Add the `effector_consents` table + migration. Storage:
+      ``workflow/storage/effector_consents.py``.
+- [x] Add MCP actions to grant/revoke/list consent on the ``extensions``
+      surface. Dispatch: ``workflow/api/extensions_consent_actions.py``.
+- [x] Update `drafts/concepts/external-write-packet-shape.md` to add
+      the `destination` field (also documents the new Phase-2 dry-run
+      evidence shape and the idempotency dedup-hit shape).
+- [x] Keep the runtime quarantine helper
+      (``_quarantine_branch_authored_external_write_keys``) — independent
+      of the authority gate and still correct.
+
+Deferred to follow-on slices (NOT in Slice 1):
+
+- [ ] Option B (per-run controller-minted capability) — kept design-only
+      in §1. Migrate when paid-market / multi-tenant capacity grants
+      make per-run scoping load-bearing.
+- [ ] Wildcard / org-level consent grants — kept exact-match for Slice
+      1. Refine once the chatbot's grant-list surface shows real usage.
+- [ ] Multi-sink generalization (twitter_post, discord_message, etc.).
+      The receipts + consent storage layers are already sink-namespaced;
+      adding a second sink is one effector module + one chatbot
+      action-dispatch arm.
+- [ ] Optional remote-branch lookup (``gh api repos/{owner}/{repo}/
+      branches/{name}``) as a pre-check before invoking ``gh pr create``.
+      Slice 1 relies on the local receipt store; a future slice can
+      add the remote check for cases where the receipt was lost
+      (e.g. universe DB restored from a backup older than the PR).
+- [ ] ``WORKFLOW_EXTERNAL_WRITE_ENABLED`` is **kept as a Phase-1 signal**
+      in Slice 1 — Phase-1-shaped packets (no ``destination``) still
+      observe it via the ``mode="dry_run_phase_1"`` evidence label.
+      Retire / repurpose when no Phase-1 packets remain in the wild.
 
 ## Reference
 

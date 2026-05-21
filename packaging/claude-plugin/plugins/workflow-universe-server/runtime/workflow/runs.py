@@ -2122,7 +2122,9 @@ def _invoke_graph(
     # raise into the user-facing run status. Hard-rule #8 (fail loudly)
     # is satisfied by the structured error fields on each evidence entry.
     _quarantine_branch_authored_external_write_keys(output)
-    external_write_evidence = _run_external_write_effectors(branch, output)
+    external_write_evidence = _run_external_write_effectors(
+        branch, output, base_path=base_path, run_id=run_id,
+    )
     if external_write_evidence:
         # PR-122 Phase 1 round-2 (Codex finding #2): the receipt is
         # system-authoritative. Overwrite unconditionally — any branch
@@ -2181,9 +2183,19 @@ def _quarantine_branch_authored_external_write_keys(
 
 
 def _run_external_write_effectors(
-    branch: BranchDefinition, run_state: dict[str, Any],
+    branch: BranchDefinition,
+    run_state: dict[str, Any],
+    *,
+    base_path: str | Path | None = None,
+    run_id: str = "",
 ) -> dict[str, Any]:
     """Dispatch external-write effectors for ``branch`` against ``run_state``.
+
+    ``base_path`` + ``run_id`` are passed to the effector so the Phase-2
+    gates (consent + idempotency) have a universe to bind to. When
+    omitted (legacy or test invocations), the effector falls back to
+    dry-run for any Phase-2-shaped packet — see
+    ``workflow.effectors.github_pr.run_effects_for_branch``.
 
     Never raises — all errors are folded into the returned evidence map.
     Returns ``{}`` when no node declares any ``effects``.
@@ -2194,7 +2206,12 @@ def _run_external_write_effectors(
         logger.exception("failed to import workflow.effectors")
         return {}
     try:
-        return run_effects_for_branch(branch=branch, run_state=run_state)
+        return run_effects_for_branch(
+            branch=branch,
+            run_state=run_state,
+            base_path=base_path,
+            run_id=run_id,
+        )
     except Exception:  # pragma: no cover — effectors are no-raise
         logger.exception("external-write effector dispatch crashed")
         return {}
@@ -2965,7 +2982,9 @@ def _invoke_graph_resume(
     # completion so a re-run that finishes via resume_run still emits
     # declared PR sinks. Same no-raise contract as the primary path.
     _quarantine_branch_authored_external_write_keys(output)
-    external_write_evidence = _run_external_write_effectors(branch, output)
+    external_write_evidence = _run_external_write_effectors(
+        branch, output, base_path=base_path, run_id=run_id,
+    )
     if external_write_evidence:
         # System-authoritative receipt — overwrite unconditionally
         # (see start_run for the rationale + Codex finding #2).
