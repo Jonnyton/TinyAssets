@@ -10,6 +10,36 @@ domain-neutral status text instead of fantasy-shaped vocabulary alone.
 from __future__ import annotations
 
 
+def test_wrapper_output_with_synthesis_switch_stops_for_universe_switch(tmp_path):
+    """Wrapper-mode output must still trigger the daemon switch path.
+
+    Direct graph execution emits the same health field from the inner
+    ``universe_cycle`` node. Under unified execution, the outer stream only
+    exposes ``universe_cycle_wrapper`` output, so the controller must honor
+    the switch request there too.
+    """
+    from fantasy_daemon.__main__ import DaemonController
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    controller = DaemonController(universe_path=str(universe), no_tray=True)
+
+    controller._handle_node_output(
+        "universe_cycle_wrapper",
+        {
+            "health": {
+                "switch_to_universe": "universe-b",
+                "stopped": True,
+            },
+            "total_words": 0,
+            "total_chapters": 0,
+        },
+    )
+
+    assert controller._pending_universe_switch == "universe-b"
+    assert controller._stop_event.is_set()
+
+
 def test_neutral_fields_in_emission_when_idle_by_design():
     """When daemon idles by design (stopped=True, no work), emission includes
     reason_code=no_active_work + display_reason=idle_no_active_work."""

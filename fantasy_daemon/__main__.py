@@ -1786,7 +1786,7 @@ class DaemonController:
         # Check for cross-universe synthesis switch request
         health = output.get("health", {})
         switch_target = health.get("switch_to_universe", "")
-        if switch_target and node_name == "universe_cycle":
+        if switch_target and node_name in ("universe_cycle", "universe_cycle_wrapper"):
             self._pending_universe_switch = switch_target
             self._stop_event.set()
             logger.info(
