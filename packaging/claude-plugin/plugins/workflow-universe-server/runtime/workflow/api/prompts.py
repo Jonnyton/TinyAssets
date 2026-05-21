@@ -276,7 +276,7 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
   action is unavailable, say so; do NOT fake the run through other tools.
 - "Remember this as daemon learning" / "what does this daemon remember?"
   / "review this daemon memory" -> use the daemon mini-brain actions on
-  `universe`. Pass `daemon_id` and structured fields through
+  `universe`. Pass `daemon_id` directly and structured fields through
   `inputs_json`; use `daemon_memory_capture` for new lessons,
   `daemon_memory_search` / `daemon_memory_list` for lookup,
   `daemon_memory_review` for accept/reject/supersede, and

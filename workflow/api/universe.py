@@ -1654,21 +1654,23 @@ def _as_string_list(value: Any) -> list[str] | None:
 def _daemon_memory_inputs(
     inputs_json: str,
     *,
+    daemon_id: str = "",
     node_def_id: str = "",
 ) -> tuple[dict[str, Any], str, str | None]:
     data, err = _parse_inputs_object(inputs_json)
     if err:
         return {}, "", err
-    daemon_id = str(data.get("daemon_id") or node_def_id or "").strip()
-    if not daemon_id:
+    resolved_daemon_id = str(data.get("daemon_id") or daemon_id or node_def_id or "").strip()
+    if not resolved_daemon_id:
         return data, "", "daemon_id is required."
-    return data, daemon_id, None
+    return data, resolved_daemon_id, None
 
 
 def _action_daemon_memory_capture(
     universe_id: str = "",
     inputs_json: str = "",
     text: str = "",
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
@@ -1676,7 +1678,9 @@ def _action_daemon_memory_capture(
     from workflow.daemon_brain import capture_daemon_memory
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     content = str(data.get("content") or text or "").strip()
@@ -1720,13 +1724,16 @@ def _action_daemon_memory_search(
     text: str = "",
     filter_text: str = "",
     limit: Any = 5,
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.daemon_brain import search_daemon_memory
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     query = str(data.get("query") or text or filter_text or "").strip()
@@ -1754,13 +1761,16 @@ def _action_daemon_memory_list(
     universe_id: str = "",
     inputs_json: str = "",
     limit: Any = 50,
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.daemon_brain import list_daemon_memory
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     try:
@@ -1782,6 +1792,7 @@ def _action_daemon_memory_review(
     inputs_json: str = "",
     text: str = "",
     branch_task_id: str = "",
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
@@ -1789,7 +1800,9 @@ def _action_daemon_memory_review(
     from workflow.daemon_brain import review_daemon_memory
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     entry_id = str(data.get("entry_id") or branch_task_id or "").strip()
@@ -1821,13 +1834,16 @@ def _action_daemon_memory_promote(
     inputs_json: str = "",
     text: str = "",
     branch_task_id: str = "",
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.daemon_brain import promote_daemon_memory_to_wiki
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     entry_ids = _as_string_list(data.get("entry_ids")) or _as_string_list(branch_task_id)
@@ -1852,13 +1868,16 @@ def _action_daemon_memory_promote(
 def _action_daemon_memory_status(
     universe_id: str = "",
     inputs_json: str = "",
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.daemon_brain import memory_observability_status
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     try:
@@ -4258,6 +4277,7 @@ def _universe_impl(
     pickup_incentive: str = "",
     directed_daemon_id: str = "",
     directed_daemon_instruction: str = "",
+    daemon_id: str = "",
     branch_task_id: str = "",
     goal_id: str = "",
     branch_def_id: str = "",
@@ -4349,6 +4369,7 @@ def _universe_impl(
         "pickup_incentive": pickup_incentive,
         "directed_daemon_id": directed_daemon_id,
         "directed_daemon_instruction": directed_daemon_instruction,
+        "daemon_id": daemon_id,
         "branch_task_id": branch_task_id,
         "goal_id": goal_id,
         "branch_def_id": branch_def_id,

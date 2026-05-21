@@ -503,6 +503,14 @@ def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch) -> None:
     assert status_out["daemon_count"] == 1
     assert status_out["runtime_count"] == 1
 
+    memory_status_out = json.loads(univ_mod._universe_impl(
+        action="daemon_memory_status",
+        universe_id="u1",
+        daemon_id=daemon["daemon_id"],
+    ))
+    assert memory_status_out["daemon_id"] == daemon["daemon_id"]
+    assert memory_status_out["schema_version"] == 1
+
     banish_out = json.loads(univ_mod._universe_impl(
         action="daemon_banish",
         universe_id="u1",

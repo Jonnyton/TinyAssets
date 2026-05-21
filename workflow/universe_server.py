@@ -325,6 +325,7 @@ def universe(
     pickup_incentive: str = "",
     directed_daemon_id: str = "",
     directed_daemon_instruction: str = "",
+    daemon_id: str = "",
     branch_task_id: str = "",
     goal_id: str = "",
     branch_def_id: str = "",
@@ -369,6 +370,7 @@ def universe(
         branch_id/request_type: Request routing fields.
         pickup_incentive/directed_daemon_id: Optional patch-request pickup
             signals; these do not affect acceptance, release, or merge odds.
+        daemon_id: Target daemon for daemon memory/status actions.
         filename/provenance_tag/limit/tag: Optional read/write filters.
         anchor_json: Optional JSON object for `give_direction` line/span notes.
     """
@@ -390,6 +392,7 @@ def universe(
         pickup_incentive=pickup_incentive,
         directed_daemon_id=directed_daemon_id,
         directed_daemon_instruction=directed_daemon_instruction,
+        daemon_id=daemon_id,
         branch_task_id=branch_task_id,
         goal_id=goal_id,
         branch_def_id=branch_def_id,
