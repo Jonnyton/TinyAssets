@@ -639,18 +639,16 @@ def _extensions_impl(
     # ── Quality leaderboard / parent selection (PR-123 substrate M2) ───────
     leaderboard_handler = _LEADERBOARD_ACTIONS.get(action)
     if leaderboard_handler is not None:
-        lb_kwargs: dict[str, Any] = {
-            "goal_id": goal_id,
-            "author": author,
-            "force": force,
-        }
-        # ``author`` carries the optional viewer override; ``force`` is
-        # the include_private flag (host / internal callers only).
-        # Field reuse keeps the extensions() tool signature stable —
-        # no new kwargs added in this slice.
-        lb_kwargs["viewer"] = author or ""
-        lb_kwargs["include_private"] = force
-        return leaderboard_handler(lb_kwargs)
+        # P1.1 fix (round 2) — the dispatch MUST NOT forward
+        # caller-supplied ``author`` / ``force`` into the leaderboard
+        # handler's visibility surface. Round-1 mapped
+        # ``author -> viewer`` and ``force -> include_private``, which
+        # let an MCP caller see private branches authored by anyone
+        # they could name. The handler now resolves viewer identity
+        # server-side via ``_current_actor()``; visibility is
+        # public-or-author-owned for the actual caller, never the
+        # caller-named identity.
+        return leaderboard_handler({"goal_id": goal_id})
 
     return json.dumps({
         "error": f"Unknown action '{action}'.",

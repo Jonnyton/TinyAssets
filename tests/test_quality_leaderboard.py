@@ -153,7 +153,7 @@ def _record_judgment(
 
 def test_empty_goal_returns_no_entries(base_path):
     _make_goal(base_path, "g-empty")
-    board = build_quality_leaderboard(base_path, goal_id="g-empty")
+    board = build_quality_leaderboard(base_path, goal_id="g-empty", viewer="")
     assert board["entries"] == []
     assert board["goal_id"] == "g-empty"
     assert board["goal"] is not None
@@ -163,14 +163,14 @@ def test_empty_goal_returns_no_entries(base_path):
 
 
 def test_unknown_goal_id_returns_empty_entries_and_none_goal(base_path):
-    board = build_quality_leaderboard(base_path, goal_id="nope")
+    board = build_quality_leaderboard(base_path, goal_id="nope", viewer="")
     assert board["entries"] == []
     assert board["goal"] is None
 
 
 def test_recommend_parent_when_no_entries(base_path):
     _make_goal(base_path, "g-empty")
-    rec = recommend_parent_for_fork(base_path, goal_id="g-empty")
+    rec = recommend_parent_for_fork(base_path, goal_id="g-empty", viewer="")
     assert rec["recommended_parent"] is None
     assert "No Branch is bound" in rec["rationale"]
     assert rec["leaderboard_size"] == 0
@@ -184,7 +184,7 @@ def test_recommend_parent_when_no_entries(base_path):
 def test_single_branch_ranks_first(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b1", goal_id="g1")
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     assert len(board["entries"]) == 1
     entry = board["entries"][0]
     assert entry["rank"] == 1
@@ -207,7 +207,7 @@ def test_single_branch_with_completed_run_scores_above_zero(base_path):
         status=RUN_STATUS_COMPLETED,
         finished_at=time.time(),
     )
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     entry = board["entries"][0]
     assert entry["score"] > 0
     assert entry["signals"]["completed_run_count"] == 1
@@ -229,7 +229,7 @@ def test_judgment_tag_parsing_produces_score_avg(base_path):
     )
     _record_judgment(base_path, run_id=run_id, tags=["quality:8.0", "novelty:7.0"])
     _record_judgment(base_path, run_id=run_id, tags=["quality:9.0"])
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     entry = board["entries"][0]
     # avg of 8.0, 7.0, 9.0 = 8.0
     assert entry["signals"]["judgment_score_avg"] == pytest.approx(8.0)
@@ -250,7 +250,7 @@ def test_other_numeric_tags_recorded_separately(base_path):
         base_path, run_id=run_id,
         tags=["quality:8", "risk:3", "cost:42"],
     )
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     signals = board["entries"][0]["signals"]
     assert signals["judgment_score_avg"] == pytest.approx(8.0)
     assert signals["other_numeric_tags"] == {"risk": 1, "cost": 1}
@@ -268,7 +268,7 @@ def test_non_numeric_tags_ignored(base_path):
         tags=["needs-revision", "writer:loop-2"],
     )
     signals = build_quality_leaderboard(
-        base_path, goal_id="g1",
+        base_path, goal_id="g1", viewer="",
     )["entries"][0]["signals"]
     assert signals["judgment_score_avg"] is None
     assert signals["other_numeric_tags"] == {}
@@ -294,7 +294,7 @@ def test_higher_judgment_wins_over_lower(base_path):
     )
     _record_judgment(base_path, run_id=r_low, tags=["quality:3.0"])
     _record_judgment(base_path, run_id=r_high, tags=["quality:9.0"])
-    board = build_quality_leaderboard(base_path, goal_id="g1", now=now)
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="", now=now)
     ranks = {e["branch_def_id"]: e["rank"] for e in board["entries"]}
     assert ranks["b-high"] == 1
     assert ranks["b-low"] == 2
@@ -319,7 +319,7 @@ def test_recency_decay_breaks_score_ties_among_equal_quality(base_path):
     )
     _record_judgment(base_path, run_id=r_old, tags=["quality:8.0"])
     _record_judgment(base_path, run_id=r_new, tags=["quality:8.0"])
-    board = build_quality_leaderboard(base_path, goal_id="g1", now=now)
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="", now=now)
     entries = board["entries"]
     assert entries[0]["branch_def_id"] == "b-new"
     assert entries[1]["branch_def_id"] == "b-old"
@@ -350,7 +350,7 @@ def test_fork_count_contributes_to_score(base_path):
         base_path, branch_def_id="fork-3",
         goal_id="g1", fork_from="b-popular",
     )
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     pop_entry = next(
         e for e in board["entries"] if e["branch_def_id"] == "b-popular"
     )
@@ -381,7 +381,7 @@ def test_failed_runs_apply_penalty(base_path):
             base_path, branch_def_id="b-buggy",
             status=RUN_STATUS_FAILED, finished_at=now,
         )
-    board = build_quality_leaderboard(base_path, goal_id="g1", now=now)
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="", now=now)
     clean = next(
         e for e in board["entries"] if e["branch_def_id"] == "b-clean"
     )
@@ -410,7 +410,7 @@ def test_safe_to_publish_signal_from_branch_stats(base_path):
         stats={"next_action_packet": {"safe_to_publish": True}},
     )
     _make_branch(base_path, branch_def_id="b-unsafe", goal_id="g1")
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     safe = next(
         e for e in board["entries"] if e["branch_def_id"] == "b-safe"
     )
@@ -433,7 +433,7 @@ def test_safe_to_publish_absent_or_falsy_does_not_crash(base_path):
         base_path, branch_def_id="b-not-a-dict",
         goal_id="g1", stats={"next_action_packet": "not a packet"},
     )
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     for entry in board["entries"]:
         assert entry["signals"]["safe_to_publish"] is False
 
@@ -463,7 +463,7 @@ def test_gate_rung_signal_populates_when_claim_present(base_path):
                 "2026-01-01T00:00:00",
             ),
         )
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     rung = next(
         e for e in board["entries"] if e["branch_def_id"] == "b-rung"
     )
@@ -503,7 +503,7 @@ def test_realistic_goal_with_fifteen_entries(base_path):
                 tags=[f"quality:{(i % 9) + 1}"],
             )
     board = build_quality_leaderboard(
-        base_path, goal_id="g-big", now=now,
+        base_path, goal_id="g-big", viewer="", now=now,
     )
     assert len(board["entries"]) == 18
     # Ranks are 1..18 with no gaps.
@@ -538,7 +538,7 @@ def test_recommend_parent_returns_top_with_rationale(base_path):
         base_path, branch_def_id="b-top-fork",
         goal_id="g1", parent_def_id="b-top",
     )
-    rec = recommend_parent_for_fork(base_path, goal_id="g1", now=now)
+    rec = recommend_parent_for_fork(base_path, goal_id="g1", viewer="", now=now)
     assert rec["recommended_parent"] is not None
     assert rec["recommended_parent"]["branch_def_id"] == "b-top"
     rationale = rec["rationale"]
@@ -552,7 +552,7 @@ def test_recommend_parent_returns_top_with_rationale(base_path):
 def test_recommend_parent_no_judgments_yet_tentative_phrase(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b-bare", goal_id="g1")
-    rec = recommend_parent_for_fork(base_path, goal_id="g1")
+    rec = recommend_parent_for_fork(base_path, goal_id="g1", viewer="")
     assert rec["recommended_parent"] is not None
     # When the top entry has no signals at all, the rationale should
     # call out the lack of quality data.
@@ -567,7 +567,7 @@ def test_recommend_parent_no_judgments_yet_tentative_phrase(base_path):
 
 def test_formula_disclosure_includes_all_weights(base_path):
     _make_goal(base_path, "g1")
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     weights = board["formula"]["weights"]
     expected_keys = {
         "judgment", "runs", "forks", "recency",
@@ -586,7 +586,7 @@ def test_score_components_sum_to_score(base_path):
         status=RUN_STATUS_COMPLETED, finished_at=time.time(),
     )
     _record_judgment(base_path, run_id=rid, tags=["quality:7"])
-    board = build_quality_leaderboard(base_path, goal_id="g1")
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     entry = board["entries"][0]
     component_sum = sum(entry["score_components"].values())
     assert entry["score"] == pytest.approx(component_sum, abs=1e-3)
@@ -603,10 +603,10 @@ def test_ranking_is_deterministic(base_path):
         _make_branch(base_path, branch_def_id=f"b{i}", goal_id="g1")
     now = 1_700_000_000.0
     board_a = build_quality_leaderboard(
-        base_path, goal_id="g1", now=now,
+        base_path, goal_id="g1", viewer="", now=now,
     )
     board_b = build_quality_leaderboard(
-        base_path, goal_id="g1", now=now,
+        base_path, goal_id="g1", viewer="", now=now,
     )
     assert [
         e["branch_def_id"] for e in board_a["entries"]

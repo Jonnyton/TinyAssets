@@ -110,14 +110,26 @@ def build_quality_leaderboard(
     base_path: str | Path,
     *,
     goal_id: str,
+    viewer: str,
     now: float | None = None,
-    viewer: str = "",
-    include_private: bool = False,
 ) -> dict[str, Any]:
     """Compute the ranked list of branches bound to ``goal_id``.
 
     Returns ``{"goal_id": ..., "goal": <row | None>, "entries": [...],
     "formula": {...}, "generated_at": ...}``.
+
+    Visibility / auth-boundary contract (round-2 P1.1 fix)
+    ------------------------------------------------------
+    ``viewer`` is the actor identity for which visibility is resolved
+    and MUST be derived server-side by the caller (never accepted from
+    an MCP input). Pass an empty string for the "strictly public" view
+    (no private branches included). The function does NOT accept an
+    ``include_private`` knob — that surface was caller-controllable in
+    round-1 and let an MCP caller flip visibility by passing
+    ``force=true``. To inspect private branches from a host/internal
+    script, build the response directly via the storage helpers; this
+    public entry point ALWAYS applies the public-or-author-owned
+    visibility filter.
 
     Each entry is::
 
@@ -148,16 +160,25 @@ def build_quality_leaderboard(
     goal_row = _safe_get_goal(base_path, goal_id)
 
     from workflow.daemon_server import list_branch_definitions
+    # P1.1 fix — visibility is ALWAYS the public-or-author-owned filter.
+    # ``include_private`` is hard-False at this seam: there's no MCP
+    # surface that legitimately needs to bypass this filter, and round-1
+    # let a caller-supplied ``force=true`` flip it. If a future internal
+    # caller genuinely needs every row, it must reach for the storage
+    # helpers directly with explicit ``include_private=True`` — that
+    # path is host/internal-only and not reachable from MCP.
     branches = list_branch_definitions(
         base_path,
         goal_id=goal_id,
         viewer=viewer,
-        include_private=include_private,
+        include_private=False,
     )
 
     entries: list[dict[str, Any]] = []
     for branch in branches:
-        signals = _collect_signals_for_branch(base_path, branch, now=now)
+        signals = _collect_signals_for_branch(
+            base_path, branch, now=now, viewer=viewer,
+        )
         components = _score_components(signals)
         score = sum(components.values())
         entries.append({
@@ -196,14 +217,17 @@ def recommend_parent_for_fork(
     base_path: str | Path,
     *,
     goal_id: str,
+    viewer: str,
     now: float | None = None,
-    viewer: str = "",
-    include_private: bool = False,
 ) -> dict[str, Any]:
     """Return the top leaderboard entry plus a human-readable rationale.
 
     Returns ``{"goal_id": ..., "recommended_parent": <entry | None>,
     "rationale": "...", "leaderboard_size": <int>, "generated_at": ...}``.
+
+    Visibility contract matches :func:`build_quality_leaderboard` —
+    ``viewer`` must be server-derived; private branches the viewer does
+    not own are excluded.
 
     When no branch is bound to the Goal the response carries
     ``recommended_parent=None`` and a rationale explaining that no
@@ -213,9 +237,8 @@ def recommend_parent_for_fork(
     board = build_quality_leaderboard(
         base_path,
         goal_id=goal_id,
-        now=now,
         viewer=viewer,
-        include_private=include_private,
+        now=now,
     )
     entries = board["entries"]
     if not entries:
@@ -250,13 +273,17 @@ def _collect_signals_for_branch(
     branch: dict[str, Any],
     *,
     now: float,
+    viewer: str,
 ) -> dict[str, Any]:
     bid = branch["branch_def_id"]
     goal_id = branch.get("goal_id") or ""
 
     run_stats = _run_stats(base_path, bid)
     judgment_stats = _judgment_stats(base_path, bid)
-    fork_count = _fork_count(base_path, bid)
+    # P1.2 fix — fork count respects viewer visibility. Counting raw
+    # descendant rows would leak existence of private forks (the row
+    # was hidden from the listing but the aggregate count exposed it).
+    fork_count = _fork_count(base_path, bid, viewer=viewer)
     gate_rung_top = _gate_rung_top(base_path, bid, goal_id)
     safe_to_publish = _safe_to_publish(branch)
 
@@ -382,21 +409,44 @@ def _judgment_stats(
     }
 
 
-def _fork_count(base_path: str | Path, branch_def_id: str) -> int:
-    """Count descendants. Either ``parent_def_id`` or ``fork_from`` may
-    reference this branch — count rows whose either column matches.
+def _fork_count(
+    base_path: str | Path,
+    branch_def_id: str,
+    *,
+    viewer: str,
+) -> int:
+    """Count descendants the ``viewer`` can see.
+
+    Either ``parent_def_id`` or ``fork_from`` may reference this branch
+    — count rows whose either column matches AND that pass the same
+    visibility filter ``list_branch_definitions`` applies (public OR
+    authored by the viewer). This closes the round-2 P1.2 finding: a
+    naive raw count exposed the existence of private descendant rows
+    even when the rows themselves were hidden from the listing.
+
+    Passing ``viewer=""`` matches the "strictly public" semantics —
+    counts only public descendants, never private ones.
     """
     from workflow.storage import _connect
 
+    if viewer:
+        sql = (
+            "SELECT COUNT(*) AS n "
+            "FROM branch_definitions "
+            "WHERE (parent_def_id = ? OR fork_from = ?) "
+            "AND (visibility = 'public' OR author = ?)"
+        )
+        params: tuple[Any, ...] = (branch_def_id, branch_def_id, viewer)
+    else:
+        sql = (
+            "SELECT COUNT(*) AS n "
+            "FROM branch_definitions "
+            "WHERE (parent_def_id = ? OR fork_from = ?) "
+            "AND visibility = 'public'"
+        )
+        params = (branch_def_id, branch_def_id)
     with _connect(base_path) as conn:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) AS n
-              FROM branch_definitions
-             WHERE parent_def_id = ? OR fork_from = ?
-            """,
-            (branch_def_id, branch_def_id),
-        ).fetchone()
+        row = conn.execute(sql, params).fetchone()
     return int(row["n"] or 0) if row is not None else 0
 
 

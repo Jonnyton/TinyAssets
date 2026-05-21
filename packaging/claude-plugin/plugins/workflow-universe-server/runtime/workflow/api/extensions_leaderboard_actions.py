@@ -33,11 +33,34 @@ def _base_universe_dir():
     return _base_path()
 
 
+def _resolve_caller_viewer() -> str:
+    """Resolve the viewer identity ONLY from the daemon-side actor.
+
+    Round-2 P1.1 fix — the round-1 handler trusted a caller-supplied
+    ``viewer`` kwarg, which let an MCP caller passing
+    ``author="someone-else"`` see that user's private branches. This
+    helper drops the kwarg entirely and reads ``_current_actor()`` as
+    the single source of truth. Defensive try/except so a misconfigured
+    daemon falls back to the "strictly public" filter rather than
+    leaking private rows on import failure.
+    """
+    try:
+        from workflow.api.engine_helpers import _current_actor
+        return _current_actor() or ""
+    except Exception:
+        logger.exception("failed to resolve _current_actor for viewer")
+        return ""
+
+
 def _action_quality_leaderboard(kwargs: dict[str, Any]) -> str:
     """Return the ranked leaderboard for a Goal.
 
-    Required: ``goal_id``. Optional: ``viewer`` (defaults to current
-    actor), ``include_private`` (default False).
+    Required: ``goal_id``.
+
+    NOTE: any caller-supplied ``viewer`` / ``include_private`` / ``force``
+    keys in ``kwargs`` are IGNORED for visibility purposes. Visibility
+    is always derived server-side from the current actor — see the
+    round-2 PR comment on #970 for the auth-boundary rationale.
     """
     goal_id = (kwargs.get("goal_id") or "").strip()
     if not goal_id:
@@ -46,14 +69,7 @@ def _action_quality_leaderboard(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_goal_id",
             "actionable_by": "chatbot",
         })
-    viewer = (kwargs.get("viewer") or "").strip()
-    if not viewer:
-        try:
-            from workflow.api.engine_helpers import _current_actor
-            viewer = _current_actor()
-        except Exception:
-            viewer = ""
-    include_private = _bool_kwarg(kwargs.get("include_private"))
+    viewer = _resolve_caller_viewer()
 
     try:
         from workflow.api.quality_leaderboard import build_quality_leaderboard
@@ -61,7 +77,6 @@ def _action_quality_leaderboard(kwargs: dict[str, Any]) -> str:
             _base_universe_dir(),
             goal_id=goal_id,
             viewer=viewer,
-            include_private=include_private,
         )
     except Exception as exc:
         logger.exception("quality_leaderboard failed for %s", goal_id)
@@ -78,8 +93,8 @@ def _action_quality_leaderboard(kwargs: dict[str, Any]) -> str:
 def _action_recommended_parent_for_fork(kwargs: dict[str, Any]) -> str:
     """Return the top leaderboard entry + rationale for forking.
 
-    Required: ``goal_id``. Same viewer / include_private kwargs as
-    ``quality_leaderboard``.
+    Required: ``goal_id``. Same viewer-derivation rules as
+    ``quality_leaderboard`` — visibility is server-side only.
     """
     goal_id = (kwargs.get("goal_id") or "").strip()
     if not goal_id:
@@ -88,14 +103,7 @@ def _action_recommended_parent_for_fork(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_goal_id",
             "actionable_by": "chatbot",
         })
-    viewer = (kwargs.get("viewer") or "").strip()
-    if not viewer:
-        try:
-            from workflow.api.engine_helpers import _current_actor
-            viewer = _current_actor()
-        except Exception:
-            viewer = ""
-    include_private = _bool_kwarg(kwargs.get("include_private"))
+    viewer = _resolve_caller_viewer()
 
     try:
         from workflow.api.quality_leaderboard import recommend_parent_for_fork
@@ -103,7 +111,6 @@ def _action_recommended_parent_for_fork(kwargs: dict[str, Any]) -> str:
             _base_universe_dir(),
             goal_id=goal_id,
             viewer=viewer,
-            include_private=include_private,
         )
     except Exception as exc:
         logger.exception(
@@ -117,14 +124,6 @@ def _action_recommended_parent_for_fork(kwargs: dict[str, Any]) -> str:
 
     result["text"] = _render_recommendation_text(result)
     return json.dumps(result, default=str)
-
-
-def _bool_kwarg(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
 
 
 def _render_leaderboard_text(board: dict[str, Any]) -> str:
