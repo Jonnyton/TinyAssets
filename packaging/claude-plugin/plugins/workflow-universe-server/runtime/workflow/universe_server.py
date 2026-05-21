@@ -782,6 +782,12 @@ def goals(
                    unbind. Needs branch_def_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
                    branch. Author-only or host-only.
+      run_canonical Dispatch a run on the Goal's canonical
+                   branch_version. When auto_canonical_via_leaderboard
+                   is on, the canonical is first refreshed via the
+                   quality leaderboard (subject to the
+                   min_completed_runs_for_canonical threshold + the
+                   in-flight guard). PR-127 (M6 cutover Step 4).
       list         Browse Goals. Optional author, tags, limit,
                    production_only.
       get          Full Goal view + bound Branches. Needs goal_id.

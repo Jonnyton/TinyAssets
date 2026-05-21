@@ -110,14 +110,19 @@ def test_attribution_actions_keys():
 # ── _GOAL_ACTIONS dispatch table ────────────────────────────────────────────
 
 
-def test_goal_actions_table_has_9_handlers():
-    assert len(_GOAL_ACTIONS) == 9
+def test_goal_actions_table_has_11_handlers():
+    # 9 base actions + archive_consultation (pre-existing on main) +
+    # run_canonical (PR-127 M6 cutover Step 4) = 11.
+    assert len(_GOAL_ACTIONS) == 11
 
 
 def test_goal_actions_keys():
     expected = {
         "propose", "update", "bind", "list", "get", "search",
         "leaderboard", "common_nodes", "set_canonical",
+        "archive_consultation",
+        # PR-127 — leaderboard-driven canonical dispatch.
+        "run_canonical",
     }
     assert set(_GOAL_ACTIONS.keys()) == expected
 

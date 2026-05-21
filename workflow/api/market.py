@@ -1617,6 +1617,137 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_goal_run_canonical(kwargs: dict[str, Any]) -> str:
+    """Dispatch a run against a Goal's canonical handler — PR-127 (M6).
+
+    The Goal's stored ``canonical_branch_version_id`` is the dispatch
+    target. When ``goal.auto_canonical_via_leaderboard`` is True, the
+    canonical is first refreshed against the freshest leaderboard
+    top-entry (subject to the ``min_completed_runs_for_canonical``
+    threshold and the in-flight guard — see
+    :func:`workflow.api.canonical_dispatch.resolve_canonical_for_run`).
+
+    Required kwargs:
+      * ``goal_id`` — the Goal to dispatch against.
+
+    Optional kwargs:
+      * ``inputs_json`` — JSON string of inputs forwarded to the run.
+      * ``run_name`` — display name for the resulting run row.
+      * ``recursion_limit_override`` — passthrough to the run executor.
+
+    Returns one of:
+
+    Success::
+
+        {
+            "status": "queued",
+            "text": "<phone-legible summary>",
+            "run_id": "...",
+            "branch_version_id_used": "...",
+            "branch_def_id": "...",
+            "source": "<canonical_stored | leaderboard_refreshed | ...>",
+            "goal_id": "...",
+            ...passthrough from run_branch_version...
+        }
+
+    Rejection::
+
+        {
+            "status": "rejected",
+            "error": "...",
+            "error_kind": "no_canonical_handler | no_goal | ...",
+            "goal_id": "...",
+        }
+    """
+    from workflow.api.canonical_dispatch import resolve_canonical_for_run
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.api.runs import _action_run_branch_version
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if not gid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "goal_id is required for run_canonical.",
+            "error_kind": "missing_goal_id",
+        })
+
+    resolution = resolve_canonical_for_run(
+        _base_path(),
+        goal_id=gid,
+        viewer=_current_actor(),
+    )
+    if not resolution.get("ok"):
+        # Surface the failure verbatim so the caller's branching logic
+        # (e.g. _maybe_enqueue_investigation's env-fallback) can read
+        # error_kind directly.
+        return json.dumps({
+            "status": "rejected",
+            "error": resolution.get("error", ""),
+            "error_kind": resolution.get(
+                "error_kind", "no_canonical_handler",
+            ),
+            "goal_id": gid,
+            "hint": resolution.get("hint", ""),
+        }, default=str)
+
+    bvid = resolution["branch_version_id"]
+    bdid = resolution.get("branch_def_id", "")
+
+    # Delegate dispatch to the existing run_branch_version path so
+    # both surfaces share executor + provider + recursion-limit
+    # behavior. Inputs flow through verbatim.
+    dispatch_result_raw = _action_run_branch_version({
+        "branch_version_id": bvid,
+        "inputs_json": kwargs.get("inputs_json", "") or "",
+        "run_name": kwargs.get("run_name", "") or "",
+        "recursion_limit_override": (
+            kwargs.get("recursion_limit_override", "") or ""
+        ),
+    })
+    try:
+        dispatch_result = json.loads(dispatch_result_raw)
+    except (TypeError, ValueError):
+        # Defensive — run_branch_version always returns JSON.
+        return dispatch_result_raw
+
+    # Annotate the dispatch response with canonical-resolution metadata
+    # WITHOUT overwriting any of run_branch_version's existing fields.
+    dispatch_result.setdefault("goal_id", gid)
+    dispatch_result["branch_version_id_used"] = bvid
+    dispatch_result.setdefault("branch_def_id", bdid)
+    dispatch_result["source"] = resolution.get("source")
+    if resolution.get("refresh_attempted"):
+        dispatch_result["refresh_attempted"] = True
+        if resolution.get("displaced_canonical_branch_version_id"):
+            dispatch_result["displaced_canonical_branch_version_id"] = (
+                resolution["displaced_canonical_branch_version_id"]
+            )
+        for k in (
+            "candidate_branch_def_id",
+            "candidate_completed_runs",
+            "candidate_score",
+            "min_completed_runs_for_canonical",
+            "in_flight_run_id",
+            "in_flight_status",
+            "in_flight_started_at",
+        ):
+            if k in resolution:
+                dispatch_result[k] = resolution[k]
+        if resolution.get("hint") and not dispatch_result.get("hint"):
+            dispatch_result["hint"] = resolution["hint"]
+
+    # Render a short text summary if the underlying handler didn't.
+    if "text" not in dispatch_result or not dispatch_result["text"]:
+        run_id = dispatch_result.get("run_id") or "(no run_id)"
+        dispatch_result["text"] = (
+            f"Canonical dispatch for Goal `{gid}` -> "
+            f"branch_version_id `{bvid}` (run_id `{run_id}`, "
+            f"source `{resolution.get('source')}`)."
+        )
+
+    return json.dumps(dispatch_result, default=str)
+
+
 _GOAL_ACTIONS: dict[str, Any] = {
     "propose": _action_goal_propose,
     "update": _action_goal_update,
@@ -1628,6 +1759,10 @@ _GOAL_ACTIONS: dict[str, Any] = {
     "common_nodes": _action_goal_common_nodes,
     "archive_consultation": _action_goal_archive_consultation,
     "set_canonical": _action_goal_set_canonical,
+    # PR-127 (M6 cutover Step 4) — leaderboard-driven canonical
+    # dispatch. Honors auto_canonical_via_leaderboard + threshold +
+    # in-flight gate; delegates the actual run to run_branch_version.
+    "run_canonical": _action_goal_run_canonical,
 }
 
 # Provider-routing compatibility: ChatGPT can render `/mcp-directory` tool
@@ -1742,6 +1877,17 @@ def goals(
       set_canonical Mark a branch_version_id as the Goal's canonical
                    (best-known) branch. Author-only or host-only.
                    Pass branch_version_id="" to unset.
+      run_canonical Dispatch a run against the Goal's canonical
+                   branch_version. PR-127 (M6 cutover): when
+                   ``auto_canonical_via_leaderboard`` is enabled on the
+                   Goal, the canonical is first refreshed via the
+                   quality leaderboard (subject to
+                   ``min_completed_runs_for_canonical`` threshold and
+                   the in-flight guard). Needs goal_id. Accepts
+                   ``inputs_json``, ``run_name``,
+                   ``recursion_limit_override``. Returns
+                   ``branch_version_id_used`` + ``source`` so the
+                   caller can see which version was picked and why.
       list         Browse Goals. Optional author, tags (CSV first
                    value only), limit, production_only. Soft-deleted
                    Goals hidden. production_only keeps public Goals
