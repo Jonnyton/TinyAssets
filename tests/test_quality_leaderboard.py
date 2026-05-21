@@ -29,6 +29,7 @@ import pytest
 from workflow.api.quality_leaderboard import (
     JUDGMENT_MAX_SCALE,
     RECENCY_HALFLIFE_DAYS,
+    _timestamp_to_epoch,
     build_quality_leaderboard,
     recommend_parent_for_fork,
 )
@@ -128,6 +129,19 @@ def _record_run(
         finished_at=finished_at if finished_at is not None else time.time(),
     )
     return run_id
+
+
+def test_timestamp_to_epoch_tolerates_numeric_iso_z_and_bad_values():
+    plus_utc = _timestamp_to_epoch("2026-05-15T05:53:29+00:00")
+
+    assert _timestamp_to_epoch("2026-05-15T05:53:29Z") == pytest.approx(plus_utc)
+    assert _timestamp_to_epoch("2026-05-15T05:53:29") == pytest.approx(plus_utc)
+    assert _timestamp_to_epoch(str(int(plus_utc))) == pytest.approx(
+        float(int(plus_utc)),
+    )
+    assert _timestamp_to_epoch("not-a-date") == 0.0
+    assert _timestamp_to_epoch("nan") == 0.0
+    assert _timestamp_to_epoch(float("inf")) == 0.0
 
 
 def _record_judgment(

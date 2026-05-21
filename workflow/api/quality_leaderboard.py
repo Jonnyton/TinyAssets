@@ -580,23 +580,29 @@ def _timestamp_to_epoch(raw: Any) -> float:
     if raw is None:
         return 0.0
     if isinstance(raw, (int, float)):
-        return float(raw)
+        return _finite_epoch_or_zero(float(raw))
     if isinstance(raw, str):
         value = raw.strip()
         if not value:
             return 0.0
         try:
-            return float(value)
+            return _finite_epoch_or_zero(float(value))
         except ValueError:
             pass
+        if value.endswith("Z"):
+            value = f"{value[:-1]}+00:00"
         try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(value)
         except ValueError:
             return 0.0
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
+        return _finite_epoch_or_zero(dt.timestamp())
     return 0.0
+
+
+def _finite_epoch_or_zero(value: float) -> float:
+    return value if math.isfinite(value) else 0.0
 
 
 # ---------------------------------------------------------------------------
