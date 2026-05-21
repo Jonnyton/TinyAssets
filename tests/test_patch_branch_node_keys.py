@@ -249,6 +249,36 @@ class TestPatchBranchUpdateNodeKeys:
         }])
         assert res.get("status") == "rejected", res
 
+    def test_update_node_model_hint_and_llm_policy_round_trip(self, ext_env):
+        us, base = ext_env
+        bid = _build(us)
+        policy = {"preferred": {"provider": "codex", "model": "gpt-5.5"}}
+
+        res = _patch(us, bid, [{
+            "op": "update_node",
+            "node_id": "capture",
+            "model_hint": "checker",
+            "llm_policy": policy,
+        }])
+
+        assert res.get("status") != "rejected", res
+        node = _node(_load(us, base, bid), "capture")
+        assert node["model_hint"] == "checker"
+        assert node["llm_policy"] == policy
+
+    def test_update_node_rejects_invalid_llm_policy(self, ext_env):
+        us, _ = ext_env
+        bid = _build(us)
+
+        res = _patch(us, bid, [{
+            "op": "update_node",
+            "node_id": "capture",
+            "llm_policy": {"preferred": {}},
+        }])
+
+        assert res.get("status") == "rejected", res
+        assert "provider" in json.dumps(res)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # build_branch / patch_branch add_node — same coercion path via _apply_node_spec.
@@ -320,6 +350,35 @@ class TestAddNodeSpecKeys:
         res = _call(us, "extensions", "build_branch",
                     spec_json=json.dumps(spec))
         assert res["status"] == "rejected", res
+
+    def test_build_branch_persists_model_hint_and_llm_policy(self, ext_env):
+        us, base = ext_env
+        policy = {"preferred": {"provider": "codex", "model": "gpt-5.5"}}
+        spec = {
+            "name": "b",
+            "entry_point": "capture",
+            "node_defs": [{
+                "node_id": "capture",
+                "display_name": "Capture",
+                "prompt_template": "cap: {x}",
+                "input_keys": ["x"],
+                "model_hint": "writer",
+                "llm_policy": policy,
+            }],
+            "edges": [
+                {"from": "START", "to": "capture"},
+                {"from": "capture", "to": "END"},
+            ],
+            "state_schema": [{"name": "x", "type": "str"}],
+        }
+
+        res = _call(us, "extensions", "build_branch",
+                    spec_json=json.dumps(spec))
+
+        assert res["status"] == "built", res
+        node = _node(_load(us, base, res["branch_def_id"]), "capture")
+        assert node["model_hint"] == "writer"
+        assert node["llm_policy"] == policy
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -431,3 +490,37 @@ class TestUpdateNodeKwargs:
             changes_json=json.dumps({"input_keys": [1, 2]}),
         )
         assert res.get("status") == "rejected", res
+
+    def test_update_node_model_hint_and_llm_policy_changes_json(self, ext_env):
+        us, base = ext_env
+        bid = _build(us)
+        policy = {"preferred": {"provider": "codex", "model": "gpt-5.5"}}
+
+        res = _call(
+            us, "extensions", "update_node",
+            branch_def_id=bid,
+            node_id="capture",
+            changes_json=json.dumps({
+                "model_hint": "checker",
+                "llm_policy": policy,
+            }),
+        )
+
+        assert res.get("status") == "updated", res
+        node = _node(_load(us, base, bid), "capture")
+        assert node["model_hint"] == "checker"
+        assert node["llm_policy"] == policy
+
+    def test_update_node_changes_json_rejects_invalid_llm_policy(self, ext_env):
+        us, _ = ext_env
+        bid = _build(us)
+
+        res = _call(
+            us, "extensions", "update_node",
+            branch_def_id=bid,
+            node_id="capture",
+            changes_json=json.dumps({"llm_policy": {"preferred": {}}}),
+        )
+
+        assert res.get("status") == "rejected", res
+        assert "provider" in res.get("error", "")
