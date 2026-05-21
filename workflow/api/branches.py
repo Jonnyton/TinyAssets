@@ -1341,6 +1341,16 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     out_keys, err = _coerce_node_keys(raw.get("output_keys"), "output_keys")
     if err:
         return err
+    model_hint, err = _coerce_model_hint_update(
+        raw.get("model_hint", ""), "model_hint",
+    )
+    if err:
+        return err
+    llm_policy, err = _coerce_llm_policy_update(
+        raw.get("llm_policy"), f"node '{nid}' llm_policy",
+    )
+    if err:
+        return err
     # BUG-045: thread the three sub-branch / sibling-run spec fields. The
     # compiler reads them (workflow/graph_compiler.py:_build_invoke_branch /
     # invoke_branch_version / await_run callables) and NodeDefinition
@@ -1381,6 +1391,8 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             strict_input_isolation=strict_input_isolation,
             source_code=source_code,
             prompt_template=prompt_template,
+            model_hint=model_hint,
+            llm_policy=llm_policy,
             author=raw.get("author") or _current_actor(),
             approved=bool(raw.get("approved", False)),
             invoke_branch_spec=invoke_branch_arg,
@@ -1480,6 +1492,46 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
             f"coerced to '{ftype}'."
         )
     return ""
+
+
+def _coerce_model_hint_update(raw: Any, field: str) -> tuple[str, str]:
+    if raw is None:
+        return "", ""
+    if not isinstance(raw, str):
+        return "", f"{field} must be a string."
+    return raw, ""
+
+
+def _coerce_llm_policy_update(
+    raw: Any, field: str,
+) -> tuple[dict[str, Any] | None, str]:
+    if raw is None:
+        return None, ""
+    if isinstance(raw, dict):
+        policy = raw
+    elif isinstance(raw, str):
+        value = raw.strip()
+        if not value or value == "null":
+            return None, ""
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            return None, f"{field} is not valid JSON: {exc}"
+        if decoded is None:
+            return None, ""
+        if isinstance(decoded, dict):
+            policy = decoded
+        else:
+            return None, f"{field} must be a JSON object or null."
+    else:
+        return None, f"{field} must be a JSON object or null."
+
+    from workflow.branches import _validate_llm_policy_shape
+
+    errors = _validate_llm_policy_shape(policy, context=field)
+    if errors:
+        return None, "; ".join(errors)
+    return policy, ""
 
 
 def _staged_branch_from_spec(
@@ -1814,6 +1866,20 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     n.prompt_template = op["prompt_template"]
                 if "source_code" in op:
                     n.source_code = op["source_code"]
+                if "model_hint" in op:
+                    model_hint, err = _coerce_model_hint_update(
+                        op["model_hint"], "model_hint",
+                    )
+                    if err:
+                        return err
+                    n.model_hint = model_hint
+                if "llm_policy" in op:
+                    llm_policy, err = _coerce_llm_policy_update(
+                        op["llm_policy"], f"node '{nid}' llm_policy",
+                    )
+                    if err:
+                        return err
+                    n.llm_policy = llm_policy
                 if "input_keys" in op:
                     keys, err = _coerce_node_keys(
                         op["input_keys"], "input_keys",
@@ -2222,10 +2288,12 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
         # Pull supported fields from the top-level kwargs.
         for field in (
             "display_name", "description", "phase",
-            "prompt_template", "source_code",
+            "prompt_template", "source_code", "model_hint",
         ):
             if kwargs.get(field):
                 updates[field] = kwargs[field]
+        if "llm_policy" in kwargs and kwargs.get("llm_policy") is not None:
+            updates["llm_policy"] = kwargs["llm_policy"]
         if kwargs.get("input_keys"):
             updates["input_keys"] = kwargs["input_keys"]
         if kwargs.get("output_keys"):
@@ -2267,7 +2335,8 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "error": (
                 "No fields to update. Pass one or more of "
                 "display_name / description / phase / prompt_template / "
-                "source_code / input_keys / output_keys, or a "
+                "source_code / model_hint / llm_policy / input_keys / "
+                "output_keys, or a "
                 "changes_json object."
             ),
         })
@@ -2329,6 +2398,20 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             target_node.source_code = updates["source_code"]
             if target_node.source_code:
                 target_node.prompt_template = ""
+        if "model_hint" in updates:
+            model_hint, err = _coerce_model_hint_update(
+                updates["model_hint"], "model_hint",
+            )
+            if err:
+                return json.dumps({"status": "rejected", "error": err})
+            target_node.model_hint = model_hint
+        if "llm_policy" in updates:
+            llm_policy, err = _coerce_llm_policy_update(
+                updates["llm_policy"], f"node '{nid}' llm_policy",
+            )
+            if err:
+                return json.dumps({"status": "rejected", "error": err})
+            target_node.llm_policy = llm_policy
         if "input_keys" in updates:
             keys, err = _coerce_node_keys(
                 updates["input_keys"], "input_keys",
