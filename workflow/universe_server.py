@@ -57,6 +57,41 @@ logger = logging.getLogger("universe_server")
 # Server
 # ---------------------------------------------------------------------------
 
+_MCP_TEXT_CONTENT_MAX_CHARS = 6000
+
+
+def _summarize_structured_content(value: object) -> str:
+    """Small text-channel summary for large structured MCP payloads."""
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in ("status", "action", "tool", "goal_id", "branch_def_id"):
+            item = value.get(key)
+            if isinstance(item, str) and item:
+                parts.append(f"{key}={item}")
+        for key in ("count", "returned", "total", "total_count"):
+            item = value.get(key)
+            if isinstance(item, int):
+                parts.append(f"{key}={item}")
+        list_counts = [
+            f"{key}={len(item)}"
+            for key, item in value.items()
+            if isinstance(item, list)
+        ]
+        parts.extend(list_counts[:4])
+        if parts:
+            return (
+                "Tool result: "
+                + "; ".join(parts)
+                + ". Full payload is in structuredContent."
+            )
+    if isinstance(value, list):
+        return (
+            f"Tool result: {len(value)} items. "
+            "Full payload is in structuredContent."
+        )
+    return "Tool result available in structuredContent."
+
+
 def _structured_return(raw):
     """Wrap an MCP tool result so FastMCP populates ``structured_content``.
 
@@ -70,19 +105,33 @@ def _structured_return(raw):
     ``structured_content`` automatically — Apps SDK then renders cleanly.
     """
     import json as _json
+
+    from fastmcp.tools.base import ToolResult
+    from mcp.types import TextContent
+
     if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, list):
-        return {"result": raw}
-    if isinstance(raw, str):
+        structured = raw
+    elif isinstance(raw, list):
+        structured = {"result": raw}
+    elif isinstance(raw, str):
         try:
             parsed = _json.loads(raw)
         except (_json.JSONDecodeError, ValueError):
             return {"text": raw}
         if isinstance(parsed, dict):
-            return parsed
-        return {"result": parsed}
-    return {"result": raw}
+            structured = parsed
+        else:
+            structured = {"result": parsed}
+    else:
+        structured = {"result": raw}
+
+    text = _json.dumps(structured, separators=(",", ":"), default=str)
+    if len(text) > _MCP_TEXT_CONTENT_MAX_CHARS:
+        text = _summarize_structured_content(structured)
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured,
+    )
 
 
 def _register_structured_tool(fn, *, title, tags, annotations):
