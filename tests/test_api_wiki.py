@@ -616,6 +616,7 @@ def test_wiki_file_bug_dedup_returns_similar_found(wiki_env):
     assert dup["bug_id"] is None
     assert isinstance(dup["similar"], list)
     assert len(dup["similar"]) >= 1
+    assert dup["effort_dispatch_route"]["lane"] == "standard-triage"
 
 
 def test_wiki_cosign_bug_requires_args(wiki_env):

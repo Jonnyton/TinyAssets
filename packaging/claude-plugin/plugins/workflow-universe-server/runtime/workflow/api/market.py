@@ -74,6 +74,7 @@ PATCH_REQUEST_AUTHORITY_BOUNDARY: dict[str, bool] = {
     "affects_merge": False,
 }
 PATCH_REQUEST_PICKUP_SIGNAL_WEIGHT = 5.0
+MERGE_INSTANT_PICKUP_SIGNAL_WEIGHT = 5.0
 _PATCH_REQUEST_MEANING_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("bug", ("bug", "broken", "crash", "error", "fail", "flake", "regression")),
     ("project_design", ("architecture", "design note", "plan.md", "principle")),
@@ -262,6 +263,39 @@ def classify_filing_effort(
         "signals": signals,
         "confidence": "heuristic",
         "authority_boundary": dict(PATCH_REQUEST_AUTHORITY_BOUNDARY),
+    }
+
+
+def filing_effort_dispatch_route(
+    effort_classification: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Translate filing effort metadata into dispatcher-visible routing hints."""
+    effort_class = str(
+        (effort_classification or {}).get("effort_class") or "standard"
+    )
+    attention = str(
+        (effort_classification or {}).get("attention") or "normal-review-gates"
+    )
+    if effort_class == "merge-instant":
+        return {
+            "lane": "merge-instant-fast-lane",
+            "pickup_signal_weight": MERGE_INSTANT_PICKUP_SIGNAL_WEIGHT,
+            "triage_policy": "skip-extended-triage-when-no-ghost-signals",
+            "visible_reason": "low-risk mechanical filing",
+        }
+    if effort_class == "ghost-risk":
+        return {
+            "lane": "carrier-attention",
+            "pickup_signal_weight": 0.0,
+            "triage_policy": "notify-carrier-before-daemon-pickup",
+            "attention_family": "opposite-family-checker",
+            "visible_reason": attention,
+        }
+    return {
+        "lane": "standard-triage",
+        "pickup_signal_weight": 0.0,
+        "triage_policy": "normal-review-gates",
+        "visible_reason": attention,
     }
 
 
