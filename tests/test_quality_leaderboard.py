@@ -331,6 +331,32 @@ def test_recency_decay_breaks_score_ties_among_equal_quality(base_path):
     assert 0.10 < old_decay < 0.20
 
 
+def test_recommend_parent_accepts_iso_finished_at(base_path):
+    """Runtime run records may store ISO timestamps; parent selection
+    should normalize them before computing recency and tie-breaks."""
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b-iso", goal_id="g1")
+    _make_branch(base_path, branch_def_id="b-bare", goal_id="g1")
+    _record_run(
+        base_path,
+        branch_def_id="b-iso",
+        status=RUN_STATUS_COMPLETED,
+        finished_at="2026-05-22T12:00:00+00:00",
+    )
+
+    rec = recommend_parent_for_fork(
+        base_path,
+        goal_id="g1",
+        viewer="",
+        now=1_779_451_200.0,
+    )
+
+    assert rec["recommended_parent"]["branch_def_id"] == "b-iso"
+    signals = rec["recommended_parent"]["signals"]
+    assert signals["last_successful_run_at"] == pytest.approx(1_779_451_200.0)
+    assert signals["age_days_since_success"] == 0.0
+
+
 def test_fork_count_contributes_to_score(base_path):
     """A branch with community forks ranks above one without."""
     _make_goal(base_path, "g1")

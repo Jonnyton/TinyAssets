@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -186,8 +187,8 @@ def build_quality_leaderboard(
             "name": branch.get("name", ""),
             "description": branch.get("description", ""),
             "author": branch.get("author", ""),
-            "created_at": branch.get("created_at", 0.0),
-            "updated_at": branch.get("updated_at", 0.0),
+            "created_at": _timestamp_seconds(branch.get("created_at")),
+            "updated_at": _timestamp_seconds(branch.get("updated_at")),
             "score": round(score, 4),
             "signals": signals,
             "score_components": {
@@ -329,25 +330,66 @@ def _run_stats(base_path: str | Path, branch_def_id: str) -> dict[str, Any]:
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-                SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
-                MAX(CASE WHEN status = 'completed' THEN finished_at END)
-                    AS last_successful_run_at
+                SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed
             FROM runs
             WHERE branch_def_id = ?
             """,
             (branch_def_id,),
         ).fetchone()
+        finished_rows = conn.execute(
+            """
+            SELECT finished_at
+            FROM runs
+            WHERE branch_def_id = ? AND status = 'completed'
+            """,
+            (branch_def_id,),
+        ).fetchall()
     if row is None:
         return {
             "total": 0, "completed": 0, "failed": 0,
             "last_successful_run_at": 0.0,
         }
+    successful_finished_at = [
+        _timestamp_seconds(finished_row["finished_at"])
+        for finished_row in finished_rows
+    ]
     return {
         "total": int(row["total"] or 0),
         "completed": int(row["completed"] or 0),
         "failed": int(row["failed"] or 0),
-        "last_successful_run_at": float(row["last_successful_run_at"] or 0.0),
+        "last_successful_run_at": max(successful_finished_at, default=0.0),
     }
+
+
+def _timestamp_seconds(value: Any) -> float:
+    """Normalize storage timestamps to Unix seconds.
+
+    Older rows use Unix floats while runtime helpers can persist ISO-8601
+    strings. Invalid or absent timestamps sort as 0.0 instead of crashing
+    the leaderboard selector.
+    """
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return 0.0
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    return 0.0
 
 
 def _judgment_stats(
