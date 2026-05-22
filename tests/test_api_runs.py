@@ -296,3 +296,56 @@ def test_failed_run_snapshot_marks_last_running_node_failed(monkeypatch):
     by_id = {node["node_id"]: node["status"] for node in snapshot["node_statuses"]}
     assert by_id["step1"] == "failed"
     assert "- step1: failed" in snapshot["summary"]
+
+
+def test_failed_run_snapshot_includes_provider_chain_from_failed_event(monkeypatch):
+    """BUG-097: provider exhaustion must expose structured routing evidence."""
+    monkeypatch.setattr(
+        "workflow.daemon_server.get_branch_definition",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        runs_mod,
+        "_run_mermaid_from_events",
+        lambda _branch_def_id, _node_statuses: "```mermaid\nflowchart LR\n```",
+    )
+
+    provider_chain = {
+        "role": "writer",
+        "chain": ["codex", "ollama-local"],
+        "attempts": [
+            {
+                "provider": "codex",
+                "status": "failed",
+                "skip_class": "auth_invalid",
+                "detail": "401 Unauthorized",
+            },
+            {
+                "provider": "ollama-local",
+                "status": "failed",
+                "skip_class": "endpoint_unreachable",
+                "detail": "connection refused",
+            },
+        ],
+    }
+    snapshot = _compose_run_snapshot(
+        {
+            "run_id": "run-1",
+            "branch_def_id": "branch-1",
+            "status": "failed",
+            "actor": "tester",
+            "last_node_id": "writer_step",
+            "error": "Provider call failed in node 'writer_step': All providers exhausted",
+        },
+        [
+            {
+                "node_id": "writer_step",
+                "status": "failed",
+                "detail": {"provider_chain": provider_chain},
+            }
+        ],
+    )
+
+    assert snapshot["failure_class"] == "provider_exhausted"
+    assert snapshot["provider_chain"] == provider_chain
+    assert snapshot["provider_chain"]["attempts"][0]["skip_class"] == "auth_invalid"

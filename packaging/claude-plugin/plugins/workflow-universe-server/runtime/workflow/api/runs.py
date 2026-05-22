@@ -679,6 +679,16 @@ def _compose_run_snapshot(
             snapshot["failure_class"] = error_annotation[0]
             snapshot["suggested_action"] = error_annotation[1]
             snapshot["actionable_by"] = _actionable_by(error_annotation[0])
+        for ev in events:
+            if ev.get("status") != "failed":
+                continue
+            detail = ev.get("detail", {})
+            if not isinstance(detail, dict):
+                continue
+            provider_chain = detail.get("provider_chain")
+            if isinstance(provider_chain, dict):
+                snapshot["provider_chain"] = provider_chain
+                break
     return snapshot
 
 
