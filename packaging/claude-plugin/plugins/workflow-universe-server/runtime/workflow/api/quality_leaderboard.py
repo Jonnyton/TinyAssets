@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -346,8 +347,34 @@ def _run_stats(base_path: str | Path, branch_def_id: str) -> dict[str, Any]:
         "total": int(row["total"] or 0),
         "completed": int(row["completed"] or 0),
         "failed": int(row["failed"] or 0),
-        "last_successful_run_at": float(row["last_successful_run_at"] or 0.0),
+        "last_successful_run_at": _timestamp_to_float(
+            row["last_successful_run_at"]
+        ),
     }
+
+
+def _timestamp_to_float(value: Any) -> float:
+    """Normalize run timestamps stored as Unix seconds or ISO strings."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    if "T" not in text:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def _judgment_stats(

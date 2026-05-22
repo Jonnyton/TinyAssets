@@ -22,6 +22,7 @@ so any future schema migration is exercised here too.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -213,6 +214,38 @@ def test_single_branch_with_completed_run_scores_above_zero(base_path):
     assert entry["signals"]["completed_run_count"] == 1
     # Recency near 1.0 for a just-finished run.
     assert entry["signals"]["recency_decay"] > 0.95
+
+
+def test_completed_run_with_iso_finished_at_does_not_crash(base_path):
+    """Legacy/community-authored rows may carry ISO timestamps."""
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    finished_at = "2026-05-22T00:00:00Z"
+    started_at = "2026-05-21T23:59:00Z"
+
+    from workflow.runs import _connect
+
+    with _connect(base_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO runs (
+                run_id, branch_def_id, thread_id, status, inputs_json,
+                output_json, started_at, finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "run-iso", "b1", "b1", RUN_STATUS_COMPLETED, "{}",
+                "{}", started_at, finished_at,
+            ),
+        )
+
+    now = datetime(2026, 5, 23, tzinfo=timezone.utc).timestamp()
+    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="", now=now)
+    entry = board["entries"][0]
+    expected_ts = datetime(2026, 5, 22, tzinfo=timezone.utc).timestamp()
+    assert entry["signals"]["completed_run_count"] == 1
+    assert entry["signals"]["last_successful_run_at"] == expected_ts
+    assert entry["signals"]["age_days_since_success"] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
