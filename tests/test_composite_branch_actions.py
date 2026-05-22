@@ -98,6 +98,32 @@ def test_build_branch_persists(comp_env):
     assert got["name"] == "Recipe tracker"
 
 
+def test_build_branch_preserves_node_timeout_seconds(comp_env):
+    us, _ = comp_env
+    spec = {
+        **RECIPE_SPEC,
+        "node_defs": [{
+            **RECIPE_SPEC["node_defs"][0],
+            "timeout_seconds": 45,
+        }],
+        "edges": [
+            {"from": "START", "to": "capture"},
+            {"from": "capture", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": "raw_recipe", "type": "str"},
+            {"name": "capture_output", "type": "str"},
+        ],
+    }
+
+    built = _call(us, "build_branch", spec_json=json.dumps(spec))
+
+    assert built["status"] == "built", built
+    got = _call(us, "get_branch", branch_def_id=built["branch_def_id"])
+    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
+    assert capture["timeout_seconds"] == 45.0
+
+
 def test_build_branch_preserves_explicit_non_strict_input_isolation(comp_env):
     us, _ = comp_env
     spec = {
