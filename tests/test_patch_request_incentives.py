@@ -231,6 +231,56 @@ def test_filing_effort_classifier_flags_merge_instant_without_ghost_signals():
     assert "low_runtime_risk" in result["signals"]
 
 
+def test_filing_effort_classifier_uses_structural_cross_reference_signal():
+    result = classify_filing_effort(
+        title="Fix typo in connector docs",
+        kind="patch_request",
+        observed="Mechanical docs-only copy edit with no runtime behavior change.",
+        cross_reference_count=4,
+    )
+
+    assert result["effort_class"] == "standard"
+    assert result["attention"] == "normal-review-gates"
+    assert result["combiner"] == "rule_based"
+    assert result["confidence"] == "heuristic"
+    assert "cross_reference_count" in result["signals"]
+    assert result["structural_features"]["cross_reference_count"] == 4
+
+
+def test_filing_effort_classifier_flags_length_ratio_ghost_risk():
+    result = classify_filing_effort(
+        title="Mechanical patch request with unusually long observations",
+        kind="patch_request",
+        observed=(
+            "The requested change looks like a small config update, but the filing "
+            "spends several paragraphs describing prior failures, recovery paths, "
+            "review conditions, rollback hazards, hidden state, and operational "
+            "constraints that make the implementation much broader than the title "
+            "suggests. It also cites multiple situations where similar changes "
+            "were reverted after passing local tests."
+        ),
+        expected="Update the config default.",
+    )
+
+    assert result["effort_class"] == "ghost-risk"
+    assert result["attention"] == "carrier-review-before-daemon-pickup"
+    assert "observed_expected_length_ratio" in result["signals"]
+    assert result["structural_features"]["observed_expected_length_ratio"] > 3.0
+
+
+def test_filing_effort_classifier_flags_ghost_tag_cluster_overlap():
+    result = classify_filing_effort(
+        title="Mechanical follow-up from reverted checker lane",
+        kind="patch_request",
+        observed="Looks mechanical.",
+        tags="mechanical, reverted, checker, prior-art",
+    )
+
+    assert result["effort_class"] == "ghost-risk"
+    assert "ghost_tag_cluster_overlap" in result["signals"]
+    assert result["structural_features"]["ghost_tag_cluster_overlap"] >= 2
+
+
 def test_requester_directed_daemon_requires_ownership(
     server_base,
     monkeypatch,

@@ -161,6 +161,22 @@ _MERGE_INSTANT_SIGNALS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+_GHOST_TAG_CLUSTER: frozenset[str] = frozenset({
+    "checker",
+    "ghost-risk",
+    "ghost risk",
+    "opposite-family",
+    "opposite family",
+    "prior-art",
+    "prior art",
+    "research",
+    "reverted",
+    "review-blocked",
+    "stuck",
+})
+_STANDARD_CROSS_REFERENCE_COUNT = 3
+_GHOST_LENGTH_RATIO = 3.0
+_GHOST_LENGTH_MIN_OBSERVED_CHARS = 240
 
 
 def classify_patch_request(
@@ -210,6 +226,7 @@ def classify_filing_effort(
     expected: str = "",
     workaround: str = "",
     tags: str = "",
+    cross_reference_count: int = 0,
 ) -> dict[str, Any]:
     """Classify filing attention needs while the wiki entry is created.
 
@@ -241,26 +258,70 @@ def classify_filing_effort(
 
     ghost_signals = _matched_signals(_GHOST_RISK_SIGNALS)
     merge_instant_signals = _matched_signals(_MERGE_INSTANT_SIGNALS)
+
+    observed_len = len(observed.strip())
+    expected_len = len(expected.strip())
+    observed_expected_ratio = (
+        round(observed_len / expected_len, 2) if expected_len else None
+    )
+    tag_tokens = {
+        token.strip().lower()
+        for token in tags.replace(";", ",").split(",")
+        if token.strip()
+    }
+    ghost_tag_overlap = len(tag_tokens & _GHOST_TAG_CLUSTER)
+    structural_features: dict[str, Any] = {
+        "cross_reference_count": max(cross_reference_count, 0),
+        "observed_expected_length_ratio": observed_expected_ratio,
+        "ghost_tag_cluster_overlap": ghost_tag_overlap,
+    }
+
+    structural_ghost_signals: list[str] = []
+    if (
+        observed_expected_ratio is not None
+        and observed_expected_ratio >= _GHOST_LENGTH_RATIO
+        and observed_len >= _GHOST_LENGTH_MIN_OBSERVED_CHARS
+    ):
+        structural_ghost_signals.append("observed_expected_length_ratio")
+    if ghost_tag_overlap >= 2:
+        structural_ghost_signals.append("ghost_tag_cluster_overlap")
+
+    structural_standard_signals: list[str] = []
+    if cross_reference_count >= _STANDARD_CROSS_REFERENCE_COUNT:
+        structural_standard_signals.append("cross_reference_count")
+
     if ghost_signals:
         effort_class = "ghost-risk"
         attention = "carrier-review-before-daemon-pickup"
-        signals = ghost_signals + [
-            signal for signal in merge_instant_signals if signal not in ghost_signals
+        signals = ghost_signals + structural_ghost_signals + [
+            signal
+            for signal in merge_instant_signals + structural_standard_signals
+            if signal not in ghost_signals and signal not in structural_ghost_signals
         ]
-    elif merge_instant_signals:
+    elif structural_ghost_signals:
+        effort_class = "ghost-risk"
+        attention = "carrier-review-before-daemon-pickup"
+        signals = structural_ghost_signals + [
+            signal
+            for signal in merge_instant_signals + structural_standard_signals
+            if signal not in structural_ghost_signals
+        ]
+    elif merge_instant_signals and not structural_standard_signals:
         effort_class = "merge-instant"
         attention = "normal-review-gates"
         signals = merge_instant_signals
     else:
         effort_class = "standard"
         attention = "normal-review-gates"
-        signals = []
+        signals = structural_standard_signals
 
     return {
         "effort_class": effort_class,
         "attention": attention,
         "signals": signals,
         "confidence": "heuristic",
+        "combiner": "rule_based",
+        "structural_features": structural_features,
         "authority_boundary": dict(PATCH_REQUEST_AUTHORITY_BOUNDARY),
     }
 
