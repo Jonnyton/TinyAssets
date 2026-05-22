@@ -662,6 +662,11 @@ def _compose_run_snapshot(
         "summary": summary,
         "recursion_limit": recursion_limit,
     }
+    output = run_record.get("output")
+    if isinstance(output, dict):
+        for key in ("external_write_results", "external_write_errors"):
+            if key in output:
+                snapshot[key] = output[key]
     # INTERRUPTED runs are terminal in v1 (durability guarantee — see
     # ``_action_run_branch`` docstring + ``runs.recover_in_flight_runs``).
     # The client must rerun with the same ``inputs_json``; it cannot be
