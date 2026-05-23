@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from workflow.runs import (
     _connect,
     create_run,
@@ -135,6 +137,55 @@ def test_record_revision_receipt_identifies_rerun_targets(
     assert receipt["subject_id"] == "prior-run"
     assert receipt["payload"]["new_evidence_refs"] == ["source-receipt-9"]
     assert receipt["payload"]["recommended_reruns"] == ["branch-1"]
+
+
+def test_receipt_preserves_unknown_keys_and_extensions(
+    tmp_path: Path,
+) -> None:
+    run_id = _seed_run(tmp_path)
+
+    record_run_receipt(
+        tmp_path,
+        run_id=run_id,
+        receipt_type="claim_lineage_receipt",
+        payload={
+            "claim_id": "claim-standard-1",
+            "status": "needs-review",
+            "confidence_score": 0.83,
+            "extensions": {
+                "standard_refs": ["FHIR-R4", "CONSORT-2010"],
+                "conformance_profile": "community/clinical-trial-v1",
+            },
+        },
+    )
+
+    receipts = list_run_receipts(tmp_path, subject_id="claim-standard-1")
+
+    payload = receipts[0]["payload"]
+    assert payload["confidence_score"] == 0.83
+    assert payload["extensions"] == {
+        "standard_refs": ["FHIR-R4", "CONSORT-2010"],
+        "conformance_profile": "community/clinical-trial-v1",
+    }
+
+
+def test_receipt_payload_size_is_capped(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_id = _seed_run(tmp_path)
+    monkeypatch.setenv("WORKFLOW_RECEIPT_PAYLOAD_MAX_BYTES", "128")
+
+    with pytest.raises(ValueError, match="payload exceeds max 128 bytes"):
+        record_run_receipt(
+            tmp_path,
+            run_id=run_id,
+            receipt_type="claim_lineage_receipt",
+            payload={
+                "claim_id": "claim-large",
+                "rationale": "x" * 512,
+            },
+        )
 
 
 def test_receipt_validation_rejects_missing_claim_id(tmp_path: Path) -> None:

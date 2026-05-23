@@ -350,6 +350,10 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         node_id         TEXT NOT NULL DEFAULT '',
         payload_json    TEXT NOT NULL DEFAULT '{}',
         created_at      REAL NOT NULL,
+        -- The runs DB does not enable PRAGMA foreign_keys today, and runs
+        -- are append-only. The explicit existence check in
+        -- record_run_receipt is the load-bearing insert validation; this
+        -- declaration is forward-compatible for future run deletion paths.
         FOREIGN KEY(run_id) REFERENCES runs(run_id) ON DELETE CASCADE
     );
 
@@ -495,11 +499,40 @@ _SOURCE_RECEIPT_FLAGS = (
     "not_searched",
 )
 
+_DEFAULT_RECEIPT_PAYLOAD_MAX_BYTES = 65_536
+
 
 def _iso_now() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+def _receipt_payload_max_bytes() -> int:
+    raw = os.environ.get(
+        "WORKFLOW_RECEIPT_PAYLOAD_MAX_BYTES",
+        str(_DEFAULT_RECEIPT_PAYLOAD_MAX_BYTES),
+    )
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "WORKFLOW_RECEIPT_PAYLOAD_MAX_BYTES must be an integer"
+        ) from exc
+    if value <= 0:
+        raise ValueError("WORKFLOW_RECEIPT_PAYLOAD_MAX_BYTES must be positive")
+    return value
+
+
+def _receipt_payload_size_bytes(payload: dict[str, Any]) -> int:
+    return len(
+        json.dumps(
+            payload,
+            default=str,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
 
 
 def _as_string_list(value: Any, field_name: str) -> list[str]:
@@ -527,6 +560,14 @@ def _normalize_receipt_payload(
     receipt_type: str,
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
+    """Normalize known receipt fields while preserving extension metadata.
+
+    Unknown payload keys outside the documented schema round-trip unchanged
+    for forward compatibility. The substrate makes no claim about their
+    meaning, type, or future canonical reservation; standards and domain
+    packs that need their own schema should put custom material under an
+    ``extensions`` object and validate it before recording the receipt.
+    """
     if receipt_type not in VALID_RECEIPT_TYPES:
         raise ValueError(
             "receipt_type must be one of: "
@@ -625,6 +666,13 @@ def _normalize_receipt_payload(
         normalized.setdefault("changed_confidence", "")
         normalized.setdefault("rationale", "")
         subject_id = old_claim_id or old_run_id
+
+    payload_bytes = _receipt_payload_size_bytes(normalized)
+    max_bytes = _receipt_payload_max_bytes()
+    if payload_bytes > max_bytes:
+        raise ValueError(
+            f"payload exceeds max {max_bytes} bytes (got {payload_bytes})"
+        )
 
     return normalized, subject_id
 
@@ -793,7 +841,9 @@ def record_run_receipt(
 
     Receipts deliberately record acquisition/lineage/revision facts without
     assigning truth rank. Gates and later runs can inspect the normalized
-    payload and decide how to use it.
+    payload and decide how to use it. Insert-time run existence is checked
+    explicitly here; the run_receipts foreign key is declarative until the
+    runs DB enables SQLite foreign-key enforcement.
     """
     initialize_runs_db(base_path)
     run_id = run_id.strip()
