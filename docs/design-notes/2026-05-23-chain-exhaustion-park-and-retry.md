@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-05-23
 author: claude-code (claude-opus-4-7)
-supersedes_consideration: wf-codex-auth-expired-loop-health, wf-checker-worker-dispatch, wf-independent-checker-routing (runtime-side counterpart; CI-side may fold)
+relationship: Runtime-side counterpart to the already-merged CI architectural commitment (PR #728 / #733 / #752). Completes the "provider availability as first-class concept" across both halves.
 ---
 
 # Chain-Exhaustion Park-and-Retry
@@ -172,23 +172,26 @@ End-to-end (manual, post-merge):
 
 **Rollback:** revert the commit. The new `chain_parked` status becomes unreachable; existing parked tasks roll to `failed` on next dispatcher tick. No data loss; no schema migration required (status enum just gains an unused value).
 
-## §7. Worktree consolidation plan
+## §7. Relationship to the CI-side lineage
 
-Three sibling worktrees touch the same root concern in the CI loop:
+**Correction from the original draft.** Three sibling worktrees that surfaced via the provider-context-feed touch the same root concern (provider/worker availability as a first-class concept) in the CI loop, but those PRs are **already merged** — they aren't pending work to consolidate or retire:
 
-- `wf-codex-auth-expired-loop-health` — stale codex auth as first-class blocker in `.github/workflows/auto-fix-bug.yml`.
-- `wf-checker-worker-dispatch` — automatic checker-worker dispatch for blocked PRs.
-- `wf-independent-checker-routing` — observable self-heal for PRs needing independent checker.
+- `codex/codex-auth-expired-loop-health` → **PR #752** (merged) — stale Codex auth classified in auto-fix loop.
+- `codex/checker-worker-dispatch` → **PR #733** (merged) — automatic independent-checker dispatch.
+- `codex/independent-checker-routing` → **PR #728** (merged) — independent-checker blockers surfaced in loop watch.
 
-These are CI-side; this design is runtime-side. They are not duplicates, but they share the architectural concern: **provider/worker availability must be a first-class concept that the system gracefully tolerates, surfaces, and recovers from — not a silent failure mode**.
+Each shipped as CI-specific work and stayed CI-scoped. They reuse the FEAT-006 chain-state diagnostic (PR #189, merged) — the same diagnostic this design's runtime path will read from. So the architectural commitment ("provider availability is a first-class concept the system gracefully tolerates, surfaces, and recovers from") is already half-shipped, on the CI side. **This design completes it on the runtime side.** It is not the consolidator of pending work; it is the runtime counterpart to the already-shipped CI work.
 
-Recommended sequence:
+### What's actually pending
 
-1. **This design merges first.** Lands the substrate primitive.
-2. **CI siblings audit their patches against the unified concept.** Some of their hand-rolled detection logic may reuse `chain_park_*` parking metadata or the structured chain-state diagnostic this builds on. Patches that duplicate this work get retired; patches that are CI-specific (e.g. GitHub Actions surfacing) land as their own slices but reference this design.
-3. **Eventually retire the three CI worktrees** once their patches are folded or superseded.
+The local `_PURPOSE.md` files for those three worktrees still exist on the host filesystem and keep surfacing via the provider-context-feed scan, even though the PRs are merged. PR #934 (merged) added a "prune _PURPOSE.md candidates from already-merged worktrees" hook but the three worktrees above weren't caught — likely because their `_PURPOSE.md` doesn't carry the PR-merged signal in a shape the hook recognized. **Out-of-band cleanup item, not blocking this design**:
 
-Unrelated worktrees (`wf-pr576-rebase`, `wf-pr578-rebase`, `wf-pr587-repair`, `wf-pr602-rebase`, `wf-pr617-five-handle-cleanup`, `wf-pr828-skill-sync-refactor`, `wf-pr354-cowork-env`) touch different concerns and are out of scope for this consolidation. They should be addressed separately by their owning sessions.
+- Remove `/c/Users/Jonathan/Projects/wf-codex-auth-expired-loop-health/` (PR #752 merged).
+- Remove `/c/Users/Jonathan/Projects/wf-checker-worker-dispatch/` (PR #733 merged).
+- Remove `/c/Users/Jonathan/Projects/wf-independent-checker-routing/` (PR #728 merged).
+- Optionally strengthen PR #934's prune hook to catch this case.
+
+Unrelated worktrees (`wf-pr576-rebase`, `wf-pr578-rebase`, `wf-pr587-repair`, `wf-pr602-rebase`, `wf-pr617-five-handle-cleanup`, `wf-pr828-skill-sync-refactor`, `wf-pr354-cowork-env`) touch different concerns and are out of scope for this design. Some may also be stale post-merge; should be audited separately by their owning sessions.
 
 ## §8. Sequencing
 
@@ -200,9 +203,9 @@ Unrelated worktrees (`wf-pr576-rebase`, `wf-pr578-rebase`, `wf-pr587-repair`, `w
 | 4 | Merge implementation PR | host merge key | — |
 | 5 | Deploy lands on droplet | deploy-prod CI | ~5 min |
 | 6 | Resume the paused M6 cutover smoke test | persona via chatgpt.com | ~30 min |
-| 7 | Retire the three CI sibling worktrees per §7 | each owning session | — |
+| 7 | Out-of-band cleanup: remove the three stale `_PURPOSE.md` files for the already-merged CI sibling worktrees per §7 | filesystem cleanup | ~1 min |
 
-After step 6, the user-buildable Loop 2 fires end-to-end with real PR emission on Jonnyton/Workflow. The cheat loop retires for real.
+After step 6, the user-buildable Loop 2 fires end-to-end with real PR emission on Jonnyton/Workflow. The cheat loop retires for real. The architectural commitment "provider availability is a first-class concept" lands fully across both CI (already shipped via #728/#733/#752) and runtime (this design's implementation).
 
 ## §9. References
 
@@ -211,5 +214,5 @@ After step 6, the user-buildable Loop 2 fires end-to-end with real PR emission o
 - **Chain state diagnostic (FEAT-006):** `workflow/providers/router.py:425-438`, `workflow/graph_compiler.py:288-318` (`_wrap_provider_failure`).
 - **Codex auth persistence:** `deploy/compose.yml:60-80`, `deploy/codex-flock-wrapper.sh`, PR #965.
 - **Daemon topology commitment:** memory `project_daemon_default_behavior` (2026-05-01), `project_capacity_grant_control_intent_executor_backend` (host directive).
-- **CI siblings (runtime counterpart of this design):** `wf-codex-auth-expired-loop-health/_PURPOSE.md`, `wf-checker-worker-dispatch/_PURPOSE.md`, `wf-independent-checker-routing/_PURPOSE.md`.
+- **CI siblings (already-shipped CI counterpart; this design completes the architectural commitment runtime-side):** PR #728 (independent-checker-routing, merged), PR #733 (checker-worker-dispatch, merged), PR #752 (codex-auth-expired-loop-health, merged). Local `_PURPOSE.md` files for those branches still exist as stale worktree metadata.
 - **Smoke test (paused, will resume post-merge):** `docs/ops/m6-cutover-operational-config.md` Step D.
