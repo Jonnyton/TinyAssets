@@ -782,6 +782,12 @@ def goals(
                    unbind. Needs branch_def_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
                    branch. Author-only or host-only.
+      set_selector Bind the Goal's selector branch_version
+                   (DESIGN-008). The bound branch ranks competitors
+                   on this Goal's leaderboard. Author-only or
+                   host-only. Pass branch_version_id="" to fall back
+                   to the platform default selector. The branch must
+                   conform to the selector-branch contract.
       run_canonical Dispatch a run on the Goal's canonical
                    branch_version. When auto_canonical_via_leaderboard
                    is on, the canonical is first refreshed via the

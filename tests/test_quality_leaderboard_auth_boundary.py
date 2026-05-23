@@ -39,6 +39,51 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _mock_selector_passthrough(monkeypatch):
+    """DESIGN-008 — pass-through selector mock for auth-boundary tests.
+
+    The auth-boundary tests in this file probe the substrate's
+    visibility filter at the leaderboard layer. Under DESIGN-008,
+    leaderboard production requires a selector dispatch (one LLM
+    call). These tests don't need to exercise selector behavior —
+    only the candidate-set visibility filter. So we monkeypatch
+    ``dispatch_selector`` to pass the candidate list straight
+    through as ``ranked_entries`` (preserving input order, score
+    0.0). The substrate's filter (already applied via
+    ``list_branch_definitions`` + ``_fork_count`` before dispatch)
+    is what's under test.
+    """
+    def _passthrough(
+        base_path,
+        *,
+        goal_id,
+        candidate_branches,
+        actor="anonymous",
+        timeout_s=None,
+        **_extra,
+    ):
+        return {
+            "ok": True,
+            "branch_version_id": "mock_selector@authtest",
+            "source": "platform_default",
+            "run_id": "mock-run",
+            "ranked_entries": [
+                {
+                    "branch_def_id": c["branch_def_id"],
+                    "branch_version_id": c.get("branch_version_id", ""),
+                    "score": 0.0,
+                    "rationale": "passthrough",
+                }
+                for c in candidate_branches
+            ],
+        }
+    monkeypatch.setattr(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        _passthrough,
+    )
+
+
 @pytest.fixture
 def us_env(tmp_path: Path, monkeypatch):
     """Daemon env where the calling actor is ``eve`` by default."""

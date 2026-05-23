@@ -1559,6 +1559,108 @@ def _action_goal_archive_consultation(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
+    """Bind (or unbind) a Goal's selector branch — DESIGN-008.
+
+    The selector branch is the published Workflow branch the
+    substrate dispatches to rank a Goal's bound branches. Pass
+    ``branch_version_id=""`` to unbind (fall back to platform
+    default selector).
+
+    Authority: only Goal author or a host-level actor may bind a
+    selector — same surface as ``set_canonical``.
+
+    Required kwargs:
+      * ``goal_id`` — Goal whose selector is being bound.
+
+    Optional kwargs:
+      * ``branch_version_id`` — selector branch_version to bind, or
+        empty string / omitted to unbind.
+
+    Returns:
+      * ``{status: "ok", selector_branch_version_id: ...}`` on bind/unbind.
+      * ``{status: "rejected", error: ...}`` on auth failure / bad input
+        / non-active version.
+    """
+    from workflow.api.branches import _ensure_workflow_db
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.daemon_server import (
+        SelectorHasEffectsError,
+        get_goal,
+        set_selector_branch,
+    )
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if not gid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "goal_id is required for set_selector.",
+        })
+    raw_bvid = (kwargs.get("branch_version_id") or "").strip()
+    branch_version_id = raw_bvid or None
+    _ensure_workflow_db()
+
+    try:
+        goal = get_goal(_base_path(), goal_id=gid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Goal '{gid}' not found.",
+        })
+
+    actor = _current_actor()
+    host_actor = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
+    if actor != goal["author"] and actor != host_actor:
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                "Only the Goal author or a host-level actor may bind "
+                "the selector branch. Goal author is "
+                f"'{goal['author']}'; request actor is '{actor}'."
+            ),
+        })
+
+    try:
+        updated = set_selector_branch(
+            _base_path(), goal_id=gid,
+            branch_version_id=branch_version_id, set_by=actor,
+        )
+    except SelectorHasEffectsError as exc:
+        # P1.3 — surface the effects rejection with a structured
+        # error_kind so chatbots can route the operator to the fix
+        # path ("remove effects on offending nodes, then re-bind").
+        return json.dumps({
+            "status": "rejected",
+            "error_kind": "selector_has_effects",
+            "error": str(exc),
+        })
+    except ValueError as exc:
+        return json.dumps({"status": "rejected", "error": str(exc)})
+
+    if branch_version_id:
+        text = (
+            f"Selector branch for Goal '{goal['name']}' set to "
+            f"`{branch_version_id}`. Future "
+            "`quality_leaderboard` / `recommend_parent_for_fork` "
+            "calls dispatch this branch to rank candidates."
+        )
+    else:
+        text = (
+            f"Selector branch for Goal '{goal['name']}' unbound. "
+            "Leaderboard calls fall back to the platform default "
+            "selector."
+        )
+
+    return json.dumps({
+        "status": "ok",
+        "text": text,
+        "goal_id": gid,
+        "selector_branch_version_id": updated.get(
+            "selector_branch_version_id",
+        ),
+    }, default=str)
+
+
 def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     from workflow.api.branches import _ensure_workflow_db
     from workflow.api.engine_helpers import (
@@ -1763,6 +1865,11 @@ _GOAL_ACTIONS: dict[str, Any] = {
     # dispatch. Honors auto_canonical_via_leaderboard + threshold +
     # in-flight gate; delegates the actual run to run_branch_version.
     "run_canonical": _action_goal_run_canonical,
+    # DESIGN-008 — user-buildable selector primitive. Bind the
+    # published Workflow branch that synthesizes the Goal's
+    # leaderboard. Pass branch_version_id="" to fall back to the
+    # platform default selector.
+    "set_selector": _action_goal_set_selector,
 }
 
 # Provider-routing compatibility: ChatGPT can render `/mcp-directory` tool
@@ -1776,6 +1883,8 @@ _GOAL_ACTION_ALIASES: dict[str, str] = {
 
 _GOAL_WRITE_ACTIONS: frozenset[str] = frozenset({
     "propose", "update", "bind", "set_canonical",
+    # DESIGN-008 — selector branch binding writes to goals row.
+    "set_selector",
 })
 
 
@@ -1877,6 +1986,14 @@ def goals(
       set_canonical Mark a branch_version_id as the Goal's canonical
                    (best-known) branch. Author-only or host-only.
                    Pass branch_version_id="" to unset.
+      set_selector Bind the Goal's selector branch_version — the
+                   published Workflow branch the substrate dispatches
+                   to rank this Goal's bound branches on the
+                   leaderboard (DESIGN-008). Author-only or
+                   host-only. Pass branch_version_id="" to unbind
+                   and fall back to the platform default selector.
+                   The bound selector MUST conform to the contract
+                   in drafts/concepts/selector-branch-contract.md.
       run_canonical Dispatch a run against the Goal's canonical
                    branch_version. PR-127 (M6 cutover): when
                    ``auto_canonical_via_leaderboard`` is enabled on the

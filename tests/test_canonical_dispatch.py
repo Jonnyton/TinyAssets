@@ -64,6 +64,60 @@ from workflow.runs import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _mock_selector_passthrough(monkeypatch):
+    """DESIGN-008 — pass-through selector for canonical-dispatch tests.
+
+    These tests probe ``_refresh_via_leaderboard`` and rely on the
+    leaderboard returning candidates in a deterministic order. We
+    mock ``dispatch_selector`` to rank candidates by
+    ``completed_run_count`` desc with a stable tiebreaker on
+    ``last_successful_run_at`` desc, then ``branch_def_id`` asc — the
+    same effective ordering the round-1 formula produced when those
+    were the dominant signals, which is what these tests pre-date.
+    """
+    def _passthrough(
+        base_path,
+        *,
+        goal_id,
+        candidate_branches,
+        actor="anonymous",
+        timeout_s=None,
+        **_extra,
+    ):
+        def _key(c):
+            sigs = c.get("signals") or {}
+            return (
+                -int(sigs.get("completed_run_count") or 0),
+                -float(sigs.get("last_successful_run_at") or 0.0),
+                c.get("branch_def_id") or "",
+            )
+        ordered = sorted(candidate_branches, key=_key)
+        return {
+            "ok": True,
+            "branch_version_id": "mock_selector@canon",
+            "source": "platform_default",
+            "run_id": "mock-run",
+            "ranked_entries": [
+                {
+                    "branch_def_id": c["branch_def_id"],
+                    "branch_version_id": c.get("branch_version_id", ""),
+                    "score": float(
+                        (c.get("signals") or {}).get(
+                            "completed_run_count", 0,
+                        )
+                    ),
+                    "rationale": "passthrough by completed_run_count",
+                }
+                for c in ordered
+            ],
+        }
+    monkeypatch.setattr(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        _passthrough,
+    )
+
+
 @pytest.fixture
 def base_path(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
