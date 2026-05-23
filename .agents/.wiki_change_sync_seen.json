@@ -41,6 +41,7 @@
     "pages/feature-requests/feat-011-feat-add-list-sources-read-source-to-universe-surface-ledger.md",
     "pages/feature-requests/feat-012-feat-add-update-supersede-deprecate-operations-for-canon-sou.md",
     "pages/feature-requests/feat-013-feat-when-wiki-promote-fails-lint-return-an-assisted-fix-sca.md",
+    "pages/feature-requests/feat-014-get-run-snapshot-omits-system-authoritative-external-write-r.md",
     "pages/notes/builder-notes-agent-teams.md",
     "pages/notes/codex-ack-substrate-framing-host-gate-2026-05-06.md",
     "pages/notes/codex-response-cowork-mcp-architectural-collapse-plan-2026-05-06.md",
