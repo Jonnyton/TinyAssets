@@ -112,19 +112,37 @@ Only `skip_class=quota_or_cooldown` with a `cooldown_remaining_s` present trigge
 
 ## §4. Where the change lives
 
-Three files carry most of the change:
+The substrate has **two parallel execution paths** that both must learn to park-and-retry; only covering one leaves the other silently broken.
 
-1. **`workflow/runs.py`** — `start_run` (around line 2090, the existing `RUN_STATUS_FAILED` path on `CompilerError`). When the underlying exception carries `chain_state` indicating all attempts were `quota_or_cooldown`, divert to `RUN_STATUS_CHAIN_PARKED` (new) with retry metadata instead of `RUN_STATUS_FAILED`. Resume-run path mirrors.
+### §4.1 Run-level path (synchronous `run_branch` MCP entry)
+
+1. **`workflow/runs.py`** — `start_run` (around line 2090, the existing `RUN_STATUS_FAILED` path on `CompilerError`). When the underlying exception carries `chain_state` indicating all attempts were `quota_or_cooldown`, divert to `RUN_STATUS_CHAIN_PARKED` (new) with retry metadata instead of `RUN_STATUS_FAILED`. Resume-run path mirrors. The new status enum value lives alongside the existing `RUN_STATUS_*` constants.
 
 2. **`workflow/api/status.py`** — surface `chain_parked_pending` + `chain_parked_pending_max_age_s` in `queue_state` alongside `policy_parked_pending`. Same shape; existing get_status consumers see new counters.
 
-3. **`workflow/dispatcher.py`** (or whichever module owns the task lifecycle) — periodic tick checks parked runs whose `chain_parked_retry_after` is in the past; flip back to `pending` for re-pickup. Use same lock discipline as `claim_task`.
+3. **Dispatcher/scheduler tick** — periodic tick checks parked runs whose `chain_parked_retry_after` is in the past; flip back to `pending` for re-pickup. Use same lock discipline as `claim_task`.
 
-Adjacent touches:
+### §4.2 BranchTask path (queued execution via `fantasy_daemon`)
+
+**Critical: the BranchTask lifecycle is separate from the run lifecycle.** Direct BranchTask execution finalizes via `fantasy_daemon/__main__.py::_finalize_claimed_task`, which translates run outcome into the queue row's terminal status. The queue row schema in `workflow/branch_tasks.py` today accepts only `pending / running / succeeded / failed / cancelled` — if the implementation only adds `RUN_STATUS_CHAIN_PARKED` and stops there, the parented run will be marked parked but the queue row will still flip to `failed`, and `select_next_task` (the dispatcher's pickup function) will not re-claim it. The retry never fires.
+
+The implementation must therefore also:
+
+1. **`workflow/branch_tasks.py`** — extend the accepted status enum to include `chain_parked` (or equivalent), and update `select_next_task` to pick up rows whose status is `chain_parked` AND `chain_parked_retry_after <= now()`. Migration path: existing rows with terminal `failed` are NOT retroactively reanimated; the new status is forward-only.
+
+2. **`fantasy_daemon/__main__.py::_finalize_claimed_task`** — when the run finalizes with `RUN_STATUS_CHAIN_PARKED`, set the queue row's status to `chain_parked` + carry over the `retry_after` + retry count. Do NOT flip to `failed`. Existing chain-of-finalization logic stays unchanged for other run statuses.
+
+3. **`workflow/branch_tasks.py` queue retry policy** — a parked queue row whose `retry_count >= max_retries` OR `total_park_age_s >= WORKFLOW_CHAIN_PARK_MAX_AGE_S` transitions to terminal `failed` with `failure_class=chain_park_exhausted`. Same budget envelope as §3 retry policy applied to the queue row, not just the run.
+
+### §4.3 Why this is symmetric
+
+Both paths share the same root signal (`AllProvidersExhausted` from `workflow/providers/router.py:433`) but propagate through different state machines. The implementation factors the park/retry decision into a helper (`is_chain_park_eligible(exc) -> ParkDecision | None` in `workflow/graph_compiler.py` or a new `workflow/parking.py` module) that both paths call. Tests cover both paths independently AND end-to-end (queue row → run → park → retry → completion).
+
+### §4.4 Adjacent touches
 
 - **`workflow/providers/router.py`** — the `AllProvidersExhaustedError` already carries `chain_state` + `attempts` (FEAT-006). The router doesn't need changes; the orchestrator interprets the existing diagnostic.
 - **`workflow/graph_compiler.py`** — `_wrap_provider_failure` already attaches `chain_state` to the wrapped `CompilerError`. Add a helper `is_chain_park_eligible(exc)` so the orchestrator can branch on the right shape.
-- **MCP surface** — `extensions action=get_run` should report `chain_parked` cleanly (`failure_class` not set; new `parking` block with retry metadata).
+- **MCP surface** — `extensions action=get_run` should report `chain_parked` cleanly (`failure_class` not set; new `parking` block with retry metadata). `extensions action=list_runs` should include parked rows by default (currently filters by status).
 - **Plugin mirror** — `packaging/claude-plugin/.../runtime/workflow/...` mirrored, per pre-commit parity guard.
 
 ## §5. Tests
