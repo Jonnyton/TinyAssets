@@ -1,4 +1,4 @@
-"""Publication-readiness guard for research publication gate rungs."""
+"""Conformance-pack guards for standards-backed gate rungs."""
 
 from __future__ import annotations
 
@@ -30,10 +30,9 @@ def _call(us, tool, action, **kwargs):
     return json.loads(getattr(us, tool)(action=action, **kwargs))
 
 
-def _ready_manifest() -> dict:
+def _ready_research_publication_evidence() -> dict:
     return {
         "target_venue": "Journal of Theoretical Biology",
-        "target_rung": "submitted",
         "policy_requirements": [
             {"name": "data availability", "status": "satisfied"},
             {"name": "conflict disclosure", "status": "satisfied"},
@@ -59,6 +58,21 @@ def _ready_manifest() -> dict:
     }
 
 
+def _research_publication_pack() -> dict:
+    return {
+        "standard_id": "research-publication-v0",
+        "standard_version": "v0",
+        "jurisdiction": "global",
+        "target_rung": "submitted",
+        "evidence_requirements": _ready_research_publication_evidence(),
+        "vocab_refs": ["CRediT"],
+        "checklist": [
+            {"name": "venue policy requirements", "status": "satisfied"},
+            {"name": "reproducibility checks", "status": "satisfied"},
+        ],
+    }
+
+
 def _seed_research_goal_and_branch(us):
     goal = _call(us, "goals", "propose", name="Markovic submission")
     goal_id = goal["goal"]["goal_id"]
@@ -75,14 +89,14 @@ def _seed_research_goal_and_branch(us):
             "rung_key": "submitted",
             "name": "Submitted",
             "description": "Submitted to target venue.",
-            "requires_publication_readiness": True,
+            "requires_conformance_pack": "research-publication-v0",
         },
     ]
     _call(us, "gates", "define_ladder", goal_id=goal_id, ladder=json.dumps(ladder))
     return goal_id, branch_id
 
 
-def test_publication_rung_requires_ready_publication_manifest(gates_env):
+def test_standard_backed_rung_requires_ready_conformance_pack(gates_env):
     us, _ = gates_env
     _goal_id, branch_id = _seed_research_goal_and_branch(us)
 
@@ -96,24 +110,25 @@ def test_publication_rung_requires_ready_publication_manifest(gates_env):
     )
 
     assert result["status"] == "rejected"
-    assert result["error"] == "publication_readiness_required"
+    assert result["error"] == "conformance_pack_required"
+    assert result["required_standard_id"] == "research-publication-v0"
 
 
-def test_blocked_publication_readiness_cannot_support_claim(gates_env):
+def test_blocked_conformance_pack_cannot_support_claim(gates_env):
     us, _ = gates_env
     goal_id, branch_id = _seed_research_goal_and_branch(us)
-    manifest = _ready_manifest()
-    manifest["blockers"] = ["missing JTB graphical abstract provenance"]
+    pack = _research_publication_pack()
+    pack["blockers"] = ["missing JTB graphical abstract provenance"]
     recorded = _call(
         us,
         "gates",
-        "record_publication_readiness",
+        "record_conformance_pack",
         goal_id=goal_id,
         branch_def_id=branch_id,
         rung_key="submitted",
-        readiness_json=json.dumps(manifest),
+        conformance_pack_json=json.dumps(pack),
     )
-    readiness_id = recorded["publication_readiness"]["readiness_id"]
+    pack_id = recorded["conformance_pack"]["pack_id"]
 
     result = _call(
         us,
@@ -122,28 +137,29 @@ def test_blocked_publication_readiness_cannot_support_claim(gates_env):
         branch_def_id=branch_id,
         rung_key="submitted",
         evidence_url="https://example.org/submission-receipt",
-        publication_readiness_id=readiness_id,
+        conformance_pack_id=pack_id,
     )
 
     assert result["status"] == "rejected"
-    assert result["error"] == "publication_readiness_blocked"
+    assert result["error"] == "conformance_pack_not_ready"
     assert "missing JTB graphical abstract provenance" in result["blockers"]
 
 
-def test_ready_publication_manifest_is_stored_on_gate_claim(gates_env):
+def test_ready_research_publication_pack_is_stored_on_gate_claim(gates_env):
     us, _ = gates_env
     goal_id, branch_id = _seed_research_goal_and_branch(us)
     recorded = _call(
         us,
         "gates",
-        "record_publication_readiness",
+        "record_conformance_pack",
         goal_id=goal_id,
         branch_def_id=branch_id,
         rung_key="submitted",
-        readiness_json=json.dumps(_ready_manifest()),
+        conformance_pack_json=json.dumps(_research_publication_pack()),
     )
-    readiness = recorded["publication_readiness"]
-    assert readiness["status"] == "ready"
+    pack = recorded["conformance_pack"]
+    assert pack["status"] == "ready"
+    assert pack["standard_id"] == "research-publication-v0"
 
     result = _call(
         us,
@@ -152,8 +168,35 @@ def test_ready_publication_manifest_is_stored_on_gate_claim(gates_env):
         branch_def_id=branch_id,
         rung_key="submitted",
         evidence_url="https://example.org/submission-receipt",
-        publication_readiness_id=readiness["readiness_id"],
+        conformance_pack_id=pack["pack_id"],
     )
 
     assert result["status"] == "claimed"
-    assert result["claim"]["publication_readiness_id"] == readiness["readiness_id"]
+    assert result["claim"]["conformance_pack_id"] == pack["pack_id"]
+
+
+def test_non_builtin_standard_pack_defaults_to_human_review(gates_env):
+    us, _ = gates_env
+    goal_id, branch_id = _seed_research_goal_and_branch(us)
+
+    recorded = _call(
+        us,
+        "gates",
+        "record_conformance_pack",
+        goal_id=goal_id,
+        branch_def_id=branch_id,
+        rung_key="submitted",
+        conformance_pack_json=json.dumps({
+            "standard_id": "frcp-edisc-2023",
+            "jurisdiction": "US",
+            "evidence_requirements": {
+                "case_caption": "Smith v Example",
+                "docket_number": "1:26-cv-00123",
+                "chain_of_custody_hash_manifest": ["sha256:abc"],
+            },
+        }),
+    )
+
+    pack = recorded["conformance_pack"]
+    assert pack["standard_id"] == "frcp-edisc-2023"
+    assert pack["status"] == "requires-human-review"

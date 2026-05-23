@@ -1845,53 +1845,63 @@ def _validate_evidence_url(url: str) -> str:
     )
 
 
-def _validate_publication_readiness_for_claim(
+def _validate_conformance_pack_for_claim(
     *,
     base_path: str | Path,
-    readiness_id: str,
+    pack_id: str,
     goal_id: str,
     branch_def_id: str,
     rung_key: str,
+    required_standard_id: str,
 ) -> dict[str, Any] | None:
-    from workflow.publication_readiness import get_publication_readiness
+    from workflow.conformance_packs import get_conformance_pack
 
-    readiness = get_publication_readiness(base_path, readiness_id)
-    if readiness is None:
+    pack = get_conformance_pack(base_path, pack_id)
+    if pack is None:
         return {
             "status": "rejected",
-            "error": "publication_readiness_not_found",
-            "publication_readiness_id": readiness_id,
+            "error": "conformance_pack_not_found",
+            "conformance_pack_id": pack_id,
         }
-    if readiness.goal_id != goal_id:
+    if pack.goal_id != goal_id:
         return {
             "status": "rejected",
-            "error": "publication_readiness_goal_mismatch",
-            "publication_readiness_id": readiness_id,
+            "error": "conformance_pack_goal_mismatch",
+            "conformance_pack_id": pack_id,
             "expected_goal_id": goal_id,
-            "actual_goal_id": readiness.goal_id,
+            "actual_goal_id": pack.goal_id,
         }
-    if readiness.branch_def_id and readiness.branch_def_id != branch_def_id:
+    if pack.branch_def_id and pack.branch_def_id != branch_def_id:
         return {
             "status": "rejected",
-            "error": "publication_readiness_branch_mismatch",
-            "publication_readiness_id": readiness_id,
+            "error": "conformance_pack_branch_mismatch",
+            "conformance_pack_id": pack_id,
             "expected_branch_def_id": branch_def_id,
-            "actual_branch_def_id": readiness.branch_def_id,
+            "actual_branch_def_id": pack.branch_def_id,
         }
-    if readiness.target_rung and readiness.target_rung != rung_key:
+    if pack.target_rung and pack.target_rung != rung_key:
         return {
             "status": "rejected",
-            "error": "publication_readiness_rung_mismatch",
-            "publication_readiness_id": readiness_id,
+            "error": "conformance_pack_rung_mismatch",
+            "conformance_pack_id": pack_id,
             "expected_rung_key": rung_key,
-            "actual_target_rung": readiness.target_rung,
+            "actual_target_rung": pack.target_rung,
         }
-    if readiness.status != "ready":
+    if required_standard_id and pack.standard_id != required_standard_id:
         return {
             "status": "rejected",
-            "error": "publication_readiness_blocked",
-            "publication_readiness_id": readiness_id,
-            "blockers": readiness.blockers,
+            "error": "conformance_pack_standard_mismatch",
+            "conformance_pack_id": pack_id,
+            "expected_standard_id": required_standard_id,
+            "actual_standard_id": pack.standard_id,
+        }
+    if pack.status != "ready":
+        return {
+            "status": "rejected",
+            "error": "conformance_pack_not_ready",
+            "conformance_pack_id": pack_id,
+            "pack_status": pack.status,
+            "blockers": pack.blockers,
         }
     return None
 
@@ -2103,31 +2113,32 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
             "error": "unknown_rung",
             "available_rungs": available,
         })
-    from workflow.publication_readiness import rung_requires_publication_readiness
+    from workflow.conformance_packs import required_standard_id_for_rung
 
-    publication_readiness_id = (
-        kwargs.get("publication_readiness_id") or ""
-    ).strip()
-    if rung_requires_publication_readiness(rung_key, ladder):
-        if not publication_readiness_id:
+    required_standard_id = required_standard_id_for_rung(rung_key, ladder)
+    conformance_pack_id = (kwargs.get("conformance_pack_id") or "").strip()
+    if required_standard_id is not None:
+        if not conformance_pack_id:
             return json.dumps({
                 "status": "rejected",
-                "error": "publication_readiness_required",
+                "error": "conformance_pack_required",
                 "rung_key": rung_key,
+                "required_standard_id": required_standard_id,
                 "hint": (
-                    "Record a ready publication-readiness manifest first "
-                    "and pass publication_readiness_id with this claim."
+                    "Record a ready conformance pack first and pass "
+                    "conformance_pack_id with this claim."
                 ),
             })
-        readiness_error = _validate_publication_readiness_for_claim(
+        pack_error = _validate_conformance_pack_for_claim(
             base_path=_base_path(),
-            readiness_id=publication_readiness_id,
+            pack_id=conformance_pack_id,
             goal_id=goal_id,
             branch_def_id=bid,
             rung_key=rung_key,
+            required_standard_id=required_standard_id,
         )
-        if readiness_error is not None:
-            return json.dumps(readiness_error)
+        if pack_error is not None:
+            return json.dumps(pack_error)
     from workflow.daemon_server import BranchRebindError
 
     goal_slug = slugify(goal.get("name") or goal_id)
@@ -2139,7 +2150,7 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
             rung_key=rung_key,
             evidence_url=evidence_url,
             evidence_note=kwargs.get("evidence_note", ""),
-            publication_readiness_id=publication_readiness_id,
+            conformance_pack_id=conformance_pack_id,
             claimed_by=_current_actor_or_anon(),
             goal_slug=goal_slug,
             branch_slug=branch_slug,
@@ -2367,9 +2378,9 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
         "rung_key": rung_key,
         "evidence_url": evidence_url,
         "evidence_note": evidence_note,
-        "publication_readiness_id": (
-            kwargs.get("publication_readiness_id")
-            or output.get("publication_readiness_id")
+        "conformance_pack_id": (
+            kwargs.get("conformance_pack_id")
+            or output.get("conformance_pack_id")
             or ""
         ),
         "force": bool(kwargs.get("force", False)),
@@ -2884,31 +2895,31 @@ def _action_list_gate_events(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
-def _action_record_publication_readiness(kwargs: dict[str, Any]) -> str:
+def _action_record_conformance_pack(kwargs: dict[str, Any]) -> str:
     from workflow.api.engine_helpers import _current_actor
+    from workflow.conformance_packs import record_conformance_pack
     from workflow.daemon_server import get_branch_definition, get_goal
-    from workflow.publication_readiness import record_publication_readiness
 
     goal_id = (kwargs.get("goal_id") or "").strip()
     branch_def_id = (kwargs.get("branch_def_id") or "").strip()
-    manifest_raw = (kwargs.get("readiness_json") or "").strip()
+    pack_raw = (kwargs.get("conformance_pack_json") or "").strip()
     target_rung = (kwargs.get("rung_key") or "").strip()
-    if not manifest_raw:
+    if not pack_raw:
         return json.dumps({
             "status": "rejected",
-            "error": "readiness_json is required.",
+            "error": "conformance_pack_json is required.",
         })
     try:
-        manifest = json.loads(manifest_raw)
+        pack_payload = json.loads(pack_raw)
     except json.JSONDecodeError as exc:
         return json.dumps({
             "status": "rejected",
-            "error": f"readiness_json is not valid JSON: {exc}",
+            "error": f"conformance_pack_json is not valid JSON: {exc}",
         })
-    if not isinstance(manifest, dict):
+    if not isinstance(pack_payload, dict):
         return json.dumps({
             "status": "rejected",
-            "error": "readiness_json must be a JSON object.",
+            "error": "conformance_pack_json must be a JSON object.",
         })
     if not goal_id:
         return json.dumps({"status": "rejected", "error": "goal_id is required."})
@@ -2935,57 +2946,58 @@ def _action_record_publication_readiness(kwargs: dict[str, Any]) -> str:
                 "branch_goal_id": branch.get("goal_id") or "",
             })
     try:
-        readiness = record_publication_readiness(
+        pack = record_conformance_pack(
             _base_path(),
             goal_id=goal_id,
             branch_def_id=branch_def_id,
             target_rung=target_rung,
-            manifest=manifest,
+            pack=pack_payload,
             created_by=_current_actor(),
         )
     except ValueError as exc:
         return json.dumps({"status": "rejected", "error": str(exc)})
     return json.dumps({
         "status": "recorded",
-        "publication_readiness": readiness.to_dict(),
+        "conformance_pack": pack.to_dict(),
     }, default=str)
 
 
-def _action_get_publication_readiness(kwargs: dict[str, Any]) -> str:
-    from workflow.publication_readiness import get_publication_readiness
+def _action_get_conformance_pack(kwargs: dict[str, Any]) -> str:
+    from workflow.conformance_packs import get_conformance_pack
 
-    readiness_id = (kwargs.get("publication_readiness_id") or "").strip()
-    if not readiness_id:
+    pack_id = (kwargs.get("conformance_pack_id") or "").strip()
+    if not pack_id:
         return json.dumps({
             "status": "rejected",
-            "error": "publication_readiness_id is required.",
+            "error": "conformance_pack_id is required.",
         })
-    readiness = get_publication_readiness(_base_path(), readiness_id)
-    if readiness is None:
+    pack = get_conformance_pack(_base_path(), pack_id)
+    if pack is None:
         return json.dumps({
             "status": "rejected",
-            "error": "publication_readiness_not_found",
-            "publication_readiness_id": readiness_id,
+            "error": "conformance_pack_not_found",
+            "conformance_pack_id": pack_id,
         })
     return json.dumps({
         "status": "ok",
-        "publication_readiness": readiness.to_dict(),
+        "conformance_pack": pack.to_dict(),
     }, default=str)
 
 
-def _action_list_publication_readiness(kwargs: dict[str, Any]) -> str:
-    from workflow.publication_readiness import list_publication_readiness
+def _action_list_conformance_packs(kwargs: dict[str, Any]) -> str:
+    from workflow.conformance_packs import list_conformance_packs
 
-    records = list_publication_readiness(
+    records = list_conformance_packs(
         _base_path(),
         goal_id=(kwargs.get("goal_id") or "").strip(),
         branch_def_id=(kwargs.get("branch_def_id") or "").strip(),
+        standard_id=(kwargs.get("standard_id") or "").strip(),
         limit=int(kwargs.get("limit") or 50),
     )
     return json.dumps({
         "status": "ok",
         "count": len(records),
-        "publication_readiness": [record.to_dict() for record in records],
+        "conformance_packs": [record.to_dict() for record in records],
     }, default=str)
 
 
@@ -3014,9 +3026,9 @@ _GATES_ACTIONS: dict[str, Any] = {
     "get_ladder": _action_gates_get_ladder,
     "claim": _action_gates_claim,
     "claim_from_branch_run": _action_gates_claim_from_branch_run,
-    "record_publication_readiness": _action_record_publication_readiness,
-    "get_publication_readiness": _action_get_publication_readiness,
-    "list_publication_readiness": _action_list_publication_readiness,
+    "record_conformance_pack": _action_record_conformance_pack,
+    "get_conformance_pack": _action_get_conformance_pack,
+    "list_conformance_packs": _action_list_conformance_packs,
     "retract": _action_gates_retract,
     "list_claims": _action_gates_list_claims,
     "leaderboard": _action_gates_leaderboard,
@@ -3045,8 +3057,9 @@ def gates(
     node_last_claimer: str = "",
     node_id: str = "",
     run_id: str = "",
-    readiness_json: str = "",
-    publication_readiness_id: str = "",
+    conformance_pack_json: str = "",
+    conformance_pack_id: str = "",
+    standard_id: str = "",
 ) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
@@ -3064,6 +3077,9 @@ def gates(
                     and `ladder` (JSON list of {rung_key, name,
                     description}).
       get_ladder    Read a Goal's ladder. Needs goal_id.
+      record_conformance_pack
+                    Store a standards/readiness conformance pack for a
+                    Goal or Branch before a gated rung claim.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url. Idempotent on (branch, rung).
       claim_from_branch_run
@@ -3128,6 +3144,9 @@ def gates(
       run_id: completed-run target for claim_from_branch_run; the run's
               final-state ``recommended_rung_claim`` selects the rung
               and (optionally) the supporting evidence URL.
+      conformance_pack_json: JSON object for record_conformance_pack.
+      conformance_pack_id: ready conformance pack supporting a claim.
+      standard_id: optional list_conformance_packs filter.
     """
     from workflow.api.engine_helpers import (
         _format_dirty_file_conflict,
@@ -3168,8 +3187,9 @@ def gates(
         "node_last_claimer": node_last_claimer,
         "node_id": node_id,
         "run_id": run_id,
-        "readiness_json": readiness_json,
-        "publication_readiness_id": publication_readiness_id,
+        "conformance_pack_json": conformance_pack_json,
+        "conformance_pack_id": conformance_pack_id,
+        "standard_id": standard_id,
     }
     try:
         return handler(kwargs)
