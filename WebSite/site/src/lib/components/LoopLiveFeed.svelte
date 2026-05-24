@@ -255,34 +255,74 @@
     return matches[matches.length - 1] ?? null;
   }
 
-  function stageStatus(
-    stage: LoopStageId,
-  ): "waiting" | "running" | "done" | "failed" {
-    const latest = latestFor(stage);
-    if (!latest)
-      return activeRun?.current_stage === stage ? "running" : "waiting";
-    const status = latest.status.toLowerCase();
+  type StageVisualStatus = "waiting" | "running" | "done" | "failed";
+
+  function stageVisualStatusFromStatus(
+    value: string,
+    fallback: StageVisualStatus = "waiting",
+  ): StageVisualStatus {
+    const status = value.trim().toLowerCase();
+    if (!status) return fallback;
     if (
-      status.includes("fail") ||
-      status.includes("error") ||
-      status.includes("revert") ||
-      status.includes("block")
-    )
-      return "failed";
-    if (
+      status === "green" ||
+      status === "passed" ||
+      status === "pass" ||
       status.includes("complete") ||
       status.includes("success") ||
+      status.includes("succeed") ||
       status.includes("done") ||
-      status.includes("accept")
+      status.includes("accept") ||
+      status.includes("merged")
     )
       return "done";
     if (
+      status === "red" ||
+      status.includes("fail") ||
+      status.includes("error") ||
+      status.includes("revert") ||
+      status.includes("block") ||
+      status.includes("interrupt") ||
+      status.includes("cancel") ||
+      status.includes("abort") ||
+      status.includes("timeout") ||
+      status.includes("timed_out")
+    )
+      return "failed";
+    if (
+      status === "yellow" ||
       status.includes("pending") ||
       status.includes("queued") ||
-      status.includes("waiting")
+      status.includes("waiting") ||
+      status.includes("handoff") ||
+      status.includes("attempted") ||
+      status.includes("deferred") ||
+      status.includes("parked") ||
+      status.includes("idle") ||
+      status.includes("unknown")
     )
       return "waiting";
-    return "running";
+    if (
+      status.includes("running") ||
+      status.includes("active") ||
+      status.includes("progress") ||
+      status.includes("started")
+    )
+      return "running";
+    return fallback;
+  }
+
+  function stageStatus(stage: LoopStageId): StageVisualStatus {
+    if (
+      activeRun?.current_stage === stage &&
+      isTerminalRunStatus(activeRun.status)
+    )
+      return stageVisualStatusFromStatus(activeRun.status, "failed");
+    const latest = latestFor(stage);
+    if (!latest)
+      return activeRun?.current_stage === stage
+        ? stageVisualStatusFromStatus(activeRun.status, "running")
+        : "waiting";
+    return stageVisualStatusFromStatus(latest.status);
   }
 
   function statusLabel(stage: LoopStageId): string {
@@ -340,9 +380,18 @@
   }
 
   function isTerminalRunStatus(status: string): boolean {
-    return ["completed", "failed", "cancelled", "canceled"].includes(
-      status.toLowerCase(),
-    );
+    return [
+      "completed",
+      "succeeded",
+      "success",
+      "failed",
+      "interrupted",
+      "cancelled",
+      "canceled",
+      "aborted",
+      "timeout",
+      "timed_out",
+    ].includes(status.toLowerCase());
   }
 
   function compactQuote(value: string): string {
