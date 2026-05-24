@@ -142,6 +142,110 @@ def test_compiler_accepts_approved_source_code():
     assert result["out"] == 6
 
 
+def test_source_code_node_can_call_allowed_mcp_action(monkeypatch):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    import workflow.api.market as market
+    from workflow.graph_compiler import compile_branch
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_goals(*, action: str, **kwargs):
+        calls.append((action, kwargs))
+        return json.dumps({
+            "status": "ok",
+            "entries": [{"branch_def_id": "b1"}],
+        })
+
+    monkeypatch.setattr(market, "goals", fake_goals)
+
+    b = BranchDefinition(name="test", entry_point="only")
+    b.node_defs = [NodeDefinition(
+        node_id="only",
+        display_name="Only",
+        source_code=(
+            "def run(state):\n"
+            "    board = invoke_mcp_action("
+            "'goals.leaderboard', goal_id=state['goal_id'], metric='run_count')\n"
+            "    return {'leaderboard_count': len(board['entries'])}\n"
+        ),
+        input_keys=["goal_id"],
+        output_keys=["leaderboard_count"],
+        tools_allowed=["goals.leaderboard"],
+        approved=True,
+    )]
+    b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
+    b.edges = [
+        EdgeDefinition(from_node="START", to_node="only"),
+        EdgeDefinition(from_node="only", to_node="END"),
+    ]
+    b.state_schema = [
+        {"name": "goal_id", "type": "str"},
+        {"name": "leaderboard_count", "type": "int"},
+    ]
+    compiled = compile_branch(b)
+    app = compiled.graph.compile(checkpointer=InMemorySaver())
+    result = app.invoke(
+        {"goal_id": "g1"}, config={"configurable": {"thread_id": "mcp-ok"}},
+    )
+
+    assert result["leaderboard_count"] == 1
+    assert calls == [("leaderboard", {"goal_id": "g1", "metric": "run_count"})]
+
+
+def test_source_code_node_rejects_mcp_action_not_in_tools_allowed(monkeypatch):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    import workflow.api.market as market
+    from workflow.graph_compiler import CompilerError, compile_branch
+
+    def fake_goals(*, action: str, **kwargs):
+        raise AssertionError("disallowed MCP action should not dispatch")
+
+    monkeypatch.setattr(market, "goals", fake_goals)
+
+    b = BranchDefinition(name="test", entry_point="only")
+    b.node_defs = [NodeDefinition(
+        node_id="only",
+        display_name="Only",
+        source_code=(
+            "def run(state):\n"
+            "    invoke_mcp_action('goals.leaderboard', goal_id='g1')\n"
+            "    return {'out': 'unreachable'}\n"
+        ),
+        output_keys=["out"],
+        tools_allowed=[],
+        approved=True,
+    )]
+    b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
+    b.edges = [
+        EdgeDefinition(from_node="START", to_node="only"),
+        EdgeDefinition(from_node="only", to_node="END"),
+    ]
+    b.state_schema = [{"name": "out", "type": "str"}]
+    compiled = compile_branch(b)
+    app = compiled.graph.compile(checkpointer=InMemorySaver())
+
+    with pytest.raises(CompilerError) as exc_info:
+        app.invoke({}, config={"configurable": {"thread_id": "mcp-denied"}})
+    assert "not allowed" in str(exc_info.value)
+
+
+def test_branch_spec_preserves_tools_allowed():
+    from workflow.api.branches import _apply_node_spec
+
+    branch = BranchDefinition(name="test")
+    err = _apply_node_spec(branch, {
+        "node_id": "only",
+        "display_name": "Only",
+        "source_code": "def run(state): return {}",
+        "tools_allowed": ["goals.leaderboard"],
+    })
+
+    assert err == ""
+    assert branch.node_defs[0].tools_allowed == ["goals.leaderboard"]
+
+
 def test_compiler_synthesized_typeddict_reducer_append():
     """state_schema with reducer=append should accumulate across nodes."""
     from langgraph.checkpoint.memory import InMemorySaver

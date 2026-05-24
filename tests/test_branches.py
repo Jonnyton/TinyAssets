@@ -196,6 +196,15 @@ class TestNodeDefinition:
         })
         assert n.node_id == "x"
 
+    def test_tools_allowed_rejects_non_list_shape(self):
+        with pytest.raises(NodeDefinitionValidationError) as exc_info:
+            NodeDefinition(
+                node_id="x",
+                display_name="X",
+                tools_allowed="goals.leaderboard",  # type: ignore[arg-type]
+            )
+        assert exc_info.value.field == "tools_allowed"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # GraphNodeRef
