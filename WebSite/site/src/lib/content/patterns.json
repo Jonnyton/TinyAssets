@@ -70,7 +70,7 @@
       "n": "10",
       "file": "10-through-line.png",
       "title": "The through-line",
-      "caption": "If you read the diagrams from top to bottom: nine invariants the whole wiki work surface inherits.",
+      "caption": "If you read the diagrams from top to bottom: nine invariants the whole goals surface inherits.",
       "takeaway": "Same pattern, different resolution. The lifecycle from diagram 01 is the atom; everything else is composition."
     }
   ]
