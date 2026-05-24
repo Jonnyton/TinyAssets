@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
 
 @pytest.fixture
@@ -95,6 +96,101 @@ def test_build_branch_persists(comp_env):
     # Atomic get_branch returns the same branch.
     got = _call(us, "get_branch", branch_def_id=bid)
     assert got["name"] == "Recipe tracker"
+
+
+def test_build_branch_preserves_explicit_non_strict_input_isolation(comp_env):
+    us, _ = comp_env
+    spec = {
+        **RECIPE_SPEC,
+        "node_defs": [{
+            "node_id": "capture",
+            "display_name": "Capture raw recipe",
+            "input_keys": ["raw_recipe"],
+            "output_keys": ["capture_output"],
+            "prompt_template": "Extract {raw_recipe} using {style_guide}",
+            "strict_input_isolation": False,
+        }],
+        "edges": [
+            {"from": "START", "to": "capture"},
+            {"from": "capture", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": "raw_recipe", "type": "str"},
+            {"name": "style_guide", "type": "str"},
+            {"name": "capture_output", "type": "str"},
+        ],
+    }
+
+    built = _call(us, "build_branch", spec_json=json.dumps(spec))
+
+    assert built["status"] == "built", built
+    got = _call(us, "get_branch", branch_def_id=built["branch_def_id"])
+    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
+    assert capture["strict_input_isolation"] is False
+
+    from workflow.branches import BranchDefinition
+    from workflow.graph_compiler import compile_branch
+
+    prompts: list[str] = []
+
+    def provider(prompt, system="", *, role="writer", fallback_response=None):
+        prompts.append(prompt)
+        return "captured"
+
+    branch = BranchDefinition.from_dict(got)
+    app = compile_branch(branch, provider_call=provider).graph.compile(
+        checkpointer=InMemorySaver(),
+    )
+    result = app.invoke(
+        {"raw_recipe": "pasta", "style_guide": "terse"},
+        config={"configurable": {"thread_id": "non-strict-build-branch"}},
+    )
+    assert prompts == ["Extract pasta using terse"]
+    assert result["capture_output"] == "captured"
+
+
+def test_build_branch_fork_from_inherits_parent_topology(comp_env):
+    us, base = comp_env
+    from workflow.branch_versions import publish_branch_version
+
+    parent = _call(us, "build_branch", spec_json=json.dumps({
+        **RECIPE_SPEC,
+        "skills": [{
+            "skill_id": "recipe-parser",
+            "name": "Recipe Parser",
+            "version": "1.0.0",
+            "body": "Parse a recipe.",
+        }],
+    }))
+    parent_branch = _call(us, "get_branch", branch_def_id=parent["branch_def_id"])
+    parent_version = publish_branch_version(
+        base,
+        parent_branch,
+        notes="publish parent",
+        publisher="tester",
+    )
+
+    child = _call(us, "build_branch", spec_json=json.dumps({
+        "name": "Recipe tracker remix",
+        "description": "Forked without repeating the graph",
+        "fork_from": parent_version.branch_version_id,
+    }))
+
+    assert child["status"] == "built", child
+    assert child["node_count"] == 3
+    assert child["edge_count"] == 4
+    assert child["skill_count"] == 1
+
+    got = _call(us, "get_branch", branch_def_id=child["branch_def_id"])
+    assert got["fork_from"] == parent_version.branch_version_id
+    assert got["parent_def_id"] == parent["branch_def_id"]
+    assert got["entry_point"] == "capture"
+    assert [n["node_id"] for n in got["node_defs"]] == [
+        n["node_id"] for n in parent_branch["node_defs"]
+    ]
+    assert got["graph"]["edges"] == parent_branch["graph"]["edges"]
+    assert got["state_schema"] == parent_branch["state_schema"]
+    assert got["skills"] == parent_branch["skills"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,6 +315,42 @@ def test_patch_branch_batch_succeeds(comp_env):
 
     got = _call(us, "get_branch", branch_def_id=bid)
     assert any(n["node_id"] == "novelty_check" for n in got["node_defs"])
+
+
+def test_patch_branch_publishes_versioned_snapshot(comp_env):
+    us, base = comp_env
+    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    bid = built["branch_def_id"]
+
+    result = _call(
+        us,
+        "patch_branch",
+        branch_def_id=bid,
+        changes_json=json.dumps([
+            {
+                "op": "add_state_field",
+                "name": "review_output",
+                "type": "str",
+            },
+        ]),
+    )
+
+    assert result["status"] == "patched", result
+    assert result["branch_version_id"]
+    assert result["parent_version_id"]
+
+    from workflow.branch_versions import get_branch_version
+
+    parent = get_branch_version(base, result["parent_version_id"])
+    version = get_branch_version(base, result["branch_version_id"])
+    assert parent is not None
+    assert version is not None
+    assert parent.branch_version_id != version.branch_version_id
+    assert version.parent_version_id == parent.branch_version_id
+    assert parent.snapshot["branch_def_id"] == bid
+    assert version.snapshot["branch_def_id"] == bid
+    assert all(f["name"] != "review_output" for f in parent.snapshot["state_schema"])
+    assert any(f["name"] == "review_output" for f in version.snapshot["state_schema"])
 
 
 def test_patch_branch_rollback_on_any_op_failure(comp_env):

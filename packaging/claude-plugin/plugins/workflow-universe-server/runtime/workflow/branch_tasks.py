@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 QUEUE_FILENAME = "branch_tasks.json"
 ARCHIVE_FILENAME = "branch_tasks_archive.json"
 LOCK_FILENAME = "branch_tasks.json.lock"
+DEFAULT_LEASE_SECONDS = 300
 
 # Exposed for test override (invariant 10).
 ARCHIVE_AFTER_DAYS = 30
@@ -92,6 +93,11 @@ class BranchTask:
     cancel_requested: bool = False
     request_type: str = "branch_run"
     deadline: str = ""
+    worker_owner_id: str = ""
+    lease_expires_at: str = ""
+    heartbeat_at: str = ""
+    last_progress_at: str = ""
+    rung_claim_recommendations: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -176,6 +182,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _lease_window(*, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> tuple[str, str]:
+    now = datetime.now(timezone.utc)
+    return (
+        now.isoformat(),
+        (now + timedelta(seconds=lease_seconds)).isoformat(),
+    )
+
+
 def _read_raw(qp: Path) -> list[dict]:
     if not qp.exists():
         return []
@@ -247,8 +261,83 @@ def claim_task(
                 continue
             if row.get("status") != "pending":
                 return None
+            heartbeat_at, lease_expires_at = _lease_window()
             row["status"] = "running"
             row["claimed_by"] = claimer
+            row["worker_owner_id"] = claimer
+            row["heartbeat_at"] = heartbeat_at
+            row["lease_expires_at"] = lease_expires_at
+            _write_raw(qp, raw)
+            return BranchTask.from_dict(row)
+    return None
+
+
+def refresh_task_heartbeat(
+    universe_path: Path,
+    task_id: str,
+    *,
+    worker_owner_id: str = "",
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> BranchTask | None:
+    """Refresh active lease metadata for a running task.
+
+    Phase A is write-only observability: this does not reclaim or
+    transition rows. The optional owner guard prevents a stale daemon
+    from rewriting another worker's lease if identity is available.
+    """
+    qp = queue_path(universe_path)
+    if not qp.exists():
+        return None
+    with _file_lock(universe_path):
+        raw = _read_raw(qp)
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            if row.get("branch_task_id") != task_id:
+                continue
+            if row.get("status") != "running":
+                return None
+            existing_owner = str(
+                row.get("worker_owner_id") or row.get("claimed_by") or ""
+            )
+            if (
+                worker_owner_id
+                and existing_owner
+                and existing_owner != worker_owner_id
+            ):
+                return None
+            heartbeat_at, lease_expires_at = _lease_window(
+                lease_seconds=lease_seconds
+            )
+            if worker_owner_id and not row.get("worker_owner_id"):
+                row["worker_owner_id"] = worker_owner_id
+            row["heartbeat_at"] = heartbeat_at
+            row["lease_expires_at"] = lease_expires_at
+            _write_raw(qp, raw)
+            return BranchTask.from_dict(row)
+    return None
+
+
+def mark_task_progress(
+    universe_path: Path,
+    task_id: str,
+    *,
+    progress_at: str | None = None,
+) -> BranchTask | None:
+    """Stamp the most recent node-status progress for a running task."""
+    qp = queue_path(universe_path)
+    if not qp.exists():
+        return None
+    with _file_lock(universe_path):
+        raw = _read_raw(qp)
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            if row.get("branch_task_id") != task_id:
+                continue
+            if row.get("status") != "running":
+                return None
+            row["last_progress_at"] = progress_at or _now_iso()
             _write_raw(qp, raw)
             return BranchTask.from_dict(row)
     return None
@@ -356,6 +445,9 @@ def recover_claimed_tasks(universe_path: Path) -> int:
             if isinstance(row, dict) and row.get("status") == "running":
                 row["status"] = "pending"
                 row["claimed_by"] = ""
+                row["worker_owner_id"] = ""
+                row["lease_expires_at"] = ""
+                row["heartbeat_at"] = ""
                 count += 1
         if count:
             _write_raw(qp, raw)

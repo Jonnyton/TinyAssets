@@ -32,6 +32,7 @@ Task arrives
     |-- Have a spec, need tasks? --------------------> planning-and-task-breakdown
     |-- Implementing code? --------------------------> incremental-implementation
     |   |-- Website edit / preview loop? -----------> website-editing
+    |   |-- Game or interactive prototype? ---------> game-prototyping
     |   |-- UI work? --------------------------------> frontend-ui-engineering
     |   |-- API / interface work? -------------------> api-and-interface-design
     |   |-- Mostly simplification / clarity? --------> code-simplification
@@ -40,6 +41,7 @@ Task arrives
     |   |-- Conditional-edge branch routing? --------> conditional-edge-testing
     |   |-- Browser runtime verification? -----------> browser-testing-with-devtools
     |   `-- Live Claude.ai phone-surface test? ------> ui-test
+    |-- Community loop unable to self-heal? ---------> loop-uptime-maintenance
     |-- Something broke? ----------------------------> debugging-and-error-recovery
     |-- Reviewing code? -----------------------------> code-review-and-quality
     |   |-- Security-sensitive? ---------------------> security-and-hardening
@@ -51,6 +53,7 @@ Task arrives
     |-- GoDaddy domain / DNS / site ops? ------------> godaddy-ops
     |-- Writing docs or rationale? ------------------> documentation-and-adrs
     |-- Deploying or launching? ---------------------> shipping-and-launch
+    |-- Recurring agent behavior failed again? ------> auto-iterate
     `-- Agent-team behavior needs tuning? -----------> team-iterate
 ```
 
@@ -147,6 +150,7 @@ Not every task needs every step. Bug triage might be:
 | Plan | planning-and-task-breakdown | Decompose work into small verifiable tasks |
 | Build | incremental-implementation | Ship thin vertical slices |
 | Build | website-editing | Edit the Workflow website with its preview and ship loop |
+| Build | game-prototyping | Build playable browser games and game-like interactive prototypes |
 | Build | context-engineering | Load the right context at the right time |
 | Build | frontend-ui-engineering | Build production-quality user interfaces |
 | Build | api-and-interface-design | Design stable interfaces and contracts |
@@ -156,6 +160,7 @@ Not every task needs every step. Bug triage might be:
 | Verify | conditional-edge-testing | Require compile+invoke coverage for conditional-edge branches |
 | Verify | browser-testing-with-devtools | Use browser runtime evidence to verify behavior |
 | Verify | ui-test | Exercise the live Claude.ai user surface |
+| Ops | loop-uptime-maintenance | Handle community-loop failures too broken to self-heal through the loop |
 | Verify | debugging-and-error-recovery | Reproduce, localize, fix, and guard regressions |
 | Review | code-review-and-quality | Review by bugs, regressions, and missing tests first |
 | Review | security-and-hardening | Apply least privilege and hostile-input thinking |
@@ -168,4 +173,5 @@ Not every task needs every step. Bug triage might be:
 | Ops | cloudflare-ops | Operate Cloudflare DNS, routes, and website surfaces |
 | Ops | godaddy-ops | Operate GoDaddy domain and site surfaces |
 | Meta | skill-authoring | Create or update project-local skills correctly |
+| Meta | auto-iterate | Ratchet prevention after repeated agent behavioral failures |
 | Meta | team-iterate | Improve agent-team definitions and launch prompts |

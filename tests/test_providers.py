@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -481,6 +482,26 @@ class TestProviderRegistration:
         with patch("shutil.which", return_value="/usr/local/bin/codex"):
             assert CodexProvider.is_available()
 
+    def test_effective_chain_excludes_unregistered_providers(self):
+        """Runtime chain skips absent CLI providers instead of advertising them first."""
+        router = ProviderRouter(
+            providers={
+                "codex": FakeProvider("codex", "openai"),
+                "ollama-local": FakeProvider("ollama-local", "local"),
+            },
+        )
+
+        chain, excluded = router.effective_chain(FALLBACK_CHAINS["writer"])
+
+        assert chain == ["codex", "ollama-local"]
+        assert [attempt.provider for attempt in excluded] == [
+            "claude-code",
+            "gemini-free",
+            "groq-free",
+            "grok-free",
+        ]
+        assert {attempt.skip_class for attempt in excluded} == {"not_in_registry"}
+
 
 # =====================================================================
 # ClaudeProvider (subprocess mock)
@@ -640,8 +661,8 @@ class TestCodexProvider:
                 await provider.complete("prompt", "system", ModelConfig())
 
     @pytest.mark.asyncio
-    async def test_skip_git_repo_check_in_command(self):
-        """codex exec must include --skip-git-repo-check."""
+    async def test_skip_git_repo_check_in_command_without_bwrap(self):
+        """codex exec must bypass sandbox only when bwrap is unavailable."""
         from workflow.providers.codex_provider import CodexProvider
 
         captured_cmd = []
@@ -658,6 +679,8 @@ class TestCodexProvider:
         with (
             patch("workflow.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
+            patch("workflow.providers.codex_provider.get_sandbox_status",
+                  return_value={"bwrap_available": False, "reason": "test"}),
             patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         ):
             provider = CodexProvider()
@@ -666,6 +689,103 @@ class TestCodexProvider:
         assert "--skip-git-repo-check" in captured_cmd, (
             f"Expected --skip-git-repo-check in command: {captured_cmd}"
         )
+        assert "--dangerously-bypass-approvals-and-sandbox" in captured_cmd
+        assert "--full-auto" not in captured_cmd
+        assert "--ephemeral" in captured_cmd
+        assert "-C" in captured_cmd
+        assert "-m" in captured_cmd
+        assert captured_cmd[captured_cmd.index("-m") + 1] == "gpt-5.4"
+
+    @pytest.mark.asyncio
+    async def test_runs_from_repo_root_so_coding_tasks_can_read_source(self):
+        """BUG-060: loop investigations need repo source/tests, not an empty tempdir."""
+        import workflow.providers.codex_provider as codex_provider
+        from workflow.providers.codex_provider import CodexProvider
+
+        captured_cmd = []
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
+
+        async def _fake_exec(*args, **kwargs):
+            captured_cmd.extend(args)
+            return mock_proc
+
+        with (
+            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+                  return_value=(["codex"], False)),
+            patch("workflow.providers.codex_provider.get_sandbox_status",
+                  return_value={"bwrap_available": False, "reason": "test"}),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        ):
+            provider = CodexProvider()
+            await provider.complete("prompt", "system", ModelConfig())
+
+        repo_root = Path(codex_provider.__file__).resolve().parents[2]
+        assert "-C" in captured_cmd
+        assert captured_cmd[captured_cmd.index("-C") + 1] == str(repo_root)
+
+    @pytest.mark.asyncio
+    async def test_model_can_be_overridden_by_env(self, monkeypatch):
+        """Operators can move the provider forward after the deployed CLI supports it."""
+        from workflow.providers.codex_provider import CodexProvider
+
+        captured_cmd = []
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
+
+        async def _fake_exec(*args, **kwargs):
+            captured_cmd.extend(args)
+            return mock_proc
+
+        monkeypatch.setenv("WORKFLOW_CODEX_MODEL", "gpt-5.5")
+        with (
+            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+                  return_value=(["codex"], False)),
+            patch("workflow.providers.codex_provider.get_sandbox_status",
+                  return_value={"bwrap_available": True, "reason": None}),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        ):
+            provider = CodexProvider()
+            await provider.complete("prompt", "system", ModelConfig())
+
+        assert captured_cmd[captured_cmd.index("-m") + 1] == "gpt-5.5"
+
+    @pytest.mark.asyncio
+    async def test_uses_full_auto_when_bwrap_available(self):
+        """Healthy bwrap hosts should keep Codex's sandboxed auto mode."""
+        from workflow.providers.codex_provider import CodexProvider
+
+        captured_cmd = []
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
+
+        async def _fake_exec(*args, **kwargs):
+            captured_cmd.extend(args)
+            return mock_proc
+
+        with (
+            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+                  return_value=(["codex"], False)),
+            patch("workflow.providers.codex_provider.get_sandbox_status",
+                  return_value={"bwrap_available": True, "reason": None}),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        ):
+            provider = CodexProvider()
+            await provider.complete("prompt", "system", ModelConfig())
+
+        assert "--full-auto" in captured_cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" not in captured_cmd
+        assert "--skip-git-repo-check" in captured_cmd
+        assert "--ephemeral" in captured_cmd
 
 
 # =====================================================================
@@ -819,7 +939,8 @@ class TestGrokProvider:
 
 
 class TestFallbackChainDefinitions:
-    def test_writer_chain_starts_with_claude(self):
+    def test_writer_preference_chain_starts_with_claude(self):
+        """Static preference may name Claude; runtime effective_chain probes it."""
         assert FALLBACK_CHAINS["writer"][0] == "claude-code"
         assert FALLBACK_CHAINS["writer"][-1] == "ollama-local"
 

@@ -485,11 +485,14 @@
     color: #0e2b1d;
   }
   @media (max-width: 560px) {
+    .card { padding: 22px; }
     .row { display: grid; grid-template-columns: 1fr; }
     .row__input {
       min-width: 0;
       border-right: 1px solid var(--border-1);
       border-radius: 8px 8px 0 0;
+      font-size: 11px;
+      padding: 14px 12px;
     }
     .row__btn {
       min-width: 0;

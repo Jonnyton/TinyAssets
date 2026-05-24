@@ -29,6 +29,12 @@ def test_soul_daemon_creation_scaffolds_host_local_wiki(tmp_path) -> None:
     assert (root / "raw" / "signals").is_dir()
     assert (root / "pages" / "self-model" / "current-self.md").exists()
     assert (root / "pages" / "signals" / "learning-signals.md").exists()
+    blocked_patterns = root / "pages" / "brain" / "blocked-patterns.md"
+    assert blocked_patterns.exists()
+    blocked_text = blocked_patterns.read_text(encoding="utf-8")
+    assert "Pre-Claim Read" in blocked_text
+    assert "verdict-feedback" in blocked_text
+    assert "BUG-049" in blocked_text
     assert daemon["metadata"]["daemon_wiki"]["host_local"] is True
     assert "preserving curiosity" in (root / "raw" / "initial-soul.md").read_text(
         encoding="utf-8"
@@ -96,6 +102,18 @@ def test_record_daemon_signal_rejects_soulless_daemon(tmp_path) -> None:
 
 def test_read_daemon_wiki_context_includes_schema_index_and_signals(tmp_path) -> None:
     daemon = _soul_daemon(tmp_path)
+    root = daemon_wiki.daemon_wiki_root(tmp_path, daemon["daemon_id"])
+    (root / "pages" / "brain" / "blocked-patterns.md").write_text(
+        "---\n"
+        "title: Blocked Patterns\n"
+        "type: blocked_patterns\n"
+        "---\n\n"
+        "# Blocked Patterns\n\n"
+        "## Active Patterns\n\n"
+        "- Rejected operator-shaped PRs must feed back into the next claim.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     daemon_wiki.record_daemon_signal(
         tmp_path,
         daemon_id=daemon["daemon_id"],
@@ -113,6 +131,8 @@ def test_read_daemon_wiki_context_includes_schema_index_and_signals(tmp_path) ->
     assert context["exists"] is True
     assert "Daemon Wiki Schema" in context["context"]
     assert "Current Self" in context["context"]
+    assert "<!-- pages/brain/blocked-patterns.md -->" in context["context"]
+    assert "Rejected operator-shaped PRs" in context["context"]
     assert "Handled a verification gate" in context["context"]
 
 

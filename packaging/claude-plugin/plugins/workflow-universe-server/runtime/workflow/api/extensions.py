@@ -51,6 +51,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from workflow.api.auto_ship_actions import _AUTO_SHIP_ACTIONS
+
 # Top-of-module imports of all 12 dispatch tables from Steps 4-8.
 # These are the routing surface — extensions.py is a hot-path dispatcher,
 # so lazy-imports would burn one import resolution per call. Verified
@@ -64,6 +66,8 @@ from workflow.api.evaluation import (
     _JUDGMENT_ACTIONS,
     _dispatch_judgment_action,
 )
+from workflow.api.extensions_consent_actions import _EFFECTOR_CONSENT_ACTIONS
+from workflow.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
 from workflow.api.helpers import _base_path, _read_json
 from workflow.api.market import (
     _ATTRIBUTION_ACTIONS,
@@ -274,6 +278,7 @@ def _extensions_impl(
     node_ref_json: str = "",
     intent: str = "",
     node_query: str = "",
+    scope: str = "published",
     force: bool = False,
     project_id: str = "",
     key: str = "",
@@ -288,6 +293,11 @@ def _extensions_impl(
     to_node_id: str = "",
     message_type: str = "",
     body_json: str = "",
+    ship_attempt_id: str = "",
+    head_branch: str = "",
+    title: str = "",
+    pr_body: str = "",
+    base_branch: str = "",
     reply_to_message_id: str = "",
     message_types: str = "",
     message_id: str = "",
@@ -332,6 +342,14 @@ def _extensions_impl(
     reason: str = "",
     severity: str = "P1",
     since_days: int = 7,
+    record_in_ledger: bool = False,
+    universe_id: str = "",
+    request_id: str = "",
+    parent_run_id: str = "",
+    release_gate_result: str = "",
+    ship_class: str = "",
+    changed_paths_json: str = "",
+    stable_evidence_handle: str = "",
 ) -> str:
     """Pattern A2 body — see ``workflow.universe_server.extensions`` for the
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
@@ -379,6 +397,7 @@ def _extensions_impl(
         "intent": intent,
         "query": node_query,
         "limit": limit,
+        "scope": scope,
         "force": force,
     }
     if node_ref_json:
@@ -545,6 +564,32 @@ def _extensions_impl(
         }
         return inspect_dry_handler(di_kwargs)
 
+    # ── Auto-ship validator (PR #198 Phase 2A) ─────────────────────────────
+    # Wraps workflow.auto_ship.validate_ship_request as an MCP action so the
+    # loop's release_safety_gate prompt (and chatbots / canaries) can call it
+    # via tool. Pure validator — no IO, no repo writes.
+    auto_ship_handler = _AUTO_SHIP_ACTIONS.get(action)
+    if auto_ship_handler is not None:
+        as_kwargs: dict[str, Any] = {
+            "body_json": body_json,
+            "record_in_ledger": record_in_ledger,
+            "universe_id": universe_id,
+            "request_id": request_id,
+            "parent_run_id": parent_run_id,
+            "child_run_id": child_run_id,
+            "branch_def_id": branch_def_id,
+            "release_gate_result": release_gate_result,
+            "ship_class": ship_class,
+            "changed_paths_json": changed_paths_json,
+            "stable_evidence_handle": stable_evidence_handle,
+            "ship_attempt_id": ship_attempt_id,
+            "head_branch": head_branch,
+            "title": title,
+            "body": pr_body,
+            "base_branch": base_branch,
+        }
+        return auto_ship_handler(as_kwargs)
+
     # ── Scheduler ──────────────────────────────────────────────────────────
     scheduler_handler = _SCHEDULER_ACTIONS.get(action)
     if scheduler_handler is not None:
@@ -578,6 +623,22 @@ def _extensions_impl(
         }
         return outcome_handler(oc_kwargs)
 
+    # ── Effector consent grants (PR-122 Phase 2 Slice 1) ───────────────────
+    consent_handler = _EFFECTOR_CONSENT_ACTIONS.get(action)
+    if consent_handler is not None:
+        # Field reuse: ``intent`` carries the sink name and ``project_id``
+        # carries the destination, so chatbots can call this without
+        # adding new tool-signature kwargs. Slice-2 may add dedicated
+        # ``sink`` / ``destination`` arg names; for now reuse the
+        # existing slots to keep the MCP surface stable.
+        consent_kwargs: dict[str, Any] = {
+            "sink": intent or "",
+            "destination": project_id or "",
+            "granted_by": author or "",
+            "active_only": active_only,
+        }
+        return consent_handler(consent_kwargs)
+
     # ── Attribution chain ──────────────────────────────────────────────────
     attribution_handler = _ATTRIBUTION_ACTIONS.get(action)
     if attribution_handler is not None:
@@ -592,6 +653,20 @@ def _extensions_impl(
         }
         return attribution_handler(attr_kwargs)
 
+    # ── Quality leaderboard / parent selection (PR-123 substrate M2) ───────
+    leaderboard_handler = _LEADERBOARD_ACTIONS.get(action)
+    if leaderboard_handler is not None:
+        # P1.1 fix (round 2) — the dispatch MUST NOT forward
+        # caller-supplied ``author`` / ``force`` into the leaderboard
+        # handler's visibility surface. Round-1 mapped
+        # ``author -> viewer`` and ``force -> include_private``, which
+        # let an MCP caller see private branches authored by anyone
+        # they could name. The handler now resolves viewer identity
+        # server-side via ``_current_actor()``; visibility is
+        # public-or-author-owned for the actual caller, never the
+        # caller-named identity.
+        return leaderboard_handler({"goal_id": goal_id})
+
     return json.dumps({
         "error": f"Unknown action '{action}'.",
         "available_actions": [
@@ -603,7 +678,7 @@ def _extensions_impl(
             "validate_branch", "describe_branch",
             "get_branch", "list_branches", "delete_branch",
             "run_branch", "get_run", "list_runs",
-            "stream_run", "cancel_run", "get_run_output",
+            "stream_run", "wait_for_run", "cancel_run", "get_run_output",
             "attach_existing_child_run",
             "resume_run", "estimate_run_cost", "query_runs",
             "judge_run", "list_judgments", "compare_runs",
@@ -622,6 +697,9 @@ def _extensions_impl(
             "pause_schedule", "unpause_schedule", "list_scheduler_subscriptions",
             "record_outcome", "list_outcomes", "get_outcome",
             "record_remix", "get_provenance",
+            "quality_leaderboard", "recommended_parent_for_fork",
+            "grant_effector_consent", "revoke_effector_consent",
+            "list_effector_consents",
         ],
     })
 

@@ -332,6 +332,42 @@ def test_execute_branch_end_to_end(tmp_path):
     assert any(e["status"] == "ran" for e in events)
 
 
+def test_execute_branch_reports_node_status_callback(tmp_path):
+    from workflow.runs import (
+        NODE_STATUS_RAN,
+        NODE_STATUS_RUNNING,
+        execute_branch,
+    )
+
+    b = BranchDefinition(name="test", entry_point="n1")
+    b.node_defs = [NodeDefinition(
+        node_id="n1", display_name="N1", approved=True,
+        source_code="def run(state): return {'out': state.get('x', 0) * 2}",
+    )]
+    b.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
+    b.edges = [
+        EdgeDefinition(from_node="START", to_node="n1"),
+        EdgeDefinition(from_node="n1", to_node="END"),
+    ]
+    b.state_schema = [
+        {"name": "x", "type": "int"}, {"name": "out", "type": "int"},
+    ]
+    seen: list[tuple[str, str]] = []
+
+    outcome = execute_branch(
+        tmp_path,
+        branch=b,
+        inputs={"x": 21},
+        on_node_status=lambda node_id, status: seen.append((node_id, status)),
+    )
+
+    assert outcome.status == "completed"
+    assert seen == [
+        ("n1", NODE_STATUS_RUNNING),
+        ("n1", NODE_STATUS_RAN),
+    ]
+
+
 def test_execute_branch_fails_on_compiler_error(tmp_path):
     from workflow.runs import execute_branch
 
@@ -573,7 +609,8 @@ def test_unknown_action_catalog_lists_run_actions(runner_env):
     result = _call(us, "flimflam")
     avail = result.get("available_actions", [])
     for action in ("run_branch", "get_run", "list_runs",
-                   "stream_run", "cancel_run", "get_run_output"):
+                   "stream_run", "wait_for_run", "cancel_run",
+                   "get_run_output"):
         assert action in avail
 
 
@@ -595,8 +632,8 @@ def test_run_branch_returns_markdown_text_channel(runner_env):
     # the text channel (#58). run_id is still present in the dict.
     assert result["run_id"] not in result["text"]
     assert "run_id" in result  # structured content still carries it
-    # Text should direct the caller to the polling surface.
-    assert "stream_run" in result["text"] or "get_run" in result["text"]
+    # Text should direct the caller to the long-poll surface first.
+    assert "wait_for_run" in result["text"]
 
 
 def test_get_run_text_channel_matches_summary(runner_env):
@@ -834,6 +871,39 @@ def test_recover_in_flight_runs_leaves_terminal_rows_alone(tmp_path):
         update_run_status(tmp_path, rid, status=status)
         recover_in_flight_runs(tmp_path)
         assert get_run(tmp_path, rid)["status"] == status
+
+
+def test_latest_run_by_name_returns_newest_matching_branch_run(tmp_path):
+    from workflow.runs import (
+        RUN_STATUS_COMPLETED,
+        create_run,
+        latest_run_by_name,
+        update_run_status,
+    )
+
+    older = create_run(
+        tmp_path, branch_def_id="b1", thread_id="", inputs={},
+        run_name="branch-task-bt-1", actor="a",
+    )
+    newer = create_run(
+        tmp_path, branch_def_id="b1", thread_id="", inputs={},
+        run_name="branch-task-bt-1", actor="a",
+    )
+    other_branch = create_run(
+        tmp_path, branch_def_id="b2", thread_id="", inputs={},
+        run_name="branch-task-bt-1", actor="a",
+    )
+    for rid in (older, newer, other_branch):
+        update_run_status(tmp_path, rid, status=RUN_STATUS_COMPLETED)
+
+    match = latest_run_by_name(
+        tmp_path,
+        run_name="branch-task-bt-1",
+        branch_def_id="b1",
+    )
+
+    assert match is not None
+    assert match["run_id"] == newer
 
 
 def test_concurrent_cap_respected(tmp_path, monkeypatch):

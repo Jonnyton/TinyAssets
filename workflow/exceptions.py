@@ -29,7 +29,23 @@ class ProviderUnavailableError(ProviderError):
 
 
 class AllProvidersExhaustedError(ProviderError):
-    """Every provider in the fallback chain failed or is in cooldown."""
+    """Every provider in the fallback chain failed or is in cooldown.
+
+    FEAT-006: optionally carries a structured ``attempts`` list of
+    :class:`workflow.providers.diagnostics.ProviderAttemptDiagnostic`
+    and a ``chain_state`` dict so callers can diagnose *why* each
+    provider was skipped (auth_invalid / quota_or_cooldown /
+    endpoint_unreachable / etc) rather than parse the human-readable
+    message. Both fields default to ``None`` for backward compatibility
+    with pre-FEAT-006 raise sites that pass only a message.
+    """
+
+    def __init__(self, *args, attempts=None, chain_state=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        # list[ProviderAttemptDiagnostic] | None
+        self.attempts = attempts
+        # dict | None — typically built via diagnostics.build_chain_state
+        self.chain_state = chain_state
 
 
 # ---------------------------------------------------------------------------

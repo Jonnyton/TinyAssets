@@ -23,7 +23,7 @@ import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # Suppress langchain-core Pydantic V1 deprecation warning on Python 3.14+
 warnings.filterwarnings(
@@ -60,6 +60,7 @@ from fantasy_daemon.providers.claude_provider import ClaudeProvider  # noqa: E40
 from fantasy_daemon.providers.codex_provider import CodexProvider  # noqa: E402
 from fantasy_daemon.providers.ollama_provider import OllamaProvider  # noqa: E402
 from fantasy_daemon.providers.router import ProviderRouter  # noqa: E402
+from workflow.checkpointing import apply_configured_checkpoint_retention  # noqa: E402
 
 logger = logging.getLogger("fantasy_author")
 
@@ -67,6 +68,8 @@ _UNIVERSE_CYCLE_BRANCH_IDS = frozenset({
     "fantasy_author/universe-cycle",
     "fantasy_author:universe_cycle_wrapper",
 })
+
+_DEFAULT_BRANCH_TASK_HEARTBEAT_INTERVAL_S = 30.0
 
 
 def _first_trace(output: dict[str, Any]) -> dict[str, Any]:
@@ -381,6 +384,82 @@ def _try_dispatcher_pick(
         return None, {}
 
 
+def _branch_task_owner_id(claimed_task: Any) -> str:
+    return str(
+        getattr(claimed_task, "worker_owner_id", "")
+        or getattr(claimed_task, "claimed_by", "")
+        or ""
+    )
+
+
+def _branch_task_heartbeat_interval_seconds() -> float:
+    raw = (
+        os.environ.get("WORKFLOW_BRANCH_TASK_HEARTBEAT_INTERVAL_S")
+        or os.environ.get("WORKFLOW_BRANCH_TASK_HEARTBEAT_INTERVAL_SECONDS")
+        or str(_DEFAULT_BRANCH_TASK_HEARTBEAT_INTERVAL_S)
+    )
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid WORKFLOW_BRANCH_TASK_HEARTBEAT_INTERVAL_S=%r; using %.1fs",
+            raw,
+            _DEFAULT_BRANCH_TASK_HEARTBEAT_INTERVAL_S,
+        )
+        return _DEFAULT_BRANCH_TASK_HEARTBEAT_INTERVAL_S
+
+
+def _build_branch_task_observers(
+    universe_path: Path, claimed_task: Any,
+) -> tuple[Callable[..., None], Callable[[str, str], None]]:
+    task_id = str(getattr(claimed_task, "branch_task_id", "") or "")
+    owner_id = _branch_task_owner_id(claimed_task)
+    interval = _branch_task_heartbeat_interval_seconds()
+    last_heartbeat = 0.0
+
+    def refresh_heartbeat(*, force: bool = False) -> None:
+        nonlocal last_heartbeat
+        if not task_id:
+            return
+        now_mono = time.monotonic()
+        if not force and (now_mono - last_heartbeat) < interval:
+            return
+        try:
+            from workflow.branch_tasks import refresh_task_heartbeat
+
+            refreshed = refresh_task_heartbeat(
+                universe_path,
+                task_id,
+                worker_owner_id=owner_id,
+            )
+            if refreshed is not None:
+                last_heartbeat = now_mono
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "branch_task heartbeat refresh failed for %s owner=%s",
+                task_id,
+                owner_id,
+            )
+
+    def mark_node_status(node_id: str, status: str) -> None:
+        if not task_id:
+            return
+        try:
+            from workflow.branch_tasks import mark_task_progress
+
+            mark_task_progress(universe_path, task_id)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "branch_task progress stamp failed for %s node=%s status=%s",
+                task_id,
+                node_id,
+                status,
+            )
+        refresh_heartbeat()
+
+    return refresh_heartbeat, mark_node_status
+
+
 def _finalize_claimed_task(
     universe_path: Path,
     claimed: Any,
@@ -598,11 +677,91 @@ def _should_execute_claimed_branch_directly(claimed_task: Any) -> bool:
     if not branch_def_id or branch_def_id in _UNIVERSE_CYCLE_BRANCH_IDS:
         return False
     request_type = str(getattr(claimed_task, "request_type", "") or "branch_run")
-    return request_type == "branch_run"
+    return request_type in {"branch_run", "bug_investigation"}
+
+
+def _branch_task_inputs_for_execution(claimed_task: Any) -> dict[str, Any]:
+    inputs = dict(getattr(claimed_task, "inputs", {}) or {})
+    request_type = str(getattr(claimed_task, "request_type", "") or "branch_run")
+    if request_type == "bug_investigation" and not str(
+        inputs.get("request_text") or ""
+    ).strip():
+        from workflow.bug_investigation import build_run_payload
+
+        inputs = build_run_payload(inputs)
+    return inputs
+
+
+def _coerce_bug_investigation_patch_packet(packet: Any) -> dict[str, Any]:
+    if isinstance(packet, dict) and packet:
+        return packet
+    if isinstance(packet, str) and packet.strip():
+        return {"implementation_sketch": packet.strip()}
+    return {}
+
+
+def _bug_investigation_patch_packet(output: dict[str, Any]) -> dict[str, Any]:
+    """Return the completed investigation packet from known output shapes."""
+    for key in ("patch_packet", "candidate_patch_packet", "child_candidate_patch_packet"):
+        packet = _coerce_bug_investigation_patch_packet(output.get(key))
+        if packet:
+            return packet
+    child_output = output.get("attached_child_output")
+    if isinstance(child_output, dict):
+        return _bug_investigation_patch_packet(child_output)
+    coding_packet = output.get("coding_packet")
+    if isinstance(coding_packet, dict):
+        packet: dict[str, Any] = {}
+        summary = str(coding_packet.get("candidate_packet_summary") or "").strip()
+        if summary:
+            packet["implementation_sketch"] = summary
+        tests = coding_packet.get("expected_tests")
+        if isinstance(tests, list):
+            test_plan = "\n".join(f"- {str(item).strip()}" for item in tests if str(item).strip())
+        else:
+            test_plan = str(tests or "").strip()
+        if test_plan:
+            packet["test_plan"] = test_plan
+        if packet:
+            return packet
+    return {}
+
+
+def _maybe_attach_bug_investigation_patch_packet(
+    claimed_task: Any,
+    run_status: str,
+    run_output: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach completed bug-investigation output to the source wiki page."""
+    request_type = str(getattr(claimed_task, "request_type", "") or "branch_run")
+    if request_type != "bug_investigation":
+        return {"status": "skipped", "reason": "not_bug_investigation"}
+    if run_status != "completed":
+        return {"status": "skipped", "reason": f"run_status:{run_status}"}
+
+    inputs = dict(getattr(claimed_task, "inputs", {}) or {})
+    bug_id = str(inputs.get("bug_id") or run_output.get("bug_id") or "").strip()
+    if not bug_id:
+        return {"status": "skipped", "reason": "missing_bug_id"}
+
+    patch_packet = _bug_investigation_patch_packet(run_output)
+    if not patch_packet:
+        return {"status": "skipped", "reason": "missing_patch_packet"}
+
+    try:
+        from workflow.bug_investigation import attach_patch_packet_comment
+
+        return attach_patch_packet_comment(bug_id, patch_packet)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("bug_investigation patch-packet attach failed")
+        return {"status": "error", "bug_id": bug_id, "error": str(exc)}
 
 
 def _try_execute_claimed_branch_task(
-    universe_path: Path, claimed_task: Any, daemon_id: str,
+    universe_path: Path,
+    claimed_task: Any,
+    daemon_id: str,
+    on_node_status: Callable[[str, str], None] | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Execute a claimed BranchTask's requested branch.
 
@@ -615,7 +774,11 @@ def _try_execute_claimed_branch_task(
         from workflow.api.branches import _resolve_branch_id
         from workflow.branches import BranchDefinition
         from workflow.daemon_server import get_branch_definition
-        from workflow.runs import RUN_STATUS_COMPLETED, execute_branch
+        from workflow.runs import (
+            RUN_STATUS_COMPLETED,
+            execute_branch,
+            latest_run_by_name,
+        )
         from workflow.storage import data_dir
 
         base_path = data_dir()
@@ -639,6 +802,37 @@ def _try_execute_claimed_branch_task(
                 "validation_errors": errors,
             }
 
+        run_name = f"branch-task-{claimed_task.branch_task_id}"
+        existing_run = latest_run_by_name(
+            base_path,
+            run_name=run_name,
+            branch_def_id=branch_def_id,
+        )
+        if existing_run and existing_run.get("status") == RUN_STATUS_COMPLETED:
+            output = existing_run.get("output", {})
+            metadata = {
+                "branch_def_id": branch_def_id,
+                "run_id": existing_run["run_id"],
+                "run_status": existing_run["status"],
+                "actor": existing_run.get("actor") or "",
+                "reused_existing_run": True,
+            }
+            attach_result = _maybe_attach_bug_investigation_patch_packet(
+                claimed_task,
+                existing_run["status"],
+                output if isinstance(output, dict) else {},
+            )
+            if attach_result.get("status") != "skipped":
+                metadata["wiki_patch_packet"] = attach_result
+            logger.info(
+                "dispatcher_pick: reused completed branch task run %s "
+                "branch=%s run=%s",
+                claimed_task.branch_task_id,
+                branch_def_id,
+                existing_run["run_id"],
+            )
+            return True, "", metadata
+
         provider_call: Any = None
         try:
             from domains.fantasy_daemon.phases._provider_stub import (
@@ -651,10 +845,11 @@ def _try_execute_claimed_branch_task(
         outcome = execute_branch(
             base_path,
             branch=branch,
-            inputs=dict(getattr(claimed_task, "inputs", {}) or {}),
-            run_name=f"branch-task-{claimed_task.branch_task_id}",
+            inputs=_branch_task_inputs_for_execution(claimed_task),
+            run_name=run_name,
             actor=actor,
             provider_call=provider_call,
+            on_node_status=on_node_status,
         )
         metadata = {
             "branch_def_id": branch_def_id,
@@ -662,6 +857,13 @@ def _try_execute_claimed_branch_task(
             "run_status": outcome.status,
             "actor": actor,
         }
+        attach_result = _maybe_attach_bug_investigation_patch_packet(
+            claimed_task,
+            outcome.status,
+            outcome.output if isinstance(outcome.output, dict) else {},
+        )
+        if attach_result.get("status") != "skipped":
+            metadata["wiki_patch_packet"] = attach_result
         success = outcome.status == RUN_STATUS_COMPLETED
         error = outcome.error if outcome.error else (
             "" if success else f"run_status:{outcome.status}"
@@ -1236,6 +1438,18 @@ class DaemonController:
             )
             claimed_failed_reason = ""
             cancel_requested_during_run = False
+
+            def branch_task_heartbeat(*, force: bool = False) -> None:
+                return None
+
+            def branch_task_node_status(node_id: str, status: str) -> None:
+                return None
+
+            if claimed_task is not None:
+                branch_task_heartbeat, branch_task_node_status = (
+                    _build_branch_task_observers(output_dir, claimed_task)
+                )
+                branch_task_heartbeat(force=True)
             if claimed_task is not None and claimed_inputs:
                 # inputs win on overlap; unknown keys tolerated by
                 # LangGraph initial_state.
@@ -1254,9 +1468,11 @@ class DaemonController:
                 claimed_task is not None
                 and claimed_task.branch_def_id.startswith(NODE_BID_SENTINEL_PREFIX)
             ):
+                branch_task_heartbeat()
                 nb_success, nb_error = _try_execute_claimed_node_bid(
                     output_dir, claimed_task, daemon_id,
                 )
+                branch_task_heartbeat(force=True)
                 _record_loop_daemon_signal(
                     loop_daemon_context,
                     universe_path=output_dir,
@@ -1286,9 +1502,13 @@ class DaemonController:
             ):
                 branch_success, branch_error, branch_metadata = (
                     _try_execute_claimed_branch_task(
-                        output_dir, claimed_task, daemon_id,
+                        output_dir,
+                        claimed_task,
+                        daemon_id,
+                        on_node_status=branch_task_node_status,
                     )
                 )
+                branch_task_heartbeat(force=True)
                 _record_loop_daemon_signal(
                     loop_daemon_context,
                     universe_path=output_dir,
@@ -1316,6 +1536,7 @@ class DaemonController:
 
             try:
                 for event in compiled.stream(initial_state, config=config):
+                    branch_task_heartbeat()
                     if self._stop_event.is_set():
                         logger.info("Stop signal received, shutting down")
                         break
@@ -1346,6 +1567,7 @@ class DaemonController:
                         (self._paused.is_set() or pause_file.exists())
                         and not self._stop_event.is_set()
                     ):
+                        branch_task_heartbeat()
                         self._paused.wait(timeout=1.0)
 
                     # Activity/status handling must run even in --no-tray
@@ -1354,6 +1576,8 @@ class DaemonController:
                     if isinstance(event, dict):
                         for node_name, node_output in event.items():
                             self._handle_node_output(node_name, node_output)
+                            if claimed_task is not None:
+                                branch_task_node_status(node_name, "ran")
 
                     # Phase E: at each cycle boundary (marked by the
                     # `universe_cycle` node in the direct graph, or
@@ -1453,6 +1677,26 @@ class DaemonController:
                                 "trigger_source": claimed_task.trigger_source,
                             },
                         )
+                try:
+                    prune_result = apply_configured_checkpoint_retention(
+                        checkpointer,
+                        universe_id,
+                    )
+                    if prune_result and prune_result.checkpoints_deleted:
+                        logger.info(
+                            "checkpoint_retention: thread=%s keep_last=%d "
+                            "deleted_checkpoints=%d deleted_writes=%d",
+                            prune_result.thread_id,
+                            prune_result.keep_last_n,
+                            prune_result.checkpoints_deleted,
+                            prune_result.writes_deleted,
+                        )
+                except Exception:  # noqa: BLE001 — retention is protective
+                    logger.warning(
+                        "checkpoint_retention: pruning failed for %s",
+                        universe_id,
+                        exc_info=True,
+                    )
                 self._cleanup()
 
                 # Handle cross-universe synthesis switch
@@ -1934,11 +2178,25 @@ class DaemonController:
                 health = {}
             reason = str(health.get("idle_reason") or "continue")
             stopped = bool(health.get("stopped", False))
+            total_words = output.get("total_words", 0)
+            total_chapters = output.get("total_chapters", 0)
+            # Substrate-fix #12 Family A Phase 1.B: additive neutral fields
+            # alongside the legacy reason for first-observer legibility.
+            # The legacy `reason` field stays for back-compat; consumers can
+            # opt into reason_code / display_reason for domain-neutral text.
+            if stopped and not total_words and not total_chapters:
+                reason_code = "no_active_work"
+                display_reason = "idle_no_active_work"
+            else:
+                reason_code = reason
+                display_reason = reason
             self._combined_log(
                 "Universe cycle wrapper: completed "
                 f"(stopped={stopped}, reason={reason}, "
-                f"words={output.get('total_words', 0)}, "
-                f"chapters={output.get('total_chapters', 0)})"
+                f"reason_code={reason_code}, "
+                f"display_reason={display_reason}, "
+                f"words={total_words}, "
+                f"chapters={total_chapters})"
             )
 
         elif node_name == "reflect":

@@ -181,9 +181,35 @@ class TestMcpRecursionLimitOverride:
         assert "error" in result  # missing branch_def_id error
 
     def test_valid_override_50_accepted(self, tmp_path, monkeypatch):
+        import json
+
+        from workflow.api.runs import _action_run_branch
+        from workflow.runs import RUN_STATUS_QUEUED, RunOutcome
+
         monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-        # Guard: 50 is in the valid 10-1000 range.
-        assert 10 <= 50 <= 1000
+        self._stub_valid_branch(monkeypatch)
+        monkeypatch.setattr(
+            "workflow.api.branches._resolve_branch_id",
+            lambda branch_def_id, _base_path: branch_def_id,
+        )
+        captured: dict[str, object] = {}
+
+        def _fake_execute_branch_async(*args, **kwargs):
+            captured.update(kwargs)
+            return RunOutcome(run_id="run-1", status=RUN_STATUS_QUEUED, output={})
+
+        monkeypatch.setattr(
+            "workflow.runs.execute_branch_async",
+            _fake_execute_branch_async,
+        )
+
+        result = json.loads(_action_run_branch({
+            "branch_def_id": "b1",
+            "recursion_limit_override": "50",
+        }))
+
+        assert result["run_id"] == "run-1"
+        assert captured["recursion_limit_override"] == 50
 
     def _stub_valid_branch(self, monkeypatch):
         from unittest.mock import MagicMock

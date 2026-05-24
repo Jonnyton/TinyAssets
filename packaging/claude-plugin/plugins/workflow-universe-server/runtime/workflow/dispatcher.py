@@ -22,9 +22,11 @@ review gates; the dispatcher does not invoke them.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +63,9 @@ class DispatcherConfig:
     goal_affinity_coefficient: float = 0.0
     cost_penalty_coefficient: float = 0.0
     served_llm_type: str = ""
+    active_daemon_id: str = ""
+    soul_affinity_coefficient: float = 0.0
+    soul_affinity_term_cap: float = 8.0
 
     def tier_enabled(self, trigger_source: str) -> bool:
         if trigger_source in {"host_request", "owner_queued"}:
@@ -182,6 +187,124 @@ def score_task(
     return tier + recency + boost + pickup_signal + bid_term + goal_term + cost_term
 
 
+def _task_dispatch_text(task: BranchTask) -> str:
+    parts = [
+        task.branch_task_id,
+        task.branch_def_id,
+        task.universe_id,
+        task.trigger_source,
+        task.request_type,
+        task.goal_id,
+        task.evidence_url,
+    ]
+    try:
+        parts.append(json.dumps(task.inputs, sort_keys=True, default=str))
+    except TypeError:
+        parts.append(str(task.inputs))
+    return " ".join(str(part or "") for part in parts)
+
+
+def _dispatch_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", value.lower())
+        if token
+    }
+
+
+def soul_guided_dispatch_read(
+    universe_path: Path,
+    *,
+    task: BranchTask,
+    active_daemon_id: str,
+    coefficient: float = 0.0,
+    term_cap: float = 8.0,
+) -> dict[str, Any]:
+    """Return read-only daemon/soul dispatch guidance for one task.
+
+    The helper never claims or mutates the queue. It enforces requester-directed
+    daemon affinity as eligibility when the caller identifies the active daemon,
+    then computes an advisory soul/brain score term from daemon metadata and
+    open mini-brain hints.
+    """
+    daemon_id = str(active_daemon_id or "").strip()
+    directed_id = str(task.directed_daemon_id or "").strip()
+    if not daemon_id:
+        return {
+            "eligible": True,
+            "reason": "no_active_daemon",
+            "score_adjustment": 0.0,
+            "read_only": True,
+        }
+    if directed_id and directed_id != daemon_id:
+        return {
+            "eligible": False,
+            "reason": "directed_to_other_daemon",
+            "directed_daemon_id": directed_id,
+            "active_daemon_id": daemon_id,
+            "score_adjustment": 0.0,
+            "read_only": True,
+        }
+
+    try:
+        from workflow.daemon_registry import get_daemon
+
+        base_path = Path(universe_path).parent
+        daemon = get_daemon(base_path, daemon_id=daemon_id, include_soul=True)
+    except Exception as exc:  # noqa: BLE001 - dispatch must degrade to queue policy
+        logger.warning("dispatcher: soul guidance unavailable for %s: %s", daemon_id, exc)
+        return {
+            "eligible": True,
+            "reason": "daemon_unavailable",
+            "active_daemon_id": daemon_id,
+            "score_adjustment": 0.0,
+            "read_only": True,
+        }
+
+    task_text = _task_dispatch_text(task)
+    task_tokens = _dispatch_tokens(task_text)
+    claim_hits = [
+        claim for claim in daemon.get("domain_claims", [])
+        if _dispatch_tokens(str(claim)) & task_tokens
+    ]
+    soul_hits = sorted(_dispatch_tokens(str(daemon.get("soul_text") or "")) & task_tokens)
+
+    brain_hits: list[dict[str, Any]] = []
+    try:
+        from workflow.daemon_brain import read_daemon_brain_dispatch_hints
+
+        brain = read_daemon_brain_dispatch_hints(
+            base_path,
+            daemon_id=daemon_id,
+            query=task_text,
+            limit=3,
+        )
+        brain_hits = list(brain.get("entries") or [])
+    except Exception as exc:  # noqa: BLE001 - advisory path only
+        logger.warning("dispatcher: brain guidance unavailable for %s: %s", daemon_id, exc)
+
+    raw_affinity = (
+        2.0 * len(claim_hits)
+        + 0.5 * min(len(soul_hits), 6)
+        + sum(float(entry.get("importance") or 0.0) for entry in brain_hits)
+    )
+    adjustment = min(
+        max(0.0, float(coefficient)) * raw_affinity,
+        max(0.0, float(term_cap)),
+    )
+    return {
+        "eligible": True,
+        "reason": "soul_guided",
+        "active_daemon_id": daemon_id,
+        "daemon_soul_hash": daemon.get("soul_hash"),
+        "domain_claim_hits": claim_hits,
+        "soul_token_hits": soul_hits[:12],
+        "brain_entry_ids": [entry["entry_id"] for entry in brain_hits],
+        "score_adjustment": adjustment,
+        "read_only": True,
+    }
+
+
 def run_branch_task_producers_into_queue(
     universe_path: Path,
     *,
@@ -270,7 +393,17 @@ def select_next_task(
         # Request-type filter: only claim types this daemon prefers.
         if not prefers_request_type(task.request_type):
             continue
+        guidance = soul_guided_dispatch_read(
+            universe_path,
+            task=task,
+            active_daemon_id=config.active_daemon_id,
+            coefficient=config.soul_affinity_coefficient,
+            term_cap=config.soul_affinity_term_cap,
+        )
+        if not guidance["eligible"]:
+            continue
         s = score_task(task, now_iso=now, config=config)
+        s += float(guidance.get("score_adjustment") or 0.0)
         eligible.append((s, task))
     if not eligible:
         return None
@@ -322,6 +455,9 @@ def load_dispatcher_config(universe_path: Path) -> DispatcherConfig:
         "bid_term_cap",
         "goal_affinity_coefficient", "cost_penalty_coefficient",
         "served_llm_type",
+        "active_daemon_id",
+        "soul_affinity_coefficient",
+        "soul_affinity_term_cap",
     ):
         if key in data:
             kwargs[key] = data[key]

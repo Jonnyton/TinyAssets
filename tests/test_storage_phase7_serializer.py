@@ -252,6 +252,19 @@ def test_node_payload_omits_defaults_for_small_files():
     assert payload["prompt_template"] == "hi"
 
 
+def test_node_payload_preserves_explicit_non_strict_input_isolation():
+    node = NodeDefinition(
+        node_id="n1",
+        display_name="N1",
+        input_keys=["topic"],
+        prompt_template="{topic} {legacy_global}",
+        strict_input_isolation=False,
+    )
+    payload = node_to_yaml_payload(node)
+    assert payload["strict_input_isolation"] is False
+    assert node_from_yaml_payload(payload).strict_input_isolation is False
+
+
 def test_node_payload_always_includes_timeout_seconds():
     """#61 raised the default; the YAML records intent explicitly so
     operators can see the current contract without remembering it."""

@@ -123,7 +123,7 @@ def test_state_summary_includes_counters():
 
 
 def test_supervisor_clean_exit_uses_idle_backoff(tmp_path):
-    """Subprocess exits 0 → sleep = idle_backoff (not crash_backoff)."""
+    """First clean exit sleeps idle_backoff (not crash_backoff)."""
     sleep_calls, sleep_fn = _make_sleep_recorder()
 
     def spawn(universe):
@@ -139,9 +139,29 @@ def test_supervisor_clean_exit_uses_idle_backoff(tmp_path):
     )
     assert state.total_clean_exits == 2
     assert state.total_crashes == 0
-    # Both iterations sleep idle_backoff after clean exit.
     assert 7.0 in sleep_calls
     assert 999.0 not in sleep_calls
+
+
+def test_supervisor_consecutive_clean_exits_back_off(tmp_path):
+    """Idle universe-cycle exits should not respawn at a fixed short cadence."""
+    sleep_calls, sleep_fn = _make_sleep_recorder()
+
+    def spawn(universe):
+        return FakeProc(returncode=0, steps_until_exit=0)
+
+    state = cw.run_supervisor(
+        tmp_path,
+        idle_backoff=10.0,
+        backoff_mult=2.0,
+        max_backoff=45.0,
+        max_iterations=4,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 4
+    assert sleep_calls == [10.0, 20.0, 40.0, 45.0]
 
 
 def test_supervisor_crash_uses_exponential_backoff(tmp_path):
@@ -201,6 +221,33 @@ def test_supervisor_crash_followed_by_clean_resets_backoff(tmp_path):
     )
 
 
+def test_supervisor_crash_resets_idle_backoff(tmp_path):
+    """Crash recovery should not inherit the idle no-work backoff streak."""
+    sleep_calls, sleep_fn = _make_sleep_recorder()
+    rc_sequence = [0, 0, 1, 0]
+    iter_idx = {"i": 0}
+
+    def spawn(universe):
+        rc = rc_sequence[iter_idx["i"]]
+        iter_idx["i"] += 1
+        return FakeProc(returncode=rc, steps_until_exit=0)
+
+    state = cw.run_supervisor(
+        tmp_path,
+        idle_backoff=3.0,
+        crash_backoff=11.0,
+        backoff_mult=2.0,
+        max_backoff=100.0,
+        max_iterations=4,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 3
+    assert state.total_crashes == 1
+    assert sleep_calls == [3.0, 6.0, 11.0, 3.0]
+
+
 def test_supervisor_max_iterations_honored(tmp_path):
     sleep_calls, sleep_fn = _make_sleep_recorder()
 
@@ -239,6 +286,33 @@ def test_supervisor_spawn_failure_counted_as_crash(tmp_path):
     assert [d for d in sleep_calls if d in (3.0, 6.0, 12.0)] == [3.0, 6.0, 12.0]
 
 
+def test_supervisor_spawn_failure_resets_idle_backoff(tmp_path):
+    """Spawn failures are crash-path events and reset idle no-work backoff."""
+    sleep_calls, sleep_fn = _make_sleep_recorder()
+    outcomes = iter(["clean", "clean", "spawn-fail", "clean"])
+
+    def spawn(universe):
+        outcome = next(outcomes)
+        if outcome == "spawn-fail":
+            raise OSError("simulated spawn failure")
+        return FakeProc(returncode=0, steps_until_exit=0)
+
+    state = cw.run_supervisor(
+        tmp_path,
+        idle_backoff=3.0,
+        crash_backoff=11.0,
+        backoff_mult=2.0,
+        max_backoff=100.0,
+        max_iterations=4,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 3
+    assert state.total_crashes == 1
+    assert sleep_calls == [3.0, 6.0, 11.0, 3.0]
+
+
 # ---- env construction ---------------------------------------------------
 
 
@@ -273,12 +347,164 @@ def test_subprocess_env_preserves_operator_unified_execution_setting(monkeypatch
     assert env["WORKFLOW_UNIFIED_EXECUTION"] == "0"
 
 
-def test_subprocess_env_inherits_openai_api_key(monkeypatch):
-    """The cloud worker delegates LLM routing to /etc/workflow/env's
-    OPENAI_API_KEY. Must survive env construction."""
+def test_subprocess_env_strips_openai_api_key_by_default(monkeypatch):
+    """Cloud worker is subscription-only unless API-key providers opt in."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake-test-key-xyz")
+    env = cw._build_subprocess_env()
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_subprocess_env_preserves_openai_api_key_when_opted_in(monkeypatch):
+    monkeypatch.setenv("WORKFLOW_ALLOW_API_KEY_PROVIDERS", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake-test-key-xyz")
     env = cw._build_subprocess_env()
     assert env["OPENAI_API_KEY"] == "sk-fake-test-key-xyz"
+
+
+# ---- queue pickup --------------------------------------------------------
+
+
+def test_has_pickable_branch_task_detects_pending_dispatcher_row(tmp_path):
+    from workflow.branch_tasks import BranchTask, append_task
+
+    append_task(
+        tmp_path,
+        BranchTask(
+            branch_task_id="bt-pending",
+            branch_def_id="branch-1",
+            universe_id="u",
+            trigger_source="owner_queued",
+        ),
+    )
+
+    assert cw._has_pickable_branch_task(tmp_path) is True
+
+
+def test_has_pickable_branch_task_respects_unified_execution_opt_out(
+    tmp_path, monkeypatch,
+):
+    from workflow.branch_tasks import BranchTask, append_task
+
+    append_task(
+        tmp_path,
+        BranchTask(
+            branch_task_id="bt-pending",
+            branch_def_id="branch-1",
+            universe_id="u",
+            trigger_source="owner_queued",
+        ),
+    )
+    monkeypatch.setenv("WORKFLOW_UNIFIED_EXECUTION", "0")
+
+    assert cw._has_pickable_branch_task(tmp_path) is False
+
+
+def test_supervisor_does_not_restart_pending_task_before_claim_grace(
+    tmp_path,
+    monkeypatch,
+):
+    from workflow.branch_tasks import BranchTask, append_task
+
+    append_task(
+        tmp_path,
+        BranchTask(
+            branch_task_id="bt-pending",
+            branch_def_id="branch-1",
+            universe_id="u",
+            trigger_source="owner_queued",
+        ),
+    )
+    monkeypatch.setattr(cw.time, "monotonic", lambda: 100.0)
+    _sleep_calls, sleep_fn = _make_sleep_recorder()
+    spawned: list[FakeProc] = []
+
+    def spawn(universe):
+        proc = FakeProc(returncode=0, steps_until_exit=1)
+        spawned.append(proc)
+        return proc
+
+    state = cw.run_supervisor(
+        tmp_path,
+        producer_poll_interval=30.0,
+        poll_interval=0.01,
+        max_iterations=1,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 1
+    assert spawned[0].terminate_called is False
+
+
+def test_supervisor_restarts_idle_subprocess_for_still_pending_task_after_grace(
+    tmp_path,
+    monkeypatch,
+):
+    from workflow.branch_tasks import BranchTask, append_task
+
+    append_task(
+        tmp_path,
+        BranchTask(
+            branch_task_id="bt-pending",
+            branch_def_id="branch-1",
+            universe_id="u",
+            trigger_source="owner_queued",
+        ),
+    )
+    times = iter([100.0, 131.0])
+    monkeypatch.setattr(cw.time, "monotonic", lambda: next(times))
+    _sleep_calls, sleep_fn = _make_sleep_recorder()
+    spawned: list[FakeProc] = []
+
+    def spawn(universe):
+        proc = FakeProc(returncode=0, steps_until_exit=10)
+        spawned.append(proc)
+        return proc
+
+    state = cw.run_supervisor(
+        tmp_path,
+        producer_poll_interval=30.0,
+        poll_interval=0.01,
+        max_iterations=1,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 1
+    assert spawned[0].terminate_called is True
+
+
+def test_supervisor_does_not_restart_when_task_is_already_running(tmp_path):
+    from workflow.branch_tasks import BranchTask, append_task
+
+    append_task(
+        tmp_path,
+        BranchTask(
+            branch_task_id="bt-running",
+            branch_def_id="branch-1",
+            universe_id="u",
+            trigger_source="owner_queued",
+            status="running",
+        ),
+    )
+    spawned: list[FakeProc] = []
+
+    def spawn(universe):
+        proc = FakeProc(returncode=0, steps_until_exit=1)
+        spawned.append(proc)
+        return proc
+
+    state = cw.run_supervisor(
+        tmp_path,
+        producer_poll_interval=0.01,
+        poll_interval=0.01,
+        max_iterations=1,
+        spawn_fn=spawn,
+        sleep_fn=lambda _: None,
+    )
+
+    assert state.total_clean_exits == 1
+    assert spawned[0].terminate_called is False
 
 
 # ---- _cloud_host_user ----------------------------------------------------

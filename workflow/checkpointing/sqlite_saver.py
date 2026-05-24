@@ -28,6 +28,7 @@ Typical usage
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -39,6 +40,10 @@ from workflow.exceptions import CheckpointError
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
+
+
+DEFAULT_CHECKPOINT_RETENTION_KEEP_LAST = 500
+CHECKPOINT_RETENTION_KEEP_LAST_ENV = "WORKFLOW_CHECKPOINT_RETENTION_KEEP_LAST"
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +263,175 @@ def make_resume_config(
 # ---------------------------------------------------------------------------
 # Checkpoint retention policy
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CheckpointPruneResult:
+    """Summary of a direct SQLite checkpoint-retention pass."""
+
+    thread_id: str
+    keep_last_n: int
+    checkpoints_before: int
+    checkpoints_deleted: int
+    writes_deleted: int
+    namespaces_seen: tuple[str, ...] = ()
+    skipped_reason: str = ""
+
+
+def configured_checkpoint_retention_keep_last() -> int | None:
+    """Return configured checkpoint retention count.
+
+    ``None`` means retention is disabled. The default is intentionally
+    bounded because unbounded LangGraph checkpoint history can fill the
+    daemon host disk. Set ``WORKFLOW_CHECKPOINT_RETENTION_KEEP_LAST=0`` to
+    disable retention for a local diagnostic run.
+    """
+    raw = os.environ.get(CHECKPOINT_RETENTION_KEEP_LAST_ENV, "").strip()
+    if not raw:
+        return DEFAULT_CHECKPOINT_RETENTION_KEEP_LAST
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_CHECKPOINT_RETENTION_KEEP_LAST
+    if value <= 0:
+        return None
+    return value
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
+
+
+def _sqlite_delete_many(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: list[tuple[object, ...]],
+) -> int:
+    if not params:
+        return 0
+    before = conn.total_changes
+    conn.executemany(sql, params)
+    return conn.total_changes - before
+
+
+def prune_checkpoint_history(
+    conn: sqlite3.Connection,
+    thread_id: str,
+    *,
+    keep_last_n: int,
+    checkpoint_ns: str | None = None,
+) -> CheckpointPruneResult:
+    """Prune old LangGraph SQLite checkpoints without loading checkpoint blobs.
+
+    This is the production retention path. It operates directly on the
+    ``checkpoints`` and ``writes`` tables so a multi-GB checkpoint database can
+    be bounded without deserializing every historical checkpoint into process
+    memory. The newest ``keep_last_n`` checkpoints are preserved per namespace.
+    """
+    if keep_last_n < 1:
+        raise ValueError("keep_last_n must be >= 1")
+
+    checkpoint_cols = _table_columns(conn, "checkpoints")
+    if not {"thread_id", "checkpoint_id"}.issubset(checkpoint_cols):
+        return CheckpointPruneResult(
+            thread_id=thread_id,
+            keep_last_n=keep_last_n,
+            checkpoints_before=0,
+            checkpoints_deleted=0,
+            writes_deleted=0,
+            skipped_reason="missing_checkpoints_table",
+        )
+
+    has_checkpoint_ns = "checkpoint_ns" in checkpoint_cols
+    where = "thread_id = ?"
+    params: list[object] = [thread_id]
+    if checkpoint_ns is not None and has_checkpoint_ns:
+        where += " AND checkpoint_ns = ?"
+        params.append(checkpoint_ns)
+
+    ns_select = ", checkpoint_ns" if has_checkpoint_ns else ""
+    rows = conn.execute(
+        f"SELECT rowid, checkpoint_id{ns_select} "
+        f"FROM checkpoints WHERE {where} ORDER BY rowid DESC",
+        tuple(params),
+    ).fetchall()
+    namespaces_seen = tuple(
+        sorted({str(row[2]) for row in rows})
+    ) if has_checkpoint_ns else ()
+
+    grouped: dict[str, list[tuple[int, str, str]]] = {}
+    for row in rows:
+        ns = str(row[2]) if has_checkpoint_ns else ""
+        grouped.setdefault(ns, []).append((int(row[0]), str(row[1]), ns))
+
+    delete_rows: list[tuple[int, str, str]] = []
+    for group_rows in grouped.values():
+        delete_rows.extend(group_rows[keep_last_n:])
+
+    if not delete_rows:
+        return CheckpointPruneResult(
+            thread_id=thread_id,
+            keep_last_n=keep_last_n,
+            checkpoints_before=len(rows),
+            checkpoints_deleted=0,
+            writes_deleted=0,
+            namespaces_seen=namespaces_seen,
+        )
+
+    checkpoint_delete_params = [(rowid,) for rowid, _cp_id, _ns in delete_rows]
+    checkpoints_deleted = _sqlite_delete_many(
+        conn,
+        "DELETE FROM checkpoints WHERE rowid = ?",
+        checkpoint_delete_params,
+    )
+
+    writes_deleted = 0
+    writes_cols = _table_columns(conn, "writes")
+    if {"thread_id", "checkpoint_id"}.issubset(writes_cols):
+        if "checkpoint_ns" in writes_cols:
+            writes_deleted = _sqlite_delete_many(
+                conn,
+                (
+                    "DELETE FROM writes "
+                    "WHERE thread_id = ? AND checkpoint_ns = ? "
+                    "AND checkpoint_id = ?"
+                ),
+                [(thread_id, ns, cp_id) for _rowid, cp_id, ns in delete_rows],
+            )
+        else:
+            writes_deleted = _sqlite_delete_many(
+                conn,
+                "DELETE FROM writes WHERE thread_id = ? AND checkpoint_id = ?",
+                [(thread_id, cp_id) for _rowid, cp_id, _ns in delete_rows],
+            )
+
+    conn.commit()
+    return CheckpointPruneResult(
+        thread_id=thread_id,
+        keep_last_n=keep_last_n,
+        checkpoints_before=len(rows),
+        checkpoints_deleted=checkpoints_deleted,
+        writes_deleted=writes_deleted,
+        namespaces_seen=namespaces_seen,
+    )
+
+
+def apply_configured_checkpoint_retention(
+    checkpointer: SqliteSaver,
+    thread_id: str,
+) -> CheckpointPruneResult | None:
+    """Apply env-configured direct retention to an active SqliteSaver."""
+    keep_last_n = configured_checkpoint_retention_keep_last()
+    if keep_last_n is None:
+        return None
+    return prune_checkpoint_history(
+        checkpointer.conn,
+        thread_id,
+        keep_last_n=keep_last_n,
+    )
 
 
 @dataclass

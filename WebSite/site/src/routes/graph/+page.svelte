@@ -25,7 +25,7 @@
     | 'plan'
     | 'draft'
     | 'hub';
-  type Lens = 'all' | 'loop' | 'repo' | 'fantasy' | 'coding' | 'website' | 'mcp';
+  type Lens = 'all' | 'loop' | 'repo' | 'writing' | 'coding' | 'website' | 'mcp';
   type SourceType = 'mcp' | 'repo' | 'website' | 'loop';
 
   type RepoSnapshot = {
@@ -92,7 +92,7 @@
     { id: 'all', label: 'All' },
     { id: 'loop', label: 'Loop' },
     { id: 'repo', label: 'Repo' },
-    { id: 'fantasy', label: 'Fantasy' },
+    { id: 'writing', label: 'Writing' },
     { id: 'coding', label: 'Coding' },
     { id: 'website', label: 'Website' },
     { id: 'mcp', label: 'MCP' }
@@ -170,7 +170,7 @@
       tags.includes('patch-loop') ||
       ['bug:BUG-005', 'bug:BUG-009', 'bug:BUG-017', 'bug:BUG-019', 'bug:BUG-034', 'goal:4ff5862cc26d', 'goal:f10caea2e437'].includes(id)
     ) values.push('loop', 'coding');
-    if (id.includes('fantasy') || id === 'area:fantasy-domain' || id === 'universe:concordance') values.push('fantasy');
+    if (id.includes('fantasy') || id === 'area:fantasy-domain' || id === 'universe:concordance') values.push('writing');
     if (id === 'area:coding-system' || id.startsWith('branch:agent_team') || id.startsWith('branch:bug_to_patch') || tags.includes('agent-teams')) values.push('coding');
     return uniq(values);
   }
@@ -279,7 +279,7 @@
     addHub(nodes, 'hub:wiki-pages', 'Wiki pages', 'Promoted and draft wiki pages returned by the public MCP feed.', ['mcp'], ['all', 'mcp']);
     addHub(nodes, 'hub:public-bugs', 'Public bug tracker', 'Every public BUG page belongs to the same MCP-backed bug tracker before stronger edges route it into the loop or a subsystem.', ['mcp'], ['all', 'mcp', 'loop', 'coding']);
     addHub(nodes, 'hub:public-goals', 'Work targets', 'Work-target records folded into the MCP community wiki.', ['mcp'], ['all', 'mcp']);
-    addHub(nodes, 'hub:universes', 'Live universes', 'Universe rows currently visible through MCP.', ['mcp'], ['all', 'mcp', 'fantasy']);
+    addHub(nodes, 'hub:universes', 'Live universes', 'Universe rows currently visible through MCP.', ['mcp'], ['all', 'mcp', 'writing']);
     addHub(nodes, 'hub:wiki-drafts', 'Wiki drafts', 'Draft wiki pages are not loose debris; they are draft-state wiki material.', ['mcp'], ['all', 'mcp']);
     addHub(nodes, 'hub:github-branches', 'GitHub branches', 'Branch refs returned by GitHub or the local repo snapshot.', ['repo'], ['all', 'repo', 'coding']);
 
@@ -577,7 +577,7 @@
 
       <label class="search">
         <span>Search graph</span>
-        <input bind:value={query} type="search" placeholder="BUG-034, loop, repo, fantasy..." />
+        <input bind:value={query} type="search" placeholder="BUG-034, loop, repo, writing..." />
       </label>
 
       <div class="lenses" aria-label="Graph lenses">

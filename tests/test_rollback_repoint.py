@@ -201,3 +201,113 @@ class TestOrchestratorIntegrationWithGoals:
         assert result["repoint"]["repointed_count"] == 2
         assert get_goal(tmp_path, goal_id="ga")["canonical_branch_version_id"] is None
         assert get_goal(tmp_path, goal_id="gb")["canonical_branch_version_id"] is None
+
+
+# ─── DESIGN-008 round 4 — selector repoint after rollback ───────────────
+
+
+def _seed_goal_with_selector(tmp_path, goal_id, selector_bvid):
+    """Bind a selector to a Goal via the storage helper. Bypasses the
+    bind-time effects check by writing the column directly via
+    update_goal, since the test fixture branches are pure prompt
+    nodes anyway."""
+    initialize_author_server(tmp_path)
+    save_goal(tmp_path, goal={
+        "goal_id": goal_id, "name": f"Goal {goal_id}", "author": "alice",
+    })
+    from workflow.daemon_server import update_goal
+    update_goal(
+        tmp_path,
+        goal_id=goal_id,
+        updates={"selector_branch_version_id": selector_bvid},
+    )
+
+
+class TestSelectorRepoint:
+    """DESIGN-008 round 4 — selector_branch_version_id pointers are
+    cleared (NULL) when the version is rolled back. Unlike canonical,
+    selectors do NOT walk up to an ancestor: re-binding to a different
+    version silently could introduce a ranking opinion the operator
+    didn't choose. Cleared bindings trigger the platform-default
+    fallback at the next leaderboard read."""
+
+    def test_clears_selector_pointer_on_rollback(self, tmp_path):
+        from workflow.rollback import repoint_selectors_after_rollback
+        selector_v = _publish(tmp_path, "selector-v1")
+        _seed_goal_with_selector(tmp_path, "g-sel", selector_v)
+        execute_rollback_set(
+            tmp_path, [selector_v], reason="t", set_by="alice",
+        )
+        result = repoint_selectors_after_rollback(
+            tmp_path, [selector_v], set_by="alice",
+        )
+        assert result["status"] == "ok"
+        assert result["repointed_count"] == 1
+        repoint_row = result["repoints"][0]
+        assert repoint_row["goal_id"] == "g-sel"
+        assert repoint_row["old_branch_version_id"] == selector_v
+        assert repoint_row["new_branch_version_id"] is None
+        goal = get_goal(tmp_path, goal_id="g-sel")
+        assert goal["selector_branch_version_id"] is None
+
+    def test_unaffected_goal_left_alone(self, tmp_path):
+        from workflow.rollback import repoint_selectors_after_rollback
+        rolled = _publish(tmp_path, "rolled-selector")
+        other = _publish(tmp_path, "other-selector")
+        _seed_goal_with_selector(tmp_path, "g-rolled", rolled)
+        _seed_goal_with_selector(tmp_path, "g-other", other)
+        execute_rollback_set(
+            tmp_path, [rolled], reason="t", set_by="alice",
+        )
+        result = repoint_selectors_after_rollback(
+            tmp_path, [rolled], set_by="alice",
+        )
+        assert result["repointed_count"] == 1
+        rolled_ids = {r["goal_id"] for r in result["repoints"]}
+        assert rolled_ids == {"g-rolled"}
+        # Other goal's selector binding untouched.
+        assert get_goal(
+            tmp_path, goal_id="g-other",
+        )["selector_branch_version_id"] == other
+
+    def test_no_bindings_no_op(self, tmp_path):
+        from workflow.rollback import repoint_selectors_after_rollback
+        bvid = _publish(tmp_path, "lonely-version")
+        execute_rollback_set(tmp_path, [bvid], reason="t", set_by="alice")
+        # No Goals bound to it → repoint is a clean no-op.
+        result = repoint_selectors_after_rollback(
+            tmp_path, [bvid], set_by="alice",
+        )
+        assert result["repointed_count"] == 0
+        assert result["repoints"] == []
+
+    def test_empty_version_set_short_circuits(self, tmp_path):
+        from workflow.rollback import repoint_selectors_after_rollback
+        initialize_author_server(tmp_path)
+        result = repoint_selectors_after_rollback(
+            tmp_path, [], set_by="alice",
+        )
+        assert result["repointed_count"] == 0
+
+    def test_orchestrator_runs_both_canonical_and_selector_repoint(self, tmp_path):
+        """End-to-end through ``rollback_merge_orchestrator``: a
+        single rollback call clears BOTH a canonical pointer AND a
+        selector pointer on the same Goal."""
+        bvid = _publish(tmp_path, "dual-pointer-version")
+        _seed_goal(tmp_path, "g-dual", canonical_bvid=bvid)
+        # ALSO bind it as selector via the column write path.
+        from workflow.daemon_server import update_goal
+        update_goal(
+            tmp_path,
+            goal_id="g-dual",
+            updates={"selector_branch_version_id": bvid},
+        )
+        result = rollback_merge_orchestrator(
+            tmp_path, bvid, reason="dual cleanup", set_by="alice",
+        )
+        assert result["status"] == "ok"
+        assert result["repoint"]["repointed_count"] == 1
+        assert result["selector_repoint"]["repointed_count"] == 1
+        goal = get_goal(tmp_path, goal_id="g-dual")
+        assert goal["canonical_branch_version_id"] is None
+        assert goal["selector_branch_version_id"] is None

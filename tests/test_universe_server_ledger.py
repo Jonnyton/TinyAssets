@@ -36,6 +36,7 @@ def _call(action: str, **kwargs) -> dict:
         "branch_id": "",
         "filename": "",
         "provenance_tag": "",
+        "anchor_json": "",
         "limit": 20,
     }
     base_kwargs.update(kwargs)
@@ -137,6 +138,22 @@ def test_give_direction_appends_ledger(universe: str) -> None:
     assert entries[0]["payload"]["note_id"] == out["note_id"]
 
 
+def test_give_direction_accepts_line_anchor(universe: str) -> None:
+    anchor = {"start_line": 3, "end_line": 4, "start_column": 2, "end_column": 17}
+    out = _call(
+        "give_direction",
+        text="Keep this span, but sharpen the verb.",
+        target="output/chapter-1.md",
+        anchor_json=json.dumps(anchor),
+    )
+    assert out["status"] == "written"
+    assert out["target"] == "output/chapter-1.md"
+    assert out["anchor"] == anchor
+
+    entries = _ledger(universe)
+    assert entries[0]["payload"]["anchor"] == anchor
+
+
 def test_submit_request_appends_ledger(universe: str) -> None:
     out = _call("submit_request", text="Please add a dragon.", request_type="scene_direction")
     assert out["status"] == "pending"
@@ -200,6 +217,32 @@ def test_create_universe_appends_ledger_to_new_universe(universe: str) -> None:
     assert entries[0]["action"] == "create_universe"
     assert entries[0]["summary"] == "A seedling kingdom."
     assert entries[0]["payload"]["has_premise"] is True
+
+
+def test_create_universe_surfaces_synthesis_first_run_checklist(
+    universe: str,
+) -> None:
+    out = _call("create_universe", universe_id="checklist-uni", text="A seed.")
+
+    checklist = out["first_run_checklist"]
+    assert checklist["synthesis_signal_meaning"] == (
+        "synthesis_signal_emitted only means an uploaded source was queued; "
+        "it is meaningful after a premise exists, at least one canon source "
+        "has been uploaded, and the daemon has processed the synthesize_source "
+        "signal."
+    )
+    assert [step["id"] for step in checklist["steps"]] == [
+        "premise",
+        "canon_source",
+        "synthesis_signal",
+        "daemon_worldbuild",
+    ]
+    assert checklist["steps"][0]["complete"] is True
+    assert checklist["steps"][1]["complete"] is False
+    assert checklist["next_action"] == (
+        "Upload canon with add_canon or add_canon_from_path, then wait for "
+        "the daemon to process the synthesize_source signal."
+    )
 
 
 def test_get_ledger_returns_appended_entries(universe: str) -> None:

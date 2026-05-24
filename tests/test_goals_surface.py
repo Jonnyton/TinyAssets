@@ -98,6 +98,34 @@ def test_list_returns_proposed_goals(p5_env):
     assert "- `" in result["text"]
 
 
+def test_list_can_filter_to_production_goals(p5_env):
+    us, _ = p5_env
+    _call(us, "goals", "propose", name="Real workflow goal", tags="research")
+    _call(us, "goals", "propose", name="Smoke probe goal", tags="smoke")
+    _call(us, "goals", "propose", name="Disposable scout goal", tags="disposable")
+    _call(us, "goals", "propose", name="RETRACTED old goal", tags="research")
+    _call(us, "goals", "propose", name="Private real goal", visibility="private")
+
+    result = _call(us, "goals", "list", production_only=True)
+
+    assert result["count"] == 1
+    assert result["production_only"] is True
+    assert result["excluded_count"] == 4
+    assert [g["name"] for g in result["goals"]] == ["Real workflow goal"]
+    assert "production" in result["text"].lower()
+
+
+def test_list_production_filter_applies_before_limit(p5_env):
+    us, _ = p5_env
+    _call(us, "goals", "propose", name="Real workflow goal", tags="research")
+    _call(us, "goals", "propose", name="Smoke probe goal", tags="smoke")
+
+    result = _call(us, "goals", "list", production_only=True, limit=1)
+
+    assert result["count"] == 1
+    assert [g["name"] for g in result["goals"]] == ["Real workflow goal"]
+
+
 def test_get_returns_full_goal_with_branches(p5_env):
     us, _ = p5_env
     gid = _call(us, "goals", "propose", name="Test")["goal"]["goal_id"]
@@ -231,7 +259,9 @@ def test_list_branches_goal_id_filter(p5_env):
     _call(us, "goals", "bind", branch_def_id=b2, goal_id=gid1)
     _call(us, "goals", "bind", branch_def_id=b3, goal_id=gid2)
 
-    result = _call(us, "extensions", "list_branches", goal_id=gid1)
+    # scope="all" so unpublished drafts built by _build_branch are included
+    # (default scope="published" would filter them out).
+    result = _call(us, "extensions", "list_branches", goal_id=gid1, scope="all")
     assert result["count"] == 2
     ids = {b["branch_def_id"] for b in result["branches"]}
     assert ids == {b1, b2}
@@ -374,6 +404,67 @@ def test_leaderboard_forks_counts_parent_chain(p5_env):
     # Parent entry should show 2 forks.
     ranked = {r["branch_def_id"]: r["value"] for r in result["entries"]}
     assert ranked.get(parent_bid) == 2
+
+
+def test_archive_consultation_uses_gate_leaderboard_parent_signal(p5_env):
+    us, base = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+
+    from workflow.daemon_server import (
+        claim_gate,
+        set_goal_ladder,
+        update_branch_definition,
+    )
+
+    set_goal_ladder(
+        _helpers_base_path(),
+        goal_id=gid,
+        ladder=[
+            {"rung_key": "draft", "label": "Draft"},
+            {"rung_key": "reviewed", "label": "Reviewed"},
+        ],
+    )
+
+    stronger_outcome = _build_branch(us, name="Stronger Outcome")
+    higher_quality = _build_branch(us, name="Higher Quality")
+    for branch_id, quality in (
+        (stronger_outcome, 0.75),
+        (higher_quality, 0.95),
+    ):
+        _call(us, "goals", "bind", branch_def_id=branch_id, goal_id=gid)
+        update_branch_definition(
+            base,
+            branch_def_id=branch_id,
+            updates={"stats": {"avg_quality_score": quality}},
+        )
+
+    claim_gate(
+        base,
+        branch_def_id=stronger_outcome,
+        goal_id=gid,
+        rung_key="reviewed",
+        evidence_url="https://example.com/reviewed",
+        claimed_by="tester",
+    )
+    claim_gate(
+        base,
+        branch_def_id=higher_quality,
+        goal_id=gid,
+        rung_key="draft",
+        evidence_url="https://example.com/draft",
+        claimed_by="tester",
+    )
+
+    result = _call(us, "goals", "archive_consultation", goal_id=gid, limit=2)
+
+    assert result["status"] == "ok"
+    assert [entry["branch_def_id"] for entry in result["candidates"]] == [
+        stronger_outcome,
+        higher_quality,
+    ]
+    assert result["candidates"][0]["outcome_signal"]["highest_rung_key"] == "reviewed"
+    assert result["outcome_leaderboard"][0]["branch_def_id"] == stronger_outcome
+    assert "gate leaderboard" in result["text"].lower()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -567,9 +658,11 @@ def test_reads_do_not_ledger(p5_env):
     _call(us, "goals", "search", query="G")
     _call(us, "goals", "leaderboard", goal_id=gid, metric="run_count")
     _call(us, "goals", "common_nodes", goal_id=gid)
+    _call(us, "goals", "archive_consultation", goal_id=gid)
     ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
     read_actions = {"goals.list", "goals.get", "goals.search",
-                    "goals.leaderboard", "goals.common_nodes"}
+                    "goals.leaderboard", "goals.common_nodes",
+                    "goals.archive_consultation"}
     for e in ledger:
         assert e["action"] not in read_actions
 
@@ -585,7 +678,8 @@ def test_unknown_action_lists_available(p5_env):
     assert "error" in result
     avail = result.get("available_actions", [])
     for a in ("propose", "update", "bind", "list", "get",
-              "search", "leaderboard", "common_nodes"):
+              "search", "leaderboard", "common_nodes",
+              "archive_consultation"):
         assert a in avail
 
 

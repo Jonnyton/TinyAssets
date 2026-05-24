@@ -40,6 +40,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,7 @@ DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 20.0
 GITHUB_API = "https://api.github.com"
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "Jonnyton/Workflow")
+MAX_CHANGE_BODY_CHARS = 12000
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 CURSOR_PATH = _REPO_ROOT / ".agents" / ".wiki_bug_sync_cursor"
@@ -72,6 +74,9 @@ _PAYMENT_FREE_OK_LABEL = "payment:free-ok"
 _WRITER_POOL_LABEL = "writer-pool:claude-codex"
 _CHECKER_POLICY_LABEL = "checker:cross-family"
 _GATE_REQUIRED_LABEL = "gate-required"
+_PRIORITY_LOOP_DISCIPLINE_LABEL = "priority:loop-discipline"
+_PRIORITY_PRIMITIVE_LAYER_LABEL = "priority:primitive-layer"
+_PRIORITY_PRIMITIVE_SURFACE_LABEL = "priority:primitive-surface"
 _DAEMON_REQUEST_LABELS = [
     _DAEMON_REQUEST_LABEL,
     _AUTO_CHANGE_LABEL,
@@ -98,6 +103,61 @@ _CHANGE_KIND_PREFIX: dict[str, str] = {
     "docs-ops": "WIKI-DOCS",
     "branch-refinement": "WIKI-BRANCH",
     "project-design": "WIKI-DESIGN",
+}
+
+_ARCHITECTURAL_FILING_MARKERS = (
+    "architecture",
+    "architectural",
+    "design-note",
+    "design note",
+    "project design",
+    "operating-model",
+    "operating model",
+    "roadmap",
+    "strategic",
+    "substrate",
+)
+
+_LOOP_DISCIPLINE_MARKERS = (
+    "auto-fix",
+    "auto fix",
+    "brain coherence",
+    "brain update",
+    "brain_update",
+    "brainupdate",
+    "checker",
+    "community loop",
+    "consensusengagementindex",
+    "consensus-marker lint",
+    "daemon request",
+    "loop",
+    "operator triage",
+    "priority label",
+    "required-reason",
+    "triage burden",
+    "wiki-bug-sync",
+    "wiki-change-sync",
+    "wiki_bug_sync",
+)
+
+_PRIMITIVE_LAYER_MARKERS = (
+    "access",
+    "architecture",
+    "authority",
+    "classifier",
+    "design note",
+    "gate ladder",
+    "meaning",
+    "primitive",
+    "request contract",
+    "substrate",
+)
+
+_PRIMITIVE_SURFACE_KINDS = {
+    "bug",
+    "branch-refinement",
+    "feature",
+    "patch",
 }
 
 _INIT_PAYLOAD = {
@@ -288,25 +348,66 @@ def _change_kind(entry: dict[str, Any]) -> str | None:
     path = str(entry.get("path", "")).lower()
     entry_type = str(entry.get("type", "")).lower()
     title = str(entry.get("title", "")).lower()
+    design_text = f"{path} {entry_type} {title}"
+    routed_change_path = path.startswith((
+        "pages/feature-requests/",
+        "feature-requests/",
+        "pages/patch-requests/",
+        "patch-requests/",
+        "pages/design-proposals/",
+        "design-proposals/",
+    ))
 
     # BUG pages are handled by the numeric cursor lane above.
-    if _bug_number(path) is not None or entry_type == "bug" or "/bugs/" in path:
+    if (
+        _bug_number(path) is not None
+        or "/bugs/" in path
+        or path.startswith("bugs/")
+        or (entry_type == "bug" and not routed_change_path)
+    ):
         return None
 
-    if path.startswith("pages/plans/feature-") or title.startswith("feature "):
+    if path.startswith("pages/notes/"):
+        if "builder" in entry_type or "builder" in title:
+            return "branch-refinement"
+        return None
+
+    if any(marker in design_text for marker in _ARCHITECTURAL_FILING_MARKERS):
+        return "project-design"
+
+    if (
+        entry_type in {"feature", "feature_request"}
+        or path.startswith("pages/feature-requests/")
+        or path.startswith("feature-requests/")
+        or path.startswith("pages/plans/feature-")
+        or title.startswith("feature ")
+    ):
         return "feature"
-    if path.startswith("pages/plans/patch-") or title.startswith("patch "):
+    if (
+        entry_type in {"patch", "patch_request"}
+        or path.startswith("pages/patch-requests/")
+        or path.startswith("patch-requests/")
+        or path.startswith("pages/plans/patch-")
+        or title.startswith("patch ")
+    ):
         return "patch"
+    if (
+        entry_type in {"design", "design_proposal", "project-design"}
+        or path.startswith("pages/design-proposals/")
+        or path.startswith("design-proposals/")
+    ):
+        return "project-design"
     if path.startswith("pages/workflows/"):
         return "branch-refinement"
-    if path.startswith("pages/notes/") and ("builder" in entry_type or "builder" in title):
-        return "branch-refinement"
-    if path.startswith("pages/plans/") and (
-        "roadmap" in path
-        or "strategic" in path
-        or "architecture" in path
-        or "design" in path
-        or "synthesis" in path
+    if path.startswith("pages/plans/") and any(
+        marker in design_text
+        for marker in (
+            *_ARCHITECTURAL_FILING_MARKERS,
+            "attribution",
+            "design",
+            "refactoring",
+            "synthesis",
+        )
     ):
         return "project-design"
     if path.startswith("pages/plans/") or path.startswith("pages/concepts/"):
@@ -337,14 +438,28 @@ def list_new_change_requests(
 # ---------------------------------------------------------------------------
 
 
-def fetch_bug_detail(
+def _split_frontmatter(content: str) -> tuple[dict[str, str], str]:
+    meta: dict[str, str] = {}
+    body = content
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            for line in parts[1].splitlines():
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    meta[k.strip()] = v.strip()
+            body = parts[2].lstrip()
+    return meta, body
+
+
+def fetch_wiki_page_detail(
     url: str,
     sid: str | None,
     path: str,
     timeout: float,
     post_fn=None,
 ) -> dict[str, Any]:
-    """Call wiki action=read and parse the frontmatter fields we need."""
+    """Call wiki action=read and return parsed frontmatter plus page body."""
     page = Path(path).stem or path
     result = _mcp_call_tool(
         url, sid, "wiki", {"action": "read", "page": page}, timeout, post_fn
@@ -356,16 +471,35 @@ def fetch_bug_detail(
     except (json.JSONDecodeError, AttributeError):
         content = text
 
-    # Parse frontmatter from the markdown content
-    meta: dict[str, str] = {}
-    if content.startswith("---"):
-        parts = content.split("---", 2)
-        if len(parts) >= 3:
-            for line in parts[1].splitlines():
-                if ":" in line:
-                    k, _, v = line.partition(":")
-                    meta[k.strip()] = v.strip()
-    return meta
+    meta, body = _split_frontmatter(content)
+    return {"meta": meta, "body": body, "content": content}
+
+
+def fetch_bug_detail(
+    url: str,
+    sid: str | None,
+    path: str,
+    timeout: float,
+    post_fn=None,
+) -> dict[str, Any]:
+    """Call wiki action=read and parse the frontmatter fields we need."""
+    return fetch_wiki_page_detail(url, sid, path, timeout, post_fn).get("meta", {})
+
+
+def format_change_issue_body(entry: dict[str, Any], page_detail: dict[str, Any]) -> str:
+    """Build bounded issue context for non-bug community request artifacts."""
+    body = f"**Wiki type:** `{entry.get('type', 'unknown')}`"
+    source_body = str(page_detail.get("body") or "").strip()
+    if not source_body:
+        return body
+
+    truncated = source_body[:MAX_CHANGE_BODY_CHARS]
+    if len(source_body) > MAX_CHANGE_BODY_CHARS:
+        truncated = (
+            f"{truncated}\n\n"
+            f"_Source wiki body truncated at {MAX_CHANGE_BODY_CHARS} characters._"
+        )
+    return f"{body}\n\n## Source wiki body\n\n{truncated}"
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +540,61 @@ def _gh_ensure_label(
         pass  # best-effort
 
 
+def find_existing_gh_issue(
+    token: str,
+    repo: str,
+    title_prefix: str,
+    gh_api: str = GITHUB_API,
+    timeout: float = 20.0,
+    opener=None,
+) -> str | None:
+    """Return URL of an existing issue whose title starts with ``title_prefix``.
+
+    Checks both open and closed issues — even a closed/landed prior filing
+    for the same wiki bug means we should not re-file. Returns None on no
+    match, malformed response, or network/HTTP error; the caller falls
+    through to its create-path so a transient API blip never silently
+    drops a needed filing. Pass ``opener`` for testability — it must
+    behave like ``urllib.request.urlopen``.
+
+    Today's recurrence pattern (2026-05-14) is multiple GitHub issues
+    referencing the same wiki BUG/PR-NNN: the cursor + change-seen state
+    is a write-side advance marker and cannot detect issues filed by a
+    different mechanism (host manual filing, earlier ad-hoc runs). This
+    check is a final safety net independent of the state files.
+    """
+    if not token:
+        return None
+    # The GitHub search API's `in:title` matches any token in the title,
+    # so we still need a post-filter for exact-prefix.
+    query = f'repo:{repo} is:issue in:title "{title_prefix}"'
+    search_url = (
+        f"{gh_api}/search/issues?q={urllib.parse.quote(query)}&per_page=10"
+    )
+    req = urllib.request.Request(
+        search_url,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "workflow-wiki-bug-sync/1.0",
+        },
+    )
+    _open = opener or urllib.request.urlopen
+    try:
+        with _open(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError,
+            json.JSONDecodeError):
+        return None
+    for item in data.get("items", []):
+        title = item.get("title", "")
+        if title.startswith(title_prefix):
+            return item.get("html_url")
+    return None
+
+
 def _label_color(label: str) -> str:
     if label == _AUTO_LABEL:
         return "0075ca"
@@ -421,11 +610,34 @@ def _label_color(label: str) -> str:
         return "b60205"
     if label == _GATE_REQUIRED_LABEL:
         return "fbca04"
+    if label.startswith("priority:"):
+        return "f9d0c4"
     if label.startswith("severity:"):
         return "d93f0b"
     if label.startswith("request:"):
         return "5319e7"
     return "e4e669"
+
+
+def priority_labels_for_request(
+    request_kind: str,
+    *,
+    title: str = "",
+    path: str = "",
+    body_md: str = "",
+) -> list[str]:
+    """Return queue-priority labels promoted from request classifier signals."""
+    corpus = " ".join((request_kind, title, path, body_md)).lower()
+    if any(marker in corpus for marker in _LOOP_DISCIPLINE_MARKERS):
+        return [_PRIORITY_LOOP_DISCIPLINE_LABEL]
+    if (
+        request_kind == "project-design"
+        or any(marker in corpus for marker in _PRIMITIVE_LAYER_MARKERS)
+    ):
+        return [_PRIORITY_PRIMITIVE_LAYER_LABEL]
+    if request_kind in _PRIMITIVE_SURFACE_KINDS:
+        return [_PRIORITY_PRIMITIVE_SURFACE_LABEL]
+    return []
 
 
 def create_gh_issue(
@@ -442,6 +654,9 @@ def create_gh_issue(
 ) -> str:
     """Create a GitHub Issue; returns the issue URL or '[dry-run]'."""
     labels = [_AUTO_LABEL, *_DAEMON_REQUEST_LABELS, _REQUEST_KIND_LABELS["bug"]]
+    labels.extend(priority_labels_for_request(
+        "bug", title=title, body_md=body_md,
+    ))
     sev_label = _SEVERITY_LABELS.get(severity.lower())
     if sev_label:
         labels.append(sev_label)
@@ -465,6 +680,15 @@ def create_gh_issue(
 
     if not token:
         raise SyncError(3, "GITHUB_TOKEN is not set — cannot create GH Issues")
+
+    existing = find_existing_gh_issue(
+        token, repo, f"[{bug_id}]", gh_api=gh_api, timeout=timeout,
+    )
+    if existing:
+        print(
+            f"[wiki-bug-sync] {bug_id} skipped — existing issue at {existing}"
+        )
+        return existing
 
     # Ensure labels exist
     for label in labels:
@@ -511,6 +735,9 @@ def create_gh_change_issue(
     """Create a non-bug community change Issue."""
     kind_label = _REQUEST_KIND_LABELS.get(request_kind, "request:change")
     labels = [*_DAEMON_REQUEST_LABELS, kind_label]
+    labels.extend(priority_labels_for_request(
+        request_kind, title=title, path=path, body_md=body_md,
+    ))
     prefix = _CHANGE_KIND_PREFIX.get(request_kind, "WIKI-CHANGE")
     title_str = f"[{prefix}] {title}"
     issue_body = (
@@ -531,6 +758,15 @@ def create_gh_change_issue(
 
     if not token:
         raise SyncError(3, "GITHUB_TOKEN is not set — cannot create GH Issues")
+
+    existing = find_existing_gh_issue(
+        token, repo, title_str, gh_api=gh_api, timeout=timeout,
+    )
+    if existing:
+        print(
+            f"[wiki-bug-sync] {prefix}:{path} skipped — existing issue at {existing}"
+        )
+        return existing
 
     for label in labels:
         _gh_ensure_label(
@@ -641,12 +877,14 @@ def sync(
             request_kind = entry["request_kind"]
 
             try:
-                meta = fetch_bug_detail(url, sid, path, timeout, post_fn)
+                page_detail = fetch_wiki_page_detail(url, sid, path, timeout, post_fn)
+                meta = page_detail.get("meta", {})
             except SyncError:
+                page_detail = {}
                 meta = {}
 
             title = meta.get("title") or entry.get("title") or Path(path).stem
-            body_md = f"**Wiki type:** `{entry.get('type', 'unknown')}`"
+            body_md = format_change_issue_body(entry, page_detail)
             issue_url = create_gh_change_issue(
                 _token,
                 repo,

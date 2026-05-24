@@ -11,8 +11,9 @@ Canary flow
 2. POST ``notifications/initialized`` (MCP protocol requires this
    before tool calls, even if the server is lenient).
 3. POST ``tools/list`` → confirm the returned tools array is non-empty.
-4. POST ``tools/call`` for ``universe`` with ``action=inspect`` → confirm
-   the returned content is valid JSON carrying a ``universe_id`` field.
+4. POST ``tools/call`` for the strongest advertised read-only probe:
+   ``universe`` with ``action=inspect`` on the legacy endpoint, or
+   ``read.graph`` with ``target=status`` on the directory endpoint.
 
 Exit codes (task #6 spec)
 -------------------------
@@ -21,8 +22,8 @@ Exit codes (task #6 spec)
 3 — session establishment failed (no ``mcp-session-id`` header, or
     ``notifications/initialized`` POST errored).
 4 — ``tools/list`` failed or returned an empty tools array.
-5 — ``tools/call universe action=inspect`` failed or returned an
-    invalid response (no ``universe_id``, isError set, etc.).
+5 — probe ``tools/call`` failed or returned an invalid response
+    (missing expected fields, isError set, etc.).
 
 Usage
 -----
@@ -77,6 +78,75 @@ _post = partial(
     error_factory=ToolCanaryError,
     user_agent="workflow-mcp-tool-canary/1.0",
 )
+
+
+def _tool_names(tools: list[Any]) -> set[str]:
+    return {
+        tool.get("name")
+        for tool in tools
+        if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+    }
+
+
+def _select_probe(tools: list[Any]) -> tuple[str, dict[str, Any], str]:
+    names = _tool_names(tools)
+    if "universe" in names:
+        return "universe", {"action": "inspect"}, "universe inspect"
+    if "read.graph" in names:
+        return "read.graph", {"target": "status"}, "read.graph status"
+    raise ToolCanaryError(
+        5,
+        "tools/list did not advertise a supported read-only probe "
+        f"(wanted 'universe' or 'read.graph'; saw {sorted(names)!r})",
+    )
+
+
+def _parse_tool_json_result(resp: dict[str, Any] | None, label: str) -> dict[str, Any]:
+    if resp is None or "result" not in resp:
+        raise ToolCanaryError(
+            5, f"{label} returned no result: {resp!r}",
+        )
+    result = resp["result"]
+    if result.get("isError"):
+        text = _extract_tool_text(result)[:300]
+        raise ToolCanaryError(
+            5, f"{label} isError=true: {text!r}",
+        )
+    text = _extract_tool_text(result)
+    if not text:
+        raise ToolCanaryError(
+            5, f"{label} returned no text content: {result!r}",
+        )
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ToolCanaryError(
+            5, f"{label} text not JSON: {exc}; preview={text[:200]!r}",
+        ) from exc
+    if not isinstance(obj, dict):
+        raise ToolCanaryError(
+            5, f"{label} JSON was not an object: {obj!r}",
+        )
+    return obj
+
+
+def _validate_probe_obj(obj: dict[str, Any], label: str) -> None:
+    if label == "universe inspect":
+        uid = obj.get("universe_id")
+        if not uid:
+            raise ToolCanaryError(
+                5, f"universe inspect missing universe_id: {obj!r}",
+            )
+        return
+
+    if label == "read.graph status":
+        if "schema_version" not in obj:
+            raise ToolCanaryError(
+                5, f"read.graph status missing schema_version: {obj!r}",
+            )
+        return
+
+    raise ToolCanaryError(5, f"unsupported probe label: {label!r}")
 
 
 def run_canary(
@@ -134,42 +204,27 @@ def run_canary(
         names = [t.get("name") for t in tools]
         print(f"[tool-canary] tools/list OK ({len(tools)} tool(s)): {names}")
 
-    # Step 4 — tools/call universe action=inspect and assert universe_id.
+    # Step 4 - tools/call the strongest read-only probe advertised.
+    tool_name, tool_args, label = _select_probe(tools)
     call_payload = {
         "jsonrpc": "2.0",
         "id": 3,
         "method": "tools/call",
-        "params": {"name": "universe", "arguments": {"action": "inspect"}},
+        "params": {"name": tool_name, "arguments": tool_args},
     }
     resp, _ = post(url, sid, call_payload, timeout, step_code=5)
-    if resp is None or "result" not in resp:
-        raise ToolCanaryError(
-            5, f"universe inspect returned no result: {resp!r}",
-        )
-    result = resp["result"]
-    if result.get("isError"):
-        text = _extract_tool_text(result)[:300]
-        raise ToolCanaryError(
-            5, f"universe inspect isError=true: {text!r}",
-        )
-    text = _extract_tool_text(result)
-    if not text:
-        raise ToolCanaryError(
-            5, f"universe inspect returned no text content: {result!r}",
-        )
-    try:
-        inspect_obj = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ToolCanaryError(
-            5, f"universe inspect text not JSON: {exc}; preview={text[:200]!r}",
-        ) from exc
-    uid = inspect_obj.get("universe_id")
-    if not uid:
-        raise ToolCanaryError(
-            5, f"universe inspect missing universe_id: {inspect_obj!r}",
-        )
+    inspect_obj = _parse_tool_json_result(resp, label)
+    _validate_probe_obj(inspect_obj, label)
     if verbose:
-        print(f"[tool-canary] universe inspect OK universe_id={uid!r}")
+        uid = inspect_obj.get("universe_id")
+        schema_version = inspect_obj.get("schema_version")
+        details = []
+        if schema_version is not None:
+            details.append(f"schema_version={schema_version!r}")
+        if uid is not None:
+            details.append(f"universe_id={uid!r}")
+        suffix = f" {' '.join(details)}" if details else ""
+        print(f"[tool-canary] {label} OK{suffix}")
 
     return inspect_obj
 
@@ -177,7 +232,7 @@ def run_canary(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="End-to-end MCP tool-invocation canary (handshake + "
-                    "session + tools/list + universe inspect).",
+                    "session + tools/list + read-only tool call).",
     )
     ap.add_argument("--url", default=DEFAULT_URL,
                     help=f"MCP endpoint URL (default: {DEFAULT_URL})")
@@ -194,7 +249,15 @@ def main(argv: list[str] | None = None) -> int:
         return exc.code
 
     if args.verbose:
-        print(f"[tool-canary] PASS universe_id={inspect.get('universe_id')!r}")
+        uid = inspect.get("universe_id")
+        schema_version = inspect.get("schema_version")
+        details = []
+        if schema_version is not None:
+            details.append(f"schema_version={schema_version!r}")
+        if uid is not None:
+            details.append(f"universe_id={uid!r}")
+        suffix = f" {' '.join(details)}" if details else ""
+        print(f"[tool-canary] PASS{suffix}")
     return 0
 
 

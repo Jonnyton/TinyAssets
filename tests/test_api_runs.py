@@ -21,6 +21,7 @@ from workflow.api.runs import (
     _build_failure_taxonomy,
     _classify_run_error,
     _classify_run_outcome_error,
+    _compose_run_snapshot,
     _ensure_runs_recovery,
     _failure_payload,
 )
@@ -267,3 +268,31 @@ def test_provider_exhausted_outcome_is_classified():
     )
     assert out is not None
     assert out[0] == "provider_exhausted"
+
+
+def test_failed_run_snapshot_marks_last_running_node_failed(monkeypatch):
+    def _missing_branch(*_args, **_kwargs):
+        raise KeyError("missing-branch")
+
+    monkeypatch.setattr("workflow.daemon_server.get_branch_definition", _missing_branch)
+    monkeypatch.setattr(
+        runs_mod,
+        "_run_mermaid_from_events",
+        lambda _branch_def_id, _node_statuses: "```mermaid\nflowchart LR\n```",
+    )
+
+    snapshot = _compose_run_snapshot(
+        {
+            "run_id": "run-1",
+            "branch_def_id": "missing-branch",
+            "status": "failed",
+            "actor": "tester",
+            "last_node_id": "step1",
+            "error": "Provider call failed in node 'step1': boom",
+        },
+        [{"node_id": "step1", "status": "running"}],
+    )
+
+    by_id = {node["node_id"]: node["status"] for node in snapshot["node_statuses"]}
+    assert by_id["step1"] == "failed"
+    assert "- step1: failed" in snapshot["summary"]

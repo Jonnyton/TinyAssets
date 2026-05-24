@@ -22,6 +22,14 @@ name: Deploy prod
 #   WORKFLOW_CODEX_AUTH_JSON_B64 - base64-encoded ~/.codex/auth.json.
 #   When present, deploy syncs it into /etc/workflow/env without printing it
 #   and forces WORKFLOW_ALLOW_API_KEY_PROVIDERS=0 for the public daemon.
+#
+# Optional PR-122 Phase 2 capability secret (PR-128):
+#   WORKFLOW_GITHUB_PR_CAPABILITIES - JSON object mapping
+#   "<owner>/<repo>" -> "<token>". Read by
+#   workflow.effectors.github_pr at invocation time; never echoed
+#   into branch-visible run state. When unset, the effector emits
+#   error_kind="missing_capability" dry-run evidence on real-PR
+#   attempts.
 
 on:
   workflow_run:
@@ -61,6 +69,14 @@ jobs:
     timeout-minutes: 15
     env:
       HAS_CODEX_AUTH_BUNDLE: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 != '' }}
+      # PR-128 — PR-122 Phase 2 capability map sync. When the
+      # WORKFLOW_GITHUB_PR_CAPABILITIES GH Actions secret is set
+      # (JSON object keyed by "<owner>/<repo>" -> "<token>"), the
+      # deploy step installs it into /etc/workflow/env so the Phase 2
+      # effector can pass its capability gate. Without this the
+      # effector emits error_kind="missing_capability" and stays in
+      # dry-run for real-PR attempts.
+      HAS_GITHUB_PR_CAPABILITY: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -71,19 +87,41 @@ jobs:
 
       # Derive the image tag to deploy. workflow_dispatch override wins;
       # otherwise use the build-image run's head SHA.
+      #
+      # Fallback: if the resolved SHA tag does not exist in GHCR, fall back
+      # to :latest. Doc-only commits can skip build-image.yml, leaving no
+      # image for that commit SHA; :latest is the last successful built tag.
       - name: Resolve image tag
         id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "${{ inputs.image_tag }}" ]; then
-            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+            tag="${{ inputs.image_tag }}"
           elif [ "${{ github.event_name }}" = "workflow_run" ]; then
             full_sha="${{ github.event.workflow_run.head_sha }}"
-            echo "tag=${full_sha:0:12}" >> "$GITHUB_OUTPUT"
+            tag="${full_sha:0:12}"
           else
-            echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+            tag="$(git rev-parse --short=12 HEAD)"
           fi
           owner_lower="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
-          echo "image=ghcr.io/${owner_lower}/workflow-daemon" >> "$GITHUB_OUTPUT"
+          image="ghcr.io/${owner_lower}/workflow-daemon"
+
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null 2>&1 || true
+          if docker manifest inspect "${image}:${tag}" >/dev/null 2>&1; then
+            echo "::notice::image ${image}:${tag} exists in GHCR; deploying it"
+          else
+            echo "::warning::${image}:${tag} not found in GHCR; falling back to :latest"
+            tag="latest"
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Image resolution"
+            echo ""
+            echo "- effective tag: \`${image}:${tag}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify secrets present
         run: |
@@ -174,10 +212,129 @@ jobs:
                sudo install -m 0644 -o root -g root /tmp/workflow-daemon.service /etc/systemd/system/workflow-daemon.service; \
                sudo systemctl daemon-reload"
 
+      - name: Preflight droplet disk before image pull
+        id: disk-preflight
+        run: |
+          # A full root volume can make both the forward deploy and the rollback
+          # fail while the live daemon is already down. Reclaim disposable state
+          # before touching WORKFLOW_IMAGE or pulling the new image.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+
+          threshold=85
+          fail_threshold=90
+
+          max_disk_pct() {
+            max=0
+            for path in / /var/lib/docker /data; do
+              [ -e "$path" ] || continue
+              pct="$(df -P "$path" | awk 'NR==2 {gsub("%", "", $5); print $5}')"
+              case "$pct" in
+                ''|*[!0-9]*) pct=0 ;;
+              esac
+              if [ "$pct" -gt "$max" ]; then
+                max="$pct"
+              fi
+            done
+            echo "$max"
+          }
+
+          echo "disk preflight before cleanup:"
+          df -h / /var/lib/docker /data 2>&1 || true
+
+          before="$(max_disk_pct)"
+          if [ "$before" -ge "$threshold" ]; then
+            echo "::warning::disk usage ${before}% >= ${threshold}%; pruning disposable Docker/build/journal state before deploy"
+            docker system prune -af 2>&1 | tail -80 || true
+            docker builder prune -af 2>&1 | tail -80 || true
+            journalctl --vacuum-time=3d 2>&1 | tail -20 || true
+          else
+            echo "disk usage ${before}% < ${threshold}%; no pre-deploy prune needed"
+          fi
+
+          echo "disk preflight after cleanup:"
+          df -h / /var/lib/docker /data 2>&1 || true
+
+          after="$(max_disk_pct)"
+          if [ "$after" -ge "$fail_threshold" ]; then
+            echo "::error::disk usage still ${after}% >= ${fail_threshold}% after prune; refusing deploy before image pull/restart"
+            exit 1
+          fi
+          SH
+
+      # Codex CLI rotates single-use OAuth refresh tokens in-place inside
+      # the container. PR #965 binds /var/lib/workflow-codex -> /app/.codex
+      # so the rotated chain survives container restart. This step makes
+      # that volume self-provisioning on every deploy — idempotent, no
+      # host hands required, per the Forever Rule (24/7 uptime, zero
+      # hosts online).
+      #
+      # Three idempotent branches:
+      #   - dir already present  -> skip creation
+      #   - auth.json already in volume -> skip migration (entrypoint preserves it)
+      #   - no running container with /app/.codex/auth.json -> skip migration
+      #     (new container will seed from WORKFLOW_CODEX_AUTH_JSON_B64 on first boot)
+      #
+      # The migration branch only fires once: the first deploy after
+      # PR #965 merges onto a live droplet where workflow-worker has a
+      # rotated auth.json that pre-dates the persistent volume.
+      - name: Prepare codex auth persistent volume
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+
+          VOLUME_DIR="/var/lib/workflow-codex"
+          WORKFLOW_UID=1001
+          WORKFLOW_GID=1001
+
+          # Create the directory if missing. mkdir -p is itself a no-op
+          # when the path already exists.
+          if [ ! -d "$VOLUME_DIR" ]; then
+            echo "creating codex auth persistent volume at $VOLUME_DIR"
+            mkdir -p "$VOLUME_DIR"
+          fi
+
+          # Ownership + mode are repaired UNCONDITIONALLY every deploy.
+          # If a prior attempt left the dir root-owned (e.g. docker bind
+          # auto-create races the create-with-chown branch), this heals
+          # the posture so uid 1001 can write. Both chown and chmod are
+          # themselves idempotent — no-op when state already matches.
+          chown "$WORKFLOW_UID:$WORKFLOW_GID" "$VOLUME_DIR"
+          chmod 700 "$VOLUME_DIR"
+
+          # Migration: if the volume is empty but a workflow-worker container is
+          # currently running with a /app/.codex/auth.json inside it (= we're rolling
+          # out PR #965 onto an existing live system), copy the live refresh chain
+          # into the volume so the new container preserves it instead of falling
+          # back to the stale env-var secret.
+          if [ ! -f "$VOLUME_DIR/auth.json" ]; then
+            if docker inspect workflow-worker >/dev/null 2>&1; then
+              if docker exec workflow-worker test -f /app/.codex/auth.json 2>/dev/null; then
+                echo "migrating live codex auth.json from workflow-worker into persistent volume"
+                docker cp workflow-worker:/app/.codex/auth.json "$VOLUME_DIR/auth.json"
+                chown "$WORKFLOW_UID:$WORKFLOW_GID" "$VOLUME_DIR/auth.json"
+                chmod 600 "$VOLUME_DIR/auth.json"
+              fi
+            fi
+          fi
+
+          # Confirm final state for the log.
+          ls -la "$VOLUME_DIR" || true
+          SH
+
       - name: Deploy new image
         id: deploy
         env:
           WORKFLOW_CODEX_AUTH_JSON_B64: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 }}
+          # PR-128 — Phase 2 effector capability map. JSON object
+          # mapping "<owner>/<repo>" -> "<token>" (round-2 P1.2
+          # shape). Read by workflow.effectors.github_pr at
+          # invocation time; never echoed into branch-visible state.
+          WORKFLOW_GITHUB_PR_CAPABILITIES: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES }}
         run: |
           NEW_IMAGE="${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}"
           echo "Deploying: ${NEW_IMAGE}"
@@ -206,11 +363,46 @@ jobs:
           else
             echo "::warning::WORKFLOW_CODEX_AUTH_JSON_B64 is not visible to deploy; leaving any existing droplet subscription auth untouched."
           fi
+          # PR-128 — sync the Phase 2 effector capability map. Same
+          # install-workflow-env.sh helper, same atomic write
+          # contract. The map MUST decode to a JSON object keyed by
+          # "<owner>/<repo>" -> "<token>"; the effector
+          # (workflow.effectors.github_pr) validates the shape and
+          # logs loudly on malformed JSON. When the secret is unset,
+          # the effector returns missing_capability dry-run evidence
+          # — emit a deploy-time warning so the operator notices
+          # before chatbots start filing for real-write attempts.
+          if [ "${HAS_GITHUB_PR_CAPABILITY}" = "true" ]; then
+            echo "Deploy-visible WORKFLOW_GITHUB_PR_CAPABILITIES found; syncing GitHub PR capability map."
+            printf '%s' "${WORKFLOW_GITHUB_PR_CAPABILITIES}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-workflow-env.sh set WORKFLOW_GITHUB_PR_CAPABILITIES"
+          else
+            # Round-2 fix (Codex round-1 finding on PR #980): the
+            # documented contract is "absence -> dry-run". Round-1
+            # logged a warning but left any prior
+            # WORKFLOW_GITHUB_PR_CAPABILITIES value in
+            # /etc/workflow/env, which meant deleting the GH Actions
+            # secret to revoke had no effect — the next deploy
+            # restarted the daemon with the OLD capability still
+            # active. Fix: when the secret is absent, explicitly
+            # delete the key from the droplet env so the effector
+            # observes "missing capability" on its next read. The
+            # install-workflow-env.sh helper's `delete` subcommand is
+            # a no-op when the key is already absent (assert_readable
+            # still passes), so re-running this on a clean droplet
+            # is safe.
+            echo "::warning::WORKFLOW_GITHUB_PR_CAPABILITIES is not visible to deploy; removing any prior capability from /etc/workflow/env so effects emission stays dry-run with error_kind=missing_capability."
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES"
+          fi
           {
             echo "## Deploy subscription auth"
             echo ""
             echo "- WORKFLOW_CODEX_AUTH_JSON_B64 visible to deploy: \`${HAS_CODEX_AUTH_BUNDLE}\`"
             echo "- API-key providers forced off when the Codex subscription bundle is synced."
+            echo "- WORKFLOW_GITHUB_PR_CAPABILITIES visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
           # Pull + restart via the systemd unit (which runs docker
           # compose down + up with the new env).

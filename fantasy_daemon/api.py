@@ -229,6 +229,13 @@ class NoteBody(BaseModel):
     target: str | None = Field(None, description="File path or scene reference")
     clearly_wrong: bool = Field(False, description="For concerns: provable error?")
     quoted_passage: str = Field("", description="Evidence from prose")
+    anchor: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Optional prose span anchor, e.g. "
+            "{'start_line': 12, 'end_line': 14, 'start_column': 3, 'end_column': 20}"
+        ),
+    )
     tags: list[str] = Field(default_factory=list, description="Optional note tags")
     metadata: dict[str, Any] = Field(
         default_factory=dict,
@@ -880,6 +887,7 @@ def post_note(
         target=body.target,
         clearly_wrong=body.clearly_wrong,
         quoted_passage=body.quoted_passage,
+        anchor=body.anchor,
         tags=body.tags,
         metadata=body.metadata,
     )

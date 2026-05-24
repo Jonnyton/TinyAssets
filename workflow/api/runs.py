@@ -49,6 +49,13 @@ from workflow.api.helpers import (
 logger = logging.getLogger("universe_server.runs")
 
 
+_EMPTY_LLM_RESPONSE_ACTION = (
+    "Ask the host to check get_status provider availability/cooldowns and fix "
+    "provider credentials or CLI, then rerun; only switch llm_type if get_status "
+    "shows another provider available."
+)
+
+
 # Phase 3: Graph Runner — execute a BranchDefinition
 # ───────────────────────────────────────────────────────────────────────────
 # The runner compiles a validated branch into a LangGraph StateGraph via
@@ -154,7 +161,7 @@ def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
         rows.append((
             EmptyResponseError,
             "empty_llm_response",
-            "Check provider config or try a different model via the llm_type param.",
+            _EMPTY_LLM_RESPONSE_ACTION,
         ))
     except ImportError:
         pass
@@ -270,7 +277,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",
-            "Check provider config or try a different model via the llm_type param.",
+            _EMPTY_LLM_RESPONSE_ACTION,
         )
     if "timed out" in msg or "timeout" in msg:
         return (
@@ -525,8 +532,9 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         "background executor.",
         "",
         *error_lines,
-        "Use `get_run` to read a snapshot, `stream_run` to poll for "
-        "progress, or `cancel_run` to stop. Each takes a `run_id` "
+        "Use `wait_for_run` to wait for progress without burning repeated "
+        "tool calls, `get_run` for a snapshot, or `cancel_run` to stop. "
+        "Each takes a `run_id` "
         "from the structured content of this response.",
     ]).strip()
 
@@ -598,6 +606,15 @@ def _compose_run_snapshot(
         pass
 
     node_statuses = build_node_status_map(events, declared_order)
+    if run_record.get("status") == "failed" and run_record.get("last_node_id"):
+        failed_node_id = run_record["last_node_id"]
+        for node_status in node_statuses:
+            if (
+                node_status.get("node_id") == failed_node_id
+                and node_status.get("status") == "running"
+            ):
+                node_status["status"] = "failed"
+                break
     mermaid = _run_mermaid_from_events(
         run_record["branch_def_id"], node_statuses,
     )
@@ -1427,8 +1444,9 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
         "background executor.",
         "",
         *error_lines,
-        "Use `get_run` to read a snapshot, `stream_run` to poll for "
-        "progress, or `cancel_run` to stop. Each takes a `run_id` "
+        "Use `wait_for_run` to wait for progress without burning repeated "
+        "tool calls, `get_run` for a snapshot, or `cancel_run` to stop. "
+        "Each takes a `run_id` "
         "from the structured content of this response.",
     ]).strip()
 
@@ -1506,6 +1524,16 @@ def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
         text_lines.append(
             f"Re-pointed canonical bindings on {repointed_count} Goal(s) "
             "to nearest non-rolled-back ancestor."
+        )
+    # DESIGN-008 round 4 — selector bindings are cleared (not walked up)
+    # so the leaderboard read path falls back to the platform default.
+    selector_repoint = result.get("selector_repoint", {})
+    selector_repointed_count = selector_repoint.get("repointed_count", 0)
+    if selector_repointed_count:
+        text_lines.append(
+            f"Cleared selector bindings on {selector_repointed_count} "
+            "Goal(s); leaderboard falls back to platform default until "
+            "operator re-binds via `goals action=set_selector`."
         )
     return json.dumps({
         "text": "\n".join(text_lines),

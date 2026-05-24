@@ -29,10 +29,14 @@ from __future__ import annotations
 
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
+from functools import wraps
+from inspect import signature
+from typing import Annotated
 
 import uvicorn
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import Field
 from starlette.applications import Starlette
 
 from workflow.api.branches import _branch_design_guide_prompt
@@ -44,6 +48,7 @@ from workflow.api.prompts import _CONTROL_STATION_PROMPT
 from workflow.api.status import get_status as _get_status_impl
 from workflow.api.universe import _universe_impl
 from workflow.api.wiki import wiki as _wiki_impl
+from workflow.connector_catalog import DIRECTORY_MCP_PATH, VERSIONED_DIRECTORY_MCP_PATH
 from workflow.directory_server import directory_mcp
 
 logger = logging.getLogger("universe_server")
@@ -52,15 +57,62 @@ logger = logging.getLogger("universe_server")
 # Server
 # ---------------------------------------------------------------------------
 
+def _structured_return(raw):
+    """Wrap an MCP tool result so FastMCP populates ``structured_content``.
+
+    ChatGPT (OpenAI Apps SDK) wedges on substrate-changing tool calls when
+    the response carries only ``content`` (text) without ``structuredContent``
+    (typed dict) + ``_meta`` annotations. Claude tolerates either shape.
+
+    The internal ``*_impl`` functions return JSON strings for back-compat.
+    Wrapping their output in a dict (parsing JSON when possible, else
+    embedding the raw text) lets FastMCP's response builder populate
+    ``structured_content`` automatically — Apps SDK then renders cleanly.
+    """
+    import json as _json
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        return {"result": raw}
+    if isinstance(raw, str):
+        try:
+            parsed = _json.loads(raw)
+        except (_json.JSONDecodeError, ValueError):
+            return {"text": raw}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"result": parsed}
+    return {"result": raw}
+
+
+def _register_structured_tool(fn, *, title, tags, annotations):
+    """Register an MCP adapter without changing the direct Python API."""
+
+    @wraps(fn)
+    def _tool(*args, **kwargs):
+        return _structured_return(fn(*args, **kwargs))
+
+    _tool.__name__ = f"_mcp_{fn.__name__}"
+    _tool.__signature__ = signature(fn).replace(return_annotation=dict)
+    return mcp.tool(
+        name=fn.__name__,
+        title=title,
+        tags=tags,
+        annotations=annotations,
+        output_schema=None,
+    )(_tool)
+
+
 mcp = FastMCP(
     "workflow",
     instructions=(
         "Workflow is a workflow-builder and long-horizon AI platform. "
         "Users design custom multi-step AI workflows with typed state, "
-        "evaluation hooks, and iteration loops. Fantasy authoring is a "
-        "benchmark, not the exclusive use case; other domains include "
-        "research papers, screenplays, literature reviews, investigative "
-        "journalism, recipe trackers, wedding planners, and news summaries. "
+        "evaluation hooks, and iteration loops. The platform is "
+        "domain-agnostic. Example domains: research papers, screenplays, "
+        "literature reviews, investigative journalism, recipe trackers, "
+        "wedding planners, news summaries, standup trackers, fantasy "
+        "novels. "
         "\n\n"
         "If a user asks about their 'workflow builder', 'custom AI builder', "
         "'universe builder', 'the workflow thing', 'the connector', 'the "
@@ -114,13 +166,12 @@ _LANDING_HTML = """<!doctype html>
 </head>
 <body>
 <h1>Workflow Server</h1>
-<p class="tag">A goal-agnostic daemon engine. You summon it, bind it to a
-domain, and let it drive.</p>
+<p class="tag">A goal-agnostic daemon engine. Bind it to a domain and let it run.</p>
 
 <p>This is the public surface of a local-first platform for building
 custom multi-step AI workflows &mdash; typed state, registered nodes,
 evaluation hooks, iteration loops, paid-market bid/claim mechanics.
-Fantasy authoring is the benchmark domain; the engine is general-purpose.</p>
+The engine is domain-agnostic.</p>
 
 <p>If you arrived here looking for an MCP connector, the live endpoint
 is at <code>/mcp</code>.</p>
@@ -178,9 +229,9 @@ _EXTENSION_GUIDE_PROMPT = """\
 The `extensions` tool is the workflow-builder surface. Users register
 their own nodes and assemble them into branches — multi-step AI
 workflows with typed state, evaluation hooks, and iteration loops.
-This is how the platform supports arbitrary domains (research papers,
-recipe trackers, screenplays, news summarizers, etc.), not just
-fiction. Fantasy authoring is one branch; yours will be another.
+The platform supports arbitrary domains (research papers, recipe
+trackers, screenplays, news summarizers, standup trackers, etc.).
+Build the one you need.
 
 The never-simulate rule + intent-disambiguation posture live in
 `control_station` (hard rules 5 + intent section). When in doubt on
@@ -256,21 +307,6 @@ def branch_design_guide() -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Universe Operations",
-    tags={
-        "universe", "daemon", "collaboration",
-        "workflow", "workflow-builder", "custom-ai", "agent-workflow",
-        "ai-builder", "universe-builder", "general-purpose",
-    },
-    annotations=ToolAnnotations(
-        title="Universe Operations",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 def universe(
     action: str,
     universe_id: str = "",
@@ -299,6 +335,7 @@ def universe(
     tier: str = "",
     enabled: bool = False,
     tag: str = "",
+    anchor_json: str = "",
 ) -> str:
     """Inspect and steer a workflow's universe.
 
@@ -311,14 +348,29 @@ def universe(
     without `text` returns an error.
 
     Args:
-        action: Universe read/write, queue, subscription, goal-pool,
-            community review, daemon roster/control, or config action name.
+        action: One of — reads: list, inspect, read_output, query_world,
+            get_activity, get_recent_events, get_ledger, read_premise,
+            list_canon, read_canon, list_sources, read_source; writes: submit_request,
+            give_direction, set_premise, add_canon, add_canon_from_path,
+            create_universe, switch_universe; queue: queue_list,
+            queue_cancel; subscriptions: subscribe_goal, unsubscribe_goal,
+            list_subscriptions; goal-pool: post_to_goal_pool,
+            submit_node_bid; community review: community_change_context;
+            daemon roster/control: daemon_overview, daemon_list,
+            daemon_get, daemon_create, daemon_summon, daemon_pause,
+            daemon_resume, daemon_restart, daemon_banish,
+            daemon_update_behavior, daemon_control_status,
+            control_daemon; daemon memory: daemon_memory_capture,
+            daemon_memory_search, daemon_memory_list, daemon_memory_review,
+            daemon_memory_promote, daemon_memory_status; economy reads:
+            treasury_status; config: set_tier_config;
         universe_id: Target universe. Defaults to the active universe.
         text/path/filter_text: Action-specific content, file path, or filter.
         branch_id/request_type: Request routing fields.
         pickup_incentive/directed_daemon_id: Optional patch-request pickup
             signals; these do not affect acceptance, release, or merge odds.
         filename/provenance_tag/limit/tag: Optional read/write filters.
+        anchor_json: Optional JSON object for `give_direction` line/span notes.
     """
     return _universe_impl(
         action=action,
@@ -348,7 +400,26 @@ def universe(
         tier=tier,
         enabled=enabled,
         tag=tag,
+        anchor_json=anchor_json,
     )
+
+
+_mcp_universe = _register_structured_tool(
+    universe,
+    title="Universe Operations",
+    tags={
+        "universe", "daemon", "collaboration",
+        "workflow", "workflow-builder", "custom-ai", "agent-workflow",
+        "ai-builder", "universe-builder", "general-purpose",
+    },
+    annotations=ToolAnnotations(
+        title="Universe Operations",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -356,20 +427,6 @@ def universe(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(
-    title="Community Change Context",
-    tags={
-        "community", "change-loop", "review", "pull-request",
-        "github", "plan", "workflow",
-    },
-    annotations=ToolAnnotations(
-        title="Community Change Context",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=True,
-    ),
-)
 def community_change_context(
     filter_text: str = "",
     limit: int = 10,
@@ -395,22 +452,28 @@ def community_change_context(
     )
 
 
+_mcp_community_change_context = _register_structured_tool(
+    community_change_context,
+    title="Community Change Context",
+    tags={
+        "community", "change-loop", "review", "pull-request",
+        "github", "plan", "workflow",
+    },
+    annotations=ToolAnnotations(
+        title="Community Change Context",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # TOOL 2 — Extensions (workflow builder surface)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Graph Extensions",
-    tags={"extensions", "nodes", "plugins", "customization"},
-    annotations=ToolAnnotations(
-        title="Graph Extensions",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
 def extensions(
     action: str,
     node_id: str = "",
@@ -458,6 +521,7 @@ def extensions(
     node_ref_json: str = "",
     intent: str = "",
     node_query: str = "",
+    scope: str = "published",
     force: bool = False,
     project_id: str = "",
     key: str = "",
@@ -472,6 +536,11 @@ def extensions(
     to_node_id: str = "",
     message_type: str = "",
     body_json: str = "",
+    ship_attempt_id: str = "",
+    head_branch: str = "",
+    title: str = "",
+    pr_body: str = "",
+    base_branch: str = "",
     reply_to_message_id: str = "",
     message_types: str = "",
     message_id: str = "",
@@ -516,18 +585,29 @@ def extensions(
     reason: str = "",
     severity: str = "P1",
     since_days: int = 7,
+    record_in_ledger: bool = False,
+    universe_id: str = "",
+    request_id: str = "",
+    parent_run_id: str = "",
+    release_gate_result: str = "",
+    ship_class: str = "",
+    changed_paths_json: str = "",
+    stable_evidence_handle: str = "",
 ) -> str:
     """Workflow-builder surface: design, edit, run, judge custom AI graphs.
 
     Behavioral rules live in `control_station`, `extension_guide`, and
     `branch_design_guide`; this description is the I/O contract.
 
-    Main actions: build_branch, patch_branch, describe_branch, get_branch,
-    list_branches, run_branch, get_run, list_runs, stream_run, cancel_run,
-    get_run_output, attach_existing_child_run, wait_for_run, resume_run,
-    judge_run, compare_runs, schedule_branch, and publish_version.
-
-    Args: pass `action` plus the matching ids or JSON payload fields.
+    Core actions include build_branch, patch_branch, list_branches,
+    describe_branch, get_branch, run_branch, get_run, wait_for_run,
+    judge_run, publish_version, schedule_branch, fork_tree, and search_nodes.
+    Pass `action` plus the matching ids or JSON payload fields.
+    Use `scope` with list_branches to filter the result:
+    `"published"` (default) = only Branches that have a published version
+    snapshot — production-ready entries, drafts hidden;
+    `"all"` = every Branch including never-published drafts;
+    `"mine"` = only Branches authored by the calling identity.
     """
     return _extensions_impl(
         action=action,
@@ -576,6 +656,7 @@ def extensions(
         node_ref_json=node_ref_json,
         intent=intent,
         node_query=node_query,
+        scope=scope,
         force=force,
         project_id=project_id,
         key=key,
@@ -590,6 +671,11 @@ def extensions(
         to_node_id=to_node_id,
         message_type=message_type,
         body_json=body_json,
+        ship_attempt_id=ship_attempt_id,
+        head_branch=head_branch,
+        title=title,
+        pr_body=pr_body,
+        base_branch=base_branch,
         reply_to_message_id=reply_to_message_id,
         message_types=message_types,
         message_id=message_id,
@@ -634,7 +720,29 @@ def extensions(
         reason=reason,
         severity=severity,
         since_days=since_days,
+        record_in_ledger=record_in_ledger,
+        universe_id=universe_id,
+        request_id=request_id,
+        parent_run_id=parent_run_id,
+        release_gate_result=release_gate_result,
+        ship_class=ship_class,
+        changed_paths_json=changed_paths_json,
+        stable_evidence_handle=stable_evidence_handle,
     )
+
+
+_mcp_extensions = _register_structured_tool(
+    extensions,
+    title="Graph Extensions",
+    tags={"extensions", "nodes", "plugins", "customization"},
+    annotations=ToolAnnotations(
+        title="Graph Extensions",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -642,17 +750,6 @@ def extensions(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Goals",
-    tags={"goals", "discovery", "intent", "community"},
-    annotations=ToolAnnotations(
-        title="Goals",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 def goals(
     action: str,
     goal_id: str = "",
@@ -668,6 +765,7 @@ def goals(
     author: str = "",
     limit: int = 50,
     scope: str = "",
+    production_only: bool = False,
     force: bool = False,
 ) -> str:
     """Goals — first-class shared primitives above workflow Branches.
@@ -684,7 +782,20 @@ def goals(
                    unbind. Needs branch_def_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
                    branch. Author-only or host-only.
-      list         Browse Goals. Optional author, tags, limit.
+      set_selector Bind the Goal's selector branch_version
+                   (DESIGN-008). The bound branch ranks competitors
+                   on this Goal's leaderboard. Author-only or
+                   host-only. Pass branch_version_id="" to fall back
+                   to the platform default selector. The branch must
+                   conform to the selector-branch contract.
+      run_canonical Dispatch a run on the Goal's canonical
+                   branch_version. When auto_canonical_via_leaderboard
+                   is on, the canonical is first refreshed via the
+                   quality leaderboard (subject to the
+                   min_completed_runs_for_canonical threshold + the
+                   in-flight guard). PR-127 (M6 cutover Step 4).
+      list         Browse Goals. Optional author, tags, limit,
+                   production_only.
       get          Full Goal view + bound Branches. Needs goal_id.
       search       LIKE-based substring search over name, description,
                    tags. Needs query.
@@ -707,8 +818,23 @@ def goals(
         author=author,
         limit=limit,
         scope=scope,
+        production_only=production_only,
         force=force,
     )
+
+
+_mcp_goals = _register_structured_tool(
+    goals,
+    title="Goals",
+    tags={"goals", "discovery", "intent", "community"},
+    annotations=ToolAnnotations(
+        title="Goals",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -716,17 +842,6 @@ def goals(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Outcome Gates",
-    tags={"gates", "outcomes", "impact", "leaderboard", "community"},
-    annotations=ToolAnnotations(
-        title="Outcome Gates",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 def gates(
     action: str,
     goal_id: str = "",
@@ -745,6 +860,7 @@ def gates(
     eval_verdict: str = "",
     node_last_claimer: str = "",
     node_id: str = "",
+    run_id: str = "",
 ) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
@@ -757,12 +873,19 @@ def gates(
     additionally require WORKFLOW_PAID_MARKET=on.
 
     Actions (all live when GATES_ENABLED=1):
+      list          Discover supported gates actions.
       define_ladder Owner sets the rung list on a Goal. Needs goal_id
                     and `ladder` (JSON list of {rung_key, name,
                     description}).
       get_ladder    Read a Goal's ladder. Needs goal_id.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url.
+      claim_from_branch_run
+                    Claim a rung whose key (and optionally evidence
+                    URL) came from a completed run's final output.
+                    Needs run_id. The branch's
+                    ``recommended_rung_claim`` field selects the rung;
+                    validated against the bound Goal's ladder.
       retract       Soft-delete a claim. Needs branch_def_id, rung_key,
                     reason.
       list_claims   Browse claims. Provide exactly one of branch_def_id
@@ -795,7 +918,22 @@ def gates(
         eval_verdict=eval_verdict,
         node_last_claimer=node_last_claimer,
         node_id=node_id,
+        run_id=run_id,
     )
+
+
+_mcp_gates = _register_structured_tool(
+    gates,
+    title="Outcome Gates",
+    tags={"gates", "outcomes", "impact", "leaderboard", "community"},
+    annotations=ToolAnnotations(
+        title="Outcome Gates",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -803,17 +941,6 @@ def gates(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Wiki Knowledge Base",
-    tags={"wiki", "knowledge", "drafts", "pages", "research"},
-    annotations=ToolAnnotations(
-        title="Wiki Knowledge Base",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 def wiki(
     action: str,
     page: str = "",
@@ -822,6 +949,9 @@ def wiki(
     filename: str = "",
     content: str = "",
     log_entry: str = "",
+    old_text: str = "",
+    new_text: str = "",
+    expected_sha256: str = "",
     source_url: str = "",
     old_page: str = "",
     new_draft: str = "",
@@ -837,23 +967,51 @@ def wiki(
     observed: str = "",
     expected: str = "",
     workaround: str = "",
+    kind: str = "bug",
+    tags: str = "",
     force_new: bool = False,
     bug_id: str = "",
     reporter_context: str = "",
+    changed_since: Annotated[
+        str,
+        Field(
+            description=(
+                'Optional ISO timestamp for action="read" ambient feed and '
+                'required ISO timestamp for action="since"; only pages updated '
+                "after this timestamp are returned."
+            ),
+        ),
+    ] = "",
 ) -> str:
     """Read, write, and manage the cross-project knowledge wiki.
 
-    Persistent prose knowledge shared across sessions. New content lands
-    in drafts/ and is promoted to pages/ after quality checks. It is
-    not for workflow structure, node definitions, state, or run outputs.
-    Intent: use `extensions` for "build / design / create a workflow";
-    use wiki for "save this how-to / ref / note" or "what is X". Start
-    with `action="list"` or `action="read" page="index"`.
+    Persistent prose knowledge shared across sessions. It is not for
+    workflow structure, node definitions, state, or run outputs. Use
+    `extensions` for "build / design / create a workflow"; use wiki
+    for "save this how-to / ref / note", "what is X", or filing user
+    bugs, patch requests, feature requests, and design proposals.
+
+    When the user asks to file a bug, patch request, feature request, or
+    design proposal, call `file_bug` directly with the matching `kind`
+    (`bug`, `patch_request`, `feature`, or `design`). `file_bug` already
+    does Jaccard duplicate detection server-side; you do NOT need to search/list/read
+    the wiki before filing. If a similar filing exists,
+    it returns status="similar_found" with the existing match.
 
     Args:
-        action: One of — reads: read, search, list, lint;
-            writes: write, consolidate, promote, ingest, supersede,
+        action: One of — reads: read, search, since, list, lint;
+            writes: write, patch, delete, consolidate, promote, ingest, supersede,
             sync_projects, file_bug, cosign_bug.
+            `search` is lexical best-effort, not a completeness proof; use
+            `since` with `changed_since` to review pages updated after a known
+            timestamp, then `read` the candidate pages.
+        old_text/new_text: For action="patch", exact text to replace server-side.
+        expected_sha256: Optional full-page hash guard for action="patch" or
+            action="delete".
+        reason: Required for action="delete" when dry_run=false.
+        changed_since: Optional ISO timestamp for action="read" ambient feed
+            and required ISO timestamp for action="since"; only pages updated
+            after this timestamp are returned.
     """
     return _wiki_impl(
         action=action,
@@ -863,6 +1021,9 @@ def wiki(
         filename=filename,
         content=content,
         log_entry=log_entry,
+        old_text=old_text,
+        new_text=new_text,
+        expected_sha256=expected_sha256,
         source_url=source_url,
         old_page=old_page,
         new_draft=new_draft,
@@ -878,10 +1039,27 @@ def wiki(
         observed=observed,
         expected=expected,
         workaround=workaround,
+        kind=kind,
+        tags=tags,
         force_new=force_new,
         bug_id=bug_id,
         reporter_context=reporter_context,
+        changed_since=changed_since,
     )
+
+
+_mcp_wiki = _register_structured_tool(
+    wiki,
+    title="Wiki Knowledge Base",
+    tags={"wiki", "knowledge", "drafts", "pages", "research"},
+    annotations=ToolAnnotations(
+        title="Wiki Knowledge Base",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -889,20 +1067,6 @@ def wiki(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(
-    title="Daemon Status + Routing Evidence",
-    tags={
-        "status", "routing", "privacy", "verification",
-        "confidential-tier", "workflow",
-    },
-    annotations=ToolAnnotations(
-        title="Daemon Status + Routing Evidence",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
 def get_status(universe_id: str = "") -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
@@ -925,21 +1089,170 @@ def get_status(universe_id: str = "") -> str:
     return _get_status_impl(universe_id=universe_id)
 
 
+_mcp_get_status = _register_structured_tool(
+    get_status,
+    title="Daemon Status + Routing Evidence",
+    tags={
+        "status", "routing", "privacy", "verification",
+        "confidential-tier", "workflow",
+    },
+    annotations=ToolAnnotations(
+        title="Daemon Status + Routing Evidence",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Server Entry Point
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MCP endpoint discovery (substrate-fix #11 / Family A Phase 1.A)
+# ═══════════════════════════════════════════════════════════════════════════
+# When a browser, recruiter, or fresh AI session GETs /mcp or /mcp-directory
+# with Accept: text/html (no MCP transport handshake), return a discovery
+# page explaining what the endpoint is and how to connect via MCP client.
+# MCP clients (POST with JSON-RPC, GET with text/event-stream for SSE leg,
+# or any request with MCP-Protocol-Version header) pass through unchanged.
+
+_MCP_DISCOVERY_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow MCP Server</title>
+<style>
+ :root { color-scheme: light dark; }
+ body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        max-width: 720px; margin: 4rem auto; padding: 0 1.25rem;
+        line-height: 1.55; }
+ h1 { margin-bottom: 0.3rem; }
+ .tag { color: #666; margin-top: 0; }
+ code { background: rgba(127,127,127,0.15); padding: 2px 6px;
+        border-radius: 3px; font-size: 0.95em; }
+ pre { background: rgba(127,127,127,0.10); padding: 0.75rem 1rem;
+       border-radius: 4px; overflow-x: auto; font-size: 0.85em; }
+ ul { padding-left: 1.2rem; }
+ li { margin-bottom: 0.4rem; }
+ footer { margin-top: 3rem; color: #888; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>Workflow MCP Server</h1>
+<p class="tag">This is the MCP (Model Context Protocol) server endpoint.
+You're seeing this page because you reached this URL in a browser instead
+of via an MCP client.</p>
+
+<p>Workflow is a multi-AI development platform: agents from different
+families (Claude, OpenAI, others) collaborate via this MCP and a durable
+shared brain to ship work through a cross-family consensus gate. The
+engine is domain-agnostic.</p>
+
+<h2>Connect via MCP client</h2>
+
+<p>Configure your client with this URL:</p>
+
+<ul>
+<li><strong>Claude</strong>: Settings → Connectors → Add custom connector
+    → URL: this page's URL</li>
+<li><strong>ChatGPT (Apps SDK)</strong>: Connector URL: this page's URL</li>
+<li><strong>Cursor</strong>: <code>settings.json</code> →
+    <code>mcpServers</code> → <code>workflow</code> → <code>url</code></li>
+<li><strong>Cowork</strong>: Connectors → URL: this page's URL</li>
+</ul>
+
+<p>Or with cURL (technical readers):</p>
+
+<pre>curl -X POST "$REQUEST_URL" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-03-26" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'</pre>
+
+<h2>Project</h2>
+<ul>
+<li><a href="/">Workflow landing page</a></li>
+<li><a href="https://github.com/Jonnyton/Workflow">GitHub repository</a></li>
+</ul>
+
+<footer>
+Workflow MCP Server &middot; Streamable HTTP transport (MCP spec) &middot; 2026
+</footer>
+</body>
+</html>
+"""
+
+
+def _wants_discovery_html(request) -> bool:  # type: ignore[no-untyped-def]
+    """Return True iff this is a browser-style GET that should see the
+    discovery HTML page rather than the MCP transport surface.
+
+    Keep narrow: GET only, Accept includes text/html, NO MCP-Protocol-Version
+    header (real MCP clients send that), Accept does NOT include
+    text/event-stream (real Streamable HTTP clients send that).
+    """
+    if request.method.upper() not in {"GET", "HEAD"}:
+        return False
+    if request.headers.get("mcp-protocol-version"):
+        return False
+    accept = request.headers.get("accept", "")
+    if "text/event-stream" in accept:
+        return False
+    return "text/html" in accept
+
+
+class _MCPDiscoveryMiddleware:
+    """Starlette middleware: serve discovery HTML on /mcp + /mcp-directory
+    GETs from browser-like clients; pass everything else through to the
+    FastMCP Streamable HTTP transport unchanged.
+    """
+
+    def __init__(self, app):  # type: ignore[no-untyped-def]
+        self.app = app
+
+    async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path not in {"/mcp", "/mcp/", "/mcp-directory", "/mcp-directory/"}:
+            await self.app(scope, receive, send)
+            return
+        # Build a Request-like view to inspect headers
+        from starlette.requests import Request
+
+        request = Request(scope, receive=receive)
+        if not _wants_discovery_html(request):
+            await self.app(scope, receive, send)
+            return
+        from starlette.responses import HTMLResponse
+
+        response = HTMLResponse(_MCP_DISCOVERY_HTML)
+        await response(scope, receive, send)
 
 
 def create_streamable_http_app() -> Starlette:
     """Create the production HTTP app with both MCP surfaces.
 
     `/mcp` preserves the legacy custom-connector surface. `/mcp-directory`
-    exposes the narrow directory-review surface used for app-store style host
-    submissions. Both route to the same backend state.
+    remains as the stable directory surface. The versioned directory path is
+    the advertised chatbot-host URL; changing it invalidates host-side cached
+    tool catalogs after substrate schema updates. Both route to the same
+    backend state.
     """
     legacy_app = mcp.http_app(path="/mcp", transport="streamable-http")
     directory_app = directory_mcp.http_app(
-        path="/mcp-directory",
+        path=DIRECTORY_MCP_PATH,
+        transport="streamable-http",
+    )
+    versioned_directory_app = directory_mcp.http_app(
+        path=VERSIONED_DIRECTORY_MCP_PATH,
         transport="streamable-http",
     )
 
@@ -952,14 +1265,25 @@ def create_streamable_http_app() -> Starlette:
             await stack.enter_async_context(
                 directory_app.router.lifespan_context(directory_app),
             )
+            await stack.enter_async_context(
+                versioned_directory_app.router.lifespan_context(versioned_directory_app),
+            )
             yield
 
     app = Starlette(
-        routes=[*legacy_app.routes, *directory_app.routes],
+        routes=[
+            *legacy_app.routes,
+            *directory_app.routes,
+            *versioned_directory_app.routes,
+        ],
         lifespan=lifespan,
     )
-    app.state.path = "/mcp,/mcp-directory"
+    app.state.path = f"/mcp,{DIRECTORY_MCP_PATH},{VERSIONED_DIRECTORY_MCP_PATH}"
     app.state.transport_type = "streamable-http"
+    # Substrate-fix #11 / Family A Phase 1.A: serve discovery HTML to
+    # browser-style GETs on /mcp + /mcp-directory; pass MCP transport
+    # requests through unchanged.
+    app = _MCPDiscoveryMiddleware(app)
     return app
 
 

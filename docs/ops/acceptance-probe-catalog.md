@@ -185,12 +185,13 @@ BUG-028 demonstrated that a slug-normalization bug could silently break bug fili
 **Validated:** mcp_tool_canary script live since 2026-04-22; closes the gap flagged in canary task #6.
 **Source script:** `scripts/mcp_tool_canary.py`
 **Persona:** `mcp-tool-canary` (automated; client name `mcp-tool-canary/1.0`)
-**Connector URL under test:** `https://tinyassets.io/mcp`
+**Connector URLs under test:** `https://tinyassets.io/mcp` and `https://tinyassets.io/mcp-directory`
 
 ### Invocation
 
 ```
 python scripts/mcp_tool_canary.py
+python scripts/mcp_tool_canary.py --url https://tinyassets.io/mcp-directory
 python scripts/mcp_tool_canary.py --url http://127.0.0.1:8001/mcp
 python scripts/mcp_tool_canary.py --verbose --timeout 20
 ```
@@ -202,7 +203,7 @@ python scripts/mcp_tool_canary.py --verbose --timeout 20
 | System | `initialize` handshake (same as PROBE-002). |
 | System | `notifications/initialized` (MCP-protocol mandatory before tool calls). |
 | System | `tools/list` returns a non-empty tools array. |
-| System | `tools/call` for `universe action=inspect` returns valid JSON carrying a `universe_id` field. |
+| System | `tools/call` for the strongest advertised read-only probe returns valid JSON: legacy `universe action=inspect` requires `universe_id`; directory `get_workflow_status` requires `schema_version`. |
 
 ### Green criteria
 
@@ -213,7 +214,7 @@ python scripts/mcp_tool_canary.py --verbose --timeout 20
 - Exit 2 — handshake failed (initialize error, network, TLS, non-200).
 - Exit 3 — session establishment failed (no `mcp-session-id` header, or `notifications/initialized` POST errored).
 - Exit 4 — `tools/list` failed or returned an empty tools array.
-- Exit 5 — `tools/call universe action=inspect` failed or returned an invalid response (no `universe_id`, `isError` set, etc.).
+- Exit 5 — the selected probe `tools/call` failed or returned an invalid response (missing expected fields, `isError` set, etc.).
 
 ### Why this probe earns a catalog slot
 
@@ -222,7 +223,7 @@ python scripts/mcp_tool_canary.py --verbose --timeout 20
 ### When to use
 
 - After any code change to `universe_server.py` tool registration or handler bodies.
-- After any deploy that adds/renames/removes MCP tools.
+- After any deploy that adds/renames/removes MCP tools on either `/mcp` or `/mcp-directory`.
 - As a continuous Layer-1.5 canary between handshake-only and full chatbot probes.
 
 ---

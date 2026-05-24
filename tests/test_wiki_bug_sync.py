@@ -13,9 +13,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from wiki_bug_sync import (  # noqa: E402
     SyncError,
     _bug_number,
+    create_gh_change_issue,
     create_gh_issue,
     fetch_bug_detail,
+    fetch_wiki_page_detail,
+    find_existing_gh_issue,
+    format_change_issue_body,
     list_new_bugs,
+    list_new_change_requests,
+    priority_labels_for_request,
     read_cursor,
     sync,
     write_cursor,
@@ -46,16 +52,28 @@ def _wiki_list_resp(bugs: list[dict]) -> dict:
     }
 
 
-def _wiki_read_resp(meta: dict) -> dict:
+def _wiki_read_resp(meta: dict, body: str = "# Body") -> dict:
     """Build a mock MCP tools/call result for wiki action=read."""
     fm_lines = "\n".join(f"{k}: {v}" for k, v in meta.items())
-    content = f"---\n{fm_lines}\n---\n\n# Body"
+    content = f"---\n{fm_lines}\n---\n\n{body}"
     return {
         "jsonrpc": "2.0",
         "id": 10,
         "result": {
             "content": [
                 {"type": "text", "text": json.dumps({"content": content})}
+            ]
+        },
+    }
+
+
+def _wiki_list_promoted_resp(promoted: list[dict]) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {
+            "content": [
+                {"type": "text", "text": json.dumps({"promoted": promoted, "drafts": []})}
             ]
         },
     }
@@ -155,6 +173,139 @@ def test_list_new_bugs_sorted_ascending():
 
 
 # ---------------------------------------------------------------------------
+# list_new_change_requests
+# ---------------------------------------------------------------------------
+
+
+def test_live_wiki_refactoring_request_is_project_design():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": (
+                    "pages/plans/"
+                    "live-wiki-refactoring-and-multi-generation-attribution.md"
+                ),
+                "title": "Live Wiki Refactoring + Multi-Generation Attribution",
+                "type": "unknown",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert len(result) == 1
+    assert result[0]["request_kind"] == "project-design"
+
+
+def test_plain_promoted_plan_remains_docs_ops():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": "pages/plans/methods-prose-rubric.md",
+                "title": "Methods-Prose Rubric",
+                "type": "plan",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert len(result) == 1
+    assert result[0]["request_kind"] == "docs-ops"
+
+
+def test_patch_request_page_enters_patch_lane():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": "pages/patch-requests/pr-001-update-connector-guidance.md",
+                "title": "Update connector guidance",
+                "type": "patch_request",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert len(result) == 1
+    assert result[0]["request_kind"] == "patch"
+
+
+def test_architectural_patch_request_enters_project_design_lane():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": (
+                    "pages/patch-requests/"
+                    "pr-004-dispatcher-should-detect-filing-shape.md"
+                ),
+                "title": (
+                    "Dispatcher should detect filing-shape mechanical vs "
+                    "architectural and route to design-note drafts"
+                ),
+                "type": "patch_request",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert len(result) == 1
+    assert result[0]["request_kind"] == "project-design"
+
+
+def test_coordination_note_with_design_language_is_not_a_request():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": "pages/notes/codex-architectural-coordination-2026-05-06.md",
+                "title": "Codex architectural coordination note",
+                "type": "note",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert result == []
+
+
+def test_builder_note_enters_branch_refinement_lane():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": "pages/notes/builder-notes-agent-teams.md",
+                "title": "Builder notes: agent teams",
+                "type": "note",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert len(result) == 1
+    assert result[0]["request_kind"] == "branch-refinement"
+
+
+def test_legacy_bug_typed_patch_request_page_enters_patch_lane():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": "pages/patch-requests/pr-002-legacy-type-bug.md",
+                "title": "Legacy patch page",
+                "type": "bug",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert len(result) == 1
+    assert result[0]["request_kind"] == "patch"
+
+
+def test_feature_request_page_enters_feature_lane():
+    wiki_list = {
+        "promoted": [
+            {
+                "path": "pages/feature-requests/feat-001-add-bulk-review.md",
+                "title": "Add bulk review",
+                "type": "feature",
+            }
+        ]
+    }
+    result = list_new_change_requests(wiki_list, seen_paths=set())
+    assert len(result) == 1
+    assert result[0]["request_kind"] == "feature"
+
+
+# ---------------------------------------------------------------------------
 # cursor read/write
 # ---------------------------------------------------------------------------
 
@@ -203,6 +354,72 @@ def test_create_gh_issue_labels_canonical_wiki_severity(capsys):
     assert "severity:critical" in out
 
 
+def test_priority_labels_promote_loop_discipline_requests():
+    labels = priority_labels_for_request(
+        "patch",
+        title=(
+            "Auto-promote priority labels from access/meaning/authority "
+            "classifier - operator triage burden trends to zero"
+        ),
+        path=(
+            "pages/patch-requests/"
+            "pr-076-auto-promote-priority-labels.md"
+        ),
+    )
+
+    assert labels == ["priority:loop-discipline"]
+
+
+def test_priority_labels_promote_brain_update_consensus_lint_docs_ops():
+    labels = priority_labels_for_request(
+        "docs-ops",
+        title=(
+            "BrainUpdate BU-001 — Required-reason field on positions + "
+            "ConsensusEngagementIndex + consensus-marker lint"
+        ),
+        path=(
+            "pages/concepts/"
+            "brain-update-001-required-reason-consensus-engagement-lint.md"
+        ),
+        body_md="**Wiki type:** `brain_update`",
+    )
+
+    assert labels == ["priority:loop-discipline"]
+
+
+def test_priority_labels_promote_project_design_to_primitive_layer():
+    assert priority_labels_for_request(
+        "project-design",
+        title="Dispatcher should detect filing shape",
+    ) == ["priority:primitive-layer"]
+
+
+def test_priority_labels_promote_patch_to_primitive_surface():
+    assert priority_labels_for_request(
+        "patch",
+        title="Update connector guidance",
+    ) == ["priority:primitive-surface"]
+
+
+def test_create_gh_change_issue_includes_promoted_priority_label(capsys):
+    url = create_gh_change_issue(
+        token="",
+        repo="owner/repo",
+        request_kind="patch",
+        title=(
+            "Auto-promote priority labels from access/meaning/authority "
+            "classifier"
+        ),
+        path="pages/patch-requests/pr-076-auto-promote-priority-labels.md",
+        body_md="**Wiki type:** `patch_request`",
+        dry_run=True,
+    )
+    out = capsys.readouterr().out
+
+    assert url == "[dry-run]"
+    assert "priority:loop-discipline" in out
+
+
 def test_create_gh_issue_no_token_raises():
     with pytest.raises(SyncError) as exc_info:
         create_gh_issue(
@@ -212,6 +429,171 @@ def test_create_gh_issue_no_token_raises():
             body_md="desc", dry_run=False,
         )
     assert exc_info.value.code == 3
+
+
+# ---------------------------------------------------------------------------
+# find_existing_gh_issue — GitHub-side dedup safety net
+# ---------------------------------------------------------------------------
+
+
+class _MockHTTPResponse:
+    """Context-manager-friendly stand-in for urllib.request.urlopen result."""
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode()
+
+
+def _make_opener(payload: dict | None = None, raise_exc: Exception | None = None):
+    calls = []
+
+    def _opener(req, timeout=None):
+        calls.append({"url": req.full_url, "headers": dict(req.headers)})
+        if raise_exc is not None:
+            raise raise_exc
+        return _MockHTTPResponse(payload or {"items": []})
+
+    _opener.calls = calls
+    return _opener
+
+
+def test_find_existing_gh_issue_returns_url_on_prefix_match():
+    opener = _make_opener({
+        "items": [
+            {"title": "[BUG-080] some title", "html_url": "https://example/issues/851"},
+        ],
+    })
+    url = find_existing_gh_issue(
+        token="tok", repo="owner/repo", title_prefix="[BUG-080]",
+        opener=opener,
+    )
+    assert url == "https://example/issues/851"
+    assert len(opener.calls) == 1
+    assert "search/issues" in opener.calls[0]["url"]
+    assert "%5BBUG-080%5D" in opener.calls[0]["url"]  # url-encoded "[BUG-080]"
+
+
+def test_find_existing_gh_issue_returns_none_on_no_match():
+    opener = _make_opener({"items": []})
+    assert find_existing_gh_issue(
+        token="tok", repo="owner/repo", title_prefix="[BUG-999]",
+        opener=opener,
+    ) is None
+
+
+def test_find_existing_gh_issue_filters_post_hoc_for_exact_prefix():
+    """GitHub's `in:title` matches any token, so the helper must post-filter
+    on exact prefix match — otherwise a `BUG-080` search would falsely
+    return a `BUG-8000` issue whose title also contains the token."""
+    opener = _make_opener({
+        "items": [
+            {"title": "[BUG-8000] unrelated bug", "html_url": "https://example/issues/9000"},
+            {"title": "[BUG-080] real match", "html_url": "https://example/issues/851"},
+        ],
+    })
+    url = find_existing_gh_issue(
+        token="tok", repo="owner/repo", title_prefix="[BUG-080]",
+        opener=opener,
+    )
+    assert url == "https://example/issues/851"
+
+
+def test_find_existing_gh_issue_returns_none_on_network_error():
+    import urllib.error
+
+    opener = _make_opener(raise_exc=urllib.error.URLError("dns fail"))
+    # Best-effort: must not raise; falling through to create-path is the
+    # correct safety posture so a transient API blip never silently drops
+    # a needed filing.
+    assert find_existing_gh_issue(
+        token="tok", repo="owner/repo", title_prefix="[BUG-080]",
+        opener=opener,
+    ) is None
+
+
+def test_find_existing_gh_issue_returns_none_without_token():
+    """No GITHUB_TOKEN → can't search, so return None and fall through."""
+    opener = _make_opener({"items": []})
+    assert find_existing_gh_issue(
+        token="", repo="owner/repo", title_prefix="[BUG-080]",
+        opener=opener,
+    ) is None
+    # MUST NOT have called the opener — no token means no GH API hit at all.
+    assert opener.calls == []
+
+
+def test_create_gh_issue_skips_when_existing_issue_found(monkeypatch, capsys):
+    """The recurrence pattern from 2026-05-14 (#840+#851 etc.): wiki-bug-sync
+    must not re-file an issue when one with the same `[BUG-NNN]` prefix
+    already exists, even when the cursor would otherwise advance past it."""
+    import wiki_bug_sync as wbs
+
+    captured = {}
+
+    def fake_find(token, repo, title_prefix, **kwargs):
+        captured["title_prefix"] = title_prefix
+        return "https://example/issues/851"
+
+    monkeypatch.setattr(wbs, "find_existing_gh_issue", fake_find)
+
+    # If we *did* fall through to creation it would raise on the urlopen
+    # POST; the dedup short-circuit prevents that. Wrap urlopen so a
+    # missed short-circuit produces a clear failure.
+    def boom(*_a, **_kw):
+        raise AssertionError("create_gh_issue should not POST when dedup hits")
+
+    monkeypatch.setattr(wbs.urllib.request, "urlopen", boom)
+
+    url = create_gh_issue(
+        token="tok", repo="owner/repo",
+        bug_id="BUG-080", title="Test", severity="major", component="x",
+        body_md="desc", dry_run=False,
+    )
+    assert url == "https://example/issues/851"
+    assert captured["title_prefix"] == "[BUG-080]"
+    out = capsys.readouterr().out
+    assert "BUG-080 skipped" in out
+    assert "https://example/issues/851" in out
+
+
+def test_create_gh_change_issue_skips_when_existing_issue_found(monkeypatch, capsys):
+    """Same dedup safety net for non-bug change requests. The full
+    `[WIKI-PATCH] <title>` is used (not just `[WIKI-PATCH]`) so distinct
+    patches with the same prefix don't false-positive each other."""
+    import wiki_bug_sync as wbs
+
+    captured = {}
+
+    def fake_find(token, repo, title_prefix, **kwargs):
+        captured["title_prefix"] = title_prefix
+        return "https://example/issues/855"
+
+    monkeypatch.setattr(wbs, "find_existing_gh_issue", fake_find)
+
+    def boom(*_a, **_kw):
+        raise AssertionError("create_gh_change_issue should not POST when dedup hits")
+
+    monkeypatch.setattr(wbs.urllib.request, "urlopen", boom)
+
+    url = create_gh_change_issue(
+        token="tok", repo="owner/repo",
+        request_kind="patch",
+        title="Move A — clone-with-inherit",
+        path="pages/patch-requests/pr-110-move-a.md",
+        body_md="desc", dry_run=False,
+    )
+    assert url == "https://example/issues/855"
+    # Must search on the full title prefix, not just `[WIKI-PATCH]`, to
+    # avoid matching unrelated WIKI-PATCH issues.
+    assert captured["title_prefix"].startswith("[WIKI-PATCH] Move A")
 
 
 def test_fetch_bug_detail_reads_with_page_not_path():
@@ -229,6 +611,36 @@ def test_fetch_bug_detail_reads_with_page_not_path():
     args = post.calls[0]["params"]["arguments"]
     assert args == {"action": "read", "page": "BUG-003-new"}
     assert detail["title"] == "Bug"
+
+
+def test_fetch_wiki_page_detail_returns_body_without_frontmatter():
+    detail = fetch_wiki_page_detail(
+        "http://fake/mcp",
+        "sid1",
+        "pages/plans/user-buildable-community-change-loop-v0-substrate-readiness-baseline.md",
+        5.0,
+        post_fn=CapturingPost([
+            (_wiki_read_resp(
+                {"title": "User-Buildable Community Change Loop"},
+                "## Main finding\n\nInput-aware loops are gated on BUG-083.",
+            ), "sid1"),
+        ]),
+    )
+
+    assert detail["meta"]["title"] == "User-Buildable Community Change Loop"
+    assert "Input-aware loops are gated on BUG-083." in detail["body"]
+    assert "title:" not in detail["body"]
+
+
+def test_format_change_issue_body_includes_bounded_source_context():
+    body = format_change_issue_body(
+        {"type": "plan"},
+        {"body": "## Pickup hints\n\nRetest immediately after BUG-083 changes."},
+    )
+
+    assert "**Wiki type:** `plan`" in body
+    assert "## Source wiki body" in body
+    assert "Retest immediately after BUG-083 changes." in body
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +733,67 @@ def test_sync_one_new_bug_updates_cursor(tmp_path):
     assert rc == 0
     assert created_issues == ["BUG-003"]
     assert read_cursor(cursor_path) == 3
+
+
+def test_sync_change_request_includes_source_wiki_body(tmp_path):
+    cursor_path = tmp_path / "cursor"
+    change_seen_path = tmp_path / "seen.json"
+    write_cursor(0, cursor_path)
+
+    path = "pages/plans/user-buildable-community-change-loop-v0-substrate-readiness-baseline.md"
+    captured = {}
+
+    post_fn = _make_post_fn(
+        (_INIT_OK, "sid1"),
+        (_NOTIF_NONE, "sid1"),
+        (_wiki_list_promoted_resp([
+            {
+                "path": path,
+                "title": "User-Buildable Community Change Loop",
+                "type": "plan",
+            }
+        ]), "sid1"),
+        (_wiki_read_resp(
+            {"title": "User-Buildable Community Change Loop"},
+            (
+                "## Main finding\n\n"
+                "Input-aware community loops are gated on BUG-083.\n\n"
+                "## Pickup hints\n\n"
+                "Retest immediately after BUG-083 changes."
+            ),
+        ), "sid1"),
+    )
+
+    def _fake_create_change_issue(
+        token, repo, request_kind, title, path, body_md,
+        dry_run=False, gh_api=None, timeout=20.0,
+    ):
+        captured.update(
+            request_kind=request_kind,
+            title=title,
+            path=path,
+            body_md=body_md,
+        )
+        return "https://github.com/owner/repo/issues/869"
+
+    with patch("wiki_bug_sync.create_gh_change_issue", side_effect=_fake_create_change_issue):
+        rc = sync(
+            "http://fake/mcp",
+            5.0,
+            dry_run=False,
+            include_community_requests=True,
+            token="fake-token",
+            cursor_path=cursor_path,
+            change_seen_path=change_seen_path,
+            post_fn=post_fn,
+        )
+
+    assert rc == 0
+    assert captured["request_kind"] == "project-design"
+    assert captured["path"] == path
+    assert "Input-aware community loops are gated on BUG-083." in captured["body_md"]
+    assert "Retest immediately after BUG-083 changes." in captured["body_md"]
+    assert path in change_seen_path.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

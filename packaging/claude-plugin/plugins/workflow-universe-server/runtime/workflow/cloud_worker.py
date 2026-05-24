@@ -187,6 +187,35 @@ def _queue_has_running_branch_task(universe: Path) -> bool:
         return True
 
 
+def _has_pickable_branch_task(universe: Path) -> bool:
+    """Return True when the dispatcher has an eligible pending task.
+
+    The MCP server appends some BranchTasks directly (not via producers).
+    The long-running fantasy_daemon subprocess only attempts a dispatcher
+    claim at startup, so the supervisor must notice these pending rows and
+    restart the idle wrapper process to let it pick them up.
+    """
+    try:
+        from workflow.dispatcher import (
+            dispatcher_enabled,
+            load_dispatcher_config,
+            select_next_task,
+        )
+
+        if not dispatcher_enabled():
+            return False
+        unified = os.environ.get("WORKFLOW_UNIFIED_EXECUTION", "1")
+        if unified.strip().lower() in {"0", "off", "false", "no"}:
+            return False
+        return select_next_task(
+            universe,
+            config=load_dispatcher_config(universe),
+        ) is not None
+    except Exception:  # noqa: BLE001
+        logger.exception("cloud_worker: pending BranchTask check failed")
+        return False
+
+
 def _pump_branch_task_producers(universe: Path) -> int:
     """Append producer output to ``branch_tasks.json``.
 
@@ -265,6 +294,7 @@ class SupervisorState:
 
     def __init__(self) -> None:
         self.crash_count = 0
+        self.clean_exit_count = 0
         self.total_spawns = 0
         self.total_clean_exits = 0
         self.total_crashes = 0
@@ -273,9 +303,11 @@ class SupervisorState:
         self.total_spawns += 1
         if returncode == 0:
             self.crash_count = 0
+            self.clean_exit_count += 1
             self.total_clean_exits += 1
         else:
             self.crash_count += 1
+            self.clean_exit_count = 0
             self.total_crashes += 1
 
     def summary(self) -> str:
@@ -306,7 +338,9 @@ def run_supervisor(
       1. Spawn fantasy_daemon against the universe.
       2. Wait for it to exit.
       3. Record exit as clean or crash.
-      4. Sleep idle_backoff (clean) or crash_backoff*mult^(crashes-1) (crash).
+      4. Sleep with exponential backoff after consecutive clean exits or
+         crashes. Clean exits usually mean no active work; backing them off
+         prevents the universe-cycle wrapper from steady polling while idle.
 
     ``max_iterations`` is an injection seam for tests — leave None in
     production for an unbounded loop. ``spawn_fn`` + ``sleep_fn`` are
@@ -354,6 +388,7 @@ def run_supervisor(
         except OSError as exc:
             logger.error("cloud_worker: spawn failed: %s", exc)
             state.crash_count += 1
+            state.clean_exit_count = 0
             state.total_crashes += 1
             delay = _compute_backoff(
                 state.crash_count,
@@ -366,8 +401,13 @@ def run_supervisor(
 
         # Poll until subprocess exits, while respecting stop signal.
         returncode: int | None = None
-        producer_restart_requested = False
-        last_producer_poll = 0.0
+        queue_restart_reason = ""
+        # The subprocess attempts its dispatcher claim during startup. If
+        # BranchTasks are already pending, polling immediately would terminate
+        # the child before it gets a chance to claim them, creating a restart
+        # loop. Start the producer clock now and only restart if the task is
+        # still pickable after one poll interval.
+        last_producer_poll = time.monotonic()
         while True:
             if stopping["flag"]:
                 logger.info("cloud_worker: terminating subprocess on stop signal")
@@ -396,10 +436,17 @@ def run_supervisor(
                     if not _queue_has_running_branch_task(universe):
                         appended = _pump_branch_task_producers(universe)
                         if appended > 0:
+                            queue_restart_reason = (
+                                f"{appended} producer task(s)"
+                            )
+                        elif _has_pickable_branch_task(universe):
+                            queue_restart_reason = "pending BranchTask"
+
+                        if queue_restart_reason:
                             logger.info(
-                                "cloud_worker: queued %d producer task(s); "
+                                "cloud_worker: queued %s; "
                                 "restarting subprocess to pick them up",
-                                appended,
+                                queue_restart_reason,
                             )
                             try:
                                 proc.terminate()
@@ -418,7 +465,6 @@ def run_supervisor(
                             except OSError:
                                 returncode = -1
                                 break
-                            producer_restart_requested = True
                             returncode = 0
                             break
             sleep_fn(poll_interval)
@@ -428,8 +474,8 @@ def run_supervisor(
             "cloud_worker: subprocess exited rc=%s (%s); %s",
             returncode,
             (
-                "producer-restart"
-                if producer_restart_requested
+                f"queue-restart:{queue_restart_reason}"
+                if queue_restart_reason
                 else "clean" if returncode == 0 else "crash"
             ),
             state.summary(),
@@ -439,7 +485,10 @@ def run_supervisor(
             break
 
         if returncode == 0:
-            delay = idle_backoff
+            delay = _compute_backoff(
+                state.clean_exit_count,
+                base=idle_backoff, mult=backoff_mult, ceiling=max_backoff,
+            )
         else:
             delay = _compute_backoff(
                 state.crash_count,

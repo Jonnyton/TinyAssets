@@ -183,6 +183,13 @@ def _restartable_work_exists(universe_path: Path) -> bool:
             for target in load_work_targets(universe_path)
         ):
             return True
+        from workflow.dispatcher import load_dispatcher_config, select_next_task
+
+        if select_next_task(
+            universe_path,
+            config=load_dispatcher_config(universe_path),
+        ):
+            return True
         requests_path = universe_path / REQUESTS_FILENAME
         if requests_path.exists():
             requests = json.loads(requests_path.read_text(encoding="utf-8"))

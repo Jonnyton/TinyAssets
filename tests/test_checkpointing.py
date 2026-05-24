@@ -23,8 +23,10 @@ from domains.fantasy_daemon.graphs.scene import build_scene_graph
 from workflow.checkpointing import (
     CheckpointRetentionPolicy,
     compile_all_graphs,
+    configured_checkpoint_retention_keep_last,
     create_checkpointer,
     get_checkpoint_history,
+    prune_checkpoint_history,
 )
 from workflow.checkpointing.sqlite_saver import (
     make_resume_config,
@@ -371,6 +373,172 @@ class TestRetentionPolicy:
 
         # Unmark non-existent is safe
         policy.unmark_named("cp-nonexistent")
+
+
+class TestDirectCheckpointPruning:
+    """Production retention path must avoid loading checkpoint blobs."""
+
+    @staticmethod
+    def _make_tables(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                parent_checkpoint_id TEXT,
+                type TEXT,
+                checkpoint BLOB,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE writes (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                type TEXT,
+                value BLOB,
+                PRIMARY KEY (
+                    thread_id, checkpoint_ns, checkpoint_id, task_id, idx
+                )
+            )
+            """
+        )
+
+    @staticmethod
+    def _insert_checkpoint(
+        conn: sqlite3.Connection,
+        *,
+        thread_id: str,
+        checkpoint_id: str,
+        checkpoint_ns: str = "",
+        writes: int = 2,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO checkpoints (
+                thread_id, checkpoint_ns, checkpoint_id,
+                parent_checkpoint_id, type, checkpoint, metadata
+            )
+            VALUES (?, ?, ?, NULL, 'msgpack', ?, ?)
+            """,
+            (thread_id, checkpoint_ns, checkpoint_id, b"x" * 1024, b"{}"),
+        )
+        for idx in range(writes):
+            conn.execute(
+                """
+                INSERT INTO writes (
+                    thread_id, checkpoint_ns, checkpoint_id,
+                    task_id, idx, channel, type, value
+                )
+                VALUES (?, ?, ?, 'task', ?, ?, 'msgpack', ?)
+                """,
+                (
+                    thread_id,
+                    checkpoint_ns,
+                    checkpoint_id,
+                    idx,
+                    f"channel-{idx}",
+                    b"y" * 512,
+                ),
+            )
+
+    def test_prune_keeps_recent_checkpoints_and_matching_writes(self, tmp_path):
+        db_path = tmp_path / "checkpoints.db"
+        conn = sqlite3.connect(db_path)
+        self._make_tables(conn)
+        for idx in range(5):
+            self._insert_checkpoint(
+                conn,
+                thread_id="concordance",
+                checkpoint_id=f"cp-{idx}",
+            )
+        for idx in range(3):
+            self._insert_checkpoint(
+                conn,
+                thread_id="other",
+                checkpoint_id=f"other-{idx}",
+                writes=1,
+            )
+        conn.commit()
+
+        result = prune_checkpoint_history(
+            conn,
+            "concordance",
+            keep_last_n=2,
+        )
+
+        assert result.checkpoints_before == 5
+        assert result.checkpoints_deleted == 3
+        assert result.writes_deleted == 6
+        remaining = [
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT checkpoint_id FROM checkpoints
+                WHERE thread_id = 'concordance'
+                ORDER BY rowid
+                """
+            )
+        ]
+        assert remaining == ["cp-3", "cp-4"]
+        other_count = conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = 'other'"
+        ).fetchone()[0]
+        assert other_count == 3
+
+    def test_prune_keeps_recent_per_namespace(self, tmp_path):
+        db_path = tmp_path / "checkpoints.db"
+        conn = sqlite3.connect(db_path)
+        self._make_tables(conn)
+        for ns in ("", "subgraph"):
+            for idx in range(3):
+                self._insert_checkpoint(
+                    conn,
+                    thread_id="concordance",
+                    checkpoint_ns=ns,
+                    checkpoint_id=f"{ns or 'root'}-{idx}",
+                    writes=1,
+                )
+        conn.commit()
+
+        result = prune_checkpoint_history(
+            conn,
+            "concordance",
+            keep_last_n=1,
+        )
+
+        assert result.checkpoints_deleted == 4
+        remaining = {
+            row
+            for row in conn.execute(
+                """
+                SELECT checkpoint_ns, checkpoint_id FROM checkpoints
+                WHERE thread_id = 'concordance'
+                """
+            )
+        }
+        assert remaining == {
+            ("", "root-2"),
+            ("subgraph", "subgraph-2"),
+        }
+
+    def test_configured_retention_defaults_enabled_and_zero_disables(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("WORKFLOW_CHECKPOINT_RETENTION_KEEP_LAST", raising=False)
+        assert configured_checkpoint_retention_keep_last() == 500
+
+        monkeypatch.setenv("WORKFLOW_CHECKPOINT_RETENTION_KEEP_LAST", "0")
+        assert configured_checkpoint_retention_keep_last() is None
 
 
 # -----------------------------------------------------------------------

@@ -35,6 +35,9 @@ services:
     image: ${WORKFLOW_IMAGE:-ghcr.io/jonnyton/workflow-daemon:latest}
     container_name: workflow-daemon
     restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     # Image CMD already runs `python -m workflow.universe_server`.
     # Expose loopback only; cloudflared reaches via Docker network.
     ports:
@@ -51,6 +54,20 @@ services:
       - /etc/workflow/env
     volumes:
       - workflow-data:/data
+      # Persist codex OAuth state across container restarts. Codex CLI
+      # rotates single-use refresh tokens in-place; without persistence,
+      # every restart throws away the rotated token and the next refresh
+      # hits `refresh_token_reused`. Shared bind so `daemon` + `worker`
+      # see the same auth.json (the daemon's in-process executor pool
+      # calls `codex exec` synchronously for `run_branch` MCP calls; the
+      # worker's `fantasy_daemon` subprocess does the same for queued
+      # BranchTasks). Cross-container refresh races are serialized by
+      # /usr/local/bin/codex (-> deploy/codex-flock-wrapper.sh), which
+      # takes an exclusive flock on /app/.codex/.lock before every
+      # invocation. The persistent volume is auto-provisioned by the
+      # `Prepare codex auth persistent volume` step in
+      # .github/workflows/deploy-prod.yml — no host action required.
+      - /var/lib/workflow-codex:/app/.codex
     healthcheck:
       # Use the same canary shape as Layer-1 / tier-3 / docker-build
       # CI. Python already in the image.
@@ -138,6 +155,9 @@ services:
     image: ${WORKFLOW_IMAGE:-ghcr.io/jonnyton/workflow-daemon:latest}
     container_name: workflow-worker
     restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     command: ["python", "-m", "workflow.cloud_worker"]
     environment:
       WORKFLOW_DATA_DIR: /data
@@ -153,6 +173,13 @@ services:
       - /etc/workflow/env
     volumes:
       - workflow-data:/data
+      # Same shared codex auth bind as `daemon`. The worker's
+      # `fantasy_daemon` subprocess invokes `codex exec` for queued
+      # BranchTask execution; refresh races against the daemon's
+      # in-process executor are serialized by the codex-flock-wrapper
+      # via /app/.codex/.lock. See the `daemon` service block above
+      # for the full rationale.
+      - /var/lib/workflow-codex:/app/.codex
     depends_on:
       daemon:
         condition: service_healthy

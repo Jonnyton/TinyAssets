@@ -7,6 +7,7 @@ directly to lock in the canonical implementation surface.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -212,6 +213,74 @@ def test_wiki_search_requires_query(wiki_env):
 def test_wiki_search_no_results_returns_empty_list(wiki_env):
     res = json.loads(wiki(action="search", query="zzz_nothing_should_match"))
     assert res["results"] == []
+    assert res["search_complete"] is False
+    assert "action=since" in res["completeness_warning"]
+
+
+def test_wiki_search_returns_completeness_warning_with_matches(wiki_env):
+    page = wiki_env / "pages" / "notes" / "search-target.md"
+    page.write_text(
+        "---\n"
+        "title: Search Target\n"
+        "type: note\n"
+        "updated: 2026-05-06T12:00:00Z\n"
+        "---\n\n"
+        "This page mentions cross AI discovery gaps.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    res = json.loads(wiki(action="search", query="discovery"))
+
+    assert res["count"] == 1
+    assert res["search_complete"] is False
+    assert "lexical" in res["completeness_warning"]
+    assert "action=since" in res["completeness_warning"]
+
+
+def test_wiki_since_returns_pages_updated_after_timestamp(wiki_env):
+    fresh_dir = wiki_env / "pages" / "patch-requests"
+    fresh_dir.mkdir(parents=True)
+    fresh = fresh_dir / "fresh-patch.md"
+    fresh.write_text(
+        "---\n"
+        "title: Fresh Patch\n"
+        "type: patch_request\n"
+        "updated: 2026-05-06T12:00:00Z\n"
+        "---\n\n"
+        "Fresh patch request content.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    older = wiki_env / "pages" / "notes" / "older-note.md"
+    older.write_text(
+        "---\n"
+        "title: Older Note\n"
+        "type: note\n"
+        "updated: 2026-05-01T12:00:00Z\n"
+        "---\n\n"
+        "Older note content.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    res = json.loads(
+        wiki(action="since", changed_since="2026-05-05T00:00:00Z")
+    )
+
+    assert res["changed_since"] == "2026-05-05T00:00:00Z"
+    assert res["count"] == 1
+    assert res["results"][0]["path"] == "pages/patch-requests/fresh-patch.md"
+    assert res["results"][0]["title"] == "Fresh Patch"
+    assert res["results"][0]["updated"] == "2026-05-06T12:00:00Z"
+
+
+def test_wiki_since_requires_valid_changed_since(wiki_env):
+    missing = json.loads(wiki(action="since"))
+    invalid = json.loads(wiki(action="since", changed_since="not-a-date"))
+
+    assert "changed_since parameter is required" in missing["error"]
+    assert "valid ISO" in invalid["error"]
 
 
 def test_wiki_read_requires_page(wiki_env):
@@ -223,6 +292,68 @@ def test_wiki_read_index_after_scaffold(wiki_env):
     res = json.loads(wiki(action="read", page="index"))
     assert "content" in res
     assert "Wiki Index" in res["content"]
+
+
+def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
+    source = wiki_env / "pages" / "notes" / "live-brain.md"
+    source.write_text(
+        "---\n"
+        "title: Live Brain\n"
+        "type: note\n"
+        "updated: 2026-05-01\n"
+        "tags: ambient relevance\n"
+        "---\n\n"
+        "# Live Brain\n\n"
+        "Ambient relevance should move source-read proof across sessions.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    related = wiki_env / "pages" / "notes" / "fresh-related.md"
+    related.write_text(
+        "---\n"
+        "title: Fresh Related\n"
+        "type: note\n"
+        "updated: 2026-05-06T12:00:00Z\n"
+        "tags: relevance feed\n"
+        "---\n\n"
+        "This note mentions ambient source-read proof for adjacent goals.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    old = wiki_env / "pages" / "notes" / "old-related.md"
+    old.write_text(
+        "---\n"
+        "title: Old Related\n"
+        "type: note\n"
+        "updated: 2026-04-01\n"
+        "tags: ambient relevance\n"
+        "---\n\n"
+        "Old ambient relevance should be excluded by changed_since.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    res = json.loads(
+        wiki(
+            action="read",
+            page="live-brain",
+            query="ambient relevance source proof",
+            changed_since="2026-05-02T00:00:00Z",
+            max_results=5,
+        )
+    )
+
+    assert res["source_read_proof"]["path"] == "pages/notes/live-brain.md"
+    assert res["source_read_proof"]["title"] == "Live Brain"
+    assert len(res["source_read_proof"]["sha256"]) == 64
+    feed = res["ambient_relevance_feed"]
+    assert feed["source_path"] == "pages/notes/live-brain.md"
+    paths = [item["path"] for item in feed["items"]]
+    assert "pages/notes/fresh-related.md" in paths
+    assert "pages/notes/old-related.md" not in paths
+    assert "pages/notes/live-brain.md" not in paths
+    fresh = next(item for item in feed["items"] if item["path"].endswith("fresh-related.md"))
+    assert "ambient" in fresh["matched_terms"]
 
 
 def test_wiki_write_requires_filename_and_content(wiki_env):
@@ -260,6 +391,100 @@ def test_wiki_write_drafts_then_promote_roundtrip(wiki_env):
     assert "pages/notes/my-note.md" in promoted["path"]
 
 
+def test_wiki_patch_updates_long_page_without_full_replace(wiki_env):
+    path = wiki_env / "pages" / "notes" / "long-note.md"
+    original = (
+        "---\ntitle: Long Note\ntype: note\nsources: []\n---\n\n"
+        "intro marker\n"
+        + ("x" * 16000)
+        + "\noriginal tail marker\n"
+    )
+    path.write_text(original, encoding="utf-8")
+
+    read_result = json.loads(wiki(action="read", page="long-note"))
+    assert read_result["truncated"] is True
+    assert "original tail marker" not in read_result["content"]
+
+    result = json.loads(
+        wiki(
+            action="patch",
+            page="long-note",
+            old_text="intro marker",
+            new_text="intro marker\npatched detail",
+            expected_sha256=hashlib.sha256(original.encode("utf-8")).hexdigest(),
+            dry_run=False,
+            log_entry="test partial patch",
+        )
+    )
+
+    assert result["status"] == "patched"
+    assert result["path"] == "pages/notes/long-note.md"
+    patched = path.read_text(encoding="utf-8")
+    assert "intro marker\npatched detail" in patched
+    assert "original tail marker" in patched
+    assert len(patched) > 15000
+
+
+def test_wiki_patch_dry_run_reports_without_writing(wiki_env):
+    path = wiki_env / "pages" / "notes" / "dry-run-note.md"
+    original = "---\ntitle: Dry\ntype: note\n---\n\nbefore\n"
+    path.write_text(original, encoding="utf-8")
+
+    result = json.loads(
+        wiki(
+            action="patch",
+            page="dry-run-note",
+            old_text="before",
+            new_text="after",
+        )
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["would_write"] is True
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_wiki_patch_rejects_hash_mismatch_without_writing(wiki_env):
+    path = wiki_env / "pages" / "notes" / "hash-note.md"
+    original = "---\ntitle: Hash\ntype: note\n---\n\nbefore\n"
+    path.write_text(original, encoding="utf-8")
+
+    result = json.loads(
+        wiki(
+            action="patch",
+            page="hash-note",
+            old_text="before",
+            new_text="after",
+            expected_sha256="0" * 64,
+            dry_run=False,
+        )
+    )
+
+    assert result["error"] == "content hash mismatch"
+    assert result["status"] == "conflict"
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_wiki_patch_rejects_ambiguous_old_text_without_writing(wiki_env):
+    path = wiki_env / "pages" / "notes" / "ambiguous-note.md"
+    original = "---\ntitle: Ambiguous\ntype: note\n---\n\nsame\nsame\n"
+    path.write_text(original, encoding="utf-8")
+
+    result = json.loads(
+        wiki(
+            action="patch",
+            page="ambiguous-note",
+            old_text="same",
+            new_text="different",
+            dry_run=False,
+        )
+    )
+
+    assert result["error"] == "old_text must match exactly once"
+    assert result["matches"] == 2
+    assert path.read_text(encoding="utf-8") == original
+
+
 def test_wiki_promote_lint_blocks_when_required_fields_missing(wiki_env):
     body = "---\ntitle: Skinny\n---\ntoo short\n"
     json.loads(
@@ -269,6 +494,35 @@ def test_wiki_promote_lint_blocks_when_required_fields_missing(wiki_env):
     assert "error" in res
     assert res["error"] == "Promotion blocked."
     assert any("Body too short" in i for i in res["issues"])
+
+
+def test_wiki_promote_lint_accepts_block_sources_with_non_http_uri(wiki_env):
+    body = (
+        "---\n"
+        "title: Local Source Note\n"
+        "type: note\n"
+        "sources:\n"
+        "  - file:///tmp/local-source.md\n"
+        "---\n"
+        "This note cites a local [[source-reference]] with enough content "
+        "to satisfy promotion lint without requiring an HTTP URL.\n"
+    )
+    meta, _ = _parse_frontmatter(body)
+    assert meta["sources"] == "- file:///tmp/local-source.md"
+    assert "- file" not in meta
+
+    json.loads(
+        wiki(
+            action="write",
+            category="notes",
+            filename="local-source-note",
+            content=body,
+        )
+    )
+
+    res = json.loads(wiki(action="promote", filename="local-source-note"))
+
+    assert res["status"] == "promoted"
 
 
 def test_wiki_supersede_requires_three_args(wiki_env):
@@ -313,6 +567,39 @@ def test_wiki_file_bug_files_clean_when_no_dups(wiki_env):
     )
     assert res["status"] == "filed"
     assert res["bug_id"].startswith("BUG-")
+
+
+def test_wiki_file_bug_queued_investigation_returns_branch_task_lease_shape(
+    wiki_env, tmp_path, monkeypatch,
+):
+    universe_dir = tmp_path / "default-universe"
+    universe_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-universe")
+    monkeypatch.setenv(
+        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID",
+        "bug-investigation-branch",
+    )
+    monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+
+    res = json.loads(
+        wiki(
+            action="file_bug",
+            component="loop",
+            severity="major",
+            title="Lease metadata response shape",
+            observed="queued task lacks visible lease metadata",
+            force_new=True,
+            verbose=True,
+        )
+    )
+
+    task = res["investigation"]["branch_task"]
+    assert task["branch_task_id"] == res["investigation"]["dispatcher_request_id"]
+    assert task["status"] == "pending"
+    assert task["worker_owner_id"] == ""
+    assert task["lease_expires_at"] == ""
+    assert task["heartbeat_at"] == ""
+    assert task["last_progress_at"] == ""
 
 
 def test_wiki_file_bug_dedup_returns_similar_found(wiki_env):

@@ -287,15 +287,12 @@ class NodeDefinition:
     output_keys: list[str] = field(default_factory=list)
     # When true, prompt_template rendering sees ONLY the state keys
     # declared in ``input_keys`` — references to any other state key
-    # raise CompilerError at runtime. Symmetry-restore vs code-node
-    # sandbox (node_sandbox.py:279-282 already filters code-node state
-    # views). Default false to preserve back-compat with branches that
-    # rely on implicit cross-key reads; flip to true for new branches
-    # that want strict isolation. Regardless of this flag,
-    # ``collect_build_warnings`` surfaces a warning per out-of-input_keys
-    # placeholder at build time so authors see the leak even without
-    # opting into strict mode.
-    strict_input_isolation: bool = False
+    # raise CompilerError at runtime. This restores symmetry with the
+    # code-node sandbox (node_sandbox.py:279-282 already filters
+    # code-node state views). Branch authors can explicitly set false
+    # as a legacy escape hatch for prompt templates that intentionally
+    # read beyond their declared input_keys.
+    strict_input_isolation: bool = True
 
     # Source and execution — one of source_code or prompt_template
     source_code: str = ""
@@ -389,6 +386,18 @@ class NodeDefinition:
     # }
     await_run_spec: dict[str, Any] | None = None
 
+    # PR-122 Phase 1 — external-write effect declarations. Each string names
+    # a sink the node's outputs should be routed to after the run completes.
+    # Today: "github_pull_request" is the only supported sink (see
+    # workflow.effectors.github_pr). The node's output_keys must contain
+    # at least one value parseable as an ``external_write_packet`` shape
+    # (sink, payload, idempotency_hint?, expected_evidence_keys?).
+    # Convention only — this is NOT a new substrate primitive; the
+    # effector reads the packet shape out of run_state at completion time.
+    # See draft spec drafts/concepts/external-write-packet-shape.md and
+    # the canonical 6+5 vocab page for context.
+    effects: list[str] = field(default_factory=list)
+
     # Legacy compat fields from NodeRegistration
     author: str = "anonymous"
     registered_at: str = ""
@@ -410,7 +419,7 @@ class NodeDefinition:
         # character-by-character, silently corrupting sandbox/state
         # handling. Per Hard Rule #8, we'd rather fail to load than
         # accept malformed data.
-        for field_name in ("input_keys", "output_keys"):
+        for field_name in ("input_keys", "output_keys", "effects"):
             value = getattr(self, field_name)
             if not isinstance(value, list):
                 raise NodeDefinitionValidationError(

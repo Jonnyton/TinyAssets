@@ -15,18 +15,20 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from functools import wraps
+from inspect import signature
 from pathlib import Path
 
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 mcp = FastMCP(
-    "fantasy-author",
+    "workflow",
     instructions=(
         "Workflow daemon interface. Use these tools to monitor "
-        "and guide an autonomous fiction-writing daemon through notes. "
+        "and guide an autonomous workflow daemon through notes. "
         "Start with get_status to see the daemon's current phase, then "
-        "use get_progress for a human-readable summary of what's been written."
+        "use get_progress for a human-readable summary of what's been produced."
     ),
     version="0.1.0",
 )
@@ -64,10 +66,53 @@ def _universe_dir() -> Path:
     return data_dir() / "default-universe"
 
 
-@mcp.tool(
-    tags={"status", "monitoring"},
-    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False),
-)
+
+
+
+def _structured_return(raw):
+    """Wrap an MCP tool result so FastMCP populates ``structured_content``.
+
+    ChatGPT (OpenAI Apps SDK) wedges on substrate-changing tool calls when
+    the response carries only ``content`` (text) without ``structuredContent``
+    (typed dict) + ``_meta`` annotations. Claude tolerates either shape.
+
+    Mirrors the helpers in workflow.universe_server applied via PR #493 + #495.
+    """
+    import json as _json
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        return {"result": raw}
+    if isinstance(raw, str):
+        try:
+            parsed = _json.loads(raw)
+        except (_json.JSONDecodeError, ValueError):
+            return {"text": raw}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"result": parsed}
+    return {"result": raw}
+
+
+def _register_structured_tool(fn, *, server, title=None, tags=None, annotations=None):
+    """Register an MCP adapter without changing the direct Python API."""
+
+    @wraps(fn)
+    def _tool(*args, **kwargs):
+        return _structured_return(fn(*args, **kwargs))
+
+    _tool.__name__ = f"_mcp_{fn.__name__}"
+    _tool.__signature__ = signature(fn).replace(return_annotation=dict)
+    kwargs = {"name": fn.__name__, "output_schema": None}
+    if title is not None:
+        kwargs["title"] = title
+    if tags is not None:
+        kwargs["tags"] = tags
+    if annotations is not None:
+        kwargs["annotations"] = annotations
+    return server.tool(**kwargs)(_tool)
+
+
 def get_status() -> str:
     """Read the daemon's current status including phase, word count, and accept rate.
 
@@ -82,10 +127,14 @@ def get_status() -> str:
         return f"Error reading status.json: {e}"
 
 
-@mcp.tool(
-    tags={"notes", "steering", "direction"},
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False),
+_mcp_get_status = _register_structured_tool(
+    get_status,
+    server=mcp,
+    tags={'status', 'monitoring'},
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False),
 )
+
+
 def add_note(text: str, category: str = "direction") -> str:
     """Add a note that the daemon reads at each scene boundary.
 
@@ -113,15 +162,19 @@ def add_note(text: str, category: str = "direction") -> str:
         return f"Error adding note: {e}"
 
 
+_mcp_add_note = _register_structured_tool(
+    add_note,
+    server=mcp,
+    tags={'notes', 'steering', 'direction'},
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False),
+)
+
+
 def steer(directive: str, category: str = "direction") -> str:
     """Backward-compatible alias for ``add_note``."""
     return add_note(directive, category)
 
 
-@mcp.tool(
-    tags={"premise", "story"},
-    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
-)
 def get_premise() -> str:
     """Read the current story premise from PROGRAM.md.
 
@@ -136,10 +189,14 @@ def get_premise() -> str:
         return f"Error reading PROGRAM.md: {e}"
 
 
-@mcp.tool(
-    tags={"premise", "story"},
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
+_mcp_get_premise = _register_structured_tool(
+    get_premise,
+    server=mcp,
+    tags={'premise', 'story'},
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
+
+
 def set_premise(text: str) -> str:
     """Write or overwrite the story premise in PROGRAM.md.
 
@@ -156,10 +213,14 @@ def set_premise(text: str) -> str:
         return f"Error writing PROGRAM.md: {e}"
 
 
-@mcp.tool(
-    tags={"progress", "monitoring"},
-    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+_mcp_set_premise = _register_structured_tool(
+    set_premise,
+    server=mcp,
+    tags={'premise', 'story'},
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
 )
+
+
 def get_progress() -> str:
     """Read the human-readable progress summary.
 
@@ -174,10 +235,14 @@ def get_progress() -> str:
         return f"Error reading progress.md: {e}"
 
 
-@mcp.tool(
-    tags={"work-targets", "planning"},
+_mcp_get_progress = _register_structured_tool(
+    get_progress,
+    server=mcp,
+    tags={'progress', 'monitoring'},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
+
+
 def get_work_targets() -> str:
     """Read the durable work target registry.
 
@@ -192,10 +257,14 @@ def get_work_targets() -> str:
         return f"Error reading work_targets.json: {e}"
 
 
-@mcp.tool(
-    tags={"review", "monitoring"},
+_mcp_get_work_targets = _register_structured_tool(
+    get_work_targets,
+    server=mcp,
+    tags={'work-targets', 'planning'},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
+
+
 def get_review_state() -> str:
     """Read the latest review-state snapshot including daemon phase, word count, and accept rate."""
     status_path = _universe_dir() / "status.json"
@@ -207,10 +276,14 @@ def get_review_state() -> str:
         return f"Error reading status.json: {e}"
 
 
-@mcp.tool(
-    tags={"output", "reading"},
+_mcp_get_review_state = _register_structured_tool(
+    get_review_state,
+    server=mcp,
+    tags={'review', 'monitoring'},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
+
+
 def get_chapter(book: int, chapter: int) -> str:
     """Read a completed chapter from the daemon's output.
 
@@ -227,10 +300,14 @@ def get_chapter(book: int, chapter: int) -> str:
         return f"Error reading chapter file: {e}"
 
 
-@mcp.tool(
-    tags={"activity", "monitoring"},
+_mcp_get_chapter = _register_structured_tool(
+    get_chapter,
+    server=mcp,
+    tags={'output', 'reading'},
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
+
+
 def get_activity(lines: int = 20) -> str:
     """Read the most recent lines from the daemon's activity log.
 
@@ -251,10 +328,14 @@ def get_activity(lines: int = 20) -> str:
         return f"Error reading activity.log: {e}"
 
 
-@mcp.tool(
-    tags={"control", "daemon"},
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+_mcp_get_activity = _register_structured_tool(
+    get_activity,
+    server=mcp,
+    tags={'activity', 'monitoring'},
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
+
+
 def pause() -> str:
     """Pause the daemon at the next scene boundary.
 
@@ -271,10 +352,14 @@ def pause() -> str:
         return f"Error writing pause signal: {e}"
 
 
-@mcp.tool(
-    tags={"control", "daemon"},
+_mcp_pause = _register_structured_tool(
+    pause,
+    server=mcp,
+    tags={'control', 'daemon'},
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
 )
+
+
 def resume() -> str:
     """Resume a paused daemon by removing the pause signal."""
     pause_path = _universe_dir() / ".pause"
@@ -287,10 +372,14 @@ def resume() -> str:
         return f"Error removing pause signal: {e}"
 
 
-@mcp.tool(
-    tags={"canon", "worldbuilding"},
+_mcp_resume = _register_structured_tool(
+    resume,
+    server=mcp,
+    tags={'control', 'daemon'},
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
 )
+
+
 def add_canon(filename: str, content: str) -> str:
     """Add a reference document to the canon/ directory for the daemon to ingest.
 
@@ -314,6 +403,14 @@ def add_canon(filename: str, content: str) -> str:
         return f"Written {safe_name} to canon/."
     except OSError as e:
         return f"Error writing to canon/: {e}"
+
+
+_mcp_add_canon = _register_structured_tool(
+    add_canon,
+    server=mcp,
+    tags={'canon', 'worldbuilding'},
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+)
 
 
 def main() -> None:

@@ -43,6 +43,7 @@ from workflow.graph_compiler import (
     NodeTimeoutError,
     UnapprovedNodeError,
     compile_branch,
+    seed_initial_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -988,6 +989,37 @@ def list_runs(
     return [_row_to_run(r) for r in rows]
 
 
+def latest_run_by_name(
+    base_path: str | Path,
+    *,
+    run_name: str,
+    branch_def_id: str = "",
+) -> dict[str, Any] | None:
+    """Return the newest run with ``run_name``.
+
+    Daemon BranchTasks use deterministic run names. Looking them up lets
+    restart recovery distinguish "task was requeued after a crash" from
+    "the branch never produced a durable run".
+    """
+    initialize_runs_db(base_path)
+    clauses = ["run_name = ?"]
+    params: list[Any] = [run_name]
+    if branch_def_id:
+        clauses.append("branch_def_id = ?")
+        params.append(branch_def_id)
+    where = " AND ".join(clauses)
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            f"""
+            SELECT * FROM runs
+            WHERE {where}
+            ORDER BY started_at DESC LIMIT 1
+            """,
+            params,
+        ).fetchone()
+    return _row_to_run(row) if row is not None else None
+
+
 def record_event(
     base_path: str | Path, event: RunStepEvent,
 ) -> None:
@@ -1541,6 +1573,25 @@ class ChildFailure:
     partial_output: dict[str, Any] | None = None
 
 
+class ChildRunAwaitTimeout(TimeoutError):
+    """Raised when an awaited child run is still non-terminal at the ceiling."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: str,
+        child_status: str,
+        child_branch_def_id: str,
+        timeout_seconds: float,
+    ) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.child_status = child_status
+        self.child_branch_def_id = child_branch_def_id
+        self.timeout_seconds = timeout_seconds
+
+
 @dataclass
 class RunOutcome:
     run_id: str
@@ -1658,6 +1709,8 @@ def _invoke_graph(
     provider_call: Callable[..., str] | None,
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
     concurrency_budget_override: int | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
+    invocation_depth: int = 0,
 ) -> RunOutcome:
     """Compile + invoke the graph for an already-prepared run_id.
 
@@ -1667,6 +1720,17 @@ def _invoke_graph(
     thread_id = run_id
     execution_cursor = {"step": 0}
     provider_tracker: dict[str, str | None] = {"last": None}
+
+    def _emit_node_status(node_id: str, status: str) -> None:
+        if on_node_status is None:
+            return
+        try:
+            on_node_status(node_id, status)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Run %s node-status callback failed for %s status=%s",
+                run_id, node_id, status,
+            )
 
     # Phase 2 design_used emit (Task #75) — pre-build a graph_node_id ->
     # NodeDefinition lookup so each "ran" event can credit the artifact
@@ -1706,6 +1770,19 @@ def _invoke_graph(
                 started_at=_now(),
                 detail=detail,
             ))
+            _emit_node_status(node_id, NODE_STATUS_RUNNING)
+            return
+
+        if phase == "failed":
+            record_event(base_path, RunStepEvent(
+                run_id=run_id,
+                step_index=step + _PENDING_OFFSET,
+                node_id=node_id,
+                status=NODE_STATUS_FAILED,
+                started_at=_now(),
+                finished_at=_now(),
+                detail=detail,
+            ))
             return
 
         if is_cancel_requested(base_path, run_id):
@@ -1722,6 +1799,7 @@ def _invoke_graph(
             finished_at=_now(),
             detail=detail,
         ))
+        _emit_node_status(node_id, NODE_STATUS_RAN)
 
         # Phase 2 design_used emit (Task #75) — credit the NodeDefinition's
         # author for a successful step execution. Fires only at "ran" phase
@@ -1773,6 +1851,8 @@ def _invoke_graph(
             event_sink=_on_node,
             concurrency_budget_override=concurrency_budget_override,
             base_path=base_path,
+            parent_run_id=run_id,
+            invocation_depth=invocation_depth,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -1835,8 +1915,14 @@ def _invoke_graph(
         Path(saver_path).parent.mkdir(parents=True, exist_ok=True)
         with SqliteSaver.from_conn_string(saver_path) as checkpointer:
             app = compiled.graph.compile(checkpointer=checkpointer)
+            # BUG-085 M3: seed state_schema defaults UNDER caller inputs so
+            # state_schema-declared fields with defaults are available to
+            # strict-isolation prompt placeholders from step 1.
+            initial_state = seed_initial_state(
+                dict(inputs), getattr(branch, "state_schema", None),
+            )
             result = app.invoke(
-                dict(inputs),
+                initial_state,
                 config={
                     "configurable": {"thread_id": thread_id},
                     "recursion_limit": recursion_limit,
@@ -1869,6 +1955,44 @@ def _invoke_graph(
             run_id=run_id, status=RUN_STATUS_FAILED,
             output={}, error=msg,
             child_failures=[failure] if failure is not None else [],
+        )
+    except ChildRunAwaitTimeout as exc:
+        msg = (
+            f"Child invocation receipt gate timed out after "
+            f"{exc.timeout_seconds}s while child run '{exc.run_id}' was "
+            f"still {exc.child_status}; parent is receipt-waiting and can be "
+            "reclaimed with attach_existing_child_run."
+        )
+        output = {
+            "parent_loop_status": "receipt_waiting",
+            "selected_child_status": "child_invocation_receipt_waiting",
+            "selected_branch_state": "child_invocation_receipt_waiting",
+            "automation_claim_status": "child_invocation_receipt_waiting",
+            "child_run_id": exc.run_id,
+            "selected_child_run_id": exc.run_id,
+            "selected_child_branch_def_id": exc.child_branch_def_id,
+            "child_invocation_receipt_gate": {
+                "status": "receipt_waiting",
+                "reason": "child_run_still_running_after_timeout",
+                "child_run_id": exc.run_id,
+                "child_status": exc.child_status,
+                "child_branch_def_id": exc.child_branch_def_id,
+                "timeout_seconds": exc.timeout_seconds,
+                "reclaim_action": "attach_existing_child_run",
+            },
+        }
+        update_run_status(
+            base_path, run_id,
+            status=RUN_STATUS_INTERRUPTED,
+            output=output,
+            error=msg,
+            finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id,
+            status=RUN_STATUS_INTERRUPTED,
+            output=output,
+            error=msg,
         )
     except Exception as exc:
         # GraphRecursionError: structured error naming the applied limit.
@@ -1920,6 +2044,10 @@ def _invoke_graph(
                 finished_at=_now(),
                 detail={"reason": "timeout", "message": str(timeout_exc)},
             ))
+            _emit_node_status(
+                _node_id_from_timeout_exc(timeout_exc),
+                NODE_STATUS_FAILED,
+            )
             update_run_status(
                 base_path, run_id,
                 status=RUN_STATUS_FAILED,
@@ -1944,6 +2072,10 @@ def _invoke_graph(
                 finished_at=_now(),
                 detail={"reason": "empty_response", "message": str(empty_exc)},
             ))
+            _emit_node_status(
+                empty_exc.node_id or "(unknown)",
+                NODE_STATUS_FAILED,
+            )
             update_run_status(
                 base_path, run_id,
                 status=RUN_STATUS_FAILED,
@@ -1982,6 +2114,28 @@ def _invoke_graph(
             detail=stats,
         ))
 
+    # PR-122 Phase 1 — external-write effectors.
+    # After a successful run, walk node_defs that declared an ``effects``
+    # list and route their outputs to the matching effector (today only
+    # github_pull_request via ``gh pr create``). Errors are surfaced into
+    # the run output's ``external_write_errors`` metadata; they never
+    # raise into the user-facing run status. Hard-rule #8 (fail loudly)
+    # is satisfied by the structured error fields on each evidence entry.
+    _quarantine_branch_authored_external_write_keys(output)
+    external_write_evidence = _run_external_write_effectors(
+        branch, output, base_path=base_path, run_id=run_id,
+    )
+    if external_write_evidence:
+        # PR-122 Phase 1 round-2 (Codex finding #2): the receipt is
+        # system-authoritative. Overwrite unconditionally — any branch
+        # that tries to forge ``external_write_results`` /
+        # ``external_write_errors`` has already been moved to
+        # ``_branch_authored_*`` for forensics above.
+        output["external_write_results"] = external_write_evidence
+        errors = _collect_external_write_errors(external_write_evidence)
+        if errors:
+            output["external_write_errors"] = errors
+
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED,
@@ -1993,6 +2147,100 @@ def _invoke_graph(
         run_id=run_id, status=RUN_STATUS_COMPLETED,
         output=output, error="",
     )
+
+
+# PR-122 Phase 1 round-2 (Codex finding #2): reserved system keys
+# the effector writes. If a branch already filled these in via run
+# output, the values are user-authored and MUST NOT be authoritative
+# — they are quarantined under ``_branch_authored_*`` so the system
+# receipt is the one that lands at the canonical key.
+_EXTERNAL_WRITE_RESERVED_KEYS = (
+    "external_write_results",
+    "external_write_errors",
+)
+
+
+def _quarantine_branch_authored_external_write_keys(
+    output: dict[str, Any],
+) -> None:
+    """Move any branch-authored reserved external-write keys aside.
+
+    Called BEFORE the effector dispatch so that the effector's
+    evidence wins at the canonical key. Branch-authored values are
+    preserved under ``_branch_authored_<key>`` for forensics, with a
+    warning so the operator notices the attempted forgery.
+    """
+    for system_key in _EXTERNAL_WRITE_RESERVED_KEYS:
+        if system_key in output:
+            quarantine_key = f"_branch_authored_{system_key}"
+            output[quarantine_key] = output.pop(system_key)
+            logger.warning(
+                "branch output included reserved system key %r; "
+                "moved to %r before effector ran",
+                system_key,
+                quarantine_key,
+            )
+
+
+def _run_external_write_effectors(
+    branch: BranchDefinition,
+    run_state: dict[str, Any],
+    *,
+    base_path: str | Path | None = None,
+    run_id: str = "",
+) -> dict[str, Any]:
+    """Dispatch external-write effectors for ``branch`` against ``run_state``.
+
+    ``base_path`` + ``run_id`` are passed to the effector so the Phase-2
+    gates (consent + idempotency) have a universe to bind to. When
+    omitted (legacy or test invocations), the effector falls back to
+    dry-run for any Phase-2-shaped packet — see
+    ``workflow.effectors.github_pr.run_effects_for_branch``.
+
+    Never raises — all errors are folded into the returned evidence map.
+    Returns ``{}`` when no node declares any ``effects``.
+    """
+    try:
+        from workflow.effectors import run_effects_for_branch
+    except Exception:  # pragma: no cover — defensive import guard
+        logger.exception("failed to import workflow.effectors")
+        return {}
+    try:
+        return run_effects_for_branch(
+            branch=branch,
+            run_state=run_state,
+            base_path=base_path,
+            run_id=run_id,
+        )
+    except Exception:  # pragma: no cover — effectors are no-raise
+        logger.exception("external-write effector dispatch crashed")
+        return {}
+
+
+def _collect_external_write_errors(
+    evidence_map: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Flatten the per-node evidence into a list of error rows.
+
+    Each row: ``{"node_id": ..., "sink": ..., "error": ..., "error_kind": ...}``.
+    Used to populate ``output['external_write_errors']`` for downstream
+    observers (run snapshot, get_run, debugging).
+    """
+    errors: list[dict[str, Any]] = []
+    for node_id, per_node in (evidence_map or {}).items():
+        if not isinstance(per_node, dict):
+            continue
+        for sink, ev in per_node.items():
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("error"):
+                errors.append({
+                    "node_id": node_id,
+                    "sink": sink,
+                    "error": ev.get("error"),
+                    "error_kind": ev.get("error_kind") or "unknown",
+                })
+    return errors
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:
@@ -2074,6 +2322,8 @@ def execute_branch(
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
+    _invocation_depth: int = 0,
 ) -> RunOutcome:
     """Synchronous end-to-end execution.
 
@@ -2101,6 +2351,8 @@ def execute_branch(
         provider_call=provider_call,
         recursion_limit=recursion_limit_override or DEFAULT_RECURSION_LIMIT,
         concurrency_budget_override=concurrency_budget_override,
+        on_node_status=on_node_status,
+        invocation_depth=_invocation_depth,
     )
 
 
@@ -2240,6 +2492,7 @@ def _execute_branch_core(
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
     branch_version_id: str | None = None,
     _invocation_depth: int = 0,
 ) -> RunOutcome:
@@ -2278,6 +2531,8 @@ def _execute_branch_core(
                 provider_call=provider_call,
                 recursion_limit=effective_limit,
                 concurrency_budget_override=concurrency_budget_override,
+                on_node_status=on_node_status,
+                invocation_depth=_invocation_depth,
             )
         except Exception:
             # Belt-and-suspenders: _invoke_graph already catches and
@@ -2314,6 +2569,7 @@ def execute_branch_async(
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
 ) -> RunOutcome:
     """Prepare a def-based run synchronously and kick off graph execution
@@ -2347,6 +2603,7 @@ def execute_branch_async(
         provider_call=provider_call,
         recursion_limit_override=recursion_limit_override,
         concurrency_budget_override=concurrency_budget_override,
+        on_node_status=on_node_status,
         branch_version_id=None,
         _invocation_depth=_invocation_depth,
     )
@@ -2378,6 +2635,7 @@ def execute_branch_version_async(
     actor: str = "anonymous",
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
@@ -2434,6 +2692,7 @@ def execute_branch_version_async(
         actor=actor,
         provider_call=provider_call,
         recursion_limit_override=recursion_limit_override,
+        on_node_status=on_node_status,
         branch_version_id=branch_version_id,
         _invocation_depth=_invocation_depth,
     )
@@ -2627,6 +2886,18 @@ def _invoke_graph_resume(
             ))
             return
 
+        if phase == "failed":
+            record_event(base_path, RunStepEvent(
+                run_id=run_id,
+                step_index=step + _PENDING_OFFSET,
+                node_id=node_id,
+                status=NODE_STATUS_FAILED,
+                started_at=_now(),
+                finished_at=_now(),
+                detail=detail,
+            ))
+            return
+
         if is_cancel_requested(base_path, run_id):
             raise RunCancelledError(f"Run {run_id} cancelled during resume.")
         record_event(base_path, RunStepEvent(
@@ -2707,6 +2978,20 @@ def _invoke_graph_resume(
         )
 
     output = dict(result) if isinstance(result, dict) else {}
+    # PR-122 Phase 1 — also fire external-write effectors on resume
+    # completion so a re-run that finishes via resume_run still emits
+    # declared PR sinks. Same no-raise contract as the primary path.
+    _quarantine_branch_authored_external_write_keys(output)
+    external_write_evidence = _run_external_write_effectors(
+        branch, output, base_path=base_path, run_id=run_id,
+    )
+    if external_write_evidence:
+        # System-authoritative receipt — overwrite unconditionally
+        # (see start_run for the rationale + Codex finding #2).
+        output["external_write_results"] = external_write_evidence
+        errors = _collect_external_write_errors(external_write_evidence)
+        if errors:
+            output["external_write_errors"] = errors
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED,
@@ -2996,9 +3281,13 @@ def poll_child_run_status(
             return record
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError(
+            raise ChildRunAwaitTimeout(
                 f"await_branch_run: child run '{run_id}' did not complete "
-                f"within {timeout_seconds}s."
+                f"within {timeout_seconds}s.",
+                run_id=run_id,
+                child_status=str(record.get("status") or ""),
+                child_branch_def_id=str(record.get("branch_def_id") or ""),
+                timeout_seconds=timeout_seconds,
             )
         time.sleep(min(poll_interval, remaining))
 
@@ -3203,12 +3492,20 @@ ACTIONABLE_BY: dict[str, str] = {
     "compile_error": "chatbot",
     "snapshot_schema_drift": "chatbot",
     "interrupted": "chatbot",
+    "child_receipt_waiting": "chatbot",
     # user — opaque/internal; chatbot escalates raw error for human judgment
     "unknown": "user",
     "error": "user",
     # none — terminal by design; no fix exists, no escalation needed
     "cancelled": "none",
 }
+
+
+_EMPTY_LLM_RESPONSE_ACTION = (
+    "Ask the host to check get_status provider availability/cooldowns and fix "
+    "provider credentials or CLI, then rerun; only switch llm_type if get_status "
+    "shows another provider available."
+)
 
 
 def _classify_failure(run: dict) -> str:
@@ -3218,10 +3515,17 @@ def _classify_failure(run: dict) -> str:
     if status == RUN_STATUS_CANCELLED:
         return "cancelled"
     if status == RUN_STATUS_INTERRUPTED:
+        output = run.get("output") or {}
+        if isinstance(output, dict):
+            gate = output.get("child_invocation_receipt_gate")
+            if isinstance(gate, dict) and gate.get("status") == "receipt_waiting":
+                return "child_receipt_waiting"
         return "interrupted"
     if not error:
         return ""
     lower = error.lower()
+    if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
+        return "empty_llm_response"
     if "timeout" in lower:
         return "timeout"
     if "exhausted" in lower or "cooldown" in lower:
@@ -3289,7 +3593,9 @@ def list_recent_runs(
 
         failure_class = _classify_failure(run)
         suggested_action = ""
-        if failure_class == "provider_exhausted":
+        if failure_class == "empty_llm_response":
+            suggested_action = _EMPTY_LLM_RESPONSE_ACTION
+        elif failure_class == "provider_exhausted":
             suggested_action = "Wait for provider cooldown or add an alternative provider."
         elif failure_class == "timeout":
             suggested_action = "Increase node timeout or simplify the prompt."
@@ -3299,6 +3605,11 @@ def list_recent_runs(
             suggested_action = "Run was cancelled by request."
         elif failure_class == "interrupted":
             suggested_action = "Run was interrupted; use resume_run to continue."
+        elif failure_class == "child_receipt_waiting":
+            suggested_action = (
+                "Wait for the child run to complete, then call "
+                "attach_existing_child_run with the recorded child_run_id."
+            )
         elif failure_class == "error":
             suggested_action = "Check error field for details; re-run after fixing root cause."
 
@@ -3344,6 +3655,7 @@ __all__ = [
     "NODE_STATUS_FAILED",
     "ACTIONABLE_BY",
     "ChildRunAttachmentError",
+    "ChildRunAwaitTimeout",
     "RunCancelledError",
     "RunOutcome",
     "RunStepEvent",
@@ -3365,6 +3677,7 @@ __all__ = [
     "list_judgments",
     "list_node_edit_audits",
     "list_runs",
+    "latest_run_by_name",
     "list_recent_runs",
     "node_output_from_run",
     "record_event",

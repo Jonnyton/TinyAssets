@@ -89,6 +89,9 @@ evidence, and more reliable across nodes and gates.
 - `pages/`: maintained synthesis pages. Update these when new signals change
   what the daemon has learned.
 - `pages/brain/review.md`: curated review of promoted mini-brain entries.
+- `pages/brain/blocked-patterns.md`: loop-discipline patterns that must be
+  read before claiming new work, especially rejected PR shapes and gate verdict
+  feedback.
 - `decision_log/`: durable records of work considered, chosen, or declined.
 - `soul_versions/`: immutable soul amendments and forks.
 - `claim_proofs/`: domain claims, credentials, attestations, and tests.
@@ -114,6 +117,8 @@ evidence, and more reliable across nodes and gates.
    preload and not a replacement for curated wiki pages.
 7. Respect memory caps. Long life should improve retrieval and synthesis
    quality without growing the normal prompt packet.
+8. Before claiming work, read `pages/brain/blocked-patterns.md` and avoid any
+   active pattern unless new evidence explicitly resolves it.
 """
 
 
@@ -139,6 +144,8 @@ schema_version: {SCHEMA_VERSION}
   soul rewrites.
 - [[brain/review]] - promoted mini-brain memories that became stable wiki
   guidance.
+- [[brain/blocked-patterns]] - rejected work shapes and verdict feedback the
+  daemon must check before claiming.
 """
 
 
@@ -239,6 +246,45 @@ the searchable atomic store; this page is the curated wiki face.
 """
 
 
+def _blocked_patterns_text(*, today: str) -> str:
+    return f"""---
+title: Blocked Patterns
+type: blocked_patterns
+updated: {today}
+---
+
+# Blocked Patterns
+
+This page is the pre-claim loop-discipline page. Read it before claiming new
+work, before drafting a coding packet, and before a release-gate verdict.
+
+## Pre-Claim Read
+
+Before claiming work, compare the request against the active patterns below.
+If a pattern matches, proceed only when the packet cites fresh evidence that
+the block no longer applies.
+
+## Active Patterns
+
+- Unknown. Add concise patterns when a gate, review, or verdict rejects a
+  repeatable work shape.
+
+## Evidence Required Before Repeating
+
+- Cite the source verdict, rejection, or failed run that created the pattern.
+- Explain what changed since the block was recorded.
+- Attach run or review evidence proving the repeated shape is no longer
+  blocked.
+
+## Verdict Feedback
+
+Rejected coding packets and release gates should feed back here as
+`verdict-feedback` lessons when they describe a reusable blocked pattern.
+Automatic verdict-feedback Trigger wiring and end-to-end autoresearch proof are
+deferred until BUG-049 supplies terminal run evidence for the closed loop.
+"""
+
+
 def scaffold_daemon_wiki(
     base_path: str | Path,
     *,
@@ -313,6 +359,10 @@ def scaffold_daemon_wiki(
     _write_if_missing(
         root / "pages" / "brain" / "review.md",
         _brain_review_text(today=today),
+    )
+    _write_if_missing(
+        root / "pages" / "brain" / "blocked-patterns.md",
+        _blocked_patterns_text(today=today),
     )
     if soul_text.strip():
         _write_if_missing(root / "raw" / "initial-soul.md", soul_text.strip() + "\n")

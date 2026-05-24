@@ -30,7 +30,11 @@ from workflow.graph_compiler import (
     _build_await_branch_run_node,
     _build_invoke_branch_node,
 )
-from workflow.runs import MAX_INVOKE_BRANCH_DEPTH, poll_child_run_status
+from workflow.runs import (
+    MAX_INVOKE_BRANCH_DEPTH,
+    ChildRunAwaitTimeout,
+    poll_child_run_status,
+)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -393,6 +397,103 @@ class TestPollChildRunStatus:
 
         with pytest.raises(TimeoutError):
             poll_child_run_status(tmp_path, run_id, timeout_seconds=0.05, poll_interval=0.01)
+
+    def test_timeout_carries_reclaim_context_for_still_running_child(self, tmp_path):
+        from workflow.runs import (
+            RUN_STATUS_RUNNING,
+            create_run,
+            initialize_runs_db,
+            update_run_status,
+        )
+
+        initialize_runs_db(tmp_path)
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="child-branch",
+            thread_id="thread-stuck",
+            run_name="stuck",
+            actor="tester",
+            inputs={},
+        )
+        update_run_status(tmp_path, run_id, status=RUN_STATUS_RUNNING)
+
+        with pytest.raises(ChildRunAwaitTimeout) as exc_info:
+            poll_child_run_status(
+                tmp_path, run_id, timeout_seconds=0.05, poll_interval=0.01,
+            )
+
+        exc = exc_info.value
+        assert exc.run_id == run_id
+        assert exc.child_status == RUN_STATUS_RUNNING
+        assert exc.child_branch_def_id == "child-branch"
+        assert exc.timeout_seconds == 0.05
+
+    def test_await_timeout_promotes_parent_to_receipt_waiting(self, tmp_path):
+        from workflow.runs import (
+            RUN_STATUS_INTERRUPTED,
+            RUN_STATUS_RUNNING,
+            create_run,
+            execute_branch,
+            get_run,
+            initialize_runs_db,
+            list_recent_runs,
+            update_run_status,
+        )
+
+        initialize_runs_db(tmp_path)
+        child_run_id = create_run(
+            tmp_path,
+            branch_def_id="child-branch",
+            thread_id="thread-child",
+            run_name="child",
+            actor="tester",
+            inputs={},
+        )
+        update_run_status(tmp_path, child_run_id, status=RUN_STATUS_RUNNING)
+
+        branch = BranchDefinition(name="parent", entry_point="await-child")
+        branch.node_defs = [
+            NodeDefinition(
+                node_id="await-child",
+                display_name="Await Child",
+                await_run_spec={
+                    "run_id_field": "child_run_id",
+                    "output_mapping": {"child_result": "result"},
+                    "timeout_seconds": 0.05,
+                },
+            ),
+        ]
+        branch.graph_nodes = [GraphNodeRef(id="await-child", node_def_id="await-child")]
+        branch.edges = [
+            EdgeDefinition(from_node="START", to_node="await-child"),
+            EdgeDefinition(from_node="await-child", to_node="END"),
+        ]
+        branch.state_schema = [
+            {"name": "child_run_id", "type": "str"},
+            {"name": "child_result", "type": "str"},
+        ]
+
+        outcome = execute_branch(
+            tmp_path,
+            branch=branch,
+            inputs={"child_run_id": child_run_id},
+        )
+
+        assert outcome.status == RUN_STATUS_INTERRUPTED
+        assert outcome.output["selected_child_status"] == "child_invocation_receipt_waiting"
+        assert outcome.output["child_invocation_receipt_gate"]["child_run_id"] == child_run_id
+        assert outcome.output["child_invocation_receipt_gate"]["reclaim_action"] == (
+            "attach_existing_child_run"
+        )
+
+        parent = get_run(tmp_path, outcome.run_id)
+        assert parent is not None
+        assert parent["status"] == RUN_STATUS_INTERRUPTED
+        assert parent["output"]["selected_child_run_id"] == child_run_id
+
+        recent = list_recent_runs(tmp_path, limit=1)
+        assert recent[0]["failure_class"] == "child_receipt_waiting"
+        assert "attach_existing_child_run" in recent[0]["suggested_action"]
 
 
 # ─── Phase A item 5 (Task #76a) — invoke_branch_version_spec validation ──────
@@ -1034,6 +1135,70 @@ class TestChildActorHonoring:
         assert kwargs["actor"] == "bob"
         assert kwargs["_invocation_depth"] == 3  # depth=2 + 1
 
+    def test_blocking_invoke_branch_inherits_parent_actor_and_threads_depth(self, tmp_path):
+        """Blocking child runs inherit parent actor unless child_actor overrides."""
+        from workflow.runs import (
+            RUN_STATUS_COMPLETED,
+            RunOutcome,
+            _prepare_run,
+            initialize_runs_db,
+        )
+
+        initialize_runs_db(tmp_path)
+        parent_branch = BranchDefinition(
+            branch_def_id="parent",
+            name="parent",
+            entry_point="n1",
+            node_defs=[],
+            graph_nodes=[],
+            edges=[],
+        )
+        parent_run_id = _prepare_run(
+            tmp_path,
+            branch=parent_branch,
+            inputs={},
+            run_name="",
+            actor="alice",
+        )
+
+        nd = NodeDefinition(
+            node_id="n1", display_name="N1",
+            invoke_branch_spec={
+                "branch_def_id": "child",
+                "inputs_mapping": {},
+                "output_mapping": {"result": "answer"},
+                "wait_mode": "blocking",
+            },
+        )
+        child_outcome = RunOutcome(
+            run_id="r1",
+            status=RUN_STATUS_COMPLETED,
+            output={"answer": "ok"},
+            error="",
+        )
+        child_branch_mock = MagicMock()
+        child_branch_mock.validate.return_value = []
+        _raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
+
+        with (
+            patch("workflow.daemon_server.get_branch_definition", return_value=_raw),
+            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("workflow.runs.execute_branch", return_value=child_outcome) as mock_exec,
+        ):
+            fn = _build_invoke_branch_node(
+                nd,
+                base_path=tmp_path,
+                event_sink=None,
+                depth=2,
+                parent_run_id=parent_run_id,
+            )
+            result = fn({})
+
+        assert result == {"result": "ok"}
+        kwargs = mock_exec.call_args.kwargs
+        assert kwargs["actor"] == "alice"
+        assert kwargs["_invocation_depth"] == 3  # depth=2 + 1
+
     def test_invoke_branch_version_threads_child_actor_and_depth(self, tmp_path):
         """invoke_branch_version_spec passes child_actor + _invocation_depth."""
         from workflow.graph_compiler import _build_invoke_branch_version_node
@@ -1064,6 +1229,58 @@ class TestChildActorHonoring:
         kwargs = mock_exec.call_args.kwargs
         assert kwargs["actor"] == "carol"
         assert kwargs["_invocation_depth"] == 2  # depth=1 + 1
+
+    def test_invoke_branch_version_inherits_parent_actor(self, tmp_path):
+        """Version-pinned child runs use the same parent-actor default."""
+        from workflow.graph_compiler import _build_invoke_branch_version_node
+        from workflow.runs import _prepare_run, initialize_runs_db
+
+        initialize_runs_db(tmp_path)
+        parent_branch = BranchDefinition(
+            branch_def_id="parent",
+            name="parent",
+            entry_point="n1",
+            node_defs=[],
+            graph_nodes=[],
+            edges=[],
+        )
+        parent_run_id = _prepare_run(
+            tmp_path,
+            branch=parent_branch,
+            inputs={},
+            run_name="",
+            actor="alice",
+        )
+
+        nd = NodeDefinition(
+            node_id="n1", display_name="N1",
+            invoke_branch_version_spec={
+                "branch_version_id": "child@abc12345",
+                "wait_mode": "blocking",
+                "inputs_mapping": {},
+                "output_mapping": {"parent_out": "child_out"},
+            },
+        )
+        node_fn = _build_invoke_branch_version_node(
+            nd,
+            base_path=tmp_path,
+            event_sink=None,
+            depth=1,
+            parent_run_id=parent_run_id,
+        )
+
+        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
+             patch("workflow.runs.poll_child_run_status") as mock_poll:
+            mock_exec.return_value = MagicMock(run_id="r-x")
+            mock_poll.return_value = {
+                "status": "completed",
+                "output": {"child_out": "v"},
+            }
+            node_fn({})
+
+        kwargs = mock_exec.call_args.kwargs
+        assert kwargs["actor"] == "alice"
+        assert kwargs["_invocation_depth"] == 2
 
 
 class TestTwoPoolIsolation:

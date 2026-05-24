@@ -1,0 +1,154 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_TEAMMATE_MODE": "in-process"
+  },
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "WebSearch",
+      "WebFetch(*)",
+      "Agent(*)",
+      "SendMessage(*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/latest_model_guard.py\"",
+            "shell": "powershell",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/fuse_pre_write_reject.py\"",
+            "shell": "powershell",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/fuse_pre_write_reject.py\"",
+            "shell": "powershell",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/stale_team_pruner.py\"",
+            "shell": "powershell",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/roster_model_audit.py\"",
+            "shell": "powershell",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/provider_context_feed_hook.py\"",
+            "shell": "powershell",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/provider_context_feed_hook.py\"",
+            "shell": "powershell",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/task_shape_guard.py\"",
+            "shell": "powershell",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/teammate_idle_guard.py\"",
+            "shell": "powershell",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/fuse_write_truncation_guard.py\"",
+            "shell": "powershell",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/cross_provider_drift_guard.py\"",
+            "shell": "powershell",
+            "timeout": 12
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/fuse_write_truncation_guard.py\"",
+            "shell": "powershell",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/cross_provider_drift_guard.py\"",
+            "shell": "powershell",
+            "timeout": 12
+          }
+        ]
+      }
+    ]
+  }
+}

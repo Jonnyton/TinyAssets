@@ -63,6 +63,11 @@ class TestCheckBwrapOutput:
         with pytest.raises(SandboxUnavailableError):
             check_bwrap_output("bwrap: No permissions to create a new namespace")
 
+    def test_raises_on_namespace_pattern_without_article(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
+        with pytest.raises(SandboxUnavailableError):
+            check_bwrap_output("bwrap: No permissions to create new namespace")
+
     def test_raises_on_no_such_file_pattern(self, monkeypatch):
         monkeypatch.setattr("sys.platform", "linux")
         with pytest.raises(SandboxUnavailableError):
@@ -116,20 +121,46 @@ class TestDetectBwrap:
         assert status.available is False
         assert "PATH" in (status.reason or "")
 
-    def test_bwrap_version_success_returns_available(self, monkeypatch):
+    def test_bwrap_version_and_launch_success_returns_available(self, monkeypatch):
         monkeypatch.setattr("sys.platform", "linux")
-        mock_result = type("R", (), {
+        version_result = type("R", (), {
             "returncode": 0,
             "stdout": "bwrap 0.6.0",
             "stderr": "",
         })()
+        launch_result = type("R", (), {
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        })()
         with patch("shutil.which", return_value="/usr/bin/bwrap"):
-            with patch("subprocess.run", return_value=mock_result):
+            with patch("subprocess.run", side_effect=[version_result, launch_result]) as run_mock:
                 status = detect_bwrap()
         assert status.available is True
         assert status.bwrap_path == "/usr/bin/bwrap"
         assert status.version == "bwrap 0.6.0"
         assert status.reason is None
+        assert run_mock.call_count == 2
+
+    def test_bwrap_launch_failure_returns_unavailable(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
+        version_result = type("R", (), {
+            "returncode": 0,
+            "stdout": "bwrap 0.6.0",
+            "stderr": "",
+        })()
+        launch_result = type("R", (), {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "bwrap: No permissions to create new namespace",
+        })()
+        with patch("shutil.which", return_value="/usr/bin/bwrap"):
+            with patch("subprocess.run", side_effect=[version_result, launch_result]):
+                status = detect_bwrap()
+        assert status.available is False
+        assert status.bwrap_path == "/usr/bin/bwrap"
+        assert "functional probe" in (status.reason or "")
+        assert "No permissions" in (status.reason or "")
 
     def test_bwrap_version_fails_returns_unavailable(self, monkeypatch):
         monkeypatch.setattr("sys.platform", "linux")

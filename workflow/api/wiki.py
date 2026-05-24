@@ -19,6 +19,7 @@ but importable for tests via `workflow.universe_server` re-exports.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -28,8 +29,10 @@ from pathlib import Path
 from typing import Any
 
 from workflow.api.helpers import (
+    _default_universe,
     _find_all_pages,
     _read_text,
+    _universe_dir,
     _wiki_drafts_dir,
     _wiki_pages_dir,
     _wiki_root,
@@ -58,6 +61,13 @@ _STOP_WORDS = frozenset(
     "could should may might shall can need and or but if then else when at by for "
     "with about against between through during before after above below to from in "
     "on of that this these those it its not no nor so very just also".split()
+)
+
+_WIKI_SEARCH_COMPLETENESS_WARNING = (
+    "wiki action=search is lexical best-effort, not a complete discovery or "
+    "change-feed proof. For recent changes use wiki action=since with "
+    "changed_since=<ISO timestamp>; for authoritative content read candidate "
+    "pages with action=read."
 )
 
 
@@ -134,10 +144,23 @@ def _parse_frontmatter(content: str) -> tuple[dict[str, str], str]:
     if not match:
         return {}, content
     meta: dict[str, str] = {}
-    for line in match.group(1).split("\n"):
+    lines = match.group(1).split("\n")
+    for index, line in enumerate(lines):
+        if line and line[0].isspace():
+            continue
         idx = line.find(":")
         if idx > 0:
-            meta[line[:idx].strip()] = line[idx + 1:].strip()
+            value = line[idx + 1:].strip()
+            if not value:
+                block_lines: list[str] = []
+                for next_line in lines[index + 1:]:
+                    if next_line and not next_line[0].isspace():
+                        break
+                    stripped = next_line.strip()
+                    if stripped:
+                        block_lines.append(stripped)
+                value = "\n".join(block_lines)
+            meta[line[:idx].strip()] = value
     return meta, match.group(2)
 
 
@@ -177,6 +200,15 @@ def _resolve_page(name: str) -> Path | None:
     return None
 
 
+def _wiki_builtin_link_targets() -> set[str]:
+    """Return built-in wiki pages that are valid wikilink targets."""
+    targets: set[str] = set()
+    for slug in ("index", "log", "schema"):
+        if _resolve_page(slug) is not None:
+            targets.add(slug)
+    return targets
+
+
 def _extract_keywords(text: str) -> set[str]:
     """Extract meaningful keywords from text."""
     words = re.sub(r"[^a-z0-9\s-]", " ", text.lower()).split()
@@ -208,6 +240,130 @@ def _wiki_similarity_score(
     title_bonus = 0.3 if slug_a and slug_b and (slug_a in slug_b or slug_b in slug_a) else 0.0
 
     return jaccard * 0.4 + link_score * 0.3 + title_bonus
+
+
+def _parse_wiki_timestamp(value: str) -> datetime | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(f"{raw}T00:00:00+00:00")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _page_updated_at(path: Path, meta: dict[str, str]) -> datetime:
+    parsed = _parse_wiki_timestamp(meta.get("updated", ""))
+    if parsed is not None:
+        return parsed
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+
+
+def _wiki_read_terms(
+    *,
+    page: str,
+    query: str,
+    meta: dict[str, str],
+    body: str,
+) -> set[str]:
+    text = query.strip()
+    if not text:
+        text = " ".join(
+            part for part in (
+                page,
+                meta.get("title", ""),
+                meta.get("tags", ""),
+                meta.get("type", ""),
+                body[:1200],
+            ) if part
+        )
+    return _extract_keywords(text)
+
+
+def _coerce_feed_limit(value: Any) -> int:
+    try:
+        raw = int(value or 0)
+    except (TypeError, ValueError):
+        raw = 10
+    return max(0, min(raw, 20))
+
+
+def _coerce_result_limit(value: Any) -> int:
+    try:
+        raw = int(value or 0)
+    except (TypeError, ValueError):
+        raw = 10
+    return max(1, min(raw, 100))
+
+
+def _ambient_relevance_feed(
+    *,
+    source: Path,
+    page: str,
+    query: str,
+    changed_since: str,
+    max_results: int,
+    source_meta: dict[str, str],
+    source_body: str,
+) -> dict[str, Any]:
+    terms = _wiki_read_terms(
+        page=page,
+        query=query,
+        meta=source_meta,
+        body=source_body,
+    )
+    since = _parse_wiki_timestamp(changed_since)
+    limit = _coerce_feed_limit(max_results)
+    candidates: list[dict[str, Any]] = []
+    for candidate in (
+        _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
+    ):
+        if candidate == source:
+            continue
+        raw = _read_text(candidate)
+        if not raw:
+            continue
+        meta, body = _parse_frontmatter(raw)
+        updated_at = _page_updated_at(candidate, meta)
+        if since is not None and updated_at <= since:
+            continue
+        haystack = " ".join(
+            part for part in (
+                meta.get("title", ""),
+                meta.get("tags", ""),
+                meta.get("type", ""),
+                body,
+            ) if part
+        ).lower()
+        matched_terms = sorted(term for term in terms if term in haystack)
+        if not matched_terms:
+            continue
+        title = meta.get("title") or candidate.stem
+        excerpt = body.replace("\n", " ").strip()[:220]
+        candidates.append({
+            "path": _page_rel_path(candidate),
+            "title": title,
+            "updated": updated_at.isoformat().replace("+00:00", "Z"),
+            "matched_terms": matched_terms[:8],
+            "score": len(matched_terms),
+            "excerpt": excerpt,
+        })
+
+    candidates.sort(key=lambda item: (-item["score"], item["path"]))
+    items = candidates[:limit]
+    return {
+        "source_path": _page_rel_path(source),
+        "query_terms": sorted(terms)[:20],
+        "changed_since": changed_since.strip(),
+        "items": items,
+        "truncated_count": max(0, len(candidates) - len(items)),
+    }
 
 
 def _add_to_index(category: str, slug: str, title: str) -> None:
@@ -314,7 +470,13 @@ def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
 # ---------------------------------------------------------------------------
 
 
-def _wiki_read(page: str = "", **_kwargs: Any) -> str:
+def _wiki_read(
+    page: str = "",
+    query: str = "",
+    changed_since: str = "",
+    max_results: int = 10,
+    **_kwargs: Any,
+) -> str:
     if not page:
         return json.dumps({"error": "page parameter is required."})
 
@@ -324,23 +486,51 @@ def _wiki_read(page: str = "", **_kwargs: Any) -> str:
 
     text = _read_text(resolved)
     is_draft = _wiki_drafts_dir() in resolved.parents
-    prefix = "[DRAFT] " if is_draft else ""
     rel = _page_rel_path(resolved)
+    meta, body = _parse_frontmatter(text)
+    updated_at = _page_updated_at(resolved, meta)
+    content = _draft_read_content(text, is_draft=is_draft)
+    source_read_proof = {
+        "path": rel,
+        "title": meta.get("title") or resolved.stem,
+        "updated": updated_at.isoformat().replace("+00:00", "Z"),
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "is_draft": is_draft,
+    }
+    ambient_feed = _ambient_relevance_feed(
+        source=resolved,
+        page=page,
+        query=query,
+        changed_since=changed_since,
+        max_results=max_results,
+        source_meta=meta,
+        source_body=body,
+    )
 
     if len(text) > 15000:
         return json.dumps({
             "path": rel,
             "is_draft": is_draft,
-            "content": prefix + text[:15000],
+            "content": content[:15000],
             "truncated": True,
             "total_chars": len(text),
+            "source_read_proof": source_read_proof,
+            "ambient_relevance_feed": ambient_feed,
         })
     return json.dumps({
         "path": rel,
         "is_draft": is_draft,
-        "content": prefix + text,
+        "content": content,
         "truncated": False,
+        "source_read_proof": source_read_proof,
+        "ambient_relevance_feed": ambient_feed,
     })
+
+
+def _draft_read_content(text: str, *, is_draft: bool) -> str:
+    if not is_draft or text.startswith("[DRAFT]"):
+        return text
+    return "[DRAFT] " + text
 
 
 def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:
@@ -389,8 +579,74 @@ def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:
     top = scored[:max_results]
 
     if not top:
-        return json.dumps({"results": [], "note": f"No results for: {query}"})
-    return json.dumps({"query": query, "results": top, "count": len(top)})
+        return json.dumps({
+            "results": [],
+            "note": f"No results for: {query}",
+            "search_complete": False,
+            "completeness_warning": _WIKI_SEARCH_COMPLETENESS_WARNING,
+        })
+    return json.dumps({
+        "query": query,
+        "results": top,
+        "count": len(top),
+        "search_complete": False,
+        "completeness_warning": _WIKI_SEARCH_COMPLETENESS_WARNING,
+    })
+
+
+def _wiki_result_item(path: Path, *, is_draft: bool) -> dict[str, Any]:
+    raw = _read_text(path)
+    meta, body = _parse_frontmatter(raw)
+    updated_at = _page_updated_at(path, meta)
+    return {
+        "path": _page_rel_path(path),
+        "title": meta.get("title") or path.stem,
+        "type": meta.get("type", "unknown"),
+        "updated": updated_at.isoformat().replace("+00:00", "Z"),
+        "is_draft": is_draft,
+        "excerpt": body.replace("\n", " ").strip()[:220],
+    }
+
+
+def _wiki_since(
+    changed_since: str = "",
+    max_results: int = 10,
+    **_kwargs: Any,
+) -> str:
+    if not changed_since.strip():
+        return json.dumps({
+            "error": "changed_since parameter is required for action=since.",
+            "hint": "Pass an ISO timestamp, for example 2026-05-06T00:00:00Z.",
+        })
+    since = _parse_wiki_timestamp(changed_since)
+    if since is None:
+        return json.dumps({
+            "error": "changed_since must be a valid ISO timestamp.",
+            "changed_since": changed_since,
+        })
+
+    candidates: list[dict[str, Any]] = []
+    for path in _find_all_pages(_wiki_pages_dir()):
+        item = _wiki_result_item(path, is_draft=False)
+        updated_at = _parse_wiki_timestamp(item["updated"])
+        if updated_at is not None and updated_at > since:
+            candidates.append(item)
+    for path in _find_all_pages(_wiki_drafts_dir()):
+        item = _wiki_result_item(path, is_draft=True)
+        updated_at = _parse_wiki_timestamp(item["updated"])
+        if updated_at is not None and updated_at > since:
+            candidates.append(item)
+
+    candidates.sort(key=lambda item: (item["updated"], item["path"]), reverse=True)
+    limit = _coerce_result_limit(max_results)
+    results = candidates[:limit]
+    return json.dumps({
+        "changed_since": changed_since.strip(),
+        "results": results,
+        "count": len(results),
+        "total_matches": len(candidates),
+        "truncated_count": max(0, len(candidates) - len(results)),
+    })
 
 
 def _wiki_list(**_kwargs: Any) -> str:
@@ -504,6 +760,172 @@ def _wiki_write(
         })
     except OSError as exc:
         return json.dumps({"error": f"Failed to write draft: {exc}"})
+
+
+def _wiki_patch(
+    page: str = "",
+    old_text: str = "",
+    new_text: str = "",
+    expected_sha256: str = "",
+    log_entry: str = "",
+    dry_run: bool = True,
+    **_kwargs: Any,
+) -> str:
+    if not page:
+        return json.dumps({"error": "page parameter is required."})
+    if not old_text:
+        return json.dumps({"error": "old_text parameter is required."})
+
+    resolved = _resolve_page(page)
+    if resolved is None:
+        return json.dumps({"error": f"Page not found: {page}"})
+
+    text = _read_text(resolved)
+    old_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    rel = _page_rel_path(resolved)
+
+    if expected_sha256 and expected_sha256 != old_sha:
+        return json.dumps({
+            "error": "content hash mismatch",
+            "status": "conflict",
+            "path": rel,
+            "expected_sha256": expected_sha256,
+            "actual_sha256": old_sha,
+        })
+
+    matches = text.count(old_text)
+    if matches != 1:
+        return json.dumps({
+            "error": "old_text must match exactly once",
+            "status": "conflict",
+            "path": rel,
+            "matches": matches,
+            "sha256": old_sha,
+        })
+
+    patched = text.replace(old_text, new_text, 1)
+    new_sha = hashlib.sha256(patched.encode("utf-8")).hexdigest()
+    response = {
+        "path": rel,
+        "matches": matches,
+        "old_sha256": old_sha,
+        "new_sha256": new_sha,
+        "old_total_chars": len(text),
+        "new_total_chars": len(patched),
+    }
+
+    if dry_run:
+        response.update({"status": "dry_run", "would_write": old_sha != new_sha})
+        return json.dumps(response)
+
+    try:
+        resolved.write_text(patched, encoding="utf-8")
+        _append_wiki_log(f"patch | {rel} | {log_entry or 'exact replacement'}")
+        response.update({"status": "patched"})
+        return json.dumps(response)
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to patch: {exc}"})
+
+
+def _resolve_delete_page(page: str) -> tuple[Path | None, str | None, str]:
+    requested = page.strip().replace("\\", "/")
+    if not requested:
+        return None, "page parameter is required.", "error"
+    if requested.startswith("/") or any(part in {"", ".", ".."} for part in requested.split("/")):
+        return None, "page must be a wiki-relative page path or unique slug.", "error"
+
+    clean = requested.removesuffix(".md")
+    if clean.lower() in {"index", "log", "schema"} or requested.lower() in {
+        "index.md",
+        "log.md",
+        "wiki.md",
+    }:
+        return None, "protected wiki anchor pages cannot be deleted.", "protected"
+
+    parts = requested.split("/")
+    if parts[0] in {"pages", "drafts"}:
+        if len(parts) != 3:
+            return None, (
+                "page must be an exact path like pages/<category>/<slug>.md "
+                "or drafts/<category>/<slug>.md."
+            ), "error"
+        base = _wiki_pages_dir() if parts[0] == "pages" else _wiki_drafts_dir()
+        slug = parts[2].removesuffix(".md")
+        if not slug:
+            return None, "page slug is required.", "error"
+        candidate = base / parts[1] / (slug + ".md")
+        if not candidate.exists():
+            return None, f"Page not found: {requested}", "not_found"
+        return candidate, None, ""
+
+    if len(parts) != 1:
+        return None, (
+            "page must be an exact path like pages/<category>/<slug>.md "
+            "or a unique slug."
+        ), "error"
+
+    slug = requested.removesuffix(".md")
+    matches = [
+        path for path in (
+            _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
+        ) if path.stem == slug
+    ]
+    if not matches:
+        return None, f"Page not found: {requested}", "not_found"
+    if len(matches) > 1:
+        return None, (
+            "page slug is ambiguous; use an exact path. Matches: "
+            + ", ".join(_page_rel_path(path) for path in matches)
+        ), "ambiguous"
+    return matches[0], None, ""
+
+
+def _wiki_delete(
+    page: str = "",
+    reason: str = "",
+    expected_sha256: str = "",
+    dry_run: bool = True,
+    **_kwargs: Any,
+) -> str:
+    resolved, error, status = _resolve_delete_page(page)
+    if error or resolved is None:
+        response = {"error": error or "Page not found."}
+        if status:
+            response["status"] = status
+        return json.dumps(response)
+
+    text = _read_text(resolved)
+    old_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    rel = _page_rel_path(resolved)
+    response = {
+        "path": rel,
+        "sha256": old_sha,
+        "total_chars": len(text),
+    }
+
+    if expected_sha256 and expected_sha256 != old_sha:
+        response.update({
+            "error": "content hash mismatch",
+            "status": "conflict",
+            "expected_sha256": expected_sha256,
+            "actual_sha256": old_sha,
+        })
+        return json.dumps(response)
+
+    if dry_run:
+        response.update({"status": "dry_run", "would_delete": True})
+        return json.dumps(response)
+
+    if not reason.strip():
+        return json.dumps({"error": "reason is required when dry_run=false."})
+
+    try:
+        resolved.unlink()
+        _append_wiki_log(f"delete | {rel} | {reason.strip()}")
+        response.update({"status": "deleted"})
+        return json.dumps(response)
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to delete: {exc}"})
 
 
 def _wiki_consolidate(
@@ -622,17 +1044,7 @@ def _wiki_promote(
     meta, body = _parse_frontmatter(content)
 
     if not skip_lint:
-        issues: list[str] = []
-        if not meta.get("title"):
-            issues.append("Missing title in frontmatter")
-        if not meta.get("type"):
-            issues.append("Missing type in frontmatter")
-        if not meta.get("sources") and not meta.get("path"):
-            issues.append("Missing sources in frontmatter")
-        if len(body.strip()) < 50:
-            issues.append("Body too short (< 50 chars)")
-        if not re.search(r"\[\[.+?\]\]", body) and found_category != "projects":
-            issues.append("No wikilinks found -- pages should cross-reference")
+        issues = _promotion_lint_issues(meta, body, found_category)
         if issues:
             return json.dumps({
                 "error": "Promotion blocked.",
@@ -763,7 +1175,135 @@ def _wiki_supersede(
         return json.dumps({"error": f"Failed to supersede: {exc}"})
 
 
-def _wiki_lint(**_kwargs: Any) -> str:
+def _promotion_lint_issues(
+    meta: dict[str, str],
+    body: str,
+    category: str,
+) -> list[str]:
+    issues: list[str] = []
+    if not meta.get("title"):
+        issues.append("Missing title in frontmatter")
+    if not meta.get("type"):
+        issues.append("Missing type in frontmatter")
+    if not meta.get("sources") and not meta.get("path"):
+        issues.append("Missing sources in frontmatter")
+    if len(body.strip()) < 50:
+        issues.append("Body too short (< 50 chars)")
+    if not re.search(r"\[\[.+?\]\]", body) and category != "projects":
+        issues.append(
+            "No wikilinks found -- pages should cross-reference; use [[index]] "
+            "for the first page in a fresh wiki"
+        )
+    return issues
+
+
+def _wiki_lint_single_page(page: str) -> str:
+    resolved = _resolve_page(page)
+    if resolved is None:
+        return json.dumps({"error": f"Page not found: {page}"})
+
+    rel = _page_rel_path(resolved)
+    is_draft = _wiki_drafts_dir() in resolved.parents
+    category = resolved.parent.name
+    raw = _read_text(resolved)
+    meta, body = _parse_frontmatter(raw)
+    page_name = resolved.stem
+    page_names = {p.stem for p in _find_all_pages(_wiki_pages_dir())}
+    link_targets = page_names | _wiki_builtin_link_targets()
+    issues: list[str] = []
+
+    for m in re.findall(r"\[\[([^\]]+)\]\]", raw):
+        link = m.lower().replace(" ", "-")
+        if link not in link_targets:
+            issues.append(f"MISSING: [[{link}]]")
+
+    if is_draft:
+        issues.extend(_promotion_lint_issues(meta, body, category))
+    else:
+        idx_content = _read_text(_wiki_index_path())
+        indexed = {
+            m.lower().replace(" ", "-")
+            for m in re.findall(r"\[\[([^\]]+)\]\]", idx_content)
+        }
+        inbound = 0
+        for p in _find_all_pages(_wiki_pages_dir()):
+            if p == resolved:
+                continue
+            for m in re.findall(r"\[\[([^\]]+)\]\]", _read_text(p)):
+                link = m.lower().replace(" ", "-")
+                if link == page_name:
+                    inbound += 1
+
+        if inbound == 0 and page_name not in indexed:
+            issues.append(f"ORPHAN: {page_name}")
+        if page_name not in indexed:
+            issues.append(f"NOT INDEXED: {page_name}")
+
+        _append_page_metadata_lint(issues, page_name, meta)
+
+    if not issues:
+        return json.dumps({"status": "healthy", "page": rel, "issues": []})
+    return json.dumps({
+        "status": "issues_found",
+        "page": rel,
+        "count": len(issues),
+        "issues": issues,
+    })
+
+
+def _append_page_metadata_lint(
+    issues: list[str],
+    page_name: str,
+    meta: dict[str, str],
+) -> None:
+    now = datetime.now(timezone.utc)
+    confidence = (meta.get("confidence") or "").strip().lower()
+    updated_str = meta.get("updated")
+    days_since: int | None = None
+    if updated_str:
+        try:
+            updated_date = datetime.fromisoformat(updated_str).replace(
+                tzinfo=timezone.utc
+            )
+            days_since = (now - updated_date).days
+        except ValueError:
+            pass
+
+    if confidence == "superseded":
+        successor = (meta.get("superseded_by") or "").strip()
+        if successor and successor not in {
+            p.stem for p in _find_all_pages(_wiki_pages_dir())
+        }:
+            issues.append(
+                f"BROKEN SUPERSESSION: {page_name} points to "
+                f"[[{successor}]] which does not exist"
+            )
+        return
+
+    if (
+        (not confidence or confidence == "high")
+        and days_since is not None
+        and days_since > 90
+    ):
+        issues.append(f"STALE HIGH: {page_name} (last updated {days_since} days ago)")
+    if confidence == "low" and days_since is not None and days_since > 30:
+        issues.append(
+            f"LINGERING LOW: {page_name} (confidence: low for {days_since} days)"
+        )
+    if not confidence and meta.get("title"):
+        issues.append(f"NO CONFIDENCE: {page_name}")
+    if (
+        not meta.get("sources")
+        and not meta.get("path")
+        and meta.get("type") != "project"
+    ):
+        issues.append(f"NO SOURCES: {page_name}")
+
+
+def _wiki_lint(page: str = "", **_kwargs: Any) -> str:
+    if page:
+        return _wiki_lint_single_page(page)
+
     all_pages = _find_all_pages(_wiki_pages_dir())
     all_drafts = _find_all_pages(_wiki_drafts_dir())
     page_names: set[str] = set()
@@ -785,12 +1325,13 @@ def _wiki_lint(**_kwargs: Any) -> str:
         indexed.add(m.lower().replace(" ", "-"))
 
     issues: list[str] = []
+    link_targets = page_names | _wiki_builtin_link_targets()
 
     for n in page_names:
         if inbound.get(n, 0) == 0 and n not in indexed:
             issues.append(f"ORPHAN: {n}")
     for link in all_linked:
-        if link not in page_names:
+        if link not in link_targets:
             issues.append(f"MISSING: [[{link}]]")
     for n in page_names:
         if n not in indexed:
@@ -1048,17 +1589,30 @@ def _render_bug_markdown(
     first_seen_date: str,
     kind: str = "bug",
     extra_tags: list[str] | None = None,
+    effort_classification: dict[str, Any] | None = None,
 ) -> str:
     comp_tag = component.split(".")[0] if component else "unknown"
     base_tags = [kind, comp_tag]
     if extra_tags:
         base_tags.extend(t for t in extra_tags if t not in base_tags)
     tags_str = ", ".join(base_tags)
+    effort_frontmatter = ""
+    if effort_classification:
+        effort_class = str(effort_classification.get("effort_class") or "standard")
+        attention = str(effort_classification.get("attention") or "normal-review-gates")
+        raw_signals = effort_classification.get("signals") or []
+        signals = [str(signal) for signal in raw_signals if str(signal)]
+        signals_str = ", ".join(signals)
+        effort_frontmatter = (
+            f"effort_class: {effort_class}\n"
+            f"effort_attention: {attention}\n"
+            f"effort_signals: [{signals_str}]\n"
+        )
     return (
         f"---\n"
         f"id: {bug_id}\n"
         f"title: {title}\n"
-        f"type: bug\n"
+        f"type: {kind}\n"
         f"kind: {kind}\n"
         f"created: {first_seen_date}\n"
         f"updated: {first_seen_date}\n"
@@ -1066,6 +1620,7 @@ def _render_bug_markdown(
         f"severity: {severity}\n"
         f"status: open\n"
         f"reported_by: chatbot\n"
+        f"{effort_frontmatter}"
         f"tags: [{tags_str}]\n"
         f"---\n\n"
         f"# {bug_id}: {title}\n\n"
@@ -1104,7 +1659,7 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
         return []
     results = []
     for p in bugs_dir.glob("*.md"):
-        m = _BUG_ID_RE.match(p.stem)
+        m = re.match(r"^([A-Z]+)-(\d{3,})", p.stem, re.IGNORECASE)
         if not m:
             continue
         try:
@@ -1141,7 +1696,7 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
                     break
         haystack = _bug_token_set(fm_title + " " + observed_text[:300])
         results.append({
-            "bug_id": p.stem.split("-", 2)[0].upper() + "-" + p.stem.split("-", 2)[1],
+            "bug_id": f"{m.group(1).upper()}-{m.group(2)}",
             "title": fm_title,
             "status": fm_status,
             "haystack_tokens": haystack,
@@ -1155,13 +1710,14 @@ def _wiki_cosign_bug(
     reporter_context: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Append a cosign to an existing bug / feature / design filing.
+    """Append a cosign to an existing bug / feature / design / patch filing.
 
     Derives the target directory from the ``bug_id`` prefix
     (``BUG-`` → ``pages/bugs/``, ``FEAT-`` → ``pages/feature-requests/``,
-    ``DESIGN-`` → ``pages/design-proposals/``). Appends a ``## Cosigns``
-    section (or extends existing), and increments the ``cosign_count``
-    frontmatter field. Returns ``{status: "cosigned", bug_id, cosign_count}``.
+    ``DESIGN-`` → ``pages/design-proposals/``, ``PR-`` →
+    ``pages/patch-requests/``). Appends a ``## Cosigns`` section (or
+    extends existing), and increments the ``cosign_count`` frontmatter
+    field. Returns ``{status: "cosigned", bug_id, cosign_count}``.
     """
     if not bug_id:
         return json.dumps({"error": "bug_id is required for cosign_bug."})
@@ -1247,13 +1803,15 @@ def _wiki_file_bug(
     kind: str = "bug",
     tags: str = "",
     force_new: bool = False,
+    verbose: bool = False,
     **_kwargs: Any,
 ) -> str:
-    """File a bug / feature request / design proposal to pages/bugs/.
+    """File a bug, feature request, design proposal, or patch request.
 
-    ``kind`` defaults to "bug"; set to "feature" or "design" for non-bug
-    filings. All three use the same pipeline — navigator vets before dev
-    implements (design-participation rule).
+    ``kind`` defaults to "bug"; set to "feature", "design", or
+    "patch_request" for non-bug filings. All kinds use the same request
+    pipeline — navigator vets before dev implements (design-participation
+    rule).
 
     Bypasses the draft-gate — filings land in pages/ immediately
     for host triage. ID is server-assigned via _next_bug_id. Atomic
@@ -1290,6 +1848,19 @@ def _wiki_file_bug(
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slug = _slugify_title(title)
+    from workflow.api.market import classify_filing_effort
+
+    effort_classification = classify_filing_effort(
+        title=title,
+        component=component,
+        severity=severity,
+        kind=effective_kind,
+        repro=repro,
+        observed=observed,
+        expected=expected,
+        workaround=workaround,
+        tags=tags,
+    )
 
     # Dedup check: scan existing filings of THIS kind for Jaccard similarity
     # ≥ threshold. Per-kind only — a feature-request shouldn't dedup against
@@ -1318,6 +1889,7 @@ def _wiki_file_bug(
                 "status": "similar_found",
                 "bug_id": None,
                 "similar": top3,
+                "effort_classification": effort_classification,
                 "hint": (
                     "Similar filings exist. Use cosign_bug to add your context "
                     "to the top match, or set force_new=true if the symptom is "
@@ -1341,6 +1913,7 @@ def _wiki_file_bug(
             first_seen_date=today,
             kind=effective_kind,
             extra_tags=[t.strip() for t in tags.split(",") if t.strip()],
+            effort_classification=effort_classification,
         )
         try:
             with open(target, "x", encoding="utf-8") as fh:
@@ -1361,16 +1934,152 @@ def _wiki_file_bug(
     _append_wiki_log(
         f"file_bug | {rel_path} | {bug_id} {title} [{severity}] kind={effective_kind}"
     )
-    return json.dumps({
+    # FEAT-004: per-request-id traceable trigger receipt. Created BEFORE the
+    # enqueue so a crash in the trigger helper still leaves a durable record
+    # showing a trigger was expected. Backward-compatible: the existing
+    # ``investigation`` block in the response is preserved verbatim, and the
+    # new ``trigger`` block is additive.
+    investigation: dict[str, Any] = {"status": "skipped"}
+    trigger_block: dict[str, Any] | None = None
+    _receipt = None
+    try:
+        from workflow import bug_investigation
+        from workflow.wiki import trigger_receipts as _tr
+
+        frontmatter = {
+            "bug_id": bug_id,
+            "title": title,
+            "type": effective_kind,
+            "kind": effective_kind,
+            "component": component,
+            "severity": severity,
+            "status": "open",
+            "observed": observed,
+            "expected": expected,
+            "repro": repro,
+            "workaround": workaround,
+        }
+        universe_id = _default_universe()
+        universe_path = _universe_dir(universe_id)
+        # Pre-write trigger receipt (status=pending). Read canonical branch_def_id
+        # from env so the receipt records what we *expected* to invoke even if the
+        # enqueue helper rejects.
+        import os as _os
+        canonical_branch_def_id = _os.environ.get(
+            "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "",
+        ).strip() or None
+        try:
+            _receipt = _tr.create_pending(
+                request_id=bug_id,
+                request_kind=effective_kind,
+                request_page=rel_path,
+                branch_def_id=canonical_branch_def_id,
+            )
+        except Exception as _rcpt_exc:  # noqa: BLE001 - filing must survive receipt-store outage.
+            _logger_wiki.warning(
+                "file_bug trigger_receipt create failed for %s: %s", bug_id, _rcpt_exc,
+            )
+            _receipt = None
+
+        try:
+            request_id = bug_investigation._maybe_enqueue_investigation(
+                bug_id=bug_id,
+                frontmatter=frontmatter,
+                base_path=universe_path,
+                universe_id=universe_id,
+            )
+        except Exception as _enq_exc:
+            # Trigger helper raised. Update receipt then re-raise into the outer
+            # except so the existing investigation = {"status": "error"} branch
+            # behavior is preserved.
+            if _receipt is not None:
+                try:
+                    _receipt = _tr.mark_failed(_receipt, error=_enq_exc)
+                    trigger_block = _receipt.to_response()
+                except Exception:  # noqa: BLE001 - last-resort, don't break filing.
+                    pass
+            raise
+
+        if request_id:
+            investigation_section = bug_investigation.format_investigation_comment(
+                request_id=request_id,
+                status="queued",
+            )
+            with open(target, "a", encoding="utf-8") as fh:
+                fh.write(investigation_section)
+            investigation = {
+                "status": "queued",
+                "dispatcher_request_id": request_id,
+            }
+            # Default response shape is compact — callers needing the
+            # full BranchTask mirror pass verbose=True. Cuts the typical
+            # file_bug response from ~3.7 KB to ~600 bytes (no 23-field
+            # BranchTask dump that mirrors inputs.request_text). The
+            # trigger_attempt_id + dispatcher_request_id below are already
+            # enough for chatbots/canaries to join request -> run; the full
+            # mirror is operator-only and can be fetched on-demand via
+            # ``universe action=queue_list`` with the branch_task_id.
+            if verbose:
+                try:
+                    from workflow.branch_tasks import read_queue
+
+                    task = next(
+                        (
+                            t for t in read_queue(universe_path)
+                            if t.branch_task_id == request_id
+                        ),
+                        None,
+                    )
+                    if task is not None:
+                        investigation["branch_task"] = task.to_dict()
+                except Exception as _queue_exc:  # noqa: BLE001
+                    _logger_wiki.warning(
+                        "file_bug investigation task read failed for %s: %s",
+                        bug_id,
+                        _queue_exc,
+                    )
+            if _receipt is not None:
+                try:
+                    _receipt = _tr.mark_queued(
+                        _receipt, dispatcher_request_id=request_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+        else:
+            # Skipped because no canonical branch configured (env var empty
+            # or filing without bug_id). Record on the receipt for audit.
+            if _receipt is not None:
+                try:
+                    _receipt = _tr.mark_skipped(
+                        _receipt, reason="no_canonical_branch",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if _receipt is not None:
+            trigger_block = _receipt.to_response()
+    except Exception as exc:  # noqa: BLE001 - bug filing itself must survive trigger failure.
+        _logger_wiki.warning("file_bug investigation trigger failed for %s: %s", bug_id, exc)
+        investigation = {"status": "error", "error": str(exc)}
+
+    response_body: dict[str, Any] = {
         "path": rel_path,
         "bug_id": bug_id,
         "status": "filed",
         "kind": effective_kind,
         "severity": severity,
         "component": component,
+        "effort_classification": effort_classification,
+        "investigation": investigation,
         "note": "Filing sent to navigator triage pipeline. "
                 f"Use `wiki action=list category={category_dir}` to view.",
-    })
+    }
+    if trigger_block is not None:
+        # FEAT-004: surface the structured trigger receipt so callers (canaries
+        # / chatbots / operators) have a per-request-id join key without log
+        # scraping. ``investigation`` is preserved above for backward compat.
+        response_body["trigger"] = trigger_block
+    return json.dumps(response_body)
 
 
 # ---------------------------------------------------------------------------
@@ -1387,6 +2096,9 @@ def wiki(
     filename: str = "",
     content: str = "",
     log_entry: str = "",
+    old_text: str = "",
+    new_text: str = "",
+    expected_sha256: str = "",
     source_url: str = "",
     old_page: str = "",
     new_draft: str = "",
@@ -1402,9 +2114,13 @@ def wiki(
     observed: str = "",
     expected: str = "",
     workaround: str = "",
+    kind: str = "bug",
+    tags: str = "",
     force_new: bool = False,
     bug_id: str = "",
     reporter_context: str = "",
+    verbose: bool = False,
+    changed_since: str = "",
 ) -> str:
     """Dispatch entry for the wiki MCP tool. See universe_server.py for the
     chatbot-facing docstring; this function is the implementation invoked by
@@ -1448,9 +2164,12 @@ def wiki(
     dispatch = {
         "read": _wiki_read,
         "search": _wiki_search,
+        "since": _wiki_since,
         "list": _wiki_list,
         "lint": _wiki_lint,
         "write": _wiki_write,
+        "patch": _wiki_patch,
+        "delete": _wiki_delete,
         "consolidate": _wiki_consolidate,
         "promote": _wiki_promote,
         "ingest": _wiki_ingest,
@@ -1474,6 +2193,9 @@ def wiki(
         "filename": filename,
         "content": content,
         "log_entry": log_entry,
+        "old_text": old_text,
+        "new_text": new_text,
+        "expected_sha256": expected_sha256,
         "source_url": source_url,
         "old_page": old_page,
         "new_draft": new_draft,
@@ -1489,9 +2211,13 @@ def wiki(
         "observed": observed,
         "expected": expected,
         "workaround": workaround,
+        "kind": kind,
+        "tags": tags,
         "force_new": force_new,
         "bug_id": bug_id,
         "reporter_context": reporter_context,
+        "verbose": verbose,
+        "changed_since": changed_since,
     }
 
     return handler(**kwargs)

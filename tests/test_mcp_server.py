@@ -46,7 +46,7 @@ class TestMCPServerSetup:
     """MCP server is properly configured."""
 
     def test_server_name(self):
-        assert mcp.name == "fantasy-author"
+        assert mcp.name == "workflow"
 
 
 class TestUniverseDirResolution:

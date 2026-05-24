@@ -517,6 +517,7 @@ def build_daemon_memory_packet(
         "index.md",
         "pages/decisions/decision-policy.md",
         "pages/self-model/current-self.md",
+        "pages/brain/blocked-patterns.md",
         "pages/brain/review.md",
         "pages/signals/compaction-summary.md",
         "pages/signals/learning-signals.md",

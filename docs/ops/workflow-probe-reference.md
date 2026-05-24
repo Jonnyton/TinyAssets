@@ -69,6 +69,18 @@ Lists all registered MCP tools with one-line descriptions.
 workflow-probe tools
 ```
 
+### `latency`
+
+Times a real MCP `initialize` plus `get_status` call and prints a compact
+client-observed latency line.
+
+```bash
+workflow-probe latency
+```
+
+Use `--raw` to include the full `get_status` MCP response with the measured
+`latency_ms`.
+
 ## Raw / arbitrary tool calls
 
 ```bash
@@ -79,6 +91,13 @@ workflow-probe --tool wiki --args '{"action":"read","page":"index"}'
 workflow-probe --list                          # alias for 'tools'
 ```
 
+PowerShell can strip JSON quotes before native commands see them. For simple
+flat objects, `workflow-probe` also accepts the stripped form:
+
+```powershell
+python scripts\mcp_probe.py --tool goals --args "{action:search,query:research-paper,limit:5}"
+```
+
 ## Flags
 
 | Flag | Description |
@@ -86,7 +105,7 @@ workflow-probe --list                          # alias for 'tools'
 | `--url URL` | MCP endpoint (default: `https://tinyassets.io/mcp`) |
 | `--raw` | Print full JSON response instead of extracted text |
 | `--tool NAME` | Raw tool call |
-| `--args JSON` | JSON arguments for `--tool` (default: `{}`) |
+| `--args JSON` | JSON arguments for `--tool` (default: `{}`); simple flat PowerShell-stripped objects are accepted |
 | `--list` | List tools (legacy alias for `tools` subcommand) |
 
 ## Healthy-state snippets
@@ -111,6 +130,12 @@ workflow-probe --list                          # alias for 'tools'
     {"id": "default-universe", "branch_count": 3}
   ]
 }
+```
+
+### `workflow-probe latency` (healthy)
+
+```text
+latency_ms=125 status=ok stage=get_status url=https://tinyassets.io/mcp
 ```
 
 ## Diagnosing prod-stale

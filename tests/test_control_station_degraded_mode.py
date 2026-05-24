@@ -40,6 +40,19 @@ def test_prompt_body_matches_module_constant():
     assert _prompt_text() == _CONTROL_STATION_PROMPT
 
 
+def test_control_station_routes_small_workflow_authoring_to_chat_tools():
+    """Community users should be able to author small workflow units from chat.
+
+    The prompt must steer chatbots to build_branch / patch_branch and away from
+    GitHub Actions YAML as the authoring surface.
+    """
+    body = _prompt_text()
+    assert "chat-native" in body
+    assert "GitHub Actions YAML" in body
+    assert "extensions action=build_branch" in body
+    assert "extensions action=patch_branch" in body
+
+
 # ---- directive presence ---------------------------------------------------
 
 

@@ -11,19 +11,26 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      self_heal_followup:
+        description: Internal self-heal follow-up pass after dependency dispatch.
+        required: false
+        default: "false"
   workflow_run:
-    workflows: ["Wiki bug sync", "Auto-fix change", "Uptime canary", "deploy-site", "Deploy prod"]
+    workflows: ["Wiki bug sync", "Auto-fix change", "Auto-check PR", "Uptime canary", "tier3-oss-clone-nightly", "deploy-site", "Deploy prod"]
     types: [completed]
   push:
     branches: [main]
     paths:
       - "scripts/community_loop_watch.py"
       - ".github/workflows/community-loop-watch.yml"
+      - ".github/workflows/auto-check-pr.yml"
       - "docs/exec-plans/active/2026-04-30-live-community-reiteration-loop.md"
 
 permissions:
   contents: read
   issues: write
+  pull-requests: write
   actions: write
 
 concurrency:
@@ -129,6 +136,7 @@ jobs:
               'wiki-bug-sync.yml',
               'uptime-canary.yml',
             ]);
+            const isSelfHealFollowup = context.payload.inputs?.self_heal_followup === 'true';
             const retryDelaysMs = [1000, 3000, 7000];
 
             function githubStatus(error) {
@@ -173,10 +181,11 @@ jobs:
                 status = JSON.parse(probeMsg);
               } catch (error) {
                 core.warning(`Could not parse community loop status JSON for self-heal dispatch: ${error.message}`);
-                return;
+                return false;
               }
 
               const stages = Array.isArray(status.stages) ? status.stages : [];
+              let dispatched = false;
               for (const stage of stages) {
                 const workflowId = stage?.details?.workflow_id;
                 const summary = String(stage?.summary || '');
@@ -193,6 +202,7 @@ jobs:
                       ref: 'main',
                     });
                     console.log(`dispatched stale dependency workflow ${workflowId}`);
+                    dispatched = true;
                   } catch (error) {
                     core.warning(`Could not dispatch stale dependency workflow ${workflowId}: ${error.message}`);
                   }
@@ -216,8 +226,13 @@ jobs:
                 count('provider_exhausted') > 0
               );
               const writerAlreadyRunning = writerStage?.status === 'yellow';
+              const writerStale = (
+                writerStage?.status === 'red' &&
+                writerStage?.details?.workflow_id === 'auto-fix-bug.yml' &&
+                String(writerStage?.summary || '').includes('has not run successfully')
+              );
               if (
-                queueStage?.status === 'red' &&
+                (queueStage?.status === 'red' || writerStale) &&
                 hasBacklog &&
                 !blockedByUnavailableAuth &&
                 !writerAlreadyRunning
@@ -230,13 +245,109 @@ jobs:
                     ref: 'main',
                   });
                   console.log('dispatched auto-fix-bug.yml for red writer queue');
+                  dispatched = true;
                 } catch (error) {
                   core.warning(`Could not dispatch auto-fix-bug.yml for red writer queue: ${error.message}`);
                 }
               }
+
+              return dispatched;
             }
 
-            await dispatchStaleDependencies();
+            async function ensureLabel(name, color, description) {
+              const existing = await githubCall(`lookup label ${name}`, () => github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name,
+              }));
+              if (existing) {
+                return true;
+              }
+              const created = await githubCall(`create label ${name}`, () => github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name,
+                color,
+                description,
+              }));
+              return Boolean(created);
+            }
+
+            async function dispatchCheckerWorkers() {
+              let status;
+              try {
+                status = JSON.parse(probeMsg);
+              } catch (error) {
+                core.warning(`Could not parse community loop status JSON for checker dispatch: ${error.message}`);
+                return false;
+              }
+
+              const stages = Array.isArray(status.stages) ? status.stages : [];
+              const checkerStage = stages.find((stage) => stage?.name === 'Checker queue');
+              const dispatches = Array.isArray(checkerStage?.details?.self_heal_dispatches)
+                ? checkerStage.details.self_heal_dispatches
+                : [];
+              if (!dispatches.length) {
+                return false;
+              }
+
+              await ensureLabel(
+                'auto-checker-dispatched',
+                '0052cc',
+                'An automatic independent checker worker has been dispatched for this PR.',
+              );
+
+              let dispatched = false;
+              for (const dispatch of dispatches) {
+                const workflowId = dispatch?.workflow_id || 'auto-check-pr.yml';
+                const inputs = dispatch?.inputs || {};
+                const prNumber = Number(dispatch?.pr_number || inputs.pr_number || 0);
+                if (!prNumber || !inputs.pr_number || !inputs.checker_family) {
+                  core.warning(`Skipping malformed checker dispatch: ${JSON.stringify(dispatch)}`);
+                  continue;
+                }
+
+                const result = await githubCall(`dispatch checker worker for PR #${prNumber}`, () => (
+                  github.rest.actions.createWorkflowDispatch({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    workflow_id: workflowId,
+                    ref: 'main',
+                    inputs,
+                  })
+                ));
+                if (!result) {
+                  continue;
+                }
+
+                await githubCall(`mark PR #${prNumber} checker-dispatched`, () => github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['auto-checker-dispatched'],
+                }));
+                console.log(`dispatched ${workflowId} for PR #${prNumber}`);
+                dispatched = true;
+              }
+              return dispatched;
+            }
+
+            const dispatchedSelfHeal = await dispatchStaleDependencies();
+            const dispatchedChecker = await dispatchCheckerWorkers();
+            if ((dispatchedSelfHeal || dispatchedChecker) && !isSelfHealFollowup) {
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: 'community-loop-watch.yml',
+                  ref: 'main',
+                  inputs: { self_heal_followup: 'true' },
+                });
+                console.log('dispatched community-loop-watch.yml self-heal follow-up');
+              } catch (error) {
+                core.warning(`Could not dispatch community-loop-watch.yml self-heal follow-up: ${error.message}`);
+              }
+            }
 
             try {
               await githubCall('lookup alarm label', () => github.rest.issues.getLabel({

@@ -21,6 +21,14 @@ self-hosted chat UI. The MCP client is the protocol component that connects
 that host to one server. Product planning should use "host" for the user-facing
 surface and "client" only for protocol behavior.
 
+Workflow also distinguishes the human account from the host surface. Claude.ai,
+ChatGPT, Claude Code, Codex desktop, local tray, CLI, and future MCP hosts are
+connected apps for the same possible Workflow user. The same request, daemon,
+approval, or user-owned universe may be inspectable from another host only when
+that host has an explicit authority binding to the same Workflow account.
+Public UX should avoid provider jargon and describe this as "same Workflow
+account, different connected apps."
+
 ## Priority Tiers
 
 | Tier | Meaning | Examples |
@@ -65,6 +73,13 @@ surface and "client" only for protocol behavior.
 5. A support claim is scoped to the host and date in the proof registry.
 6. Long-tail hosts get spec-compatible setup notes only after a tool-list/read
    proof, not from rumor or marketplace presence.
+7. Cross-host continuity is account-bound, not thread-bound. A request started
+   in Claude can continue in ChatGPT only when both surfaces are linked to the
+   same Workflow account and have sufficient authority.
+8. Daemon identity is stable across hosts. Summoning from a new connected app
+   resolves existing user-owned daemons before creating another daemon.
+9. Security-sensitive actions may require per-host re-authentication, stronger
+   proof, or handoff even when the host is already linked.
 
 ## Website Implications
 
@@ -79,6 +94,10 @@ The `/connect` page should present a chooser by customer situation:
 
 Each path should show whether it is live, pending submission, planned, or
 verified in `docs/ops/mcp-host-proof-registry.md`.
+
+Account-linking copy should use product language: "same Workflow account,
+different connected apps." Do not imply that being logged into ChatGPT, Claude,
+or another provider alone grants Workflow account authority.
 
 ## Sources Checked
 

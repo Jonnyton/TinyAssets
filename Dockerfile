@@ -55,11 +55,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # Install codex CLI to an explicit prefix so the path is deterministic
 # across distros. npm global prefix under nodesource Debian may be
 # /usr/lib/node_modules (not /usr/local/lib), so we pin to /opt/codex-install
-# and symlink the bin — then COPY --from=builder targets a known path.
+# — then COPY --from=builder targets a known path.
+#
+# Smoke-test the install via the absolute path. The final-stage image
+# does NOT symlink the bare codex bin to /usr/local/bin; it copies the
+# flock wrapper there instead (see below). Adding the same wrapper in
+# the builder stage would just be dead weight, so we run the binary
+# directly here.
 RUN mkdir -p /opt/codex-install && \
     npm install --prefix /opt/codex-install @openai/codex && \
-    ln -s /opt/codex-install/node_modules/.bin/codex /usr/local/bin/codex && \
-    codex --version
+    /opt/codex-install/node_modules/.bin/codex --version
 
 WORKDIR /build
 
@@ -96,6 +101,7 @@ RUN apt-get update && \
         curl \
         libgomp1 \
         tini \
+        util-linux \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs \
     && apt-get purge -y curl \
@@ -103,10 +109,18 @@ RUN apt-get update && \
     groupadd --system --gid 1001 workflow && \
     useradd --system --uid 1001 --gid workflow --home /app --shell /bin/bash workflow
 
-# Copy the codex install tree from builder and recreate the symlink.
-# /opt/codex-install is a deterministic path set in the builder stage.
+# Copy the codex install tree from builder and install the flock
+# wrapper as /usr/local/bin/codex. The wrapper takes an exclusive
+# flock on a sentinel in /app/.codex before exec'ing the real codex
+# binary — required because PR #965 binds the codex auth directory
+# across the daemon + worker containers, and Codex's official CI/CD
+# auth guide forbids sharing one auth.json across concurrent runners
+# without serialization (concurrent refresh attempts race rotation
+# and trigger `refresh_token_reused`). See deploy/codex-flock-wrapper.sh.
 COPY --from=builder /opt/codex-install /opt/codex-install
-RUN ln -s /opt/codex-install/node_modules/.bin/codex /usr/local/bin/codex
+COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex
+RUN chmod 0755 /usr/local/bin/codex && \
+    /usr/local/bin/codex --version
 
 WORKDIR /app
 

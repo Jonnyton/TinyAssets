@@ -97,12 +97,14 @@ class TestEnqueueInvestigationRequest:
         queue_file = tmp_path / "branch_tasks.json"
         tasks = json.loads(queue_file.read_text(encoding="utf-8"))
         inputs = tasks[0]["inputs"]
-        # All 9 canonical payload keys must be present
+        # All canonical payload keys must be present, including the branch input.
         for key in ("bug_id", "title", "component", "severity", "kind",
-                    "observed", "expected", "repro", "workaround"):
+                    "observed", "expected", "repro", "workaround", "request_text"):
             assert key in inputs, f"missing key {key!r} in task inputs"
         assert inputs["bug_id"] == "BUG-099"
         assert inputs["title"] == "Frob explodes on edge case"
+        assert inputs["request_text"].startswith("bug BUG-099: Frob explodes")
+        assert "Observed: explosion" in inputs["request_text"]
 
     def test_task_trigger_source_is_owner_queued(self, tmp_path):
         self._enqueue(tmp_path)

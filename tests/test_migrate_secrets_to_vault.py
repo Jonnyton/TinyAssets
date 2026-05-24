@@ -83,6 +83,10 @@ def test_read_keys_missing_raises(tmp_path):
         m._read_keys(tmp_path / "nope.txt")
 
 
+def test_canonical_keys_include_github_push_token():
+    assert "GH_TOKEN" in m._read_keys(_SCRIPTS / "secrets_keys.txt")
+
+
 # ---- migrate() decision matrix --------------------------------------------
 
 

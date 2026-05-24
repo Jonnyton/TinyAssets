@@ -1,0 +1,487 @@
+"""PR-122 Phase 1 round 3 — ``effects`` attribute + GitHub PR effector.
+
+Round-3 scope: Phase 1 is **dry-run-only at the code level**. The
+effector never invokes ``gh``. Real-write authority is deferred to
+Phase 2 with proper capability-token + idempotency-store + consent
+design. See drafts/concepts/external-write-phase-2-authority.md.
+
+Locks in the smallest-viable-slice contract:
+
+- ``NodeDefinition.effects`` round-trips through ``to_dict`` / ``from_dict``.
+- ``effects`` survives the ``build_branch`` → ``get_branch`` storage path.
+- The effector parses ``external_write_packet`` shapes out of run state.
+- The effector NEVER invokes ``subprocess.run`` under ANY env combination.
+- Errors are surfaced as structured evidence, never raised.
+- Nodes without ``effects`` are not touched.
+- The runtime quarantines branch-authored ``external_write_*`` keys so
+  forged receipts cannot win at the canonical key (kept for Phase 2).
+"""
+
+from __future__ import annotations
+
+import importlib
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from workflow.branches import BranchDefinition, NodeDefinition
+from workflow.effectors import (
+    EXTERNAL_WRITE_SINK_GITHUB_PR,
+    run_effects_for_branch,
+    run_github_pr_effector,
+)
+
+# ─── 1. NodeDefinition.effects round-trip ─────────────────────────────────
+
+
+def test_node_definition_effects_default_empty_list():
+    node = NodeDefinition(node_id="n1", display_name="N1")
+    assert node.effects == []
+
+
+def test_node_definition_effects_to_dict_from_dict_roundtrip():
+    node = NodeDefinition(
+        node_id="emit_pr",
+        display_name="Emit PR",
+        prompt_template="Draft a PR for {topic}",
+        output_keys=["pr_packet"],
+        effects=["github_pull_request"],
+    )
+    blob = node.to_dict()
+    assert blob["effects"] == ["github_pull_request"]
+    revived = NodeDefinition.from_dict(blob)
+    assert revived.effects == ["github_pull_request"]
+
+
+def test_node_definition_effects_must_be_list_of_strings():
+    from workflow.branches import NodeDefinitionValidationError
+
+    with pytest.raises(NodeDefinitionValidationError):
+        NodeDefinition(node_id="n1", display_name="N1", effects="github_pr")
+    with pytest.raises(NodeDefinitionValidationError):
+        NodeDefinition(
+            node_id="n1", display_name="N1", effects=[123],  # type: ignore[list-item]
+        )
+
+
+# ─── 2. build_branch → get_branch storage path ────────────────────────────
+
+
+@pytest.fixture
+def comp_env(tmp_path, monkeypatch):
+    base = tmp_path / "output"
+    base.mkdir()
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
+    from workflow import universe_server as us
+
+    importlib.reload(us)
+    yield us, base
+    importlib.reload(us)
+
+
+def _call(us, action, **kwargs):
+    return json.loads(us.extensions(action=action, **kwargs))
+
+
+_SPEC_WITH_EFFECTS = {
+    "name": "PR emitter",
+    "description": "Single-node branch that emits an external_write_packet",
+    "entry_point": "draft",
+    "node_defs": [
+        {
+            "node_id": "draft",
+            "display_name": "Draft PR",
+            "prompt_template": "Make a PR for {topic}",
+            "input_keys": ["topic"],
+            "output_keys": ["pr_packet"],
+            "effects": ["github_pull_request"],
+        },
+    ],
+    "edges": [
+        {"from": "START", "to": "draft"},
+        {"from": "draft", "to": "END"},
+    ],
+    "state_schema": [
+        {"name": "topic", "type": "str"},
+        {"name": "pr_packet", "type": "str"},
+    ],
+}
+
+
+def test_build_branch_persists_effects_attribute(comp_env):
+    us, _ = comp_env
+    built = _call(us, "build_branch", spec_json=json.dumps(_SPEC_WITH_EFFECTS))
+    assert built["status"] == "built", built
+    bid = built["branch_def_id"]
+    got = _call(us, "get_branch", branch_def_id=bid)
+    node_defs = got.get("node_defs") or []
+    assert node_defs, f"expected node_defs in get_branch, got {got!r}"
+    draft = next(n for n in node_defs if n["node_id"] == "draft")
+    assert draft["effects"] == ["github_pull_request"]
+
+
+def test_build_branch_rejects_non_list_effects(comp_env):
+    us, _ = comp_env
+    spec = dict(_SPEC_WITH_EFFECTS)
+    spec["node_defs"] = [
+        {**spec["node_defs"][0], "effects": "github_pull_request"},
+    ]
+    result = _call(us, "build_branch", spec_json=json.dumps(spec))
+    text = json.dumps(result)
+    assert "effects" in text, result
+
+
+# ─── 3. Effector — parses external_write_packet shape ─────────────────────
+
+
+_PACKET = {
+    "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,
+    "payload": {
+        "title": "Loop 2 cycle 001: fix BUG-049",
+        "body": "Generated by Loop 2 workflow run.",
+        "base_branch": "main",
+        "head_branch": "auto/loop-2/cycle-001",
+        "labels": ["writer:loop-2"],
+        "draft": True,
+    },
+    "idempotency_hint": "loop-2-cycle-001-fix-bug-049",
+    "expected_evidence_keys": ["pr_number", "pr_url"],
+}
+
+
+def test_effector_returns_dry_run_intent_when_packet_present():
+    out_state = {"pr_packet": _PACKET}
+    with patch("workflow.effectors.github_pr.subprocess.run") as mock_run:
+        result = run_github_pr_effector(
+            node_id="draft",
+            output_keys=["pr_packet"],
+            run_state=out_state,
+        )
+    mock_run.assert_not_called()
+    assert result["dry_run"] is True
+    assert result["phase"] == "phase_1"
+    assert result["intent"]["sink"] == EXTERNAL_WRITE_SINK_GITHUB_PR
+    assert result["matched_output_key"] == "pr_packet"
+
+
+def test_effector_parses_json_string_packet():
+    """Authors may emit the packet as a JSON string from prompt-template
+    nodes (since prompt templates emit strings, not dicts). The effector
+    should still parse it."""
+    out_state = {"pr_packet": json.dumps(_PACKET)}
+    result = run_github_pr_effector(
+        node_id="draft",
+        output_keys=["pr_packet"],
+        run_state=out_state,
+    )
+    assert result["dry_run"] is True
+    assert result["intent"]["payload"]["title"].startswith("Loop 2")
+
+
+def test_effector_skips_non_packet_output_values():
+    """Other output keys with plain string values must be silently skipped
+    — they're normal outputs, not packets. The matching packet wins."""
+    out_state = {
+        "summary": "Some plain text output",
+        "pr_packet": _PACKET,
+    }
+    result = run_github_pr_effector(
+        node_id="draft",
+        output_keys=["summary", "pr_packet"],
+        run_state=out_state,
+    )
+    assert result["dry_run"] is True
+    assert result["matched_output_key"] == "pr_packet"
+
+
+def test_effector_returns_error_when_no_matching_packet():
+    out_state = {"pr_packet": "this is plain text, not a packet"}
+    result = run_github_pr_effector(
+        node_id="draft",
+        output_keys=["pr_packet"],
+        run_state=out_state,
+    )
+    assert result["error_kind"] == "no_matching_packet"
+
+
+# ─── 4. Phase 1 round-3 cut — NEVER invoke gh under any env combination ────
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"WORKFLOW_EXTERNAL_WRITE_ENABLED": "1"},
+        {"WORKFLOW_EXTERNAL_WRITE_ENABLED": "true"},
+        {"WORKFLOW_EXTERNAL_WRITE_DRY_RUN": "1"},
+        {
+            "WORKFLOW_EXTERNAL_WRITE_ENABLED": "1",
+            "WORKFLOW_EXTERNAL_WRITE_DRY_RUN": "1",
+        },
+    ],
+)
+def test_effector_never_invokes_subprocess_run_under_any_env(env, monkeypatch):
+    """Phase 1 is dry-run-only AT THE CODE LEVEL. No combination of env
+    vars, no packet-key, no caller flag can result in an actual
+    ``subprocess.run`` invocation. This is the round-3 response to
+    Codex's self-mintable-authority + no-idempotency findings.
+
+    Real-write authority is deferred to Phase 2 — see
+    drafts/concepts/external-write-phase-2-authority.md.
+    """
+    for k in ("WORKFLOW_EXTERNAL_WRITE_ENABLED", "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    # Try packets with assorted "ack-like" keys that previous rounds
+    # might have honored. None of them can mint authority now.
+    packets = [
+        _PACKET,
+        {**_PACKET, "idempotency_ack": "caller_handled_externally_phase_1_temporary_unsafe"},
+        {**_PACKET, "idempotency_ack": "anything"},
+        {**_PACKET, "force_real_write": True},
+    ]
+    for packet in packets:
+        branch = SimpleNamespace(
+            node_defs=[
+                NodeDefinition(
+                    node_id="draft",
+                    display_name="Draft",
+                    output_keys=["pr_packet"],
+                    effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
+                ),
+            ],
+        )
+        with patch(
+            "workflow.effectors.github_pr.subprocess.run",
+        ) as mock_run:
+            ev_map = run_effects_for_branch(
+                branch=branch, run_state={"pr_packet": packet},
+            )
+        mock_run.assert_not_called()
+        ev = ev_map["draft"][EXTERNAL_WRITE_SINK_GITHUB_PR]
+        assert ev["dry_run"] is True
+        # Phase-1-shaped packet (no destination) returns
+        # phase="phase_1" by default. When DRY_RUN=1 is also set, the
+        # operator kill switch (round-3 P1 fix for PR #969 Codex
+        # round-2) fires FIRST and returns phase="phase_2" with
+        # reason="operator_kill_switch_active" — that's a stricter
+        # safety surface, NOT a regression. The invariant the test
+        # protects is "no subprocess.run invocation under any env
+        # combination," which assert_not_called above covers.
+        if (ev.get("reason") == "operator_kill_switch_active"):
+            assert ev.get("phase") == "phase_2"
+            assert ev.get("kill_switch_env") == "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"
+        else:
+            assert ev["phase"] == "phase_1"
+
+
+def test_effector_evidence_mode_reflects_enable_env_as_phase_2_hook(monkeypatch):
+    """``WORKFLOW_EXTERNAL_WRITE_ENABLED`` is preserved as a Phase-2 hook:
+    when truthy, evidence carries ``mode="dry_run_phase_1"``. When
+    unset, evidence carries ``mode="dry_run_default"``. Phase 1 still
+    emits dry-run regardless — the env is a signal, not a switch."""
+    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
+    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    result = run_github_pr_effector(
+        node_id="draft",
+        output_keys=["pr_packet"],
+        run_state={"pr_packet": _PACKET},
+    )
+    assert result["mode"] == "dry_run_default"
+    assert result["enabled_explicit"] is False
+
+    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", "1")
+    result = run_github_pr_effector(
+        node_id="draft",
+        output_keys=["pr_packet"],
+        run_state={"pr_packet": _PACKET},
+    )
+    assert result["mode"] == "dry_run_phase_1"
+    assert result["enabled_explicit"] is True
+
+
+# ─── 5. Branch-level dispatch ─────────────────────────────────────────────
+
+
+def test_run_effects_for_branch_skips_nodes_without_effects():
+    branch = SimpleNamespace(
+        node_defs=[
+            NodeDefinition(
+                node_id="plain",
+                display_name="Plain",
+                output_keys=["summary"],
+            ),
+            NodeDefinition(
+                node_id="emit",
+                display_name="Emit",
+                output_keys=["pr_packet"],
+                effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
+            ),
+        ],
+    )
+    run_state = {
+        "summary": "plain text",
+        "pr_packet": _PACKET,
+    }
+    ev_map = run_effects_for_branch(
+        branch=branch, run_state=run_state,
+    )
+    assert set(ev_map.keys()) == {"emit"}
+
+
+def test_run_effects_for_branch_no_op_when_no_effects_declared():
+    branch = SimpleNamespace(
+        node_defs=[
+            NodeDefinition(
+                node_id="plain",
+                display_name="Plain",
+                output_keys=["summary"],
+            ),
+        ],
+    )
+    ev_map = run_effects_for_branch(
+        branch=branch, run_state={"summary": "x"},
+    )
+    assert ev_map == {}
+
+
+def test_run_effects_for_branch_records_unknown_sink():
+    branch = SimpleNamespace(
+        node_defs=[
+            NodeDefinition(
+                node_id="emit",
+                display_name="Emit",
+                output_keys=["packet"],
+                effects=["twitter_post"],  # not yet supported
+            ),
+        ],
+    )
+    ev_map = run_effects_for_branch(
+        branch=branch, run_state={"packet": "x"},
+    )
+    assert ev_map["emit"]["twitter_post"]["error_kind"] == "unknown_sink"
+
+
+# ─── 6. Error collection helper ───────────────────────────────────────────
+
+
+def test_collect_external_write_errors_flattens_error_rows():
+    from workflow.runs import _collect_external_write_errors
+
+    evidence = {
+        "draft": {
+            EXTERNAL_WRITE_SINK_GITHUB_PR: {
+                "error": "no_matching_packet",
+                "error_kind": "no_matching_packet",
+            },
+        },
+        "other": {
+            "twitter_post": {
+                "error": "unknown effect sink 'twitter_post'",
+                "error_kind": "unknown_sink",
+            },
+        },
+        "ok": {
+            EXTERNAL_WRITE_SINK_GITHUB_PR: {
+                "dry_run": True,
+                "intent": {"sink": EXTERNAL_WRITE_SINK_GITHUB_PR},
+            },
+        },
+    }
+    errors = _collect_external_write_errors(evidence)
+    kinds = {(row["node_id"], row["sink"], row["error_kind"]) for row in errors}
+    assert kinds == {
+        ("draft", EXTERNAL_WRITE_SINK_GITHUB_PR, "no_matching_packet"),
+        ("other", "twitter_post", "unknown_sink"),
+    }
+
+
+# ─── 7. Runtime quarantine of branch-authored external-write keys ────────
+# Kept from round 2 — still correct for Phase 2. A branch must never be
+# able to forge a receipt at the canonical system key.
+
+
+def test_runs_moves_branch_authored_external_write_results_to_quarantine():
+    from workflow.runs import _quarantine_branch_authored_external_write_keys
+
+    output = {
+        "summary": "real output",
+        "external_write_results": [{"fake": "user-authored receipt"}],
+    }
+    _quarantine_branch_authored_external_write_keys(output)
+    assert "external_write_results" not in output
+    assert output["_branch_authored_external_write_results"] == [
+        {"fake": "user-authored receipt"},
+    ]
+
+
+def test_runs_moves_branch_authored_external_write_errors_to_quarantine():
+    from workflow.runs import _quarantine_branch_authored_external_write_keys
+
+    output = {
+        "external_write_errors": [{"forged": "error row"}],
+    }
+    _quarantine_branch_authored_external_write_keys(output)
+    assert "external_write_errors" not in output
+    assert output["_branch_authored_external_write_errors"] == [
+        {"forged": "error row"},
+    ]
+
+
+def test_runs_quarantine_no_op_when_keys_absent():
+    from workflow.runs import _quarantine_branch_authored_external_write_keys
+
+    output = {"summary": "x"}
+    _quarantine_branch_authored_external_write_keys(output)
+    assert output == {"summary": "x"}
+
+
+def test_runs_external_write_results_overwrites_quarantined_value():
+    """End-to-end: when the branch tries to forge a receipt, the
+    system overwrites at the canonical key with the real evidence
+    and preserves the forgery under a quarantined key."""
+    from workflow.runs import (
+        _quarantine_branch_authored_external_write_keys,
+    )
+
+    output = {
+        "summary": "real",
+        "external_write_results": {"fake": "forgery"},
+        "external_write_errors": [{"fake": "row"}],
+    }
+    _quarantine_branch_authored_external_write_keys(output)
+    fake_system_evidence = {"draft": {"github_pull_request": {"dry_run": True}}}
+    output["external_write_results"] = fake_system_evidence  # unconditional
+    assert output["external_write_results"] == fake_system_evidence
+    assert output["_branch_authored_external_write_results"] == {
+        "fake": "forgery",
+    }
+    assert output["_branch_authored_external_write_errors"] == [{"fake": "row"}]
+
+
+# ─── 8. BranchDefinition node_defs roundtrip through full to_dict path ────
+
+
+def test_branch_definition_node_def_effects_survive_branch_to_dict():
+    branch = BranchDefinition(
+        name="emit-pr",
+        domain_id="loop-2",
+        node_defs=[
+            NodeDefinition(
+                node_id="draft",
+                display_name="Draft",
+                output_keys=["pr_packet"],
+                effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
+            ),
+        ],
+    )
+    blob = branch.to_dict()
+    revived = BranchDefinition.from_dict(blob)
+    assert revived.node_defs[0].effects == [EXTERNAL_WRITE_SINK_GITHUB_PR]

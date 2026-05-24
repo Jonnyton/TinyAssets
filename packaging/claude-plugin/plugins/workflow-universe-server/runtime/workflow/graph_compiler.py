@@ -26,6 +26,7 @@ Design rules (from `docs/specs/community_branches_phase3.md`):
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import json
 import logging
 import operator
@@ -38,13 +39,30 @@ from typing import Annotated, Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from workflow.branches import BranchDefinition, NodeDefinition
+from workflow.branches import BranchDefinition, GraphNodeRef, NodeDefinition
 
 logger = logging.getLogger(__name__)
 
 
 class CompilerError(Exception):
-    """Raised when the compiler cannot produce a runnable graph."""
+    """Raised when the compiler cannot produce a runnable graph.
+
+    FEAT-006: optionally carries the structured ``chain_state`` and
+    ``attempts`` from an underlying ``AllProvidersExhaustedError`` so
+    chatbots and the auto-fix loop can see *why* the chain exhausted
+    without having to walk ``__cause__`` themselves.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        chain_state: dict | None = None,
+        attempts: list | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.chain_state = chain_state
+        self.attempts = attempts
 
 
 class BranchValidationError(CompilerError, ValueError):
@@ -219,6 +237,85 @@ def _is_cancel_exception(exc: BaseException) -> bool:
     catch-all; everything else is logged and swallowed.
     """
     return type(exc).__name__ == "RunCancelledError"
+
+
+def _emit_failed_event(
+    event_sink: Callable[..., None] | None,
+    node_id: str,
+    exc: BaseException,
+) -> None:
+    """Emit a terminal failed event before re-raising CompilerError.
+
+    FEAT-006: when the underlying exception carries ``chain_state``
+    (an ``AllProvidersExhaustedError``), forward it as a structured
+    ``provider_chain`` field on the event so downstream consumers
+    (chatbots, auto-fix loop, get_run.events) can read per-provider
+    skip reasons without parsing the human-readable error string.
+    """
+    if event_sink is None:
+        return
+    chain_state = getattr(exc, "chain_state", None)
+    kwargs: dict[str, Any] = {
+        "node_id": node_id,
+        "phase": "failed",
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+    }
+    if chain_state is not None:
+        kwargs["provider_chain"] = chain_state
+    try:
+        event_sink(**kwargs)
+    except TypeError:
+        # Older event_sink signatures may not accept `provider_chain`;
+        # retry without it so a kwarg-mismatch never blocks the failed event.
+        try:
+            event_sink(
+                node_id=node_id,
+                phase="failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+        except Exception as sink_exc:  # noqa: BLE001
+            if _is_cancel_exception(sink_exc):
+                raise
+            logger.exception("event_sink raised in %s (failed)", node_id)
+    except Exception as sink_exc:  # noqa: BLE001
+        if _is_cancel_exception(sink_exc):
+            raise
+        logger.exception("event_sink raised in %s (failed)", node_id)
+
+
+def _wrap_provider_failure(node_id: str, exc: BaseException) -> "CompilerError":
+    """Wrap a provider-side exception into a ``CompilerError``.
+
+    FEAT-006: when the cause carries ``chain_state`` / ``attempts``
+    (an ``AllProvidersExhaustedError`` from the router), copy them
+    onto the new ``CompilerError`` and append a compact JSON suffix
+    to the error message so chatbots and the auto-fix loop can see
+    per-provider skip reasons without walking ``__cause__``.
+
+    Without this, the wrap stringifies the cause to just
+    ``"All providers exhausted for role=writer. Daemon should retry
+    with backoff."`` and the structured diagnostics are silently
+    dropped — the failure mode that makes BUG-097's investigation
+    daemon recursively self-block on the same opaque error.
+    """
+    chain_state = getattr(exc, "chain_state", None)
+    attempts = getattr(exc, "attempts", None)
+    base_msg = f"Provider call failed in node '{node_id}': {exc}"
+    if chain_state is not None:
+        try:
+            suffix = json.dumps(chain_state, default=str, separators=(",", ":"))
+            base_msg = f"{base_msg} [chain_state]: {suffix}"
+        except Exception:  # noqa: BLE001
+            # Never let a serialization edge case prevent the wrap.
+            # `default=str` can re-enter into arbitrary user objects whose
+            # ``__repr__`` raises, so the catch must be broad.
+            logger.exception(
+                "Failed to serialize chain_state on provider failure in %s",
+                node_id,
+            )
+    return CompilerError(base_msg, chain_state=chain_state, attempts=attempts)
 
 
 def _dict_merge(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
@@ -434,8 +531,8 @@ def collect_build_warnings(branch: BranchDefinition) -> list[dict[str, Any]]:
                     f"input_keys {sorted(node.input_keys)!r}. This is "
                     f"an implicit cross-node dependency that reduces "
                     f"branch portability. Add '{placeholder}' to "
-                    f"input_keys, or set strict_input_isolation=true "
-                    f"to reject such references at runtime."
+                    f"input_keys, or set strict_input_isolation=false "
+                    f"only when the cross-key read is intentional."
                 ),
             })
     return warnings
@@ -560,6 +657,61 @@ def _state_type_map(state_schema: list[dict[str, Any]]) -> dict[str, str]:
         ftype = (field.get("type") or "str").strip().lower() or "str"
         types[name] = ftype
     return types
+
+
+def _state_schema_defaults(
+    state_schema: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Extract ``{field_name: default_value}`` for every state_schema entry
+    that carries a non-None ``default_value``.
+
+    BUG-085 M3: state_schema fields with declared defaults must be
+    available to strict-isolation prompt placeholders even when the
+    caller didn't pass them in ``inputs``. Callers merge this dict UNDER
+    user-provided inputs so explicit caller values still win.
+
+    Codex checker finding 2: each call returns FRESH deepcopies of the
+    default values so mutable defaults (``[]``, ``{}``) cannot leak
+    mutation across runs. This makes ``_state_schema_defaults`` the
+    canonical "fresh defaults" entry point.
+    """
+    defaults: dict[str, Any] = {}
+    for field in state_schema or []:
+        if not isinstance(field, dict):
+            continue
+        name = (field.get("name") or "").strip()
+        if not name:
+            continue
+        # BUG-094: prefer canonical ``default_value`` key (StateFieldDecl),
+        # fall back to legacy storage key ``default`` so existing branches
+        # built before the key alignment still seed correctly without
+        # requiring a data migration.
+        if "default_value" in field:
+            value = field.get("default_value")
+        elif "default" in field:
+            value = field.get("default")
+        else:
+            continue
+        if value is None:
+            continue
+        defaults[name] = copy.deepcopy(value)
+    return defaults
+
+
+def seed_initial_state(
+    inputs: dict[str, Any],
+    state_schema: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Return a fresh dict with state_schema defaults merged UNDER inputs.
+
+    BUG-085 M3 — used at branch invocation to pre-populate the runtime
+    state with any state_schema field that carries a ``default_value``.
+    Explicit caller-provided ``inputs`` always win; defaults only fill
+    keys the caller did not pass.
+    """
+    seeded = dict(_state_schema_defaults(state_schema))
+    seeded.update(inputs or {})
+    return seeded
 
 
 def _needs_json_contract(
@@ -710,8 +862,16 @@ def _build_prompt_template_node(
     role = (node.model_hint or "writer").strip().lower() or "writer"
     template = node.prompt_template or ""
     timeout_s = float(node.timeout_seconds or 300.0)
-    strict_isolation = bool(getattr(node, "strict_input_isolation", False))
+    strict_isolation = bool(getattr(node, "strict_input_isolation", True))
     declared_inputs = list(node.input_keys)
+    # BUG-085 (Codex checker finding 1): state_schema fields carrying a
+    # default_value count as effectively-declared input. Without this,
+    # the strict render filter drops seeded defaults when the node
+    # declares any explicit input_keys, and the truly_outside partition
+    # falsely flags defaulted-but-referenced keys as isolation
+    # violations. Compute the union ONCE at closure-build time.
+    schema_defaulted_keys = set(_state_schema_defaults(state_schema).keys())
+    effective_declared = set(declared_inputs) | schema_defaulted_keys
     state_types = _state_type_map(state_schema or [])
     needs_json = _needs_json_contract(node, state_types)
     json_suffix = _json_contract_suffix(node, state_types) if needs_json else ""
@@ -737,8 +897,11 @@ def _build_prompt_template_node(
         # placeholders then trip the missing-state-keys check below
         # and raise CompilerError — never silently read leaked state.
         if strict_isolation and declared_inputs:
+            # BUG-085: include state_schema-defaulted keys in the render
+            # allow-list so seeded defaults are visible to the prompt
+            # even when not duplicated into the node's input_keys.
             render_state: dict[str, Any] = {
-                k: state[k] for k in declared_inputs if k in state
+                k: state[k] for k in effective_declared if k in state
             }
         else:
             render_state = state
@@ -768,14 +931,57 @@ def _build_prompt_template_node(
         missing = _missing_state_keys(template, render_state)
         if missing:
             if strict_isolation:
-                # Distinguish the isolation-specific failure so the
-                # operator sees WHY the key was unavailable (filtered
-                # out, not absent from state).
+                # BUG-085: partition the missing keys into two categories
+                # so the operator sees the ACTUAL failure mode, not a
+                # contradictory "outside declared input_keys" message for
+                # keys that ARE in the declared list but simply aren't in
+                # state yet (upstream node hasn't produced them, or a
+                # state_schema default wasn't seeded).
+                # state_schema-defaulted keys count as effectively-declared
+                # (Codex checker finding 1) — a referenced default key
+                # that simply isn't in state at execution time is NOT an
+                # isolation violation, it's an unavailability problem.
+                truly_outside = [
+                    k for k in missing if k not in effective_declared
+                ]
+                declared_but_unavailable = [
+                    k for k in missing if k in effective_declared
+                ]
+                # Prioritize the actionable "outside" diagnosis when both
+                # categories are present — that's the real isolation
+                # violation; the unavailable-declared keys are noted as
+                # secondary context so the operator gets the whole picture.
+                if truly_outside and declared_but_unavailable:
+                    raise CompilerError(
+                        f"Node '{node.node_id}' (strict_input_isolation=true) "
+                        f"prompt references state keys {truly_outside} "
+                        f"outside declared input_keys "
+                        f"{sorted(declared_inputs)!r}. "
+                        f"Add the keys to input_keys or clear the flag. "
+                        f"Additionally, declared input_keys "
+                        f"{declared_but_unavailable} are not present in "
+                        f"state at execution time — likely an upstream "
+                        f"node did not produce them, or a state_schema "
+                        f"default was not initialized."
+                    )
+                if truly_outside:
+                    raise CompilerError(
+                        f"Node '{node.node_id}' (strict_input_isolation=true) "
+                        f"prompt references state keys {truly_outside} "
+                        f"outside declared input_keys "
+                        f"{sorted(declared_inputs)!r}. "
+                        f"Add the keys to input_keys or clear the flag."
+                    )
+                # All missing keys ARE declared — the failure is that
+                # state didn't contain them at execution time.
                 raise CompilerError(
                     f"Node '{node.node_id}' (strict_input_isolation=true) "
-                    f"prompt references state keys {missing} outside "
-                    f"declared input_keys {sorted(declared_inputs)!r}. "
-                    f"Add the keys to input_keys or clear the flag."
+                    f"prompt references declared input_keys "
+                    f"{declared_but_unavailable} that are not present in "
+                    f"state at execution time. "
+                    f"Likely cause: an upstream node did not produce these "
+                    f"keys, or a state_schema field default was not "
+                    f"initialized into the run's initial state."
                 )
             raise CompilerError(
                 f"Node '{node.node_id}' prompt references missing "
@@ -824,7 +1030,13 @@ def _build_prompt_template_node(
                 # Policy-aware path: route through ProviderRouter.call_with_policy_sync
                 try:
                     _policy_router = _get_shared_router()
-                    if _policy_router is not None:
+                    router_providers = getattr(
+                        _policy_router, "available_providers", None,
+                    )
+                    router_has_providers = (
+                        router_providers is None or bool(router_providers)
+                    )
+                    if _policy_router is not None and router_has_providers:
                         def _policy_call() -> tuple[str, str]:
                             return _policy_router.call_with_policy_sync(
                                 role, prompt, "", effective_policy,
@@ -836,7 +1048,8 @@ def _build_prompt_template_node(
                         )
                         response, provider_served = text_and_name
                     else:
-                        # Router not available — fall through to plain provider_call
+                        # Router unavailable or empty — fall through to the
+                        # run_branch-injected provider bridge.
                         response = _run_with_timeout(
                             lambda: provider_call(prompt, "", role=role),
                             timeout_s=timeout_s,
@@ -848,9 +1061,8 @@ def _build_prompt_template_node(
                     raise
                 except Exception as exc:
                     logger.exception("Policy provider call failed in %s", node.node_id)
-                    raise CompilerError(
-                        f"Provider call failed in node '{node.node_id}': {exc}"
-                    ) from exc
+                    _emit_failed_event(event_sink, node.node_id, exc)
+                    raise _wrap_provider_failure(node.node_id, exc) from exc
             else:
                 try:
                     response = _run_with_timeout(
@@ -864,9 +1076,8 @@ def _build_prompt_template_node(
                     raise
                 except Exception as exc:
                     logger.exception("Provider call failed in %s", node.node_id)
-                    raise CompilerError(
-                        f"Provider call failed in node '{node.node_id}': {exc}"
-                    ) from exc
+                    _emit_failed_event(event_sink, node.node_id, exc)
+                    raise _wrap_provider_failure(node.node_id, exc) from exc
         finally:
             if concurrency_tracker is not None:
                 concurrency_tracker.release()
@@ -1424,6 +1635,17 @@ def _build_invoke_branch_node(
 
     _base = Path(base_path)
 
+    def _resolve_actor() -> str:
+        if child_actor:
+            return child_actor
+        if parent_run_id:
+            from workflow.runs import get_run
+
+            parent = get_run(_base, parent_run_id)
+            if parent:
+                return parent.get("actor") or "anonymous"
+        return "anonymous"
+
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         from workflow.branches import BranchDefinition as _BD
         from workflow.daemon_server import get_branch_definition
@@ -1436,7 +1658,7 @@ def _build_invoke_branch_node(
             for parent_key, child_key in inputs_mapping.items()
         }
 
-        actor_arg = child_actor or "anonymous"
+        actor_arg = _resolve_actor()
         if wait_mode == "blocking":
             # Phase A item 5 / Task #76b — on_child_fail policy + retry.
             # Blocking-mode invocation knows the child's terminal status
@@ -1449,6 +1671,7 @@ def _build_invoke_branch_node(
                     _base, branch=child_branch, inputs=child_inputs,
                     actor=actor_arg,
                     provider_call=provider_call,
+                    _invocation_depth=depth + 1,
                 )
                 if outcome.status == "completed":
                     try:
@@ -1564,6 +1787,17 @@ def _build_invoke_branch_version_node(
 
     _base = Path(base_path)
 
+    def _resolve_actor() -> str:
+        if child_actor:
+            return child_actor
+        if parent_run_id:
+            from workflow.runs import get_run
+
+            parent = get_run(_base, parent_run_id)
+            if parent:
+                return parent.get("actor") or "anonymous"
+        return "anonymous"
+
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         # Lazy module-attribute lookups so unittest.mock.patch on
         # workflow.runs.* takes effect (matches the patch-where-the-
@@ -1577,7 +1811,7 @@ def _build_invoke_branch_version_node(
             child_key: state.get(parent_key)
             for parent_key, child_key in inputs_mapping.items()
         }
-        actor_arg = child_actor or "anonymous"
+        actor_arg = _resolve_actor()
 
         def _resolve_branch_def_id_for_author() -> str:
             """Map child_branch_version_id → branch_def_id for author lookup.
@@ -1736,6 +1970,7 @@ def _build_node(
     concurrency_tracker: ConcurrencyTracker | None = None,
     base_path: str | Path | None = None,
     parent_run_id: str = "",
+    invocation_depth: int = 0,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -1786,6 +2021,7 @@ def _build_node(
             node, base_path=base_path, event_sink=event_sink,
             provider_call=provider_call,
             parent_run_id=parent_run_id,
+            depth=invocation_depth,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.invoke_branch_version_spec is not None:
@@ -1798,6 +2034,7 @@ def _build_node(
             node, base_path=base_path, event_sink=event_sink,
             provider_call=provider_call,
             parent_run_id=parent_run_id,
+            depth=invocation_depth,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.await_run_spec is not None:
@@ -1905,6 +2142,7 @@ def compile_branch(
     concurrency_budget_override: int | None = None,
     base_path: str | Path | None = None,
     parent_run_id: str = "",
+    invocation_depth: int = 0,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -1987,6 +2225,9 @@ def compile_branch(
     node_by_id: dict[str, NodeDefinition] = {
         n.node_id: n for n in branch.node_defs
     }
+    graph_node_by_id: dict[str, GraphNodeRef] = {
+        gn.id: gn for gn in branch.graph_nodes
+    }
 
     node_ids_in_order = [gn.id for gn in branch.graph_nodes]
 
@@ -2014,6 +2255,7 @@ def compile_branch(
             concurrency_tracker=concurrency_tracker,
             base_path=base_path,
             parent_run_id=parent_run_id,
+            invocation_depth=invocation_depth,
         )
         graph.add_node(gn.id, fn)
 
@@ -2032,7 +2274,9 @@ def compile_branch(
 
     # Conditional edges.
     for cedge in branch.conditional_edges:
-        source_def = node_by_id.get(cedge.from_node)
+        source_ref = graph_node_by_id.get(cedge.from_node)
+        source_def_id = source_ref.node_def_id if source_ref else cedge.from_node
+        source_def = node_by_id.get(source_def_id or cedge.from_node)
         conditions = {
             label: (END if tgt == "END" else tgt)
             for label, tgt in cedge.conditions.items()

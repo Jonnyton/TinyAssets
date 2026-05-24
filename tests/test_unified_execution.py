@@ -459,6 +459,40 @@ def test_boundary_state_round_trip(fresh_registrations, monkeypatch):
     assert "selected_target_id" not in out
 
 
+def test_worldbuild_soft_stop_clears_when_branch_task_queue_has_work(tmp_path):
+    """BUG-055: a checkpointed ``worldbuild_stuck`` stop must not keep
+    exiting when the durable BranchTask queue has pickable work.
+    """
+    from fantasy_daemon.branch_registrations import clear_restartable_soft_stop
+    from workflow.branch_tasks import BranchTask, append_task
+
+    append_task(
+        tmp_path,
+        BranchTask(
+            branch_task_id="bt-1",
+            branch_def_id="fantasy_author:universe_cycle_wrapper",
+            universe_id="u1",
+            status="pending",
+            trigger_source="owner_queued",
+        ),
+    )
+
+    repaired = clear_restartable_soft_stop({
+        "universe_id": "u1",
+        "universe_path": str(tmp_path),
+        "health": {
+            "stopped": True,
+            "idle_reason": "worldbuild_stuck",
+            "worldbuild_noop_streak": 3,
+            "cycle_noop_streak": 0,
+        },
+    })
+
+    assert repaired["health"]["stopped"] is False
+    assert repaired["health"]["idle_reason"] == ""
+    assert repaired["health"]["worldbuild_noop_streak"] == 0
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Checkpoint regression under flag-on (§4.11, option-1 accepted)
 # ───────────────────────────────────────────────────────────────────────

@@ -9,7 +9,8 @@
 # 3. Optionally install a subscription-backed Codex auth bundle from
 #    WORKFLOW_CODEX_AUTH_JSON_B64. Legacy `codex login --with-api-key`
 #    from OPENAI_API_KEY is intentionally not run.
-# 4. exec the passed CMD (preserves tini PID-1 signal forwarding).
+# 4. Fail loud if required static data files are missing from the image.
+# 5. exec the passed CMD (preserves tini PID-1 signal forwarding).
 #
 # Placed before CMD so operators can override CMD freely.
 
@@ -75,10 +76,27 @@ else
 fi
 
 # Codex stores auth in ~/.codex/auth.json relative to the running user.
+#
+# Codex CLI uses OAuth single-use refresh tokens — it rotates them
+# in-container during normal operation, writing the new token back to
+# auth.json. Overwriting that file on every container start throws away
+# rotated tokens, so the next refresh attempt sends a token that's
+# already been used -> `refresh_token_reused` error -> codex calls die.
+#
+# Fix per OpenAI's official Codex CI/CD auth guide
+# (https://developers.openai.com/codex/auth/ci-cd-auth): seed auth.json
+# only when missing, and persist it across container restarts via a
+# volume mount on the parent directory (deploy/compose.yml binds
+# /app/.codex to a host path so the in-place refresh chain survives).
+#
+# Three branches:
+#   1. env set, file missing  -> seed (first boot / volume recovery)
+#   2. env set, file present  -> preserve (in-place refresh chain alive)
+#   3. env unset, file present -> preserve (volume-only operation)
 CODEX_AUTH_FILE="${HOME:-/app}/.codex/auth.json"
 
-if [[ -n "${WORKFLOW_CODEX_AUTH_JSON_B64:-}" ]]; then
-    echo "[entrypoint] installing codex subscription auth bundle"
+if [[ -n "${WORKFLOW_CODEX_AUTH_JSON_B64:-}" && ! -f "${CODEX_AUTH_FILE}" ]]; then
+    echo "[entrypoint] seeding codex auth.json (first boot / volume recovery)"
     CODEX_AUTH_DIR="$(dirname "${CODEX_AUTH_FILE}")"
     mkdir -p "${CODEX_AUTH_DIR}"
     CODEX_AUTH_TMP="$(mktemp "${CODEX_AUTH_DIR}/auth.json.XXXXXX")"
@@ -90,7 +108,45 @@ if [[ -n "${WORKFLOW_CODEX_AUTH_JSON_B64:-}" ]]; then
         echo "[entrypoint] failed to decode WORKFLOW_CODEX_AUTH_JSON_B64" >&2
         exit 1
     fi
-    unset WORKFLOW_CODEX_AUTH_JSON_B64
+elif [[ -f "${CODEX_AUTH_FILE}" ]]; then
+    echo "[entrypoint] preserving existing codex auth.json (in-place refresh chain)"
 fi
+unset WORKFLOW_CODEX_AUTH_JSON_B64
+
+_workflow_bash_path() {
+    local _path="${1:-}"
+    if [[ "${_path}" =~ ^([A-Za-z]):([\\/].*)$ ]]; then
+        if command -v cygpath >/dev/null 2>&1; then
+            cygpath -u "${_path}"
+        else
+            local _drive
+            local _prefix
+            local _rest
+            _drive="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+            _rest="${BASH_REMATCH[2]//\\//}"
+            _rest="${_rest#/}"
+            _prefix="/${_drive}"
+            if [[ -d "/mnt/${_drive}" ]]; then
+                _prefix="/mnt/${_drive}"
+            fi
+            printf '%s/%s\n' "${_prefix}" "${_rest}"
+        fi
+    else
+        printf '%s\n' "${_path}"
+    fi
+}
+
+_workflow_package_root="$(_workflow_bash_path "${WORKFLOW_PACKAGE_ROOT:-/app}")"
+_required_data_files=(
+    data/world_rules.lp
+)
+
+for _rel in "${_required_data_files[@]}"; do
+    _expected="${_workflow_package_root}/${_rel}"
+    if [[ ! -f "${_expected}" ]]; then
+        echo "DATA-FILE-MISSING: ${_rel} (expected at ${_expected})" >&2
+        exit 1
+    fi
+done
 
 exec "$@"

@@ -7,9 +7,13 @@ from pathlib import Path
 from workflow.daemon_brain import (
     build_daemon_brain_packet,
     capture_daemon_memory,
+    daemon_memory_cost_ledger_status,
+    daemon_memory_registry,
     list_daemon_memory,
     memory_observability_status,
+    open_brain_status_surface,
     promote_daemon_memory_to_wiki,
+    review_daemon_memory,
     search_daemon_memory,
 )
 from workflow.daemon_memory import build_daemon_memory_packet
@@ -135,3 +139,239 @@ def test_daemon_brain_smoke_roundtrip(tmp_path: Path) -> None:
     status = memory_observability_status(tmp_path, daemon_id=ada["daemon_id"])
     assert status["entry_count"] == 1
     assert status["event_count"] >= 5
+    assert status["cost_ledger"]["read_only"] is True
+    assert status["cost_ledger"]["estimated_total_tokens"] > 0
+
+
+def test_daemon_memory_registry_describes_kinds_and_lifecycle() -> None:
+    registry = daemon_memory_registry()
+
+    assert "failure_mode" in {item["kind"] for item in registry["memory_kinds"]}
+    assert registry["default_memory_kind"] == "semantic"
+    assert registry["default_promotion_state"] == "candidate"
+    assert registry["promotion_transitions"]["candidate"] == [
+        "accepted",
+        "promoted",
+        "rejected",
+        "superseded",
+    ]
+    assert registry["promotion_transitions"]["promoted"] == ["superseded"]
+    assert registry["terminal_promotion_states"] == ["rejected", "superseded"]
+
+
+def test_daemon_memory_lifecycle_blocks_invalid_transitions(tmp_path: Path) -> None:
+    daemon = _create_daemon(tmp_path, "Lifecycle Daemon")
+
+    entry = capture_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        memory_kind="policy",
+        content="Rejected memories must not be promoted later.",
+        source_type="manual",
+        source_id="pytest-lifecycle",
+        reliability="host_observed",
+        language_type="policy",
+    )
+    rejected = review_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        entry_id=entry["entry_id"],
+        decision="reject",
+        note="Not stable enough.",
+    )
+    assert rejected["entry"]["promotion_state"] == "rejected"
+
+    try:
+        promote_daemon_memory_to_wiki(
+            tmp_path,
+            daemon_id=daemon["daemon_id"],
+            entry_ids=[entry["entry_id"]],
+            summary="This should not promote.",
+        )
+    except ValueError as exc:
+        assert "cannot transition promotion_state from rejected to promoted" in str(exc)
+    else:
+        raise AssertionError("rejected memory was promoted")
+
+def test_session_trace_summary_is_recognized_kind_with_full_lifecycle(
+    tmp_path: Path,
+) -> None:
+    """Slice 2 of PrivateTraceCommons (per docs/design-notes/2026-05-02-private-trace-commons.md).
+
+    Verifies session_trace_summary is a recognized memory_kind that moves
+    through the existing promotion state machine like any other kind:
+    candidate (capture) → accepted (review) → promoted (publish to wiki).
+
+    Slice 1 spec proposed a `host_private`-blocks-promotion enforcement;
+    Slice 2 implementation found that contradicts the existing default
+    visibility semantics (host_private is the DEFAULT for new entries, and
+    every normal promotion flow today walks through host_private →
+    promoted). Per Scoping Rules 2 + 3, visibility enforcement is
+    community-composed via gates anyway, not a platform primitive. The
+    enforcement is intentionally NOT shipped; visibility tagging
+    + community-composed gate enforcement is the path. Follow-up filing
+    will retract that part of the Slice 1 spec.
+    """
+    daemon = _create_daemon(tmp_path, "Trace Daemon")
+
+    entry = capture_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        memory_kind="session_trace_summary",
+        content=(
+            "Run of branch X completed. 3 artifacts captured. "
+            "No sensitive content exposed."
+        ),
+        source_type="run",
+        source_id="run-abc123",
+        reliability="host_observed",
+        language_type="summary",
+        visibility="borrowable_role_context",
+    )
+    assert entry["memory_kind"] == "session_trace_summary"
+    assert entry["promotion_state"] == "candidate"
+
+    review_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        entry_id=entry["entry_id"],
+        decision="accept",
+        note="Summary reviewed; safe to surface.",
+    )
+
+    result = promote_daemon_memory_to_wiki(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        entry_ids=[entry["entry_id"]],
+        summary="Session trace summary promotion sanity check.",
+    )
+    assert result["promoted_count"] == 1
+
+
+def test_experience_lesson_is_recognized_kind_with_full_lifecycle(
+    tmp_path: Path,
+) -> None:
+    """Slice 2 of ExperiencePool (per docs/design-notes/2026-05-02-experience-pool-and-group-evolution.md).
+
+    Verifies experience_lesson is a recognized memory_kind that moves
+    through the existing promotion state machine: candidate (capture) →
+    accepted (review) → promoted (publish to wiki).
+
+    Per the audit verdict, experience_lesson reuses the existing memory_kind
+    substrate verbatim — no new typed surface, no schema migration, no
+    parallel evidence shape (evidence_refs point at existing EvalResult IDs).
+    """
+    daemon = _create_daemon(tmp_path, "Lesson Daemon")
+
+    entry = capture_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        memory_kind="experience_lesson",
+        content=(
+            "When the simulator placeholder check fails, adding a "
+            "validation gate before the simulator step caught 3 prior "
+            "false-passes in retrospective evaluation."
+        ),
+        source_type="run",
+        source_id="run-markovic-2026-05-15-abc",
+        reliability="host_observed",
+        language_type="lesson",
+        visibility="borrowable_role_context",
+        metadata={
+            "source_run_id": "run:markovic-2026-05-15-abc",
+            "goal_id": "goal:markovic-publication",
+            "branch_id": "branch:markovic_fingerprint_rd_v3",
+            "lesson_kind": "intervention",
+            "intervention": {
+                "description": "Add placeholder-validation gate before simulator step",
+                "change_kind": "add",
+                "applied_to": "branch:markovic_fingerprint_rd_v3",
+            },
+            "observed_delta": (
+                "3 prior runs would have been caught at the new gate; "
+                "new gate produces FAILED early with typed failure_mode."
+            ),
+            "evidence_refs": [
+                "evalresult://run-markovic-2026-05-15-abc",
+            ],
+            "confidence": 0.8,
+        },
+    )
+    assert entry["memory_kind"] == "experience_lesson"
+    assert entry["promotion_state"] == "candidate"
+
+    review_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        entry_id=entry["entry_id"],
+        decision="accept",
+        note="Lesson reviewed; intervention pattern is generalizable.",
+    )
+
+    result = promote_daemon_memory_to_wiki(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        entry_ids=[entry["entry_id"]],
+        summary="Experience lesson promotion sanity check.",
+    )
+    assert result["promoted_count"] == 1
+
+
+def test_daemon_memory_cost_ledger_is_read_only_status(tmp_path: Path) -> None:
+    ada = _create_daemon(tmp_path, "Cost Ada")
+    capture_daemon_memory(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        memory_kind="policy",
+        content="Track prompt budget costs before promoting open-brain memories.",
+        source_type="manual",
+        source_id="pytest-cost-ledger",
+        reliability="host_observed",
+        temporal_bounds={"valid_from": "2026-05-17"},
+        language_type="policy",
+        confidence=0.8,
+        importance=0.7,
+    )
+    search_daemon_memory(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        query="prompt budget",
+        limit=2,
+    )
+
+    ledger = daemon_memory_cost_ledger_status(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        recent_limit=2,
+    )
+
+    assert ledger["read_only"] is True
+    assert ledger["ledger_available"] is True
+    assert ledger["entry_count"] == 1
+    assert ledger["event_count"] >= 2
+    assert ledger["estimated_total_tokens"] > 0
+    assert ledger["entries_by_kind"] == {"policy": 1}
+    assert "daemon.memory.write_candidate" in ledger["events_by_type"]
+    assert ledger["recent_events"][0]["estimated_tokens"] >= 0
+
+
+def test_open_brain_status_surface_summarizes_soul_daemons(tmp_path: Path) -> None:
+    ada = _create_daemon(tmp_path, "Surface Ada")
+    capture_daemon_memory(
+        tmp_path,
+        daemon_id=ada["daemon_id"],
+        memory_kind="failure_mode",
+        content="Surface mini-brain cost without triggering autonomous cleanup.",
+        source_type="manual",
+        source_id="pytest-open-brain-status",
+        reliability="host_observed",
+        temporal_bounds={"valid_from": "2026-05-17"},
+        language_type="policy",
+    )
+
+    status = open_brain_status_surface(tmp_path)
+
+    assert status["read_only"] is True
+    assert status["daemon_count"] == 1
+    assert status["daemons"][0]["daemon_id"] == ada["daemon_id"]
+    assert status["daemons"][0]["cost_ledger"]["estimated_total_tokens"] > 0

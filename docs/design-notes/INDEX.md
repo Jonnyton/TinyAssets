@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## 2026-05-03
+
+- [Multi-User Workflow Operating Model](2026-05-03-multi-user-workflow-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-workflow-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
+
 ## 2026-04-18
 
 - [Full Platform Architecture — No Phases, Single-Build Target](2026-04-18-full-platform-architecture.md) - **status: integrated-into-PLAN (2026-04-28).** Architectural commitments are canonical via `PLAN.md §"Full-Platform Architecture (Canonical)"`; this design note is the integrated detail surface (full reasoning + scale-audit + host-decision lineage). Host directive 2026-04-18: thousands-concurrent users, full node CRUD with zero daemons hosted, multi-user near-real-time collaboration, opt-in daemon hosting. Recommends Supabase (Postgres + Realtime + Auth + RLS + Storage), GitHub demoted to export sink, versioned rows + broadcast + presence (not CRDT), GitHub OAuth at launch. ~7-9 dev-days with two devs. 8 host Qs §11, most importantly Q1 Postgres-canonical commit.

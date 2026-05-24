@@ -19,15 +19,18 @@ of the community change loop.
 3. BUG lane: filters promoted BUG entries with `bug_number > cursor`.
 4. Community lane: filters promoted non-bug request artifacts not in
    `.agents/.wiki_change_sync_seen.json`.
-5. For each new item, calls `wiki action=read` to pull frontmatter, then POSTs
-   a GH Issue via `GITHUB_TOKEN`.
+5. For each new item, calls `wiki action=read` to pull frontmatter. Non-bug
+   community request issues also include a bounded copy of the source wiki body
+   so auto-change writers see the request evidence without a separate lookup.
+   Then the sync POSTs a GH Issue via `GITHUB_TOKEN`.
 6. BUG issue title: `[BUG-NNN] <title>`. Labels: `daemon-request`,
    `auto-change`, `auto-bug`, `request:bug`, `payment:free-ok`,
    `writer-pool:claude-codex`, `checker:cross-family`, `gate-required`, and
-   `severity:<level>`.
+   classifier-promoted `priority:*` plus `severity:<level>`.
 7. Non-bug issue title: `[WIKI-<KIND>] <title>`. Labels: `daemon-request`,
    `auto-change`, `request:<kind>`, `payment:free-ok`,
-   `writer-pool:claude-codex`, `checker:cross-family`, and `gate-required`.
+   `writer-pool:claude-codex`, `checker:cross-family`, `gate-required`, and
+   classifier-promoted `priority:*`.
 8. Commits updated sync state back with `[skip ci]`.
 
 ## State files
@@ -62,8 +65,20 @@ commits increments back. This makes reruns idempotent.
 | `pages/plans/patch-*` | `request:patch` |
 | `pages/workflows/*` | `request:branch-refinement` |
 | builder notes under `pages/notes/*` | `request:branch-refinement` |
-| strategic/roadmap/design/architecture plans | `request:project-design` |
+| other coordination notes under `pages/notes/*` | ignored by sync |
+| strategic/roadmap/design/architecture/refactoring/attribution plans | `request:project-design` |
+| patch/feature pages whose title/path has architectural shape | `request:project-design` |
 | other promoted plans/concepts | `request:docs-ops` |
+
+Architectural shape wins over the folder name. A patch request asking for
+architecture, design-note, roadmap, operating-model, or substrate changes is
+filed as `request:project-design`; the auto-fix workflow then drafts under
+`docs/design-notes/proposed/` on a `design-note-draft/*` branch instead of
+opening a mechanical `auto-change/*` branch.
+
+Ordinary `pages/notes/*` coordination artifacts are not request artifacts.
+Only builder notes enter the branch-refinement lane; design or architecture
+words in coordination-note titles are not enough to create daemon requests.
 
 ## Manual trigger
 
@@ -89,6 +104,30 @@ python scripts/wiki_bug_sync.py \
 ```
 
 Prints what would be created. It does not touch GitHub or update state files.
+
+## Timestamp lint for BrainUpdate pages
+
+BU-002 coordination pages use a source-fidelity split: typed coordination
+timestamps must be UTC ISO8601 `Z` values, while source/canon prose keeps the
+source's original date conventions. Before bridging or reviewing BrainUpdate
+pages that add typed timestamp metadata, run:
+
+```bash
+python scripts/timestamp_lint_run.py path/to/page.md
+```
+
+For replaying wiki evidence against the observed write time, pass the server
+write timestamp explicitly:
+
+```bash
+python scripts/timestamp_lint_run.py path/to/page.md \
+    --write-time 2026-05-08T01:25:00Z
+```
+
+The check rejects typed timestamp fields in frontmatter or YAML state blocks
+that are non-UTC, lack the `Z` suffix, or are future-stamped beyond the small
+clock-skew tolerance. Prose dates and untyped source text are advisory only and
+are intentionally ignored.
 
 ## Reset and skip
 
@@ -128,6 +167,7 @@ Labels are created automatically if missing.
 | `writer-pool:*` | `1d76db` |
 | `checker:*` | `b60205` |
 | `gate-required` | `fbca04` |
+| `priority:*` | `f9d0c4` |
 
 ## Request contract
 

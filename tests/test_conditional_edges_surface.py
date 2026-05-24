@@ -10,8 +10,12 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+from typing import Any, Callable
 
 import pytest
+
+from workflow.branches import BranchDefinition
+from workflow.graph_compiler import compile_branch
 
 
 @pytest.fixture
@@ -39,6 +43,28 @@ def _conditional_edges(got: dict) -> list:
     return got.get("graph", {}).get("conditional_edges", [])
 
 
+def _scripted_provider(gate_output: str) -> Callable[..., str]:
+    def _call(prompt: str, system: str = "", *, role: str = "writer") -> str:
+        if "decide" in prompt:
+            return gate_output
+        return "leaf ran"
+
+    return _call
+
+
+def _compile_and_invoke_stored_branch(
+    branch_payload: dict[str, Any],
+    *,
+    gate_output: str,
+) -> dict[str, Any]:
+    branch = BranchDefinition.from_dict(branch_payload)
+    compiled = compile_branch(
+        branch,
+        provider_call=_scripted_provider(gate_output),
+    )
+    return compiled.graph.compile().invoke({"scene_input": "x"})
+
+
 def _three_node_spec() -> dict:
     """Baseline valid 2-node branch (router→leaf→END). Tests that
     exercise patch ops mutate this baseline — they add ``right``
@@ -47,13 +73,20 @@ def _three_node_spec() -> dict:
         "name": "Router",
         "node_defs": [
             {"node_id": "router", "display_name": "Router",
-             "prompt_template": "decide"},
+             "prompt_template": "decide: {scene_input}",
+             "output_keys": ["route"]},
             {"node_id": "left", "display_name": "Left",
-             "prompt_template": "L"},
+             "prompt_template": "L",
+             "output_keys": ["left_out"]},
         ],
         "edges": [
             {"from": "router", "to": "left"},
             {"from": "left", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": "scene_input", "type": "str"},
+            {"name": "route", "type": "str"},
+            {"name": "left_out", "type": "str"},
         ],
         "entry_point": "router",
     }
@@ -65,15 +98,24 @@ def _router_spec_no_regular_edges() -> dict:
         "name": "Router",
         "node_defs": [
             {"node_id": "router", "display_name": "Router",
-             "prompt_template": "decide"},
+             "prompt_template": "decide: {scene_input}",
+             "output_keys": ["route"]},
             {"node_id": "left", "display_name": "Left",
-             "prompt_template": "L"},
+             "prompt_template": "L",
+             "output_keys": ["left_out"]},
             {"node_id": "right", "display_name": "Right",
-             "prompt_template": "R"},
+             "prompt_template": "R",
+             "output_keys": ["right_out"]},
         ],
         "edges": [
             {"from": "left", "to": "END"},
             {"from": "right", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": "scene_input", "type": "str"},
+            {"name": "route", "type": "str"},
+            {"name": "left_out", "type": "str"},
+            {"name": "right_out", "type": "str"},
         ],
         "entry_point": "router",
     }
@@ -93,6 +135,9 @@ def test_build_branch_accepts_conditional_edges(branch_env):
     assert _conditional_edges(got) == [
         {"from": "router", "conditions": {"a": "left", "b": "right"}}
     ]
+    invoked = _compile_and_invoke_stored_branch(got, gate_output="b")
+    assert invoked.get("right_out")
+    assert not invoked.get("left_out")
 
 
 def test_patch_branch_add_conditional_edge_appends(branch_env):
@@ -103,14 +148,18 @@ def test_patch_branch_add_conditional_edge_appends(branch_env):
     assert result["status"] == "built", result
     bid = result["branch_def_id"]
 
-    # Add a second leaf + conditional branching in one transaction.
+    # Replace the original linear router->left edge with conditional
+    # branching in one transaction.
     patch_result = _call(
         us, "patch_branch",
         branch_def_id=bid,
         changes_json=json.dumps([
             {"op": "add_node", "node_id": "right", "display_name": "Right",
-             "prompt_template": "R"},
+             "prompt_template": "R",
+             "output_keys": ["right_out"]},
             {"op": "add_edge", "from": "right", "to": "END"},
+            {"op": "add_state_field", "name": "right_out", "type": "str"},
+            {"op": "remove_edge", "from": "router", "to": "left"},
             {"op": "add_conditional_edge",
              "from": "router",
              "conditions": {"a": "left", "b": "right"}},
@@ -122,6 +171,9 @@ def test_patch_branch_add_conditional_edge_appends(branch_env):
     assert _conditional_edges(got) == [
         {"from": "router", "conditions": {"a": "left", "b": "right"}}
     ]
+    invoked = _compile_and_invoke_stored_branch(got, gate_output="b")
+    assert invoked.get("right_out")
+    assert not invoked.get("left_out")
 
 
 def test_patch_remove_conditional_edge_with_outcome_removes_mapping(branch_env):

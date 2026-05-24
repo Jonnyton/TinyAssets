@@ -170,6 +170,18 @@ class TestWikiRead:
         result = json.loads(wiki("read"))
         assert "error" in result
 
+    def test_read_draft_does_not_duplicate_existing_draft_marker(self, wiki_dir):
+        content = "[DRAFT] # Pending Concept\n\nDraft body.\n"
+        (wiki_dir / "drafts" / "concepts" / "pending-concept.md").write_text(
+            content, encoding="utf-8"
+        )
+
+        result = json.loads(wiki("read", page="pending-concept"))
+
+        assert result["is_draft"] is True
+        assert result["content"].startswith("[DRAFT] # Pending Concept")
+        assert not result["content"].startswith("[DRAFT] [DRAFT]")
+
 
 class TestWikiList:
     def test_list_pages(self, wiki_dir):
@@ -282,6 +294,81 @@ class TestWikiWrite:
         )
 
 
+class TestWikiDelete:
+    def test_delete_dry_run_default_does_not_delete(self, wiki_dir):
+        target = wiki_dir / "pages" / "projects" / "test-project.md"
+        assert target.exists()
+
+        result = json.loads(wiki("delete", page="pages/projects/test-project.md"))
+
+        assert result["status"] == "dry_run"
+        assert result["would_delete"] is True
+        assert result["path"] == "pages/projects/test-project.md"
+        assert "sha256" in result
+        assert target.exists()
+
+    def test_delete_requires_reason_when_not_dry_run(self, wiki_dir):
+        target = wiki_dir / "pages" / "projects" / "test-project.md"
+
+        result = json.loads(
+            wiki("delete", page="pages/projects/test-project.md", dry_run=False)
+        )
+
+        assert result["error"] == "reason is required when dry_run=false."
+        assert target.exists()
+
+    def test_delete_rejects_hash_mismatch(self, wiki_dir):
+        target = wiki_dir / "pages" / "projects" / "test-project.md"
+
+        result = json.loads(
+            wiki(
+                "delete",
+                page="pages/projects/test-project.md",
+                reason="stale test cleanup",
+                expected_sha256="wrong",
+                dry_run=False,
+            )
+        )
+
+        assert result["status"] == "conflict"
+        assert result["error"] == "content hash mismatch"
+        assert target.exists()
+
+    def test_delete_removes_exact_patch_request_page_and_logs(self, wiki_dir):
+        patch_dir = wiki_dir / "pages" / "patch-requests"
+        patch_dir.mkdir(parents=True)
+        target = patch_dir / "pr-106-bad-filing.md"
+        target.write_text(
+            "---\ntitle: Bad filing\ntype: patch_request\n---\n\nDelete me.\n",
+            encoding="utf-8",
+        )
+
+        dry_run = json.loads(wiki("delete", page="pages/patch-requests/pr-106-bad-filing.md"))
+        result = json.loads(
+            wiki(
+                "delete",
+                page="pages/patch-requests/pr-106-bad-filing.md",
+                reason="misframed patch request",
+                expected_sha256=dry_run["sha256"],
+                dry_run=False,
+            )
+        )
+
+        assert result["status"] == "deleted"
+        assert result["path"] == "pages/patch-requests/pr-106-bad-filing.md"
+        assert not target.exists()
+        assert "misframed patch request" in (wiki_dir / "log.md").read_text(
+            encoding="utf-8"
+        )
+
+    def test_delete_rejects_protected_anchor_page(self, wiki_dir):
+        result = json.loads(wiki("delete", page="index"))
+
+        assert result["status"] == "protected"
+        assert "protected" in result["error"]
+        assert (wiki_dir / "index.md").exists()
+
+
 class TestWikiPromote:
     def test_promote_valid_draft(self, wiki_dir):
         # Write a draft with valid frontmatter and wikilinks
@@ -299,6 +386,23 @@ class TestWikiPromote:
         assert result["status"] == "promoted"
         assert (wiki_dir / "pages" / "concepts" / "promotable.md").exists()
         assert not (wiki_dir / "drafts" / "concepts" / "promotable.md").exists()
+
+    def test_promote_first_page_can_link_to_seed_index(self, tmp_path, monkeypatch):
+        wiki_root = tmp_path / "FreshWiki"
+        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+        content = (
+            "---\ntitle: First Concept\ntype: concept\n"
+            "created: 2026-05-05\nupdated: 2026-05-05\n"
+            "sources: [first-note]\n---\n\n"
+            "This is the first promoted concept in a fresh wiki, so it links "
+            "back to the canonical seed [[index]] until another page exists.\n"
+        )
+        wiki("write", category="concepts", filename="first-concept", content=content)
+
+        result = json.loads(wiki("promote", filename="first-concept"))
+
+        assert result["status"] == "promoted"
+        assert (wiki_root / "pages" / "concepts" / "first-concept.md").exists()
 
     def test_promote_blocks_without_title(self, wiki_dir):
         content = "---\ntype: concept\n---\nShort."
@@ -406,6 +510,75 @@ class TestWikiLint:
         result = json.loads(wiki("lint"))
         issues = result.get("issues", [])
         assert any("ORPHAN" in i and "orphan-page" in i for i in issues)
+
+    def test_lint_single_page_excludes_whole_wiki_backlog(self, wiki_dir):
+        clean_content = (
+            "---\ntitle: Clean Page\ntype: concept\n"
+            "confidence: medium\nsources: [test]\n---\n\n"
+            "A clean page that links to [[test-project]] and has enough body "
+            "content for page-specific linting.\n"
+        )
+        (wiki_dir / "pages" / "concepts" / "clean-page.md").write_text(
+            clean_content, encoding="utf-8"
+        )
+        (wiki_dir / "index.md").write_text(
+            (wiki_dir / "index.md").read_text(encoding="utf-8")
+            + "- [[clean-page]] -- Clean Page\n",
+            encoding="utf-8",
+        )
+        (wiki_dir / "pages" / "concepts" / "orphan-page.md").write_text(
+            "---\ntitle: Orphan\ntype: concept\nconfidence: high\n"
+            "sources: [test]\n---\n\nUnrelated orphan backlog.\n",
+            encoding="utf-8",
+        )
+        wiki(
+            "write",
+            category="concepts",
+            filename="pending-draft",
+            content="---\ntitle: Pending Draft\ntype: concept\n---\n\nDraft backlog.",
+        )
+
+        result = json.loads(wiki("lint", page="clean-page"))
+
+        assert result["status"] == "healthy"
+        assert result["issues"] == []
+
+    def test_lint_single_draft_reports_promotion_blockers_only(self, wiki_dir):
+        wiki(
+            "write",
+            category="notes",
+            filename="skinny",
+            content="---\ntitle: Skinny\n---\ntoo short\n",
+        )
+        (wiki_dir / "pages" / "concepts" / "orphan-page.md").write_text(
+            "---\ntitle: Orphan\ntype: concept\nconfidence: high\n"
+            "sources: [test]\n---\n\nUnrelated orphan backlog.\n",
+            encoding="utf-8",
+        )
+
+        result = json.loads(wiki("lint", page="skinny"))
+        issues = result.get("issues", [])
+
+        assert result["status"] == "issues_found"
+        assert any("Missing type" in issue for issue in issues)
+        assert any("Body too short" in issue for issue in issues)
+        assert not any("orphan-page" in issue for issue in issues)
+
+    def test_lint_accepts_seed_index_as_wikilink_target(self, tmp_path, monkeypatch):
+        wiki_root = tmp_path / "FreshWiki"
+        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+        content = (
+            "---\ntitle: First Concept\ntype: concept\n"
+            "confidence: medium\nsources: [first-note]\n---\n\n"
+            "This first page links to the canonical seed [[index]] while the "
+            "fresh wiki has no other promoted content to cross-reference.\n"
+        )
+        wiki("write", category="concepts", filename="first-concept", content=content)
+        wiki("promote", filename="first-concept")
+
+        result = json.loads(wiki("lint", page="first-concept"))
+
+        assert "MISSING: [[index]]" not in result.get("issues", [])
 
 
 class TestWikiSupersede:
@@ -568,6 +741,80 @@ class TestWikiFileBugDispatch:
         assert out["bug_id"].startswith("BUG-")
         assert "path" in out
 
+    def test_file_bug_flags_patch_request_ghost_risk_attention(self, wiki_dir):
+        (wiki_dir / "pages" / "patch-requests").mkdir(parents=True, exist_ok=True)
+        (wiki_dir / "drafts" / "patch-requests").mkdir(parents=True, exist_ok=True)
+
+        out = json.loads(
+            wiki(
+                "file_bug",
+                component="community_loop.classifier",
+                severity="minor",
+                title="Filing-time effort-class prediction circuit-breaker classifier",
+                observed=(
+                    "Mechanical filing cites MSR prior art with AUC 0.96 on "
+                    "33K agent PRs and needs opposite-family checker attention."
+                ),
+                expected="Carrier attention lands before stall.",
+                kind="patch_request",
+                tags="mechanical",
+            )
+        )
+
+        assert out["status"] == "filed"
+        effort = out["effort_classification"]
+        assert effort["effort_class"] == "ghost-risk"
+        assert effort["attention"] == "carrier-review-before-daemon-pickup"
+        assert "research_prior_art" in effort["signals"]
+        body = (wiki_dir / out["path"]).read_text(encoding="utf-8")
+        assert "effort_class: ghost-risk" in body
+        assert "effort_attention: carrier-review-before-daemon-pickup" in body
+
+    def test_file_bug_flags_patch_request_merge_instant(self, wiki_dir):
+        (wiki_dir / "pages" / "patch-requests").mkdir(parents=True, exist_ok=True)
+        (wiki_dir / "drafts" / "patch-requests").mkdir(parents=True, exist_ok=True)
+
+        out = json.loads(
+            wiki(
+                "file_bug",
+                component="docs",
+                severity="cosmetic",
+                title="Fix typo in connector docs",
+                observed="Mechanical docs-only copy edit with no runtime behavior change.",
+                kind="patch_request",
+            )
+        )
+
+        assert out["status"] == "filed"
+        effort = out["effort_classification"]
+        assert effort["effort_class"] == "merge-instant"
+        assert effort["attention"] == "normal-review-gates"
+        assert "mechanical_shape" in effort["signals"]
+        body = (wiki_dir / out["path"]).read_text(encoding="utf-8")
+        assert "effort_class: merge-instant" in body
+
+    def test_file_bug_accepts_tags_via_public_wrapper(self, wiki_dir):
+        """BUG-040: public wiki wrapper must pass tags through to file_bug."""
+        (wiki_dir / "pages" / "bugs").mkdir(parents=True, exist_ok=True)
+        (wiki_dir / "drafts" / "bugs").mkdir(parents=True, exist_ok=True)
+
+        out = json.loads(
+            wiki(
+                "file_bug",
+                component="wiki-mcp",
+                severity="minor",
+                title="Tagged schema regression",
+                tags="schema, regression",
+                force_new=True,
+            )
+        )
+
+        assert out["status"] == "filed"
+        body = (wiki_dir / out["path"]).read_text(encoding="utf-8")
+        tags_line = [ln for ln in body.split("\n") if ln.startswith("tags:")][0]
+        assert "schema" in tags_line
+        assert "regression" in tags_line
+
     def test_id_collision_retry_via_dispatch(self, wiki_dir):
         """Collision retry is end-to-end via the wiki() router."""
         from pathlib import Path
@@ -613,3 +860,35 @@ class TestWikiMCPRegistration:
         assert {"wiki", "knowledge"} <= wiki_tool.tags
         assert wiki_tool.annotations.readOnlyHint is False
         assert wiki_tool.annotations.openWorldHint is True
+
+    def test_wiki_tool_schema_advertises_file_bug_tags_field(self):
+        """BUG-040: MCP clients must not reject backend-supported tags."""
+
+        tools = asyncio.run(mcp.list_tools(run_middleware=False))
+        wiki_tool = next(t for t in tools if t.name == "wiki")
+        properties = wiki_tool.parameters["properties"]
+
+        assert properties["tags"]["type"] == "string"
+        assert properties["tags"]["default"] == ""
+
+    def test_wiki_file_bug_kind_field_is_in_mcp_schema(self):
+        """BUG-042: MCP schema must expose backend-supported file_bug kind."""
+
+        tools = asyncio.run(mcp.list_tools(run_middleware=False))
+        wiki_tool = next(t for t in tools if t.name == "wiki")
+        properties = wiki_tool.parameters["properties"]
+
+        assert properties["kind"] == {"default": "bug", "type": "string"}
+        assert "kind" not in wiki_tool.parameters["required"]
+
+    def test_wiki_since_changed_since_field_is_in_mcp_schema(self):
+        """PR-088: action=since must advertise its timestamp parameter."""
+
+        tools = asyncio.run(mcp.list_tools(run_middleware=False))
+        wiki_tool = next(t for t in tools if t.name == "wiki")
+        properties = wiki_tool.parameters["properties"]
+
+        assert properties["changed_since"]["type"] == "string"
+        assert properties["changed_since"]["default"] == ""
+        assert "action=\"since\"" in properties["changed_since"]["description"]
+        assert "changed_since" not in wiki_tool.parameters["required"]

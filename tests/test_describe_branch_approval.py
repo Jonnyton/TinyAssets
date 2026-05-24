@@ -40,6 +40,21 @@ def _make_branch_dict(node_defs=None, branch_def_id="b1", name="TestBranch"):
     }
 
 
+def _call_validate_real(branch_dict):
+    from workflow.api.branches import _ext_branch_validate
+
+    with (
+        patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
+        patch("workflow.api.helpers._base_path", return_value="/fake"),
+        patch(
+            "workflow.providers.base.get_sandbox_status",
+            return_value={"bwrap_available": True},
+        ),
+    ):
+        result = _ext_branch_validate({"branch_def_id": branch_dict["branch_def_id"]})
+    return json.loads(result)
+
+
 def _call_describe(branch_dict, validate_errors=None):
     from workflow.api.branches import _ext_branch_describe
 
@@ -141,6 +156,8 @@ class TestDescribeBranchApproval:
         assert unapp["display_name"] == "Custom Runner"
         assert "APPROVAL REQUIRED" in result["summary"]
         assert "approve_source_code" in result["summary"]
+        assert "must be approved before it can run" in result["summary"]
+        assert "once validated" not in result["summary"]
 
     def test_unapproved_node_still_valid_structurally(self):
         """valid reflects structural errors only; approval is separate via runnable."""
@@ -275,3 +292,26 @@ class TestValidateBranchApproval:
         ids = {n["node_id"] for n in result["unapproved_source_code_nodes"]}
         assert ids == {"n1", "n3"}
         assert result["runnable"] is False
+
+    def test_state_field_node_id_collision_not_valid_or_runnable(self):
+        node = _make_node(node_id="status", display_name="Status")
+        branch = _make_branch_dict(node_defs=[node])
+        branch["graph_nodes"] = [{
+            "id": "status",
+            "node_def_id": "status",
+            "position": 0,
+        }]
+        branch["edges"] = [
+            {"from": "START", "to": "status"},
+            {"from": "status", "to": "END"},
+        ]
+        branch["state_schema"] = [{"name": "status", "type": "str"}]
+
+        result = _call_validate_real(branch)
+
+        assert result["valid"] is False
+        assert result["runnable"] is False
+        assert any(
+            "State field name 'status' collides with a graph node ID" in error
+            for error in result["errors"]
+        )

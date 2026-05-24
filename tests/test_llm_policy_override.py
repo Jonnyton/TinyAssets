@@ -166,6 +166,45 @@ def test_pinned_preferred_used_when_available():
     assert ran[0]["provider_served"] == "groq-free"
 
 
+def test_policy_router_empty_registry_falls_back_to_injected_provider_call():
+    """BUG-038: a fresh policy router with no registered providers must not
+    exhaust before the run_branch provider bridge can serve the node."""
+    policy = {"preferred": {"provider": "codex"}}
+    node = _make_node(llm_policy=policy)
+    branch = _make_branch(node)
+
+    class _EmptyRouter:
+        available_providers: list[str] = []
+
+        def call_with_policy_sync(self, *args, **kwargs):
+            raise AssertionError("empty policy router should not be called")
+
+    events: list[dict] = []
+    prompts: list[str] = []
+
+    def _provider(prompt, system, *, role="writer"):
+        prompts.append(prompt)
+        return "served by injected provider"
+
+    def _sink(**kw):
+        events.append(dict(kw))
+
+    with patch(
+        "workflow.graph_compiler._get_shared_router", return_value=_EmptyRouter(),
+    ):
+        compiled = compile_branch(branch, provider_call=_provider, event_sink=_sink)
+        app = compiled.graph.compile()
+        result = app.invoke(
+            {"topic": "install planning"},
+            config={"configurable": {"thread_id": "t-empty-router"}},
+        )
+
+    assert prompts == ["Write about install planning"]
+    assert result["out"] == "served by injected provider"
+    ran = [e for e in events if e.get("phase") == "ran"]
+    assert ran
+
+
 def test_branch_default_policy_applies_when_node_unset():
     """Branch-level default_llm_policy is used when node has no llm_policy."""
     default_policy = {"preferred": {"provider": "gemini-free"}}

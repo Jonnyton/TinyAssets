@@ -89,6 +89,10 @@ def test_daemon_memory_actions_capture_search_review_and_promote(
     assert status["entry_count"] == 1
     assert status["promotion_count"] == 1
     assert status["promotion_states"]["promoted"] == 1
+    assert status["registry"]["default_memory_kind"] == "semantic"
+    assert "failure_mode" in {
+        item["kind"] for item in status["registry"]["memory_kinds"]
+    }
 
 
 def test_daemon_memory_review_can_supersede_entries(
@@ -137,4 +141,3 @@ def test_daemon_memory_review_can_supersede_entries(
     assert reviewed["entry"]["promotion_state"] == "superseded"
     assert reviewed["entry"]["superseded_by_entry_id"] == second["entry_id"]
     assert reviewed["entry"]["metadata"]["last_review"]["decision"] == "superseded"
-

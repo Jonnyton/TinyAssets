@@ -34,6 +34,7 @@ handlers are parameterless single-action tools (`get_status`, `pause`,
 
 from __future__ import annotations
 
+import inspect
 import re
 
 import pytest
@@ -108,7 +109,7 @@ def _universe_dispatch_keys() -> set[str]:
         "submit_request", "give_direction",
         "read_premise", "set_premise",
         "add_canon", "add_canon_from_path",
-        "list_canon", "read_canon",
+        "list_canon", "read_canon", "list_sources", "read_source",
         "control_daemon", "switch_universe", "create_universe",
         "queue_list", "queue_cancel",
         "subscribe_goal", "unsubscribe_goal", "list_subscriptions",
@@ -262,8 +263,13 @@ def _block_actions(slab: str, indent: int = 2) -> set[str]:
     return out
 
 
+def _tool_doc(handler) -> str:
+    """Return the normalized docstring shape exposed to MCP clients."""
+    return inspect.getdoc(handler) or ""
+
+
 def _docstring_actions_universe() -> set[str]:
-    doc = us.universe.__doc__ or ""
+    doc = _tool_doc(us.universe)
     slab = _extract_slab(
         doc,
         r"action:\s*One of\s*[—\-]",
@@ -273,7 +279,7 @@ def _docstring_actions_universe() -> set[str]:
 
 
 def _docstring_actions_wiki() -> set[str]:
-    doc = us.wiki.__doc__ or ""
+    doc = _tool_doc(us.wiki)
     slab = _extract_slab(
         doc,
         r"action:\s*One of\s*[—\-]",
@@ -283,20 +289,20 @@ def _docstring_actions_wiki() -> set[str]:
 
 
 def _docstring_actions_gates() -> set[str]:
-    doc = us.gates.__doc__ or ""
+    doc = _tool_doc(us.gates)
     primary = _extract_slab(doc, r"\nActions \([^)]*\):\s*\n", r"\n\n")
     bonus = _extract_slab(doc, r"\nBonus actions \([^)]*\):\s*\n", r"\n\n")
     return _block_actions(primary) | _block_actions(bonus)
 
 
 def _docstring_actions_goals() -> set[str]:
-    doc = us.goals.__doc__ or ""
+    doc = _tool_doc(us.goals)
     slab = _extract_slab(doc, r"\nActions:\s*\n", r"\n\n")
     return _block_actions(slab)
 
 
 def _docstring_actions_extensions() -> set[str]:
-    doc = us.extensions.__doc__ or ""
+    doc = _tool_doc(us.extensions)
     slab = _extract_slab(doc, r"\nAction groups:\s*\n", r"\n\n")
     return _bullet_group_actions(slab)
 
@@ -373,6 +379,18 @@ def test_no_orphaned_documented_actions(
         f"that are not in the dispatch dict: {orphans}. Either remove "
         f"them from the docstring or wire them into dispatch."
     )
+
+
+def test_wiki_docstring_tells_clients_to_file_bug_directly() -> None:
+    """The wiki tool description must not trigger costly filing pre-flight."""
+    doc = _tool_doc(us.wiki)
+
+    assert "call `file_bug` directly" in doc
+    assert "duplicate detection server-side" in doc
+    assert "do NOT need to search/list/read" in doc
+    assert "status=\"similar_found\"" in doc
+    assert "Start with `action=\"list\"`" not in doc
+    assert "Start with `action=\"read\"`" not in doc
 
 
 @pytest.mark.parametrize("name,handler,dispatch,documented", _PARITY_CASES)

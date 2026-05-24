@@ -70,10 +70,11 @@ def _make_probe_result(tools, status):
     return (set(tools), status)
 
 
-def test_run_exit_0_when_parity_holds(monkeypatch):
+def test_run_exit_0_when_access_gate_holds(monkeypatch):
     tools = {"get_status", "universe"}
     status = {"phase": "idle"}
     monkeypatch.setattr(smoke, "probe_url", lambda url, timeout, label: (tools, status))
+    monkeypatch.setattr(smoke, "assert_tunnel_access_blocked", lambda url, timeout: 403)
     rc = smoke.run(
         smoke.CANONICAL_URL, smoke.TUNNEL_URL, 10,
         llm_check_fn=lambda url, timeout: {"llm_endpoint_bound": "anthropic"},
@@ -88,7 +89,12 @@ def test_run_exit_3_when_tools_differ(monkeypatch):
         return ({"get_status"}, {"phase": "idle"})
 
     monkeypatch.setattr(smoke, "probe_url", _probe)
-    rc = smoke.run(smoke.CANONICAL_URL, smoke.TUNNEL_URL, 10)
+    rc = smoke.run(
+        smoke.CANONICAL_URL,
+        smoke.TUNNEL_URL,
+        10,
+        internal_parity=True,
+    )
     assert rc == 3
 
 
@@ -108,10 +114,11 @@ def test_run_exit_2_when_network_fails(monkeypatch):
 def test_main_passes_custom_urls_to_run(monkeypatch):
     seen = {}
 
-    def _run(canonical, tunnel, timeout):
+    def _run(canonical, tunnel, timeout, *, internal_parity=False):
         seen["canonical"] = canonical
         seen["tunnel"] = tunnel
         seen["timeout"] = timeout
+        seen["internal_parity"] = internal_parity
         return 0
 
     monkeypatch.setattr(smoke, "run", _run)
@@ -124,6 +131,7 @@ def test_main_passes_custom_urls_to_run(monkeypatch):
     assert seen["canonical"] == "https://example.com/mcp"
     assert seen["tunnel"] == "https://tunnel.example.com/mcp"
     assert seen["timeout"] == 5.0
+    assert seen["internal_parity"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +146,7 @@ def test_run_exit_0_when_parity_and_llm_bound(monkeypatch):
     monkeypatch.setattr(smoke, "probe_url", lambda url, timeout, label: (_TOOLS, _STATUS))
     rc = smoke.run(
         smoke.CANONICAL_URL, smoke.TUNNEL_URL, 10,
+        internal_parity=True,
         llm_check_fn=lambda url, timeout: {"llm_endpoint_bound": "anthropic"},
     )
     assert rc == 0
@@ -145,6 +154,7 @@ def test_run_exit_0_when_parity_and_llm_bound(monkeypatch):
 
 def test_run_fails_when_llm_unbound(monkeypatch):
     monkeypatch.setattr(smoke, "probe_url", lambda url, timeout, label: (_TOOLS, _STATUS))
+    monkeypatch.setattr(smoke, "assert_tunnel_access_blocked", lambda url, timeout: 403)
 
     def _unbound(url, timeout):
         raise VerifyError(3, "llm_endpoint_bound is 'unset'")
@@ -158,6 +168,7 @@ def test_run_fails_when_llm_unbound(monkeypatch):
 
 def test_run_fails_when_llm_network_error(monkeypatch):
     monkeypatch.setattr(smoke, "probe_url", lambda url, timeout, label: (_TOOLS, _STATUS))
+    monkeypatch.setattr(smoke, "assert_tunnel_access_blocked", lambda url, timeout: 403)
 
     def _net_err(url, timeout):
         raise VerifyError(2, "network error")
@@ -185,6 +196,7 @@ def test_run_parity_fail_skips_llm_check(monkeypatch):
     monkeypatch.setattr(smoke, "probe_url", _probe)
     rc = smoke.run(
         smoke.CANONICAL_URL, smoke.TUNNEL_URL, 10,
+        internal_parity=True,
         llm_check_fn=_llm,
     )
     assert rc == 3

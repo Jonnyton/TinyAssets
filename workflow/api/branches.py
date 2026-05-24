@@ -371,9 +371,23 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     return json.dumps(branch, default=str)
 
 
+_VALID_BRANCH_LIST_SCOPES = {"published", "all", "mine"}
+
+
 def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     from workflow.api.engine_helpers import _current_actor
     from workflow.daemon_server import list_branch_definitions
+
+    scope = (kwargs.get("scope") or "published").strip().lower()
+    if scope not in _VALID_BRANCH_LIST_SCOPES:
+        return json.dumps({
+            "error": (
+                f"unknown scope '{scope}'. "
+                f"Valid scopes: {sorted(_VALID_BRANCH_LIST_SCOPES)}."
+            ),
+        })
+
+    actor = _current_actor()
 
     # Phase 6.2.2 — visibility-aware listing. Viewer sees public
     # Branches and any private Branches they authored.
@@ -382,7 +396,7 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         domain_id=kwargs.get("domain_id", ""),
         author=kwargs.get("author", ""),
         goal_id=kwargs.get("goal_id", ""),
-        viewer=_current_actor(),
+        viewer=actor,
     )
 
     # requires_sandbox filter: "none" = design-only branches only (no node
@@ -392,6 +406,14 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
 
     summaries = []
     for r in rows:
+        if scope == "published":
+            from workflow.branch_versions import list_branch_versions
+
+            if not list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1):
+                continue
+        elif scope == "mine":
+            if (r.get("author") or "") != actor:
+                continue
         node_defs = r.get("node_defs", [])
         has_sandbox_nodes = any(nd.get("requires_sandbox") for nd in node_defs)
         if rs_filter == "none" and has_sandbox_nodes:
@@ -635,8 +657,13 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
     reducer = kwargs.get("reducer", "").strip()
     if reducer:
         field_entry["reducer"] = reducer
-    default = kwargs.get("field_default", "")
+    # BUG-094: also accept canonical ``default_value`` (StateFieldDecl) and
+    # write both keys so PR #932's ``_state_schema_defaults`` seeding finds it.
+    default = kwargs.get(
+        "default_value", kwargs.get("field_default", ""),
+    )
     if default != "":
+        field_entry["default_value"] = default
         field_entry["default"] = default
 
     branch.state_schema.append(field_entry)
@@ -950,14 +977,16 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     if approval_warning_lines:
         summary_parts += ["", "Approval warnings (branch NOT runnable):"]
         summary_parts += approval_warning_lines
-    summary_parts += [
-        "",
-        "Graph:",
-        mermaid,
-        "",
-        "Note: run this branch with action='run_branch' once validated. "
-        "Pass state field values via inputs_json.",
-    ]
+    run_note = (
+        "Note: this branch has unapproved source_code nodes and must be "
+        "approved before it can run."
+        if unapproved_sc
+        else (
+            "Note: run this branch with action='run_branch' once validated. "
+            "Pass state field values via inputs_json."
+        )
+    )
+    summary_parts += ["", "Graph:", mermaid, "", run_note]
     summary = "\n".join(summary_parts)
     related = _related_wiki_pages(source_dict)
 
@@ -1070,6 +1099,22 @@ def _errors_to_suggestions(
                     "target."
                 ),
             })
+        elif "collides with a graph node id" in low:
+            state_field = ""
+            match = re.search(r"State field name '([^']+)'", err)
+            if match:
+                state_field = match.group(1)
+            suggestions.append({
+                "issue": err,
+                "proposed_fix": (
+                    f"Rename state_schema field '{state_field}' or the "
+                    f"graph node ID '{state_field}' so they are distinct "
+                    "before running this branch."
+                    if state_field
+                    else "Rename the colliding state_schema field or graph "
+                    "node ID so they are distinct before running this branch."
+                ),
+            })
         elif "at least one node" in low:
             suggestions.append({
                 "issue": err,
@@ -1154,7 +1199,8 @@ def _resolve_node_spec(
         merged["node_id"] = nid or ref_nid
         for field_key in (
             "display_name", "description", "phase", "input_keys",
-            "output_keys", "source_code", "prompt_template", "author",
+            "output_keys", "strict_input_isolation", "source_code",
+            "prompt_template", "author",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1216,6 +1262,9 @@ def _lookup_node_body(
             "phase": hit.get("phase", "custom"),
             "input_keys": list(hit.get("input_keys") or []),
             "output_keys": list(hit.get("output_keys") or []),
+            "strict_input_isolation": bool(
+                hit.get("strict_input_isolation", True),
+            ),
             "source_code": hit.get("source_code", ""),
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
@@ -1243,6 +1292,9 @@ def _lookup_node_body(
                 "phase": nd.get("phase", "custom"),
                 "input_keys": list(nd.get("input_keys") or []),
                 "output_keys": list(nd.get("output_keys") or []),
+                "strict_input_isolation": bool(
+                    nd.get("strict_input_isolation", True),
+                ),
                 "source_code": nd.get("source_code", ""),
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
@@ -1275,12 +1327,28 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             f"node '{nid}' has both source_code and prompt_template — "
             "pick one."
         )
+    strict_input_isolation = raw.get("strict_input_isolation", True)
+    if not isinstance(strict_input_isolation, bool):
+        return (
+            f"node '{nid}' strict_input_isolation must be a JSON boolean "
+            "(true or false)."
+        )
 
     phase = (raw.get("phase") or "").strip() or "custom"
     in_keys, err = _coerce_node_keys(raw.get("input_keys"), "input_keys")
     if err:
         return err
     out_keys, err = _coerce_node_keys(raw.get("output_keys"), "output_keys")
+    if err:
+        return err
+    model_hint, err = _coerce_model_hint_update(
+        raw.get("model_hint", ""), "model_hint",
+    )
+    if err:
+        return err
+    llm_policy, err = _coerce_llm_policy_update(
+        raw.get("llm_policy"), f"node '{nid}' llm_policy",
+    )
     if err:
         return err
     # BUG-045: thread the three sub-branch / sibling-run spec fields. The
@@ -1299,6 +1367,19 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         invoke_branch_version if isinstance(invoke_branch_version, dict) else None
     )
     await_run_arg = await_run if isinstance(await_run, dict) else None
+    # PR-122 Phase 1: ``effects`` declares external-write sinks the node's
+    # outputs should be routed to after the run completes. Validated by
+    # NodeDefinition.__post_init__ (list of strings) — same partition
+    # pattern as input_keys/output_keys plumbing.
+    effects_raw = raw.get("effects", [])
+    if effects_raw is None:
+        effects_arg: list[str] = []
+    elif isinstance(effects_raw, list):
+        effects_arg = list(effects_raw)
+    else:
+        return (
+            f"node '{nid}' effects must be a JSON array of strings"
+        )
     try:
         node = NodeDefinition(
             node_id=nid,
@@ -1307,13 +1388,17 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             phase=phase,
             input_keys=in_keys,
             output_keys=out_keys,
+            strict_input_isolation=strict_input_isolation,
             source_code=source_code,
             prompt_template=prompt_template,
+            model_hint=model_hint,
+            llm_policy=llm_policy,
             author=raw.get("author") or _current_actor(),
             approved=bool(raw.get("approved", False)),
             invoke_branch_spec=invoke_branch_arg,
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
+            effects=effects_arg,
         )
     except ValueError as exc:
         return str(exc)
@@ -1387,8 +1472,18 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     }
     if raw.get("reducer"):
         entry["reducer"] = raw["reducer"]
-    default = raw.get("default", raw.get("field_default", ""))
+    # BUG-094: ``default_value`` is the canonical StateFieldDecl key
+    # (workflow/branches.py:224). Read it first, fall back to the legacy
+    # ``default`` / ``field_default`` spec shapes. Write to ``default_value``
+    # so PR #932's ``_state_schema_defaults`` finds the seed value at runtime;
+    # also dual-write ``default`` for back-compat with any reader that still
+    # uses the legacy storage key.
+    default = raw.get(
+        "default_value",
+        raw.get("default", raw.get("field_default", "")),
+    )
     if default != "":
+        entry["default_value"] = default
         entry["default"] = default
     branch.state_schema.append(entry)
     if ftype_raw.lower() not in _VALID_STATE_TYPES:
@@ -1397,6 +1492,46 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
             f"coerced to '{ftype}'."
         )
     return ""
+
+
+def _coerce_model_hint_update(raw: Any, field: str) -> tuple[str, str]:
+    if raw is None:
+        return "", ""
+    if not isinstance(raw, str):
+        return "", f"{field} must be a string."
+    return raw, ""
+
+
+def _coerce_llm_policy_update(
+    raw: Any, field: str,
+) -> tuple[dict[str, Any] | None, str]:
+    if raw is None:
+        return None, ""
+    if isinstance(raw, dict):
+        policy = raw
+    elif isinstance(raw, str):
+        value = raw.strip()
+        if not value or value == "null":
+            return None, ""
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            return None, f"{field} is not valid JSON: {exc}"
+        if decoded is None:
+            return None, ""
+        if isinstance(decoded, dict):
+            policy = decoded
+        else:
+            return None, f"{field} must be a JSON object or null."
+    else:
+        return None, f"{field} must be a JSON object or null."
+
+    from workflow.branches import _validate_llm_policy_shape
+
+    errors = _validate_llm_policy_shape(policy, context=field)
+    if errors:
+        return None, "; ".join(errors)
+    return policy, ""
 
 
 def _staged_branch_from_spec(
@@ -1422,17 +1557,75 @@ def _staged_branch_from_spec(
     except ValueError as exc:
         errors.append(str(exc))
 
+    # PR-037: accept the nested `graph` shape that `get_branch` RETURNS.
+    # Without this, a user trying to fork by mirroring a live branch's
+    # response shape (`{"graph": {"edges": [...], "conditional_edges":
+    # [...], "entry_point": "..."}}`) has their edges silently dropped
+    # during staging. The validator then reports "node not reachable
+    # from entry point" — diagnostics that contradict what the submitted
+    # spec literally contains. This mirrors what
+    # `BranchDefinition.from_dict` already does for the DB-row path.
+    graph_blob = spec.get("graph") if isinstance(spec.get("graph"), dict) else None
+
+    def _spec_get(key: str, default=None):
+        """Top-level key wins; otherwise fall back to graph_blob[key]."""
+        top = spec.get(key)
+        if top is not None:
+            return top
+        if graph_blob is not None and graph_blob.get(key) is not None:
+            return graph_blob.get(key)
+        return default
+
+    def _spec_has_graph_key(key: str) -> bool:
+        return key in spec or (
+            graph_blob is not None and graph_blob.get(key) is not None
+        )
+
+    if branch.fork_from:
+        from workflow.branch_versions import get_branch_version
+
+        parent_version = get_branch_version(_base_path(), branch.fork_from)
+        if parent_version is not None:
+            parent = BranchDefinition.from_dict(parent_version.snapshot)
+            parent_copy = BranchDefinition.from_dict(parent.to_dict())
+            parent_skills = parent_copy.skills
+            if not parent_skills and parent.branch_def_id:
+                from workflow.daemon_server import get_branch_definition
+
+                try:
+                    parent_def = get_branch_definition(
+                        _base_path(), branch_def_id=parent.branch_def_id,
+                    )
+                except KeyError:
+                    parent_def = {}
+                if parent_def:
+                    parent_skills = BranchDefinition.from_dict(parent_def).skills
+            branch.parent_def_id = parent.branch_def_id
+            if "skills" not in spec:
+                branch.skills = parent_skills
+            if "node_defs" not in spec and "nodes" not in spec:
+                branch.node_defs = parent_copy.node_defs
+                branch.graph_nodes = parent_copy.graph_nodes
+            if not _spec_has_graph_key("edges"):
+                branch.edges = parent_copy.edges
+            if not _spec_has_graph_key("conditional_edges"):
+                branch.conditional_edges = parent_copy.conditional_edges
+            if not _spec_has_graph_key("entry_point"):
+                branch.entry_point = parent_copy.entry_point
+            if "state_schema" not in spec:
+                branch.state_schema = list(parent_copy.state_schema)
+
     for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
         err = _apply_node_spec(branch, raw)
         if err:
             errors.append(f"node[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("edges") or []):
+    for idx, raw in enumerate(_spec_get("edges") or []):
         err = _apply_edge_spec(branch, raw)
         if err:
             errors.append(f"edge[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("conditional_edges") or []):
+    for idx, raw in enumerate(_spec_get("conditional_edges") or []):
         err = _apply_conditional_edge_spec(branch, raw)
         if err:
             errors.append(f"conditional_edge[{idx}]: {err}")
@@ -1443,6 +1636,8 @@ def _staged_branch_from_spec(
             errors.append(f"state_schema[{idx}]: {err}")
 
     entry = (spec.get("entry_point") or "").strip()
+    if not entry and graph_blob is not None:
+        entry = (graph_blob.get("entry_point") or "").strip()
     if entry:
         branch.entry_point = entry
 
@@ -1671,6 +1866,20 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     n.prompt_template = op["prompt_template"]
                 if "source_code" in op:
                     n.source_code = op["source_code"]
+                if "model_hint" in op:
+                    model_hint, err = _coerce_model_hint_update(
+                        op["model_hint"], "model_hint",
+                    )
+                    if err:
+                        return err
+                    n.model_hint = model_hint
+                if "llm_policy" in op:
+                    llm_policy, err = _coerce_llm_policy_update(
+                        op["llm_policy"], f"node '{nid}' llm_policy",
+                    )
+                    if err:
+                        return err
+                    n.llm_policy = llm_policy
                 if "input_keys" in op:
                     keys, err = _coerce_node_keys(
                         op["input_keys"], "input_keys",
@@ -1816,6 +2025,10 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
 
 
 def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
+    import copy
+
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.branch_versions import publish_branch_version
     from workflow.branches import BranchDefinition
     from workflow.daemon_server import (
         get_branch_definition,
@@ -1859,8 +2072,33 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "error": f"Branch '{bid}' not found.",
         })
 
+    # BUG-081: author-gate. Reject patch_branch on a non-author branch
+    # unless the caller explicitly passes force=true. The previous shape
+    # accepted any caller against any public branch, conflating
+    # `visibility=public` (discoverable + readable) with mutation
+    # authority. Slice-0 substrate-readiness probe 2026-05-13 demonstrated
+    # the gap by mutating a chatgpt-community-builder-authored branch
+    # from a non-author session. See pages/bugs/bug-081-... for the
+    # filing.
+    branch_author = (source.get("author") or "").strip()
+    caller = (_current_actor() or "").strip()
+    force_mutate = bool(kwargs.get("force", False))
+    if branch_author and caller and branch_author != caller and not force_mutate:
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                f"patch_branch denied: branch '{bid}' is authored by "
+                f"'{branch_author}'; caller is '{caller}'. Pass "
+                "force=true to mutate another author's branch, or fork "
+                "it (publish_version + build_branch with fork_from) and "
+                "amend your own copy. See BUG-081."
+            ),
+            "branch_author": branch_author,
+            "caller": caller,
+        })
+
     old_name = source.get("name", "")
-    staging = BranchDefinition.from_dict(source)
+    staging = BranchDefinition.from_dict(copy.deepcopy(source))
 
     per_op_errors: list[dict[str, Any]] = []
     for idx, op in enumerate(changes):
@@ -1913,8 +2151,37 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "suggestions": suggestions,
         })
 
+    actor = _current_actor()
+    try:
+        parent_version = publish_branch_version(
+            _base_path(),
+            source,
+            publisher=actor,
+            notes="patch_branch pre-patch snapshot",
+        )
+    except (KeyError, ValueError) as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Could not snapshot pre-patch branch: {exc}",
+        })
+
     saved = save_branch_definition(_base_path(), branch_def=staging.to_dict())
     persisted = BranchDefinition.from_dict(saved)
+    try:
+        branch_version = publish_branch_version(
+            _base_path(),
+            saved,
+            publisher=actor,
+            notes="patch_branch post-patch snapshot",
+            parent_version_id=parent_version.branch_version_id,
+        )
+    except (KeyError, ValueError) as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Patch saved but post-patch version snapshot failed: {exc}",
+            "branch_def_id": persisted.branch_def_id,
+            "parent_version_id": parent_version.branch_version_id,
+        })
 
     _SKIP_DIFF = {"updated_at", "created_at", "node_defs", "edges",
                   "conditional_edges", "graph_nodes", "state_schema", "stats"}
@@ -1938,6 +2205,7 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         f"**Patched branch '{persisted.name}'**: applied {len(changes)} op(s). "
         f"{len(persisted.node_defs)} nodes, {len(persisted.edges)} edges, "
         f"{len(persisted.skills)} skills, entry=`{persisted.entry_point}`.",
+        f"Published version `{branch_version.branch_version_id}`.",
     ]
     if patched_fields:
         text_lines += ["", f"Changed fields: {', '.join(patched_fields)}."]
@@ -1953,6 +2221,10 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         "text": "\n".join(text_lines),
         "status": "patched",
         "branch_def_id": persisted.branch_def_id,
+        "branch_version_id": branch_version.branch_version_id,
+        "content_hash": branch_version.content_hash,
+        "published_at": branch_version.published_at,
+        "parent_version_id": branch_version.parent_version_id,
         "ops_applied": len(changes),
         "node_count": len(persisted.node_defs),
         "edge_count": len(persisted.edges),
@@ -2016,10 +2288,12 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
         # Pull supported fields from the top-level kwargs.
         for field in (
             "display_name", "description", "phase",
-            "prompt_template", "source_code",
+            "prompt_template", "source_code", "model_hint",
         ):
             if kwargs.get(field):
                 updates[field] = kwargs[field]
+        if "llm_policy" in kwargs and kwargs.get("llm_policy") is not None:
+            updates["llm_policy"] = kwargs["llm_policy"]
         if kwargs.get("input_keys"):
             updates["input_keys"] = kwargs["input_keys"]
         if kwargs.get("output_keys"):
@@ -2061,7 +2335,8 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "error": (
                 "No fields to update. Pass one or more of "
                 "display_name / description / phase / prompt_template / "
-                "source_code / input_keys / output_keys, or a "
+                "source_code / model_hint / llm_policy / input_keys / "
+                "output_keys, or a "
                 "changes_json object."
             ),
         })
@@ -2123,6 +2398,20 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             target_node.source_code = updates["source_code"]
             if target_node.source_code:
                 target_node.prompt_template = ""
+        if "model_hint" in updates:
+            model_hint, err = _coerce_model_hint_update(
+                updates["model_hint"], "model_hint",
+            )
+            if err:
+                return json.dumps({"status": "rejected", "error": err})
+            target_node.model_hint = model_hint
+        if "llm_policy" in updates:
+            llm_policy, err = _coerce_llm_policy_update(
+                updates["llm_policy"], f"node '{nid}' llm_policy",
+            )
+            if err:
+                return json.dumps({"status": "rejected", "error": err})
+            target_node.llm_policy = llm_policy
         if "input_keys" in updates:
             keys, err = _coerce_node_keys(
                 updates["input_keys"], "input_keys",
@@ -2667,6 +2956,10 @@ a bug (#66).
 Use `build_branch` with the whole workflow in a single `spec_json`.
 You get back a validated branch with a mermaid diagram in one call —
 no per-node chatter, no tool-call budget burn:
+This is the chat-native authoring path for small workflow units. Do NOT
+send community users to GitHub Actions YAML, repo files, or CI config
+when they ask to make or revise a workflow from chat; use `build_branch`
+for new units and `patch_branch` for edits.
 
 ```
 extensions action=build_branch spec_json='{
@@ -2750,9 +3043,12 @@ per-turn tool-call budget is not at risk:
 
 ## Hard rule
 
-After `describe_branch`, tell the user their branch is ready to run. Use
-`run_branch` with a JSON `inputs_json` that fills the state_schema fields.
-The runner returns a `run_id`, final status, and per-node trace.
+After `describe_branch`, check `runnable` before telling the user their
+branch is ready to run. If `runnable=false`, surface
+`unapproved_source_code_nodes` or validation errors and stop. If
+`runnable=true`, use `run_branch` with a JSON `inputs_json` that fills the
+state_schema fields. The runner returns a `run_id`, final status, and
+per-node trace.
 
 ## Power users
 
@@ -2766,8 +3062,10 @@ the difference is how much you abstract on the user's behalf.
 Once validated, execute with:
 
 - `run_branch branch_def_id=... inputs_json='{"raw_recipe": "pasta"}'`
+- `wait_for_run run_id=... since_step=-1 max_wait_s=60` to wait for progress
+  without burning repeated tool calls.
 - `get_run run_id=...` for a full snapshot with mermaid + per-node status.
-- `stream_run run_id=... since_step=-1` to poll incrementally.
+- `stream_run run_id=... since_step=-1` only for low-level incremental reads.
 - `get_run_output run_id=... field_name=archived` to pull one field.
 - `cancel_run run_id=...` to request cooperative stop.
 

@@ -192,6 +192,25 @@ class TestListOutput:
 # (d) --tool with --args
 # ---------------------------------------------------------------------------
 
+class TestToolArgsParsing:
+    def test_json_object_args_still_parse(self):
+        assert mcp_probe._parse_tool_args('{"action":"list","limit":5}') == {
+            "action": "list",
+            "limit": 5,
+        }
+
+    def test_powershell_stripped_simple_object_parses(self):
+        assert mcp_probe._parse_tool_args("{action:search,query:research-paper,limit:5}") == {
+            "action": "search",
+            "query": "research-paper",
+            "limit": 5,
+        }
+
+    def test_args_must_be_object(self):
+        with pytest.raises(ValueError):
+            mcp_probe._parse_tool_args('["not", "an", "object"]')
+
+
 class TestToolCall:
     def _urlopen_sequence(self, tool_resp=None):
         return iter([
@@ -357,6 +376,14 @@ _WIKI_RESP = _sse({
     },
 })
 
+_LATENCY_STATUS_RESP = _sse({
+    "jsonrpc": "2.0", "id": 3,
+    "result": {
+        "content": [{"type": "text", "text": '{"phase":"running"}'}],
+        "isError": False,
+    },
+})
+
 
 class TestSubcommands:
     def _run(self, monkeypatch, argv, urlopen_seq):
@@ -428,6 +455,37 @@ class TestSubcommands:
         out = capsys.readouterr().out
         assert rc == 0
         assert "get_status" in out
+
+    def test_latency_subcommand_reports_elapsed_ms(self, capsys, monkeypatch):
+        seq = _seq(
+            (_INIT_RESP, "s1"),
+            (_NOTIF_RESP, None),
+            (_LATENCY_STATUS_RESP, None),
+        )
+        times = iter([10.0, 10.125])
+        monkeypatch.setattr(mcp_probe.time, "monotonic", lambda: next(times))
+        rc = self._run(monkeypatch, ["--url", "http://fake", "latency"], seq)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "latency_ms=125" in out
+        assert "status=ok" in out
+        assert "stage=get_status" in out
+
+    def test_latency_raw_includes_response(self, capsys, monkeypatch):
+        seq = _seq(
+            (_INIT_RESP, "s1"),
+            (_NOTIF_RESP, None),
+            (_LATENCY_STATUS_RESP, None),
+        )
+        times = iter([20.0, 20.05])
+        monkeypatch.setattr(mcp_probe.time, "monotonic", lambda: next(times))
+        rc = self._run(monkeypatch, ["--url", "http://fake", "--raw", "latency"], seq)
+        out = capsys.readouterr().out
+        parsed = json.loads(out)
+        assert rc == 0
+        assert parsed["ok"] is True
+        assert parsed["latency_ms"] == 50
+        assert parsed["response"]["result"]["isError"] is False
 
     def test_status_raw_flag(self, capsys, monkeypatch):
         seq = _seq(

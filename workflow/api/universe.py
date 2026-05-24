@@ -48,6 +48,7 @@ to ``workflow.api.engine_helpers``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -57,6 +58,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +100,7 @@ def _extract_submit_request(
             "branch_id": kwargs.get("branch_id", "") or None,
             "pickup_incentive": kwargs.get("pickup_incentive", "") or None,
             "directed_daemon_id": kwargs.get("directed_daemon_id", "") or None,
+            "request_classification": result.get("request_classification"),
         },
     )
 
@@ -112,6 +115,7 @@ def _extract_give_direction(
         {
             "category": kwargs.get("category", "direction"),
             "note_id": result.get("note_id", ""),
+            "anchor": result.get("anchor", {}),
         },
     )
 
@@ -190,6 +194,52 @@ def _extract_create_universe(
     text = kwargs.get("text", "")
     summary = _truncate(text) if text.strip() else f"created {uid}"
     return (uid, summary, {"has_premise": bool(text.strip())})
+
+
+def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
+    """Explain when upload synthesis signals become actionable on first run."""
+    steps = [
+        {
+            "id": "premise",
+            "label": "Save a premise with create_universe text or set_premise.",
+            "complete": has_premise,
+        },
+        {
+            "id": "canon_source",
+            "label": "Upload at least one canon source with add_canon or add_canon_from_path.",
+            "complete": False,
+        },
+        {
+            "id": "synthesis_signal",
+            "label": "Confirm the upload response reports synthesis_signal_emitted=true.",
+            "complete": False,
+        },
+        {
+            "id": "daemon_worldbuild",
+            "label": "Let the daemon process the synthesize_source signal in a worldbuild cycle.",
+            "complete": False,
+        },
+    ]
+    if has_premise:
+        next_action = (
+            "Upload canon with add_canon or add_canon_from_path, then wait for "
+            "the daemon to process the synthesize_source signal."
+        )
+    else:
+        next_action = (
+            "Set a premise before uploading canon; synthesis needs the premise "
+            "and source material to produce useful context."
+        )
+    return {
+        "synthesis_signal_meaning": (
+            "synthesis_signal_emitted only means an uploaded source was queued; "
+            "it is meaningful after a premise exists, at least one canon source "
+            "has been uploaded, and the daemon has processed the synthesize_source "
+            "signal."
+        ),
+        "steps": steps,
+        "next_action": next_action,
+    }
 
 
 # action name -> (extractor, control_daemon_gate)
@@ -955,8 +1005,9 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
             result["pending_requests"] = len(pending)
 
     # Cross-surface hint — helps chatbots discover cross-domain work even
-    # when the active universe is themed (e.g. fantasy). The workspace is
-    # one container; goals, branches, and wiki span all domains.
+    # when the active universe is themed (e.g. a particular novel or
+    # standup tracker). The workspace is one container; goals, branches,
+    # and wiki span all domains.
     result["cross_surface_hint"] = {
         "note": (
             "This workspace is one container; cross-domain branches and Goals "
@@ -1047,6 +1098,7 @@ def _action_submit_request(
 ) -> str:
     from workflow.api.market import (
         PATCH_REQUEST_AUTHORITY_BOUNDARY,
+        classify_patch_request,
         normalize_patch_request_incentive,
     )
     from workflow.branch_tasks import BranchTask, append_task, new_task_id
@@ -1118,6 +1170,13 @@ def _action_submit_request(
                 "error": "directed_daemon_not_authorized",
                 "requester_directed_daemon": requester_directed_daemon,
             })
+    request_classification = classify_patch_request(
+        text=text,
+        request_type=request_type,
+        requester_id=source,
+        host_id=host_id,
+        directed_daemon=requester_directed_daemon is not None,
+    )
     request_obj = {
         "id": request_id,
         "type": request_type,
@@ -1128,6 +1187,7 @@ def _action_submit_request(
         "source": source,
         "pickup_incentive": incentive,
         "authority_boundary": authority_boundary,
+        "request_classification": request_classification,
     }
     if requester_directed_daemon is not None:
         request_obj["requester_directed_daemon"] = requester_directed_daemon
@@ -1165,6 +1225,7 @@ def _action_submit_request(
                 "branch_id": branch_id or "",
                 "pickup_incentive": incentive,
                 "authority_boundary": authority_boundary,
+                "request_classification": request_classification,
                 "requester_directed_daemon": requester_directed_daemon,
             },
             trigger_source=(
@@ -1204,6 +1265,7 @@ def _action_submit_request(
         "priority_weight": pw,
         "pickup_incentive": incentive,
         "authority_boundary": authority_boundary,
+        "request_classification": request_classification,
         "requester_directed_daemon": requester_directed_daemon,
         "queue_position": pending_count,
         "ahead_of_yours": ahead,
@@ -1802,6 +1864,22 @@ def _action_daemon_memory_status(
     try:
         result = memory_observability_status(_base_path(), daemon_id=daemon_id)
     except (KeyError, ValueError, TypeError) as exc:
+        return json.dumps({"universe_id": uid, "error": str(exc)})
+    result["universe_id"] = uid
+    return json.dumps(result, default=str)
+
+
+def _action_treasury_status(
+    universe_id: str = "",
+    limit: Any = 10,
+    **_kwargs: Any,
+) -> str:
+    from workflow.treasury import treasury_status
+
+    uid = universe_id or _default_universe()
+    try:
+        result = treasury_status(_base_path(), limit=int(limit))
+    except (ValueError, TypeError) as exc:
         return json.dumps({"universe_id": uid, "error": str(exc)})
     result["universe_id"] = uid
     return json.dumps(result, default=str)
@@ -3014,6 +3092,7 @@ def _action_give_direction(
     text: str = "",
     category: str = "direction",
     target: str = "",
+    anchor_json: str = "",
     **_kwargs: Any,
 ) -> str:
     uid = universe_id or _default_universe()
@@ -3028,6 +3107,13 @@ def _action_give_direction(
     try:
         from workflow.notes import add_note as _add_note
 
+        anchor: dict[str, Any] = {}
+        if anchor_json.strip():
+            parsed_anchor = json.loads(anchor_json)
+            if not isinstance(parsed_anchor, dict):
+                return json.dumps({"error": "anchor_json must be a JSON object."})
+            anchor = parsed_anchor
+
         udir.mkdir(parents=True, exist_ok=True)
         note = _add_note(
             udir,
@@ -3035,14 +3121,19 @@ def _action_give_direction(
             text=text,
             category=category,
             target=target or None,
+            anchor=anchor,
         )
         return json.dumps({
             "universe_id": uid,
             "note_id": note.id,
             "category": category,
+            "target": note.target,
+            "anchor": note.anchor,
             "status": "written",
             "note": "Direction delivered. The daemon reads notes at scene boundaries.",
         })
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"Invalid anchor_json: {exc.msg}"})
     except Exception as exc:
         return json.dumps({"error": f"Failed to add note: {exc}"})
 
@@ -3301,6 +3392,38 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": f"Failed to write premise: {exc}"})
 
 
+_CANON_SAME_FILENAME_BEHAVIOR = (
+    "A later add_canon call with the same filename replaces the stored "
+    "source bytes and manifest entry when the content hash changes; "
+    "identical bytes are treated as unchanged."
+)
+
+
+def _canon_source_operation(canon_dir: Path, filename: str, data: bytes) -> str:
+    from workflow.ingestion.core import SourceManifest
+
+    existing = SourceManifest.load(canon_dir).get(filename)
+    if existing is None:
+        return "created"
+    if existing.sha256 == sha256(data).hexdigest():
+        return "unchanged"
+    return "replaced"
+
+
+def _canon_version_semantics(filename: str, routed_to: str) -> dict[str, Any]:
+    identity = f"canon/{filename}"
+    if routed_to == "sources":
+        identity = f"canon/sources/{filename}"
+    return {
+        "mode": "filename_upsert",
+        "identity": identity,
+        "same_filename_behavior": _CANON_SAME_FILENAME_BEHAVIOR,
+        "history_retained": False,
+        "supersede_supported": False,
+        "deprecate_supported": False,
+    }
+
+
 def _action_add_canon(
     universe_id: str = "",
     filename: str = "",
@@ -3338,6 +3461,7 @@ def _action_add_canon(
 
     try:
         canon_dir.mkdir(parents=True, exist_ok=True)
+        source_operation = _canon_source_operation(canon_dir, safe_name, data)
         result = ingest_file(
             canon_dir=canon_dir,
             filename=safe_name,
@@ -3363,6 +3487,10 @@ def _action_add_canon(
             "routed_to": result.routed_to,
             "bytes_written": result.byte_count,
             "synthesis_signal_emitted": result.signal_emitted,
+            "source_operation": source_operation,
+            "version_semantics": _canon_version_semantics(
+                safe_name, result.routed_to,
+            ),
             "note": (
                 "Canon file ingested via ingest_file(). The daemon will "
                 "pick up the synthesize_source signal on its next cycle."
@@ -3483,6 +3611,7 @@ def _action_add_canon_from_path(
 
     try:
         canon_dir.mkdir(parents=True, exist_ok=True)
+        source_operation = _canon_source_operation(canon_dir, safe_name, data)
         result = ingest_file(
             canon_dir=canon_dir,
             filename=safe_name,
@@ -3509,6 +3638,10 @@ def _action_add_canon_from_path(
             "synthesis_signal_emitted": result.signal_emitted,
             "routed_to": result.routed_to,
             "provenance": tag,
+            "source_operation": source_operation,
+            "version_semantics": _canon_version_semantics(
+                safe_name, result.routed_to,
+            ),
             # Task #15: echo the first 200 decoded chars so the host
             # can confirm in the MCP response what was ingested —
             # silent file-swap becomes detectable without an
@@ -3555,6 +3688,173 @@ def _action_list_canon(
             files.append(entry)
 
     return json.dumps({"universe_id": uid, "canon_files": files, "count": len(files)})
+
+
+def _source_sidecar_meta(canon_dir: Path, filename: str) -> dict[str, Any]:
+    meta_path = canon_dir / f".{filename}.meta.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _manifest_data(canon_dir: Path) -> dict[str, Any]:
+    manifest_path = canon_dir / ".manifest.json"
+    if not manifest_path.exists():
+        return {}
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _source_file_entry(
+    path: Path,
+    canon_dir: Path,
+    manifest: dict[str, Any],
+    raw: bytes | None = None,
+) -> dict[str, Any]:
+    stat = path.stat()
+    meta = _source_sidecar_meta(canon_dir, path.name)
+    manifest_entry = manifest.get(path.name, {})
+    if not isinstance(manifest_entry, dict):
+        manifest_entry = {}
+    synthesized_docs = manifest_entry.get("synthesized_docs", [])
+    if not isinstance(synthesized_docs, list):
+        synthesized_docs = []
+    manifest_sha = manifest_entry.get("sha256", "")
+    current_sha = hashlib.sha256(raw).hexdigest() if raw is not None else manifest_sha
+
+    entry: dict[str, Any] = {
+        "filename": path.name,
+        "source_path": f"sources/{path.name}",
+        "size_bytes": stat.st_size,
+        "modified_at": datetime.fromtimestamp(
+            stat.st_mtime, tz=timezone.utc,
+        ).isoformat(),
+        "sha256": current_sha,
+        "provenance": meta.get("provenance", ""),
+        "added": meta.get("added", ""),
+        "source": meta.get("source", ""),
+        "original_source_path": meta.get("source_path", ""),
+        "file_type": manifest_entry.get("file_type", "unknown"),
+        "mime_type": manifest_entry.get("mime_type", ""),
+        "manifest_sha256": manifest_sha,
+        "ingested_at": manifest_entry.get("ingested_at", ""),
+        "synthesized_docs": synthesized_docs,
+        "synthesis_complete": bool(synthesized_docs),
+        "synthesis_failed": bool(manifest_entry.get("synthesis_failed")),
+    }
+    if isinstance(manifest_entry.get("last_bite_outcomes"), dict):
+        entry["last_bite_outcomes"] = manifest_entry["last_bite_outcomes"]
+    return entry
+
+
+def _action_list_sources(
+    universe_id: str = "",
+    **_kwargs: Any,
+) -> str:
+    """List uploaded source documents with attestation metadata."""
+    uid = universe_id or _default_universe()
+    udir = _universe_dir(uid)
+    canon_dir = udir / "canon"
+    sources_dir = canon_dir / "sources"
+
+    if not sources_dir.is_dir():
+        return json.dumps({
+            "universe_id": uid,
+            "source_files": [],
+            "source_count": 0,
+            "note": "No canon/sources directory.",
+        })
+
+    manifest = _manifest_data(canon_dir)
+    source_files: list[dict[str, Any]] = []
+    try:
+        for path in sorted(sources_dir.iterdir()):
+            if path.is_file() and not path.name.startswith("."):
+                source_files.append(_source_file_entry(path, canon_dir, manifest))
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to list source files: {exc}"})
+
+    return json.dumps({
+        "universe_id": uid,
+        "source_files": source_files,
+        "source_count": len(source_files),
+    })
+
+
+def _action_read_source(
+    universe_id: str = "",
+    filename: str = "",
+    limit: int = 30,
+    **_kwargs: Any,
+) -> str:
+    """Read one uploaded source document verbatim with checksum metadata."""
+    uid = universe_id or _default_universe()
+    udir = _universe_dir(uid)
+    canon_dir = udir / "canon"
+    sources_dir = canon_dir / "sources"
+
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename:
+        return json.dumps({
+            "error": "Filename required. Use list_sources to see available files.",
+        })
+
+    target = (sources_dir / safe_name).resolve()
+    if not target.is_relative_to(sources_dir.resolve()):
+        return json.dumps({"error": "Path traversal not allowed."})
+    if not target.is_file():
+        return json.dumps({
+            "error": f"Source file '{safe_name}' not found.",
+            "hint": "Use list_sources to see available files.",
+        })
+
+    try:
+        raw = target.read_bytes()
+        content = raw.decode("utf-8")
+        manifest = _manifest_data(canon_dir)
+        entry = _source_file_entry(target, canon_dir, manifest, raw=raw)
+    except UnicodeDecodeError as exc:
+        return json.dumps({
+            "error": (
+                f"Source file '{safe_name}' is not valid UTF-8 "
+                f"({exc.reason} at byte {exc.start})."
+            ),
+        })
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to read source file: {exc}"})
+
+    # ChatGPT's connector wrapper can stop rendering downstream writes after
+    # several large source reads. Keep the default preview compact, while still
+    # allowing an explicit larger preview through the existing MCP `limit` arg.
+    preview_chars = 4000
+    if limit and limit > 100:
+        preview_chars = min(limit, 10000)
+
+    truncated = len(content) > preview_chars
+    entry.update({
+        "universe_id": uid,
+        "content": content[:preview_chars] if truncated else content,
+        "truncated": truncated,
+        "content_preview_chars": preview_chars,
+        "next_action_hint": (
+            "If the user requested a create or update, continue with that write "
+            "action now; do not stop after reading sources."
+        ),
+    })
+    if truncated:
+        entry["total_chars"] = len(content)
+        entry["note"] = (
+            f"Source file preview truncated to {preview_chars} chars. "
+            "Pass limit=10000 for the largest supported preview."
+        )
+    return json.dumps(entry)
 
 
 def _action_read_canon(
@@ -3914,6 +4214,9 @@ def _action_create_universe(
             "universe_id": uid,
             "status": "created",
             "has_premise": bool(text.strip()),
+            "first_run_checklist": _synthesis_first_run_checklist(
+                has_premise=bool(text.strip()),
+            ),
         }
 
         # Auto-switch the daemon to the new universe
@@ -3965,6 +4268,7 @@ def _universe_impl(
     tier: str = "",
     enabled: bool = False,
     tag: str = "",
+    anchor_json: str = "",
 ) -> str:
     """Pattern A2 body — see ``workflow.universe_server.universe`` for the
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
@@ -3986,6 +4290,8 @@ def _universe_impl(
         "add_canon_from_path": _action_add_canon_from_path,
         "list_canon": _action_list_canon,
         "read_canon": _action_read_canon,
+        "list_sources": _action_list_sources,
+        "read_source": _action_read_source,
         "control_daemon": _action_control_daemon,
         "switch_universe": _action_switch_universe,
         "create_universe": _action_create_universe,
@@ -4014,6 +4320,7 @@ def _universe_impl(
         "daemon_memory_review": _action_daemon_memory_review,
         "daemon_memory_promote": _action_daemon_memory_promote,
         "daemon_memory_status": _action_daemon_memory_status,
+        "treasury_status": _action_treasury_status,
         "set_tier_config": _action_set_tier_config,
     }
 
@@ -4052,6 +4359,7 @@ def _universe_impl(
         "tier": tier,
         "enabled": enabled,
         "tag": tag,
+        "anchor_json": anchor_json,
     }
 
     # All WRITE actions are funneled through the ledger wrapper. READ actions

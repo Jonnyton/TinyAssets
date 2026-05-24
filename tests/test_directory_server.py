@@ -2,80 +2,66 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 from workflow.directory_server import (
+    _redact_directory_status,
     directory_mcp,
-    propose_workflow_goal,
-    search_workflow_goals,
+    read_graph,
+    read_page,
+    write_graph,
+    write_page,
 )
 
 EXPECTED_TOOLS = {
-    "get_workflow_status": {
+    "read.graph": {
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
         "openWorldHint": False,
     },
-    "list_workflow_universes": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "inspect_workflow_universe": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "list_workflow_goals": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "search_workflow_goals": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "get_workflow_goal": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "search_workflow_wiki": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "read_workflow_wiki_page": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "list_workflow_runs": {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
-    "propose_workflow_goal": {
+    "write.graph": {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
         "openWorldHint": True,
     },
-    "submit_workflow_request": {
+    "run.graph": {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
         "openWorldHint": False,
     },
+    "read.page": {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+    "write.page": {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+}
+
+LEGACY_DIRECTORY_TOOL_NAMES = {
+    "get_workflow_status",
+    "list_workflow_universes",
+    "inspect_workflow_universe",
+    "list_workflow_goals",
+    "search_workflow_goals",
+    "get_workflow_goal",
+    "search_workflow_wiki",
+    "read_workflow_wiki_page",
+    "list_workflow_runs",
+    "propose_workflow_goal",
+    "submit_workflow_request",
+    "universe",
+    "extensions",
+    "goals",
+    "wiki",
 }
 
 
@@ -87,22 +73,40 @@ def test_directory_surface_exposes_review_scoped_tool_set() -> None:
     tools = {tool.name: tool for tool in _list_tools()}
 
     assert set(tools) == set(EXPECTED_TOOLS)
-    assert "universe" not in tools
-    assert "extensions" not in tools
-    assert "goals" not in tools
-    assert "wiki" not in tools
+    assert LEGACY_DIRECTORY_TOOL_NAMES.isdisjoint(tools)
 
 
 def test_directory_tools_have_explicit_submission_annotations() -> None:
     tools = {tool.name: tool for tool in _list_tools()}
 
     for tool_name, expected in EXPECTED_TOOLS.items():
-        annotations = tools[tool_name].annotations
+        tool = tools[tool_name]
+        assert tool.title, f"{tool_name} missing tool title"
+        annotations = tool.annotations
         assert annotations is not None, f"{tool_name} missing annotations"
+        assert annotations.title, f"{tool_name} missing annotation title"
         for hint_name, expected_value in expected.items():
             assert getattr(annotations, hint_name) is expected_value, (
                 f"{tool_name}.{hint_name} must be {expected_value}"
             )
+
+
+def test_chatgpt_submission_packet_matches_directory_surface() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    packet = json.loads(
+        (repo_root / "chatgpt-app-submission.json").read_text(encoding="utf-8")
+    )
+    tools = {tool.name: tool for tool in _list_tools()}
+
+    assert set(packet["tools"]) == set(tools)
+    for tool_name, tool in tools.items():
+        annotations = tool.annotations
+        assert annotations is not None
+        assert packet["tools"][tool_name]["annotations"] == {
+            "readOnlyHint": annotations.readOnlyHint,
+            "openWorldHint": annotations.openWorldHint,
+            "destructiveHint": annotations.destructiveHint,
+        }
 
 
 def test_directory_tools_do_not_use_catch_all_action_inputs() -> None:
@@ -132,6 +136,65 @@ def test_directory_tool_inputs_avoid_sensitive_credentials() -> None:
         )
 
 
+def test_directory_read_page_schema_advertises_changed_since() -> None:
+    """PR-088: directory wiki reads must expose the since-feed timestamp."""
+
+    tool = next(tool for tool in _list_tools() if tool.name == "read.page")
+    properties = tool.parameters["properties"]
+
+    assert properties["changed_since"]["type"] == "string"
+    assert properties["changed_since"]["default"] == ""
+    assert "changed after this" in properties["changed_since"]["description"]
+    assert "changed_since" not in tool.parameters.get("required", [])
+
+
+def test_directory_status_redacts_operator_diagnostics() -> None:
+    redacted = _redact_directory_status({
+        "active_host": {
+            "host_id": "alice@example.com",
+            "served_llm_type": "any",
+        },
+        "evidence": {
+            "activity_log_tail": ["[2026-05-02] raw internal log"],
+            "last_n_calls": [{"ts": "2026-05-02", "raw": "internal"}],
+            "policy_hash": "abc123",
+            "activity_log_line_count": 1,
+        },
+        "evidence_caveats": {
+            "last_completed_request_llm_used": ["No recent provider tag."],
+            "last_n_calls": ["Internal recent-call diagnostic caveat."],
+        },
+        "session_boundary": {"account_user": "alice@example.com"},
+        "storage_utilization": {
+            "pressure_level": "ok",
+            "per_subsystem": {
+                "wiki": {
+                    "bytes": 10,
+                    "path": "C:/Users/Jonathan/AppData/Roaming/Workflow/wiki",
+                },
+            },
+        },
+        "actionable_next_steps": [
+            "Inspect the full activity_log_tail.",
+            "Inspect last_n_calls for legacy entries.",
+            "Check daemon status again.",
+        ],
+    })
+
+    assert "host_id" not in redacted["active_host"]
+    assert "session_boundary" not in redacted
+    assert "activity_log_tail" not in redacted["evidence"]
+    assert "last_n_calls" not in redacted["evidence"]
+    assert "policy_hash" not in redacted["evidence"]
+    assert "activity_log_tail_count" not in redacted["evidence"]
+    assert "last_n_calls_count" not in redacted["evidence"]
+    assert "last_n_calls" not in redacted["evidence_caveats"]
+    assert "last_completed_request_llm_used" in redacted["evidence_caveats"]
+    assert "path" not in redacted["storage_utilization"]["per_subsystem"]["wiki"]
+    assert redacted["actionable_next_steps"] == ["Check daemon status again."]
+    assert "directory_privacy_note" in redacted
+
+
 def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> None:
     """Guard the reviewed directory goal path beyond tool-schema listing."""
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
@@ -142,7 +205,8 @@ def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> No
     invalidate_backend_cache()
     try:
         proposed = json.loads(
-            propose_workflow_goal(
+            write_graph(
+                target="goal",
                 name="Directory smoke goal",
                 tags="directory,smoke",
                 visibility="public",
@@ -150,7 +214,7 @@ def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> No
         )
         assert proposed["status"] == "proposed"
 
-        searched = json.loads(search_workflow_goals("Directory smoke"))
+        searched = json.loads(read_graph(target="goals", query="Directory smoke"))
         assert searched["count"] >= 1
         assert any(
             goal["goal_id"] == proposed["goal"]["goal_id"]
@@ -158,3 +222,87 @@ def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> No
         )
     finally:
         invalidate_backend_cache()
+
+
+def test_directory_submit_request_queues_temp_universe_request(monkeypatch, tmp_path) -> None:
+    """Guard the reviewed directory request write path without touching prod."""
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "directory-test")
+
+    from workflow.catalog import invalidate_backend_cache
+
+    invalidate_backend_cache()
+    universe_dir = tmp_path / "directory-universe"
+    universe_dir.mkdir()
+
+    try:
+        result = json.loads(
+            write_graph(
+                target="request",
+                graph_id="directory-universe",
+                text="Summarize submission readiness blockers.",
+                request_type="general",
+            )
+        )
+
+        assert result["universe_id"] == "directory-universe"
+        assert result["status"] == "pending"
+        assert result["request_id"].startswith("req_")
+        assert result["queue_position"] == 1
+        assert result["ahead_of_yours"] == 0
+        assert "what_happens_next" in result
+
+        requests = json.loads((universe_dir / "requests.json").read_text(encoding="utf-8"))
+        assert requests[0]["id"] == result["request_id"]
+        assert requests[0]["text"] == "Summarize submission readiness blockers."
+        assert requests[0]["type"] == "general"
+    finally:
+        invalidate_backend_cache()
+
+
+def test_directory_write_page_drafts_temp_wiki_page(monkeypatch, tmp_path) -> None:
+    """Guard the five-handle page write adapter against parameter drift."""
+    wiki_root = tmp_path / "wiki"
+    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+
+    drafted = json.loads(
+        write_page(
+            category="notes",
+            filename="directory-page-smoke",
+            content="# Directory page smoke\n",
+            log_entry="directory page smoke",
+        )
+    )
+
+    assert drafted["status"] == "drafted"
+    assert drafted["path"] == "drafts/notes/directory-page-smoke.md"
+    assert (
+        wiki_root / "drafts" / "notes" / "directory-page-smoke.md"
+    ).read_text(encoding="utf-8") == "# Directory page smoke\n"
+
+
+def test_directory_read_page_changed_since_routes_to_since_feed(
+    monkeypatch, tmp_path,
+) -> None:
+    """Empty read.page + changed_since is the directory-safe since action."""
+    wiki_root = tmp_path / "wiki"
+    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+
+    from workflow.api.wiki import _ensure_wiki_scaffold
+
+    _ensure_wiki_scaffold(wiki_root)
+    fresh = wiki_root / "pages" / "notes" / "fresh-directory-feed.md"
+    fresh.write_text(
+        "---\ntitle: Fresh directory feed\ntype: note\n---\n# Fresh\n",
+        encoding="utf-8",
+    )
+
+    result = json.loads(
+        read_page(changed_since="2026-05-01T00:00:00Z", max_results=5)
+    )
+
+    assert result["changed_since"] == "2026-05-01T00:00:00Z"
+    assert any(
+        item["path"] == "pages/notes/fresh-directory-feed.md"
+        for item in result["results"]
+    )

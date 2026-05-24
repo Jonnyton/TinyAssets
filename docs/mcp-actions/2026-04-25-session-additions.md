@@ -108,6 +108,10 @@ Two new fields in the patch_branch response for post-op verification:
 - `post_patch` (dict) — re-read of the patched branch fields after write, so caller can
   confirm the update landed.
 - `patched_fields` (list[str]) — names of the fields that were actually changed.
+- `branch_version_id` (str) — immutable post-patch branch snapshot ID.
+- `parent_version_id` (str | null) — pre-patch snapshot linked as the parent when the
+  post-patch topology creates a new version.
+- `content_hash` (str) / `published_at` (str) — metadata for the post-patch snapshot.
 
 ---
 

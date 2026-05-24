@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from workflow.api.helpers import _default_universe, _universe_dir
+from workflow.api.helpers import _base_path, _default_universe, _universe_dir
 from workflow.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 
 
@@ -37,6 +37,444 @@ def _policy_hash(payload: dict[str, Any]) -> str:
     """
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# Heartbeat refresh interval observed in fantasy_daemon's BUG-011 Phase A
+# implementation (PR #212). 2x interval is the threshold for "stale heartbeat".
+_HEARTBEAT_REFRESH_INTERVAL_S = 60
+_HEARTBEAT_STALE_THRESHOLD_S = _HEARTBEAT_REFRESH_INTERVAL_S * 2
+
+# Threshold for "stuck pending" — a pending task older than this without
+# claim implies dispatcher pickup or worker liveness issue (today's
+# BUG-009 class).
+_STUCK_PENDING_THRESHOLD_S = 120
+
+# Auto-ship observation window surfaced in get_status.auto_ship_health.
+_AUTO_SHIP_OBSERVATION_WINDOW_S = 24 * 60 * 60
+_AUTO_SHIP_RECENT_ATTEMPT_LIMIT = 10
+_AUTO_SHIP_TEXT_FIELD_LIMIT = 500
+
+
+def _parse_iso_to_epoch(value: str) -> float | None:
+    """Best-effort ISO-8601 parser; returns None on empty/unparseable input.
+
+    Defensive — never raises so a malformed lease timestamp can't break
+    the status probe. Pre-#212 BranchTasks have empty strings for the new
+    fields; this returns None for those.
+    """
+    if not value:
+        return None
+    try:
+        from datetime import datetime
+        # fromisoformat handles "+00:00" but not "Z" suffix on older Pythons.
+        cleaned = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(cleaned).timestamp()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _auto_ship_window_seconds() -> tuple[int, list[str]]:
+    """Return configured auto-ship observation window with warnings.
+
+    Invalid config is surfaced in status warnings and falls back to the
+    conservative 24h default instead of breaking the public status probe.
+    """
+    raw = os.environ.get("WORKFLOW_AUTO_SHIP_OBSERVATION_WINDOW_SECONDS", "")
+    raw = raw.strip()
+    if not raw:
+        return _AUTO_SHIP_OBSERVATION_WINDOW_S, []
+    try:
+        value = int(raw)
+    except ValueError:
+        return _AUTO_SHIP_OBSERVATION_WINDOW_S, [
+            "invalid_window_seconds: "
+            f"WORKFLOW_AUTO_SHIP_OBSERVATION_WINDOW_SECONDS={raw!r}; "
+            f"using {_AUTO_SHIP_OBSERVATION_WINDOW_S}"
+        ]
+    if value <= 0:
+        return _AUTO_SHIP_OBSERVATION_WINDOW_S, [
+            "invalid_window_seconds: "
+            f"WORKFLOW_AUTO_SHIP_OBSERVATION_WINDOW_SECONDS must be > 0; "
+            f"using {_AUTO_SHIP_OBSERVATION_WINDOW_S}"
+        ]
+    return value, []
+
+
+def _compact_status_text(value: str) -> str:
+    if len(value) <= _AUTO_SHIP_TEXT_FIELD_LIMIT:
+        return value
+    return value[:_AUTO_SHIP_TEXT_FIELD_LIMIT] + "...[truncated]"
+
+
+def _compact_ship_attempt(attempt: Any) -> dict[str, Any]:
+    """Compact chatbot-facing summary of an auto-ship ledger row.
+
+    Omits empty optional fields and potentially bulky fields such as
+    changed_paths_json. The full structured ledger remains the source of
+    truth on disk.
+    """
+    summary = {
+        "ship_attempt_id": attempt.ship_attempt_id,
+        "request_id": attempt.request_id,
+        "release_gate_result": attempt.release_gate_result,
+        "ship_class": attempt.ship_class,
+        "ship_status": attempt.ship_status,
+        "would_open_pr": attempt.would_open_pr,
+        "updated_at": attempt.updated_at,
+    }
+    for field in (
+        "parent_run_id",
+        "child_run_id",
+        "branch_def_id",
+        "pr_url",
+        "commit_sha",
+        "ci_status",
+        "rollback_handle",
+        "stable_evidence_handle",
+        "observation_status",
+        "observation_status_at",
+        "error_class",
+        "error_message",
+    ):
+        value = getattr(attempt, field)
+        if not value:
+            continue
+        if field == "error_message":
+            value = _compact_status_text(value)
+        summary[field] = value
+    return summary
+
+
+def _observation_window_remaining_s(
+    attempt: Any,
+    *,
+    now_ts: float,
+    window_seconds: int,
+) -> int | None:
+    anchor = (
+        attempt.observation_status_at
+        or attempt.updated_at
+        or attempt.created_at
+        or ""
+    )
+    anchor_ts = _parse_iso_to_epoch(anchor)
+    if anchor_ts is None:
+        return None
+    elapsed = max(0, int(now_ts - anchor_ts))
+    return max(0, window_seconds - elapsed)
+
+
+def _opened_pr_summary(
+    attempt: Any,
+    *,
+    now_ts: float,
+    window_seconds: int,
+) -> dict[str, Any]:
+    summary = {
+        "ship_attempt_id": attempt.ship_attempt_id,
+        "request_id": attempt.request_id,
+        "pr_url": attempt.pr_url,
+        "ship_status": attempt.ship_status,
+        "ci_status": attempt.ci_status,
+        "observation_status": attempt.observation_status or "observing",
+        "observation_status_at": attempt.observation_status_at,
+        "observation_window_remaining_s": _observation_window_remaining_s(
+            attempt,
+            now_ts=now_ts,
+            window_seconds=window_seconds,
+        ),
+        "rollback_handle": attempt.rollback_handle,
+        "updated_at": attempt.updated_at,
+    }
+    return summary
+
+
+def _rollback_recommendation_summary(attempt: Any) -> dict[str, Any]:
+    return {
+        "ship_attempt_id": attempt.ship_attempt_id,
+        "request_id": attempt.request_id,
+        "ship_status": attempt.ship_status,
+        "pr_url": attempt.pr_url,
+        "commit_sha": attempt.commit_sha,
+        "rollback_handle": attempt.rollback_handle,
+        "observation_status": attempt.observation_status,
+        "observation_status_at": attempt.observation_status_at,
+        "reason": (
+            _compact_status_text(attempt.error_message)
+            if attempt.error_message
+            else "observation_status=regressed"
+        ),
+        "updated_at": attempt.updated_at,
+    }
+
+
+def _compute_auto_ship_health(
+    udir: Any,
+    *,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    """Summarize the auto-ship attempt ledger for public get_status.
+
+    Slice B is read-only observability: no polling, no rollback, no
+    state mutation. The helper returns compact rows so chatbots can see
+    the loop's recent ship/audit state without loading the full ledger.
+    """
+    import time as _time
+    if now_ts is None:
+        now_ts = _time.time()
+
+    window_seconds, warnings = _auto_ship_window_seconds()
+    out: dict[str, Any] = {
+        "recent_attempts": [],
+        "opened_prs": [],
+        "rollback_recommendations": [],
+        "window_seconds": window_seconds,
+        "ledger_available": True,
+        "warnings": warnings,
+    }
+
+    try:
+        from workflow.auto_ship_ledger import read_attempts
+        attempts = read_attempts(Path(udir))
+    except Exception as exc:  # noqa: BLE001 — surfaced, not silent
+        out["ledger_available"] = False
+        out["warnings"].append(f"ledger_read_failed: {exc}")
+        return out
+
+    if not attempts:
+        return out
+
+    recent_attempts = list(reversed(attempts[-_AUTO_SHIP_RECENT_ATTEMPT_LIMIT:]))
+    opened_attempts = [
+        attempt for attempt in reversed(attempts)
+        if attempt.ship_status == "opened"
+    ]
+    regressed_attempts = [
+        attempt for attempt in reversed(attempts)
+        if attempt.ship_status in {"opened", "merged"}
+        and attempt.observation_status == "regressed"
+    ]
+
+    out["recent_attempts"] = [
+        _compact_ship_attempt(attempt) for attempt in recent_attempts
+    ]
+    out["opened_prs"] = [
+        _opened_pr_summary(
+            attempt,
+            now_ts=now_ts,
+            window_seconds=window_seconds,
+        )
+        for attempt in opened_attempts
+    ]
+    out["rollback_recommendations"] = [
+        _rollback_recommendation_summary(attempt)
+        for attempt in regressed_attempts
+    ]
+    return out
+
+
+def _compute_supervisor_liveness(
+    udir: Any,
+    *,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    """Aggregate BranchTask queue + BUG-011 Phase A lease fields into a
+    structured liveness snapshot.
+
+    Pairs with PR #212 (write-only lease metadata fields). Uses
+    ``getattr`` with defaults so this works both pre- and post-PR-#212
+    deployment: pre-#212 BranchTasks lack the lease fields and surface
+    as ``"lease_data_unavailable"`` rather than crashing the probe.
+
+    Surfaces the diagnostic the BUG-009 incident (2026-05-02) cost an
+    hour of triage to find: container alive but daemon subprocess
+    wedged. With this field, the same diagnosis becomes
+    ``stuck_pending_max_age_s`` + ``stale_running_tasks`` readable from
+    ``get_status``.
+    """
+    import time as _time
+    if now_ts is None:
+        now_ts = _time.time()
+
+    out: dict[str, Any] = {
+        "queue_state": {
+            "depth": 0,
+            "pending": 0,
+            "running": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "policy_parked_pending": 0,
+            "stuck_pending_max_age_s": 0,
+            "policy_parked_pending_max_age_s": 0,
+            "stuck_running_max_age_s": 0,
+        },
+        "running_tasks_lease": [],
+        "stale_running_tasks": [],
+        "warnings": [],
+        "lease_data_available": True,
+    }
+
+    try:
+        from workflow.branch_tasks import read_queue
+        queue = read_queue(udir)
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        out["warnings"].append(f"queue_read_failed: {exc}")
+        return out
+
+    out["queue_state"]["depth"] = len(queue)
+    if not queue:
+        return out
+
+    try:
+        from workflow.dispatcher import load_dispatcher_config
+        dispatcher_config = load_dispatcher_config(Path(udir))
+    except Exception as exc:  # noqa: BLE001 — status must remain best-effort
+        dispatcher_config = None
+        out["warnings"].append(f"dispatcher_config_read_failed: {exc}")
+
+    any_lease_field_seen = False
+    pending_ages: list[float] = []
+    policy_parked_pending_ages: list[float] = []
+    running_ages: list[float] = []
+
+    for task in queue:
+        status = getattr(task, "status", "") or ""
+        if status in out["queue_state"]:
+            out["queue_state"][status] = out["queue_state"].get(status, 0) + 1
+
+        # Pending-task age (queued_at -> now). Detects dispatcher pickup
+        # gaps even before a task gets claimed (today's BUG-009 pattern).
+        queued_at = getattr(task, "queued_at", "") or ""
+        queued_ts = _parse_iso_to_epoch(queued_at) if queued_at else None
+        if status == "pending" and queued_ts is not None:
+            age = max(0.0, now_ts - queued_ts)
+            trigger_source = getattr(task, "trigger_source", "") or ""
+            if (
+                dispatcher_config is not None
+                and not dispatcher_config.tier_enabled(trigger_source)
+            ):
+                out["queue_state"]["policy_parked_pending"] += 1
+                policy_parked_pending_ages.append(age)
+            else:
+                pending_ages.append(age)
+
+        if status != "running":
+            continue
+
+        # Lease metadata (PR #212). Defensive getattr so pre-#212 tasks
+        # surface as empty strings rather than AttributeError.
+        worker_owner_id = getattr(task, "worker_owner_id", "") or ""
+        lease_expires_at = getattr(task, "lease_expires_at", "") or ""
+        heartbeat_at = getattr(task, "heartbeat_at", "") or ""
+        last_progress_at = getattr(task, "last_progress_at", "") or ""
+
+        if worker_owner_id or lease_expires_at or heartbeat_at:
+            any_lease_field_seen = True
+
+        lease_expires_ts = _parse_iso_to_epoch(lease_expires_at)
+        heartbeat_ts = _parse_iso_to_epoch(heartbeat_at)
+        progress_ts = _parse_iso_to_epoch(last_progress_at)
+
+        lease_remaining_s: int | None = None
+        if lease_expires_ts is not None:
+            lease_remaining_s = int(lease_expires_ts - now_ts)
+
+        heartbeat_age_s: int | None = None
+        if heartbeat_ts is not None:
+            heartbeat_age_s = max(0, int(now_ts - heartbeat_ts))
+
+        progress_age_s: int | None = None
+        if progress_ts is not None:
+            progress_age_s = max(0, int(now_ts - progress_ts))
+
+        # Running-task age tracked for the queue summary even if no lease
+        # data exists (pre-#212 fallback).
+        if heartbeat_ts is not None:
+            running_ages.append(now_ts - heartbeat_ts)
+        elif queued_ts is not None:
+            running_ages.append(max(0.0, now_ts - queued_ts))
+
+        record = {
+            "branch_task_id": getattr(task, "branch_task_id", ""),
+            "worker_owner_id": worker_owner_id,
+            "lease_expires_at": lease_expires_at,
+            "lease_remaining_s": lease_remaining_s,
+            "heartbeat_at": heartbeat_at,
+            "heartbeat_age_s": heartbeat_age_s,
+            "last_progress_at": last_progress_at,
+            "progress_age_s": progress_age_s,
+        }
+        out["running_tasks_lease"].append(record)
+
+        # Stale detection: heartbeat older than 2x refresh OR lease
+        # expired. Both signal the daemon owning this task is dead/wedged.
+        # Phase C (Codex) will use the same predicate to actively
+        # reclaim; this field lets operators see the condition before
+        # that ships.
+        is_stale = False
+        stale_reasons: list[str] = []
+        if (
+            heartbeat_age_s is not None
+            and heartbeat_age_s > _HEARTBEAT_STALE_THRESHOLD_S
+        ):
+            is_stale = True
+            stale_reasons.append(
+                f"heartbeat_age_s={heartbeat_age_s} > "
+                f"threshold={_HEARTBEAT_STALE_THRESHOLD_S}"
+            )
+        if lease_remaining_s is not None and lease_remaining_s <= 0:
+            is_stale = True
+            stale_reasons.append(
+                f"lease_expired ({lease_remaining_s}s ago)"
+            )
+
+        if is_stale:
+            stale = dict(record)
+            stale["stale_reasons"] = stale_reasons
+            out["stale_running_tasks"].append(stale)
+
+    if pending_ages:
+        out["queue_state"]["stuck_pending_max_age_s"] = int(max(pending_ages))
+    if policy_parked_pending_ages:
+        out["queue_state"]["policy_parked_pending_max_age_s"] = int(
+            max(policy_parked_pending_ages)
+        )
+    if running_ages:
+        out["queue_state"]["stuck_running_max_age_s"] = int(max(running_ages))
+
+    # If any pending task is past the stuck threshold, surface a
+    # warning. Today's BUG-009 RCA: a pending task that sits >2min
+    # without claim means the supervisor restart logic isn't reaching
+    # the queue (the exact pattern PR #205 fixed).
+    if (
+        out["queue_state"]["stuck_pending_max_age_s"]
+        > _STUCK_PENDING_THRESHOLD_S
+    ):
+        out["warnings"].append(
+            f"stuck_pending: oldest pending task is "
+            f"{out['queue_state']['stuck_pending_max_age_s']}s old "
+            f"(threshold {_STUCK_PENDING_THRESHOLD_S}s). Likely "
+            "supervisor restart loop, dispatcher disabled, or daemon "
+            "subprocess wedged. See PR #206 spec for incident pattern."
+        )
+
+    if out["queue_state"]["running"] > 0 and not any_lease_field_seen:
+        out["lease_data_available"] = False
+        out["warnings"].append(
+            "lease_data_unavailable: running tasks present but no lease "
+            "fields populated. Either pre-PR-#212 deploy, or daemon is "
+            "not stamping heartbeats. Reclaim heuristics cannot run."
+        )
+
+    if out["stale_running_tasks"]:
+        out["warnings"].append(
+            f"{len(out['stale_running_tasks'])} stale running task(s) "
+            "(heartbeat past threshold or lease expired). BUG-011 "
+            "Phase C reclaim would reclaim these once shipped."
+        )
+
+    return out
 
 
 def get_status(universe_id: str = "") -> str:
@@ -259,6 +697,11 @@ def get_status(universe_id: str = "") -> str:
         # directory, not at data_dir() root; patch the per-subsystem byte
         # counts using the already-resolved udir.
         if "per_subsystem" in storage_utilization:
+            checkpoint_bytes = path_size_bytes(udir / "checkpoints.db")
+            storage_utilization["per_subsystem"]["checkpoint_db"] = {
+                "bytes": checkpoint_bytes,
+                "path": str(udir / "checkpoints.db"),
+            }
             storage_utilization["per_subsystem"]["activity_log"] = {
                 "bytes": path_size_bytes(udir / "activity.log"),
                 "path": str(udir / "activity.log"),
@@ -267,6 +710,20 @@ def get_status(universe_id: str = "") -> str:
                 "bytes": path_size_bytes(udir / "output"),
                 "path": str(udir / "output"),
             }
+            try:
+                from workflow.storage.caps import subsystem_cap_snapshot
+
+                storage_utilization["subsystem_caps"] = subsystem_cap_snapshot({
+                    "checkpoints": checkpoint_bytes,
+                    "logs": storage_utilization["per_subsystem"]
+                    .get("activity_log", {})
+                    .get("bytes", 0),
+                    "run_artifacts": storage_utilization["per_subsystem"]
+                    .get("run_transcripts", {})
+                    .get("bytes", 0),
+                })
+            except Exception:  # noqa: BLE001 — keep status best-effort
+                pass
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         storage_utilization = {
             "error": "inspect_failed",
@@ -349,6 +806,50 @@ def get_status(universe_id: str = "") -> str:
     except Exception:  # noqa: BLE001 — best-effort observability
         missing_data_files = []
 
+    # supervisor_liveness — BUG-009 incident (2026-05-02) cost ~1hr of
+    # triage finding "container alive but daemon subprocess wedged"
+    # without SSH. This block surfaces the diagnosis from the public MCP
+    # probe: queue counts + per-running-task lease/heartbeat ages +
+    # stale-detection. Pairs with PR #212 (BUG-011 Phase A lease metadata
+    # writes); the helper is defensive so a missing branch_tasks file or
+    # pre-#212 task shape cannot break the status probe.
+    try:
+        supervisor_liveness = _compute_supervisor_liveness(udir)
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        supervisor_liveness = {
+            "error": "compute_failed",
+            "detail": str(exc),
+            "lease_data_available": False,
+        }
+
+    # auto_ship_health — PR #198 option-2 Slice B. Read-only summary of
+    # the append-only auto_ship_attempts ledger so the loop can observe
+    # recent ship attempts, open PR observation windows, and regressed
+    # attempts that need rollback consideration without SSH or ad hoc
+    # file reads.
+    try:
+        auto_ship_health = _compute_auto_ship_health(udir)
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        auto_ship_health = {
+            "error": "compute_failed",
+            "detail": str(exc),
+            "ledger_available": False,
+        }
+
+    # open_brain — PR-119 Slice C. Read-only status surface over daemon
+    # mini-brain cost ledgers. This only derives estimates from existing
+    # entries/events; it does not trigger memory capture, review, promotion,
+    # compaction, or any autonomous scheduling decision.
+    try:
+        from workflow.daemon_brain import open_brain_status_surface
+        open_brain = open_brain_status_surface(_base_path())
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        open_brain = {
+            "error": "compute_failed",
+            "detail": str(exc),
+            "read_only": True,
+        }
+
     response = {
         "schema_version": 1,
         "active_host": policy_payload["active_host"],
@@ -368,6 +869,9 @@ def get_status(universe_id: str = "") -> str:
         "per_provider_cooldown_remaining": per_provider_cooldown_remaining,
         "sandbox_status": sandbox_status,
         "missing_data_files": missing_data_files,
+        "supervisor_liveness": supervisor_liveness,
+        "auto_ship_health": auto_ship_health,
+        "open_brain": open_brain,
         "universe_id": uid,
         "universe_exists": universe_exists,
     }

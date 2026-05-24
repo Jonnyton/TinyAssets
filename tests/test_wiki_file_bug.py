@@ -487,7 +487,28 @@ class TestFileBugKindRouting:
         assert out["path"].startswith("pages/patch-requests/")
         pr_dir = wiki_dir / "pages" / "patch-requests"
         assert pr_dir.is_dir()
-        assert any(p.stem.startswith("pr-") for p in pr_dir.glob("*.md"))
+        patch_files = [p for p in pr_dir.glob("*.md") if p.stem.startswith("pr-")]
+        assert len(patch_files) == 1
+        body = patch_files[0].read_text(encoding="utf-8")
+        assert "type: patch_request" in body
+        assert "kind: patch_request" in body
+
+    def test_patch_request_dedup_uses_patch_request_ids(self, wiki_dir):
+        first = json.loads(_wiki_file_bug(
+            component="x", severity="minor",
+            title="Patch connector guidance for community requests",
+            observed="Guidance frames platform changes as bugs only",
+            kind="patch_request",
+        ))
+        second = json.loads(_wiki_file_bug(
+            component="x", severity="minor",
+            title="Patch connector guidance for community requests",
+            observed="Guidance frames platform changes as bugs only",
+            kind="patch_request",
+        ))
+        assert first["status"] == "filed"
+        assert second["status"] == "similar_found"
+        assert second["similar"][0]["bug_id"].startswith("PR-")
 
     def test_independent_id_counters_per_kind(self, wiki_dir):
         """BUG-001 / FEAT-001 / DESIGN-001 must coexist — independent sequences."""

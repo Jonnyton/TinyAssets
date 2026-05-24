@@ -55,9 +55,10 @@ def test_module_exposes_expected_public_names():
         "_action_goal_list", "_action_goal_get", "_action_goal_search",
         "_action_goal_leaderboard", "_action_goal_common_nodes",
         "_action_goal_set_canonical",
-        # Gates main handlers (9)
+        # Gates main handlers (10)
         "_action_gates_define_ladder", "_action_gates_get_ladder",
-        "_action_gates_claim", "_action_gates_retract",
+        "_action_gates_claim", "_action_gates_claim_from_branch_run",
+        "_action_gates_retract",
         "_action_gates_list_claims", "_action_gates_leaderboard",
         "_action_gates_stake_bonus", "_action_gates_unstake_bonus",
         "_action_gates_release_bonus",
@@ -109,14 +110,22 @@ def test_attribution_actions_keys():
 # ── _GOAL_ACTIONS dispatch table ────────────────────────────────────────────
 
 
-def test_goal_actions_table_has_9_handlers():
-    assert len(_GOAL_ACTIONS) == 9
+def test_goal_actions_table_has_12_handlers():
+    # 9 base actions + archive_consultation (pre-existing on main) +
+    # run_canonical (PR-127 M6 cutover Step 4) +
+    # set_selector (DESIGN-008 user-buildable selector primitive) = 12.
+    assert len(_GOAL_ACTIONS) == 12
 
 
 def test_goal_actions_keys():
     expected = {
         "propose", "update", "bind", "list", "get", "search",
         "leaderboard", "common_nodes", "set_canonical",
+        "archive_consultation",
+        # PR-127 — leaderboard-driven canonical dispatch.
+        "run_canonical",
+        # DESIGN-008 — user-buildable selector primitive.
+        "set_selector",
     }
     assert set(_GOAL_ACTIONS.keys()) == expected
 
@@ -136,18 +145,61 @@ def test_goal_read_actions_excluded_from_write_set():
         assert r not in _GOAL_WRITE_ACTIONS
 
 
+@pytest.mark.parametrize(
+    "provider_action, canonical_action, kwargs",
+    [
+        ("list_workflow_goals", "list", {}),
+        ("search_workflow_goals", "search", {"query": "onboarding"}),
+        ("get_workflow_goal", "get", {"goal_id": "goal_123"}),
+        ("propose_workflow_goal", "propose", {"name": "Alias smoke"}),
+    ],
+)
+def test_goal_directory_action_aliases_dispatch_to_canonical_actions(
+    monkeypatch, provider_action, canonical_action, kwargs,
+):
+    """ChatGPT can route directory tool names through legacy Goals."""
+    from workflow.api import branches as branches_mod
+
+    monkeypatch.setattr(branches_mod, "_ensure_workflow_db", lambda: None)
+    seen = {}
+
+    def fake_dispatch(action, handler, goal_kwargs):
+        seen["action"] = action
+        seen["handler"] = handler
+        seen["goal_kwargs"] = goal_kwargs
+        return json.dumps({"status": "ok", "canonical_action": action})
+
+    monkeypatch.setattr(mkt_mod, "_dispatch_goal_action", fake_dispatch)
+
+    out = json.loads(goals(action=provider_action, **kwargs))
+
+    assert out == {"status": "ok", "canonical_action": canonical_action}
+    assert seen["action"] == canonical_action
+    assert seen["handler"] is _GOAL_ACTIONS[canonical_action]
+    for key, value in kwargs.items():
+        assert seen["goal_kwargs"][key] == value
+
+
+def test_goals_unknown_action_lists_directory_aliases():
+    out = json.loads(goals(action="totally_bogus_action"))
+    assert "propose_workflow_goal" in out["available_actions"]
+    assert "search_workflow_goals" in out["available_actions"]
+
+
 # ── _GATES_ACTIONS dispatch table ───────────────────────────────────────────
 
 
-def test_gates_actions_table_has_9_handlers():
-    assert len(_GATES_ACTIONS) == 9
+def test_gates_actions_table_has_11_handlers():
+    assert len(_GATES_ACTIONS) == 11
 
 
 def test_gates_actions_keys():
     expected = {
-        "define_ladder", "get_ladder", "claim", "retract",
+        "define_ladder", "get_ladder", "claim", "retract", "list",
         "list_claims", "leaderboard",
         "stake_bonus", "unstake_bonus", "release_bonus",
+        # PR-126 M5 — claim from completed run's recommended_rung_claim.
+        "claim_from_branch_run",
     }
     assert set(_GATES_ACTIONS.keys()) == expected
 
@@ -225,6 +277,17 @@ def test_gates_when_flag_off_returns_not_available(monkeypatch):
     monkeypatch.delenv("GATES_ENABLED", raising=False)
     out = json.loads(gates(action="claim"))
     assert out["status"] == "not_available"
+
+
+def test_gates_list_returns_discovery_payload(monkeypatch):
+    monkeypatch.setenv("GATES_ENABLED", "1")
+
+    out = json.loads(gates(action="list"))
+
+    assert out["status"] == "ok"
+    assert out["tool"] == "gates"
+    assert "list" in out["available_actions"]
+    assert "list_claims" in out["available_actions"]
 
 
 def test_gates_enabled_default_off(monkeypatch):

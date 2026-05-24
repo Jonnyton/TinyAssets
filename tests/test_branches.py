@@ -524,6 +524,20 @@ class TestBranchDefinition:
         errors = b.validate()
         assert any("collides with a graph node ID" in e for e in errors)
 
+    def test_state_field_graph_node_collision_suggestion_names_both_sides(self):
+        from workflow.api.branches import _errors_to_suggestions
+
+        b = _make_sample_branch()
+        b.state_schema.append({"name": "orient", "type": "str"})
+        errors = b.validate()
+
+        suggestions = _errors_to_suggestions(b, errors)
+        fixes = " ".join(s["proposed_fix"] for s in suggestions)
+
+        assert "state_schema field 'orient'" in fixes
+        assert "graph node ID 'orient'" in fixes
+        assert "before running" in fixes
+
     def test_fork(self):
         b = _make_sample_branch()
         b.stats["run_count"] = 42

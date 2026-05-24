@@ -32,7 +32,7 @@ class TestUniverseServerMetadata:
         assert extensions.annotations.readOnlyHint is False
         assert extensions.annotations.destructiveHint is False
         assert extensions.annotations.idempotentHint is False
-        assert extensions.annotations.openWorldHint is False
+        assert extensions.annotations.openWorldHint is True
         assert "extension_guide" in extensions.description
 
         change_context = tools["community_change_context"]

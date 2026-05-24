@@ -9,6 +9,12 @@ name: Auto-fix change
 #   -> an automated writer attempts a change, or the issue is marked
 #      `needs-human`.
 #
+# Lost-work guard:
+#   once an issue is labeled `auto-fix-attempted`, it must eventually gain a
+#   terminal receipt: PR artifact, `auto-fix-reviewed`, or `needs-human`.
+#   Attempted issues without a terminal receipt are treated as interrupted and
+#   retried instead of skipped.
+#
 # Why this has a backfill path:
 #   wiki-bug-sync intentionally uses GITHUB_TOKEN. GitHub suppresses most
 #   follow-on workflow runs caused by GITHUB_TOKEN events, so an issue label
@@ -31,7 +37,11 @@ name: Auto-fix change
 # Variables -> Actions -> New repository variable). Flip to false to re-enable.
 # Variable-based toggle preserves the secrets; no data loss.
 #
-# Branch naming: auto-change/issue-<N>
+# Branch naming:
+#   all filings: auto-change/issue-<N>
+# Project-design requests are not design-note drafts. They either update a
+# brain page under pages/concepts|plans, implement a runtime guardrail, or
+# leave a no-change explanation.
 # PR title/body are requested in the prompt because claude-code-action@v1 no
 # longer accepts the v0 `pr_title` / `pr_body` inputs.
 
@@ -74,6 +84,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           HAS_WRITER_AUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' || secrets.WORKFLOW_CODEX_AUTH_JSON_B64 != '' }}
+          HAS_WORKFLOW_PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
           AUTO_FIX_DISABLED: ${{ vars.AUTO_FIX_DISABLED }}
         with:
           script: |
@@ -81,11 +92,116 @@ jobs:
             const repo = context.repo.repo;
             const maxIssues = 1;
             const autoLabels = ['daemon-request', 'auto-change', 'auto-bug'];
+            const staleGateLabel = 'auto-fix-stale-gate';
+            const priorityLabelOrder = [
+              'priority:loop-discipline',
+              'priority:primitive-layer',
+              'priority:primitive-surface',
+            ];
+            const skipLabels = ['await-primitive-layer', 'complete', 'auto-fix-exhausted'];
+            const MAX_RETRIES = Number(process.env.LOOP_MAX_RETRIES || '5');
+
+            function retryCountForIssue(issue) {
+              const match = (issue.labels || [])
+                .map((label) => (typeof label === 'string' ? label : label.name || ''))
+                .map((name) => /^auto-fix-retries-(\d+)$/.exec(name))
+                .find(Boolean);
+              return match ? Number(match[1]) : 0;
+            }
             const hasWriterAuth = process.env.HAS_WRITER_AUTH === 'true';
+            const hasWorkflowPushToken = process.env.HAS_WORKFLOW_PUSH_TOKEN === 'true';
             const autoFixDisabled = process.env.AUTO_FIX_DISABLED === 'true';
+            const dispatchIssueNumber = (
+              core.getInput('issue_number') ||
+              context.payload.inputs?.issue_number ||
+              ''
+            ).trim();
 
             function hasLabel(issue, name) {
               return (issue.labels || []).some((label) => label.name === name);
+            }
+
+            function shouldSkipIssue(issue, options = {}) {
+              return !options.ignoreSkip && skipLabels.some((name) => hasLabel(issue, name));
+            }
+
+            function prerequisitePrNumbers(issue) {
+              const labels = (issue.labels || []).map((label) => label.name || label);
+              const text = [
+                issue.title || '',
+                issue.body || '',
+                labels.join('\n'),
+              ].join('\n');
+              const patterns = [
+                /sequenced[-_ ]after[^\n#]{0,120}#(\d+)/gi,
+                /sequenced[-_ ]after[^\n]{0,120}PR\s*#?(\d+)/gi,
+                /sequenced[-_ ]after[-_: ]*pr[-_: ]*(\d+)/gi,
+                /prerequisite[-_ ]pr[^\n0-9]{0,80}(\d+)/gi,
+                /depends[-_ ]on[^\n#]{0,120}PR\s*#?(\d+)/gi,
+                /blocked[^\n]{0,80}(?:by|on)[^\n#]{0,80}PR\s*#?(\d+)/gi,
+              ];
+              const numbers = new Set();
+              for (const pattern of patterns) {
+                for (const match of text.matchAll(pattern)) {
+                  numbers.add(Number(match[1]));
+                }
+              }
+              return [...numbers].filter((number) => Number.isInteger(number) && number > 0);
+            }
+
+            async function hasUnlandedPrerequisitePr(issue) {
+              const prNumbers = prerequisitePrNumbers(issue);
+              for (const prNumber of prNumbers) {
+                try {
+                  const { data: pull } = await github.rest.pulls.get({
+                    owner,
+                    repo,
+                    pull_number: prNumber,
+                  });
+                  if (!pull.merged_at) {
+                    core.info(
+                      `Skipping issue #${issue.number} because it has an unlanded prerequisite PR #${prNumber}.`
+                    );
+                    return true;
+                  }
+                } catch (error) {
+                  core.warning(
+                    `Skipping issue #${issue.number} because prerequisite PR #${prNumber} could not be verified: ${error.message}`
+                  );
+                  return true;
+                }
+              }
+              return false;
+            }
+
+            let openPullsCache = null;
+
+            async function listOpenPulls() {
+              if (!openPullsCache) {
+                openPullsCache = await github.paginate(github.rest.pulls.list, {
+                  owner,
+                  repo,
+                  state: 'open',
+                  per_page: 100,
+                });
+              }
+              return openPullsCache;
+            }
+
+            async function linkedOpenPrNumbers(issue) {
+              const issueMention = new RegExp(`(^|[^0-9])#${issue.number}([^0-9]|$)`);
+              const branchMention = new RegExp(`issue-${issue.number}(?![0-9])`);
+              const pulls = await listOpenPulls();
+              return pulls
+                .filter((pull) => {
+                  const text = [
+                    pull.title || '',
+                    pull.body || '',
+                    pull.head?.ref || '',
+                  ].join('\n');
+                  return issueMention.test(text) || branchMention.test(text);
+                })
+                .map((pull) => pull.number);
             }
 
             function issueRow(issue) {
@@ -109,18 +225,48 @@ jobs:
             const rows = [];
             const seenIssueNumbers = new Set();
 
-            function pushIfPending(issue, options = {}) {
+            async function pushIfPending(issue, options = {}) {
               if (!issue || issue.pull_request || seenIssueNumbers.has(issue.number)) {
+                return;
+              }
+              if (shouldSkipIssue(issue, options)) {
+                core.info(`Skipping issue #${issue.number} because it is deferred or complete.`);
+                return;
+              }
+              if (await hasUnlandedPrerequisitePr(issue)) {
+                return;
+              }
+              const linkedPrNumbers = await linkedOpenPrNumbers(issue);
+              if (linkedPrNumbers.length) {
+                core.info(
+                  `Skipping issue #${issue.number} because linked open PR(s) #${linkedPrNumbers.join(', #')} already exist.`
+                );
                 return;
               }
               const needsHuman = hasLabel(issue, 'needs-human');
               const attempted = hasLabel(issue, 'auto-fix-attempted');
               const reviewed = hasLabel(issue, 'auto-fix-reviewed');
-              const retryAttempted = options.retryAttempted || (
-                needsHuman && hasWriterAuth && !autoFixDisabled && !reviewed
+              const incompleteAttempt = attempted && !reviewed && !needsHuman;
+              const staleGate = hasLabel(issue, staleGateLabel);
+              const retryPermissionBlocked = (
+                (
+                  hasLabel(issue, 'auto-fix-branch-push-blocked') ||
+                  hasLabel(issue, 'auto-fix-pr-blocked')
+                ) &&
+                hasWriterAuth &&
+                hasWorkflowPushToken &&
+                !autoFixDisabled
               );
+              const retryAttempted = options.retryAttempted || incompleteAttempt || (
+                needsHuman && hasWriterAuth && !autoFixDisabled && !reviewed
+              ) || retryPermissionBlocked || staleGate;
               if (attempted && !retryAttempted) {
                 return;
+              }
+              if (incompleteAttempt) {
+                core.info(
+                  `Retrying issue #${issue.number} because auto-fix-attempted has no terminal receipt.`
+                );
               }
               if (attempted) {
                 core.info(`Retrying previously attempted issue #${issue.number}.`);
@@ -129,9 +275,13 @@ jobs:
                 return;
               }
               if (needsHuman) {
-                core.info(
-                  `Retrying needs-human issue #${issue.number} because writer auth is now visible.`
-                );
+                const reason = retryPermissionBlocked
+                  ? 'workflow push token is now visible'
+                  : 'writer auth is now visible';
+                core.info(`Retrying needs-human issue #${issue.number} because ${reason}.`);
+              }
+              if (staleGate) {
+                core.info(`Retrying stale-gate issue #${issue.number}.`);
               }
               rows.push(issueRow(issue));
               seenIssueNumbers.add(issue.number);
@@ -144,31 +294,89 @@ jobs:
                 autoLabels.includes(label?.name) &&
                 !issue.pull_request
               ) {
-                pushIfPending(issue, { retryAttempted: true });
+                await pushIfPending(issue, { retryAttempted: true });
               }
-            } else if (context.eventName === 'workflow_dispatch' && core.getInput('issue_number')) {
-              const issue = await issueFromNumber(core.getInput('issue_number'));
+            } else if (context.eventName === 'workflow_dispatch' && dispatchIssueNumber) {
+              core.info(`Workflow dispatch requested issue #${dispatchIssueNumber}.`);
+              const issue = await issueFromNumber(dispatchIssueNumber);
               if (issue) {
-                pushIfPending(issue, { retryAttempted: true });
+                await pushIfPending(issue, { retryAttempted: true });
               }
             } else {
-              for (const labelName of autoLabels) {
-                const { data: issues } = await github.rest.issues.listForRepo({
-                  owner,
-                  repo,
-                  state: 'open',
-                  labels: labelName,
-                  per_page: 100,
-                });
-                for (const issue of issues) {
-                  pushIfPending(issue);
-                  if (rows.length >= maxIssues) {
-                    break;
+              if (context.eventName === 'workflow_dispatch') {
+                core.info('Workflow dispatch did not include issue_number; scanning pending daemon requests.');
+              }
+              async function scanAutoLabels(options = {}) {
+                const onlyPermissionBlocked = options.onlyPermissionBlocked || false;
+                const onlyStaleGate = options.onlyStaleGate || false;
+                async function scanLabelQuery(labelNames) {
+                  const issues = await github.paginate(github.rest.issues.listForRepo, {
+                    owner,
+                    repo,
+                    state: 'open',
+                    labels: labelNames.join(','),
+                    sort: 'created',
+                    direction: 'asc',
+                    per_page: 100,
+                  });
+                  // Tier fairness: deprioritize needs-human issues that have been retried many
+                  // times so a perpetually-retrying-but-failing issue can't starve fresh
+                  // candidates in the same tier (#918→#922 head-of-line blocking pattern).
+                  // Within retried set, sort by ascending retry count, then ascending issue#.
+                  issues.sort((a, b) => {
+                    const aRetries = retryCountForIssue(a);
+                    const bRetries = retryCountForIssue(b);
+                    if (aRetries !== bRetries) {
+                      return aRetries - bRetries;
+                    }
+                    return (a.number || 0) - (b.number || 0);
+                  });
+                  core.info(`Scanning ${issues.length} open issue(s) for labels ${labelNames.join(',')}.`);
+                  for (const issue of issues) {
+                    if (
+                      onlyPermissionBlocked &&
+                      !hasLabel(issue, 'auto-fix-branch-push-blocked') &&
+                      !hasLabel(issue, 'auto-fix-pr-blocked')
+                    ) {
+                      continue;
+                    }
+                    if (onlyStaleGate && !hasLabel(issue, staleGateLabel)) {
+                      continue;
+                    }
+                    await pushIfPending(issue, { ignoreSkip: onlyPermissionBlocked });
+                    if (rows.length >= maxIssues) {
+                      return true;
+                    }
+                  }
+                  return false;
+                }
+
+                for (const priorityLabel of priorityLabelOrder) {
+                  for (const autoLabel of autoLabels) {
+                    if (await scanLabelQuery([autoLabel, priorityLabel])) {
+                      return;
+                    }
                   }
                 }
-                if (rows.length >= maxIssues) {
-                  break;
+                for (const labelName of autoLabels) {
+                  if (await scanLabelQuery([labelName])) {
+                    return;
+                  }
                 }
+              }
+
+              await scanAutoLabels({ onlyStaleGate: true });
+              if (rows.length >= maxIssues) {
+                core.info('Prioritized stale-gate issue before normal queue discovery.');
+              }
+              if (rows.length < maxIssues) {
+                await scanAutoLabels({ onlyPermissionBlocked: true });
+              }
+              if (rows.length >= maxIssues) {
+                core.info('Prioritized retryable permission-blocked issue before normal queue discovery.');
+              }
+              if (rows.length < maxIssues) {
+                await scanAutoLabels();
               }
             }
 
@@ -179,6 +387,7 @@ jobs:
     needs: discover
     if: needs.discover.outputs.matrix != '[]'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -236,10 +445,20 @@ jobs:
                 color: 'd93f0b',
                 description: 'Automated writer auth exists, but the selected provider returned quota/capacity exhaustion.',
               },
-              {
-                name: 'auto-fix-claude-subscription-missing',
-                color: 'd93f0b',
-                description: 'Preferred subscription-backed Claude Code OAuth token was not visible to GitHub Actions.',
+                {
+                  name: 'auto-fix-writer-failed',
+                  color: 'd93f0b',
+                  description: 'Automated writer auth existed, but the selected writer failed before opening a PR.',
+                },
+                {
+                  name: 'auto-fix-auth-expired',
+                  color: 'd93f0b',
+                  description: 'Subscription-backed writer auth was visible but expired or revoked at invocation time.',
+                },
+                {
+                  name: 'auto-fix-claude-subscription-missing',
+                  color: 'd93f0b',
+                  description: 'Preferred subscription-backed Claude Code OAuth token was not visible to GitHub Actions.',
               },
               {
                 name: 'auto-fix-codex-subscription-missing',
@@ -250,6 +469,11 @@ jobs:
                 name: 'auto-fix-attempted',
                 color: 'fbca04',
                 description: 'Automated fix workflow already attempted this issue.',
+              },
+              {
+                name: 'auto-fix-stale-gate',
+                color: 'd93f0b',
+                description: 'Attempted request has no terminal review label and is blocking the gated queue.',
               },
               {
                 name: 'auto-fix-reviewed',
@@ -267,6 +491,11 @@ jobs:
                 description: 'Automated writer inspected the request but found no safe autonomous patch.',
               },
               {
+                name: 'auto-fix-exhausted',
+                color: '5319e7',
+                description: 'Automated writer exhausted its retry budget; the loop will not retry without explicit host re-open.',
+              },
+              {
                 name: 'auto-fix-pr-blocked',
                 color: 'd93f0b',
                 description: 'Automated writer pushed a branch, but GitHub blocked Actions from opening the PR.',
@@ -275,6 +504,16 @@ jobs:
                 name: 'auto-fix-branch-push-blocked',
                 color: 'd93f0b',
                 description: 'Automated writer produced a patch, but GitHub blocked Actions from pushing the branch.',
+              },
+              {
+                name: 'auto-fix-superseded',
+                color: 'cfd3d7',
+                description: 'Older auto-change PR was closed because a newer branch superseded it.',
+              },
+              {
+                name: 'ready_for_checker',
+                color: '0e8a16',
+                description: 'Loop PR matured through source, duplicate, stale-base, design-note, and scope-split pre-checks before checker escalation.',
               },
               {
                 name: 'writer:claude',
@@ -356,6 +595,7 @@ jobs:
         env:
           HAS_CLAUDE_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
           HAS_CODEX_AUTH_BUNDLE: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 != '' }}
+          HAS_WORKFLOW_PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
           HAS_OPENAI_API_KEY_CONFIGURED: ${{ secrets.OPENAI_API_KEY != '' }}
           HAS_ANTHROPIC_API_KEY_CONFIGURED: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
@@ -376,6 +616,7 @@ jobs:
           {
             echo "has_claude_oauth=${HAS_CLAUDE_OAUTH}"
             echo "has_codex=${HAS_CODEX_AUTH_BUNDLE}"
+            echo "has_workflow_push_token=${HAS_WORKFLOW_PUSH_TOKEN}"
             echo "has_claude_api=false"
             echo "has_openai_api_key_configured=${HAS_OPENAI_API_KEY_CONFIGURED}"
             echo "has_anthropic_api_key_configured=${HAS_ANTHROPIC_API_KEY_CONFIGURED}"
@@ -391,9 +632,11 @@ jobs:
             echo "|---|---|"
             echo "| CLAUDE_CODE_OAUTH_TOKEN | ${HAS_CLAUDE_OAUTH} |"
             echo "| WORKFLOW_CODEX_AUTH_JSON_B64 | ${HAS_CODEX_AUTH_BUNDLE} |"
+            echo "| WORKFLOW_PUSH_TOKEN | ${HAS_WORKFLOW_PUSH_TOKEN} |"
             echo ""
             echo "- selected writer mode: \`${mode}\`"
             echo "- required checker family: \`${checker_family}\`"
+            echo "- WORKFLOW_PUSH_TOKEN is optional, but required for automated branches that edit .github/workflows/* and for loop-created PRs to trigger pull_request checks."
             echo "- API-key secrets are intentionally ignored for default daemon writers."
             echo "- OPENAI_API_KEY configured: \`${HAS_OPENAI_API_KEY_CONFIGURED}\`"
             echo "- ANTHROPIC_API_KEY configured: \`${HAS_ANTHROPIC_API_KEY_CONFIGURED}\`"
@@ -447,12 +690,35 @@ jobs:
         with:
           script: |
             const issueNumber = Number('${{ matrix.issue.issue_number }}');
-            const labelsToClear = ['needs-human', 'auto-fix-auth-missing', 'auto-fix-provider-exhausted'];
+            const issue = ${{ toJson(matrix.issue) }};
+            const issueLabels = (issue.labels || []).map((label) => (
+              typeof label === 'string' ? label : label.name
+            ));
+            const labelsToClear = [
+              'needs-human',
+              'auto-fix-auth-missing',
+              'auto-fix-auth-expired',
+              'auto-fix-provider-exhausted',
+              'auto-fix-writer-failed',
+            ];
             if ('${{ steps.auth.outputs.has_claude_oauth }}' === 'true') {
               labelsToClear.push('auto-fix-claude-subscription-missing');
             }
             if ('${{ steps.auth.outputs.has_codex }}' === 'true') {
               labelsToClear.push('auto-fix-codex-subscription-missing');
+            }
+            if (
+              '${{ steps.auth.outputs.has_workflow_push_token }}' === 'true' &&
+              (
+                issueLabels.includes('auto-fix-branch-push-blocked') ||
+                issueLabels.includes('auto-fix-pr-blocked')
+              )
+            ) {
+              labelsToClear.push(
+                'auto-fix-reviewed',
+                'auto-fix-branch-push-blocked',
+                'auto-fix-pr-blocked',
+              );
             }
             for (const label of labelsToClear) {
               try {
@@ -476,6 +742,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
+          fetch-depth: 0
+
+      - name: Install Python dev dependencies
+        if: >
+          steps.check-disabled.outputs.disabled == 'false' &&
+          steps.auth.outputs.mode != 'none'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
 
       - name: Extract request metadata
         if: >
@@ -496,6 +772,38 @@ jobs:
             const labels = (issue.labels || []).map(labelName);
             const requestKindLabel = labels.find((name) => name?.startsWith('request:'));
             const requestKind = requestKindLabel ? requestKindLabel.replace('request:', '') : 'change';
+            const architecturalKinds = new Set(['project-design']);
+            const filingShape = architecturalKinds.has(requestKind) ? 'architectural' : 'mechanical';
+            const branchPrefix = 'auto-change/';
+            const prTitlePrefix = '[auto-change]';
+            const wikiPathMatch = body.match(/\*\*Wiki path:\*\*\s*`([^`]+)`/i);
+            const wikiPath = wikiPathMatch ? wikiPathMatch[1] : '';
+
+            function issueLinkKeyword(requestKind, body) {
+              if (requestKind !== 'patch') {
+                return 'Fixes';
+              }
+              const text = String(body || '').toLowerCase();
+              const hasFinalMarker = [
+                /(^|\n)\s*(final|final_phase|is_final_phase)\s*:\s*true\b/,
+                /(^|\n)\s*phase\s*:\s*final\b/,
+                /(^|\n)\s*(?:the\s+)?final\s+phase\b/,
+                /\blast\s+phase\b/,
+              ].some((pattern) => pattern.test(text));
+              if (hasFinalMarker) {
+                return 'Fixes';
+              }
+              const hasNonFinalMarker = [
+                /(^|\n)\s*(final|final_phase|is_final_phase)\s*:\s*false\b/,
+                /\bnon[- ]final\b/,
+                /\bnot\s+(?:the\s+)?final\b/,
+                /\bintermediate\s+phase\b/,
+              ].some((pattern) => pattern.test(text));
+              const hasEarlierNumberedPhase = Array.from(
+                text.matchAll(/\bphase\s+(\d+)\s*(?:of|\/)\s*(\d+)\b/g)
+              ).some((match) => Number(match[1]) < Number(match[2]));
+              return hasNonFinalMarker || hasEarlierNumberedPhase ? 'Part of' : 'Fixes';
+            }
 
             // Pull request id from titles like "[BUG-003] ..." or "[WIKI-FEATURE] ...".
             const bugMatch = title.match(/\[?(BUG-\d+)\]?/i);
@@ -505,6 +813,7 @@ jobs:
               : wikiMatch
                 ? wikiMatch[1].toUpperCase()
                 : `ISSUE-${String(issue.issue_number).padStart(3, '0')}`;
+            const expectedBranchTask = `${branchPrefix}issue-${issue.issue_number}`;
 
             // Short title = everything after the bracketed request prefix, trimmed.
             const shortTitle = title.replace(/^\[?(BUG-\d+|WIKI-[A-Z-]+)\]?\s*/i, '').trim() || title;
@@ -512,8 +821,13 @@ jobs:
             core.setOutput('issue_number', String(issue.issue_number));
             core.setOutput('request_id', requestId);
             core.setOutput('request_kind', requestKind);
+            core.setOutput('filing_shape', filingShape);
+            core.setOutput('branch_prefix', branchPrefix);
+            core.setOutput('wiki_path', wikiPath);
+            core.setOutput('expected_branch_task', expectedBranchTask);
             core.setOutput('short_title', shortTitle);
-            core.setOutput('pr_title', `[auto-change] ${requestId}: ${shortTitle}`);
+            core.setOutput('pr_title', `${prTitlePrefix} ${requestId}: ${shortTitle}`);
+            core.setOutput('issue_link_line', `${issueLinkKeyword(requestKind, body)} #${issue.issue_number}`);
             core.setOutput('issue_body', body);
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -555,13 +869,14 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           base_branch: main
-          branch_prefix: auto-change/
+          branch_prefix: ${{ steps.meta.outputs.branch_prefix }}
           branch_name_template: issue-${{ steps.meta.outputs.issue_number }}
           prompt: |
             You are handling a community change request in the Workflow repository.
 
             Request ID: ${{ steps.meta.outputs.request_id }}
             Request kind: ${{ steps.meta.outputs.request_kind }}
+            Filing shape: ${{ steps.meta.outputs.filing_shape }}
             Issue #${{ steps.meta.outputs.issue_number }}: ${{ steps.meta.outputs.short_title }}
 
             Issue body:
@@ -570,22 +885,36 @@ jobs:
             Recent issue comments and loop feedback:
             ${{ steps.meta.outputs.issue_comments }}
 
+            Autonomous spend guardrails:
+            - This invocation is logged/proposed mode for a single issue.
+            - Spend only the bounded subscription-backed writer time in this job.
+            - Do not start background jobs, recursive workflow_dispatch runs, external paid services, or open-ended searches.
+            - Produce at most one narrow working-tree patch/PR proposal.
+            - If safe completion needs broader execution, leave the working tree unchanged and explain the blocker.
+
             Instructions:
-            1. Read AGENTS.md and STATUS.md for project context.
+            1. Read AGENTS.md, STATUS.md, and `.agents/skills/using-agent-skills/SKILL.md` for project context and skill routing. Then load the relevant `.agents/skills/<skill>/SKILL.md` files before editing.
             2. Classify the request as bug, patch, feature, docs/ops, branch refinement, or project design.
             3. For bugs, reproduce or reason about the root cause. For non-bug requests, identify the smallest useful project change.
+            3a. For architectural/project-design filings, do not draft `docs/design-notes/proposed/` by default. Prefer a brain page under `pages/concepts/` or `pages/plans/`, or implement the smallest runtime guardrail when the issue asks for substrate behavior.
             4. Implement a minimal, targeted change; no refactoring beyond what's needed.
             5. Add or update tests/docs/checks appropriate to the risk.
             6. If recent comments mention verification failures or review blockers, address those failures first.
             7. Run `python -m ruff check` on touched Python files and the relevant focused tests for changed test files; fix failures before finishing.
             8. If you edit canonical `workflow/*` runtime files, run `python packaging/claude-plugin/build_plugin.py` and commit the plugin mirror changes.
-            9. If you make changes, open a pull request titled:
+            9. Autonomous spend is logged/proposed-only. Do not add or activate real billing, bounty settlement, paid provider execution, cloud-plan upgrades, wallet transfers, or subscription/API-key spend paths. If the request needs spend behavior, limit the patch to local guardrails, docs, tests, or proposal records.
+            10. If you make changes, open a pull request titled:
                ${{ steps.meta.outputs.pr_title }}
-            10. The PR body must start with:
-               Fixes #${{ steps.meta.outputs.issue_number }}
-            11. Include `Writer family: Claude` and `Required checker family: Codex`.
-            12. Include a short fix summary, tests run, and any remaining risks.
-            13. Do not redesign community-authored branches unless the issue explicitly asks for that.
+            11. The PR body must start with:
+               ${{ steps.meta.outputs.issue_link_line }}
+            12. Include a `Request artifact reconciliation` section that lists:
+               - Wiki page: `${{ steps.meta.outputs.wiki_path || 'not declared' }}`
+               - GitHub issue: `#${{ steps.meta.outputs.issue_number }}`
+               - Branch task: `${{ steps.meta.outputs.expected_branch_task }}`
+               - PR artifact: this PR
+            13. Include `Writer family: Claude` and `Required checker family: Codex`.
+            14. Include a short fix summary, tests run, and any remaining risks.
+            15. Do not redesign community-authored branches unless the issue explicitly asks for that.
 
             If you cannot find a safe targeted change or are not confident, leave a
             comment in the code and exit gracefully. Do not guess.
@@ -598,9 +927,13 @@ jobs:
           steps.auth.outputs.mode == 'codex_subscription'
         env:
           WORKFLOW_CODEX_AUTH_JSON_B64: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 }}
+          WORKFLOW_PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN }}
+          PR_TITLE: ${{ steps.meta.outputs.pr_title }}
+          BRANCH_PREFIX: ${{ steps.meta.outputs.branch_prefix }}
+          ISSUE_LINK_LINE: ${{ steps.meta.outputs.issue_link_line }}
         run: |
           set -euo pipefail
-          branch="auto-change/issue-${{ steps.meta.outputs.issue_number }}-codex-${GITHUB_RUN_ID}"
+          branch="${BRANCH_PREFIX}issue-${{ steps.meta.outputs.issue_number }}-codex-${GITHUB_RUN_ID}"
           echo "branch=${branch}" >> "$GITHUB_OUTPUT"
 
           mkdir -p "$HOME/.codex"
@@ -610,13 +943,22 @@ jobs:
           unset OPENAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_BASE_URL GEMINI_API_KEY GROQ_API_KEY XAI_API_KEY
 
           npm install -g @openai/codex
-          git checkout -B "$branch"
+          git fetch origin main --prune
+          git checkout -B "$branch" "origin/main"
+          if [[ -n "${WORKFLOW_PUSH_TOKEN:-}" ]]; then
+            git remote set-url origin "https://x-access-token:${WORKFLOW_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git config --local --unset-all "http.https://github.com/.extraheader" || true
+            git config --local --unset-all "http.https://github.com/${GITHUB_REPOSITORY}.extraheader" || true
+          fi
+          unset WORKFLOW_PUSH_TOKEN
 
-          codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$GITHUB_WORKSPACE" --output-last-message "$RUNNER_TEMP/codex-last-message.md" - <<'PROMPT'
+          prompt_file="$RUNNER_TEMP/codex-prompt.md"
+          cat > "$prompt_file" <<'PROMPT'
           You are handling a community change request in the Workflow repository.
 
           Request ID: ${{ steps.meta.outputs.request_id }}
           Request kind: ${{ steps.meta.outputs.request_kind }}
+          Filing shape: ${{ steps.meta.outputs.filing_shape }}
           Issue #${{ steps.meta.outputs.issue_number }}: ${{ steps.meta.outputs.short_title }}
 
           Issue body:
@@ -625,21 +967,59 @@ jobs:
           Recent issue comments and loop feedback:
           ${{ steps.meta.outputs.issue_comments }}
 
+          Autonomous spend guardrails:
+          - This invocation is logged/proposed mode for a single issue.
+          - Spend only the bounded subscription-backed writer time in this job.
+          - Do not start background jobs, recursive workflow_dispatch runs, external paid services, or open-ended searches.
+          - Produce at most one narrow working-tree patch/PR proposal.
+          - If safe completion needs broader execution, leave the working tree unchanged and explain the blocker.
+
           Instructions:
-          1. Read AGENTS.md and STATUS.md for project context.
+          1. Read AGENTS.md, STATUS.md, and `.agents/skills/using-agent-skills/SKILL.md` for project context and skill routing. Then load the relevant `.agents/skills/<skill>/SKILL.md` files before editing.
           2. Classify the request as bug, patch, feature, docs/ops, branch refinement, or project design.
           3. For bugs, reproduce or reason about the root cause. For non-bug requests, identify the smallest useful project change.
+          3a. For architectural/project-design filings, do not draft `docs/design-notes/proposed/` by default. Prefer a brain page under `pages/concepts/` or `pages/plans/`, or implement the smallest runtime guardrail when the issue asks for substrate behavior.
           4. Implement a minimal, targeted change; no refactoring beyond what's needed.
           5. Add or update tests/docs/checks appropriate to the risk.
           6. If recent comments mention verification failures or review blockers, address those failures first.
           7. Run `python -m ruff check` on touched Python files and the relevant focused tests for changed test files; fix failures before finishing.
           8. If you edit canonical `workflow/*` runtime files, run `python packaging/claude-plugin/build_plugin.py` and leave the plugin mirror changes in the working tree.
-          9. Do not commit, push, or open a PR. Leave any changes in the working tree for this workflow to commit.
-          10. Do not redesign community-authored branches unless the issue explicitly asks for that.
+          9. Autonomous spend is logged/proposed-only. Do not add or activate real billing, bounty settlement, paid provider execution, cloud-plan upgrades, wallet transfers, or subscription/API-key spend paths. If the request needs spend behavior, limit the patch to local guardrails, docs, tests, or proposal records.
+          10. Do not commit, push, or open a PR. Leave any changes in the working tree for this workflow to commit.
+          11. Do not redesign community-authored branches unless the issue explicitly asks for that.
 
           If you cannot find a safe targeted change or are not confident, leave the
           working tree unchanged and explain why in your final message. Do not guess.
           PROMPT
+
+          codex_log="$RUNNER_TEMP/codex-exec.log"
+          set +e
+          codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$GITHUB_WORKSPACE" --output-last-message "$RUNNER_TEMP/codex-last-message.md" - < "$prompt_file" 2>&1 | tee "$codex_log"
+          codex_status=${PIPESTATUS[0]}
+          set -e
+          if [[ "$codex_status" -ne 0 ]]; then
+            auth_expired=false
+            if grep -Eiq 'refresh_token_reused|token_expired|invalid_grant|auth[^[:space:]]*[[:space:]-]*(expired|revoked)|login required|not logged in' "$codex_log"; then
+              auth_expired=true
+            fi
+            _delim="EOF_$(tr -d '-' < /proc/sys/kernel/random/uuid)"
+            {
+              echo "changed=false"
+              echo "no_change_reason="
+              echo "push_blocked=false"
+              echo "push_block_reason="
+              echo "auth_expired=${auth_expired}"
+              echo "last_message<<${_delim}"
+              if [ -s "$RUNNER_TEMP/codex-last-message.md" ]; then
+                head -c 4000 "$RUNNER_TEMP/codex-last-message.md"
+              else
+                head -c 4000 "$codex_log"
+              fi
+              echo
+              echo "${_delim}"
+            } >> "$GITHUB_OUTPUT"
+            exit "$codex_status"
+          fi
 
           if [ -z "$(git status --porcelain)" ]; then
             reason="blocked"
@@ -654,6 +1034,7 @@ jobs:
             {
               echo "changed=false"
               echo "no_change_reason=${reason}"
+              echo "auth_expired=false"
               echo "last_message<<${_delim}"
               if [ -s "$message_file" ]; then
                 head -c 4000 "$message_file"
@@ -719,6 +1100,7 @@ jobs:
               echo "no_change_reason="
               echo "push_blocked=false"
               echo "push_block_reason="
+              echo "auth_expired=false"
               echo "last_message<<${_delim}"
               head -c 4000 "$verification_log"
               echo
@@ -732,8 +1114,8 @@ jobs:
           git config user.name "workflow-daemon[bot]"
           git config user.email "workflow-daemon[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "${{ steps.meta.outputs.pr_title }}" \
-            -m "Fixes #${{ steps.meta.outputs.issue_number }}" \
+          git commit -m "$PR_TITLE" \
+            -m "$ISSUE_LINK_LINE" \
             -m "Writer family: Codex" \
             -m "Required checker family: Claude"
           push_log="$RUNNER_TEMP/codex-git-push.log"
@@ -744,6 +1126,7 @@ jobs:
                 echo "no_change_reason="
                 echo "push_blocked=true"
                 echo "push_block_reason=github_actions_workflow_permission_missing"
+                echo "auth_expired=false"
               } >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -754,6 +1137,7 @@ jobs:
             echo "no_change_reason="
             echo "push_blocked=false"
             echo "push_block_reason="
+            echo "auth_expired=false"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create Codex PR
@@ -767,10 +1151,86 @@ jobs:
           CODEX_BRANCH: ${{ steps.codex-subscription.outputs.branch }}
           PR_TITLE: ${{ steps.meta.outputs.pr_title }}
           ISSUE_NUMBER: ${{ steps.meta.outputs.issue_number }}
+          ISSUE_LINK_LINE: ${{ steps.meta.outputs.issue_link_line }}
+          WIKI_PATH: ${{ steps.meta.outputs.wiki_path }}
+          EXPECTED_BRANCH_TASK: ${{ steps.meta.outputs.expected_branch_task }}
         with:
+          # PAT-created PRs fire pull_request checks; GITHUB_TOKEN-created PRs do not.
+          github-token: ${{ secrets.WORKFLOW_PUSH_TOKEN || github.token }}
           script: |
             const branch = process.env.CODEX_BRANCH;
             const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const issueLinkLine = process.env.ISSUE_LINK_LINE || `Fixes #${issueNumber}`;
+            const filingShape = '${{ steps.meta.outputs.filing_shape }}';
+            const branchPrefix = '${{ steps.meta.outputs.branch_prefix }}';
+            const wikiPath = process.env.WIKI_PATH || 'not declared';
+            const expectedBranchTask = process.env.EXPECTED_BRANCH_TASK || `${branchPrefix}issue-${issueNumber}`;
+            async function selfReviewLoopPr(pr) {
+              const failures = [];
+              const headRef = pr.head?.ref || '';
+              const headRepo = pr.head?.repo?.full_name || '';
+              const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+              const expectedRoot = `${branchPrefix}issue-${issueNumber}`;
+              const expectedPrefix = `${expectedRoot}-`;
+              if (headRef !== branch || headRepo !== expectedRepo) {
+                failures.push(`source check failed: expected ${expectedRepo}:${branch}, got ${headRepo}:${headRef}`);
+              }
+              if (pr.base?.ref !== 'main') {
+                failures.push(`source check failed: expected base main, got ${pr.base?.ref || '(unknown)'}`);
+              }
+              if (headRef !== expectedRoot && !headRef.startsWith(expectedPrefix)) {
+                failures.push(`scope-split check failed: branch ${headRef} does not match ${expectedRoot}*`);
+              }
+              if (branchPrefix !== 'auto-change/') {
+                failures.push(`scope-split check failed: filing shape ${filingShape} uses branch prefix ${branchPrefix}`);
+              }
+              try {
+                const { data: compare } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  basehead: `main...${headRef}`,
+                });
+                if (
+                  Number(compare.behind_by || 0) > 0 ||
+                  !['ahead', 'identical'].includes(String(compare.status || ''))
+                ) {
+                  failures.push(
+                    `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
+                  );
+                }
+                const changedFiles = (compare.files || []).map((file) => file.filename || '');
+                const designNoteFiles = changedFiles.filter((filename) =>
+                  filename.startsWith('docs/design-notes/proposed/')
+                );
+                if (filingShape === 'architectural' && designNoteFiles.length) {
+                  failures.push(
+                    `scope-split check failed: project-design requests must not auto-promote docs/design-notes/proposed (${designNoteFiles.join(', ')}); use pages/concepts/, pages/plans/, or a runtime guardrail`
+                  );
+                }
+              } catch (error) {
+                failures.push(`stale-base check failed: ${error.message}`);
+              }
+              const { data: openPrs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                base: 'main',
+                sort: 'updated',
+                direction: 'desc',
+                per_page: 100,
+              });
+              const duplicates = openPrs
+                .filter((candidate) => candidate.number !== pr.number)
+                .filter((candidate) => {
+                  const candidateHead = candidate.head?.ref || '';
+                  return candidateHead === expectedRoot || candidateHead.startsWith(expectedPrefix);
+                })
+                .map((candidate) => `#${candidate.number}`);
+              if (duplicates.length) {
+                failures.push(`duplicate check failed: still-open issue PR(s) ${duplicates.join(', ')}`);
+              }
+              return failures;
+            }
             const { data: existing } = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -788,7 +1248,14 @@ jobs:
                   head: branch,
                   base: 'main',
                   body: [
-                    `Fixes #${issueNumber}`,
+                    issueLinkLine,
+                    '',
+                    '## Request artifact reconciliation',
+                    '',
+                    `- Wiki page: \`${wikiPath}\``,
+                    `- GitHub issue: #${issueNumber}`,
+                    `- Branch task: \`${expectedBranchTask}\``,
+                    '- PR artifact: this PR',
                     '',
                     'Writer family: Codex',
                     'Required checker family: Claude',
@@ -815,6 +1282,85 @@ jobs:
             core.setOutput('blocked', 'false');
             core.setOutput('block_reason', '');
             core.setOutput('number', String(pr.number));
+            const issueBranchRoot = `${branchPrefix}issue-${issueNumber}`;
+            const issueBranchPrefix = `${issueBranchRoot}-`;
+            const { data: issuePrs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              base: 'main',
+              sort: 'updated',
+              direction: 'desc',
+              per_page: 100,
+            });
+            for (const candidate of issuePrs) {
+              const headRef = candidate.head?.ref || '';
+              if (
+                candidate.number === pr.number ||
+                (headRef !== issueBranchRoot && !headRef.startsWith(issueBranchPrefix)) ||
+                !headRef.startsWith(branchPrefix)
+              ) {
+                continue;
+              }
+              let staleBase = false;
+              try {
+                const { data: compare } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  basehead: `main...${headRef}`,
+                });
+                staleBase = Number(compare.behind_by || 0) > 0 ||
+                  !['ahead', 'identical'].includes(String(compare.status || ''));
+              } catch (error) {
+                core.warning(
+                  `Could not compare stale-base state for PR #${candidate.number} (${headRef}): ${error.message}`
+                );
+                continue;
+              }
+              if (!staleBase) {
+                continue;
+              }
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: candidate.number,
+                labels: ['auto-fix-reviewed', 'auto-fix-superseded'],
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: candidate.number,
+                body: [
+                  '**Auto-change PR closed as superseded**',
+                  '',
+                  `This stale-base PR from \`${headRef}\` was superseded by #${pr.number} from \`${branch}\`.`,
+                  'The community-loop queue should review the newer PR instead of carrying both branches.',
+                ].join('\n'),
+              });
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: candidate.number,
+                state: 'closed',
+              });
+            }
+            const selfReviewFailures = await selfReviewLoopPr(pr);
+            if (selfReviewFailures.length) {
+              core.warning(`Loop PR #${pr.number} is not ready_for_checker: ${selfReviewFailures.join('; ')}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: [
+                  '**Pre-checker self-review blocked `ready_for_checker`**',
+                  '',
+                  ...selfReviewFailures.map((failure) => `- ${failure}`),
+                  '',
+                  'Fix the pre-check failure before routing this loop PR to a checker.',
+                ].join('\n'),
+              });
+              return;
+            }
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -833,6 +1379,33 @@ jobs:
                 '',
                 'Do not accept this PR with a same-family checker.',
               ].join('\n'),
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                '**Auto-fix artifact receipt**',
+                '',
+                `- Wiki page: \`${wikiPath}\``,
+                `- GitHub issue: #${issueNumber}`,
+                `- Branch task: \`${expectedBranchTask}\``,
+                `- PR artifact: #${pr.number} (${pr.html_url})`,
+                `- Child invocation receipt: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '- Terminal outcome: `pr-opened`',
+              ].join('\n'),
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['auto-fix-reviewed'],
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['ready_for_checker'],
             });
 
       - name: Close already-fixed issue when no repo change is needed
@@ -905,13 +1478,84 @@ jobs:
           steps.check-disabled.outputs.disabled == 'false' &&
           steps.auth.outputs.mode == 'claude_oauth'
         uses: actions/github-script@v7
+        env:
+          WIKI_PATH: ${{ steps.meta.outputs.wiki_path }}
+          EXPECTED_BRANCH_TASK: ${{ steps.meta.outputs.expected_branch_task }}
         with:
           script: |
             const issueNumber = Number('${{ matrix.issue.issue_number }}');
             const mode = '${{ steps.auth.outputs.mode }}';
+            const branchPrefix = '${{ steps.meta.outputs.branch_prefix }}';
+            const filingShape = '${{ steps.meta.outputs.filing_shape }}';
             const branch = mode === 'codex_subscription'
               ? '${{ steps.codex-subscription.outputs.branch }}'
-              : `auto-change/issue-${issueNumber}`;
+              : `${branchPrefix}issue-${issueNumber}`;
+            async function selfReviewLoopPr(pr) {
+              const failures = [];
+              const headRef = pr.head?.ref || '';
+              const headRepo = pr.head?.repo?.full_name || '';
+              const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+              const expectedRoot = `${branchPrefix}issue-${issueNumber}`;
+              const expectedPrefix = `${expectedRoot}-`;
+              if (headRef !== branch || headRepo !== expectedRepo) {
+                failures.push(`source check failed: expected ${expectedRepo}:${branch}, got ${headRepo}:${headRef}`);
+              }
+              if (pr.base?.ref !== 'main') {
+                failures.push(`source check failed: expected base main, got ${pr.base?.ref || '(unknown)'}`);
+              }
+              if (headRef !== expectedRoot && !headRef.startsWith(expectedPrefix)) {
+                failures.push(`scope-split check failed: branch ${headRef} does not match ${expectedRoot}*`);
+              }
+              if (branchPrefix !== 'auto-change/') {
+                failures.push(`scope-split check failed: filing shape ${filingShape} uses branch prefix ${branchPrefix}`);
+              }
+              try {
+                const { data: compare } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  basehead: `main...${headRef}`,
+                });
+                if (
+                  Number(compare.behind_by || 0) > 0 ||
+                  !['ahead', 'identical'].includes(String(compare.status || ''))
+                ) {
+                  failures.push(
+                    `stale-base check failed: status=${compare.status || '(unknown)'} behind_by=${compare.behind_by || 0}`
+                  );
+                }
+                const changedFiles = (compare.files || []).map((file) => file.filename || '');
+                const designNoteFiles = changedFiles.filter((filename) =>
+                  filename.startsWith('docs/design-notes/proposed/')
+                );
+                if (filingShape === 'architectural' && designNoteFiles.length) {
+                  failures.push(
+                    `scope-split check failed: project-design requests must not auto-promote docs/design-notes/proposed (${designNoteFiles.join(', ')}); use pages/concepts/, pages/plans/, or a runtime guardrail`
+                  );
+                }
+              } catch (error) {
+                failures.push(`stale-base check failed: ${error.message}`);
+              }
+              const { data: openPrs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                base: 'main',
+                sort: 'updated',
+                direction: 'desc',
+                per_page: 100,
+              });
+              const duplicates = openPrs
+                .filter((candidate) => candidate.number !== pr.number)
+                .filter((candidate) => {
+                  const candidateHead = candidate.head?.ref || '';
+                  return candidateHead === expectedRoot || candidateHead.startsWith(expectedPrefix);
+                })
+                .map((candidate) => `#${candidate.number}`);
+              if (duplicates.length) {
+                failures.push(`duplicate check failed: still-open issue PR(s) ${duplicates.join(', ')}`);
+              }
+              return failures;
+            }
             const { data: prs } = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -924,6 +1568,23 @@ jobs:
             core.setOutput('number', pr ? String(pr.number) : '');
             if (!pr) {
               core.info(`No Claude-created PR found for ${branch}.`);
+              return;
+            }
+            const selfReviewFailures = await selfReviewLoopPr(pr);
+            if (selfReviewFailures.length) {
+              core.warning(`Loop PR #${pr.number} is not ready_for_checker: ${selfReviewFailures.join('; ')}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: [
+                  '**Pre-checker self-review blocked `ready_for_checker`**',
+                  '',
+                  ...selfReviewFailures.map((failure) => `- ${failure}`),
+                  '',
+                  'Fix the pre-check failure before routing this loop PR to a checker.',
+                ].join('\n'),
+              });
               return;
             }
             await github.rest.issues.addLabels({
@@ -945,6 +1606,35 @@ jobs:
                 'Do not accept this PR with a same-family checker.',
               ].join('\n'),
             });
+            const wikiPath = process.env.WIKI_PATH || 'not declared';
+            const expectedBranchTask = process.env.EXPECTED_BRANCH_TASK || `${branchPrefix}issue-${issueNumber}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                '**Auto-fix artifact receipt**',
+                '',
+                `- Wiki page: \`${wikiPath}\``,
+                `- GitHub issue: #${issueNumber}`,
+                `- Branch task: \`${expectedBranchTask}\``,
+                `- PR artifact: #${pr.number} (${pr.html_url})`,
+                `- Child invocation receipt: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '- Terminal outcome: `pr-opened`',
+              ].join('\n'),
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['auto-fix-reviewed'],
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['ready_for_checker'],
+            });
 
       - name: Mark needs-human if no PR opened
         if: >
@@ -961,14 +1651,23 @@ jobs:
           CODEX_PR_BLOCK_REASON: ${{ steps.codex-pr-create.outputs.block_reason }}
           CODEX_PUSH_BLOCKED: ${{ steps.codex-subscription.outputs.push_blocked }}
           CODEX_PUSH_BLOCK_REASON: ${{ steps.codex-subscription.outputs.push_block_reason }}
+          CODEX_AUTH_EXPIRED: ${{ steps.codex-subscription.outputs.auth_expired }}
+          WIKI_PATH: ${{ steps.meta.outputs.wiki_path }}
+          EXPECTED_BRANCH_TASK: ${{ steps.meta.outputs.expected_branch_task }}
+          CLAUDE_OUTCOME: ${{ steps.claude-oauth.outcome }}
+          CODEX_OUTCOME: ${{ steps.codex-subscription.outcome }}
         with:
           script: |
             const issueNumber = Number('${{ matrix.issue.issue_number }}');
             const mode = '${{ steps.auth.outputs.mode }}';
+            const branchPrefix = '${{ steps.meta.outputs.branch_prefix }}';
             const codexBranch = process.env.CODEX_BRANCH || '';
             const branch = mode === 'codex_subscription' && codexBranch
               ? codexBranch
-              : `auto-change/issue-${issueNumber}`;
+              : `${branchPrefix}issue-${issueNumber}`;
+            const wikiPath = process.env.WIKI_PATH || 'not declared';
+            const expectedBranchTask = process.env.EXPECTED_BRANCH_TASK || `${branchPrefix}issue-${issueNumber}`;
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const { data: prs } = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -977,7 +1676,29 @@ jobs:
               per_page: 5,
             });
             if (prs.length) {
-              core.info(`Auto-fix PR exists: #${prs[0].number}`);
+              const pr = prs[0];
+              core.info(`Auto-fix PR exists: #${pr.number}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: [
+                  '**Auto-fix artifact receipt**',
+                  '',
+                  `- Wiki page: \`${wikiPath}\``,
+                  `- GitHub issue: #${issueNumber}`,
+                  `- Branch task: \`${expectedBranchTask}\``,
+                  `- PR artifact: #${pr.number} (${pr.html_url})`,
+                  `- Child invocation receipt: ${runUrl}`,
+                  '- Terminal outcome: `pr-opened-existing`',
+                ].join('\n'),
+              });
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                labels: ['auto-fix-reviewed'],
+              });
               return;
             }
 
@@ -988,9 +1709,65 @@ jobs:
             const codexPrBlockReason = process.env.CODEX_PR_BLOCK_REASON || '';
             const codexPushBlocked = process.env.CODEX_PUSH_BLOCKED === 'true';
             const codexPushBlockReason = process.env.CODEX_PUSH_BLOCK_REASON || '';
-            const labels = ['needs-human'];
-            if (codexNoChangeReason || codexPrBlocked || codexPushBlocked) {
+            const codexAuthExpired = process.env.CODEX_AUTH_EXPIRED === 'true';
+            const claudeWriterFailed = mode === 'claude_oauth' && process.env.CLAUDE_OUTCOME === 'failure';
+            const codexWriterFailed = mode === 'codex_subscription' && process.env.CODEX_OUTCOME === 'failure';
+            const writerFailed = claudeWriterFailed || codexWriterFailed;
+            const terminalOutcome = codexAuthExpired
+              ? 'writer-auth-expired-before-pr'
+              : writerFailed
+              ? 'writer-failed-before-pr'
+              : codexPushBlocked
+                ? 'branch-push-blocked'
+                : codexPrBlocked
+                  ? 'pr-creation-blocked'
+                  : codexNoChangeReason
+                    ? `no-change-${codexNoChangeReason}`
+                    : 'no-pr-artifact-created';
+            // Retry-exhaustion: read the current retry counter from labels (label series
+            // `auto-fix-retries-N`), then either bump it or escalate to terminal
+            // `auto-fix-exhausted` if MAX_RETRIES is exceeded. Exhausted issues drop out of
+            // the discover step's active scan (see skipLabels) so a perpetually-failing
+            // request can't starve its tier. Host can re-open by clearing the exhausted
+            // label or via the loop-consent PR reopen path (Slice C).
+            const MAX_RETRIES = Number(process.env.LOOP_MAX_RETRIES || '5');
+            const { data: currentIssue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+            });
+            const retryRe = /^auto-fix-retries-(\d+)$/;
+            const currentLabelNames = (currentIssue.labels || []).map((label) =>
+              typeof label === 'string' ? label : label.name || ''
+            );
+            let currentRetries = 0;
+            for (const name of currentLabelNames) {
+              const m = retryRe.exec(name);
+              if (m) {
+                currentRetries = Math.max(currentRetries, Number(m[1]));
+              }
+            }
+            const nextRetries = currentRetries + 1;
+            const exhausted = nextRetries > MAX_RETRIES;
+
+            const labels = [];
+            if (exhausted) {
+              labels.push('auto-fix-exhausted');
+            } else {
+              labels.push('needs-human', `auto-fix-retries-${nextRetries}`);
+            }
+            if (codexNoChangeReason || codexPrBlocked || codexPushBlocked || (writerFailed && !codexAuthExpired)) {
               labels.push('auto-fix-reviewed');
+            }
+            if (writerFailed) {
+              labels.push('auto-fix-writer-failed');
+            }
+            if (codexAuthExpired) {
+              labels.push(
+                'auto-fix-auth-missing',
+                'auto-fix-codex-subscription-missing',
+                'auto-fix-auth-expired',
+              );
             }
             if (codexNoChangeReason) {
               labels.push('auto-fix-blocked');
@@ -1006,33 +1783,96 @@ jobs:
               labels.push('auto-fix-codex-subscription-missing');
             }
 
+            // Remove the prior retry label (if any) so only one auto-fix-retries-N sticks.
+            if (currentRetries > 0) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  name: `auto-fix-retries-${currentRetries}`,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+            // On exhaustion, drop needs-human so the discover step doesn't re-pick.
+            if (exhausted && currentLabelNames.includes('needs-human')) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  name: 'needs-human',
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
               labels,
             });
+            const headlineRetry = exhausted
+              ? `**Auto-fix exhausted** - retry budget burned after ${currentRetries} attempt(s); MAX_RETRIES=${MAX_RETRIES}.`
+              : '**Auto-fix needs human review** - approved writer auth was present, but no automated PR was opened.';
+            const retryLine = exhausted
+              ? `- Retry budget: \`exhausted\` (${currentRetries}/${MAX_RETRIES} attempts; loop will not retry)`
+              : `- Retry counter: \`${nextRetries}/${MAX_RETRIES}\` (loop will retry when root cause clears)`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
               body: [
-                '**Auto-fix needs human review** - approved writer auth was present, but no automated PR was opened.',
+                headlineRetry,
+                '',
+                '## Request artifact reconciliation',
+                '',
+                `- Wiki page: \`${wikiPath}\``,
+                `- GitHub issue: #${issueNumber}`,
+                `- Branch task: \`${expectedBranchTask}\``,
+                '- PR artifact: `not created`',
+                `- Child invocation receipt: ${runUrl}`,
+                `- Terminal outcome: \`${terminalOutcome}\``,
+                retryLine,
                 '',
                 `Detected auth mode: \`${{ steps.auth.outputs.mode }}\``,
                 `Claude OAuth present: \`${{ steps.auth.outputs.has_claude_oauth }}\``,
                 `Codex subscription present: \`${{ steps.auth.outputs.has_codex }}\``,
+                `Workflow push token present: \`${{ steps.auth.outputs.has_workflow_push_token }}\``,
                 `OpenAI API key configured but ignored: \`${{ steps.auth.outputs.has_openai_api_key_configured }}\``,
                 `Anthropic API key configured but ignored: \`${{ steps.auth.outputs.has_anthropic_api_key_configured }}\``,
                 '',
                 `Claude OAuth outcome: \`${{ steps.claude-oauth.outcome }}\``,
                 `Codex subscription outcome: \`${{ steps.codex-subscription.outcome }}\``,
+                mode === 'codex_subscription' && process.env.CODEX_OUTCOME === 'success'
+                  ? 'Writer child invocation: `succeeded`'
+                  : '',
+                mode === 'codex_subscription' && codexBranch
+                  ? 'Auto-fix branch pushed: `true`'
+                  : '',
                 codexNoChangeReason ? `Codex no-change reason: \`${codexNoChangeReason}\`` : '',
                 codexPrBlocked
                   ? `PR creation blocked: \`${codexPrBlockReason || 'unknown'}\``
                   : '',
+                codexPrBlocked
+                  ? 'Remaining blocker: GitHub Actions PR creation policy. Do not treat this as a failed child invocation.'
+                  : '',
                 codexPushBlocked
                   ? `Branch push blocked: \`${codexPushBlockReason || 'unknown'}\``
+                  : '',
+                codexPushBlocked && codexPushBlockReason === 'github_actions_workflow_permission_missing'
+                  ? 'Configure `WORKFLOW_PUSH_TOKEN` with repo Contents write, Workflows write, and Pull requests write so automated workflow-file branches can push and loop-created PRs can trigger checks.'
+                  : '',
+                codexAuthExpired
+                  ? 'Remaining blocker: refresh `WORKFLOW_CODEX_AUTH_JSON_B64`; the auth bundle is visible but expired or revoked.'
                   : '',
                 codexPrBlocked && branch
                   ? `Auto-fix branch: https://github.com/${context.repo.owner}/${context.repo.repo}/tree/${branch}`
@@ -1051,7 +1891,13 @@ jobs:
                   ? 'No approved subscription-backed daemon lane was visible to GitHub Actions.'
                   : '',
                 'API-key billing lanes are intentionally not used for default daemon writers.',
-                'The issue is marked `needs-human` so it does not loop silently.',
+                exhausted
+                  ? 'The issue is marked `auto-fix-exhausted` and removed from the active scan. Host can re-open by removing the `auto-fix-exhausted` label, or via the loop-consent PR reopen path.'
+                  : 'The issue is marked `needs-human` so it does not loop silently.',
               ].filter(Boolean).join('\n'),
             });
-            core.warning('approved writer auth was present, but no auto-fix PR was opened');
+            core.warning(
+              exhausted
+                ? `auto-fix exhausted after ${currentRetries} retries; marked auto-fix-exhausted`
+                : 'approved writer auth was present, but no auto-fix PR was opened'
+            );

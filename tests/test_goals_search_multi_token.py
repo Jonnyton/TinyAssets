@@ -102,6 +102,24 @@ def test_description_match_contributes_to_results(goals_db):
     assert any("research" in r["name"].lower() for r in results)
 
 
+def test_space_separated_query_matches_hyphenated_field(goals_db):
+    """Hyphen punctuation should not hide a clear token match."""
+    from workflow.daemon_server import search_goals
+
+    results = search_goals(goals_db, query="peer reviewed")
+    assert results, "Expected query 'peer reviewed' to match 'peer-reviewed'"
+    assert any("research" in r["name"].lower() for r in results)
+
+
+def test_hyphenated_query_matches_space_separated_field(goals_db):
+    """A chatbot may hyphenate a phrase that the Goal stores with spaces."""
+    from workflow.daemon_server import search_goals
+
+    results = search_goals(goals_db, query="research-paper")
+    assert results, "Expected query 'research-paper' to match 'research paper'"
+    assert any("research" in r["name"].lower() for r in results)
+
+
 def test_empty_query_returns_empty_list(goals_db):
     """Empty query must return empty list, not crash."""
     from workflow.daemon_server import search_goals

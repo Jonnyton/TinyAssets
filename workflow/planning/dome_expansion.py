@@ -5,20 +5,113 @@ NAACL 2025 (arxiv.org/abs/2412.13575).  At each decomposition level:
 
     rough outline -> query KG -> refine -> detailed outline
 
-The KG feedback parameter is stubbed until the knowledge agent's
-retrieval layer is available.
+The KG feedback parameter accepts lightweight entity/fact/relationship
+feedback and annotates generated beats with bounded consistency notes.
 """
 
 from __future__ import annotations
 
 import copy
 import logging
+import re
 
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from workflow.planning.htn_planner import Outline, ScenePlan
 
 logger = logging.getLogger(__name__)
+
+_CAPITALIZED_PHRASE_RE = re.compile(
+    r"\b[A-Z][A-Za-z0-9_-]{2,}(?:\s+[A-Z][A-Za-z0-9_-]{2,}){0,3}\b"
+)
+
+_ENTITY_KEYS = (
+    "name",
+    "entity",
+    "entity_name",
+    "character",
+    "subject",
+    "object",
+)
+
+_TEXT_KEYS = ("text", "summary", "description")
+
+_REL_SOURCE_KEYS = ("source", "from", "subject", "left")
+_REL_TARGET_KEYS = ("target", "to", "object", "right")
+_REL_TYPE_KEYS = ("type", "relation", "relationship", "predicate")
+
+
+def _clean_name(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip(" \t\r\n\"'`.,;:()[]{}")
+    if len(text) < 2 or len(text) > 80:
+        return None
+    return text
+
+
+def _add_name(names: dict[str, str], value: object) -> None:
+    text = _clean_name(value)
+    if not text:
+        return
+    names.setdefault(text.casefold(), text)
+
+
+def _extract_names_from_text(names: dict[str, str], text: object) -> None:
+    if not isinstance(text, str):
+        return
+    for match in _CAPITALIZED_PHRASE_RE.finditer(text):
+        _add_name(names, match.group(0))
+
+
+def _collect_known_names(kg_feedback: dict) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for entity in kg_feedback.get("entities", []):
+        if isinstance(entity, dict):
+            for key in _ENTITY_KEYS:
+                _add_name(names, entity.get(key))
+            for key in _TEXT_KEYS:
+                _extract_names_from_text(names, entity.get(key))
+        else:
+            _add_name(names, entity)
+
+    for fact in kg_feedback.get("facts", []):
+        if isinstance(fact, dict):
+            for key in _ENTITY_KEYS:
+                _add_name(names, fact.get(key))
+            for key in _TEXT_KEYS:
+                _extract_names_from_text(names, fact.get(key))
+        else:
+            _extract_names_from_text(names, fact)
+
+    return names
+
+
+def _relationship_note(relationship: object) -> tuple[str, str, str] | None:
+    if not isinstance(relationship, dict):
+        return None
+    source = next(
+        (_clean_name(relationship.get(key)) for key in _REL_SOURCE_KEYS
+         if _clean_name(relationship.get(key))),
+        None,
+    )
+    target = next(
+        (_clean_name(relationship.get(key)) for key in _REL_TARGET_KEYS
+         if _clean_name(relationship.get(key))),
+        None,
+    )
+    rel_type = next(
+        (_clean_name(relationship.get(key)) for key in _REL_TYPE_KEYS
+         if _clean_name(relationship.get(key))),
+        "related_to",
+    )
+    if not source or not target:
+        return None
+    return source, rel_type or "related_to", target
+
+
+def _mentions_name(text: str, name: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text, re.IGNORECASE) is not None
 
 
 class SceneBeat(TypedDict):
@@ -28,6 +121,7 @@ class SceneBeat(TypedDict):
     character_focus: str
     tension_level: float  # 0.0-1.0
     beat_type: str  # "action", "dialogue", "reflection", "revelation"
+    kg_notes: NotRequired[list[str]]
 
 
 class DetailedScene(TypedDict):
@@ -228,33 +322,81 @@ class DOMEExpander:
         Checks character references in beats against KG entities and
         annotates beats with known relationships and facts.
         """
-        kg_entities = kg_feedback.get("facts", [])
-        relationships = kg_feedback.get("relationships", [])
+        known_names = _collect_known_names(kg_feedback)
+        relationships = [
+            note
+            for note in (
+                _relationship_note(rel)
+                for rel in kg_feedback.get("relationships", [])
+            )
+            if note is not None
+        ]
 
-        if not kg_entities and not relationships:
+        if not known_names and not relationships:
             return
 
-        # Build a set of known entity names for quick lookup
-        known_names: set[str] = set()
-        for fact in kg_entities:
-            if isinstance(fact, dict):
-                text = fact.get("text", "")
-                # Extract entity names from fact text (simple heuristic)
-                for word in text.split():
-                    if word[0:1].isupper() and len(word) > 2:
-                        known_names.add(word)
-
-        # Annotate beats with KG consistency notes
+        name_values = sorted(known_names.values(), key=str.casefold)
         for act in acts:
             for chapter in act.get("chapters", []):
                 for scene in chapter.get("scenes", []):
-                    for beat in scene.get("beats", []):
-                        desc = beat.get("description", "")
-                        # Flag beats that reference unknown entities
-                        for word in desc.split():
-                            if (word[0:1].isupper() and len(word) > 2
-                                    and word not in known_names
-                                    and known_names):
-                                beat.setdefault("kg_notes", []).append(
-                                    f"'{word}' not found in KG"
+                    scene_text = " ".join(
+                        str(part)
+                        for part in (
+                            scene.get("title", ""),
+                            scene.get("summary", ""),
+                            " ".join(scene.get("characters", [])),
+                            scene.get("location", ""),
+                        )
+                    )
+                    scene_mentions = [
+                        name for name in name_values
+                        if _mentions_name(scene_text, name)
+                    ]
+                    for index, beat in enumerate(scene.get("beats", [])):
+                        beat_text = " ".join(
+                            str(part)
+                            for part in (
+                                scene_text,
+                                beat.get("description", ""),
+                                beat.get("character_focus", ""),
+                                beat.get("beat_type", ""),
+                            )
+                        )
+                        mentions = [
+                            name for name in name_values
+                            if _mentions_name(beat_text, name)
+                        ]
+                        notes: list[str] = []
+                        if mentions:
+                            notes.append(
+                                "KG entities referenced: "
+                                + ", ".join(mentions[:5])
+                            )
+                        elif index == 0 and name_values:
+                            notes.append(
+                                "KG context available: "
+                                + ", ".join(name_values[:5])
+                            )
+
+                        relationship_notes = []
+                        for source, rel_type, target in relationships:
+                            if _mentions_name(beat_text, source) and _mentions_name(
+                                beat_text, target,
+                            ):
+                                relationship_notes.append(
+                                    f"{source} {rel_type} {target}"
                                 )
+                        if relationship_notes:
+                            notes.append(
+                                "KG relationships referenced: "
+                                + "; ".join(relationship_notes[:3])
+                            )
+
+                        if scene_mentions and index == 0:
+                            notes.append(
+                                "KG scene entities: "
+                                + ", ".join(scene_mentions[:5])
+                            )
+
+                        if notes:
+                            beat.setdefault("kg_notes", []).extend(notes)

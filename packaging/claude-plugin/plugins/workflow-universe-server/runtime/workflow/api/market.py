@@ -26,18 +26,18 @@ Public surface (back-compat re-exported via ``workflow.universe_server``):
     Attribution handlers:
         _action_record_remix / _action_get_provenance
 
-    Goal handlers (9):
+    Goal handlers (10):
         _action_goal_propose / _action_goal_update / _action_goal_bind /
         _action_goal_list / _action_goal_get / _action_goal_search /
         _action_goal_leaderboard / _action_goal_common_nodes /
-        _action_goal_set_canonical
+        _action_goal_archive_consultation / _action_goal_set_canonical
 
-    Gates handlers (9 + 6 gate_event):
+    Gates handlers (10 + 6 gate_event):
         _action_gates_define_ladder / _action_gates_get_ladder /
-        _action_gates_claim / _action_gates_retract /
-        _action_gates_list_claims / _action_gates_leaderboard /
-        _action_gates_stake_bonus / _action_gates_unstake_bonus /
-        _action_gates_release_bonus
+        _action_gates_claim / _action_gates_claim_from_branch_run /
+        _action_gates_retract / _action_gates_list_claims /
+        _action_gates_leaderboard / _action_gates_stake_bonus /
+        _action_gates_unstake_bonus / _action_gates_release_bonus
         _action_attest_gate_event / _action_verify_gate_event /
         _action_dispute_gate_event / _action_retract_gate_event /
         _action_get_gate_event / _action_list_gate_events
@@ -74,6 +74,195 @@ PATCH_REQUEST_AUTHORITY_BOUNDARY: dict[str, bool] = {
     "affects_merge": False,
 }
 PATCH_REQUEST_PICKUP_SIGNAL_WEIGHT = 5.0
+_PATCH_REQUEST_MEANING_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("bug", ("bug", "broken", "crash", "error", "fail", "flake", "regression")),
+    ("project_design", ("architecture", "design note", "plan.md", "principle")),
+    ("docs_ops", ("docs", "documentation", "runbook", "ops", "deploy", "ci")),
+    ("feature", ("feature", "add support", "new capability")),
+    ("patch", ("patch", "fix", "update", "change", "cleanup")),
+)
+_REQUEST_TYPE_MEANING: dict[str, str] = {
+    "branch_proposal": "branch_refinement",
+    "canon_change": "patch",
+    "general": "patch",
+    "revision": "patch",
+    "scene_direction": "branch_refinement",
+}
+_GHOST_RISK_SIGNALS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "research_prior_art",
+        (
+            "prior art",
+            "paper",
+            "benchmark",
+            "auc",
+            "msr",
+            "dataset",
+            "classifier",
+            "prediction",
+            "model",
+            "33k",
+        ),
+    ),
+    (
+        "review_gate",
+        (
+            "opposite-family",
+            "opposite family",
+            "checker",
+            "gate requirement",
+            "gate ladder",
+            "review blocker",
+        ),
+    ),
+    (
+        "stall_language",
+        (
+            "ghost-risk",
+            "ghost risk",
+            "stall",
+            "carrier attention",
+            "before stall",
+        ),
+    ),
+)
+_MERGE_INSTANT_SIGNALS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "mechanical_shape",
+        (
+            "mechanical",
+            "typo",
+            "copy edit",
+            "copy-edit",
+            "formatting",
+            "format-only",
+            "rename only",
+            "one-line",
+        ),
+    ),
+    (
+        "low_runtime_risk",
+        (
+            "docs only",
+            "docs-only",
+            "documentation only",
+            "no runtime",
+            "no behavior change",
+            "comment only",
+        ),
+    ),
+    (
+        "merge_instant_language",
+        (
+            "merge-instant",
+            "merge instant",
+            "safe to merge",
+            "trivial patch",
+        ),
+    ),
+)
+
+
+def classify_patch_request(
+    *,
+    text: str,
+    request_type: str,
+    requester_id: str,
+    host_id: str,
+    directed_daemon: bool = False,
+) -> dict[str, Any]:
+    """Classify patch-loop intake before daemon implementation work starts."""
+    lower_text = text.lower()
+    meaning = _REQUEST_TYPE_MEANING.get(request_type, "patch")
+    for candidate, keywords in _PATCH_REQUEST_MEANING_KEYWORDS:
+        if any(keyword in lower_text for keyword in keywords):
+            meaning = candidate
+            break
+
+    authority_scope = (
+        "host_priority_allowed" if requester_id == host_id else "requester_pickup_only"
+    )
+    if directed_daemon:
+        authority_scope = f"{authority_scope}+proposal_only_directed_daemon"
+
+    return {
+        "access": {
+            "claimable_by": ["free_daemon", "paid_daemon"],
+            "code_writer_gate": "claude_or_codex",
+            "checker_gate": "opposite_family_checker",
+        },
+        "meaning": meaning,
+        "authority": {
+            "scope": authority_scope,
+            "boundary": dict(PATCH_REQUEST_AUTHORITY_BOUNDARY),
+        },
+    }
+
+
+def classify_filing_effort(
+    *,
+    title: str,
+    component: str = "",
+    severity: str = "",
+    kind: str = "bug",
+    repro: str = "",
+    observed: str = "",
+    expected: str = "",
+    workaround: str = "",
+    tags: str = "",
+) -> dict[str, Any]:
+    """Classify filing attention needs while the wiki entry is created.
+
+    This is a deterministic circuit-breaker, not a merge decision. It gives
+    carriers a pickup signal for filings likely to stall despite looking
+    mechanical, while keeping merge authority with the normal review gates.
+    """
+    haystack = " ".join(
+        str(part or "")
+        for part in (
+            title,
+            component,
+            severity,
+            kind,
+            repro,
+            observed,
+            expected,
+            workaround,
+            tags,
+        )
+    ).lower()
+
+    def _matched_signals(catalog: tuple[tuple[str, tuple[str, ...]], ...]) -> list[str]:
+        return [
+            signal
+            for signal, keywords in catalog
+            if any(keyword in haystack for keyword in keywords)
+        ]
+
+    ghost_signals = _matched_signals(_GHOST_RISK_SIGNALS)
+    merge_instant_signals = _matched_signals(_MERGE_INSTANT_SIGNALS)
+    if ghost_signals:
+        effort_class = "ghost-risk"
+        attention = "carrier-review-before-daemon-pickup"
+        signals = ghost_signals + [
+            signal for signal in merge_instant_signals if signal not in ghost_signals
+        ]
+    elif merge_instant_signals:
+        effort_class = "merge-instant"
+        attention = "normal-review-gates"
+        signals = merge_instant_signals
+    else:
+        effort_class = "standard"
+        attention = "normal-review-gates"
+        signals = []
+
+    return {
+        "effort_class": effort_class,
+        "attention": attention,
+        "signals": signals,
+        "confidence": "heuristic",
+        "authority_boundary": dict(PATCH_REQUEST_AUTHORITY_BOUNDARY),
+    }
 
 
 def normalize_patch_request_incentive(
@@ -559,7 +748,8 @@ _ATTRIBUTION_ACTIONS: dict[str, Any] = {
 # Phase 5 per docs/specs/community_branches_phase5.md. A Goal is the
 # intent a Branch serves — "produce a research paper", "plan a
 # wedding". Many Branches bind to one Goal. 8 actions: propose,
-# update, bind, list, get, search, leaderboard, common_nodes.
+# update, bind, list, get, search, leaderboard, common_nodes,
+# archive_consultation.
 # Storage in workflow/author_server.py.
 
 
@@ -582,6 +772,31 @@ def _format_goal_catalog_line(g: dict[str, Any]) -> str:
         f"- `{g['goal_id']}` · **{name}** · {g.get('author')}"
         f"{tag_suffix}" + (f" · {desc}" if desc else "")
     )
+
+
+_PRODUCTION_ONLY_EXCLUDED_TAGS = {"retracted", "smoke", "disposable"}
+_PRODUCTION_ONLY_EXCLUDED_TEXT = ("retracted", "smoke", "disposable")
+
+
+def _truthy_tool_arg(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_production_goal(g: dict[str, Any]) -> bool:
+    if (g.get("visibility") or "public") != "public":
+        return False
+    tags = {str(tag).strip().lower() for tag in (g.get("tags") or [])}
+    if tags & _PRODUCTION_ONLY_EXCLUDED_TAGS:
+        return False
+    text = " ".join([
+        str(g.get("name") or ""),
+        str(g.get("description") or ""),
+    ]).lower()
+    return not any(marker in text for marker in _PRODUCTION_ONLY_EXCLUDED_TEXT)
 
 
 def _action_goal_propose(kwargs: dict[str, Any]) -> str:
@@ -838,14 +1053,21 @@ def _action_goal_list(kwargs: dict[str, Any]) -> str:
     from workflow.daemon_server import list_goals
 
     _ensure_workflow_db()
+    requested_limit = max(1, int(kwargs.get("limit", 50) or 50))
+    production_only = _truthy_tool_arg(kwargs.get("production_only", False))
+    fetch_limit = max(requested_limit * 10, 100) if production_only else requested_limit
     rows = list_goals(
         _base_path(),
         author=kwargs.get("author", ""),
         tag=(_split_csv(kwargs.get("tags", ""))[:1] or [""])[0],
-        limit=int(kwargs.get("limit", 50) or 50),
+        limit=fetch_limit,
     )
+    unfiltered_count = len(rows)
+    if production_only:
+        rows = [g for g in rows if _is_production_goal(g)][:requested_limit]
     if rows:
-        lines = [f"**{len(rows)} Goal(s):**", ""]
+        label = "production Goal(s)" if production_only else "Goal(s)"
+        lines = [f"**{len(rows)} {label}:**", ""]
         for g in rows[:12]:
             lines.append(_format_goal_catalog_line(g))
         if len(rows) > 12:
@@ -860,6 +1082,8 @@ def _action_goal_list(kwargs: dict[str, Any]) -> str:
         "text": text,
         "goals": rows,
         "count": len(rows),
+        "production_only": production_only,
+        "excluded_count": unfiltered_count - len(rows),
     }, default=str)
 
 
@@ -1265,6 +1489,178 @@ def _action_goal_common_nodes(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_goal_archive_consultation(kwargs: dict[str, Any]) -> str:
+    from workflow.api.branches import _ensure_workflow_db
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.daemon_server import get_goal, goal_archive_consultation
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if not gid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "goal_id is required.",
+        })
+    _ensure_workflow_db()
+    try:
+        goal = get_goal(_base_path(), goal_id=gid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Goal '{gid}' not found.",
+        })
+
+    query = (kwargs.get("query") or "").strip()
+    consultation = goal_archive_consultation(
+        _base_path(),
+        goal_id=gid,
+        query=query,
+        limit=int(kwargs.get("limit", 20) or 20),
+        viewer=_current_actor(),
+    )
+    candidates = consultation["candidates"]
+    lines = [
+        f"**Archive consultation for Goal '{goal['name']}'**",
+        (
+            "Parent candidates are ranked with quality, diversity, "
+            "and the gate leaderboard outcome signal."
+        ),
+        "",
+    ]
+    if candidates:
+        for candidate in candidates[:12]:
+            outcome = candidate.get("outcome_signal") or {}
+            lines.append(
+                f"{candidate['rank']}. **{candidate['name']}** · "
+                f"score={candidate['parent_rank_score']} · "
+                f"quality={candidate['quality_score']} · "
+                f"outcome={candidate['outcome_score']} "
+                f"(`{outcome.get('highest_rung_key', '')}`) · "
+                f"diversity={candidate['diversity_score']} · "
+                f"`{candidate['branch_def_id']}`"
+            )
+    else:
+        if query:
+            lines.append("_No bound Branches match that archive query._")
+        else:
+            lines.append(
+                "_No Branches are bound to this Goal yet. Bind existing "
+                "Branches before selecting fork parents._"
+            )
+
+    return json.dumps({
+        "status": "ok",
+        "text": "\n".join(lines),
+        "goal_id": gid,
+        "query": query,
+        "candidates": candidates,
+        "outcome_leaderboard": consultation["outcome_leaderboard"],
+        "selection_basis": consultation["selection_basis"],
+        "count": len(candidates),
+    }, default=str)
+
+
+def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
+    """Bind (or unbind) a Goal's selector branch — DESIGN-008.
+
+    The selector branch is the published Workflow branch the
+    substrate dispatches to rank a Goal's bound branches. Pass
+    ``branch_version_id=""`` to unbind (fall back to platform
+    default selector).
+
+    Authority: only Goal author or a host-level actor may bind a
+    selector — same surface as ``set_canonical``.
+
+    Required kwargs:
+      * ``goal_id`` — Goal whose selector is being bound.
+
+    Optional kwargs:
+      * ``branch_version_id`` — selector branch_version to bind, or
+        empty string / omitted to unbind.
+
+    Returns:
+      * ``{status: "ok", selector_branch_version_id: ...}`` on bind/unbind.
+      * ``{status: "rejected", error: ...}`` on auth failure / bad input
+        / non-active version.
+    """
+    from workflow.api.branches import _ensure_workflow_db
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.daemon_server import (
+        SelectorHasEffectsError,
+        get_goal,
+        set_selector_branch,
+    )
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if not gid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "goal_id is required for set_selector.",
+        })
+    raw_bvid = (kwargs.get("branch_version_id") or "").strip()
+    branch_version_id = raw_bvid or None
+    _ensure_workflow_db()
+
+    try:
+        goal = get_goal(_base_path(), goal_id=gid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Goal '{gid}' not found.",
+        })
+
+    actor = _current_actor()
+    host_actor = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
+    if actor != goal["author"] and actor != host_actor:
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                "Only the Goal author or a host-level actor may bind "
+                "the selector branch. Goal author is "
+                f"'{goal['author']}'; request actor is '{actor}'."
+            ),
+        })
+
+    try:
+        updated = set_selector_branch(
+            _base_path(), goal_id=gid,
+            branch_version_id=branch_version_id, set_by=actor,
+        )
+    except SelectorHasEffectsError as exc:
+        # P1.3 — surface the effects rejection with a structured
+        # error_kind so chatbots can route the operator to the fix
+        # path ("remove effects on offending nodes, then re-bind").
+        return json.dumps({
+            "status": "rejected",
+            "error_kind": "selector_has_effects",
+            "error": str(exc),
+        })
+    except ValueError as exc:
+        return json.dumps({"status": "rejected", "error": str(exc)})
+
+    if branch_version_id:
+        text = (
+            f"Selector branch for Goal '{goal['name']}' set to "
+            f"`{branch_version_id}`. Future "
+            "`quality_leaderboard` / `recommend_parent_for_fork` "
+            "calls dispatch this branch to rank candidates."
+        )
+    else:
+        text = (
+            f"Selector branch for Goal '{goal['name']}' unbound. "
+            "Leaderboard calls fall back to the platform default "
+            "selector."
+        )
+
+    return json.dumps({
+        "status": "ok",
+        "text": text,
+        "goal_id": gid,
+        "selector_branch_version_id": updated.get(
+            "selector_branch_version_id",
+        ),
+    }, default=str)
+
+
 def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     from workflow.api.branches import _ensure_workflow_db
     from workflow.api.engine_helpers import (
@@ -1323,6 +1719,137 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_goal_run_canonical(kwargs: dict[str, Any]) -> str:
+    """Dispatch a run against a Goal's canonical handler — PR-127 (M6).
+
+    The Goal's stored ``canonical_branch_version_id`` is the dispatch
+    target. When ``goal.auto_canonical_via_leaderboard`` is True, the
+    canonical is first refreshed against the freshest leaderboard
+    top-entry (subject to the ``min_completed_runs_for_canonical``
+    threshold and the in-flight guard — see
+    :func:`workflow.api.canonical_dispatch.resolve_canonical_for_run`).
+
+    Required kwargs:
+      * ``goal_id`` — the Goal to dispatch against.
+
+    Optional kwargs:
+      * ``inputs_json`` — JSON string of inputs forwarded to the run.
+      * ``run_name`` — display name for the resulting run row.
+      * ``recursion_limit_override`` — passthrough to the run executor.
+
+    Returns one of:
+
+    Success::
+
+        {
+            "status": "queued",
+            "text": "<phone-legible summary>",
+            "run_id": "...",
+            "branch_version_id_used": "...",
+            "branch_def_id": "...",
+            "source": "<canonical_stored | leaderboard_refreshed | ...>",
+            "goal_id": "...",
+            ...passthrough from run_branch_version...
+        }
+
+    Rejection::
+
+        {
+            "status": "rejected",
+            "error": "...",
+            "error_kind": "no_canonical_handler | no_goal | ...",
+            "goal_id": "...",
+        }
+    """
+    from workflow.api.canonical_dispatch import resolve_canonical_for_run
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.api.runs import _action_run_branch_version
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if not gid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "goal_id is required for run_canonical.",
+            "error_kind": "missing_goal_id",
+        })
+
+    resolution = resolve_canonical_for_run(
+        _base_path(),
+        goal_id=gid,
+        viewer=_current_actor(),
+    )
+    if not resolution.get("ok"):
+        # Surface the failure verbatim so the caller's branching logic
+        # (e.g. _maybe_enqueue_investigation's env-fallback) can read
+        # error_kind directly.
+        return json.dumps({
+            "status": "rejected",
+            "error": resolution.get("error", ""),
+            "error_kind": resolution.get(
+                "error_kind", "no_canonical_handler",
+            ),
+            "goal_id": gid,
+            "hint": resolution.get("hint", ""),
+        }, default=str)
+
+    bvid = resolution["branch_version_id"]
+    bdid = resolution.get("branch_def_id", "")
+
+    # Delegate dispatch to the existing run_branch_version path so
+    # both surfaces share executor + provider + recursion-limit
+    # behavior. Inputs flow through verbatim.
+    dispatch_result_raw = _action_run_branch_version({
+        "branch_version_id": bvid,
+        "inputs_json": kwargs.get("inputs_json", "") or "",
+        "run_name": kwargs.get("run_name", "") or "",
+        "recursion_limit_override": (
+            kwargs.get("recursion_limit_override", "") or ""
+        ),
+    })
+    try:
+        dispatch_result = json.loads(dispatch_result_raw)
+    except (TypeError, ValueError):
+        # Defensive — run_branch_version always returns JSON.
+        return dispatch_result_raw
+
+    # Annotate the dispatch response with canonical-resolution metadata
+    # WITHOUT overwriting any of run_branch_version's existing fields.
+    dispatch_result.setdefault("goal_id", gid)
+    dispatch_result["branch_version_id_used"] = bvid
+    dispatch_result.setdefault("branch_def_id", bdid)
+    dispatch_result["source"] = resolution.get("source")
+    if resolution.get("refresh_attempted"):
+        dispatch_result["refresh_attempted"] = True
+        if resolution.get("displaced_canonical_branch_version_id"):
+            dispatch_result["displaced_canonical_branch_version_id"] = (
+                resolution["displaced_canonical_branch_version_id"]
+            )
+        for k in (
+            "candidate_branch_def_id",
+            "candidate_completed_runs",
+            "candidate_score",
+            "min_completed_runs_for_canonical",
+            "in_flight_run_id",
+            "in_flight_status",
+            "in_flight_started_at",
+        ):
+            if k in resolution:
+                dispatch_result[k] = resolution[k]
+        if resolution.get("hint") and not dispatch_result.get("hint"):
+            dispatch_result["hint"] = resolution["hint"]
+
+    # Render a short text summary if the underlying handler didn't.
+    if "text" not in dispatch_result or not dispatch_result["text"]:
+        run_id = dispatch_result.get("run_id") or "(no run_id)"
+        dispatch_result["text"] = (
+            f"Canonical dispatch for Goal `{gid}` -> "
+            f"branch_version_id `{bvid}` (run_id `{run_id}`, "
+            f"source `{resolution.get('source')}`)."
+        )
+
+    return json.dumps(dispatch_result, default=str)
+
+
 _GOAL_ACTIONS: dict[str, Any] = {
     "propose": _action_goal_propose,
     "update": _action_goal_update,
@@ -1332,12 +1859,41 @@ _GOAL_ACTIONS: dict[str, Any] = {
     "search": _action_goal_search,
     "leaderboard": _action_goal_leaderboard,
     "common_nodes": _action_goal_common_nodes,
+    "archive_consultation": _action_goal_archive_consultation,
     "set_canonical": _action_goal_set_canonical,
+    # PR-127 (M6 cutover Step 4) — leaderboard-driven canonical
+    # dispatch. Honors auto_canonical_via_leaderboard + threshold +
+    # in-flight gate; delegates the actual run to run_branch_version.
+    "run_canonical": _action_goal_run_canonical,
+    # DESIGN-008 — user-buildable selector primitive. Bind the
+    # published Workflow branch that synthesizes the Goal's
+    # leaderboard. Pass branch_version_id="" to fall back to the
+    # platform default selector.
+    "set_selector": _action_goal_set_selector,
+}
+
+# Provider-routing compatibility: ChatGPT can render `/mcp-directory` tool
+# names but dispatch them through the legacy `Goals` wrapper.
+_GOAL_ACTION_ALIASES: dict[str, str] = {
+    "list_workflow_goals": "list",
+    "search_workflow_goals": "search",
+    "get_workflow_goal": "get",
+    "propose_workflow_goal": "propose",
 }
 
 _GOAL_WRITE_ACTIONS: frozenset[str] = frozenset({
     "propose", "update", "bind", "set_canonical",
+    # DESIGN-008 — selector branch binding writes to goals row.
+    "set_selector",
 })
+
+
+def _canonical_goal_action(action: str) -> str:
+    return _GOAL_ACTION_ALIASES.get(action, action)
+
+
+def _available_goal_actions() -> list[str]:
+    return sorted(set(_GOAL_ACTIONS.keys()) | set(_GOAL_ACTION_ALIASES.keys()))
 
 
 def _dispatch_goal_action(
@@ -1409,6 +1965,7 @@ def goals(
     author: str = "",
     limit: int = 50,
     scope: str = "",
+    production_only: bool = False,
     force: bool = False,
 ) -> str:
     """Goals — first-class shared primitives above workflow Branches.
@@ -1429,8 +1986,29 @@ def goals(
       set_canonical Mark a branch_version_id as the Goal's canonical
                    (best-known) branch. Author-only or host-only.
                    Pass branch_version_id="" to unset.
+      set_selector Bind the Goal's selector branch_version — the
+                   published Workflow branch the substrate dispatches
+                   to rank this Goal's bound branches on the
+                   leaderboard (DESIGN-008). Author-only or
+                   host-only. Pass branch_version_id="" to unbind
+                   and fall back to the platform default selector.
+                   The bound selector MUST conform to the contract
+                   in drafts/concepts/selector-branch-contract.md.
+      run_canonical Dispatch a run against the Goal's canonical
+                   branch_version. PR-127 (M6 cutover): when
+                   ``auto_canonical_via_leaderboard`` is enabled on the
+                   Goal, the canonical is first refreshed via the
+                   quality leaderboard (subject to
+                   ``min_completed_runs_for_canonical`` threshold and
+                   the in-flight guard). Needs goal_id. Accepts
+                   ``inputs_json``, ``run_name``,
+                   ``recursion_limit_override``. Returns
+                   ``branch_version_id_used`` + ``source`` so the
+                   caller can see which version was picked and why.
       list         Browse Goals. Optional author, tags (CSV first
-                   value only), limit. Soft-deleted Goals hidden.
+                   value only), limit, production_only. Soft-deleted
+                   Goals hidden. production_only keeps public Goals
+                   and filters RETRACTED/smoke/disposable entries.
       get          Full Goal view + bound Branches. Needs goal_id.
       search       LIKE-based substring search over name, description,
                    tags. Needs query.
@@ -1445,6 +2023,9 @@ def goals(
                    this when helping a user decide "is there already
                    a node that does X somewhere on this server?" even
                    if they haven't committed to a Goal yet.
+      archive_consultation Rank bound Branches as fork parents using
+                   quality, diversity, and gates leaderboard outcome
+                   signal. Optional query filters the candidate space.
 
     Args:
       action: see above.
@@ -1460,6 +2041,8 @@ def goals(
       min_branches: common_nodes cutoff (default 2).
       scope: common_nodes aggregation. 'this_goal' (default) restricts
         to one Goal; 'all' aggregates cross-Goal.
+      production_only: list filter for fresh-user discovery. Keeps
+        public Goals and filters RETRACTED/smoke/disposable entries.
       author: list filter.
       limit: cap on returned rows.
       force: override `local_edit_conflict` refusal on propose/update/bind
@@ -1484,15 +2067,17 @@ def goals(
         "author": author,
         "limit": limit,
         "scope": scope,
+        "production_only": production_only,
         "force": force,
     }
-    handler = _GOAL_ACTIONS.get(action)
+    canonical_action = _canonical_goal_action(action)
+    handler = _GOAL_ACTIONS.get(canonical_action)
     if handler is None:
         return json.dumps({
             "error": f"Unknown action '{action}'.",
-            "available_actions": sorted(_GOAL_ACTIONS.keys()),
+            "available_actions": _available_goal_actions(),
         })
-    return _dispatch_goal_action(action, handler, goal_kwargs)
+    return _dispatch_goal_action(canonical_action, handler, goal_kwargs)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TOOL 3b — Outcome Gates (Phase 6.1)
@@ -1768,6 +2353,225 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
         "status": "claimed",
         "claim": saved,
     }, default=str)
+
+
+def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
+    """PR-126 M5 — claim a gate rung from a completed run's final state.
+
+    Reads the run's ``output["recommended_rung_claim"]`` and validates
+    the rung_key against the bound Goal's ladder before delegating to
+    ``_action_gates_claim`` for the actual write. Keeps the substrate
+    convention crisp:
+
+      * Branch authors emit ``recommended_rung_claim`` (a rung_key
+        matching the bound Goal's ladder) in the run's final output.
+      * Optionally, branches emit ``recommended_rung_claim_evidence_url``
+        and ``recommended_rung_claim_evidence_note`` for the supporting
+        evidence the gate machinery requires. Either field can be
+        overridden by the caller of this action.
+
+    Required kwargs:
+      * ``run_id`` — the completed run to read the recommendation from.
+
+    Optional kwargs:
+      * ``evidence_url`` — overrides any branch-supplied evidence URL.
+      * ``evidence_note`` — overrides any branch-supplied evidence note.
+      * ``force`` — passthrough to the underlying ``gates.claim``.
+
+    Failure shapes (``status="rejected"``):
+      * ``run_not_found`` — no run row for ``run_id``.
+      * ``run_not_completed`` — run.status is not ``completed``.
+      * ``branch_not_found`` — run references a deleted branch.
+      * ``branch_not_bound_to_goal`` — branch has no ``goal_id``.
+      * ``missing_recommended_rung_claim`` — run output has no
+        ``recommended_rung_claim`` (or it's empty / non-string).
+      * ``unknown_rung`` — the recommended rung is not in the bound
+        Goal's ladder; ``available_rungs`` lists what the branch
+        SHOULD have emitted.
+      * ``missing_evidence_url`` — neither the branch nor the caller
+        supplied an evidence URL.
+      * Any other ``status`` shape returned by ``_action_gates_claim``
+        propagates verbatim (e.g. ``branch_rebound``,
+        ``local_edit_conflict``).
+    """
+    from workflow.daemon_server import (
+        get_branch_definition,
+        get_goal_ladder,
+    )
+    from workflow.runs import RUN_STATUS_COMPLETED, get_run
+
+    rid = (kwargs.get("run_id") or "").strip()
+    if not rid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "run_id is required for claim_from_branch_run.",
+        })
+
+    run = get_run(_base_path(), rid)
+    if run is None:
+        return json.dumps({
+            "status": "rejected",
+            "error": "run_not_found",
+            "run_id": rid,
+        })
+
+    if run.get("status") != RUN_STATUS_COMPLETED:
+        return json.dumps({
+            "status": "rejected",
+            "error": "run_not_completed",
+            "run_id": rid,
+            "run_status": run.get("status"),
+            "hint": (
+                "Only runs in 'completed' status can claim a rung. "
+                "Re-run the branch or `wait_for_run` before claiming."
+            ),
+        })
+
+    bid = (run.get("branch_def_id") or "").strip()
+    if not bid:
+        # Defensive — runs always carry a branch_def_id; included so the
+        # response is debuggable if the schema ever drifts.
+        return json.dumps({
+            "status": "rejected",
+            "error": "branch_not_found",
+            "hint": "Run row is missing branch_def_id.",
+        })
+    try:
+        branch = get_branch_definition(_base_path(), branch_def_id=bid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": "branch_not_found",
+            "branch_def_id": bid,
+        })
+
+    goal_id = (branch.get("goal_id") or "").strip()
+    if not goal_id:
+        return json.dumps({
+            "status": "rejected",
+            "error": "branch_not_bound_to_goal",
+            "branch_def_id": bid,
+            "hint": (
+                "Bind the branch to a Goal via "
+                "`goals action=bind` before claiming a rung from a run."
+            ),
+        })
+
+    output = run.get("output") or {}
+    if not isinstance(output, dict):
+        output = {}
+    raw_rung = output.get("recommended_rung_claim")
+    rung_key = raw_rung.strip() if isinstance(raw_rung, str) else ""
+    if not rung_key:
+        return json.dumps({
+            "status": "rejected",
+            "error": "missing_recommended_rung_claim",
+            "run_id": rid,
+            "branch_def_id": bid,
+            "goal_id": goal_id,
+            "hint": (
+                "The branch must emit a non-empty string field named "
+                "'recommended_rung_claim' in the run's final output. "
+                "The value must match a rung_key in the bound Goal's "
+                "ladder (read it via `goals action=get goal_id=...` "
+                "or `gates action=get_ladder goal_id=...`)."
+            ),
+        })
+
+    try:
+        ladder = get_goal_ladder(_base_path(), goal_id=goal_id)
+    except KeyError:
+        # Branch was bound to a now-deleted Goal. Surface explicitly.
+        return json.dumps({
+            "status": "rejected",
+            "error": "branch_not_bound_to_goal",
+            "branch_def_id": bid,
+            "goal_id": goal_id,
+            "hint": (
+                "Branch references a Goal that no longer exists. "
+                "Rebind via `goals action=bind`."
+            ),
+        })
+    available_rungs = [
+        r.get("rung_key") for r in ladder if r.get("rung_key")
+    ]
+    if rung_key not in available_rungs:
+        return json.dumps({
+            "status": "rejected",
+            "error": "unknown_rung",
+            "run_id": rid,
+            "branch_def_id": bid,
+            "goal_id": goal_id,
+            "recommended_rung_claim": rung_key,
+            "available_rungs": available_rungs,
+            "hint": (
+                "The branch's recommended_rung_claim does not match "
+                "any rung in the bound Goal's ladder. Branch authors "
+                "must emit a rung_key from the ladder vocabulary."
+            ),
+        })
+
+    # Evidence resolution: caller override > branch-supplied output >
+    # nothing. We do NOT auto-synthesize a workflow:run:<id> URL because
+    # the existing claim path validates http(s) only — failing fast
+    # forces branch authors to publish a real artifact URL.
+    evidence_url = (kwargs.get("evidence_url") or "").strip()
+    if not evidence_url:
+        branch_url = output.get("recommended_rung_claim_evidence_url")
+        if isinstance(branch_url, str):
+            evidence_url = branch_url.strip()
+    if not evidence_url:
+        return json.dumps({
+            "status": "rejected",
+            "error": "missing_evidence_url",
+            "run_id": rid,
+            "branch_def_id": bid,
+            "goal_id": goal_id,
+            "recommended_rung_claim": rung_key,
+            "hint": (
+                "Supply evidence_url=<https://...> to this action, or "
+                "have the branch emit "
+                "'recommended_rung_claim_evidence_url' in the run's "
+                "final output. The URL must be http(s)."
+            ),
+        })
+
+    evidence_note = (kwargs.get("evidence_note") or "").strip()
+    if not evidence_note:
+        branch_note = output.get("recommended_rung_claim_evidence_note")
+        if isinstance(branch_note, str):
+            evidence_note = branch_note.strip()
+    if not evidence_note:
+        # Default note ties the claim back to the run so a downstream
+        # auditor can trace the chain. Non-empty by construction so
+        # the gates.claim handler never sees an empty note from this
+        # path — branch-authored notes still win when present.
+        evidence_note = f"Auto-claim from completed run {rid}"
+
+    claim_kwargs: dict[str, Any] = {
+        "branch_def_id": bid,
+        "rung_key": rung_key,
+        "evidence_url": evidence_url,
+        "evidence_note": evidence_note,
+        "force": bool(kwargs.get("force", False)),
+    }
+    response_json = _action_gates_claim(claim_kwargs)
+    try:
+        response = json.loads(response_json)
+    except (TypeError, ValueError):
+        # Defensive — the inner handler should always return JSON.
+        return response_json
+    # Decorate the response so the caller sees the run origin and the
+    # rung that was claimed, without losing any of the existing
+    # gates.claim fields (status, claim, hints, error structure).
+    response.setdefault("run_id", rid)
+    response.setdefault("source", "claim_from_branch_run")
+    if response.get("status") == "claimed":
+        # Surface the rung that was claimed at top level so the chatbot
+        # can render "Branch X reached rung Y" without parsing the
+        # nested claim dict.
+        response.setdefault("rung_key", rung_key)
+    return json.dumps(response, default=str)
 
 
 def _action_gates_retract(kwargs: dict[str, Any]) -> str:
@@ -2271,10 +3075,21 @@ _GATE_EVENT_ACTIONS: dict[str, Any] = {
 }
 
 
+def _action_gates_list(_kwargs: dict[str, Any]) -> str:
+    return json.dumps({
+        "status": "ok",
+        "tool": "gates",
+        "available_actions": sorted(_GATES_ACTIONS.keys()),
+        "gate_event_actions": sorted(_GATE_EVENT_ACTIONS.keys()),
+    })
+
+
 _GATES_ACTIONS: dict[str, Any] = {
+    "list": _action_gates_list,
     "define_ladder": _action_gates_define_ladder,
     "get_ladder": _action_gates_get_ladder,
     "claim": _action_gates_claim,
+    "claim_from_branch_run": _action_gates_claim_from_branch_run,
     "retract": _action_gates_retract,
     "list_claims": _action_gates_list_claims,
     "leaderboard": _action_gates_leaderboard,
@@ -2302,6 +3117,7 @@ def gates(
     eval_verdict: str = "",
     node_last_claimer: str = "",
     node_id: str = "",
+    run_id: str = "",
 ) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
@@ -2314,12 +3130,21 @@ def gates(
     additionally require WORKFLOW_PAID_MARKET=on.
 
     Actions (all live when GATES_ENABLED=1):
+      list          Discover supported gates actions.
       define_ladder Owner sets the rung list on a Goal. Needs goal_id
                     and `ladder` (JSON list of {rung_key, name,
                     description}).
       get_ladder    Read a Goal's ladder. Needs goal_id.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url. Idempotent on (branch, rung).
+      claim_from_branch_run
+                    Claim a rung whose key + (optionally) evidence URL
+                    came from a completed run's final output state.
+                    Needs run_id. The branch's
+                    ``recommended_rung_claim`` output field selects the
+                    rung; this action validates it against the bound
+                    Goal's ladder before delegating to ``claim``. PR-126
+                    M5 (Loop 1 retirement roadmap).
       retract       Soft-delete a claim. Needs branch_def_id, rung_key,
                     reason. Claim author, Goal owner, or host can
                     retract.
@@ -2371,6 +3196,9 @@ def gates(
       node_last_claimer: actor_id of the node fulfiller who receives
                          payout on a "pass" release_bonus verdict.
       node_id: node target for stake_bonus.
+      run_id: completed-run target for claim_from_branch_run; the run's
+              final-state ``recommended_rung_claim`` selects the rung
+              and (optionally) the supporting evidence URL.
     """
     from workflow.api.engine_helpers import (
         _format_dirty_file_conflict,
@@ -2410,6 +3238,7 @@ def gates(
         "eval_verdict": eval_verdict,
         "node_last_claimer": node_last_claimer,
         "node_id": node_id,
+        "run_id": run_id,
     }
     try:
         return handler(kwargs)

@@ -1,7 +1,8 @@
 # Workflow
 
-A goal-agnostic daemon engine. You summon it, bind it to a domain, and
-let it drive. Fantasy authoring is one domain. There will be others.
+A goal-agnostic daemon engine. Bind it to a domain and let it run. The platform supports any multi-step AI workflow — research
+papers, screenplays, recipe trackers, standup trackers, novels, news
+summaries, any substantive long-running work.
 
 ---
 
@@ -64,17 +65,21 @@ If it's about what's happening right now → STATUS.md.
 ### Orient
 
 1. Read `STATUS.md` (live coordination board, concerns, current work). **Trim check:** when reading or writing it, delete resolved concerns, landing records, entries marked DONE, duplicated host asks, and rows no provider can act on. STATUS.md has a 60-line canonical budget (~4 KB guidance); every reader is a janitor.
-2. `PLAN.md` is the design reference (~50 KB). Load it based on task scope:
+2. `PLAN.md` is the design reference (~50 KB). Review the relevant module(s)
+   for any work you plan, build, review, or fold back. Load it based on task
+   scope:
    - **Full load** when: planning or scoping a new feature, making or evaluating
      a design decision, checking alignment with project principles, working on
      module architecture or cross-cutting concerns.
    - **Section load** when: fixing a bug in a specific module, making a small
      scoped change. Use `python scripts/docview.py headings PLAN.md` to find
      the relevant section, then read only that section.
-   - **Skip** when: routine test fixes, documentation, skill edits, or
-     non-architectural code changes.
+   - **Minimal check** when: routine test fixes, documentation, skill edits,
+     or non-architectural code changes. Use headings/search to confirm no
+     relevant design module applies, then proceed.
 3. If the idea inbox is non-empty, scan `ideas/PIPELINE.md` and `ideas/INBOX.md`.
 4. If your approach conflicts with a PLAN.md principle, do NOT implement it. Add the conflict to STATUS.md Concerns. PLAN.md changes require user approval.
+5. **Cohit-prevention check before drafting:** before drafting a design note that proposes a new MCP action, citing an unfixed `BUG-NNN`, or pinning a sha in frontmatter / memory, run `python scripts/check_primitive_exists.py {action <verb>|bug <BUG-NNN>|sha <sha>}` from origin/main. Exits 0 (clean), 1 (warning — may be false positive), 2 (collision — investigate before drafting). Catches the "primitive already exists / already-landed work" class — see `.claude/agent-memory/dev-2/2026-05-02-check-primitive-exists-script.md` for the four 2026-05-02 cohit incidents this script is calibrated against.
 
 ### Updating the Three Files
 
@@ -101,6 +106,26 @@ If it's about what's happening right now → STATUS.md.
 - No provider-actionable next step? Move detail to an artifact, or rewrite as a concrete `host-decision` / `host-action` row.
 - Session summary or landing narrative? Put it in `activity.log`, not STATUS.md.
 - Need detail on a concern? Link to the commit, spec, or `docs/concerns/` — STATUS.md entries stay ≤150 chars.
+
+### Where new conventions live (provider-agnostic by default)
+
+This project is multi-provider: the user steers Codex, Cursor, Aider, Claude Code, and Cowork sessions against the same repo. **`AGENTS.md` is the cross-provider standard** — every major coding agent reads it as canonical project context.
+
+**Rule:** when adding a project-level convention (anything a teammate in any provider would need to know — preview loops, ship rituals, file layouts, naming, gates), it goes in `AGENTS.md` first. Provider-specific files (`CLAUDE.md`, `.cursor/rules/*`, `.codex/*`, agent memory) exist only for genuinely provider-specific rules — harness behavior, harness quirks, harness-specific bootstrapping. Those files should reduce to *pointers at `AGENTS.md`* plus a thin layer of harness-specific notes.
+
+**Self-check before saving any rule:** *"Would a Codex session or a Cursor session need to know this?"* If yes → `AGENTS.md`. If "no, this is purely about how my harness works" → the provider-specific file. When in doubt, default to `AGENTS.md` — broader visibility is the safer error.
+
+| Convention type                                | Lives in                                            |
+|------------------------------------------------|-----------------------------------------------------|
+| Cross-provider (any agent needs it)            | `AGENTS.md`                                         |
+| Claude Code harness behavior                   | `CLAUDE.md` (which `@AGENTS.md` imports)            |
+| Cursor-specific                                | `.cursor/rules/*.mdc` or `.cursorrules`             |
+| Cowork-quirk (e.g., FUSE truncation)           | Cowork agent memory + pointer in a project doc      |
+| Codex-specific                                 | `AGENTS.md` (Codex's canonical file already)        |
+
+**This rule is itself self-correcting.** If a future session adds a project-level convention to `CLAUDE.md` or memory without also putting it in `AGENTS.md`, that session has drifted. Catch the drift on review and pull the convention up to `AGENTS.md`. Provider-specific files should de-duplicate by replacing the duplicated content with a pointer.
+
+**Auto-heal hook (apply the `auto-iterate` skill when fixing recurring behavioral failures).** Run `python scripts/check_cross_provider_drift.py` from any provider. It scans `CLAUDE.md`, `.cursorrules`, `.cursor/rules/*`, `.codex/*` for substantive sections that don't appear in `AGENTS.md`. Exits 2 with a fix prescription on drift (move to `AGENTS.md`, or tag `[harness-specific]` / `[Claude Code only]` / `[Cursor only]` / etc. on the heading). In Claude Code it fires automatically as a `PostToolUse` hook on Write/Edit of any watched provider-specific file (see `.claude/hooks/cross_provider_drift_guard.py`). Cowork / Codex / Cursor sessions should run the script manually after editing one of those files. Each drift recurrence ratchets the prevention layer, same auto-iterate pattern as the FUSE-truncation guard (`WebSite/HOOKS_FUSE_QUIRKS.md`).
 
 ### Truth And Freshness
 
@@ -142,6 +167,8 @@ scoped reader at `python scripts/docview.py`.
 - Claude Code reads from `.claude/skills/`.
 - When the right workflow skill is not obvious, start with `using-agent-skills` and then read the matching skill.
 - After editing shared skills, run `powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1` to refresh the Claude Code mirror.
+- When the user points at an outside project, repo, paper, benchmark, article, or codebase and asks what Workflow should learn or integrate, use `external-research-implications`. That process must canonicalize the source, research current context, compare module-by-module against Workflow, write durable implications, and self-update the skill when the process itself improves.
+- Research-derived concepts need opposite-provider review before implementation. If Codex makes the initial finding, Claude researches/reviews it; if Claude makes the initial finding, Codex researches/reviews it. If another provider makes the initial finding, name a different reviewer provider explicitly in `STATUS.md`, preferring the Codex/Claude pair when available. The review must re-check sources and Workflow context, leave a durable artifact, and gate any build, git push, live rollout, or acceptance test based on the finding.
 
 ### Where new conventions live
 
@@ -186,6 +213,14 @@ provider-specific files. Claude Code also wires
 - Review-blocked work should still have a visible pending worktree lane, but
   must not advance beyond planning/scaffolding until the required
   opposite-provider review returns approve/adapt.
+
+### Site preview / ship loop
+
+The Workflow site lives in `WebSite/site/`. Keep website-specific rules in
+`.agents/skills/website-editing/SKILL.md`, not expanded here. For any
+non-trivial website edit, read that skill first; it owns the preview loop,
+UX affordance conventions, transparent-capture rules, build/ship pipeline,
+FUSE quirks, and website-specific auto-iteration.
 
 ---
 
@@ -248,22 +283,74 @@ should be able to start working productively in under a minute.
 Every provider, every session, in this order:
 
 1. **Read STATUS.md.** Concerns + Work table + Next.
-2. **Run `python scripts/claim_check.py --provider <yourname>`.**
+2. **Run `python scripts/worktree_status.py`.** This shows dirty current
+   checkouts, worktrees that need `_PURPOSE.md`, orphaned or missing paths,
+   lanes that need PR/STATUS promotion, and parked draft lanes. Do not switch
+   a dirty checkout to `main`; start a clean main-based worktree for new
+   live-ready work.
+3. **Run `python scripts/claim_check.py --provider <yourname>`.**
    Output classifies every Work row into CLAIMABLE / BLOCKED / IN-FLIGHT
    / HOST-OWNED / STALE-CLAIM. The CLAIMABLE list is what's safe to
    start on right now; BLOCKED tells you why something isn't; IN-FLIGHT
    shows files off-limits.
-3. **Claim by editing STATUS.md.** Change the chosen row's Status cell
+4. **Run `python scripts/provider_context_feed.py --provider <yourname> --phase claim`.**
+   This scans provider memories/configs, shared ideas, recent research
+   artifacts, worktree handoffs, and provider automation notes. It is a
+   context feed, not a backlog writer. Relevant candidates must be promoted
+   into a current STATUS/worktree/PR lane before they become build authority.
+   Claim phase deliberately includes durable memory/brain notes authored by
+   other AI families, not only your own provider. Search the feed for the
+   issue/request slug and related domain terms before assuming no prior
+   Claude/Codex/Cursor/Cowork context exists.
+5. **Claim by editing STATUS.md.** Change the chosen row's Status cell
    to `claimed:<yourname>`. Use a session-specific provider name when
    more than one session from the same tool may be active (for example
    `codex-gpt5-desktop`, `codex-cli-2`, `cursor-gpt55`). Commit that
    edit on your branch (or directly to main if you're operating without
    a worktree). The edit IS the claim — no other notification required.
-4. **Work in a worktree or branch.** `git worktree add ../wf-<task>` or
+6. **Scan cross-implications before building.** Before implementation,
+   compare your claimed task against active `STATUS.md` rows,
+   `ideas/PIPELINE.md` Active Promotions, and recent research/design
+   artifacts for matching domain terms, files, primitives, or user surfaces.
+   If a research-derived finding may affect your design, read its artifact
+   before coding and either add a `Depends` edge / note to your row or record
+   why it does not apply. Do not bypass an opposite-provider review gate just
+   because your task is named differently.
+7. **Work in a worktree or branch.** `git worktree add ../wf-<task>` or
    feature branch. Do not write outside your row's Files write-set
-   without first updating STATUS.md to reflect the new write-set.
-5. **On land**, change Status → `done` and delete the row in the same
+   without first updating STATUS.md to reflect the new write-set. A branch is
+   isolation, not memory; make sure the lane has `_PURPOSE.md`,
+   `.agents/worktrees.md`, STATUS row, or draft PR metadata before leaving it.
+8. **On land**, change Status -> `done` and delete the row in the same
    commit. The commit is the audit trail.
+
+### Provider-context feed checkpoints
+
+`provider_context_feed.py` is a lifecycle gate, not a session-start-only
+ritual. Run it whenever a provider is about to narrow or advance durable work:
+
+- `--phase claim` before claiming or adding a STATUS row.
+- `--phase plan` before writing a plan, design note, exec plan, or
+  `_PURPOSE.md`.
+- `--phase build` before implementation starts and again before broadening a
+  Files cell.
+- `--phase review` before reviewing another provider's work.
+- `--phase foldback` before pushing, opening/updating a PR, merging, or
+  retiring a STATUS row.
+- `--phase memory-write` after writing provider memory, idea-feed entries,
+  research artifacts, reflections, or `_PURPOSE.md` so related candidates can
+  be folded into the current lane immediately.
+
+If a harness supports automatic hooks or automations, wire those checkpoints
+there too, but the shared contract remains the script + STATUS/worktree/PR
+promotion. The scanner may produce noisy candidates; the agent must read the
+relevant ones and then either promote them into the lane or explicitly note why
+they do not apply. `ideas/INBOX.md` remains a loose idea feed at the bottom of
+lanes, never design truth or permission to build.
+The phase filters are coarse triage, not proof that unrelated context is
+absent. Bare CLI use should start with the default limit for a broad sweep,
+use `--limit 10` for compact hook-like triage, and use `--limit 200` when
+auditing whether a category is absent.
 
 ### Work-table row schema
 
@@ -307,6 +394,117 @@ Files. Substring match either direction. If overlap fires, EITHER add a
 Depends edge (the overlap is real coordination) OR refine your row's
 Files to be narrower (the overlap was a hint, not a real write).
 
+### GitHub-Aligned Worktree Discipline
+
+GitHub is the integration model. A Workflow worktree is the local checkout
+for one Git branch; the branch folds back through a PR; `STATUS.md` is the
+claim surface, not a replacement for GitHub history. A branch by itself is
+not durable memory. It remembers commits, not why the branch exists, whether
+it is live-safe, what blocks it, what ideas are parked in it, who owns it, or
+whether it should merge, split, be abandoned, or become a PR. Uncommitted
+changes are weaker: they exist only in that local worktree. The durable memory
+layer is `_PURPOSE.md`, `.agents/worktrees.md`, `STATUS.md`, idea files, and
+draft PR bodies.
+
+Every branch/worktree must be in exactly one lane state:
+
+- **Active lane**: actionable now. Has a `STATUS.md` row with exact Files /
+  Depends / Status ownership, a local worktree path, a branch, and
+  `_PURPOSE.md`.
+- **Parked draft lane**: not necessarily actionable now. Has a pushed branch
+  and draft PR. The PR body or `_PURPOSE.md` records ship condition, abandon
+  condition, blockers, review gates, memory refs, related implications, and
+  pickup hints.
+- **Idea/reference only**: no build authority. Captured in `ideas/INBOX.md`,
+  `ideas/PIPELINE.md`, or the bottom "Idea feed refs" section of
+  `_PURPOSE.md`. It must be promoted into `STATUS.md` and checked against
+  `PLAN.md` before implementation.
+- **Abandoned/swept**: worktree removed or marked abandoned in
+  `.agents/worktrees.md` with a reason. Useful ideas are extracted before
+  deletion.
+
+`worktree_status.py` emits more diagnostic states than the four canonical
+lane states. `ACTIVE_LANE` and `PARKED_DRAFT` map directly to canonical lane
+states. `DIRTY_*`, `IN_FLIGHT*`, `NEEDS_*`, `PURPOSE_INCOMPLETE`, `ORPHANED`,
+`MISSING`, and `READY_TO_REMOVE` are action-required intermediate states that
+must be fixed, promoted, parked, or swept before the branch is considered
+durably remembered. `Idea/reference only` has no worktree state because it
+lives in `ideas/*.md` or bottom-of-lane "Idea feed refs", not in a checkout.
+
+Branch-selector safety rule: a non-main branch is isolated from the live
+deploy chain until merged to `main`. Merging to `main` is production-impacting
+for the live MCP/backend deploy chain and must pass the relevant gates.
+Switching a dirty checkout to `main` is unsafe because it can drag branch
+changes into main or confuse what is live-safe. For new live-ready work, start
+a clean session/worktree from `main`. Leaving a branch as-is is safe only when
+the lane has durable metadata; otherwise it is forgotten-work risk.
+
+When creating a worktree:
+
+1. Use a purpose-named branch (`codex/<slug>`, `claude/<slug>`,
+   `cursor/<slug>`, `fix/<slug>`, `chore/<slug>`, etc.).
+2. Use a sibling path `../wf-<slug>` unless an existing manager names it
+   differently. Avoid `Workflow-foo`, nested `Workflow/foo`, and hash-only
+   names for new work.
+3. Create `_PURPOSE.md` at the worktree root, <=30 lines: purpose,
+   provider/session, branch, base ref, STATUS row / PR / issue, relevant
+   PLAN module refs, ship condition, abandon condition, pickup hints, memory
+   refs, related implication refs, and a bottom "Idea feed refs" section for
+   loose ideas that must not be forgotten but are not build authority.
+4. Append a create event to `.agents/worktrees.md`; append a remove event
+   when the PR lands or the lane is abandoned.
+5. Run `python scripts/worktree_status.py` at session start or before a
+   cleanup pass to find pickup-ready, stale, orphaned, or dirty worktrees.
+
+Memory refs are required for inherited work. When a worktree continues,
+reviews, or builds on work from another provider/family, `_PURPOSE.md`,
+`.agents/worktrees.md`, the STATUS row, or the PR body must reference the
+preceding provider's durable memory/artifact paths, for example
+`.claude/agent-memory/navigator/2026-05-02-worktree-discipline-design.md`.
+Before coding, the pickup provider reads those memories plus the source
+artifact and records any new memory refs it creates. If no memory path is
+listed, search `.claude/agent-memory/`, `.agents/activity.log`, recent audit
+artifacts, and branch/PR notes by task slug before assuming context is absent.
+
+Related implications stay live across the whole GitHub/worktree lifecycle.
+At planning, build, review, and fold-back, re-check the relevant `PLAN.md`
+modules as the project/module understanding. Also re-check linked `STATUS.md`
+lanes, `ideas/PIPELINE.md` rows, research artifacts, design notes, and memory
+refs that touch the same files, primitives, user surfaces, or review gates.
+`ideas/INBOX.md` captures are not design truth or build authority; copy them
+into the bottom "Idea feed refs" area of the worktree/PR when they are useful
+reminders. If a related implication changes the approach, update the STATUS
+row and PR body before continuing; if it does not apply, record that in the PR
+or handoff.
+
+Review-blocked work still gets a lane. If a finding needs opposite-provider
+review, create the review row as claimable and create/reserve the
+implementation row as `pending` with `Depends` naming the review artifact and
+required verdict. The worktree/branch may exist before review, but runtime
+implementation, push, live rollout, and acceptance-test advancement stay
+blocked until the review returns `approve` or `adapt`. If a branch has enough
+metadata to push, use a draft PR or clearly blocked PR body rather than an
+untracked private branch.
+
+Legacy coordination docs (`ideas/PIPELINE.md`, `ideas/INBOX.md`,
+`docs/vetted-specs.md`, `docs/exec-plans/active/*`, old audit docs, and
+agent memories) are context, not build queues. Before building from any of
+them, promote/refactor the work into current project state:
+
+- re-check relevant `PLAN.md` modules as design truth, plus `STATUS.md`,
+  `ideas/PIPELINE.md`, recent commits, and active research gates;
+- create or update a `STATUS.md` Work row with exact Files, Depends, Status,
+  proposed branch, proposed worktree path, PR/fold-back expectation, and
+  PLAN module refs, prior-provider memory refs, and related implication refs;
+- carry `ideas/INBOX.md` captures only as bottom-of-lane "Idea feed refs" so
+  promising ideas are not forgotten, never as permission to build;
+- run `claim_check.py --check-files` before broadening Files;
+- only then claim and build in the worktree.
+
+Existing worktrees are retrofit-on-next-touch: add `_PURPOSE.md` and inventory
+events when you next work there. Do not bulk rewrite another provider's active
+worktree metadata unless the STATUS row or owner asks for it.
+
 ### Staying unblocked
 
 If `claim_check.py` shows zero CLAIMABLE rows, look for cross-cutting
@@ -331,7 +529,7 @@ keeps the next provider's `claim_check.py` accurate.
 10. **Contributor attribution uses `CONTRIBUTORS.md`.** When a branch or node ships and `attribution_credit` rows exist, read `CONTRIBUTORS.md` to map each `actor_id` to a GitHub handle and emit `Co-Authored-By:` lines in the commit message. Format: `Co-Authored-By: Display Name <handle@users.noreply.github.com>`. If an actor_id is not in the table, skip silently — never block a commit on missing attribution.
 11. **Public-surface changes verify post-change.** After any edit to DNS records, Cloudflare tunnel config, GoDaddy Website Builder config, or any surface affecting `tinyassets.io`, run `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp` (or `scripts/uptime_canary.py --once` when Layer-1 is wired) and confirm a green probe. This canary is required evidence, not final chatbot-surface proof; MCP/chatbot-facing changes also require the rendered chatbot `ui-test` check above before final acceptance. Canonical public endpoint is `https://tinyassets.io/mcp` only. `mcp.tinyassets.io` is an Access-gated internal tunnel origin (host directive 2026-04-20) — it exists in DNS but is not user-facing; direct requests without the Worker's CF Access service-token headers return 401/403. Do not document or share `mcp.tinyassets.io` in user-facing contexts. The 2026-04-19 P0 outage (`docs/audits/2026-04-20-public-mcp-outage-postmortem.md`) landed when a tunnel reshuffle silently dropped a route — no commit touched the broken surface, so only a post-change out-of-band probe can catch this class. Named reference probes (including PROBE-001, the validated full-stack smoke): `docs/ops/acceptance-probe-catalog.md`.
 12. **Portfolio graph stays current.** Before changing public-facing docs, project status, repo structure, or lineage, inspect `PROJECT_GRAPH.yml` where present and the standards in `docs/portfolio/`. If the change affects how a project appears publicly, update the relevant manifest, `docs/project-lineage.md`, or portfolio index notes. Default stance is public-draft unless explicitly private, but public publishing remains gated by scan/review.
-13. **No destructive git ops without explicit approval.** Do not use `git reset --hard`, `git checkout --`, `git restore`, `git clean`, force-push, or stash/drop as cleanup or diagnostics unless the host explicitly asks for that operation.
+13. **No destructive git ops without explicit approval.** Do not use `git reset --hard`, `git checkout --`, `git restore`, `git clean`, force-push, or stash/drop as cleanup or diagnostics unless the host explicitly asks for that operation. Do not switch a dirty worktree to `main`; create a clean main-based worktree/session for live-ready work.
 
 ---
 
@@ -393,7 +591,10 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | `OLLAMA_HOST` | Local Ollama endpoint URL. Presence is the "local-LLM-bound" signal `get_status` reports. | Unset. |
 | `ANTHROPIC_BASE_URL` | Alternate Anthropic endpoint (e.g. self-hosted relay). Presence also flips `llm_endpoint_bound` to truthy. | Unset. |
 | `WORKFLOW_PIN_WRITER` | Pin a specific writer provider by name (e.g. `"claude-code"`, `"codex"`). Overrides the provider router's fallback chain. | Unset. |
+| `WORKFLOW_CODEX_AUTH_JSON_B64` | Base64-encoded `~/.codex/auth.json` bundle for the Codex provider's subscription auth. `deploy/docker-entrypoint.sh` decodes it on container startup and writes `~/.codex/auth.json`; rotate on each Codex CLI re-auth. | Unset. |
 | `WORKFLOW_ALLOW_API_KEY_PROVIDERS` | Explicit opt-in for API-key-backed daemon providers. Default project-wide policy, including self-hosted daemons, is subscription-only: API-key env vars are ignored unless this is truthy. Use only when the host deliberately chooses to run an API-key daemon. | `off` |
+| `WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY` | Deprecated no-op placeholder retained in `deploy/compose.yml` and `deploy/workflow-env.template` for migration safety. No code path reads this flag; use `WORKFLOW_ALLOW_API_KEY_PROVIDERS` directly. | Unset (no-op). |
+| `OPENAI_API_KEY` | Stripped by `deploy/docker-entrypoint.sh` unless `WORKFLOW_ALLOW_API_KEY_PROVIDERS=1`. The legacy `codex login --with-api-key` path is intentionally not run; Codex auth flows through `WORKFLOW_CODEX_AUTH_JSON_B64`. | Unset. |
 | `GEMINI_API_KEY` / `GROQ_API_KEY` / `XAI_API_KEY` | Provider API keys for the Gemini / Groq / Grok providers respectively. Ignored unless `WORKFLOW_ALLOW_API_KEY_PROVIDERS` is truthy. | Unset. |
 | `FANTASY_DAEMON_LLM_TYPES` | Comma-separated list of LLM types the fantasy daemon prefers (e.g. `"claude,codex"`). Filters provider selection. | Unset. |
 
@@ -453,11 +654,14 @@ Canonical list of keys: `scripts/secrets_keys.txt` (edit there, not in shell pro
 | `scripts/docview.py` | Any AI, any tool | Scoped reader for large Markdown/text/JSON artifacts that should not be read raw. |
 | `scripts/capture_idea.py` | Any AI, any tool | Fast append helper for the idea inbox. |
 | `scripts/claim_check.py` | Any AI, any tool | Multi-provider session-start helper. Classifies STATUS.md Work rows as CLAIMABLE / BLOCKED / IN-FLIGHT / HOST-OWNED / STALE. Run with `--provider <yourname>` before claiming work. |
+| `scripts/worktree_status.py` | Any AI, any tool | Worktree cold-start helper. Shows dirty current checkouts, missing or incomplete `_PURPOSE.md`, orphaned/missing paths, active lanes, parked drafts, and PR/STATUS promotion gaps. |
+| `scripts/provider_context_feed.py` | Any AI, any tool | Lifecycle checkpoint feed for provider memories/configs, ideas, research artifacts, automation notes, and worktree handoffs. Run at claim/plan/build/review/foldback/memory-write checkpoints. |
 | `scripts/sync-skills.ps1` | Repo maintenance | Re-sync `.agents/skills/` into `.claude/skills/`. |
 | `CLAUDE.md` | Claude Code only | Thin routing layer. |
 | `CLAUDE_LEAD_OPS.md` | Claude Code lead | Situational: user-sim loops, dev team management, token efficiency. Not auto-loaded. |
 | `LAUNCH_PROMPT.md` | Claude Code lead | Team spawn, session protocol, lead norms. |
 | `.claude/agents/*.md` | Claude Code only | Individual agent definitions. |
+| `.claude/agent-memory/<name>/` | Claude Code teammate `<name>` only (write); any AI (read) | Per-teammate persistent memory. **Owned by the named teammate; other agents and other providers must NOT write here.** Read-only access is fine when context is needed. If a non-owner has a useful observation for another teammate, route it via SendMessage / activity log / a docs note, not by writing into the memory directory. |
 | `.agents/skills/*/SKILL.md` | Codex + project agents (canonical source) | Canonical skill definitions. Edit here first. |
 | `.claude/skills/*/SKILL.md` | Claude Code only | Mirror of `.agents/skills/` refreshed by `scripts/sync-skills.ps1`. |
 | `.agents/activity.log` | Any AI, any tool | Short cross-session activity feed for coordination. |

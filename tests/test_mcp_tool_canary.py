@@ -71,6 +71,27 @@ def _universe_inspect_resp(
     )
 
 
+def _workflow_status_resp(
+    schema_version: int = 1,
+    is_error: bool = False,
+    raw_text: str | None = None,
+    sid: str = "sess-123",
+) -> tuple[dict, str]:
+    if raw_text is None:
+        raw_text = json.dumps({
+            "schema_version": schema_version,
+            "universe_id": "demo-universe",
+            "active_host": {"host_id": "host"},
+        })
+    return (
+        {"jsonrpc": "2.0", "id": 3, "result": {
+            "content": [{"type": "text", "text": raw_text}],
+            "isError": is_error,
+        }},
+        sid,
+    )
+
+
 class ScriptedPost:
     """Feeds pre-scripted (response, sid) tuples back one call at a time.
 
@@ -85,7 +106,7 @@ class ScriptedPost:
     def __call__(self, url, sid, payload, timeout, *, step_code):
         self.calls.append({
             "url": url, "sid": sid, "method": payload.get("method"),
-            "step_code": step_code,
+            "step_code": step_code, "payload": payload,
         })
         if not self._responses:
             raise AssertionError(
@@ -115,6 +136,25 @@ def test_happy_path_returns_inspect_dict():
     assert scripted.calls[1]["step_code"] == 3  # notifications/initialized
     assert scripted.calls[2]["step_code"] == 4  # tools/list
     assert scripted.calls[3]["step_code"] == 5  # tools/call
+
+
+def test_directory_tool_set_uses_workflow_status_probe():
+    scripted = ScriptedPost([
+        _init_resp(),
+        _initialized_notif_resp(),
+        _tools_list_resp(tools=[
+            {"name": "read.graph", "description": "..."},
+            {"name": "read.page", "description": "..."},
+        ]),
+        _workflow_status_resp(schema_version=1),
+    ])
+    result = tc.run_canary("https://fake/mcp-directory", 5.0, post_fn=scripted)
+    assert result["schema_version"] == 1
+    assert result["universe_id"] == "demo-universe"
+    assert scripted.calls[3]["payload"]["params"] == {
+        "name": "read.graph",
+        "arguments": {"target": "status"},
+    }
 
 
 def test_main_exit_zero_on_happy_path(monkeypatch, capsys):
@@ -275,6 +315,33 @@ def test_exit_5_on_universe_inspect_network_error():
     with pytest.raises(tc.ToolCanaryError) as ei:
         tc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 5
+
+
+def test_exit_5_when_no_supported_probe_tool_advertised():
+    scripted = ScriptedPost([
+        _init_resp(),
+        _initialized_notif_resp(),
+        _tools_list_resp(tools=[
+            {"name": "read.page", "description": "..."},
+        ]),
+    ])
+    with pytest.raises(tc.ToolCanaryError) as ei:
+        tc.run_canary("https://fake/mcp-directory", 5.0, post_fn=scripted)
+    assert ei.value.code == 5
+    assert "supported read-only probe" in ei.value.msg
+
+
+def test_exit_5_when_workflow_status_missing_schema_version():
+    scripted = ScriptedPost([
+        _init_resp(),
+        _initialized_notif_resp(),
+        _tools_list_resp(tools=[{"name": "read.graph"}]),
+        _workflow_status_resp(raw_text=json.dumps({"universe_id": "demo"})),
+    ])
+    with pytest.raises(tc.ToolCanaryError) as ei:
+        tc.run_canary("https://fake/mcp-directory", 5.0, post_fn=scripted)
+    assert ei.value.code == 5
+    assert "schema_version" in ei.value.msg
 
 
 # ---- main() exit-code propagation ----------------------------------------

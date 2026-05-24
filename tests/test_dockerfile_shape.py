@@ -85,6 +85,78 @@ def test_dockerfile_codex_version_smoke():
     )
 
 
+# ---------------------------------------------------------------------------
+# Dockerfile — codex flock wrapper (PR #965 Codex round-2 Finding 1)
+# ---------------------------------------------------------------------------
+
+
+def test_dockerfile_installs_codex_flock_wrapper():
+    """Final stage must install deploy/codex-flock-wrapper.sh as /usr/local/bin/codex.
+
+    PR #965 binds /var/lib/workflow-codex -> /app/.codex across daemon
+    + worker. Codex's official CI/CD auth guide forbids sharing one
+    auth.json across concurrent runners; the wrapper serializes
+    invocations via an exclusive flock on /app/.codex/.lock.
+
+    Round-1 of PR #965 used a bare symlink (`ln -s ... /usr/local/bin/codex`),
+    which is the exact pattern Codex Issue #10332 calls out as broken
+    when the auth dir is shared. The wrapper replaces it.
+    """
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex" in text, (
+        "Dockerfile must COPY deploy/codex-flock-wrapper.sh to /usr/local/bin/codex "
+        "so every `codex` invocation goes through the cross-container flock"
+    )
+    # The legacy bare symlink must be gone. Regression guard.
+    assert "ln -s /opt/codex-install/node_modules/.bin/codex /usr/local/bin/codex" not in text, (
+        "Dockerfile must not install codex via bare symlink; concurrent "
+        "containers sharing /app/.codex would race the OAuth refresh "
+        "(Codex Issue #10332). Use the flock wrapper instead."
+    )
+
+
+def test_dockerfile_installs_util_linux_for_flock():
+    """flock(1) lives in util-linux. The final stage apt layer must include it
+    explicitly so the wrapper works even if the base image trims util-linux
+    in a future python-slim revision.
+    """
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "util-linux" in text, (
+        "Final stage must apt-install util-linux; flock(1) is part of "
+        "that package and codex-flock-wrapper.sh exec's flock on every call"
+    )
+
+
+def test_codex_flock_wrapper_script_present():
+    """The wrapper script itself must exist + be executable + lock the shared dir."""
+    wrapper = REPO_ROOT / "deploy" / "codex-flock-wrapper.sh"
+    assert wrapper.exists(), "deploy/codex-flock-wrapper.sh must exist"
+    text = wrapper.read_text(encoding="utf-8")
+    # Bash strict-mode header.
+    assert text.startswith("#!/usr/bin/env bash"), (
+        "wrapper must declare #!/usr/bin/env bash shebang"
+    )
+    assert "set -euo pipefail" in text, "wrapper must use strict bash"
+    # Lock target must live next to auth.json so the shared bind-mount
+    # makes the lock visible across containers.
+    assert ".codex" in text and ".lock" in text, (
+        "wrapper must lock a sentinel inside the codex auth directory"
+    )
+    assert "flock -x" in text, (
+        "wrapper must use exclusive flock (`flock -x`) — shared locks "
+        "would not serialize refresh writes"
+    )
+    # The actual codex binary should be the exec target.
+    assert "/opt/codex-install/node_modules/.bin/codex" in text, (
+        "wrapper must exec the real codex bin under flock"
+    )
+    assert text.rstrip().endswith('exec flock -x "${LOCK_FILE}" "${CODEX_BIN}" "$@"'), (
+        "wrapper's final line must `exec flock -x ... codex \"$@\"` so the "
+        "wrapper process is replaced (no double-fork) and signals + exit codes "
+        "propagate from codex to the daemon/worker caller"
+    )
+
+
 def test_dockerfile_ships_plan_md_for_live_review_context():
     """PLAN.md must be present at /app/PLAN.md in the runtime image."""
     text = DOCKERFILE.read_text(encoding="utf-8")
@@ -186,13 +258,14 @@ def test_codex_provider_has_skip_git_repo_check():
 def test_codex_provider_flag_is_on_exec_command():
     """--skip-git-repo-check must be on the exec invocation, not a separate call."""
     text = CODEX_PROVIDER.read_text(encoding="utf-8")
-    # The flag must appear on the same logical line as "exec" + "--full-auto"
-    for line in text.splitlines():
-        if "--skip-git-repo-check" in line:
-            assert "exec" in line or "--full-auto" in line, (
-                "--skip-git-repo-check should be on the 'codex exec' command line"
-            )
-            break
+    start = text.index("cmd = [")
+    end = text.index("]", start)
+    cmd_block = text[start:end]
+    assert '"exec"' in cmd_block
+    assert "--skip-git-repo-check" in cmd_block
+    assert "*sandbox_args" in cmd_block
+    assert "--full-auto" in text
+    assert "--dangerously-bypass-approvals-and-sandbox" in text
 
 
 # ---------------------------------------------------------------------------

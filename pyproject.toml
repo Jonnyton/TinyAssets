@@ -5,10 +5,10 @@ build-backend = "hatchling.build"
 [project]
 name = "workflow"
 version = "0.1.0"
-description = "Goal-agnostic daemon engine — summon it, bind it to a domain, let it drive. MCP interface for any chatbot."
+description = "Goal-agnostic daemon engine. Bind it to a domain and let it run. MCP interface for any chatbot."
 requires-python = ">=3.11"
 authors = [
-    {name = "Jonathan", email = "jonathan@example.com"}
+    {name = "Jonathan Farnsworth", email = "jonathan.m.farnsworth@gmail.com"}
 ]
 dependencies = [
     # Core orchestration
@@ -38,6 +38,10 @@ dependencies = [
 
     # Retry with backoff for provider calls
     "tenacity>=9.0,<10.0",
+
+    # MCP/server entry points and Tier-3 structural smoke imports
+    "fastmcp>=3.0",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.scripts]

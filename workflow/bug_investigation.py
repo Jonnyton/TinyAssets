@@ -43,7 +43,30 @@ def is_auto_trigger_enabled() -> bool:
 
 def build_run_payload(bug_frontmatter: dict) -> dict:
     """Map BUG-NNN frontmatter → canonical investigation branch input shape."""
-    return {k: bug_frontmatter.get(k, "") for k in _PAYLOAD_KEYS}
+    payload = {k: bug_frontmatter.get(k, "") for k in _PAYLOAD_KEYS}
+    payload["request_text"] = str(
+        bug_frontmatter.get("request_text") or _format_request_text(payload)
+    )
+    return payload
+
+
+def _format_request_text(payload: dict) -> str:
+    kind = str(payload.get("kind") or "bug").strip() or "bug"
+    bug_id = str(payload.get("bug_id") or "untracked").strip() or "untracked"
+    title = str(payload.get("title") or "Untitled").strip() or "Untitled"
+    lines = [f"{kind} {bug_id}: {title}", ""]
+    for label, key in (
+        ("Component", "component"),
+        ("Severity", "severity"),
+        ("Observed", "observed"),
+        ("Expected", "expected"),
+        ("Repro", "repro"),
+        ("Workaround", "workaround"),
+    ):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            lines.append(f"{label}: {value}")
+    return "\n".join(lines).strip()
 
 
 def format_investigation_comment(
@@ -139,7 +162,7 @@ def attach_patch_packet_comment(
         next_h2 = re.search(r"\n## ", existing[head_idx + len(_PATCH_PACKET_HEADING):])
         if next_h2:
             tail = existing[head_idx + len(_PATCH_PACKET_HEADING) + next_h2.start():]
-            body = existing[:head_idx].rstrip() + packet_section + "\n\n" + tail.lstrip("# \n")
+            body = existing[:head_idx].rstrip() + packet_section + "\n\n" + tail.lstrip("\n")
         else:
             body = existing[:head_idx].rstrip() + packet_section + "\n"
     else:
@@ -239,19 +262,34 @@ def _maybe_enqueue_investigation(
 ) -> str | None:
     """Forward-trigger seam for `_wiki_file_bug` post-write.
 
-    Reads `WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID` at call time; when set,
-    enqueues a dispatcher request for the freshly-filed bug. Swallows
-    dispatcher-rejection (RuntimeError) and bad-input (ValueError) so a
-    filing never breaks because of investigation-pipeline misconfiguration.
+    Resolution order (PR-127 / M6 cutover Step 4):
 
-    Returns request_id when enqueued, None when skipped or recovered from error.
+      1. If ``WORKFLOW_BUG_INVESTIGATION_GOAL_ID`` is set AND that
+         Goal has a ``canonical_branch_version_id`` (set via
+         ``goals action=set_canonical`` or auto-refreshed from the
+         leaderboard when ``auto_canonical_via_leaderboard`` is on),
+         resolve the canonical to a ``branch_def_id`` and enqueue
+         a dispatcher request against it.
+      2. Otherwise, fall back to
+         ``WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID`` — the round-1
+         cheat-loop env. This fallback is intentional graceful
+         degradation: the cutover plan removes the env in a
+         subsequent slice (Step 5/6) once the canonical handler has
+         been observation-window'd.
+
+    Returns request_id when enqueued, None when skipped or recovered
+    from error. Swallows dispatcher-rejection (RuntimeError) and
+    bad-input (ValueError) so a filing never breaks because of
+    investigation-pipeline misconfiguration.
     """
-    canonical = os.environ.get("WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "").strip()
-    if not canonical:
-        return None
     if not bug_id:
         _logger.info("_maybe_enqueue_investigation | skipped | missing bug_id")
         return None
+
+    canonical_branch_def_id = _resolve_investigation_handler(base_path)
+    if not canonical_branch_def_id:
+        return None
+
     bug_ref = dict(frontmatter or {})
     bug_ref["bug_id"] = bug_id
     # Module-attribute lookup (NOT bare-name) so `patch("workflow.bug_investigation
@@ -262,7 +300,7 @@ def _maybe_enqueue_investigation(
     try:
         return enqueue(
             bug_ref=bug_ref,
-            canonical_branch_def_id=canonical,
+            canonical_branch_def_id=canonical_branch_def_id,
             base_path=base_path,
             universe_id=universe_id,
         )
@@ -271,3 +309,79 @@ def _maybe_enqueue_investigation(
             "_maybe_enqueue_investigation | %s | recovered: %s", bug_id, exc
         )
         return None
+
+
+def _resolve_investigation_handler(base_path: "Path | str") -> str:
+    """Pick the ``branch_def_id`` that should handle a fresh bug.
+
+    Two paths, in order:
+
+      1. **Goal-canonical (PR-127 cutover):** read
+         ``WORKFLOW_BUG_INVESTIGATION_GOAL_ID``; if set, look up the
+         Goal and resolve ``canonical_branch_version_id`` → its
+         ``branch_def_id``. When ``auto_canonical_via_leaderboard``
+         is enabled on the Goal, the canonical is auto-refreshed
+         here too (subject to the threshold + in-flight gate) so a
+         file_bug burst doesn't have to wait for an MCP-driven
+         ``run_canonical`` to refresh the pick.
+      2. **Cheat-loop env fallback:** read
+         ``WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID`` directly. Kept
+         in place until Cutover plan Steps 5/6 retire it. The env
+         lets the host roll out PR-127 before any Goal has a
+         canonical set.
+
+    Returns "" when neither path produces a handler. Never raises.
+    """
+    goal_id = os.environ.get(
+        "WORKFLOW_BUG_INVESTIGATION_GOAL_ID", "",
+    ).strip()
+    if goal_id:
+        try:
+            from workflow.api.canonical_dispatch import (
+                resolve_canonical_for_run,
+            )
+            resolution = resolve_canonical_for_run(
+                base_path,
+                goal_id=goal_id,
+                # No actor context inside the wiki-write hook — use
+                # the empty-viewer (strictly-public) lookup so private
+                # branches cannot serve as a public bug-investigation
+                # canonical.
+                viewer="",
+            )
+        except Exception:  # pragma: no cover — defensive
+            _logger.exception(
+                "_resolve_investigation_handler | canonical resolution "
+                "crashed for goal %s; falling back to env",
+                goal_id,
+            )
+            resolution = {"ok": False}
+        if resolution.get("ok"):
+            bdid = (resolution.get("branch_def_id") or "").strip()
+            if bdid:
+                _logger.info(
+                    "_resolve_investigation_handler | goal=%s "
+                    "canonical=%s source=%s",
+                    goal_id,
+                    resolution.get("branch_version_id"),
+                    resolution.get("source"),
+                )
+                return bdid
+        else:
+            _logger.info(
+                "_resolve_investigation_handler | goal=%s no canonical "
+                "available (%s); falling back to env",
+                goal_id, resolution.get("error_kind") or "unknown",
+            )
+
+    # Cheat-loop fallback.
+    fallback = os.environ.get(
+        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "",
+    ).strip()
+    if fallback:
+        _logger.info(
+            "_resolve_investigation_handler | using env fallback "
+            "branch_def_id=%s (cutover plan Step 5/6 retires this path)",
+            fallback,
+        )
+    return fallback

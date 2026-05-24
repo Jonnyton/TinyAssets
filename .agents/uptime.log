@@ -16,3 +16,7 @@
 2026-04-29T20:24:55-07:00 RED   layer=1 url=https://tinyassets.io/mcp exit=2 rtt_ms=125 reason='HTTP 502 from https://tinyassets.io/mcp: Bad Gateway'
 2026-04-29T20:25:50-07:00 GREEN layer=1 url=https://tinyassets.io/mcp rtt_ms=165
 2026-04-29T20:29:11-07:00 GREEN layer=1 url=https://tinyassets.io/mcp rtt_ms=282
+2026-05-01T22:55:31-07:00 RED   layer=1 url=https://tinyassets.io/mcp exit=2 rtt_ms=123 reason='HTTP 502 from https://tinyassets.io/mcp: Bad Gateway'
+2026-05-01T23:40:43-07:00 GREEN layer=1 url=https://tinyassets.io/mcp rtt_ms=382 apex_url=https://tinyassets.io/ apex_status=200
+2026-05-02T00:01:15-07:00 GREEN layer=1 url=https://tinyassets.io/mcp rtt_ms=433 apex_url=https://tinyassets.io/ apex_status=200
+2026-05-02T00:50:13-07:00 GREEN layer=1 url=https://tinyassets.io/mcp rtt_ms=333 apex_url=https://tinyassets.io/ apex_status=200

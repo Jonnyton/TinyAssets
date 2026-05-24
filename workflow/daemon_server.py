@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -459,6 +460,44 @@ def initialize_author_server(base_path: str | Path) -> Path:
             conn.execute(
                 "ALTER TABLE goals ADD COLUMN canonical_branch_history_json "
                 "TEXT NOT NULL DEFAULT '[]'"
+            )
+        # PR-127 (M6 cutover Steps 4 + 7) — leaderboard-driven canonical
+        # selection. ``auto_canonical_via_leaderboard``: when set, every
+        # ``goals action=run_canonical`` call first re-queries
+        # ``recommended_parent_for_fork`` and updates the stored
+        # ``canonical_branch_version_id`` to the freshest top-ranked
+        # entry before dispatching. Default OFF so existing Goals are
+        # opt-in. ``min_completed_runs_for_canonical``: security gate
+        # against a malicious branch ranking high with zero actual
+        # runs; default 5. Both columns are stored as integers (SQLite
+        # has no native BOOLEAN).
+        if "auto_canonical_via_leaderboard" not in goal_cols:
+            conn.execute(
+                "ALTER TABLE goals ADD COLUMN auto_canonical_via_leaderboard "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        if "min_completed_runs_for_canonical" not in goal_cols:
+            conn.execute(
+                "ALTER TABLE goals ADD COLUMN min_completed_runs_for_canonical "
+                "INTEGER NOT NULL DEFAULT 5"
+            )
+        # DESIGN-008: user-buildable selector primitive. A Goal can
+        # bind a "selector branch" (a published Workflow branch) that
+        # the substrate dispatches whenever the leaderboard is built;
+        # the selector reads input signals + emits ``ranked_entries``,
+        # replacing the round-1 platform-opinionated formula.
+        #
+        # NULL is the post-migration "use platform default" state.
+        # The default selector branch is materialized lazily on first
+        # leaderboard read (see
+        # ``workflow.api.selector_dispatch.ensure_default_selector_published``)
+        # and stored under a deterministic branch_def_id; the migration
+        # at the bottom of this function backfills the column for any
+        # Goal that has bound branches.
+        if "selector_branch_version_id" not in goal_cols:
+            conn.execute(
+                "ALTER TABLE goals ADD COLUMN selector_branch_version_id "
+                "TEXT DEFAULT NULL"
             )
         # Variant canonicals (Task #61 Step 1) — backfill canonical_bindings
         # from existing goals.canonical_branch_version_id. INSERT OR IGNORE
@@ -2419,6 +2458,24 @@ def _goal_from_row(row: sqlite3.Row) -> dict[str, Any]:
         canonical_history_raw = row["canonical_branch_history_json"]
     except (IndexError, KeyError):
         canonical_history_raw = "[]"
+    # PR-127 — leaderboard-driven canonical selection. Defaults match
+    # the schema (auto OFF, threshold 5) so pre-migration rows behave
+    # as if they were freshly created.
+    try:
+        auto_flag = int(row["auto_canonical_via_leaderboard"] or 0)
+    except (IndexError, KeyError, TypeError, ValueError):
+        auto_flag = 0
+    try:
+        min_runs = int(row["min_completed_runs_for_canonical"] or 5)
+    except (IndexError, KeyError, TypeError, ValueError):
+        min_runs = 5
+    # DESIGN-008 — user-buildable selector primitive. NULL post-migration
+    # is the "use platform default selector" signal; the leaderboard
+    # call resolves the default on demand.
+    try:
+        selector_bvid = row["selector_branch_version_id"]
+    except (IndexError, KeyError):
+        selector_bvid = None
     return {
         "goal_id": row["goal_id"],
         "name": row["name"],
@@ -2433,6 +2490,9 @@ def _goal_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "canonical_branch_history": _json_loads(
             canonical_history_raw or "[]", []
         ),
+        "auto_canonical_via_leaderboard": bool(auto_flag),
+        "min_completed_runs_for_canonical": min_runs,
+        "selector_branch_version_id": selector_bvid,
     }
 
 
@@ -2495,7 +2555,9 @@ def update_goal(
 ) -> dict[str, Any]:
     """Patch mutable fields on a Goal. Returns the updated row.
 
-    Supported fields: name, description, tags, visibility. Author is
+    Supported fields: name, description, tags, visibility,
+    auto_canonical_via_leaderboard (bool — PR-127), and
+    min_completed_runs_for_canonical (int — PR-127). Author is
     immutable; timestamps are server-managed.
     """
     initialize_author_server(base_path)
@@ -2511,6 +2573,33 @@ def update_goal(
     if "tags" in updates:
         sets.append("tags_json = ?")
         params.append(_json_dumps(list(updates["tags"] or [])))
+    # PR-127 — leaderboard-driven canonical opt-in + threshold knob.
+    # Booleans land as 0/1 to match the SQLite INTEGER column.
+    if "auto_canonical_via_leaderboard" in updates:
+        sets.append("auto_canonical_via_leaderboard = ?")
+        params.append(1 if updates["auto_canonical_via_leaderboard"] else 0)
+    if "min_completed_runs_for_canonical" in updates:
+        try:
+            threshold = int(updates["min_completed_runs_for_canonical"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "min_completed_runs_for_canonical must be an integer"
+            ) from exc
+        if threshold < 0:
+            raise ValueError(
+                "min_completed_runs_for_canonical must be >= 0"
+            )
+        sets.append("min_completed_runs_for_canonical = ?")
+        params.append(threshold)
+    # DESIGN-008 — selector branch_version pointer. Storage helpers
+    # do NOT enforce active-version validation here; the dedicated
+    # set_selector_branch() helper does. update_goal accepts the
+    # field for host scripts / migration backfill that bypass the
+    # MCP auth+validate path.
+    if "selector_branch_version_id" in updates:
+        bvid = updates["selector_branch_version_id"]
+        sets.append("selector_branch_version_id = ?")
+        params.append(bvid if bvid else None)
     params.append(goal_id)
     with _connect(base_path) as conn:
         conn.execute(
@@ -2541,19 +2630,39 @@ def set_canonical_branch(
     canonical_branch_history before the new value is written.
     Raises KeyError if goal_id not found.
     Raises ValueError if branch_version_id is provided but does not exist
-        in branch_versions table (not a published version).
+        in branch_versions table (not a published version), OR if the
+        supplied version's status is not 'active' (PR-127 round 2 P1.1
+        defense-in-depth — rolled_back / superseded versions cannot be
+        promoted to canonical even if a caller bypasses the auto-refresh
+        filter in :func:`workflow.api.canonical_dispatch._latest_published_version_id`).
     """
     initialize_author_server(base_path)
     now = _now()
     goal = get_goal(base_path, goal_id=goal_id)
 
     if branch_version_id is not None:
-        # Validate that it's a real published version.
+        # Validate that it's a real published version AND that it has
+        # not been rolled back / superseded. The active-only check is
+        # the round-2 P1.1 defense-in-depth: the auto-refresh path
+        # already filters via `_latest_published_version_id`, but a
+        # second guard at the write site means a rolled-back version
+        # cannot become canonical via any code path (manual MCP call,
+        # auto-refresh bug, host script, etc.).
         from workflow.branch_versions import get_branch_version
-        if get_branch_version(base_path, branch_version_id) is None:
+        version = get_branch_version(base_path, branch_version_id)
+        if version is None:
             raise ValueError(
                 f"branch_version_id {branch_version_id!r} not found "
                 "in branch_versions — only published versions may be canonical."
+            )
+        version_status = getattr(version, "status", "active") or "active"
+        if version_status != "active":
+            raise ValueError(
+                f"branch_version_id {branch_version_id!r} has "
+                f"status={version_status!r}; only versions with "
+                "status='active' may be promoted to canonical. "
+                "Re-publish a fresh version or restore the rolled-back "
+                "one before retrying."
             )
 
     # Build history entry for previous canonical (if any).
@@ -2655,6 +2764,23 @@ def list_goals(
     return results
 
 
+_GOAL_SEARCH_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _goal_search_tokens(value: str) -> list[str]:
+    """Return lowercase alphanumeric query tokens for goal search."""
+    return _GOAL_SEARCH_TOKEN_RE.findall(value.lower())
+
+
+def _goal_search_haystack(goal: dict[str, Any]) -> str:
+    fields = [
+        goal.get("name") or "",
+        goal.get("description") or "",
+        " ".join(goal.get("tags") or []),
+    ]
+    return " ".join(_goal_search_tokens(" ".join(fields)))
+
+
 def search_goals(
     base_path: str | Path,
     *,
@@ -2673,7 +2799,7 @@ def search_goals(
     Hidden Goals (visibility='deleted') are excluded.
     """
     initialize_author_server(base_path)
-    tokens = [t for t in (query or "").lower().split() if t]
+    tokens = _goal_search_tokens(query or "")
     if not tokens:
         return []
 
@@ -2687,11 +2813,7 @@ def search_goals(
         scored: list[tuple[int, dict[str, Any]]] = []
         for row in all_rows:
             g = _goal_from_row(row)
-            haystack = " ".join([
-                (g.get("name") or "").lower(),
-                (g.get("description") or "").lower(),
-                " ".join(g.get("tags") or []).lower(),
-            ])
+            haystack = _goal_search_haystack(g)
             hit_count = sum(1 for t in tokens if t in haystack)
             if hit_count > 0:
                 scored.append((hit_count, g))
@@ -2716,6 +2838,168 @@ def delete_goal(
     return update_goal(
         base_path, goal_id=goal_id, updates={"visibility": "deleted"},
     )
+
+
+class SelectorHasEffectsError(ValueError):
+    """Raised when a selector branch is not pure / read-only.
+
+    DESIGN-008 round-2/3 purity guard: selector branches run on every
+    leaderboard read (``quality_leaderboard`` /
+    ``recommend_parent_for_fork``). The substrate forbids any selector
+    branch that could trigger external writes, including transitively:
+
+    * **Round 2 P1.3** — node declares non-empty ``effects``
+      (e.g. ``github_pull_request``). Each read would fire the
+      effector directly.
+    * **Round 3 P1.B** — node declares ``invoke_branch_spec`` or
+      ``invoke_branch_version_spec``. The child run executes through
+      the normal graph path, and child completion fires the child's
+      effectors — bypassing the direct-effects scan. Worse,
+      ``invoke_branch_spec`` resolves at run time against a live
+      ``branch_def_id`` that the operator can mutate AFTER bind, so
+      transitive scanning at bind time is not a reliable safeguard.
+      Reject child-invocation nodes outright; a pure selector is a
+      single graph.
+
+    Bind-time rejection is the loud + early gate. The single error
+    type covers both classes because the failure mode is the same:
+    "read became a write."
+    """
+
+
+def set_selector_branch(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    branch_version_id: str | None,
+    set_by: str,
+) -> dict[str, Any]:
+    """Bind (or unbind) the selector branch_version for a Goal.
+
+    DESIGN-008 — user-buildable selector primitive. The selector
+    branch is the published Workflow branch that synthesizes the
+    Goal's leaderboard rankings. ``branch_version_id=None`` unsets
+    the binding, falling back to the platform default selector.
+
+    Authority: the caller must enforce "only Goal author or host"
+    before calling this; the helper does NOT re-check authority
+    (matches the contract of ``set_canonical_branch``).
+
+    Raises
+    ------
+    KeyError
+        ``goal_id`` is not in the goals table.
+    ValueError
+        ``branch_version_id`` is provided but the version row does
+        not exist in ``branch_versions`` OR its status is not
+        ``'active'`` (defense in depth — rolled-back / superseded
+        versions cannot be promoted to selector, mirroring the
+        PR-127 round-2 P1.1 contract on ``set_canonical_branch``).
+    SelectorHasEffectsError
+        ``branch_version_id`` is provided but the snapshot contains
+        a node with non-empty ``effects`` (DESIGN-008 round-2 P1.3).
+        Reads must not silently fire external writes.
+    """
+    initialize_author_server(base_path)
+    now = _now()
+    # Validate goal exists — get_goal raises KeyError when missing.
+    # Authority enforcement is the caller's responsibility (see docstring).
+    get_goal(base_path, goal_id=goal_id)
+
+    if branch_version_id is not None:
+        from workflow.branch_versions import get_branch_version
+        version = get_branch_version(base_path, branch_version_id)
+        if version is None:
+            raise ValueError(
+                f"branch_version_id {branch_version_id!r} not found in "
+                "branch_versions — only published versions may be "
+                "selector branches."
+            )
+        version_status = getattr(version, "status", "active") or "active"
+        if version_status != "active":
+            raise ValueError(
+                f"branch_version_id {branch_version_id!r} has "
+                f"status={version_status!r}; only versions with "
+                "status='active' may be promoted to selector."
+            )
+        # Selector purity scan (rounds 2 + 3). Selector branches run
+        # on every leaderboard read; the substrate forbids ANY shape
+        # that could result in a real external write, directly or
+        # transitively.
+        node_defs = (version.snapshot or {}).get("node_defs") or []
+        # P1.3 (round 2) — direct effects declarations.
+        effectful: list[str] = []
+        # P1.B (round 3) — child-branch invocation specs. A node with
+        # invoke_branch_spec / invoke_branch_version_spec spawns a
+        # child run; the child's normal completion path fires its
+        # OWN effectors, bypassing the direct-effects scan above.
+        # ``invoke_branch_spec`` resolves at run time against a live
+        # branch_def_id that operators can mutate AFTER bind, so
+        # transitive scanning of the bind-time graph is not reliable.
+        # Reject child-invocation outright — selectors must be a
+        # single graph.
+        child_invokers: list[str] = []
+        for nd in node_defs:
+            if not isinstance(nd, dict):
+                continue
+            node_id = nd.get("node_id") or "(unnamed)"
+            effects = nd.get("effects") or []
+            if effects:
+                effectful.append(f"{node_id}:{list(effects)}")
+            ibs = nd.get("invoke_branch_spec")
+            if ibs:
+                target = ""
+                if isinstance(ibs, dict):
+                    target = ibs.get("branch_def_id") or ""
+                child_invokers.append(
+                    f"{node_id}:invoke_branch_spec"
+                    + (f"({target})" if target else "")
+                )
+            ivs = nd.get("invoke_branch_version_spec")
+            if ivs:
+                target = ""
+                if isinstance(ivs, dict):
+                    target = ivs.get("branch_version_id") or ""
+                child_invokers.append(
+                    f"{node_id}:invoke_branch_version_spec"
+                    + (f"({target})" if target else "")
+                )
+        # Both classes route through the same error type because the
+        # failure mode is identical: "read became a write."
+        violations: list[str] = []
+        if effectful:
+            violations.append(
+                "declares external-write effects "
+                f"({', '.join(effectful)})"
+            )
+        if child_invokers:
+            violations.append(
+                "declares child-branch invocation "
+                f"({', '.join(child_invokers)})"
+            )
+        if violations:
+            raise SelectorHasEffectsError(
+                f"branch_version_id {branch_version_id!r} cannot be "
+                "bound as a selector: selector branches run on every "
+                "leaderboard read and MUST be pure (no external "
+                "writes, no child-branch invocation). Violations: "
+                + "; ".join(violations)
+                + ". Remove the offending fields on those nodes (or "
+                "fork into a pure selector branch) before binding. "
+                "If you need rich ranking that requires running other "
+                "graphs, build a selector that emits a recommendation "
+                "and let a separate Goal / canonical handler perform "
+                "the side-effecting work."
+            )
+
+    with _connect(base_path) as conn:
+        conn.execute(
+            "UPDATE goals SET selector_branch_version_id = ?, "
+            "    updated_at = ? "
+            "WHERE goal_id = ?",
+            (branch_version_id, now, goal_id),
+        )
+    return get_goal(base_path, goal_id=goal_id)
 
 
 def branches_for_goal(
@@ -2747,6 +3031,172 @@ def branches_for_goal(
         viewer=viewer,
         include_private=include_private,
     )[:max(1, int(limit))]
+
+
+def _branch_feature_tokens(branch: dict[str, Any]) -> set[str]:
+    """Return coarse feature tokens for parent diversity ranking."""
+    fields: list[str] = [
+        branch.get("name") or "",
+        branch.get("description") or "",
+        branch.get("author") or "",
+        " ".join(branch.get("tags") or []),
+    ]
+    for node in branch.get("node_defs") or []:
+        if not isinstance(node, dict):
+            continue
+        fields.extend([
+            node.get("node_id") or "",
+            node.get("display_name") or "",
+        ])
+    return set(_goal_search_tokens(" ".join(fields)))
+
+
+def _branch_quality_score(branch: dict[str, Any]) -> float:
+    stats = branch.get("stats") or {}
+    try:
+        score = float(stats.get("avg_quality_score", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        score = 0.0
+    return max(0.0, min(1.0, score))
+
+
+def _feature_distance(tokens: set[str], selected: list[set[str]]) -> float:
+    if not selected:
+        return 1.0
+    if not tokens:
+        return 0.0
+    max_similarity = 0.0
+    for other in selected:
+        if not other:
+            continue
+        union = tokens | other
+        if not union:
+            continue
+        max_similarity = max(max_similarity, len(tokens & other) / len(union))
+    return max(0.0, min(1.0, 1.0 - max_similarity))
+
+
+def goal_archive_consultation(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    query: str = "",
+    limit: int = 20,
+    viewer: str = "",
+) -> dict[str, Any]:
+    """Rank Goal-bound Branches as fork parents with gate outcome signal."""
+    branches = branches_for_goal(
+        base_path,
+        goal_id=goal_id,
+        limit=500,
+        viewer=viewer,
+    )
+    query_tokens = set(_goal_search_tokens(query or ""))
+    outcome_entries = gates_leaderboard(
+        base_path,
+        goal_id=goal_id,
+        limit=500,
+    )
+    outcome_by_branch = {
+        entry["branch_def_id"]: entry
+        for entry in outcome_entries
+        if entry.get("branch_def_id")
+    }
+    ladder_len = len(get_goal_ladder(base_path, goal_id=goal_id))
+    max_rung_index = max(0, ladder_len - 1)
+
+    pool: list[dict[str, Any]] = []
+    for branch in branches:
+        feature_tokens = _branch_feature_tokens(branch)
+        if query_tokens and not (query_tokens & feature_tokens):
+            continue
+        outcome = outcome_by_branch.get(branch["branch_def_id"], {})
+        try:
+            rung_index = int(outcome.get("highest_rung_index", -1))
+        except (TypeError, ValueError):
+            rung_index = -1
+        outcome_score = (
+            max(0.0, min(1.0, rung_index / max_rung_index))
+            if max_rung_index > 0 else 0.0
+        )
+        pool.append({
+            "branch": branch,
+            "feature_tokens": feature_tokens,
+            "quality_score": _branch_quality_score(branch),
+            "outcome_score": outcome_score,
+            "outcome_signal": {
+                "highest_rung_key": outcome.get("highest_rung_key", ""),
+                "highest_rung_index": rung_index,
+                "claimed_at": outcome.get("claimed_at", ""),
+                "evidence_url": outcome.get("evidence_url", ""),
+            },
+        })
+
+    selected_tokens: list[set[str]] = []
+    ranked: list[dict[str, Any]] = []
+    remaining = pool[:]
+    while remaining and len(ranked) < max(1, int(limit)):
+        best_index = 0
+        best_payload: dict[str, Any] | None = None
+        for index, item in enumerate(remaining):
+            diversity = _feature_distance(item["feature_tokens"], selected_tokens)
+            score = (
+                0.4 * item["quality_score"]
+                + 0.4 * item["outcome_score"]
+                + 0.2 * diversity
+            )
+            payload = {
+                **item["branch"],
+                "quality_score": round(item["quality_score"], 3),
+                "outcome_score": round(item["outcome_score"], 3),
+                "diversity_score": round(diversity, 3),
+                "parent_rank_score": round(score, 3),
+                "outcome_signal": item["outcome_signal"],
+                "selection_basis": (
+                    "0.4 quality + 0.4 gate leaderboard outcome + "
+                    "0.2 diversity"
+                ),
+            }
+            if best_payload is None:
+                best_index = index
+                best_payload = payload
+                continue
+            current_key = (
+                payload["parent_rank_score"],
+                payload["outcome_score"],
+                payload["quality_score"],
+                payload.get("updated_at") or "",
+                payload.get("branch_def_id") or "",
+            )
+            best_key = (
+                best_payload["parent_rank_score"],
+                best_payload["outcome_score"],
+                best_payload["quality_score"],
+                best_payload.get("updated_at") or "",
+                best_payload.get("branch_def_id") or "",
+            )
+            if current_key > best_key:
+                best_index = index
+                best_payload = payload
+        chosen = remaining.pop(best_index)
+        selected_tokens.append(chosen["feature_tokens"])
+        if best_payload is not None:
+            best_payload["rank"] = len(ranked) + 1
+            ranked.append(best_payload)
+
+    visible_ids = {entry["branch_def_id"] for entry in ranked}
+    visible_outcomes = [
+        entry for entry in outcome_entries
+        if entry.get("branch_def_id") in visible_ids
+    ]
+    return {
+        "candidates": ranked,
+        "outcome_leaderboard": visible_outcomes,
+        "selection_basis": (
+            "parent candidates ranked by quality, gates leaderboard "
+            "outcome, and diversity"
+        ),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════

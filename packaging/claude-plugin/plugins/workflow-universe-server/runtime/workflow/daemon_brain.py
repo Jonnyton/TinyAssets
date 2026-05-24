@@ -20,25 +20,42 @@ from typing import Any
 SCHEMA_VERSION = 1
 DEFAULT_BRAIN_PACKET_CHARS = 1600
 
-VALID_MEMORY_KINDS = {
-    "semantic",
-    "episodic",
-    "procedural",
-    "policy",
-    "claim",
-    "preference",
-    "failure_mode",
-    "open_loop",
-    "contradiction",
-    "soul_proposal",
+MEMORY_KIND_REGISTRY = {
+    "semantic": "Stable facts, concepts, and durable domain knowledge.",
+    "episodic": "Specific observed events, runs, and source episodes.",
+    "procedural": "How-to knowledge, repeatable workflows, and operating steps.",
+    "policy": "Rules, constraints, and decision policies the daemon should follow.",
+    "claim": "A checkable assertion that may need provenance or later revision.",
+    "preference": "Host, user, or role preferences that steer behavior.",
+    "failure_mode": "Known ways work fails and the guardrails that prevent repeats.",
+    "open_loop": "Unresolved follow-up, watch item, or incomplete learning thread.",
+    "contradiction": "Conflicting claims or evidence that require reconciliation.",
+    "soul_proposal": "Candidate change to the daemon's identity or role contract.",
+    "session_trace_summary": "Reviewed narrative summary of one session (run/mission/cadence); references raw artifacts, not raw payloads.",
+    "experience_lesson": "Typed lesson learned from one run; carries lineage, lesson_kind, observed_delta, and evidence_refs. Atom of cross-branch group evolution.",
 }
-VALID_PROMOTION_STATES = {
-    "candidate",
-    "accepted",
-    "promoted",
-    "superseded",
-    "rejected",
+VALID_MEMORY_KINDS = frozenset(MEMORY_KIND_REGISTRY)
+DEFAULT_MEMORY_KIND = "semantic"
+
+PROMOTION_STATE_REGISTRY = {
+    "candidate": "Captured but not yet reviewed.",
+    "accepted": "Reviewed as useful and eligible for prompt retrieval or promotion.",
+    "promoted": "Curated into the daemon wiki face.",
+    "superseded": "Replaced by a newer entry; retained for audit history.",
+    "rejected": "Reviewed and rejected; retained for audit history.",
 }
+VALID_PROMOTION_STATES = frozenset(PROMOTION_STATE_REGISTRY)
+DEFAULT_PROMOTION_STATE = "candidate"
+PROMOTION_TRANSITIONS = {
+    "candidate": frozenset({"accepted", "promoted", "rejected", "superseded"}),
+    "accepted": frozenset({"promoted", "rejected", "superseded"}),
+    "promoted": frozenset({"superseded"}),
+    "rejected": frozenset(),
+    "superseded": frozenset(),
+}
+TERMINAL_PROMOTION_STATES = frozenset(
+    state for state, targets in PROMOTION_TRANSITIONS.items() if not targets
+)
 VALID_VISIBILITIES = {
     "host_private",
     "borrowable_role_context",
@@ -178,6 +195,24 @@ def _json_loads(value: str, default: Any) -> Any:
         return default
 
 
+def _estimate_tokens(value: Any) -> int:
+    """Cheap deterministic token estimate for read-only cost surfaces."""
+    return max(0, len(str(value or "")) // 4)
+
+
+def _connect_existing_read_only(base_path: str | Path) -> sqlite3.Connection | None:
+    db_path = daemon_brain_db_path(base_path)
+    if not db_path.exists():
+        return None
+    conn = sqlite3.connect(
+        f"file:{db_path.as_posix()}?mode=ro",
+        timeout=30.0,
+        uri=True,
+    )
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _clean_content(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
@@ -211,6 +246,42 @@ def _validate_choice(value: str, choices: set[str], field: str) -> str:
     if normalized not in choices:
         raise ValueError(f"{field} must be one of {sorted(choices)}")
     return normalized
+
+
+def _validate_promotion_transition(current_state: str, next_state: str) -> None:
+    current = _validate_choice(
+        current_state,
+        VALID_PROMOTION_STATES,
+        "current promotion_state",
+    )
+    target = _validate_choice(next_state, VALID_PROMOTION_STATES, "promotion_state")
+    if current == target:
+        return
+    if target not in PROMOTION_TRANSITIONS[current]:
+        raise ValueError(
+            f"cannot transition promotion_state from {current} to {target}"
+        )
+
+
+def daemon_memory_registry() -> dict[str, Any]:
+    """Return daemon mini-brain memory kinds and promotion lifecycle metadata."""
+    return {
+        "memory_kinds": [
+            {"kind": kind, "description": MEMORY_KIND_REGISTRY[kind]}
+            for kind in sorted(MEMORY_KIND_REGISTRY)
+        ],
+        "default_memory_kind": DEFAULT_MEMORY_KIND,
+        "promotion_states": [
+            {"state": state, "description": PROMOTION_STATE_REGISTRY[state]}
+            for state in sorted(PROMOTION_STATE_REGISTRY)
+        ],
+        "default_promotion_state": DEFAULT_PROMOTION_STATE,
+        "promotion_transitions": {
+            state: sorted(targets)
+            for state, targets in sorted(PROMOTION_TRANSITIONS.items())
+        },
+        "terminal_promotion_states": sorted(TERMINAL_PROMOTION_STATES),
+    }
 
 
 def _require_text(value: str, field: str) -> str:
@@ -363,7 +434,7 @@ def capture_daemon_memory(
     *,
     daemon_id: str,
     content: str,
-    memory_kind: str = "semantic",
+    memory_kind: str = DEFAULT_MEMORY_KIND,
     source_type: str = "manual",
     source_id: str = "manual",
     source_path: str = "",
@@ -375,7 +446,7 @@ def capture_daemon_memory(
     importance: float = 0.5,
     sensitivity_tier: str = "normal",
     visibility: str = "host_private",
-    promotion_state: str = "candidate",
+    promotion_state: str = DEFAULT_PROMOTION_STATE,
     supersedes_entry_id: str | None = None,
     metadata: dict[str, Any] | None = None,
     embedding: Sequence[float] | None = None,
@@ -890,6 +961,90 @@ def list_daemon_memory(
     }
 
 
+def read_daemon_brain_dispatch_hints(
+    base_path: str | Path,
+    *,
+    daemon_id: str,
+    query: str = "",
+    limit: int = 3,
+) -> dict[str, Any]:
+    """Read open mini-brain entries for dispatch scoring without writes.
+
+    This is intentionally narrower than ``search_daemon_memory``: it opens the
+    brain database read-only when present and does not record query/retrieval
+    events. Dispatch can use the result as advisory context, but this function
+    never claims work, mutates memory, or exposes a write surface.
+    """
+    _validate_daemon(base_path, daemon_id)
+    bounded_limit = max(0, min(20, int(limit)))
+    db_path = daemon_brain_db_path(base_path)
+    if bounded_limit == 0 or not db_path.exists():
+        return {
+            "daemon_id": daemon_id,
+            "host_local": True,
+            "query": str(query or "").strip(),
+            "count": 0,
+            "entries": [],
+            "read_only": True,
+        }
+
+    clean_query = str(query or "").strip()
+    tokens = _tokens(clean_query)
+    like_sql = ""
+    like_params: list[str] = []
+    if tokens:
+        like_sql = " AND (" + " OR ".join("LOWER(content) LIKE ?" for _ in tokens) + ")"
+        like_params = [f"%{token}%" for token in tokens]
+
+    uri = f"file:{db_path.as_posix()}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.OperationalError:
+        return {
+            "daemon_id": daemon_id,
+            "host_local": True,
+            "query": clean_query,
+            "count": 0,
+            "entries": [],
+            "read_only": True,
+        }
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM daemon_brain_entries
+            WHERE daemon_id = ?
+                AND visibility IN ('borrowable_role_context', 'published')
+                AND promotion_state IN ('accepted', 'promoted')
+                AND memory_kind IN ('policy', 'preference', 'failure_mode', 'claim')
+                {like_sql}
+            ORDER BY importance DESC, updated_at DESC
+            LIMIT ?
+            """,
+            [daemon_id, *like_params, bounded_limit],
+        ).fetchall()
+    finally:
+        conn.close()
+    entries = []
+    token_count = max(1, len(tokens))
+    for row in rows:
+        entry = _row_to_entry(row)
+        content = str(entry["content"]).lower()
+        hits = sum(1 for token in tokens if token in content)
+        entry["retrieval_score"] = hits / token_count if tokens else entry["importance"]
+        entry["retrieval_source"] = "dispatch_read_only"
+        entries.append(entry)
+    return {
+        "daemon_id": daemon_id,
+        "host_local": True,
+        "query": clean_query,
+        "count": len(entries),
+        "entries": entries,
+        "read_only": True,
+    }
+
+
 def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
@@ -1166,6 +1321,8 @@ def promote_daemon_memory_to_wiki(
         missing = [entry_id for entry_id in clean_ids if entry_id not in found]
         if missing:
             raise ValueError(f"entries not found for daemon: {', '.join(missing)}")
+        for entry in entries:
+            _validate_promotion_transition(entry["promotion_state"], "promoted")
         conn.execute(
             f"""
             UPDATE daemon_brain_entries
@@ -1334,6 +1491,7 @@ def review_daemon_memory(
                 raise ValueError("superseded_by_entry_id not found for daemon")
         else:
             replacement_id = None
+        _validate_promotion_transition(entry["promotion_state"], state)
 
         entry_metadata = dict(entry.get("metadata") or {})
         review_record = {
@@ -1453,4 +1611,214 @@ def memory_observability_status(
         "promotion_states": states,
         "event_types": events,
         "candidate_backlog": int(states.get("candidate", 0) + states.get("accepted", 0)),
+        "registry": daemon_memory_registry(),
+        "cost_ledger": daemon_memory_cost_ledger_status(
+            base_path,
+            daemon_id=daemon_id,
+            recent_limit=5,
+        ),
+    }
+
+
+def _daemon_cost_ledger_from_conn(
+    conn: sqlite3.Connection,
+    *,
+    daemon_id: str,
+    recent_limit: int,
+) -> dict[str, Any]:
+    entry_rows = conn.execute(
+        """
+        SELECT memory_kind, content, metadata_json, temporal_bounds_json,
+               source_type, source_id
+        FROM daemon_brain_entries
+        WHERE daemon_id = ?
+        """,
+        (daemon_id,),
+    ).fetchall()
+    event_rows = conn.execute(
+        """
+        SELECT event_id, event_type, source_type, source_id, query_text,
+               entry_ids_json, metadata_json, created_at
+        FROM daemon_memory_events
+        WHERE daemon_id = ?
+        ORDER BY created_at DESC, event_id DESC
+        """,
+        (daemon_id,),
+    ).fetchall()
+
+    entry_tokens = 0
+    tokens_by_kind: dict[str, int] = {}
+    entries_by_kind: dict[str, int] = {}
+    for row in entry_rows:
+        kind = str(row["memory_kind"])
+        estimate = (
+            _estimate_tokens(row["content"])
+            + _estimate_tokens(row["metadata_json"])
+            + _estimate_tokens(row["temporal_bounds_json"])
+            + _estimate_tokens(row["source_type"])
+            + _estimate_tokens(row["source_id"])
+        )
+        entry_tokens += estimate
+        tokens_by_kind[kind] = tokens_by_kind.get(kind, 0) + estimate
+        entries_by_kind[kind] = entries_by_kind.get(kind, 0) + 1
+
+    event_tokens = 0
+    tokens_by_event_type: dict[str, int] = {}
+    events_by_type: dict[str, int] = {}
+    recent_events: list[dict[str, Any]] = []
+    for idx, row in enumerate(event_rows):
+        event_type = str(row["event_type"])
+        estimate = (
+            _estimate_tokens(row["query_text"])
+            + _estimate_tokens(row["metadata_json"])
+            + _estimate_tokens(row["entry_ids_json"])
+            + _estimate_tokens(row["source_type"])
+            + _estimate_tokens(row["source_id"])
+        )
+        event_tokens += estimate
+        tokens_by_event_type[event_type] = (
+            tokens_by_event_type.get(event_type, 0) + estimate
+        )
+        events_by_type[event_type] = events_by_type.get(event_type, 0) + 1
+        if idx < recent_limit:
+            entry_ids = _json_loads(row["entry_ids_json"], [])
+            recent_events.append({
+                "event_id": row["event_id"],
+                "event_type": event_type,
+                "created_at": row["created_at"],
+                "source_type": row["source_type"],
+                "source_id": row["source_id"],
+                "entry_count": len(entry_ids) if isinstance(entry_ids, list) else 0,
+                "estimated_tokens": estimate,
+            })
+
+    return {
+        "daemon_id": daemon_id,
+        "schema_version": SCHEMA_VERSION,
+        "read_only": True,
+        "entry_count": len(entry_rows),
+        "event_count": len(event_rows),
+        "estimated_entry_tokens": entry_tokens,
+        "estimated_event_tokens": event_tokens,
+        "estimated_total_tokens": entry_tokens + event_tokens,
+        "entries_by_kind": entries_by_kind,
+        "estimated_tokens_by_kind": tokens_by_kind,
+        "events_by_type": events_by_type,
+        "estimated_tokens_by_event_type": tokens_by_event_type,
+        "recent_events": recent_events,
+    }
+
+
+def daemon_memory_cost_ledger_status(
+    base_path: str | Path,
+    *,
+    daemon_id: str,
+    recent_limit: int = 5,
+) -> dict[str, Any]:
+    """Return a read-only estimated-cost ledger for one daemon brain.
+
+    This derives cost from existing daemon brain entries and memory events. It
+    never writes rows and never makes autonomous retention/promotion decisions.
+    """
+    limit = max(0, min(int(recent_limit), 20))
+    conn = _connect_existing_read_only(base_path)
+    if conn is None:
+        return {
+            "daemon_id": daemon_id,
+            "schema_version": SCHEMA_VERSION,
+            "read_only": True,
+            "ledger_available": False,
+            "reason": "daemon_brain_db_missing",
+            "entry_count": 0,
+            "event_count": 0,
+            "estimated_total_tokens": 0,
+            "recent_events": [],
+        }
+    try:
+        out = _daemon_cost_ledger_from_conn(
+            conn,
+            daemon_id=daemon_id,
+            recent_limit=limit,
+        )
+    finally:
+        conn.close()
+    out["ledger_available"] = True
+    return out
+
+
+def open_brain_status_surface(
+    base_path: str | Path,
+    *,
+    recent_limit: int = 3,
+    daemon_limit: int = 10,
+) -> dict[str, Any]:
+    """Compact read-only daemon brain status for public status probes."""
+    from workflow.storage import db_path
+
+    author_db = db_path(base_path)
+    if not author_db.exists():
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "read_only": True,
+            "daemon_count": 0,
+            "daemons": [],
+            "warnings": ["daemon_registry_db_missing"],
+        }
+
+    conn = sqlite3.connect(
+        f"file:{author_db.as_posix()}?mode=ro",
+        timeout=30.0,
+        uri=True,
+    )
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT author_id, display_name, soul_text, metadata_json
+            FROM author_definitions
+            ORDER BY created_at, author_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    daemons: list[dict[str, Any]] = []
+    for row in rows:
+        metadata = _json_loads(row["metadata_json"], {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        soul_mode = str(metadata.get("daemon_soul_mode") or "").strip()
+        if soul_mode != "soul":
+            continue
+        author_id = str(row["author_id"])
+        daemon_id = (
+            "daemon::" + author_id[len("author::"):]
+            if author_id.startswith("author::")
+            else author_id
+        )
+        daemons.append({
+            "daemon_id": daemon_id,
+            "display_name": str(row["display_name"]),
+            "has_soul": True,
+        })
+    out_daemons: list[dict[str, Any]] = []
+    for daemon in daemons[: max(0, int(daemon_limit))]:
+        ledger = daemon_memory_cost_ledger_status(
+            base_path,
+            daemon_id=str(daemon["daemon_id"]),
+            recent_limit=recent_limit,
+        )
+        out_daemons.append({
+            "daemon_id": daemon["daemon_id"],
+            "display_name": daemon["display_name"],
+            "has_soul": daemon["has_soul"],
+            "cost_ledger": ledger,
+        })
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "read_only": True,
+        "daemon_count": len(daemons),
+        "returned_daemon_count": len(out_daemons),
+        "daemons": out_daemons,
+        "warnings": [],
     }

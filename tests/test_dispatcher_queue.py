@@ -49,6 +49,7 @@ from workflow.dispatcher import (
     load_dispatcher_config,
     score_task,
     select_next_task,
+    soul_guided_dispatch_read,
 )
 
 # ───────────────────────────────────────────────────────────────────────
@@ -255,6 +256,120 @@ def test_dispatcher_determinism(universe_dir):
 def test_select_next_empty_queue_returns_none(universe_dir):
     cfg = DispatcherConfig()
     assert select_next_task(universe_dir, config=cfg) is None
+
+
+def test_select_next_skips_tasks_directed_to_other_daemon(tmp_path):
+    from workflow import daemon_registry
+
+    universe = tmp_path / "test-universe"
+    universe.mkdir()
+    mine = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="My Patch Daemon",
+        created_by="host",
+        soul_text="Prefer Workflow patch requests.",
+    )
+    other = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Other Patch Daemon",
+        created_by="host",
+        soul_text="Prefer unrelated patch requests.",
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    directed_elsewhere = BranchTask(
+        branch_task_id="bt-directed-other",
+        branch_def_id="fantasy_author:universe_cycle_wrapper",
+        universe_id="test-universe",
+        trigger_source="owner_queued",
+        queued_at=now,
+        directed_daemon_id=other["daemon_id"],
+    )
+    open_task = BranchTask(
+        branch_task_id="bt-open",
+        branch_def_id="fantasy_author:universe_cycle_wrapper",
+        universe_id="test-universe",
+        trigger_source="user_request",
+        queued_at=now,
+    )
+    append_task(universe, directed_elsewhere)
+    append_task(universe, open_task)
+
+    selected = select_next_task(
+        universe,
+        config=DispatcherConfig(active_daemon_id=mine["daemon_id"]),
+        now_iso=now,
+    )
+
+    assert selected is not None
+    assert selected.branch_task_id == "bt-open"
+
+
+def test_soul_guided_dispatch_read_boosts_matching_open_brain_task(tmp_path):
+    from workflow import daemon_registry
+    from workflow.daemon_brain import capture_daemon_memory
+
+    universe = tmp_path / "test-universe"
+    universe.mkdir()
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Workflow Dispatch Daemon",
+        created_by="host",
+        soul_text="Prefer Workflow dispatch and verified patch work.",
+        domain_claims=["workflow-platform"],
+    )
+    memory = capture_daemon_memory(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        memory_kind="preference",
+        content="Prefer workflow-platform dispatch patches with narrow tests.",
+        source_type="manual",
+        source_id="pytest",
+        reliability="host_observed",
+        language_type="policy",
+        importance=0.9,
+        visibility="published",
+        promotion_state="accepted",
+    )
+    matching = BranchTask(
+        branch_task_id="bt-workflow",
+        branch_def_id="fantasy_author:universe_cycle_wrapper",
+        universe_id="test-universe",
+        inputs={"text": "Fix workflow-platform dispatch scoring."},
+        trigger_source="user_request",
+        queued_at="2026-05-17T00:00:00+00:00",
+    )
+    unrelated = BranchTask(
+        branch_task_id="bt-other",
+        branch_def_id="fantasy_author:universe_cycle_wrapper",
+        universe_id="test-universe",
+        inputs={"text": "Write a recipe tracker note."},
+        trigger_source="user_request",
+        queued_at="2026-05-17T00:00:00+00:00",
+    )
+    append_task(universe, unrelated)
+    append_task(universe, matching)
+
+    guidance = soul_guided_dispatch_read(
+        universe,
+        task=matching,
+        active_daemon_id=daemon["daemon_id"],
+        coefficient=1.0,
+    )
+    selected = select_next_task(
+        universe,
+        config=DispatcherConfig(
+            active_daemon_id=daemon["daemon_id"],
+            soul_affinity_coefficient=1.0,
+        ),
+        now_iso="2026-05-17T00:00:00+00:00",
+    )
+
+    assert guidance["read_only"] is True
+    assert guidance["domain_claim_hits"] == ["workflow-platform"]
+    assert guidance["brain_entry_ids"] == [memory["entry_id"]]
+    assert guidance["score_adjustment"] > 0
+    assert selected is not None
+    assert selected.branch_task_id == "bt-workflow"
 
 
 # ───────────────────────────────────────────────────────────────────────

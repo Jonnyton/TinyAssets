@@ -44,7 +44,7 @@ model we're trying to close.
 
 | File | Role |
 |------|------|
-| `scripts/secrets_keys.txt` | Canonical list of LOCAL keys (single source of truth). |
+| `scripts/secrets_keys.txt` | Canonical list of LOCAL keys (single source of truth), including `GH_TOKEN` for local/sandbox GitHub push flows. |
 | `scripts/load_secrets.sh` | Bash/POSIX loader. Pulls keys from vault into the calling shell via `source` or `--emit-exports`. |
 | `scripts/load_secrets.ps1` | PowerShell mirror. Dot-source to export. |
 | `scripts/migrate_secrets_to_vault.py` | One-shot migrator — reads `$HOME/workflow-secrets.env`, writes each key into the chosen vault. Idempotent. |
@@ -129,7 +129,7 @@ use this in production sessions once the vault works.
 
 ## Non-scope
 
-- **GitHub Actions secrets are unchanged.** CI uses `secrets.CLOUDFLARE_API_TOKEN` etc. directly from the GH repo settings. Those never touched the plaintext file and aren't in scope here.
+- **GitHub Actions secrets are unchanged.** CI uses `secrets.CLOUDFLARE_API_TOKEN` etc. directly from the GH repo settings. The local `GH_TOKEN` vault item is for operator/sandbox push sessions; GitHub Actions' built-in `GITHUB_TOKEN` stays CI-side and is not listed in `scripts/secrets_keys.txt`.
 - **Daemon-side `/etc/workflow/env`** on the Droplet is also unchanged.
   That's a systemd `EnvironmentFile=` mount, not a developer laptop.
 - **Shared-team vault** — the current design is per-operator. If/when

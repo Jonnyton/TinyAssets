@@ -62,6 +62,8 @@ class TestEnqueueInvestigationRequest:
         assert inputs["bug_id"] == "BUG-003"
         assert inputs["title"] == "null pointer"
         assert inputs["severity"] == "critical"
+        assert inputs["request_text"].startswith("bug BUG-003: null pointer")
+        assert "Severity: critical" in inputs["request_text"]
 
     def test_raises_if_no_branch_def_id(self, tmp_path, monkeypatch):
         monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
@@ -249,3 +251,319 @@ class TestBranchTaskRequestTypeField:
         queue_path(tmp_path).write_text(json.dumps([task_dict]), encoding="utf-8")
         queue = read_queue(tmp_path)
         assert queue[0].request_type == "branch_run"
+
+
+class TestBugInvestigationDirectRunRouting:
+    def test_bug_investigation_tasks_execute_through_direct_run_path(self):
+        from fantasy_daemon.__main__ import _should_execute_claimed_branch_directly
+
+        task = BranchTask(
+            branch_task_id="bt-bug",
+            branch_def_id="change-loop",
+            universe_id="u",
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        assert _should_execute_claimed_branch_directly(task) is True
+
+    def test_universe_cycle_wrapper_still_uses_wrapper_path(self):
+        from fantasy_daemon.__main__ import _should_execute_claimed_branch_directly
+
+        task = BranchTask(
+            branch_task_id="bt-wrapper",
+            branch_def_id="fantasy_author:universe_cycle_wrapper",
+            universe_id="u",
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        assert _should_execute_claimed_branch_directly(task) is False
+
+    def test_bug_investigation_direct_run_synthesizes_request_text_for_legacy_tasks(self):
+        from fantasy_daemon.__main__ import _branch_task_inputs_for_execution
+
+        task = BranchTask(
+            branch_task_id="bt-bug",
+            branch_def_id="change-loop",
+            universe_id="u",
+            inputs={"bug_id": "BUG-009", "title": "dispatcher pickup stalls"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        inputs = _branch_task_inputs_for_execution(task)
+
+        assert inputs["request_text"].startswith("bug BUG-009: dispatcher pickup stalls")
+
+    def test_bug_investigation_direct_run_preserves_existing_request_text(self):
+        from fantasy_daemon.__main__ import _branch_task_inputs_for_execution
+
+        task = BranchTask(
+            branch_task_id="bt-bug",
+            branch_def_id="change-loop",
+            universe_id="u",
+            inputs={"bug_id": "BUG-009", "request_text": "already normalized"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        inputs = _branch_task_inputs_for_execution(task)
+
+        assert inputs["request_text"] == "already normalized"
+
+    def test_branch_run_inputs_are_not_rewritten(self):
+        from fantasy_daemon.__main__ import _branch_task_inputs_for_execution
+
+        task = BranchTask(
+            branch_task_id="bt-branch",
+            branch_def_id="change-loop",
+            universe_id="u",
+            inputs={"bug_id": "BUG-009"},
+            request_type="branch_run",
+        )
+
+        inputs = _branch_task_inputs_for_execution(task)
+
+        assert inputs == {"bug_id": "BUG-009"}
+
+    def test_direct_run_reuses_completed_branch_task_run_after_restart(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import _try_execute_claimed_branch_task
+        from workflow.runs import (
+            RUN_STATUS_COMPLETED,
+            create_run,
+            update_run_status,
+        )
+
+        monkeypatch.setattr("workflow.storage.data_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "workflow.api.branches._resolve_branch_id",
+            lambda requested, base_path: "branch-1",
+        )
+        monkeypatch.setattr(
+            "workflow.daemon_server.get_branch_definition",
+            lambda base_path, branch_def_id: {"branch_def_id": branch_def_id},
+        )
+
+        class _Branch:
+            def validate(self):
+                return []
+
+        from workflow.branches import BranchDefinition
+        monkeypatch.setattr(
+            BranchDefinition,
+            "from_dict",
+            classmethod(lambda cls, data: _Branch()),
+        )
+
+        def _should_not_execute(*args, **kwargs):
+            raise AssertionError("completed durable run should be reused")
+
+        monkeypatch.setattr("workflow.runs.execute_branch", _should_not_execute)
+
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="branch-1",
+            thread_id="",
+            inputs={"bug_id": "BUG-011"},
+            run_name="branch-task-bt-restart",
+            actor="daemon-a",
+        )
+        update_run_status(
+            tmp_path,
+            run_id,
+            status=RUN_STATUS_COMPLETED,
+            output={"result": "already completed"},
+        )
+        task = BranchTask(
+            branch_task_id="bt-restart",
+            branch_def_id="branch-1",
+            universe_id="u",
+            inputs={"bug_id": "BUG-011"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        success, error, metadata = _try_execute_claimed_branch_task(
+            tmp_path, task, "daemon-a",
+        )
+
+        assert success is True
+        assert error == ""
+        assert metadata["run_id"] == run_id
+        assert metadata["run_status"] == RUN_STATUS_COMPLETED
+        assert metadata["reused_existing_run"] is True
+
+
+class TestBugInvestigationPatchPacketWriteBack:
+    def _make_bug_page(self, tmp_path):
+        bugs_dir = tmp_path / "pages" / "bugs"
+        bugs_dir.mkdir(parents=True)
+        page = bugs_dir / "bug-057-write-completed-loop-investigation.md"
+        page.write_text(
+            "---\nbug_id: BUG-057\ntitle: Write back investigation\n---\n\n"
+            "## Description\n\nInvestigation output should be visible on the request page.\n",
+            encoding="utf-8",
+        )
+        return page
+
+    def test_completed_bug_investigation_attaches_patch_packet_to_wiki(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import (
+            _maybe_attach_bug_investigation_patch_packet,
+        )
+
+        page = self._make_bug_page(tmp_path)
+        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        task = BranchTask(
+            branch_task_id="bt-bug",
+            branch_def_id="change-loop",
+            universe_id="u",
+            inputs={"bug_id": "BUG-057"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        result = _maybe_attach_bug_investigation_patch_packet(
+            task,
+            "completed",
+            {
+                "patch_packet": {
+                    "root_cause": "completed run output was never attached",
+                    "test_plan": "assert wiki page contains patch packet",
+                }
+            },
+        )
+
+        assert result["status"] == "attached"
+        written = page.read_text(encoding="utf-8")
+        assert "## Patch Packet" in written
+        assert "completed run output was never attached" in written
+
+    def test_non_completed_bug_investigation_does_not_attach_false_packet(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import (
+            _maybe_attach_bug_investigation_patch_packet,
+        )
+
+        page = self._make_bug_page(tmp_path)
+        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        task = BranchTask(
+            branch_task_id="bt-bug",
+            branch_def_id="change-loop",
+            universe_id="u",
+            inputs={"bug_id": "BUG-057"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        result = _maybe_attach_bug_investigation_patch_packet(
+            task,
+            "failed",
+            {"patch_packet": {"root_cause": "not proven"}},
+        )
+
+        assert result == {"status": "skipped", "reason": "run_status:failed"}
+        assert "## Patch Packet" not in page.read_text(encoding="utf-8")
+
+    def test_attaches_candidate_packet_from_attached_child_output(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import (
+            _maybe_attach_bug_investigation_patch_packet,
+        )
+
+        page = self._make_bug_page(tmp_path)
+        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        task = BranchTask(
+            branch_task_id="bt-bug",
+            branch_def_id="change-loop",
+            universe_id="u",
+            inputs={"bug_id": "BUG-057"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        result = _maybe_attach_bug_investigation_patch_packet(
+            task,
+            "completed",
+            {
+                "attached_child_output": {
+                    "candidate_patch_packet": {
+                        "implementation_sketch": "attach child packet output",
+                    }
+                }
+            },
+        )
+
+        assert result["status"] == "attached"
+        assert "attach child packet output" in page.read_text(encoding="utf-8")
+
+    def test_attaches_live_parent_child_candidate_packet_string(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import (
+            _maybe_attach_bug_investigation_patch_packet,
+        )
+
+        page = self._make_bug_page(tmp_path)
+        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        task = BranchTask(
+            branch_task_id="bt-bug",
+            branch_def_id="change-loop",
+            universe_id="u",
+            inputs={"bug_id": "BUG-057"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        result = _maybe_attach_bug_investigation_patch_packet(
+            task,
+            "completed",
+            {
+                "child_candidate_patch_packet": (
+                    "The patch packet is in "
+                    "[candidate_patch_packet.md](/tmp/workflow/candidate_patch_packet.md:1)."
+                ),
+                "child_run_id": "e12caa6629ff48d6",
+                "coding_packet": {
+                    "status": "CHILD_REVIEW_READY",
+                    "candidate_packet_summary": "freshness_scope_check before PR creation",
+                },
+            },
+        )
+
+        assert result["status"] == "attached"
+        written = page.read_text(encoding="utf-8")
+        assert "## Patch Packet" in written
+        assert "candidate_patch_packet.md" in written
+        assert "### Implementation Sketch" in written
+
+    def test_attaches_live_child_candidate_packet_string(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import (
+            _maybe_attach_bug_investigation_patch_packet,
+        )
+
+        page = self._make_bug_page(tmp_path)
+        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        task = BranchTask(
+            branch_task_id="bt-bug",
+            branch_def_id="change-loop",
+            universe_id="u",
+            inputs={"bug_id": "BUG-057"},
+            request_type=REQUEST_TYPE_BUG_INVESTIGATION,
+        )
+
+        result = _maybe_attach_bug_investigation_patch_packet(
+            task,
+            "completed",
+            {
+                "candidate_patch_packet": (
+                    "**candidate_patch_packet**\n\n"
+                    "`repo_availability_gate` blocks coding before source is present."
+                ),
+                "keep_reject_decision": "REVIEW_READY",
+            },
+        )
+
+        assert result["status"] == "attached"
+        written = page.read_text(encoding="utf-8")
+        assert "repo_availability_gate" in written
+        assert "### Implementation Sketch" in written

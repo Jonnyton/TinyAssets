@@ -77,6 +77,17 @@ def test_gates_tool_gated_by_flag(tmp_path, monkeypatch):
         importlib.reload(us)
 
 
+def test_gates_list_discovers_actions(gates_env):
+    us, _ = gates_env
+
+    result = _call(us, "gates", "list")
+
+    assert result["status"] == "ok"
+    assert result["tool"] == "gates"
+    assert "list" in result["available_actions"]
+    assert "list_claims" in result["available_actions"]
+
+
 # ─── define_ladder ─────────────────────────────────────────────────────
 
 

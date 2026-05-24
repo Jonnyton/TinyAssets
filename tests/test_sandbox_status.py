@@ -89,14 +89,31 @@ class TestProbeSandboxAvailable:
         assert result["bwrap_available"] is False
         assert "PATH" in str(result.get("reason", ""))
 
-    def test_bwrap_version_succeeds_returns_available(self, monkeypatch):
+    def test_bwrap_version_and_launch_succeed_returns_available(self, monkeypatch):
         monkeypatch.setattr("sys.platform", "linux")
-        mock_result = type("R", (), {"returncode": 0, "stderr": ""})()
+        version_result = type("R", (), {"returncode": 0, "stderr": "", "stdout": "bwrap 0.6.0"})()
+        launch_result = type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
         with patch("shutil.which", return_value="/usr/bin/bwrap"):
-            with patch("subprocess.run", return_value=mock_result):
+            with patch("subprocess.run", side_effect=[version_result, launch_result]) as run_mock:
                 result = probe_sandbox_available()
         assert result["bwrap_available"] is True
         assert result.get("reason") is None
+        assert run_mock.call_count == 2
+
+    def test_bwrap_launch_fails_returns_unavailable(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
+        version_result = type("R", (), {"returncode": 0, "stderr": "", "stdout": "bwrap 0.6.0"})()
+        launch_result = type("R", (), {
+            "returncode": 1,
+            "stderr": "bwrap: No permissions to create new namespace",
+            "stdout": "",
+        })()
+        with patch("shutil.which", return_value="/usr/bin/bwrap"):
+            with patch("subprocess.run", side_effect=[version_result, launch_result]):
+                result = probe_sandbox_available()
+        assert result["bwrap_available"] is False
+        assert "functional probe" in str(result.get("reason", ""))
+        assert "No permissions" in str(result.get("reason", ""))
 
     def test_bwrap_version_fails_returns_unavailable(self, monkeypatch):
         monkeypatch.setattr("sys.platform", "linux")
