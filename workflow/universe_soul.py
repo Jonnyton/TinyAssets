@@ -6,6 +6,7 @@ mirror while introducing ``soul.md`` as the durable universe-intent artifact.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -39,6 +40,38 @@ class UniverseSoul:
             "lineage": self.lineage,
             "edit_authority": self.edit_authority,
             "versions_dir": SOUL_VERSIONS_DIR,
+        }
+
+
+@dataclass(frozen=True)
+class PinnedUniverseSoul:
+    soul: UniverseSoul
+    content: str
+    version_id: str
+    content_sha256: str
+
+    def context(self, *, max_chars: int = 4000) -> dict[str, object]:
+        content = self.content[:max_chars].rstrip()
+        truncated = len(self.content) > max_chars
+        return {
+            "path": SOUL_FILENAME,
+            "version_id": self.version_id,
+            "content_sha256": self.content_sha256,
+            "schema_version": self.soul.schema_version,
+            "purpose": self.soul.purpose,
+            "why": self.soul.why,
+            "hard_lines": list(self.soul.hard_lines),
+            "soft_preferences": list(self.soul.soft_preferences),
+            "open_to_contributors": list(self.soul.open_to_contributors),
+            "domain_shape": self.soul.domain_shape,
+            "lineage": self.soul.lineage,
+            "edit_authority": self.soul.edit_authority,
+            "identity_boundary": (
+                "Universe soul guides this context only; it does not change "
+                "the actor identity or user memory scope."
+            ),
+            "content": content,
+            "truncated": truncated,
         }
 
 
@@ -112,6 +145,29 @@ def read_universe_soul(universe_dir: Path) -> UniverseSoul | None:
             _read_section(text, "Edit Authority")
             or _read_meta(text, "Edit authority", DEFAULT_EDIT_AUTHORITY)
         ),
+    )
+
+
+def read_pinned_universe_soul(universe_dir: Path) -> PinnedUniverseSoul | None:
+    soul = read_universe_soul(universe_dir)
+    if soul is None:
+        return None
+
+    try:
+        content = soul_path(universe_dir).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    version_id = _matching_soul_version_id(universe_dir, content)
+    if version_id is None:
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        version_id = f"{SOUL_FILENAME}@sha256:{digest[:12]}"
+
+    return PinnedUniverseSoul(
+        soul=soul,
+        content=content,
+        version_id=version_id,
+        content_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
     )
 
 
@@ -220,6 +276,19 @@ def _write_soul_version(universe_dir: Path, rendered: str) -> None:
         except ValueError:
             next_number = len(versions) + 1
     (versions_dir / f"{next_number:04d}.md").write_text(rendered, encoding="utf-8")
+
+
+def _matching_soul_version_id(universe_dir: Path, content: str) -> str | None:
+    versions_dir = universe_dir / SOUL_VERSIONS_DIR
+    if not versions_dir.is_dir():
+        return None
+    for path in sorted(versions_dir.glob("[0-9][0-9][0-9][0-9].md"), reverse=True):
+        try:
+            if path.read_text(encoding="utf-8") == content:
+                return f"{SOUL_VERSIONS_DIR}/{path.name}"
+        except OSError:
+            continue
+    return None
 
 
 def _read_meta(text: str, key: str, default: str) -> str:

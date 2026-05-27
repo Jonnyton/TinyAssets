@@ -5,6 +5,7 @@ from __future__ import annotations
 from domains.fantasy_daemon.phases.orient import orient
 from domains.fantasy_daemon.phases.writer_tools import select_and_run_writer_tools
 from workflow.notes import add_note, list_notes
+from workflow.universe_soul import write_universe_soul
 
 
 def _state_with_context(tmp_path) -> dict:
@@ -51,6 +52,11 @@ def _state_with_context(tmp_path) -> dict:
 class TestWriterTools:
     def test_plan_tools_render_context_and_mark_notes_read(self, tmp_path):
         state = _state_with_context(tmp_path)
+        write_universe_soul(
+            tmp_path,
+            purpose="A civic-memory lens checks every source.",
+            hard_lines=("Never invent citations.",),
+        )
         add_note(
             tmp_path,
             source="user",
@@ -64,6 +70,9 @@ class TestWriterTools:
         assert "Story Search" in context
         assert "Routed sources" in context
         assert "Unread Notes" in context
+        assert "Universe soul lens pinned to soul_versions/0001.md" in context
+        assert "A civic-memory lens checks every source." in context
+        assert "Never invent citations." in context
         assert "Keep the pressure on the harbor gate." in context
         assert "stormglass towers" in context
         assert "harbor watch" in context

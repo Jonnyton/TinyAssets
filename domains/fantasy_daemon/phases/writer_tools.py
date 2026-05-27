@@ -198,6 +198,10 @@ def _render_story_search(state: dict[str, Any]) -> str:
     if sources:
         parts.append("Routed sources: " + ", ".join(sources[:8]))
 
+    soul_section = _render_universe_soul_from_context(search.get("universe_soul", {}))
+    if soul_section:
+        parts.append(soul_section)
+
     world_section = _render_world_state_from_context(search.get("world_state", {}))
     if world_section:
         parts.append(world_section)
@@ -221,6 +225,51 @@ def _render_story_search(state: dict[str, Any]) -> str:
         parts.append("Canon Files:\n\n" + canon_section)
 
     return "\n\n".join(parts)
+
+
+def _render_universe_soul_from_context(soul_ctx: dict[str, Any]) -> str:
+    if not soul_ctx:
+        return ""
+
+    parts: list[str] = []
+    version_id = str(soul_ctx.get("version_id") or "")
+    digest = str(soul_ctx.get("content_sha256") or "")
+    if version_id or digest:
+        label = version_id or "soul.md"
+        hash_part = f", sha256={digest[:12]}" if digest else ""
+        parts.append(f"Universe soul lens pinned to {label}{hash_part}.")
+
+    content = str(soul_ctx.get("content") or "").strip()
+    if content:
+        parts.append("Pinned soul.md:\n" + content)
+    else:
+        purpose = str(soul_ctx.get("purpose") or "").strip()
+        if purpose:
+            parts.append(f"Purpose: {purpose}")
+
+        why = str(soul_ctx.get("why") or "").strip()
+        if why:
+            parts.append(f"Why: {why}")
+
+        hard_lines = _string_list(soul_ctx.get("hard_lines"))
+        if hard_lines:
+            parts.append(
+                "Hard lines:\n"
+                + "\n".join(f"- {item}" for item in hard_lines[:5])
+            )
+
+        soft_preferences = _string_list(soul_ctx.get("soft_preferences"))
+        if soft_preferences:
+            parts.append(
+                "Soft preferences:\n"
+                + "\n".join(f"- {item}" for item in soft_preferences[:5])
+            )
+
+    boundary = str(soul_ctx.get("identity_boundary") or "").strip()
+    if boundary:
+        parts.append(boundary)
+
+    return "\n".join(parts)
 
 
 def _render_world_state(state: dict[str, Any]) -> str:
@@ -420,6 +469,12 @@ def _render_retrieval_context_from_context(retrieved: dict[str, Any]) -> str:
             parts.append("World summaries:\n" + "\n\n".join(summary_lines))
 
     return "\n\n".join(parts)
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _get_search_context(state: dict[str, Any], phase: str) -> dict[str, Any]:
