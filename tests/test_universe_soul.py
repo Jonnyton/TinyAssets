@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from workflow.universe_soul import read_pinned_universe_soul
+
 
 @pytest.fixture
 def us(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -60,6 +62,28 @@ def test_read_premise_falls_back_to_soul_purpose(us):
     assert result["premise"] == "A solar archive wakes up."
     assert result["source"] == "soul.md"
     assert result["soul"]["schema_version"] == 1
+
+
+def test_read_pinned_universe_soul_reports_version_hash(us):
+    base = Path(us._base_path())
+    _mkuniverse(base, "u1")
+    us._action_set_premise(
+        universe_id="u1",
+        text="A civic-memory workflow checks every source.",
+    )
+
+    pinned = read_pinned_universe_soul(base / "u1")
+
+    assert pinned is not None
+    assert pinned.version_id == "soul_versions/0001.md"
+    assert len(pinned.content_sha256) == 64
+    context = pinned.context()
+    assert context["purpose"] == "A civic-memory workflow checks every source."
+    assert context["version_id"] == "soul_versions/0001.md"
+    assert context["identity_boundary"] == (
+        "Universe soul guides this context only; it does not change "
+        "the actor identity or user memory scope."
+    )
 
 
 def test_create_universe_always_writes_soul_profile(us):
