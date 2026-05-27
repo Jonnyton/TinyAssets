@@ -961,7 +961,7 @@ def wiki(
     skip_lint: bool = False,
     max_results: int = 10,
     offset: int = 0,
-    max_chars: int = 15000,
+    max_chars: int = 128000,
     component: str = "",
     severity: str = "",
     title: str = "",

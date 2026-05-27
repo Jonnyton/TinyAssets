@@ -69,8 +69,8 @@ _WIKI_SEARCH_COMPLETENESS_WARNING = (
     "changed_since=<ISO timestamp>; for authoritative content read candidate "
     "pages with action=read."
 )
-_WIKI_READ_DEFAULT_MAX_CHARS = 15_000
-_WIKI_READ_MAX_CHARS = 50_000
+_WIKI_READ_DEFAULT_MAX_CHARS = 128_000
+_WIKI_READ_MAX_CHARS = 256_000
 
 
 _logger_wiki = logging.getLogger("universe_server.wiki")

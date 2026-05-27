@@ -20,6 +20,8 @@ from workflow.api.wiki import (
     _VALID_BUG_KINDS,
     _VALID_SEVERITIES,
     _WIKI_CATEGORIES,
+    _WIKI_READ_DEFAULT_MAX_CHARS,
+    _WIKI_READ_MAX_CHARS,
     _bug_token_set,
     _ensure_wiki_scaffold,
     _extract_keywords,
@@ -395,6 +397,52 @@ def test_wiki_read_large_page_marks_content_and_supports_offset(wiki_env):
     assert "end marker" in second["content"]
 
 
+def test_wiki_read_default_window_handles_medium_design_doc(wiki_env):
+    path = wiki_env / "pages" / "notes" / "medium-design-doc.md"
+    body = "start marker\n" + ("x" * 80_000) + "\nend marker\n"
+    path.write_text(
+        "---\n"
+        "title: Medium Design Doc\n"
+        "type: note\n"
+        "updated: 2026-05-27T00:00:00Z\n"
+        "---\n\n"
+        + body,
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    res = json.loads(wiki(action="read", page="medium-design-doc"))
+
+    assert res["truncated"] is False
+    assert res["read_limit"] == _WIKI_READ_DEFAULT_MAX_CHARS
+    assert res["next_offset"] is None
+    assert "end marker" in res["content"]
+
+
+def test_wiki_read_max_chars_is_capped(wiki_env):
+    path = wiki_env / "pages" / "notes" / "oversize-design-doc.md"
+    body = "start marker\n" + ("x" * 300_000) + "\nend marker\n"
+    path.write_text(
+        "---\n"
+        "title: Oversize Design Doc\n"
+        "type: note\n"
+        "updated: 2026-05-27T00:00:00Z\n"
+        "---\n\n"
+        + body,
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    res = json.loads(
+        wiki(action="read", page="oversize-design-doc", max_chars=999_999)
+    )
+
+    assert res["truncated"] is True
+    assert res["read_limit"] == _WIKI_READ_MAX_CHARS
+    assert res["next_offset"] == _WIKI_READ_MAX_CHARS
+    assert "WIKI READ TRUNCATED" in res["content"]
+
+
 def test_wiki_write_requires_filename_and_content(wiki_env):
     res = json.loads(wiki(action="write", category="notes"))
     assert "error" in res
@@ -435,7 +483,7 @@ def test_wiki_patch_updates_long_page_without_full_replace(wiki_env):
     original = (
         "---\ntitle: Long Note\ntype: note\nsources: []\n---\n\n"
         "intro marker\n"
-        + ("x" * 16000)
+        + ("x" * (_WIKI_READ_DEFAULT_MAX_CHARS + 1_000))
         + "\noriginal tail marker\n"
     )
     path.write_text(original, encoding="utf-8")
@@ -461,7 +509,7 @@ def test_wiki_patch_updates_long_page_without_full_replace(wiki_env):
     patched = path.read_text(encoding="utf-8")
     assert "intro marker\npatched detail" in patched
     assert "original tail marker" in patched
-    assert len(patched) > 15000
+    assert len(patched) > _WIKI_READ_DEFAULT_MAX_CHARS
 
 
 def test_wiki_patch_dry_run_reports_without_writing(wiki_env):

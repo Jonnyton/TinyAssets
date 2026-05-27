@@ -8,6 +8,7 @@ import json
 import pytest
 
 from workflow.api.wiki import (
+    _WIKI_READ_DEFAULT_MAX_CHARS,
     _extract_keywords,
     _parse_frontmatter,
     _sanitize_slug,
@@ -207,6 +208,23 @@ class TestWikiRead:
         )
         assert second["truncated"] is False
         assert "final marker" in second["content"]
+
+    def test_read_wrapper_default_window_handles_medium_document(self, wiki_dir):
+        content = (
+            "---\ntitle: Medium Project\ntype: project\n---\n\n"
+            + ("a" * 80_000)
+            + "\nfinal marker\n"
+        )
+        (wiki_dir / "pages" / "projects" / "medium-project.md").write_text(
+            content, encoding="utf-8"
+        )
+
+        result = json.loads(wiki("read", page="medium-project"))
+
+        assert result["truncated"] is False
+        assert result["read_limit"] == _WIKI_READ_DEFAULT_MAX_CHARS
+        assert result["next_offset"] is None
+        assert "final marker" in result["content"]
 
 
 class TestWikiList:
