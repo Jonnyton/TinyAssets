@@ -539,3 +539,14 @@ Notes:
   users.
 - Ship condition: focused wiki read tests pass, PR opened for Claude-family
   checker review.
+
+## PR-139 Resolver Contract - 2026-05-27
+
+- 2026-05-27 create `../wf-pr139-resolver-contract` on
+  `codex/pr139-resolver-contract` by codex-gpt5-desktop.
+- Source: live wiki PR-139 souled-universe consolidation program; dispatcher
+  request failed from provider exhaustion before creating a GitHub lane.
+- Purpose: implement build-order step 1 only: frozen resolver decision contract,
+  fixture shape, and tests.
+- Ship condition: focused resolution contract tests pass, branch pushed, PR
+  opened for opposite-family checker review.
