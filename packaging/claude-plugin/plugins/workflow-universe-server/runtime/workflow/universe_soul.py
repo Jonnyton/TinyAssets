@@ -17,6 +17,8 @@ LEGACY_PREMISE_FILENAME = "PROGRAM.md"
 SOUL_SCHEMA_VERSION = 1
 DEFAULT_DOMAIN_SHAPE = "general"
 DEFAULT_EDIT_AUTHORITY = "soul.edit"
+NO_LOOP_DECLARED = ""
+NO_LOOP_MARKER = "_None recorded._"
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,7 @@ class UniverseSoul:
     domain_shape: str = DEFAULT_DOMAIN_SHAPE
     lineage: str = "template"
     edit_authority: str = DEFAULT_EDIT_AUTHORITY
+    loop_branch_def_id: str = NO_LOOP_DECLARED
 
     def summary(self) -> dict[str, object]:
         return {
@@ -39,6 +42,7 @@ class UniverseSoul:
             "domain_shape": self.domain_shape,
             "lineage": self.lineage,
             "edit_authority": self.edit_authority,
+            "loop_branch_def_id": self.loop_branch_def_id,
             "versions_dir": SOUL_VERSIONS_DIR,
         }
 
@@ -66,6 +70,7 @@ class PinnedUniverseSoul:
             "domain_shape": self.soul.domain_shape,
             "lineage": self.soul.lineage,
             "edit_authority": self.soul.edit_authority,
+            "loop_branch_def_id": self.soul.loop_branch_def_id,
             "identity_boundary": (
                 "Universe soul guides this context only; it does not change "
                 "the actor identity or user memory scope."
@@ -95,6 +100,7 @@ def render_soul_markdown(soul: UniverseSoul) -> str:
         f"- Domain shape: {soul.domain_shape}",
         f"- Lineage: {soul.lineage}",
         f"- Edit authority: {soul.edit_authority}",
+        f"- Loop branch: {soul.loop_branch_def_id or NO_LOOP_MARKER}",
         "",
         "## Purpose",
         "",
@@ -145,6 +151,7 @@ def read_universe_soul(universe_dir: Path) -> UniverseSoul | None:
             _read_section(text, "Edit Authority")
             or _read_meta(text, "Edit authority", DEFAULT_EDIT_AUTHORITY)
         ),
+        loop_branch_def_id=_read_loop_branch_meta(text),
     )
 
 
@@ -182,6 +189,7 @@ def write_universe_soul(
     domain_shape: str = DEFAULT_DOMAIN_SHAPE,
     lineage: str = "template",
     edit_authority: str = DEFAULT_EDIT_AUTHORITY,
+    loop_branch_def_id: str = NO_LOOP_DECLARED,
 ) -> UniverseSoul:
     universe_dir.mkdir(parents=True, exist_ok=True)
     existing = read_universe_soul(universe_dir)
@@ -199,6 +207,7 @@ def write_universe_soul(
             domain_shape=domain_shape.strip() or DEFAULT_DOMAIN_SHAPE,
             lineage=lineage.strip() or "template",
             edit_authority=edit_authority.strip() or DEFAULT_EDIT_AUTHORITY,
+            loop_branch_def_id=loop_branch_def_id.strip(),
         )
     else:
         soul = replace(
@@ -220,6 +229,9 @@ def write_universe_soul(
             domain_shape=domain_shape.strip() or existing.domain_shape,
             lineage=lineage.strip() or existing.lineage,
             edit_authority=edit_authority.strip() or existing.edit_authority,
+            loop_branch_def_id=(
+                loop_branch_def_id.strip() or existing.loop_branch_def_id
+            ),
         )
 
     rendered = render_soul_markdown(soul)
@@ -228,14 +240,23 @@ def write_universe_soul(
     return soul
 
 
-def ensure_universe_soul(universe_dir: Path, *, purpose: str = "") -> UniverseSoul:
+def ensure_universe_soul(
+    universe_dir: Path,
+    *,
+    purpose: str = "",
+    loop_branch_def_id: str = NO_LOOP_DECLARED,
+) -> UniverseSoul:
     existing = read_universe_soul(universe_dir)
-    if existing is not None and (existing.purpose or not purpose.strip()):
+    if existing is not None and (
+        (existing.purpose or not purpose.strip())
+        and (existing.loop_branch_def_id or not loop_branch_def_id.strip())
+    ):
         return existing
     return write_universe_soul(
         universe_dir,
         purpose=purpose,
         lineage="created-from-premise" if purpose.strip() else "template",
+        loop_branch_def_id=loop_branch_def_id,
     )
 
 
@@ -251,6 +272,11 @@ def read_legacy_premise(universe_dir: Path) -> str:
 def premise_from_soul(universe_dir: Path) -> str:
     soul = read_universe_soul(universe_dir)
     return soul.purpose if soul is not None else ""
+
+
+def loop_branch_from_soul(universe_dir: Path) -> str:
+    soul = read_universe_soul(universe_dir)
+    return soul.loop_branch_def_id if soul is not None else NO_LOOP_DECLARED
 
 
 def _render_list(items: tuple[str, ...]) -> str:
@@ -305,6 +331,13 @@ def _read_int_meta(text: str, key: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _read_loop_branch_meta(text: str) -> str:
+    raw = _read_meta(text, "Loop branch", NO_LOOP_DECLARED)
+    if raw in {NO_LOOP_MARKER, "none", "None", "NONE"}:
+        return NO_LOOP_DECLARED
+    return raw
 
 
 def _read_section(text: str, heading: str) -> str:

@@ -164,6 +164,7 @@ def test_submit_request_appends_ledger(universe: str) -> None:
     assert entries[0]["action"] == "submit_request"
     assert entries[0]["target"] == out["request_id"]
     assert entries[0]["payload"]["request_type"] == "scene_direction"
+    assert entries[0]["payload"]["loop_dispatch"]["source"] == "legacy_no_soul_compat"
 
 
 def test_add_canon_appends_ledger(universe: str) -> None:
@@ -261,6 +262,10 @@ def test_get_ledger_returns_appended_entries(universe: str) -> None:
 def test_ledger_survives_across_mixed_writes(universe: str) -> None:
     _call("set_premise", text="Premise.")
     _call("give_direction", text="Direction.")
+    us.ensure_universe_soul(
+        us._base_path() / universe,
+        loop_branch_def_id="fantasy_author:universe_cycle_wrapper",
+    )
     _call("submit_request", text="Request.")
     _call("add_canon", filename="a.md", text="x", provenance_tag="test")
 

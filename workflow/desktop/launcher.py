@@ -25,7 +25,11 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from workflow.universe_soul import premise_from_soul, read_legacy_premise
+from workflow.universe_soul import (
+    ensure_universe_soul,
+    premise_from_soul,
+    read_legacy_premise,
+)
 
 # tkinter requires libtk (system lib). Headless Docker containers
 # don't ship it; the cloud_worker's fantasy_daemon subprocess imports
@@ -359,6 +363,7 @@ class LauncherApp:
         path = Path(self._universe_var.get())
         canon_path = path / "canon"
         try:
+            ensure_universe_soul(path)
             canon_path.mkdir(parents=True, exist_ok=True)
             self.set_status(f"Created: {path}")
             logger.info("Created universe directory: %s", path)

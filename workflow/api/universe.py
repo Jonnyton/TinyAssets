@@ -71,6 +71,7 @@ from workflow.api.helpers import (
 )
 from workflow.catalog import list_unreconciled_writes
 from workflow.universe_soul import (
+    NO_LOOP_DECLARED,
     SOUL_FILENAME,
     ensure_universe_soul,
     has_soul,
@@ -87,6 +88,7 @@ ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 ACTION_SUBMIT_PRIORITY_REQUEST = "submit_priority_request"
 ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
 ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
+LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
 
 
 def _env_actor_grants() -> tuple[str, ...]:
@@ -134,6 +136,7 @@ def _extract_submit_request(
             "pickup_incentive": kwargs.get("pickup_incentive", "") or None,
             "directed_daemon_id": kwargs.get("directed_daemon_id", "") or None,
             "request_classification": result.get("request_classification"),
+            "loop_dispatch": result.get("loop_dispatch"),
         },
     )
 
@@ -233,6 +236,7 @@ def _extract_create_universe(
         "has_premise": bool(text.strip()),
         "has_soul": True,
         "soul_path": SOUL_FILENAME,
+        "loop_branch_def_id": str(kwargs.get("branch_def_id") or "").strip(),
     })
 
 
@@ -279,6 +283,37 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
         ),
         "steps": steps,
         "next_action": next_action,
+    }
+
+
+def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
+    soul = read_universe_soul(udir)
+    if soul is None:
+        return LEGACY_FANTASY_LOOP_BRANCH_DEF_ID, {
+            "source": "legacy_no_soul_compat",
+            "has_soul": False,
+            "branch_def_id": LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
+            "caveat": (
+                "Legacy universe has no soul.md; keeping the existing fantasy "
+                "loop only until the universe is migrated to a soul-declared loop."
+            ),
+        }
+    branch_def_id = soul.loop_branch_def_id.strip()
+    if not branch_def_id:
+        return NO_LOOP_DECLARED, {
+            "source": SOUL_FILENAME,
+            "has_soul": True,
+            "branch_def_id": "",
+            "error": "universe_loop_not_declared",
+            "note": (
+                "This universe has a soul.md but no Loop branch declaration; "
+                "new souled universes do not silently attach the fantasy loop."
+            ),
+        }
+    return branch_def_id, {
+        "source": SOUL_FILENAME,
+        "has_soul": True,
+        "branch_def_id": branch_def_id,
     }
 
 
@@ -1163,6 +1198,14 @@ def _action_submit_request(
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
 
+    loop_branch_def_id, loop_dispatch = _universe_loop_dispatch(udir)
+    if not loop_branch_def_id:
+        return json.dumps({
+            "error": "universe_loop_not_declared",
+            "universe_id": uid,
+            "loop_dispatch": loop_dispatch,
+        })
+
     # 8 KiB cap keeps requests.json bounded and discourages pasting
     # entire drafts into the request channel (add_canon is the right
     # tool for that). UTF-8 byte length, not char count.
@@ -1244,6 +1287,7 @@ def _action_submit_request(
         "pickup_incentive": incentive,
         "authority_boundary": authority_boundary,
         "request_classification": request_classification,
+        "loop_dispatch": loop_dispatch,
     }
     if requester_directed_daemon is not None:
         request_obj["requester_directed_daemon"] = requester_directed_daemon
@@ -1272,7 +1316,7 @@ def _action_submit_request(
     try:
         task = BranchTask(
             branch_task_id=new_task_id(),
-            branch_def_id="fantasy_author:universe_cycle_wrapper",
+            branch_def_id=loop_branch_def_id,
             universe_id=uid,
             inputs={
                 "work_target_ref": None,
@@ -1283,6 +1327,7 @@ def _action_submit_request(
                 "authority_boundary": authority_boundary,
                 "request_classification": request_classification,
                 "requester_directed_daemon": requester_directed_daemon,
+                "loop_dispatch": loop_dispatch,
             },
             trigger_source=(
                 "owner_queued"
@@ -1323,6 +1368,7 @@ def _action_submit_request(
         "authority_boundary": authority_boundary,
         "request_classification": request_classification,
         "requester_directed_daemon": requester_directed_daemon,
+        "loop_dispatch": loop_dispatch,
         "queue_position": pending_count,
         "ahead_of_yours": ahead,
         "what_happens_next": (
@@ -4252,6 +4298,7 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
 def _action_create_universe(
     universe_id: str = "",
     text: str = "",
+    branch_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     if not universe_id:
@@ -4270,7 +4317,12 @@ def _action_create_universe(
     try:
         udir.mkdir(parents=True, exist_ok=True)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
-        soul = ensure_universe_soul(udir, purpose=normalized_text)
+        loop_branch_def_id = str(branch_def_id or "").strip()
+        soul = ensure_universe_soul(
+            udir,
+            purpose=normalized_text,
+            loop_branch_def_id=loop_branch_def_id,
+        )
         # Write premise if provided
         if normalized_text.strip():
             legacy_premise_path(udir).write_text(normalized_text, encoding="utf-8")
@@ -4285,6 +4337,11 @@ def _action_create_universe(
             "has_premise": bool(normalized_text.strip()),
             "has_soul": True,
             "soul": soul.summary(),
+            "loop_dispatch": {
+                "source": SOUL_FILENAME,
+                "branch_def_id": soul.loop_branch_def_id,
+                "declared": bool(soul.loop_branch_def_id),
+            },
             "first_run_checklist": _synthesis_first_run_checklist(
                 has_premise=bool(normalized_text.strip()),
             ),
