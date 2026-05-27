@@ -12,6 +12,8 @@ from typing import Annotated
 
 from typing_extensions import TypedDict
 
+from workflow.universe_state import DomainNeutralUniverseState
+
 
 class ExecutionEnvelope(TypedDict):
     """Thin live execution cursor for one active target run."""
@@ -26,7 +28,7 @@ class ExecutionEnvelope(TypedDict):
     control_flags: dict
 
 
-class UniverseState(TypedDict):
+class UniverseState(DomainNeutralUniverseState):
     """State for the Universe graph (daemon entry point)."""
 
     # ==================================================================
