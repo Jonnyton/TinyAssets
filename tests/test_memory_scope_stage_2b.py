@@ -22,6 +22,7 @@ Stage 2b ships three guarantees tests here pin down:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -35,7 +36,12 @@ from workflow.knowledge.models import (
     NarrativeFunction,
     SourceType,
 )
-from workflow.memory.episodic import EpisodicMemory
+from workflow.memory.episodic import (
+    EpisodicMemory,
+    check_episodic_no_bleed,
+    migrate_episodic_schema_to_domain_neutral,
+    rollback_episodic_schema_migration,
+)
 from workflow.memory.scoping import MemoryScope
 
 # ─── KG write-site threading ────────────────────────────────────────────
@@ -226,6 +232,27 @@ def _legacy_episodic_schema() -> str:
     """
 
 
+def _seed_legacy_episodic_db(db) -> None:
+    raw = sqlite3.connect(db)
+    try:
+        raw.executescript(_legacy_episodic_schema())
+        raw.execute(
+            "INSERT INTO scene_summaries "
+            "(universe_id, book_number, chapter_number, scene_number, summary, word_count) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("world", 1, 2, 3, "Legacy summary.", 100),
+        )
+        raw.execute(
+            "INSERT INTO reflections "
+            "(universe_id, chapter_number, scene_number, critique, reflection) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("world", 2, 3, "Too sparse.", "Add sensory detail."),
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+
 def test_episodic_migration_non_destructive_on_legacy_rows(tmp_path):
     """Simulate a pre-2b universe with populated rows, then open with
     the 2b code. Legacy rows must survive with NULL sub-scope tiers.
@@ -332,6 +359,144 @@ def test_episodic_migration_is_idempotent(tmp_path):
         assert row[1] == 42
     finally:
         second.close()
+
+
+def test_episodic_neutral_migration_dry_run_leaves_source_db_unchanged(tmp_path):
+    db = tmp_path / "episodic.db"
+    _seed_legacy_episodic_db(db)
+
+    before = sqlite3.connect(db)
+    try:
+        before_notnull = {
+            row[1]: row[3]
+            for row in before.execute("PRAGMA table_info(scene_summaries)")
+        }
+    finally:
+        before.close()
+
+    report = migrate_episodic_schema_to_domain_neutral(
+        db,
+        dry_run=True,
+        backup_dir=tmp_path / "backups",
+        legacy_domain_id="fantasy_author",
+    )
+
+    assert report.dry_run is True
+    assert report.backup_path is None
+    assert report.schema_changed is True
+    assert report.no_bleed_ok is True
+    assert report.row_counts["scene_summaries"] == 1
+
+    after = sqlite3.connect(db)
+    try:
+        after_notnull = {
+            row[1]: row[3]
+            for row in after.execute("PRAGMA table_info(scene_summaries)")
+        }
+    finally:
+        after.close()
+    assert after_notnull == before_notnull
+    assert after_notnull["book_number"] == 1
+
+
+def test_episodic_neutral_migration_requires_operator_flag(tmp_path):
+    db = tmp_path / "episodic.db"
+    _seed_legacy_episodic_db(db)
+
+    with pytest.raises(PermissionError):
+        migrate_episodic_schema_to_domain_neutral(
+            db,
+            dry_run=False,
+            backup_dir=tmp_path / "backups",
+            legacy_domain_id="fantasy_author",
+        )
+
+
+def test_episodic_neutral_migration_backup_and_rollback(tmp_path, monkeypatch):
+    db = tmp_path / "episodic.db"
+    _seed_legacy_episodic_db(db)
+    monkeypatch.setenv("WORKFLOW_EPISODIC_SCHEMA_MIGRATION", "1")
+
+    report = migrate_episodic_schema_to_domain_neutral(
+        db,
+        dry_run=False,
+        backup_dir=tmp_path / "backups",
+        legacy_domain_id="fantasy_author",
+    )
+
+    assert report.dry_run is False
+    assert report.backup_path is not None
+    assert report.backup_path.exists()
+    assert report.no_bleed_ok is True
+
+    migrated = sqlite3.connect(db)
+    try:
+        scene_cols = {
+            row[1]: row[3]
+            for row in migrated.execute("PRAGMA table_info(scene_summaries)")
+        }
+        assert scene_cols["book_number"] == 0
+        assert scene_cols["chapter_number"] == 0
+        assert scene_cols["scene_number"] == 0
+
+        row = migrated.execute(
+            "SELECT domain_id, episode_id, sequence_number, domain_payload, "
+            "summary FROM scene_summaries"
+        ).fetchone()
+        assert row[0] == "fantasy_author"
+        assert row[1] == "book:1/chapter:2/scene:3"
+        assert row[2] == 2
+        assert json.loads(row[3]) == {
+            "book_number": 1,
+            "chapter_number": 2,
+            "scene_number": 3,
+        }
+        assert row[4] == "Legacy summary."
+    finally:
+        migrated.close()
+
+    db.with_name(f"{db.name}-wal").write_text("stale wal")
+    db.with_name(f"{db.name}-shm").write_text("stale shm")
+    rollback_episodic_schema_migration(db, report.backup_path)
+    assert not db.with_name(f"{db.name}-wal").exists()
+    assert not db.with_name(f"{db.name}-shm").exists()
+
+    restored = sqlite3.connect(db)
+    try:
+        restored_cols = {
+            row[1]: row[3]
+            for row in restored.execute("PRAGMA table_info(scene_summaries)")
+        }
+        assert "domain_id" not in restored_cols
+        assert restored_cols["book_number"] == 1
+        restored_row = restored.execute(
+            "SELECT summary FROM scene_summaries"
+        ).fetchone()
+        assert restored_row[0] == "Legacy summary."
+    finally:
+        restored.close()
+
+
+def test_episodic_no_bleed_check_flags_non_fantasy_coordinates(tmp_path):
+    store = EpisodicMemory(db_path=str(tmp_path / "e.db"), universe_id="world")
+    try:
+        store.store_episode_summary(
+            episode_id="research-session-1",
+            sequence_number=1,
+            summary="Generic research summary.",
+            domain_id="research_probe",
+        )
+        store._conn.execute(
+            "UPDATE scene_summaries SET book_number = 1 WHERE domain_id = ?",
+            ("research_probe",),
+        )
+        store._conn.commit()
+
+        violations = check_episodic_no_bleed(store._conn)
+        assert any("scene_summaries" in violation for violation in violations)
+        assert any("research_probe" in violation for violation in violations)
+    finally:
+        store.close()
 
 
 def test_episodic_store_summary_with_scope(tmp_path):

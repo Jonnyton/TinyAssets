@@ -17,7 +17,14 @@ domain-specific storage patterns Workflow uses.
 
 from __future__ import annotations
 
+from workflow.domain_registry import register_episodic_coordinate_shape
 from workflow.protocols import MemorySchema
+
+register_episodic_coordinate_shape(
+    "fantasy_author",
+    ("book_number", "chapter_number", "scene_number"),
+    sequence_field="chapter_number",
+)
 
 
 def get_fantasy_memory_schemas() -> list[MemorySchema]:

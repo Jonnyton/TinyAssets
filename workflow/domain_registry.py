@@ -20,6 +20,7 @@ the footprint for investigation.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,18 @@ logger = logging.getLogger(__name__)
 _DomainCallable = Callable[[dict[str, Any]], dict[str, Any]]
 
 _REGISTRY: dict[tuple[str, str], _DomainCallable] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodicCoordinateShape:
+    """Domain-owned coordinate fields for episodic memory rows."""
+
+    domain_id: str
+    coordinate_fields: tuple[str, ...]
+    sequence_field: str | None = None
+
+
+_EPISODIC_COORDINATE_SHAPES: dict[str, EpisodicCoordinateShape] = {}
 
 
 def register_domain_callable(
@@ -62,3 +75,30 @@ def resolve_domain_callable(
 def clear_registry() -> None:
     """Testing-only helper; drops all registrations."""
     _REGISTRY.clear()
+    _EPISODIC_COORDINATE_SHAPES.clear()
+
+
+def register_episodic_coordinate_shape(
+    domain_id: str,
+    coordinate_fields: tuple[str, ...] | list[str],
+    *,
+    sequence_field: str | None = None,
+) -> None:
+    """Register the domain-owned coordinate fields for episodic rows.
+
+    The shared episodic tables stay domain-neutral; this registry names
+    which optional payload fields a domain uses to interpret row order and
+    identity.
+    """
+    _EPISODIC_COORDINATE_SHAPES[domain_id] = EpisodicCoordinateShape(
+        domain_id=domain_id,
+        coordinate_fields=tuple(coordinate_fields),
+        sequence_field=sequence_field,
+    )
+
+
+def resolve_episodic_coordinate_shape(
+    domain_id: str,
+) -> EpisodicCoordinateShape | None:
+    """Return a registered episodic coordinate shape, if any."""
+    return _EPISODIC_COORDINATE_SHAPES.get(domain_id)
