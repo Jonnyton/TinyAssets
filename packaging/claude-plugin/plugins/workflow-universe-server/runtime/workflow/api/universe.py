@@ -70,6 +70,16 @@ from workflow.api.helpers import (
     _universe_dir,
 )
 from workflow.catalog import list_unreconciled_writes
+from workflow.universe_soul import (
+    SOUL_FILENAME,
+    ensure_universe_soul,
+    has_soul,
+    legacy_premise_path,
+    premise_from_soul,
+    read_legacy_premise,
+    read_universe_soul,
+    write_universe_soul,
+)
 
 logger = logging.getLogger("universe_server.universe")
 
@@ -126,9 +136,12 @@ def _extract_set_premise(
     from workflow.api.engine_helpers import _truncate
     text = kwargs.get("text", "")
     return (
-        "PROGRAM.md",
+        SOUL_FILENAME,
         _truncate(text),
-        {"bytes": len(text.encode("utf-8"))},
+        {
+            "bytes": len(text.encode("utf-8")),
+            "legacy_program_mirror": "PROGRAM.md",
+        },
     )
 
 
@@ -193,7 +206,11 @@ def _extract_create_universe(
     uid = kwargs.get("universe_id", "")
     text = kwargs.get("text", "")
     summary = _truncate(text) if text.strip() else f"created {uid}"
-    return (uid, summary, {"has_premise": bool(text.strip())})
+    return (uid, summary, {
+        "has_premise": bool(text.strip()),
+        "has_soul": True,
+        "soul_path": SOUL_FILENAME,
+    })
 
 
 def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
@@ -201,7 +218,7 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
     steps = [
         {
             "id": "premise",
-            "label": "Save a premise with create_universe text or set_premise.",
+            "label": "Save a soul purpose with create_universe text or set_premise.",
             "complete": has_premise,
         },
         {
@@ -830,7 +847,9 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     same interpreted fields, so legibility fixes in one place land
     everywhere at once.
     """
-    has_premise = (udir / "PROGRAM.md").exists()
+    has_premise = bool(
+        read_legacy_premise(udir).strip() or premise_from_soul(udir).strip()
+    )
     targets = _read_json(udir / "work_targets.json")
     has_work = isinstance(targets, list) and any(
         t.get("lifecycle") == "active" for t in targets if isinstance(t, dict)
@@ -858,6 +877,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
         ),
         "is_paused": is_paused,
         "has_premise": has_premise,
+        "has_soul": has_soul(udir),
         "has_work": has_work,
         "last_activity_at": last_activity,
         "staleness": staleness,
@@ -895,6 +915,7 @@ def _action_list_universes(**_kwargs: Any) -> str:
         info: dict[str, Any] = {
             "id": child.name,
             "has_premise": liveness["has_premise"],
+            "has_soul": liveness["has_soul"],
             "word_count": liveness["word_count"],
             "phase": liveness["phase"],
             "phase_human": liveness["phase_human"],
@@ -941,6 +962,7 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         "phase_human": liveness["phase_human"],
         "is_paused": liveness["is_paused"],
         "has_premise": liveness["has_premise"],
+        "has_soul": liveness["has_soul"],
         "has_work": liveness["has_work"],
         "last_activity_at": liveness["last_activity_at"],
         "staleness": liveness["staleness"],
@@ -950,12 +972,21 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         "accept_rate_sample": liveness["accept_rate_sample"],
     }
 
-    # Premise — always present as a boolean so callers can't silently miss
-    # the "no premise set" case. Full text included only when non-empty.
-    program = _read_text(udir / "PROGRAM.md")
-    result["has_premise"] = bool(program)
-    if program:
-        result["premise"] = program[:500] + ("..." if len(program) > 500 else "")
+    soul = read_universe_soul(udir)
+    if soul is not None:
+        result["has_soul"] = True
+        result["soul"] = soul.summary()
+
+    # Premise remains the public compatibility field. The durable source is
+    # now soul.md when PROGRAM.md is absent or empty.
+    program = _normalize_escaped_text(read_legacy_premise(udir))
+    premise = program.strip() or (soul.purpose if soul is not None else "")
+    result["has_premise"] = bool(premise)
+    if premise:
+        result["premise"] = premise[:500] + ("..." if len(premise) > 500 else "")
+        result["premise_source"] = (
+            "PROGRAM.md" if program.strip() else SOUL_FILENAME
+        )
 
     # Notes summary
     notes = _read_json(udir / "notes.json")
@@ -3329,20 +3360,29 @@ def _query_world_db(
 def _action_read_premise(universe_id: str = "", **_kwargs: Any) -> str:
     uid = universe_id or _default_universe()
     udir = _universe_dir(uid)
-    program_path = udir / "PROGRAM.md"
+    content = _normalize_escaped_text(read_legacy_premise(udir))
+    source = "PROGRAM.md"
+    if not content.strip():
+        soul = read_universe_soul(udir)
+        content = soul.purpose if soul is not None else ""
+        source = SOUL_FILENAME
+    else:
+        soul = read_universe_soul(udir)
 
-    content = _read_text(program_path)
-    if not content:
+    if not content.strip():
         return json.dumps({
             "universe_id": uid,
             "premise": None,
+            "has_soul": soul is not None,
+            "soul": soul.summary() if soul is not None else None,
             "note": "No premise set. Use action='set_premise' to create one.",
         })
-    # Read-time fallback: decode any pre-existing files that were written
-    # with literal \n sequences by a buggy client before the write-side fix.
     return json.dumps({
         "universe_id": uid,
-        "premise": _normalize_escaped_text(content),
+        "premise": content,
+        "source": source,
+        "has_soul": soul is not None,
+        "soul": soul.summary() if soul is not None else None,
     })
 
 
@@ -3375,17 +3415,21 @@ def _normalize_escaped_text(text: str) -> str:
 def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -> str:
     uid = universe_id or _default_universe()
     udir = _universe_dir(uid)
-    program_path = udir / "PROGRAM.md"
 
     if not text.strip():
         return json.dumps({"error": "Premise text cannot be empty."})
     text = _normalize_escaped_text(text)
     try:
         udir.mkdir(parents=True, exist_ok=True)
-        program_path.write_text(text, encoding="utf-8")
+        soul = write_universe_soul(
+            udir, purpose=text, lineage="created-from-premise",
+        )
+        legacy_premise_path(udir).write_text(text, encoding="utf-8")
         return json.dumps({
             "universe_id": uid,
             "status": "updated",
+            "has_soul": True,
+            "soul": soul.summary(),
             "note": "Premise saved. The daemon will read it at next startup.",
         })
     except OSError as exc:
@@ -4200,11 +4244,11 @@ def _action_create_universe(
 
     try:
         udir.mkdir(parents=True, exist_ok=True)
+        normalized_text = _normalize_escaped_text(text) if text.strip() else ""
+        soul = ensure_universe_soul(udir, purpose=normalized_text)
         # Write premise if provided
-        if text.strip():
-            (udir / "PROGRAM.md").write_text(
-                _normalize_escaped_text(text), encoding="utf-8",
-            )
+        if normalized_text.strip():
+            legacy_premise_path(udir).write_text(normalized_text, encoding="utf-8")
 
         # Initialize empty state files
         (udir / "notes.json").write_text("[]", encoding="utf-8")
@@ -4213,9 +4257,11 @@ def _action_create_universe(
         result: dict[str, Any] = {
             "universe_id": uid,
             "status": "created",
-            "has_premise": bool(text.strip()),
+            "has_premise": bool(normalized_text.strip()),
+            "has_soul": True,
+            "soul": soul.summary(),
             "first_run_checklist": _synthesis_first_run_checklist(
-                has_premise=bool(text.strip()),
+                has_premise=bool(normalized_text.strip()),
             ),
         }
 

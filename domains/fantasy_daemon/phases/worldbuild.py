@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from domains.fantasy_daemon.phases.world_state_db import connect, get_all_facts, init_db
+from workflow.universe_soul import (
+    premise_from_soul,
+    read_legacy_premise,
+    write_universe_soul,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -251,10 +256,8 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
         return ""
 
     universe_dir = Path(universe_path)
-    program_path = universe_dir / "PROGRAM.md"
-
     # Skip if premise already exists (on disk or in state)
-    if program_path.exists():
+    if read_legacy_premise(universe_dir).strip() or premise_from_soul(universe_dir).strip():
         return ""
     existing_premise = state.get("premise_kernel", "")
     if existing_premise and existing_premise.strip():
@@ -311,9 +314,12 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
 
     premise = premise.strip()
 
-    # Write to PROGRAM.md
+    # Write to PROGRAM.md as compatibility mirror and soul.md as intent profile.
     try:
-        program_path.write_text(premise, encoding="utf-8")
+        (universe_dir / "PROGRAM.md").write_text(premise, encoding="utf-8")
+        write_universe_soul(
+            universe_dir, purpose=premise, lineage="auto-generated-from-canon",
+        )
         logger.info(
             "Auto-premise: generated from %d canon files (%d chars)",
             len(canon_files), len(premise),
@@ -885,18 +891,16 @@ def _generate_canon_documents(state: dict[str, Any]) -> list[str]:
 
 
 def _read_premise(universe_dir: Path, state: dict[str, Any]) -> str:
-    """Read the story premise from PROGRAM.md or state.
+    """Read the story premise from PROGRAM.md, soul.md, or state.
 
     Falls back to ``premise_kernel`` in state if the file is missing.
     """
-    program_path = universe_dir / "PROGRAM.md"
-    if program_path.exists():
-        try:
-            content = program_path.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-        except OSError:
-            logger.debug("Failed to read PROGRAM.md", exc_info=True)
+    content = read_legacy_premise(universe_dir).strip()
+    if content:
+        return content
+    content = premise_from_soul(universe_dir).strip()
+    if content:
+        return content
 
     # Fallback to state
     return state.get("premise_kernel", "")

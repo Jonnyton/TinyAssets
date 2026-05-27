@@ -567,3 +567,14 @@ Notes:
   fixture shape, and tests.
 - Ship condition: focused resolution contract tests pass, branch pushed, PR
   opened for opposite-family checker review.
+
+## PR-139 Soul From Premise - 2026-05-27
+
+- 2026-05-27 create `../wf-pr139-soul` on `codex/pr139-soul` by
+  codex-gpt5-desktop.
+- Source: live wiki PR-139 souled-universe consolidation program; host key
+  now approved for all PR-139 slices.
+- Purpose: implement build-order step 3 only: generalize `soul.md` from the
+  current premise mechanism.
+- Ship condition: focused soul/premise tests pass, branch pushed, PR opened
+  for opposite-family checker review.
