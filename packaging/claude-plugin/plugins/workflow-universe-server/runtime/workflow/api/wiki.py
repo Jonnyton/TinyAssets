@@ -2134,6 +2134,57 @@ def _wiki_file_bug(
 # workflow/universe_server.py and delegates here (Pattern A2).
 # ---------------------------------------------------------------------------
 
+WIKI_ACTIONS: dict[str, Any] = {
+    "read": _wiki_read,
+    "search": _wiki_search,
+    "since": _wiki_since,
+    "list": _wiki_list,
+    "lint": _wiki_lint,
+    "write": _wiki_write,
+    "patch": _wiki_patch,
+    "delete": _wiki_delete,
+    "consolidate": _wiki_consolidate,
+    "promote": _wiki_promote,
+    "ingest": _wiki_ingest,
+    "supersede": _wiki_supersede,
+    "sync_projects": _wiki_sync_projects,
+    "file_bug": _wiki_file_bug,
+    "cosign_bug": _wiki_cosign_bug,
+}
+
+WIKI_WRITE_ACTIONS: frozenset[str] = frozenset({
+    "write",
+    "patch",
+    "delete",
+    "consolidate",
+    "promote",
+    "ingest",
+    "supersede",
+    "sync_projects",
+    "file_bug",
+    "cosign_bug",
+})
+
+
+def _dispatch_scope_error(tool: str, action: str) -> str | None:
+    from workflow.auth.middleware import require_action_scope
+    from workflow.auth.provider import PermissionScope
+
+    try:
+        require_action_scope(
+            tool,
+            action,
+            scope=PermissionScope(resource_type="wiki", resource_id=action),
+        )
+    except PermissionError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "auth_scope_required": True,
+            "tool": tool,
+            "action": action,
+        })
+    return None
+
 
 def wiki(
     action: str,
@@ -2210,30 +2261,16 @@ def wiki(
             ),
         })
 
-    dispatch = {
-        "read": _wiki_read,
-        "search": _wiki_search,
-        "since": _wiki_since,
-        "list": _wiki_list,
-        "lint": _wiki_lint,
-        "write": _wiki_write,
-        "patch": _wiki_patch,
-        "delete": _wiki_delete,
-        "consolidate": _wiki_consolidate,
-        "promote": _wiki_promote,
-        "ingest": _wiki_ingest,
-        "supersede": _wiki_supersede,
-        "sync_projects": _wiki_sync_projects,
-        "file_bug": _wiki_file_bug,
-        "cosign_bug": _wiki_cosign_bug,
-    }
-
+    dispatch = WIKI_ACTIONS
     handler = dispatch.get(action)
     if handler is None:
         return json.dumps({
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(dispatch.keys()),
         })
+    scope_error = _dispatch_scope_error("wiki", action)
+    if scope_error is not None:
+        return scope_error
 
     kwargs: dict[str, Any] = {
         "page": page,

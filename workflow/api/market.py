@@ -3132,6 +3132,27 @@ _GATES_ACTIONS: dict[str, Any] = {
 }
 
 
+def _gates_scope_error(action: str) -> str | None:
+    from workflow.auth.middleware import require_action_scope
+    from workflow.auth.provider import PermissionScope
+
+    try:
+        require_action_scope(
+            "gates",
+            action,
+            scope=PermissionScope(resource_type="outcome-gate", resource_id=action),
+        )
+    except PermissionError as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": str(exc),
+            "auth_scope_required": True,
+            "tool": "gates",
+            "action": action,
+        })
+    return None
+
+
 def gates(
     action: str,
     goal_id: str = "",
@@ -3254,6 +3275,9 @@ def gates(
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(_GATES_ACTIONS.keys()),
         })
+    scope_error = _gates_scope_error(action)
+    if scope_error is not None:
+        return scope_error
     kwargs: dict[str, Any] = {
         "goal_id": goal_id,
         "branch_def_id": branch_def_id,

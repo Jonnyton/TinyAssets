@@ -15,8 +15,9 @@ Dev mode:
   No auth required. Set UNIVERSE_SERVER_AUTH=false (default).
 """
 
-from workflow.auth.middleware import auth_middleware, require_auth
+from workflow.auth.middleware import auth_middleware, require_action_scope, require_auth
 from workflow.auth.provider import (
+    ActionScopeMetadata,
     AuthProvider,
     DevAuthProvider,
     OAuthProvider,
@@ -24,10 +25,15 @@ from workflow.auth.provider import (
     PermissionContext,
     PermissionScope,
     PermissionVerdict,
+    action_scope_audit,
+    action_scope_for,
+    build_action_scope_registry,
+    supported_oauth_scopes,
 )
 from workflow.auth.wellknown import create_wellknown_routes
 
 __all__ = [
+    "ActionScopeMetadata",
     "AuthProvider",
     "DevAuthProvider",
     "OAuthProvider",
@@ -35,7 +41,12 @@ __all__ = [
     "PermissionContext",
     "PermissionScope",
     "PermissionVerdict",
+    "action_scope_audit",
+    "action_scope_for",
     "auth_middleware",
+    "build_action_scope_registry",
     "require_auth",
+    "require_action_scope",
+    "supported_oauth_scopes",
     "create_wellknown_routes",
 ]

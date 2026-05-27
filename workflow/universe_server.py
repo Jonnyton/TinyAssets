@@ -601,7 +601,8 @@ def extensions(
 
     Core actions include build_branch, patch_branch, list_branches,
     describe_branch, get_branch, run_branch, get_run, wait_for_run,
-    judge_run, publish_version, schedule_branch, fork_tree, and search_nodes.
+    judge_run, publish_version, schedule_branch, fork_tree, search_nodes,
+    and get_action_scope_status for the derived action-to-OAuth-scope audit.
     Pass `action` plus the matching ids or JSON payload fields.
     Use `scope` with list_branches to filter the result:
     `"published"` (default) = only Branches that have a published version

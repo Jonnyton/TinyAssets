@@ -231,6 +231,26 @@ ALLOWED_DEPENDENCIES = {
 # ───────────────────────────────────────────────────────────────────────────
 
 
+def _dispatch_scope_error(tool: str, action: str) -> str | None:
+    from workflow.auth.middleware import require_action_scope
+    from workflow.auth.provider import PermissionScope
+
+    try:
+        require_action_scope(
+            tool,
+            action,
+            scope=PermissionScope(resource_type="mcp-tool", resource_id=tool),
+        )
+    except PermissionError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "auth_scope_required": True,
+            "tool": tool,
+            "action": action,
+        })
+    return None
+
+
 def _extensions_impl(
     action: str,
     node_id: str = "",
@@ -355,6 +375,15 @@ def _extensions_impl(
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
     forwards every argument unchanged.
     """
+    if action == "get_action_scope_status":
+        from workflow.auth.provider import action_scope_audit
+
+        return json.dumps(action_scope_audit(), default=str)
+
+    scope_error = _dispatch_scope_error("extensions", action)
+    if scope_error is not None:
+        return scope_error
+
     if action == "register":
         return _ext_register(
             node_id, display_name, description, phase,
@@ -681,6 +710,7 @@ def _extensions_impl(
             "stream_run", "wait_for_run", "cancel_run", "get_run_output",
             "attach_existing_child_run",
             "resume_run", "estimate_run_cost", "query_runs",
+            "get_action_scope_status",
             "judge_run", "list_judgments", "compare_runs",
             "suggest_node_edit", "get_node_output",
             "rollback_node", "list_node_versions",
