@@ -22,6 +22,11 @@ from workflow.knowledge.models import (
     SubQuery,
 )
 from workflow.knowledge.raptor import RaptorTree, query_raptor_tree
+from workflow.knowledge.tag_matrix import (
+    TagMatrixQuery,
+    filter_rows_by_tag_matrix,
+    row_visible_for_tag_matrix,
+)
 from workflow.memory.scoping import MemoryScope
 from workflow.retrieval.phase_context import should_use_backend
 from workflow.retrieval.vector_store import VectorStore
@@ -174,6 +179,7 @@ class RetrievalRouter:
         access_tier: int = 0,
         pov_character: str | None = None,
         chapter_number: int | None = None,
+        tag_query: TagMatrixQuery | None = None,
         token_budget: int = 4000,
     ) -> RetrievalResult:
         """Route a query to the appropriate retrieval backends.
@@ -195,6 +201,9 @@ class RetrievalRouter:
             POV character for epistemic filtering.
         chapter_number
             Current chapter for temporal filtering.
+        tag_query
+            Optional tag-matrix filter. Applied after hard
+            ``MemoryScope`` filtering; tags never replace scope.
         token_budget
             Maximum tokens for the assembled context.
 
@@ -228,7 +237,7 @@ class RetrievalRouter:
             elif sq.query_type == QueryType.TONE_SIMILARITY:
                 if not should_use_backend(phase, "voice_examples"):
                     continue
-                self._route_to_vector(sq, result)
+                self._route_to_vector(sq, result, scope, tag_query)
                 result.sources.append("vector")
 
         # Defense-in-depth: drop rows whose declared universe_id
@@ -236,6 +245,9 @@ class RetrievalRouter:
         # attribute pass through (Stage 1 — interface only; KG/vector
         # rows are path-tagged, not row-tagged, today).
         result = _drop_cross_universe_rows(result, scope)
+        if tag_query is not None:
+            result = _filter_by_tag_matrix(result, scope, tag_query)
+            result.sources.append("tag_matrix")
 
         # Cluster similar results to reduce redundancy
         result = self._cluster_results(result)
@@ -293,7 +305,13 @@ class RetrievalRouter:
         )
         result.community_summaries.extend(summaries)
 
-    def _route_to_vector(self, sq: SubQuery, result: RetrievalResult) -> None:
+    def _route_to_vector(
+        self,
+        sq: SubQuery,
+        result: RetrievalResult,
+        scope: MemoryScope,
+        tag_query: TagMatrixQuery | None,
+    ) -> None:
         """Route a tone/similarity query to LanceDB vectors."""
         if self._vector_store is None or self._embed_fn is None:
             return
@@ -304,6 +322,10 @@ class RetrievalRouter:
 
         matches = self._vector_store.search(query_emb, limit=5)
         for match in matches:
+            if tag_query is not None and not row_visible_for_tag_matrix(
+                match, scope=scope, query=tag_query,
+            ):
+                continue
             result.prose_chunks.append(match.get("text", ""))
 
     def _cluster_results(self, result: RetrievalResult) -> RetrievalResult:
@@ -490,6 +512,44 @@ def _drop_cross_universe_rows(
             "on" if flag_on else "off",
         )
 
+    return result
+
+
+def _filter_by_tag_matrix(
+    result: RetrievalResult,
+    scope: MemoryScope,
+    tag_query: TagMatrixQuery,
+) -> RetrievalResult:
+    """Apply CHILD-2 tag-matrix filtering after hard scope checks."""
+    before = (
+        len(result.facts),
+        len(result.relationships),
+        len(result.community_summaries),
+    )
+    result.facts = filter_rows_by_tag_matrix(
+        result.facts, scope=scope, query=tag_query,
+    )
+    result.relationships = filter_rows_by_tag_matrix(
+        result.relationships, scope=scope, query=tag_query,
+    )
+    result.community_summaries = filter_rows_by_tag_matrix(
+        result.community_summaries, scope=scope, query=tag_query,
+    )
+    after = (
+        len(result.facts),
+        len(result.relationships),
+        len(result.community_summaries),
+    )
+    dropped = sum(before) - sum(after)
+    if dropped:
+        logger.info(
+            "tag_matrix.filter: dropped %d rows after scope filtering "
+            "(caller_scope=%r, domain_tags=%r, shape_tags=%r)",
+            dropped,
+            scope.compose_predicate(),
+            tag_query.domain_tags,
+            tag_query.shape_tags,
+        )
     return result
 
 

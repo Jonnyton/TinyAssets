@@ -13,6 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
+from workflow.knowledge.tag_matrix import TagMatrixQuery
 from workflow.memory.scoping import MemoryScope
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,7 @@ def run_phase_retrieval(
             phase,
         )
         return {}
+    tag_query = _tag_query_from_state(state)
 
     kg = None
     owns_kg = False
@@ -206,6 +208,7 @@ def run_phase_retrieval(
             access_tier=int(orient_result.get("access_tier", 0) or 0),
             pov_character=orient_result.get("pov_character"),
             chapter_number=state.get("chapter_number"),
+            tag_query=tag_query,
         )
 
         try:
@@ -245,6 +248,28 @@ def run_phase_retrieval(
                 kg.close()
             except Exception:
                 logger.debug("Failed to close temporary knowledge graph", exc_info=True)
+
+
+def _tag_query_from_state(state: dict[str, Any]) -> TagMatrixQuery | None:
+    """Derive an optional tag-matrix filter from graph state."""
+    raw = (
+        state.get("tag_matrix")
+        or state.get("tag_filter")
+        or state.get("knowledge_tags")
+    )
+    if raw is None:
+        return None
+    if isinstance(raw, TagMatrixQuery):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+    return TagMatrixQuery(
+        domain_tags=raw.get("domain_tags") or raw.get("domains") or (),
+        shape_tags=raw.get("shape_tags") or raw.get("shapes") or (),
+        include_general=bool(raw.get("include_general", True)),
+        include_commons=bool(raw.get("include_commons", True)),
+        include_untagged=bool(raw.get("include_untagged", False)),
+    )
 
 
 def build_phase_query(
