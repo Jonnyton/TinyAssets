@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from workflow.resolution.contracts import ResolverDecision
+
 logger = logging.getLogger("universe_server.auth")
 
 
@@ -31,21 +33,180 @@ logger = logging.getLogger("universe_server.auth")
 
 
 @dataclass
+class PermissionAction:
+    """Action being authorized by the replayable permission check."""
+
+    name: str
+    cost_tier: str = "standard"
+
+    def __post_init__(self) -> None:
+        self.name = self.name.strip()
+        self.cost_tier = self.cost_tier.strip() or "standard"
+        if not self.name:
+            raise ValueError("PermissionAction.name is required")
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass
+class PermissionScope:
+    """Bounded resource scope for a permission decision."""
+
+    universe_id: str = ""
+    goal_id: str | None = None
+    branch_id: str | None = None
+    node_id: str | None = None
+    tier: str = "universe"
+    resource_type: str = ""
+    resource_id: str = ""
+    actor_scope: str = "user"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class PermissionContext:
+    """Replay inputs that are not identity, action, or resource scope."""
+
+    actor_id: str = "anonymous"
+    presented_grants: tuple[str, ...] = ()
+    resource_policy_version: str = "permission-policy-v1"
+    resolver_decision: ResolverDecision | None = None
+    external_evidence_handles: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "actor_id": self.actor_id,
+            "presented_grants": list(self.presented_grants),
+            "resource_policy_version": self.resource_policy_version,
+            "resolver_decision": (
+                self.resolver_decision.to_dict()
+                if self.resolver_decision is not None else None
+            ),
+            "external_evidence_handles": list(self.external_evidence_handles),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class PermissionVerdict:
+    """Auditable authorization result returned by ``.can(...)``."""
+
+    allowed: bool
+    action: str
+    scope: dict[str, Any]
+    reason: str
+    presented_grants: tuple[str, ...]
+    resource_policy_version: str
+    resolver_decision_status: str = ""
+    evidence_handles: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return self.allowed
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "allowed": self.allowed,
+            "action": self.action,
+            "scope": self.scope,
+            "reason": self.reason,
+            "presented_grants": list(self.presented_grants),
+            "resource_policy_version": self.resource_policy_version,
+            "resolver_decision_status": self.resolver_decision_status,
+            "evidence_handles": list(self.evidence_handles),
+        }
+
+
+def _coerce_action(action: str | PermissionAction) -> PermissionAction:
+    if isinstance(action, PermissionAction):
+        return action
+    return PermissionAction(name=str(action))
+
+
+def _coerce_scope(scope: PermissionScope | None) -> PermissionScope:
+    return scope if scope is not None else PermissionScope()
+
+
+def _coerce_context(
+    actor_id: str,
+    grants: list[str] | tuple[str, ...],
+    context: PermissionContext | None,
+) -> PermissionContext:
+    if context is not None:
+        return context
+    return PermissionContext(actor_id=actor_id, presented_grants=tuple(grants))
+
+
+def resolve_permission(
+    *,
+    actor_id: str,
+    action: str | PermissionAction,
+    grants: list[str] | tuple[str, ...],
+    scope: PermissionScope | None = None,
+    context: PermissionContext | None = None,
+) -> PermissionVerdict:
+    """Return a deterministic permission verdict from replayable inputs."""
+
+    permission_action = _coerce_action(action)
+    permission_scope = _coerce_scope(scope)
+    permission_context = _coerce_context(actor_id, grants, context)
+    presented_grants = tuple(
+        sorted({grant.strip() for grant in (
+            permission_context.presented_grants or tuple(grants)
+        ) if grant.strip()})
+    )
+    allowed = permission_action.name in presented_grants
+    resolver_decision = permission_context.resolver_decision
+    evidence_handles = tuple(permission_context.external_evidence_handles)
+    resolver_status = ""
+    if resolver_decision is not None:
+        resolver_status = resolver_decision.status
+        evidence_handles = tuple(resolver_decision.evidence_handles)
+    reason = (
+        "action grant present"
+        if allowed else
+        "action grant missing"
+    )
+    return PermissionVerdict(
+        allowed=allowed,
+        action=permission_action.name,
+        scope=permission_scope.to_dict(),
+        reason=reason,
+        presented_grants=presented_grants,
+        resource_policy_version=permission_context.resource_policy_version,
+        resolver_decision_status=resolver_status,
+        evidence_handles=evidence_handles,
+    )
+
+
+@dataclass
 class Identity:
     """Resolved user identity from an authenticated request."""
 
     user_id: str
     username: str
     display_name: str = ""
-    is_host: bool = False
     capabilities: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def can(self, capability: str) -> bool:
-        """Check if this identity has a specific capability."""
-        if self.is_host:
-            return True  # Host can do everything
-        return capability in self.capabilities
+    def can(
+        self,
+        action: str | PermissionAction,
+        scope: PermissionScope | None = None,
+        context: PermissionContext | None = None,
+    ) -> PermissionVerdict:
+        """Check whether this identity may perform an action."""
+
+        return resolve_permission(
+            actor_id=self.user_id,
+            action=action,
+            grants=self.capabilities,
+            scope=scope,
+            context=context,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -55,7 +216,6 @@ ANONYMOUS = Identity(
     user_id="anonymous",
     username="anonymous",
     display_name="Anonymous",
-    is_host=False,
     capabilities=["read", "submit_request", "list"],
 )
 
@@ -63,8 +223,7 @@ HOST = Identity(
     user_id="host",
     username="host",
     display_name="Host",
-    is_host=True,
-    capabilities=[],  # Host has all capabilities implicitly
+    capabilities=["read", "write", "submit_request", "list"],
 )
 
 
@@ -288,16 +447,10 @@ class OAuthProvider(AuthProvider):
             scope = row["scope"]
             capabilities = scope.split() if scope else ["read"]
 
-            # Check if this is the host (first registered user or
-            # explicitly configured)
-            host_user = os.environ.get("UNIVERSE_SERVER_HOST_USER", "")
-            is_host = user_id == host_user if host_user else False
-
             return Identity(
                 user_id=user_id,
                 username=user_id,
                 display_name=user_id,
-                is_host=is_host,
                 capabilities=capabilities,
             )
         finally:

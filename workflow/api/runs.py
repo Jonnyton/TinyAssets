@@ -48,6 +48,24 @@ from workflow.api.helpers import (
 
 logger = logging.getLogger("universe_server.runs")
 
+ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
+
+
+def _current_actor_grants() -> tuple[str, ...]:
+    raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
+    return tuple(part for part in raw.replace(",", " ").split() if part)
+
+
+def _current_actor_has_capability(action: str) -> bool:
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.auth.provider import resolve_permission
+
+    return resolve_permission(
+        actor_id=_current_actor(),
+        action=action,
+        grants=_current_actor_grants(),
+    ).allowed
+
 
 _EMPTY_LLM_RESPONSE_ACTION = (
     "Ask the host to check get_status provider availability/cooldowns and fix "
@@ -1466,8 +1484,7 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
 
 
 def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
-    """Surgical-rollback (Task #22 Phase B). Host-only authority per
-    design §5 + Hard-Rule emergency-override pattern.
+    """Surgical-rollback (Task #22 Phase B). Explicit rollback capability.
 
     Required kwargs: ``branch_version_id`` (seed), ``reason``.
     Optional kwargs: ``severity`` (P0/P1/P2; default P1).
@@ -1481,6 +1498,7 @@ def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
     docstring).
     """
     from workflow.api.engine_helpers import _current_actor
+    from workflow.daemon_server import CAP_ROLLBACK_BRANCH
     from workflow.rollback import rollback_merge_orchestrator
 
     bvid = (kwargs.get("branch_version_id") or "").strip()
@@ -1492,13 +1510,11 @@ def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
         return json.dumps({"error": "reason is required."})
 
     actor = _current_actor()
-    host_actor = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-    if actor != host_actor:
+    if not _current_actor_has_capability(CAP_ROLLBACK_BRANCH):
         return json.dumps({
             "error": (
-                "host-only authority — only the host actor "
-                f"({host_actor!r}) may roll back versions. "
-                f"Request actor was {actor!r}."
+                f"Missing capability: {CAP_ROLLBACK_BRANCH} "
+                f"(request actor was {actor!r})."
             ),
         })
 

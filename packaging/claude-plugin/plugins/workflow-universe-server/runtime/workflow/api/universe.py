@@ -83,6 +83,29 @@ from workflow.universe_soul import (
 
 logger = logging.getLogger("universe_server.universe")
 
+ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
+ACTION_SUBMIT_PRIORITY_REQUEST = "submit_priority_request"
+ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
+ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
+
+
+def _env_actor_grants() -> tuple[str, ...]:
+    raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
+    return tuple(part for part in re.split(r"[\s,]+", raw.strip()) if part)
+
+
+def _env_actor_can(action: str, *, universe_id: str = "") -> bool:
+    from workflow.auth.provider import PermissionScope, resolve_permission
+
+    actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    grants = _env_actor_grants()
+    return resolve_permission(
+        actor_id=actor,
+        action=action,
+        grants=grants,
+        scope=PermissionScope(universe_id=universe_id),
+    ).allowed
+
 # WRITE_ACTIONS is the single source of truth for which `universe` tool
 # actions are writes. The dispatcher consults this table; any action
 # registered here is funneled through `_dispatch_with_ledger`, which
@@ -1172,9 +1195,11 @@ def _action_submit_request(
             "error": "priority_weight must be >= 0.",
         })
     source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-    host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-    is_host = source == host_id
-    if not is_host:
+    can_prioritize = _env_actor_can(
+        ACTION_SUBMIT_PRIORITY_REQUEST,
+        universe_id=uid,
+    )
+    if not can_prioritize:
         pw = 0.0
 
     request_id = f"req_{int(time.time())}_{os.urandom(4).hex()}"
@@ -1205,7 +1230,7 @@ def _action_submit_request(
         text=text,
         request_type=request_type,
         requester_id=source,
-        host_id=host_id,
+        priority_authorized=can_prioritize,
         directed_daemon=requester_directed_daemon is not None,
     )
     request_obj = {
@@ -1262,7 +1287,7 @@ def _action_submit_request(
             trigger_source=(
                 "owner_queued"
                 if requester_directed_daemon is not None
-                else "host_request" if is_host else "user_request"
+                else "operator_request" if can_prioritize else "user_request"
             ),
             priority_weight=pw,
             pickup_signal_weight=float(incentive.get("pickup_signal_weight") or 0.0),
@@ -2721,19 +2746,21 @@ def _action_queue_cancel(
         })
     if target.status == "running":
         source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-        host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-        is_host = source == host_id
         is_owner = bool(target.claimed_by) and source == target.claimed_by
-        if not (is_host or is_owner):
+        can_cancel = _env_actor_can(
+            ACTION_CANCEL_BRANCH_TASK,
+            universe_id=uid,
+        )
+        if not (can_cancel or is_owner):
             return json.dumps({
                 "universe_id": uid,
                 "status": "rejected",
                 "error": "cancel_not_authorized",
                 "branch_task_id": branch_task_id,
                 "hint": (
-                    "Running-task cancel requires the host or the "
-                    "claiming daemon. Set UNIVERSE_SERVER_USER to the "
-                    "task owner or the host identity."
+                    "Running-task cancel requires the claiming daemon "
+                    f"or the {ACTION_CANCEL_BRANCH_TASK!r} capability "
+                    f"in {ENV_CAPABILITIES_VAR}."
                 ),
             })
         try:
@@ -2957,9 +2984,7 @@ def _action_post_to_goal_pool(
             "error": "priority_weight must be >= 0.",
         })
     source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-    host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-    is_host = source == host_id
-    if not is_host:
+    if not _env_actor_can(ACTION_POST_PRIORITY_GOAL_POOL, universe_id=uid):
         pw = 0.0
 
     try:

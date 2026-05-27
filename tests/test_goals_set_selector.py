@@ -141,7 +141,7 @@ def test_set_selector_requires_author_or_host(env, monkeypatch):
     us, base = env
     gid = _seed_goal(us)  # author = alice
     bvid = _seed_published_branch(us, base)
-    # Switch actor to eve — not author, not host.
+    # Switch actor to eve — not author and no selector-bind grant.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "eve")
     importlib.reload(us)
     try:
@@ -156,12 +156,13 @@ def test_set_selector_requires_author_or_host(env, monkeypatch):
         importlib.reload(us)
 
 
-def test_set_selector_host_actor_can_bind(env, monkeypatch):
+def test_set_selector_granted_actor_can_bind(env, monkeypatch):
     us, base = env
     gid = _seed_goal(us)  # author = alice
     bvid = _seed_published_branch(us, base)
-    # Switch to the host actor (UNIVERSE_SERVER_HOST_USER, defaults to "host").
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
+    # Switch to a non-author carrying the explicit selector-bind grant.
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "operator")
+    monkeypatch.setenv("UNIVERSE_SERVER_CAPABILITIES", "set_goal_selector")
     importlib.reload(us)
     try:
         result = _call(

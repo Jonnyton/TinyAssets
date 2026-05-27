@@ -19,6 +19,9 @@ from workflow.auth.provider import (
     ANONYMOUS,
     AuthProvider,
     Identity,
+    PermissionAction,
+    PermissionContext,
+    PermissionScope,
     create_provider,
 )
 
@@ -78,7 +81,12 @@ def current_identity() -> Identity:
     return getattr(_local, "identity", ANONYMOUS)
 
 
-def require_auth(capability: str | None = None) -> Identity:
+def require_auth(
+    capability: str | PermissionAction | None = None,
+    *,
+    scope: PermissionScope | None = None,
+    context: PermissionContext | None = None,
+) -> Identity:
     """Get current identity, raising if auth is required but missing.
 
     Args:
@@ -98,9 +106,14 @@ def require_auth(capability: str | None = None) -> Identity:
     if provider.is_auth_required() and identity.user_id == "anonymous":
         raise PermissionError("Authentication required")
 
-    if capability and not identity.can(capability):
+    if capability:
+        verdict = identity.can(capability, scope=scope, context=context)
+    else:
+        verdict = None
+
+    if verdict is not None and not verdict.allowed:
         raise PermissionError(
-            f"Missing capability: {capability} "
+            f"Missing capability: {verdict.action} "
             f"(user={identity.username}, capabilities={identity.capabilities})"
         )
 

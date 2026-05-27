@@ -67,6 +67,25 @@ from workflow.catalog import CommitFailedError, DirtyFileError
 
 logger = logging.getLogger("universe_server.market")
 
+ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
+
+
+def _current_actor_grants() -> tuple[str, ...]:
+    raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
+    return tuple(part for part in raw.replace(",", " ").split() if part)
+
+
+def _current_actor_has_capability(action: str) -> bool:
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.auth.provider import resolve_permission
+
+    return resolve_permission(
+        actor_id=_current_actor(),
+        action=action,
+        grants=_current_actor_grants(),
+    ).allowed
+
+
 PATCH_REQUEST_AUTHORITY_BOUNDARY: dict[str, bool] = {
     "affects_pickup_priority": True,
     "affects_acceptance": False,
@@ -168,7 +187,7 @@ def classify_patch_request(
     text: str,
     request_type: str,
     requester_id: str,
-    host_id: str,
+    priority_authorized: bool = False,
     directed_daemon: bool = False,
 ) -> dict[str, Any]:
     """Classify patch-loop intake before daemon implementation work starts."""
@@ -180,7 +199,7 @@ def classify_patch_request(
             break
 
     authority_scope = (
-        "host_priority_allowed" if requester_id == host_id else "requester_pickup_only"
+        "operator_priority_allowed" if priority_authorized else "requester_pickup_only"
     )
     if directed_daemon:
         authority_scope = f"{authority_scope}+proposal_only_directed_daemon"
@@ -1567,8 +1586,8 @@ def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
     ``branch_version_id=""`` to unbind (fall back to platform
     default selector).
 
-    Authority: only Goal author or a host-level actor may bind a
-    selector — same surface as ``set_canonical``.
+    Authority: only Goal author or an actor with the selector-bind
+    capability may bind a selector.
 
     Required kwargs:
       * ``goal_id`` — Goal whose selector is being bound.
@@ -1585,6 +1604,7 @@ def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
     from workflow.api.branches import _ensure_workflow_db
     from workflow.api.engine_helpers import _current_actor
     from workflow.daemon_server import (
+        CAP_SET_GOAL_SELECTOR,
         SelectorHasEffectsError,
         get_goal,
         set_selector_branch,
@@ -1609,14 +1629,15 @@ def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
         })
 
     actor = _current_actor()
-    host_actor = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-    if actor != goal["author"] and actor != host_actor:
+    if actor != goal["author"] and not _current_actor_has_capability(
+        CAP_SET_GOAL_SELECTOR,
+    ):
         return json.dumps({
             "status": "rejected",
             "error": (
-                "Only the Goal author or a host-level actor may bind "
-                "the selector branch. Goal author is "
-                f"'{goal['author']}'; request actor is '{actor}'."
+                "Only the Goal author or an actor with "
+                f"{CAP_SET_GOAL_SELECTOR!r} may bind the selector branch. "
+                f"Goal author is '{goal['author']}'; request actor is '{actor}'."
             ),
         })
 
@@ -1666,7 +1687,11 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     from workflow.api.engine_helpers import (
         _current_actor,
     )
-    from workflow.daemon_server import get_goal, set_canonical_branch
+    from workflow.daemon_server import (
+        CAP_SET_CANONICAL_BRANCH,
+        get_goal,
+        set_canonical_branch,
+    )
 
     gid = (kwargs.get("goal_id") or "").strip()
     if not gid:
@@ -1679,14 +1704,15 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     except KeyError:
         return json.dumps({"status": "rejected", "error": f"Goal '{gid}' not found."})
 
-    # Authority: only Goal author or host may set canonical.
     actor = _current_actor()
-    host_actor = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-    if actor != goal["author"] and actor != host_actor:
+    if actor != goal["author"] and not _current_actor_has_capability(
+        CAP_SET_CANONICAL_BRANCH,
+    ):
         return json.dumps({
             "status": "rejected",
             "error": (
-                "Only the Goal author or a host-level actor may set the canonical branch. "
+                "Only the Goal author or an actor with "
+                f"{CAP_SET_CANONICAL_BRANCH!r} may set the canonical branch. "
                 f"Goal author is '{goal['author']}'; request actor is '{actor}'."
             ),
         })
@@ -2116,7 +2142,7 @@ def _action_gates_define_ladder(kwargs: dict[str, Any]) -> str:
         _storage_backend,
     )
     from workflow.catalog.layout import slugify
-    from workflow.daemon_server import get_goal
+    from workflow.daemon_server import CAP_DEFINE_GATE_LADDER, get_goal
     from workflow.identity import git_author
 
     gid = (kwargs.get("goal_id") or "").strip()
@@ -2171,11 +2197,14 @@ def _action_gates_define_ladder(kwargs: dict[str, Any]) -> str:
             "error": f"Goal '{gid}' not found.",
         })
     actor = _current_actor_or_anon()
-    if goal.get("author") and goal["author"] != actor and actor != "host":
+    if goal.get("author") and goal["author"] != actor and not (
+        _current_actor_has_capability(CAP_DEFINE_GATE_LADDER)
+    ):
         return json.dumps({
             "status": "rejected",
             "error": (
-                "Only the Goal author can define its ladder. "
+                "Only the Goal author or an actor with "
+                f"{CAP_DEFINE_GATE_LADDER!r} can define its ladder. "
                 f"Owner: {goal['author']}."
             ),
         })
@@ -2583,6 +2612,7 @@ def _action_gates_retract(kwargs: dict[str, Any]) -> str:
     )
     from workflow.catalog.layout import slugify
     from workflow.daemon_server import (
+        CAP_RETRACT_GATE_CLAIM,
         get_branch_definition,
         get_gate_claim,
         get_goal,
@@ -2625,7 +2655,7 @@ def _action_gates_retract(kwargs: dict[str, Any]) -> str:
             "claim": existing,
         }, default=str)
     actor = _current_actor_or_anon()
-    # Owner-retract: original claimant, Goal author, or ambient host.
+    # Owner-retract: original claimant, Goal author, or explicit action grant.
     claimed_by = existing.get("claimed_by") or ""
     goal_author = ""
     goal_id = existing.get("goal_id") or ""
@@ -2638,11 +2668,14 @@ def _action_gates_retract(kwargs: dict[str, Any]) -> str:
         except KeyError:
             pass
     allowed = {actor_id for actor_id in (claimed_by, goal_author) if actor_id}
-    if actor not in allowed and actor != "host":
+    if actor not in allowed and not _current_actor_has_capability(
+        CAP_RETRACT_GATE_CLAIM,
+    ):
         return json.dumps({
             "status": "rejected",
             "error": (
-                "Only the claim author or Goal owner can retract "
+                "Only the claim author, Goal owner, or an actor with "
+                f"{CAP_RETRACT_GATE_CLAIM!r} can retract "
                 f"(claimant: '{claimed_by}', goal owner: "
                 f"'{goal_author}')."
             ),

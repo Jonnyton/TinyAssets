@@ -578,3 +578,15 @@ Notes:
   current premise mechanism.
 - Ship condition: focused soul/premise tests pass, branch pushed, PR opened
   for opposite-family checker review.
+
+## PR-139 Permission Consolidation - 2026-05-27
+
+- 2026-05-27 create `../wf-pr139-permission` on `codex/pr139-permission` by
+  codex-gpt5-desktop.
+- Source: live wiki PR-139 souled-universe consolidation program; slice 4
+  coordination marker filed in the live wiki.
+- Purpose: implement build-order step 4 only: CHILD-3 permission consolidation
+  through a test-universe `.can(action, scope, context)` path, resolver-decision
+  fixture handle, and legacy `is_host` equivalence evidence.
+- Ship condition: focused permission/auth/universe tests pass, branch pushed,
+  PR opened for opposite-family checker review.

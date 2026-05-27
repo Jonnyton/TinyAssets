@@ -64,6 +64,7 @@ Substantive work flowing through the live MCP brain — not duplicated here. Cur
 - **PR-129** (filed 2026-05-19) — Goal-bound branch protocols / ordered branch family runbook with typed artifact handoffs. Real community-build case (chatbot already composed manually via wiki prose; needs first-class durability). Dispatcher `ec15c952-aefa-42ab-b50b-eee1524d3ef9` queued.
 - **PR-131** (filed 2026-05-19) — Host-local Windows desktop effect adapter; closes BUG-043 generalized. First consumer of #914 external-write design. Dispatcher `bc6ed9df-e764-495a-b466-c5c86d7e0e2e` queued.
 - **PR-130** (Markovic) — peer-reviewed simulation-biology publication strategy.
+- **PR-139 / GH #1090** — souled-universe consolidation; slices #1089/#1091/#1092 landed; slice 4 permission lane in flight.
 - **New universes in flight:** Meridian Ashes (fantasy prose-lab), Etsy Printify v2 (commerce via effect packets), Markovic (scientific publication).
 
 For full live-brain enumeration see `.claude/agent-memory/navigator/wiki_sweep_cursor.md` (refreshed 2026-05-19: 890 promoted + 134 drafts + theme distribution).

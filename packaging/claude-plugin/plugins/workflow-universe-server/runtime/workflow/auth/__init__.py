@@ -16,13 +16,25 @@ Dev mode:
 """
 
 from workflow.auth.middleware import auth_middleware, require_auth
-from workflow.auth.provider import AuthProvider, DevAuthProvider, OAuthProvider
+from workflow.auth.provider import (
+    AuthProvider,
+    DevAuthProvider,
+    OAuthProvider,
+    PermissionAction,
+    PermissionContext,
+    PermissionScope,
+    PermissionVerdict,
+)
 from workflow.auth.wellknown import create_wellknown_routes
 
 __all__ = [
     "AuthProvider",
     "DevAuthProvider",
     "OAuthProvider",
+    "PermissionAction",
+    "PermissionContext",
+    "PermissionScope",
+    "PermissionVerdict",
     "auth_middleware",
     "require_auth",
     "create_wellknown_routes",

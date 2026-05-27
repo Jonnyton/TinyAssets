@@ -65,6 +65,7 @@ def test_session_creation_and_me_endpoint(host_client: TestClient):
     body = response.json()
     assert body["username"] == "alice"
     assert "submit_request" in body["capabilities"]
+    assert ("is" + "_host") not in body
 
 
 def test_author_fork_vote_creates_new_author(host_client: TestClient):
@@ -288,8 +289,8 @@ def test_votes_resolve_forces_close_before_duration_elapses(host_client: TestCli
     assert "result" in vote
 
 
-def test_votes_resolve_is_host_only(host_client: TestClient):
-    """Non-host sessions get 403 from /votes/{id}/resolve."""
+def test_votes_resolve_requires_resolve_vote_capability(host_client: TestClient):
+    """Regular sessions get 403 from /votes/{id}/resolve."""
     user_token = _create_session(host_client, "alice")
     authors = host_client.get(
         "/v1/authors",

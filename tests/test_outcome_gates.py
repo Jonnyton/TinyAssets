@@ -110,7 +110,7 @@ def test_define_ladder_owner_only(gates_env, monkeypatch):
     result = json.loads(us.gates(action="define_ladder",
                                  goal_id=gid, ladder=json.dumps(_LADDER)))
     assert result["status"] == "rejected"
-    assert "author can define" in result["error"]
+    assert "define_gate_ladder" in result["error"]
 
 
 def test_define_ladder_rejects_invalid_json(gates_env):
