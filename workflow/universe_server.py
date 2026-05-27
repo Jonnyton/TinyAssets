@@ -960,6 +960,8 @@ def wiki(
     dry_run: bool = True,
     skip_lint: bool = False,
     max_results: int = 10,
+    offset: int = 0,
+    max_chars: int = 15000,
     component: str = "",
     severity: str = "",
     title: str = "",
@@ -1012,6 +1014,8 @@ def wiki(
         changed_since: Optional ISO timestamp for action="read" ambient feed
             and required ISO timestamp for action="since"; only pages updated
             after this timestamp are returned.
+        offset/max_chars: For action="read", read a bounded character window
+            from large pages. Truncated responses include `next_offset`.
     """
     return _wiki_impl(
         action=action,
@@ -1032,6 +1036,8 @@ def wiki(
         dry_run=dry_run,
         skip_lint=skip_lint,
         max_results=max_results,
+        offset=offset,
+        max_chars=max_chars,
         component=component,
         severity=severity,
         title=title,

@@ -528,3 +528,14 @@ Notes:
   checkpoint DB size in storage status before it becomes a disk-full outage.
 - Ship condition: focused tests pass, ruff passes, PR opened for Claude/Cowork
   review.
+
+## BUG-106 Wiki Read Truncation - 2026-05-27
+
+- 2026-05-27 create `../wf-bug106-wiki-read-truncation` on
+  `codex/bug106-wiki-read-truncation` by codex-gpt5-desktop.
+- Source: live wiki BUG-106 filed from the souled-universe draft review:
+  `wiki read` returns partial large documents without an in-band marker.
+- Purpose: make wiki read truncation unmistakable and actionable for connector
+  users.
+- Ship condition: focused wiki read tests pass, PR opened for Claude-family
+  checker review.

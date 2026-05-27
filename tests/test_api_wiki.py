@@ -356,6 +356,45 @@ def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
     assert "ambient" in fresh["matched_terms"]
 
 
+def test_wiki_read_large_page_marks_content_and_supports_offset(wiki_env):
+    path = wiki_env / "pages" / "notes" / "large-read.md"
+    body = "start marker\n" + ("x" * 16000) + "\nend marker\n"
+    path.write_text(
+        "---\n"
+        "title: Large Read\n"
+        "type: note\n"
+        "updated: 2026-05-27T00:00:00Z\n"
+        "---\n\n"
+        + body,
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    first = json.loads(wiki(action="read", page="large-read", max_chars=4000))
+
+    assert first["truncated"] is True
+    assert first["read_start"] == 0
+    assert first["read_end"] == 4000
+    assert first["next_offset"] == 4000
+    assert "WIKI READ TRUNCATED" in first["content"]
+    assert "offset=4000" in first["content"]
+    assert "end marker" not in first["content"]
+
+    second = json.loads(
+        wiki(
+            action="read",
+            page="large-read",
+            offset=first["next_offset"],
+            max_chars=20000,
+        )
+    )
+
+    assert second["truncated"] is False
+    assert second["read_start"] == 4000
+    assert second["next_offset"] is None
+    assert "end marker" in second["content"]
+
+
 def test_wiki_write_requires_filename_and_content(wiki_env):
     res = json.loads(wiki(action="write", category="notes"))
     assert "error" in res
