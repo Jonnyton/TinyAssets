@@ -921,6 +921,99 @@ def _composer_contains_message(page, message: str) -> tuple[bool, str]:
     return normalized_message in normalized_composer, composer_text
 
 
+def _clear_composer(page, inp) -> None:
+    """Best-effort clear of the chat composer (keystroke + DOM fallback)."""
+    try:
+        inp.click()
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Delete")
+    except Exception:
+        pass
+    try:
+        leftover = (inp.inner_text() or "").strip()
+    except Exception:
+        leftover = ""
+    if leftover:
+        try:
+            inp.evaluate(
+                "(el) => { "
+                "if ('value' in el) { el.value = ''; } "
+                "else { el.textContent = ''; } "
+                "el.dispatchEvent(new Event('input', {bubbles: true})); "
+                "}"
+            )
+        except Exception:
+            pass
+
+
+def _type_message_verified(page, inp, message, *, max_attempts=3):
+    """Type ``message`` into the composer and verify the FULL text landed
+    BEFORE the caller submits.
+
+    Why this exists (host-reported 2026-05-28, recurring class):
+    ``page.keyboard.type`` over a long multi-line message can drop
+    keystrokes on a slow render, interleave with leftover composer text,
+    or — worst — let a transient focus-steal / auto-dismiss click submit a
+    PARTIAL message mid-type. That produces a truncated send. The old
+    post-send guard only asked "is the WHOLE message still in the
+    composer?", so a truncated composer (empty-ish) read as success and the
+    half-message went out silently.
+
+    Defenses:
+      * Newlines are entered with Shift+Enter, never a bare Enter, so an
+        embedded newline can never trigger claude.ai's Enter-to-send and
+        submit the message early.
+      * After typing, the composer text is read back and compared to the
+        intended message (whitespace-normalized). A mismatch means a
+        dropped / early-submitted / interleaved type — clear and retry.
+
+    Returns ``(ok, composer_text)``. ``ok=False`` after ``max_attempts``
+    means the full message never landed; the caller MUST NOT send — it
+    should dump diagnostics and fail loudly rather than emit a fragment.
+    """
+    normalized_target = _normalize_chat_text(message)
+    composer_text = ""
+    for _attempt in range(max_attempts):
+        _clear_composer(page, inp)
+        # Primary path: atomic insert. `keyboard.insert_text` commits the
+        # whole string as ONE input event (the same path IME/paste uses), so
+        # there are no per-keystroke events to drop and no bare Enter to
+        # submit the message early. This is what fixes the host-reported
+        # truncation: char-by-char `keyboard.type` over a long line dropped
+        # keystrokes (observed: a 430-char line landing as ~120 chars).
+        inserted = False
+        try:
+            inp.click()
+            page.keyboard.insert_text(message)
+            inserted = True
+        except Exception:
+            inserted = False
+        if not inserted:
+            # Fallback: per-line typing, Shift+Enter for newlines so an
+            # embedded newline still can't submit mid-message.
+            for idx, line in enumerate(message.split("\n")):
+                if idx > 0:
+                    try:
+                        page.keyboard.press("Shift+Enter")
+                    except Exception:
+                        pass
+                if line:
+                    page.keyboard.type(line, delay=12)
+        time.sleep(0.3)
+        composer_text = _locator_text(inp)
+        normalized_composer = _normalize_chat_text(composer_text)
+        if not normalized_target:
+            return True, composer_text
+        if normalized_target in normalized_composer:
+            return True, composer_text
+        # Mismatch: the composer doesn't hold the full message. Likely a
+        # partial/early submit or detached input — re-scan before retry.
+        rescanned = _first_usable_input(page)
+        if rescanned is not None:
+            inp = rescanned
+    return False, composer_text
+
+
 def _visible_submit_block_note(page) -> str:
     """Extract visible rate-limit/send-block hints for diagnostic notes."""
     try:
@@ -1619,35 +1712,37 @@ def cmd_ask(message: str) -> int:
                 f"INFO: recovered chat input via {recovery_steps}",
                 file=sys.stderr,
             )
-        inp.click()
-        # Clear any stale text (user-sim mid-type changes, stream abort
-        # remnants, prior-send leftover). Without this, Mission 8 hit
-        # "show me the list of universes and a one-sentencplease submit
-        # a scene direction request..." — new text interleaved with old.
-        try:
-            page.keyboard.press("Control+A")
-            page.keyboard.press("Delete")
-        except Exception:
-            pass
-        # Defensive: if the keystroke path didn't actually clear (some
-        # contenteditable shells swallow Ctrl+A), fall back to a DOM
-        # clear with an 'input' event so the framework state updates.
-        try:
-            current = (inp.inner_text() or "").strip()
-        except Exception:
-            current = ""
-        if current:
-            try:
-                inp.evaluate(
-                    "(el) => { "
-                    "if ('value' in el) { el.value = ''; } "
-                    "else { el.textContent = ''; } "
-                    "el.dispatchEvent(new Event('input', {bubbles: true})); "
-                    "}"
-                )
-            except Exception:
-                pass
-        page.keyboard.type(message, delay=15)
+        # Type the message AND verify the full text landed in the composer
+        # before we submit. This guards the host-reported truncation class:
+        # dropped keystrokes / interleaving / a partial early-submit that the
+        # post-send check could not catch. Clearing stale text is handled
+        # inside the helper (per-attempt). Newlines go in as Shift+Enter so
+        # an embedded newline never triggers Enter-to-send mid-message.
+        typed_ok, composer_text = _type_message_verified(page, inp, message)
+        if not typed_ok:
+            block_note = _visible_submit_block_note(page)
+            dump = _capture_failure_dump(
+                page,
+                "message_truncated_typing",
+                note=(
+                    "composer did not contain the full message after typing "
+                    "(dropped keystrokes / interleave / partial early submit); "
+                    "nothing was sent. "
+                    f"message_len={len(message)}; "
+                    f"message_preview={message[:80]!r}; "
+                    f"composer_preview={composer_text[:120]!r}; "
+                    f"block_note={block_note or 'none'}"
+                ),
+            )
+            print(
+                "ERROR: message was NOT sent — the composer never held the "
+                "full message after typing (truncation / keystroke-drop "
+                "guard). Nothing was submitted, so no fragment went out. "
+                "Re-run the same `ask`. Diagnostic dump: "
+                f"output/claude_chat_failures/{dump}.{{html,png,txt}}",
+                file=sys.stderr,
+            )
+            return 7
         # Prefer the send button if visible; fall back to Enter.
         send = _first_visible(page, SEND_BUTTON_SELECTORS)
         if send is not None:
