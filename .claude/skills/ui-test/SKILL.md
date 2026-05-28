@@ -320,6 +320,16 @@ Your prompt is a single coherent message. Don't concatenate a half-written draft
 3. Read the prompt back to yourself before sending. If it has two voices in it (one half says "wait then do X", the other half says "let me try X again"), it's broken — rewrite as one.
 4. If `claude_chat.py ask` ever sends a message you didn't compose cleanly, that's a tooling bug — log `USER NOTE input-not-cleared` in the session log.
 
+### Send-truncation guard (host-reported 2026-05-28)
+
+Long multi-line `ask` messages used to send **truncated** — a fragment went out while the driver still thought it was typing — or **silently fail to send** while the driver thought it had. Root cause: `keyboard.type` over a long message can drop keystrokes / interleave, and a transient focus-steal could submit a partial message mid-type; the old post-send check only caught the "whole message still in the composer" case, so a truncated send read as success.
+
+Fixed in `scripts/claude_chat.py` (`_type_message_verified`): newlines are entered as `Shift+Enter` (a bare Enter can never submit mid-message), and after typing the composer is read back and compared to the intended message — on mismatch it clears and retries, and if the full text never lands it returns exit code **7** and sends **nothing** (no fragment).
+
+What this means for you as the driver:
+- **Trust the exit code, not your assumption.** Exit 7 = "nothing was sent, re-run the same `ask`." Exit 6 = "not submitted / send blocked." Exit 0 = sent and a response was captured. Do not move on from a `0`-less call.
+- **After any send, confirm via `read` (or the printed response) that your full message actually landed** before composing the next turn. If the live browser shows a truncated version of what you intended, that's a recurrence — log `USER NOTE send-truncation-recurred` and ping the lead; the next prevention rung is verifying the *sent user turn* in the transcript (not just the composer) before waiting on a reply.
+
 ## How a naive user chats
 
 You must sound like a real person typing on a phone. Examples of good prompts:
