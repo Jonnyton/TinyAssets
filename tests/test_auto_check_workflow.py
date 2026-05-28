@@ -63,6 +63,37 @@ def test_auto_check_codex_lane_posts_structured_verdict_marker():
     assert "Do not commit, push, merge" in text
 
 
+def test_auto_check_codex_lane_fills_review_api_with_reviewer_bot_token():
+    text = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Fill GitHub Review API surface from Codex approval" in text
+    assert "CODEX_REVIEWER_BOT_TOKEN" in text
+    assert "WORKFLOW_REVIEW_BOT_TOKEN" in text
+    assert "github-token: ${{ secrets.CODEX_REVIEWER_BOT_TOKEN" in text
+    assert "secrets.WORKFLOW_REVIEW_BOT_TOKEN || github.token }}" in text
+    assert "pulls.createReview" in text
+    assert "event: 'APPROVE'" in text
+    assert "commit_id: head" in text
+    assert "${marker} status=filled family=codex" in text
+
+
+def test_auto_check_codex_lane_marks_review_api_degraded_when_not_filled():
+    text = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "auto-checker-review-api-degraded" in text
+    assert "missing_reviewer_bot_token" in text
+    assert "review_api_write_failed" in text
+    assert "workflow-review-api-fill:v1` status=degraded" not in text
+    assert (
+        "Do not treat an empty `pulls/{pull_number}/reviews` response as a "
+        "missing checker gate"
+    ) in text
+    assert (
+        "The canonical Codex checker verdict for this head is the "
+        "`workflow-checker-verdict:v1` PR comment."
+    ) in text
+
+
 def test_auto_check_codex_lane_enforces_bounded_logged_review_mode():
     text = WORKFLOW.read_text(encoding="utf-8")
 

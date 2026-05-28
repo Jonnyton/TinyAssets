@@ -3,8 +3,11 @@ name: Auto-check PR
 # Independent checker worker for ready_for_checker PRs.
 #
 # This workflow is intentionally a checker, not a writer or merge executor.
-# It never commits, pushes, approves through GitHub Review, or merges. It posts
-# a structured PR comment that merge-readiness can tie to the current head SHA.
+# The model worker never commits, pushes, approves through GitHub Review, or
+# merges. It posts a structured PR comment that merge-readiness can tie to the
+# current head SHA. A separate reviewer-bot token may then mirror an approve
+# verdict into the GitHub Reviews API; if that mirror path is unavailable, the
+# workflow leaves a degraded marker pointing peers back to the canonical comment.
 
 on:
   workflow_dispatch:
@@ -367,6 +370,132 @@ jobs:
                 issue_number: prNumber,
                 labels: ['auto-checker-failed'],
               });
+            }
+
+      - name: Fill GitHub Review API surface from Codex approval
+        if: steps.preflight.outputs.skip == 'false' && env.HAS_CODEX_AUTH == 'true'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          HEAD_SHA: ${{ steps.preflight.outputs.head_sha }}
+          VERDICT: ${{ steps.codex-review.outputs.verdict || 'send_back' }}
+          REVIEW_STEP_OUTCOME: ${{ steps.codex-review.outcome }}
+          HAS_CODEX_REVIEWER_BOT_TOKEN: ${{ secrets.CODEX_REVIEWER_BOT_TOKEN != '' }}
+          HAS_WORKFLOW_REVIEW_BOT_TOKEN: ${{ secrets.WORKFLOW_REVIEW_BOT_TOKEN != '' }}
+          STATUS_GITHUB_TOKEN: ${{ github.token }}
+        with:
+          github-token: ${{ secrets.CODEX_REVIEWER_BOT_TOKEN || secrets.WORKFLOW_REVIEW_BOT_TOKEN || github.token }}
+          script: |
+            const prNumber = Number(process.env.PR_NUMBER);
+            const marker = 'workflow-review-api-fill:v1';
+            const head = process.env.HEAD_SHA || '';
+            const statusGithub = require('@actions/github').getOctokit(
+              process.env.STATUS_GITHUB_TOKEN,
+            );
+            const hasReviewerBotToken =
+              process.env.HAS_CODEX_REVIEWER_BOT_TOKEN === 'true' ||
+              process.env.HAS_WORKFLOW_REVIEW_BOT_TOKEN === 'true';
+            async function ensureLabel(name, color, description) {
+              try {
+                await statusGithub.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await statusGithub.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                  color,
+                  description,
+                });
+              }
+            }
+            async function markDegraded(reason, detail) {
+              await ensureLabel(
+                'auto-checker-review-api-degraded',
+                'fbca04',
+                'Canonical checker verdict exists, but the GitHub Reviews API surface was not filled.',
+              );
+              await statusGithub.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels: ['auto-checker-review-api-degraded'],
+              });
+              await statusGithub.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: [
+                  `<!-- ${marker} status=degraded reason=${reason} family=codex head=${head} run=${process.env.GITHUB_RUN_ID} -->`,
+                  '**GitHub Review API fill degraded**',
+                  '',
+                  'The canonical Codex checker verdict for this head is the `workflow-checker-verdict:v1` PR comment.',
+                  'Do not treat an empty `pulls/{pull_number}/reviews` response as a missing checker gate while this degraded marker is present.',
+                  '',
+                  `Reason: \`${reason}\``,
+                  detail ? `Detail: \`${String(detail).slice(0, 500).replace(/`/g, "'")}\`` : '',
+                ].filter(Boolean).join('\n'),
+              });
+            }
+            if (
+              process.env.REVIEW_STEP_OUTCOME !== 'success' ||
+              process.env.VERDICT !== 'approve'
+            ) {
+              core.info('GitHub Review API fill only runs for successful approve verdicts.');
+              return;
+            }
+            if (!hasReviewerBotToken) {
+              await markDegraded('missing_reviewer_bot_token', 'Set CODEX_REVIEWER_BOT_TOKEN or WORKFLOW_REVIEW_BOT_TOKEN to a non-host reviewer identity.');
+              return;
+            }
+            try {
+              const existingReviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                per_page: 100,
+              });
+              const alreadyFilled = existingReviews.some((review) => {
+                const body = String(review.body || '');
+                return body.includes(marker) && body.includes(`head=${head}`);
+              });
+              if (alreadyFilled) {
+                core.info(`PR #${prNumber} already has a Review API fill for ${head}.`);
+                return;
+              }
+              await github.rest.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                commit_id: head,
+                event: 'APPROVE',
+                body: [
+                  `<!-- ${marker} status=filled family=codex head=${head} run=${process.env.GITHUB_RUN_ID} -->`,
+                  'Canonical Codex checker approval mirrored from `workflow-checker-verdict:v1`.',
+                ].join('\n'),
+              });
+              try {
+                await statusGithub.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: 'auto-checker-review-api-degraded',
+                });
+              } catch (error) {
+                if (error.status === 404) {
+                  return;
+                }
+                core.warning(`Could not clear auto-checker-review-api-degraded: ${error.message}`);
+              }
+            } catch (error) {
+              await markDegraded(
+                'review_api_write_failed',
+                error && error.message ? error.message : String(error),
+              );
             }
 
   unsupported-checker:
