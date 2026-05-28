@@ -18,6 +18,7 @@ from workflow.resolution.contracts import (
     guard_unknown_taxonomy,
     validate_decision_payload,
 )
+from workflow.resolution.resolver import resolve_authority
 
 __all__ = [
     "FIXTURE_LOCATION",
@@ -31,5 +32,6 @@ __all__ = [
     "ResolverDecision",
     "ResolverInput",
     "guard_unknown_taxonomy",
+    "resolve_authority",
     "validate_decision_payload",
 ]
