@@ -38,15 +38,48 @@ class PermissionAction:
 
     name: str
     cost_tier: str = "standard"
+    required_scope: str = ""
 
     def __post_init__(self) -> None:
         self.name = self.name.strip()
         self.cost_tier = self.cost_tier.strip() or "standard"
+        self.required_scope = self.required_scope.strip()
         if not self.name:
             raise ValueError("PermissionAction.name is required")
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ActionScopeMetadata:
+    """Named OAuth-scope metadata derived from an internal action registry."""
+
+    tool: str
+    action: str
+    oauth_scope: str
+    cost_tier: str
+    effect: str
+    source: str
+    checkpoint: str = "dispatch"
+    caveats: tuple[str, ...] = ()
+
+    @property
+    def action_name(self) -> str:
+        return f"{self.tool}.{self.action}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool": self.tool,
+            "action": self.action,
+            "action_name": self.action_name,
+            "oauth_scope": self.oauth_scope,
+            "cost_tier": self.cost_tier,
+            "effect": self.effect,
+            "source": self.source,
+            "checkpoint": self.checkpoint,
+            "caveats": list(self.caveats),
+        }
 
 
 @dataclass
@@ -97,6 +130,7 @@ class PermissionVerdict:
 
     allowed: bool
     action: str
+    required_scope: str
     scope: dict[str, Any]
     reason: str
     presented_grants: tuple[str, ...]
@@ -111,6 +145,7 @@ class PermissionVerdict:
         return {
             "allowed": self.allowed,
             "action": self.action,
+            "required_scope": self.required_scope,
             "scope": self.scope,
             "reason": self.reason,
             "presented_grants": list(self.presented_grants),
@@ -158,7 +193,8 @@ def resolve_permission(
             permission_context.presented_grants or tuple(grants)
         ) if grant.strip()})
     )
-    allowed = permission_action.name in presented_grants
+    required_scope = permission_action.required_scope or permission_action.name
+    allowed = required_scope in presented_grants
     resolver_decision = permission_context.resolver_decision
     evidence_handles = tuple(permission_context.external_evidence_handles)
     resolver_status = ""
@@ -173,6 +209,7 @@ def resolve_permission(
     return PermissionVerdict(
         allowed=allowed,
         action=permission_action.name,
+        required_scope=required_scope,
         scope=permission_scope.to_dict(),
         reason=reason,
         presented_grants=presented_grants,
@@ -210,6 +247,297 @@ class Identity:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+_EFFECT_TO_SCOPE_SUFFIX: dict[str, str] = {
+    "read": "read",
+    "write": "write",
+    "costly": "costly",
+    "admin": "admin",
+}
+
+_EFFECT_TO_COST_TIER: dict[str, str] = {
+    "read": "free",
+    "write": "standard",
+    "costly": "costly",
+    "admin": "admin",
+}
+
+_EXTENSION_STANDALONE_ACTIONS = frozenset({
+    "register", "list", "inspect", "approve", "disable", "enable", "remove",
+    "get_action_scope_status",
+})
+_EXTENSION_STANDALONE_WRITE_ACTIONS = frozenset({
+    "register", "approve", "disable", "enable", "remove",
+})
+_UNIVERSE_COSTLY_ACTIONS = frozenset({
+    "create_universe",
+    "post_to_goal_pool",
+    "submit_node_bid",
+    "daemon_create",
+    "daemon_summon",
+    "daemon_memory_promote",
+})
+_UNIVERSE_ADMIN_ACTIONS = frozenset({
+    "control_daemon",
+    "set_tier_config",
+    "daemon_banish",
+    "daemon_pause",
+    "daemon_resume",
+    "daemon_restart",
+    "daemon_update_behavior",
+})
+_EXTENSIONS_COSTLY_ACTIONS = frozenset({
+    "run_branch",
+    "run_branch_version",
+    "resume_run",
+    "rollback_merge",
+    "rollback_node",
+    "open_auto_ship_pr",
+    "schedule_branch",
+    "subscribe_branch",
+    "escrow_lock",
+    "escrow_release",
+    "escrow_refund",
+    "record_outcome",
+    "record_remix",
+})
+_EXTENSIONS_ADMIN_ACTIONS = frozenset({
+    "delete_branch",
+    "cancel_run",
+    "grant_effector_consent",
+    "revoke_effector_consent",
+    "pause_schedule",
+    "unpause_schedule",
+    "unschedule_branch",
+})
+_GATES_COSTLY_ACTIONS = frozenset({
+    "claim",
+    "claim_from_branch_run",
+    "stake_bonus",
+    "release_bonus",
+})
+_GATES_ADMIN_ACTIONS = frozenset({
+    "define_ladder",
+    "retract",
+    "unstake_bonus",
+})
+
+
+def _metadata_for_action(
+    *,
+    tool: str,
+    action: str,
+    source: str,
+    write_actions: set[str] | frozenset[str],
+    costly_actions: set[str] | frozenset[str] = frozenset(),
+    admin_actions: set[str] | frozenset[str] = frozenset(),
+) -> ActionScopeMetadata:
+    if action in admin_actions:
+        effect = "admin"
+    elif action in costly_actions:
+        effect = "costly"
+    elif action in write_actions:
+        effect = "write"
+    else:
+        effect = "read"
+    return ActionScopeMetadata(
+        tool=tool,
+        action=action,
+        oauth_scope=f"workflow.{tool}.{_EFFECT_TO_SCOPE_SUFFIX[effect]}",
+        cost_tier=_EFFECT_TO_COST_TIER[effect],
+        effect=effect,
+        source=source,
+    )
+
+
+def _extend_scope_rows(
+    rows: list[ActionScopeMetadata],
+    *,
+    tool: str,
+    actions: set[str] | frozenset[str],
+    source: str,
+    write_actions: set[str] | frozenset[str],
+    costly_actions: set[str] | frozenset[str] = frozenset(),
+    admin_actions: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    for action in sorted(actions):
+        rows.append(_metadata_for_action(
+            tool=tool,
+            action=action,
+            source=source,
+            write_actions=write_actions,
+            costly_actions=costly_actions,
+            admin_actions=admin_actions,
+        ))
+
+
+def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
+    """Derive action-scope metadata from internal MCP dispatch registries."""
+
+    rows: list[ActionScopeMetadata] = []
+
+    from workflow.api.auto_ship_actions import _AUTO_SHIP_ACTIONS
+    from workflow.api.branches import _BRANCH_ACTIONS, _BRANCH_WRITE_ACTIONS
+    from workflow.api.evaluation import (
+        _BRANCH_VERSION_ACTIONS,
+        _JUDGMENT_ACTIONS,
+        _JUDGMENT_WRITE_ACTIONS,
+    )
+    from workflow.api.extensions_consent_actions import _EFFECTOR_CONSENT_ACTIONS
+    from workflow.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
+    from workflow.api.market import (
+        _ATTRIBUTION_ACTIONS,
+        _ESCROW_ACTIONS,
+        _GATE_EVENT_ACTIONS,
+        _GATES_ACTIONS,
+        _OUTCOME_ACTIONS,
+    )
+    from workflow.api.runs import _RUN_ACTIONS, _RUN_WRITE_ACTIONS
+    from workflow.api.runtime_ops import (
+        _INSPECT_DRY_ACTIONS,
+        _MESSAGING_ACTIONS,
+        _PROJECT_MEMORY_ACTIONS,
+        _PROJECT_MEMORY_WRITE_ACTIONS,
+        _SCHEDULER_ACTIONS,
+    )
+    from workflow.api.universe import UNIVERSE_ACTIONS, WRITE_ACTIONS
+    from workflow.api.wiki import WIKI_ACTIONS, WIKI_WRITE_ACTIONS
+
+    _extend_scope_rows(
+        rows,
+        tool="universe",
+        actions=set(UNIVERSE_ACTIONS),
+        source="workflow.api.universe.UNIVERSE_ACTIONS",
+        write_actions=set(WRITE_ACTIONS),
+        costly_actions=_UNIVERSE_COSTLY_ACTIONS,
+        admin_actions=_UNIVERSE_ADMIN_ACTIONS,
+    )
+    _extend_scope_rows(
+        rows,
+        tool="wiki",
+        actions=set(WIKI_ACTIONS),
+        source="workflow.api.wiki.WIKI_ACTIONS",
+        write_actions=set(WIKI_WRITE_ACTIONS),
+    )
+
+    extension_actions: set[str] = set(_EXTENSION_STANDALONE_ACTIONS)
+    extension_writes: set[str] = set(_EXTENSION_STANDALONE_WRITE_ACTIONS)
+    for action_map in (
+        _BRANCH_ACTIONS,
+        _RUN_ACTIONS,
+        _JUDGMENT_ACTIONS,
+        _BRANCH_VERSION_ACTIONS,
+        _PROJECT_MEMORY_ACTIONS,
+        _MESSAGING_ACTIONS,
+        _ESCROW_ACTIONS,
+        _GATE_EVENT_ACTIONS,
+        _INSPECT_DRY_ACTIONS,
+        _AUTO_SHIP_ACTIONS,
+        _SCHEDULER_ACTIONS,
+        _OUTCOME_ACTIONS,
+        _EFFECTOR_CONSENT_ACTIONS,
+        _ATTRIBUTION_ACTIONS,
+        _LEADERBOARD_ACTIONS,
+    ):
+        extension_actions.update(action_map)
+    extension_writes.update(_BRANCH_WRITE_ACTIONS)
+    extension_writes.update(_RUN_WRITE_ACTIONS)
+    extension_writes.update(_JUDGMENT_WRITE_ACTIONS)
+    extension_writes.update({"publish_version"})
+    extension_writes.update(_PROJECT_MEMORY_WRITE_ACTIONS)
+    extension_writes.update({"messaging_send", "messaging_ack"})
+    extension_writes.update({"escrow_lock", "escrow_release", "escrow_refund"})
+    extension_writes.update({
+        "attest_gate_event", "verify_gate_event", "dispute_gate_event",
+        "retract_gate_event",
+    })
+    extension_writes.update({"open_auto_ship_pr"})
+    extension_writes.update({
+        "schedule_branch", "unschedule_branch", "subscribe_branch",
+        "unsubscribe_branch", "pause_schedule", "unpause_schedule",
+    })
+    extension_writes.update({"record_outcome", "record_remix"})
+    extension_writes.update({
+        "grant_effector_consent", "revoke_effector_consent",
+    })
+    _extend_scope_rows(
+        rows,
+        tool="extensions",
+        actions=extension_actions,
+        source="workflow.api.extensions internal dispatch tables",
+        write_actions=extension_writes,
+        costly_actions=_EXTENSIONS_COSTLY_ACTIONS,
+        admin_actions=_EXTENSIONS_ADMIN_ACTIONS,
+    )
+
+    gates_writes = {
+        "define_ladder",
+        "claim",
+        "claim_from_branch_run",
+        "retract",
+        "stake_bonus",
+        "unstake_bonus",
+        "release_bonus",
+    }
+    _extend_scope_rows(
+        rows,
+        tool="gates",
+        actions=set(_GATES_ACTIONS),
+        source="workflow.api.market._GATES_ACTIONS",
+        write_actions=gates_writes,
+        costly_actions=_GATES_COSTLY_ACTIONS,
+        admin_actions=_GATES_ADMIN_ACTIONS,
+    )
+
+    return {row.action_name: row for row in rows}
+
+
+def action_scope_for(tool: str, action: str) -> ActionScopeMetadata | None:
+    """Return the derived action-scope row for one MCP tool action."""
+
+    return build_action_scope_registry().get(f"{tool}.{action}")
+
+
+def supported_oauth_scopes() -> list[str]:
+    """Advertise named action scopes plus legacy coarse scopes."""
+
+    scopes = {row.oauth_scope for row in build_action_scope_registry().values()}
+    scopes.update({"read", "write", "admin"})
+    return sorted(scopes)
+
+
+def action_scope_audit() -> dict[str, Any]:
+    """Self-auditing read payload for CHILD-3 gradient scopes."""
+
+    registry = build_action_scope_registry()
+    rows = [row.to_dict() for row in registry.values()]
+    rows.sort(key=lambda item: (item["tool"], item["action"]))
+    return {
+        "schema_version": 1,
+        "source": "internal_dispatch_action_registries",
+        "scope_derivation": (
+            "Scopes are derived from server-side action dispatch tables and "
+            "write-action sets, not raw MCP tool schemas."
+        ),
+        "checkpoint_mode": (
+            "Dispatch checkpoints fail closed for missing named scopes when "
+            "auth is enabled; dev/no-auth mode bypasses grant enforcement."
+        ),
+        "oauth_scopes": supported_oauth_scopes(),
+        "actions": rows,
+        "counts": {
+            "actions": len(rows),
+            "oauth_scopes": len({row["oauth_scope"] for row in rows}),
+        },
+        "caveats": [
+            "Read/write/admin legacy OAuth scopes are still advertised for "
+            "older clients but are not the source of the derived table.",
+            "Argument-sensitive actions such as universe control_daemon are "
+            "classified at the action level; finer sub-action scoping can be "
+            "added by attaching metadata to that internal sub-dispatch.",
+        ],
+    }
 
 
 ANONYMOUS = Identity(

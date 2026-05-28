@@ -4311,6 +4311,82 @@ def _action_create_universe(
 # ───────────────────────────────────────────────────────────────────────────
 
 
+UNIVERSE_ACTIONS: dict[str, Any] = {
+    "list": _action_list_universes,
+    "inspect": _action_inspect_universe,
+    "read_output": _action_read_output,
+    "query_world": _action_query_world,
+    "get_activity": _action_get_activity,
+    "get_recent_events": _action_get_recent_events,
+    "get_ledger": _action_get_ledger,
+    "submit_request": _action_submit_request,
+    "give_direction": _action_give_direction,
+    "read_premise": _action_read_premise,
+    "set_premise": _action_set_premise,
+    "add_canon": _action_add_canon,
+    "add_canon_from_path": _action_add_canon_from_path,
+    "list_canon": _action_list_canon,
+    "read_canon": _action_read_canon,
+    "list_sources": _action_list_sources,
+    "read_source": _action_read_source,
+    "control_daemon": _action_control_daemon,
+    "switch_universe": _action_switch_universe,
+    "create_universe": _action_create_universe,
+    "queue_list": _action_queue_list,
+    "queue_cancel": _action_queue_cancel,
+    "subscribe_goal": _action_subscribe_goal,
+    "unsubscribe_goal": _action_unsubscribe_goal,
+    "list_subscriptions": _action_list_subscriptions,
+    "post_to_goal_pool": _action_post_to_goal_pool,
+    "submit_node_bid": _action_submit_node_bid,
+    "community_change_context": _action_community_change_context,
+    "daemon_overview": _action_daemon_overview,
+    "daemon_list": _action_daemon_list,
+    "daemon_get": _action_daemon_get,
+    "daemon_create": _action_daemon_create,
+    "daemon_summon": _action_daemon_summon,
+    "daemon_pause": _action_daemon_pause,
+    "daemon_resume": _action_daemon_resume,
+    "daemon_restart": _action_daemon_restart,
+    "daemon_banish": _action_daemon_banish,
+    "daemon_update_behavior": _action_daemon_update_behavior,
+    "daemon_control_status": _action_daemon_control_status,
+    "daemon_memory_capture": _action_daemon_memory_capture,
+    "daemon_memory_search": _action_daemon_memory_search,
+    "daemon_memory_list": _action_daemon_memory_list,
+    "daemon_memory_review": _action_daemon_memory_review,
+    "daemon_memory_promote": _action_daemon_memory_promote,
+    "daemon_memory_status": _action_daemon_memory_status,
+    "treasury_status": _action_treasury_status,
+    "set_tier_config": _action_set_tier_config,
+}
+
+
+def _dispatch_scope_error(
+    tool: str,
+    action: str,
+    *,
+    universe_id: str = "",
+) -> str | None:
+    from workflow.auth.middleware import require_action_scope
+    from workflow.auth.provider import PermissionScope
+
+    try:
+        require_action_scope(
+            tool,
+            action,
+            scope=PermissionScope(universe_id=universe_id),
+        )
+    except PermissionError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "auth_scope_required": True,
+            "tool": tool,
+            "action": action,
+        })
+    return None
+
+
 def _universe_impl(
     action: str,
     universe_id: str = "",
@@ -4345,62 +4421,16 @@ def _universe_impl(
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
     forwards every argument unchanged.
     """
-    dispatch = {
-        "list": _action_list_universes,
-        "inspect": _action_inspect_universe,
-        "read_output": _action_read_output,
-        "query_world": _action_query_world,
-        "get_activity": _action_get_activity,
-        "get_recent_events": _action_get_recent_events,
-        "get_ledger": _action_get_ledger,
-        "submit_request": _action_submit_request,
-        "give_direction": _action_give_direction,
-        "read_premise": _action_read_premise,
-        "set_premise": _action_set_premise,
-        "add_canon": _action_add_canon,
-        "add_canon_from_path": _action_add_canon_from_path,
-        "list_canon": _action_list_canon,
-        "read_canon": _action_read_canon,
-        "list_sources": _action_list_sources,
-        "read_source": _action_read_source,
-        "control_daemon": _action_control_daemon,
-        "switch_universe": _action_switch_universe,
-        "create_universe": _action_create_universe,
-        "queue_list": _action_queue_list,
-        "queue_cancel": _action_queue_cancel,
-        "subscribe_goal": _action_subscribe_goal,
-        "unsubscribe_goal": _action_unsubscribe_goal,
-        "list_subscriptions": _action_list_subscriptions,
-        "post_to_goal_pool": _action_post_to_goal_pool,
-        "submit_node_bid": _action_submit_node_bid,
-        "community_change_context": _action_community_change_context,
-        "daemon_overview": _action_daemon_overview,
-        "daemon_list": _action_daemon_list,
-        "daemon_get": _action_daemon_get,
-        "daemon_create": _action_daemon_create,
-        "daemon_summon": _action_daemon_summon,
-        "daemon_pause": _action_daemon_pause,
-        "daemon_resume": _action_daemon_resume,
-        "daemon_restart": _action_daemon_restart,
-        "daemon_banish": _action_daemon_banish,
-        "daemon_update_behavior": _action_daemon_update_behavior,
-        "daemon_control_status": _action_daemon_control_status,
-        "daemon_memory_capture": _action_daemon_memory_capture,
-        "daemon_memory_search": _action_daemon_memory_search,
-        "daemon_memory_list": _action_daemon_memory_list,
-        "daemon_memory_review": _action_daemon_memory_review,
-        "daemon_memory_promote": _action_daemon_memory_promote,
-        "daemon_memory_status": _action_daemon_memory_status,
-        "treasury_status": _action_treasury_status,
-        "set_tier_config": _action_set_tier_config,
-    }
-
+    dispatch = UNIVERSE_ACTIONS
     handler = dispatch.get(action)
     if handler is None:
         return json.dumps({
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(dispatch.keys()),
         })
+    scope_error = _dispatch_scope_error("universe", action, universe_id=universe_id)
+    if scope_error is not None:
+        return scope_error
 
     # Build kwargs from all optional params
     kwargs: dict[str, Any] = {
