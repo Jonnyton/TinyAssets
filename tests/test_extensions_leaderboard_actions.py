@@ -1,14 +1,10 @@
-"""Tests for the ``extensions`` MCP actions added by PR-123 substrate (M2).
+"""Tests for the ``extensions`` MCP actions for the leaderboard surface.
 
-- ``quality_leaderboard(goal_id, [author=<viewer>], [force=<include_private>])``
-- ``recommended_parent_for_fork(goal_id, ...)``
-
-The dispatch reuses existing ``extensions(...)`` kwargs to keep the
-tool signature stable:
-  * ``goal_id`` -> Goal under inspection.
-  * ``author`` (string) -> optional viewer override; defaults to the
-    current actor when omitted.
-  * ``force`` (bool) -> include_private flag (host / internal callers).
+DESIGN-008: leaderboard now dispatches a per-Goal selector branch.
+Tests use a pass-through selector mock that ranks by
+``judgment_score_avg`` desc so the "highest-quality first" invariant
+the round-1 formula provided is preserved at the test layer without
+needing a live LLM.
 """
 
 from __future__ import annotations
@@ -19,6 +15,51 @@ import time
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _mock_selector_passthrough(monkeypatch):
+    """Selector pass-through mock: rank by judgment_score_avg desc."""
+    def _passthrough(
+        base_path,
+        *,
+        goal_id,
+        candidate_branches,
+        actor="anonymous",
+        timeout_s=None,
+        **_extra,
+    ):
+        def _key(c):
+            sigs = c.get("signals") or {}
+            v = sigs.get("judgment_score_avg")
+            if v is None:
+                return float("-inf")
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return float("-inf")
+        ordered = sorted(candidate_branches, key=_key, reverse=True)
+        return {
+            "ok": True,
+            "branch_version_id": "mock_selector@ext",
+            "source": "platform_default",
+            "run_id": "mock-run",
+            "ranked_entries": [
+                {
+                    "branch_def_id": c["branch_def_id"],
+                    "branch_version_id": c.get("branch_version_id", ""),
+                    "score": (
+                        _key(c) if _key(c) != float("-inf") else 0.0
+                    ),
+                    "rationale": "passthrough by judgment_score_avg",
+                }
+                for c in ordered
+            ],
+        }
+    monkeypatch.setattr(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        _passthrough,
+    )
 
 
 @pytest.fixture
@@ -110,12 +151,15 @@ def test_quality_leaderboard_returns_ranked_entries(us_env):
     # Higher quality should rank first.
     assert bids[0] == "b-top"
     assert bids[-1] == "b-low"
-    # Every entry has rank + score + signals + score_components.
+    # DESIGN-008: every entry has rank + score + signals +
+    # rationale (selector-emitted). ``score_components`` is gone —
+    # the selector branch synthesizes the score, not a Python
+    # formula.
     for entry in result["entries"]:
         assert "rank" in entry
         assert "score" in entry
         assert "signals" in entry
-        assert "score_components" in entry
+        assert "rationale" in entry
     # Text channel is phone-legible.
     assert "Quality leaderboard" in result["text"]
     assert "Rank | Branch" in result["text"]
@@ -144,13 +188,20 @@ def test_quality_leaderboard_unknown_goal_returns_no_entries(us_env):
     assert result["goal"] is None
 
 
-def test_quality_leaderboard_response_includes_formula_disclosure(us_env):
+def test_quality_leaderboard_response_includes_selector_metadata(us_env):
+    """DESIGN-008: the response carries the selector branch_version_id
+    + source so the chatbot can render "ranked by selector X". The
+    round-1 formula-disclosure block is gone — selectors disclose
+    their own logic in their prompts."""
     us, base = us_env
     _seed_goal_and_branches(base)
     result = _call(us, "quality_leaderboard", goal_id="g-mcp")
-    assert "formula" in result
-    assert "weights" in result["formula"]
-    assert "judgment" in result["formula"]["weights"]
+    assert "selector" in result
+    assert "branch_version_id" in result["selector"]
+    assert result["selector"]["branch_version_id"] == "mock_selector@ext"
+    assert result["selector"]["source"] == "platform_default"
+    # No formula key — that primitive is gone.
+    assert "formula" not in result
 
 
 # ---------------------------------------------------------------------------

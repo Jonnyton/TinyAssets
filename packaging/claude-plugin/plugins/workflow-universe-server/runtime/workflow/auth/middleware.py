@@ -19,6 +19,10 @@ from workflow.auth.provider import (
     ANONYMOUS,
     AuthProvider,
     Identity,
+    PermissionAction,
+    PermissionContext,
+    PermissionScope,
+    action_scope_for,
     create_provider,
 )
 
@@ -78,7 +82,12 @@ def current_identity() -> Identity:
     return getattr(_local, "identity", ANONYMOUS)
 
 
-def require_auth(capability: str | None = None) -> Identity:
+def require_auth(
+    capability: str | PermissionAction | None = None,
+    *,
+    scope: PermissionScope | None = None,
+    context: PermissionContext | None = None,
+) -> Identity:
     """Get current identity, raising if auth is required but missing.
 
     Args:
@@ -98,10 +107,57 @@ def require_auth(capability: str | None = None) -> Identity:
     if provider.is_auth_required() and identity.user_id == "anonymous":
         raise PermissionError("Authentication required")
 
-    if capability and not identity.can(capability):
+    if capability:
+        verdict = identity.can(capability, scope=scope, context=context)
+    else:
+        verdict = None
+
+    if verdict is not None and not verdict.allowed:
         raise PermissionError(
-            f"Missing capability: {capability} "
+            f"Missing capability: {verdict.action} "
             f"(user={identity.username}, capabilities={identity.capabilities})"
         )
 
+    return identity
+
+
+def require_action_scope(
+    tool: str,
+    action: str,
+    *,
+    scope: PermissionScope | None = None,
+    context: PermissionContext | None = None,
+) -> Identity:
+    """Authorize one internal dispatch action against its named OAuth scope."""
+
+    identity = current_identity()
+    provider = _get_provider()
+    if not provider.is_auth_required():
+        return identity
+
+    metadata = action_scope_for(tool, action)
+    if metadata is None:
+        raise PermissionError(
+            f"No action-scope metadata for {tool}.{action}; refusing "
+            "authenticated dispatch."
+        )
+
+    if provider.is_auth_required() and identity.user_id == "anonymous":
+        raise PermissionError("Authentication required")
+
+    verdict = identity.can(
+        PermissionAction(
+            name=metadata.action_name,
+            cost_tier=metadata.cost_tier,
+            required_scope=metadata.oauth_scope,
+        ),
+        scope=scope,
+        context=context,
+    )
+    if not verdict.allowed:
+        raise PermissionError(
+            f"Missing OAuth scope: {verdict.required_scope} "
+            f"for action {metadata.action_name} "
+            f"(user={identity.username}, capabilities={identity.capabilities})"
+        )
     return identity

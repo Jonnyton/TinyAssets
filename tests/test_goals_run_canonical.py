@@ -30,6 +30,54 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _mock_selector_passthrough(monkeypatch):
+    """DESIGN-008 — pass-through selector for run_canonical tests.
+
+    Ranks by completed_run_count desc, matching the effective
+    ordering the round-1 formula produced for these scenarios."""
+    def _passthrough(
+        base_path,
+        *,
+        goal_id,
+        candidate_branches,
+        actor="anonymous",
+        timeout_s=None,
+        **_extra,
+    ):
+        def _key(c):
+            sigs = c.get("signals") or {}
+            return (
+                -int(sigs.get("completed_run_count") or 0),
+                -float(sigs.get("last_successful_run_at") or 0.0),
+                c.get("branch_def_id") or "",
+            )
+        ordered = sorted(candidate_branches, key=_key)
+        return {
+            "ok": True,
+            "branch_version_id": "mock_selector@canon",
+            "source": "platform_default",
+            "run_id": "mock-run",
+            "ranked_entries": [
+                {
+                    "branch_def_id": c["branch_def_id"],
+                    "branch_version_id": c.get("branch_version_id", ""),
+                    "score": float(
+                        (c.get("signals") or {}).get(
+                            "completed_run_count", 0,
+                        )
+                    ),
+                    "rationale": "passthrough by completed_run_count",
+                }
+                for c in ordered
+            ],
+        }
+    monkeypatch.setattr(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        _passthrough,
+    )
+
+
 @pytest.fixture
 def us_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))

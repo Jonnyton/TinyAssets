@@ -1,0 +1,52 @@
+{
+  "schema_version": "resolver-decision-v1",
+  "fixture_cases": [
+    {
+      "case_id": "constructed-real-conflict-unresolved",
+      "description": "Two same-surface citations disagree; the contract permits unresolved.",
+      "decision": {
+        "schema_version": "resolver-decision-v1",
+        "status": "unresolved",
+        "confidence": 0.0,
+        "evidence_handles": ["evidence:repo-main", "evidence:live-deploy"],
+        "source_role_map": {
+          "evidence:repo-main": "merged-code",
+          "evidence:live-deploy": "running-system"
+        },
+        "resolver_version": "authority-resolver-contract-v1",
+        "reason": "Claims conflict and no contract rule may force a winner."
+      }
+    },
+    {
+      "case_id": "surface-mismatch-reframe-preserves-claims",
+      "description": "Different surfaces are reframed, not dropped.",
+      "decision": {
+        "schema_version": "resolver-decision-v1",
+        "status": "resolved",
+        "confidence": 0.82,
+        "evidence_handles": ["evidence:github-commit", "evidence:local-worktree"],
+        "source_role_map": {
+          "evidence:github-commit": "merged-code",
+          "evidence:local-worktree": "worktree-snapshot"
+        },
+        "resolver_version": "authority-resolver-contract-v1",
+        "reason": "Both claims are preserved under typed surface labels."
+      }
+    },
+    {
+      "case_id": "unknown-surface-type-unresolved",
+      "description": "Unknown surfaces fail closed instead of receiving guessed precedence.",
+      "decision": {
+        "schema_version": "resolver-decision-v1",
+        "status": "unresolved",
+        "confidence": 0.0,
+        "evidence_handles": ["evidence:unknown-surface"],
+        "source_role_map": {
+          "evidence:unknown-surface": "unknown-surface"
+        },
+        "resolver_version": "authority-resolver-contract-v1",
+        "reason": "Unknown surface type is unresolved until typed by governance."
+      }
+    }
+  ]
+}

@@ -31,8 +31,14 @@ MEMORY_KIND_REGISTRY = {
     "open_loop": "Unresolved follow-up, watch item, or incomplete learning thread.",
     "contradiction": "Conflicting claims or evidence that require reconciliation.",
     "soul_proposal": "Candidate change to the daemon's identity or role contract.",
-    "session_trace_summary": "Reviewed narrative summary of one session (run/mission/cadence); references raw artifacts, not raw payloads.",
-    "experience_lesson": "Typed lesson learned from one run; carries lineage, lesson_kind, observed_delta, and evidence_refs. Atom of cross-branch group evolution.",
+    "session_trace_summary": (
+        "Reviewed narrative summary of one session (run/mission/cadence); "
+        "references raw artifacts, not raw payloads."
+    ),
+    "experience_lesson": (
+        "Typed lesson learned from one run; carries lineage, lesson_kind, "
+        "observed_delta, and evidence_refs. Atom of cross-branch group evolution."
+    ),
 }
 VALID_MEMORY_KINDS = frozenset(MEMORY_KIND_REGISTRY)
 DEFAULT_MEMORY_KIND = "semantic"
@@ -282,6 +288,82 @@ def daemon_memory_registry() -> dict[str, Any]:
         },
         "terminal_promotion_states": sorted(TERMINAL_PROMOTION_STATES),
     }
+
+
+class DaemonBrain:
+    """Daemon-scoped facade for new mini-brain consumers.
+
+    Existing module-level functions remain the stable API. The facade is kept
+    narrow until concrete consumers need more methods.
+    """
+
+    def __init__(self, base_path: str | Path, *, daemon_id: str) -> None:
+        self.base_path = Path(base_path)
+        self.daemon_id = str(daemon_id)
+
+    def capture(
+        self,
+        *,
+        content: str,
+        memory_kind: str = DEFAULT_MEMORY_KIND,
+        source_type: str = "manual",
+        source_id: str = "manual",
+        source_path: str = "",
+        source_hash: str = "",
+        reliability: str,
+        temporal_bounds: dict[str, Any] | None = None,
+        language_type: str,
+        confidence: float = 0.5,
+        importance: float = 0.5,
+        sensitivity_tier: str = "normal",
+        visibility: str = "host_private",
+        promotion_state: str = DEFAULT_PROMOTION_STATE,
+        supersedes_entry_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        embedding: Sequence[float] | None = None,
+        created_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        return capture_daemon_memory(
+            self.base_path,
+            daemon_id=self.daemon_id,
+            content=content,
+            memory_kind=memory_kind,
+            source_type=source_type,
+            source_id=source_id,
+            source_path=source_path,
+            source_hash=source_hash,
+            reliability=reliability,
+            temporal_bounds=temporal_bounds,
+            language_type=language_type,
+            confidence=confidence,
+            importance=importance,
+            sensitivity_tier=sensitivity_tier,
+            visibility=visibility,
+            promotion_state=promotion_state,
+            supersedes_entry_id=supersedes_entry_id,
+            metadata=metadata,
+            embedding=embedding,
+            created_at=created_at,
+        )
+
+    def build_packet(
+        self,
+        *,
+        query: str = "",
+        max_chars: int = DEFAULT_BRAIN_PACKET_CHARS,
+        limit: int = 5,
+        min_score: float = 0.0,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        return build_daemon_brain_packet(
+            self.base_path,
+            daemon_id=self.daemon_id,
+            query=query,
+            max_chars=max_chars,
+            limit=limit,
+            min_score=min_score,
+            trace_id=trace_id,
+        )
 
 
 def _require_text(value: str, field: str) -> str:

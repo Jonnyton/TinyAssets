@@ -27,6 +27,16 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from workflow.universe_soul import (
+    ensure_universe_soul,
+    has_soul,
+    legacy_premise_path,
+    premise_from_soul,
+    read_legacy_premise,
+    read_universe_soul,
+    write_universe_soul,
+)
+
 logger = logging.getLogger("fantasy_daemon.api")
 
 # ---------------------------------------------------------------------------
@@ -209,6 +219,10 @@ def _require_bearer_token(request: Request) -> dict[str, Any]:
     return actor
 
 
+def _actor_type(actor: dict[str, Any]) -> str:
+    return "operator" if actor.get("token_type") == "master_api_key" else "user"
+
+
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
@@ -269,6 +283,10 @@ class CreateUniverseBody(BaseModel):
     name: str | None = Field(
         None,
         description="Human-readable display name (auto-generated if omitted)",
+    )
+    branch_def_id: str | None = Field(
+        None,
+        description="Optional workflow loop branch declared in the new universe soul.",
     )
 
 
@@ -409,7 +427,10 @@ def _read_universe_info(udir: Path, uid: str) -> dict[str, Any]:
         info["word_count"] = 0
         info["daemon_state"] = "idle"
 
-    info["has_premise"] = (udir / "PROGRAM.md").exists()
+    info["has_premise"] = bool(
+        read_legacy_premise(udir).strip() or premise_from_soul(udir).strip()
+    )
+    info["has_soul"] = has_soul(udir)
     return info
 
 
@@ -764,6 +785,12 @@ def create_universe(
 
     try:
         udir.mkdir(parents=True, exist_ok=True)
+        soul = ensure_universe_soul(
+            udir,
+            loop_branch_def_id=(
+                body.branch_def_id if body and body.branch_def_id else ""
+            ),
+        )
         (udir / "canon").mkdir(exist_ok=True)
         (udir / "output").mkdir(exist_ok=True)
         (udir / "universe.json").write_text(
@@ -774,7 +801,7 @@ def create_universe(
             status_code=500, detail=f"Failed to create universe: {e}",
         )
 
-    return {"id": slug, "name": name}
+    return {"id": slug, "name": name, "has_soul": True, "soul": soul.summary()}
 
 
 @app.patch("/v1/universes/{uid}")
@@ -838,34 +865,42 @@ def delete_universe(
 
 
 @app.get("/v1/universes/{uid}/premise")
-def get_premise(uid: str, _user: str = Depends(_require_auth)) -> dict[str, str]:
-    """Read the current story premise from PROGRAM.md."""
+def get_premise(uid: str, _user: str = Depends(_require_auth)) -> dict[str, Any]:
+    """Read the current premise, falling back to soul.md purpose."""
     udir = _validate_universe_id(uid)
-    program_path = udir / "PROGRAM.md"
-    if not program_path.exists():
+    text = read_legacy_premise(udir)
+    source = "PROGRAM.md"
+    soul = read_universe_soul(udir)
+    if not text.strip() and soul is not None:
+        text = soul.purpose
+        source = "soul.md"
+    if not text.strip():
         raise HTTPException(
             status_code=404,
             detail="No premise set yet. Use the set premise endpoint to create one.",
         )
-    try:
-        text = program_path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read premise: {e}")
-    return {"text": text}
+    return {
+        "text": text,
+        "source": source,
+        "has_soul": soul is not None,
+        "soul": soul.summary() if soul is not None else None,
+    }
 
 
 @app.post("/v1/universes/{uid}/premise", status_code=200)
 def set_premise(
     uid: str, body: PremiseBody, _user: str = Depends(_require_auth),
-) -> dict[str, str]:
-    """Write or overwrite the story premise in PROGRAM.md."""
+) -> dict[str, Any]:
+    """Write or overwrite the premise as soul.md purpose plus legacy mirror."""
     udir = _validate_universe_id(uid)
-    program_path = udir / "PROGRAM.md"
     try:
-        program_path.write_text(body.text, encoding="utf-8")
+        soul = write_universe_soul(
+            udir, purpose=body.text, lineage="created-from-premise",
+        )
+        legacy_premise_path(udir).write_text(body.text, encoding="utf-8")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to write premise: {e}")
-    return {"status": "ok"}
+    return {"status": "ok", "has_soul": True, "soul": soul.summary()}
 
 
 # -- Notes -----------------------------------------------------------------
@@ -1148,7 +1183,9 @@ def get_overview(uid: str, _user: str = Depends(_require_auth)) -> dict[str, Any
         except OSError:
             pass
 
-    premise_set = (udir / "PROGRAM.md").exists()
+    premise_set = bool(
+        read_legacy_premise(udir).strip() or premise_from_soul(udir).strip()
+    )
     daemon_state = status.get("daemon_state", "idle")
 
     # Check if daemon is actually on this universe
@@ -2080,7 +2117,6 @@ def get_current_user(
         "username": actor.get("username"),
         "display_name": actor.get("display_name"),
         "capabilities": actor.get("capabilities", []),
-        "is_host": actor.get("is_host", False),
     }
 
 
@@ -2183,9 +2219,11 @@ def resolve_vote(
     """Resolve a vote window (host-only)."""
     from workflow import daemon_server as author_server
 
-    # Only host can resolve votes
-    if not actor.get("is_host"):
-        raise HTTPException(status_code=403, detail="Only host can resolve votes")
+    if not author_server.actor_has_capability(actor, author_server.CAP_RESOLVE_VOTE):
+        raise HTTPException(
+            status_code=403,
+            detail="Missing capability: resolve_vote",
+        )
 
     try:
         base = _base()
@@ -2220,7 +2258,7 @@ def create_branch(
         author_server.record_action(
             base,
             universe_id=universe_id,
-            actor_type="host" if actor.get("is_host") else "user",
+            actor_type=_actor_type(actor),
             actor_id=actor["user_id"],
             action_type="create_branch",
             target_type="branch",
@@ -2277,7 +2315,7 @@ def create_request(
         author_server.record_action(
             base,
             universe_id=universe_id,
-            actor_type="host" if actor.get("is_host") else "user",
+            actor_type=_actor_type(actor),
             actor_id=actor["user_id"],
             action_type="submit_request",
             target_type="user_request",
@@ -2319,9 +2357,14 @@ def spawn_runtime(
     """Spawn a runtime instance for an author in a universe."""
     from workflow import daemon_server as author_server
 
-    # Only host can spawn runtimes
-    if not actor.get("is_host"):
-        raise HTTPException(status_code=403, detail="Only host can spawn runtimes")
+    if not author_server.actor_has_capability(
+        actor,
+        author_server.CAP_SPAWN_RUNTIME_CAPACITY,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Missing capability: spawn_runtime_capacity",
+        )
 
     try:
         base = _base()
@@ -2337,7 +2380,7 @@ def spawn_runtime(
         author_server.record_action(
             base,
             universe_id=universe_id,
-            actor_type="host" if actor.get("is_host") else "user",
+            actor_type=_actor_type(actor),
             actor_id=actor["user_id"],
             action_type="spawn_runtime_capacity",
             target_type="runtime_instance",

@@ -65,6 +65,34 @@ class TestEnqueueInvestigationRequest:
         assert inputs["request_text"].startswith("bug BUG-003: null pointer")
         assert "Severity: critical" in inputs["request_text"]
 
+    def test_merge_instant_effort_metadata_uses_fast_lane(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        enqueue_investigation_request(
+            bug_ref={
+                "bug_id": "PR-004",
+                "title": "Fix typo in connector docs",
+                "kind": "patch_request",
+                "effort_class": "merge-instant",
+                "effort_attention": "normal-review-gates",
+                "effort_classification": {
+                    "effort_class": "merge-instant",
+                    "attention": "normal-review-gates",
+                    "signals": ["mechanical_shape"],
+                },
+            },
+            canonical_branch_def_id="branch-abc",
+            base_path=tmp_path,
+        )
+
+        task = read_queue(tmp_path)[0]
+        assert task.pickup_signal_weight > 0.0
+        assert task.inputs["effort_dispatch_lane"] == "merge-instant-fast-lane"
+        assert (
+            task.inputs["effort_dispatch_route"]["triage_policy"]
+            == "skip-extended-triage-when-no-ghost-signals"
+        )
+        assert "Dispatch Lane: merge-instant-fast-lane" in task.inputs["request_text"]
+
     def test_raises_if_no_branch_def_id(self, tmp_path, monkeypatch):
         monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
         with pytest.raises(ValueError, match="canonical_branch_def_id"):

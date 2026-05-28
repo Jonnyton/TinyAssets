@@ -33,6 +33,7 @@ import operator
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Callable
@@ -40,8 +41,11 @@ from typing import Annotated, Any, Callable
 from langgraph.graph import END, START, StateGraph
 
 from workflow.branches import BranchDefinition, GraphNodeRef, NodeDefinition
+from workflow.exceptions import AllProvidersExhaustedError
 
 logger = logging.getLogger(__name__)
+
+_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS = (2.0, 4.0)
 
 
 class CompilerError(Exception):
@@ -207,6 +211,32 @@ def _run_with_timeout(
             "its own subprocess/HTTP timeout is the backstop.",
             node_id=node_id,
         ) from exc
+
+
+def _call_policy_router_with_retry(
+    router: Any,
+    *,
+    role: str,
+    prompt: str,
+    system: str,
+    policy: dict[str, Any],
+) -> tuple[str, str]:
+    """Retry policy-aware provider dispatch on transient chain exhaustion."""
+    attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
+    for attempt_index in range(attempts):
+        try:
+            return router.call_with_policy_sync(role, prompt, system, policy)
+        except AllProvidersExhaustedError:
+            if attempt_index == attempts - 1:
+                raise
+            delay = _POLICY_PROVIDER_RETRY_BACKOFF_SECONDS[attempt_index]
+            logger.warning(
+                "Policy provider chain exhausted for role=%s; retrying in %.1fs",
+                role,
+                delay,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable policy provider retry state")
 
 
 _DANGEROUS_PATTERNS = (
@@ -1038,8 +1068,12 @@ def _build_prompt_template_node(
                     )
                     if _policy_router is not None and router_has_providers:
                         def _policy_call() -> tuple[str, str]:
-                            return _policy_router.call_with_policy_sync(
-                                role, prompt, "", effective_policy,
+                            return _call_policy_router_with_retry(
+                                _policy_router,
+                                role=role,
+                                prompt=prompt,
+                                system="",
+                                policy=effective_policy,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,
@@ -1169,6 +1203,92 @@ def _validate_source_code(node: NodeDefinition) -> None:
             )
 
 
+_NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
+    "goals.leaderboard": ("goals", "leaderboard"),
+    "goal_leaderboard": ("goals", "leaderboard"),
+    "quality_leaderboard": ("goals", "leaderboard"),
+    "goals.archive_consultation": ("goals", "archive_consultation"),
+    "goal_archive_consultation": ("goals", "archive_consultation"),
+    "gates.leaderboard": ("gates", "leaderboard"),
+    "gates_leaderboard": ("gates", "leaderboard"),
+    "gates.get_ladder": ("gates", "get_ladder"),
+}
+
+
+def _build_node_mcp_invoker(
+    node: NodeDefinition,
+    *,
+    event_sink: Callable[..., None] | None,
+) -> Callable[..., dict[str, Any]]:
+    allowed = set(node.tools_allowed or [])
+
+    def _invoke_mcp_action(action_name: str, **kwargs: Any) -> dict[str, Any]:
+        requested = str(action_name or "").strip()
+        if not requested:
+            raise CompilerError(
+                f"Node '{node.node_id}' invoke_mcp_action requires action_name."
+            )
+        resolved = _NODE_MCP_ACTION_ALIASES.get(requested)
+        if resolved is None:
+            raise CompilerError(
+                f"Node '{node.node_id}' requested unsupported MCP action "
+                f"'{requested}'. Supported actions: "
+                f"{sorted(_NODE_MCP_ACTION_ALIASES)}"
+            )
+        canonical = ".".join(resolved)
+        if requested not in allowed and canonical not in allowed:
+            raise CompilerError(
+                f"Node '{node.node_id}' is not allowed to call MCP action "
+                f"'{requested}'. Declare it in tools_allowed first."
+            )
+
+        if event_sink is not None:
+            try:
+                event_sink(
+                    node_id=node.node_id,
+                    phase="mcp_action",
+                    action_name=requested,
+                    canonical_action=canonical,
+                )
+            except Exception as exc:
+                if _is_cancel_exception(exc):
+                    raise
+                logger.exception(
+                    "event_sink raised for node MCP action in %s",
+                    node.node_id,
+                )
+
+        tool_name, action = resolved
+        if tool_name == "goals":
+            from workflow.api.market import goals
+
+            raw = goals(action=action, **kwargs)
+        elif tool_name == "gates":
+            from workflow.api.market import gates
+
+            raw = gates(action=action, **kwargs)
+        else:  # pragma: no cover - mapping owns the dispatch domains.
+            raise CompilerError(
+                f"Node '{node.node_id}' requested unsupported MCP tool "
+                f"'{tool_name}'."
+            )
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise CompilerError(
+                f"Node '{node.node_id}' MCP action '{requested}' returned "
+                f"invalid JSON: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise CompilerError(
+                f"Node '{node.node_id}' MCP action '{requested}' returned "
+                f"{type(parsed).__name__}, expected object."
+            )
+        return parsed
+
+    return _invoke_mcp_action
+
+
 def _build_source_code_node(
     node: NodeDefinition,
     *,
@@ -1184,10 +1304,18 @@ def _build_source_code_node(
     _validate_source_code(node)
     src = node.source_code
     timeout_s = float(node.timeout_seconds or 300.0)
+    invoke_mcp_action = _build_node_mcp_invoker(node, event_sink=event_sink)
 
     local_scope: dict[str, Any] = {}
     try:
-        exec(src, {"__builtins__": __builtins__}, local_scope)  # noqa: S102
+        exec(  # noqa: S102
+            src,
+            {
+                "__builtins__": __builtins__,
+                "invoke_mcp_action": invoke_mcp_action,
+            },
+            local_scope,
+        )
     except Exception as exc:
         raise CompilerError(
             f"Node '{node.node_id}' source_code failed to load: {exc}"

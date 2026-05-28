@@ -420,6 +420,20 @@ class TestPremise:
         resp = client.get("/v1/universes/test-universe/premise")
         assert resp.status_code == 200
         assert "dragons" in resp.json()["text"]
+        assert resp.json()["source"] == "PROGRAM.md"
+
+    def test_get_premise_falls_back_to_soul(self, client, universe_dir):
+        from workflow.universe_soul import write_universe_soul
+
+        write_universe_soul(
+            universe_dir,
+            purpose="A civic lab studies memory.",
+            lineage="test",
+        )
+        resp = client.get("/v1/universes/test-universe/premise")
+        assert resp.status_code == 200
+        assert resp.json()["text"] == "A civic lab studies memory."
+        assert resp.json()["source"] == "soul.md"
 
     def test_get_premise_missing(self, client):
         resp = client.get("/v1/universes/test-universe/premise")
@@ -433,6 +447,8 @@ class TestPremise:
         assert resp.status_code == 200
         content = (universe_dir / "PROGRAM.md").read_text(encoding="utf-8")
         assert "wandering knight" in content
+        soul = (universe_dir / "soul.md").read_text(encoding="utf-8")
+        assert "wandering knight" in soul
 
     def test_set_premise_overwrites(self, client, universe_dir):
         client.post(
@@ -1720,13 +1736,26 @@ class TestServeFlag:
 class TestEdgeCaseUniverseCreation:
     """Edge cases a GPT might trigger when creating universes."""
 
-    def test_create_universe_no_name(self, client):
+    def test_create_universe_no_name(self, client, base_dir):
         """Empty body should auto-generate a name."""
         resp = client.post("/v1/universes", json={})
         assert resp.status_code == 201
         data = resp.json()
         assert data["id"]
         assert data["name"]
+        assert data["has_soul"] is True
+        assert (base_dir / data["id"] / "soul.md").exists()
+
+    def test_create_universe_declares_loop_branch_in_soul(self, client, base_dir):
+        resp = client.post(
+            "/v1/universes",
+            json={"name": "Workflow Lab", "branch_def_id": "workflow:review_loop"},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["soul"]["loop_branch_def_id"] == "workflow:review_loop"
+        soul_md = (base_dir / data["id"] / "soul.md").read_text(encoding="utf-8")
+        assert "- Loop branch: workflow:review_loop" in soul_md
 
     def test_create_universe_empty_name(self, client):
         """Explicit empty string name should auto-generate."""

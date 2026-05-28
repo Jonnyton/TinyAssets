@@ -183,13 +183,15 @@ class TestPremise:
 
     def test_get_premise_missing(self, universe_dir):
         result = get_premise()
-        assert "No PROGRAM.md" in result
+        assert "No premise found" in result
 
     def test_set_premise_writes(self, universe_dir):
         result = set_premise("A story about a wandering knight.")
         assert "updated" in result.lower()
         content = (universe_dir / "PROGRAM.md").read_text(encoding="utf-8")
         assert "wandering knight" in content
+        soul = (universe_dir / "soul.md").read_text(encoding="utf-8")
+        assert "wandering knight" in soul
 
     def test_set_overwrites_existing(self, universe_dir):
         set_premise("Old premise")
@@ -197,6 +199,18 @@ class TestPremise:
         content = (universe_dir / "PROGRAM.md").read_text(encoding="utf-8")
         assert "New premise" in content
         assert "Old premise" not in content
+
+    def test_get_premise_falls_back_to_soul(self, universe_dir):
+        from workflow.universe_soul import write_universe_soul
+
+        write_universe_soul(
+            universe_dir,
+            purpose="A city remembers every repair.",
+            lineage="test",
+        )
+
+        result = get_premise()
+        assert result == "A city remembers every repair."
 
 
 # ---------------------------------------------------------------------------

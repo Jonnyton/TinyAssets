@@ -22,9 +22,15 @@ from workflow.effectors.github_pr import (
     run_effects_for_branch,
     run_github_pr_effector,
 )
+from workflow.effectors.windows_desktop import (
+    EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME,
+    run_windows_desktop_effector,
+)
 
 __all__ = [
     "EXTERNAL_WRITE_SINK_GITHUB_PR",
+    "EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME",
     "run_github_pr_effector",
+    "run_windows_desktop_effector",
     "run_effects_for_branch",
 ]

@@ -573,6 +573,28 @@ def test_build_branch_accepts_goal_id(p5_env):
     assert got["goal_id"] == gid
 
 
+def test_build_branch_binds_top_level_goal_id(p5_env):
+    us, _ = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+    spec = {
+        "name": "Top-level goal",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "{x}"}],
+        "edges": [
+            {"from": "START", "to": "n"},
+            {"from": "n", "to": "END"},
+        ],
+        "state_schema": [{"name": "x", "type": "str"}],
+    }
+    result = _call(us, "extensions", "build_branch",
+                   spec_json=json.dumps(spec), goal_id=gid)
+    assert result["status"] == "built"
+    got = _call(us, "extensions", "get_branch",
+                branch_def_id=result["branch_def_id"])
+    assert got["goal_id"] == gid
+
+
 def test_patch_branch_set_goal_and_unset_goal(p5_env):
     us, _ = p5_env
     gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]

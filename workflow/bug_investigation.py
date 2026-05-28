@@ -29,6 +29,9 @@ _PAYLOAD_KEYS = (
     "component",
     "severity",
     "kind",
+    "effort_class",
+    "effort_attention",
+    "effort_dispatch_lane",
     "observed",
     "expected",
     "repro",
@@ -44,6 +47,10 @@ def is_auto_trigger_enabled() -> bool:
 def build_run_payload(bug_frontmatter: dict) -> dict:
     """Map BUG-NNN frontmatter → canonical investigation branch input shape."""
     payload = {k: bug_frontmatter.get(k, "") for k in _PAYLOAD_KEYS}
+    if bug_frontmatter.get("effort_classification"):
+        payload["effort_classification"] = bug_frontmatter["effort_classification"]
+    if bug_frontmatter.get("effort_dispatch_route"):
+        payload["effort_dispatch_route"] = bug_frontmatter["effort_dispatch_route"]
     payload["request_text"] = str(
         bug_frontmatter.get("request_text") or _format_request_text(payload)
     )
@@ -58,6 +65,8 @@ def _format_request_text(payload: dict) -> str:
     for label, key in (
         ("Component", "component"),
         ("Severity", "severity"),
+        ("Effort Class", "effort_class"),
+        ("Dispatch Lane", "effort_dispatch_lane"),
         ("Observed", "observed"),
         ("Expected", "expected"),
         ("Repro", "repro"),
@@ -220,6 +229,7 @@ def enqueue_investigation_request(
     """
     from datetime import datetime, timezone
 
+    from workflow.api.market import filing_effort_dispatch_route
     from workflow.branch_tasks import BranchTask, append_task
     from workflow.dispatcher import prefers_request_type
 
@@ -236,14 +246,21 @@ def enqueue_investigation_request(
     base = Path(base_path)
     uid = universe_id or base.name
     request_id = str(uuid.uuid4())
+    effort_route = filing_effort_dispatch_route(
+        bug_ref.get("effort_classification")
+    )
+    bug_payload = dict(bug_ref)
+    bug_payload["effort_dispatch_route"] = effort_route
+    bug_payload["effort_dispatch_lane"] = effort_route["lane"]
 
     task = BranchTask(
         branch_task_id=request_id,
         branch_def_id=canonical_branch_def_id,
         universe_id=uid,
-        inputs=build_run_payload(bug_ref),
+        inputs=build_run_payload(bug_payload),
         trigger_source="owner_queued",
         priority_weight=float(priority),
+        pickup_signal_weight=float(effort_route.get("pickup_signal_weight") or 0.0),
         queued_at=datetime.now(timezone.utc).isoformat(),
         request_type=REQUEST_TYPE_BUG_INVESTIGATION,
     )

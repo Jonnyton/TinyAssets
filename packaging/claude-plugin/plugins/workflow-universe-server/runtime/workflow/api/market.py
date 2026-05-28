@@ -67,6 +67,25 @@ from workflow.catalog import CommitFailedError, DirtyFileError
 
 logger = logging.getLogger("universe_server.market")
 
+ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
+
+
+def _current_actor_grants() -> tuple[str, ...]:
+    raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
+    return tuple(part for part in raw.replace(",", " ").split() if part)
+
+
+def _current_actor_has_capability(action: str) -> bool:
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.auth.provider import resolve_permission
+
+    return resolve_permission(
+        actor_id=_current_actor(),
+        action=action,
+        grants=_current_actor_grants(),
+    ).allowed
+
+
 PATCH_REQUEST_AUTHORITY_BOUNDARY: dict[str, bool] = {
     "affects_pickup_priority": True,
     "affects_acceptance": False,
@@ -74,6 +93,7 @@ PATCH_REQUEST_AUTHORITY_BOUNDARY: dict[str, bool] = {
     "affects_merge": False,
 }
 PATCH_REQUEST_PICKUP_SIGNAL_WEIGHT = 5.0
+MERGE_INSTANT_PICKUP_SIGNAL_WEIGHT = 5.0
 _PATCH_REQUEST_MEANING_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("bug", ("bug", "broken", "crash", "error", "fail", "flake", "regression")),
     ("project_design", ("architecture", "design note", "plan.md", "principle")),
@@ -168,7 +188,7 @@ def classify_patch_request(
     text: str,
     request_type: str,
     requester_id: str,
-    host_id: str,
+    priority_authorized: bool = False,
     directed_daemon: bool = False,
 ) -> dict[str, Any]:
     """Classify patch-loop intake before daemon implementation work starts."""
@@ -180,7 +200,7 @@ def classify_patch_request(
             break
 
     authority_scope = (
-        "host_priority_allowed" if requester_id == host_id else "requester_pickup_only"
+        "operator_priority_allowed" if priority_authorized else "requester_pickup_only"
     )
     if directed_daemon:
         authority_scope = f"{authority_scope}+proposal_only_directed_daemon"
@@ -262,6 +282,39 @@ def classify_filing_effort(
         "signals": signals,
         "confidence": "heuristic",
         "authority_boundary": dict(PATCH_REQUEST_AUTHORITY_BOUNDARY),
+    }
+
+
+def filing_effort_dispatch_route(
+    effort_classification: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Translate filing effort metadata into dispatcher-visible routing hints."""
+    effort_class = str(
+        (effort_classification or {}).get("effort_class") or "standard"
+    )
+    attention = str(
+        (effort_classification or {}).get("attention") or "normal-review-gates"
+    )
+    if effort_class == "merge-instant":
+        return {
+            "lane": "merge-instant-fast-lane",
+            "pickup_signal_weight": MERGE_INSTANT_PICKUP_SIGNAL_WEIGHT,
+            "triage_policy": "skip-extended-triage-when-no-ghost-signals",
+            "visible_reason": "low-risk mechanical filing",
+        }
+    if effort_class == "ghost-risk":
+        return {
+            "lane": "carrier-attention",
+            "pickup_signal_weight": 0.0,
+            "triage_policy": "notify-carrier-before-daemon-pickup",
+            "attention_family": "opposite-family-checker",
+            "visible_reason": attention,
+        }
+    return {
+        "lane": "standard-triage",
+        "pickup_signal_weight": 0.0,
+        "triage_policy": "normal-review-gates",
+        "visible_reason": attention,
     }
 
 
@@ -1559,12 +1612,120 @@ def _action_goal_archive_consultation(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
+    """Bind (or unbind) a Goal's selector branch — DESIGN-008.
+
+    The selector branch is the published Workflow branch the
+    substrate dispatches to rank a Goal's bound branches. Pass
+    ``branch_version_id=""`` to unbind (fall back to platform
+    default selector).
+
+    Authority: only Goal author or an actor with the selector-bind
+    capability may bind a selector.
+
+    Required kwargs:
+      * ``goal_id`` — Goal whose selector is being bound.
+
+    Optional kwargs:
+      * ``branch_version_id`` — selector branch_version to bind, or
+        empty string / omitted to unbind.
+
+    Returns:
+      * ``{status: "ok", selector_branch_version_id: ...}`` on bind/unbind.
+      * ``{status: "rejected", error: ...}`` on auth failure / bad input
+        / non-active version.
+    """
+    from workflow.api.branches import _ensure_workflow_db
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.daemon_server import (
+        CAP_SET_GOAL_SELECTOR,
+        SelectorHasEffectsError,
+        get_goal,
+        set_selector_branch,
+    )
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if not gid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "goal_id is required for set_selector.",
+        })
+    raw_bvid = (kwargs.get("branch_version_id") or "").strip()
+    branch_version_id = raw_bvid or None
+    _ensure_workflow_db()
+
+    try:
+        goal = get_goal(_base_path(), goal_id=gid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Goal '{gid}' not found.",
+        })
+
+    actor = _current_actor()
+    if actor != goal["author"] and not _current_actor_has_capability(
+        CAP_SET_GOAL_SELECTOR,
+    ):
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                "Only the Goal author or an actor with "
+                f"{CAP_SET_GOAL_SELECTOR!r} may bind the selector branch. "
+                f"Goal author is '{goal['author']}'; request actor is '{actor}'."
+            ),
+        })
+
+    try:
+        updated = set_selector_branch(
+            _base_path(), goal_id=gid,
+            branch_version_id=branch_version_id, set_by=actor,
+        )
+    except SelectorHasEffectsError as exc:
+        # P1.3 — surface the effects rejection with a structured
+        # error_kind so chatbots can route the operator to the fix
+        # path ("remove effects on offending nodes, then re-bind").
+        return json.dumps({
+            "status": "rejected",
+            "error_kind": "selector_has_effects",
+            "error": str(exc),
+        })
+    except ValueError as exc:
+        return json.dumps({"status": "rejected", "error": str(exc)})
+
+    if branch_version_id:
+        text = (
+            f"Selector branch for Goal '{goal['name']}' set to "
+            f"`{branch_version_id}`. Future "
+            "`quality_leaderboard` / `recommend_parent_for_fork` "
+            "calls dispatch this branch to rank candidates."
+        )
+    else:
+        text = (
+            f"Selector branch for Goal '{goal['name']}' unbound. "
+            "Leaderboard calls fall back to the platform default "
+            "selector."
+        )
+
+    return json.dumps({
+        "status": "ok",
+        "text": text,
+        "goal_id": gid,
+        "selector_branch_version_id": updated.get(
+            "selector_branch_version_id",
+        ),
+    }, default=str)
+
+
 def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     from workflow.api.branches import _ensure_workflow_db
     from workflow.api.engine_helpers import (
         _current_actor,
     )
-    from workflow.daemon_server import get_goal, set_canonical_branch
+    from workflow.daemon_server import (
+        CAP_SET_CANONICAL_BRANCH,
+        get_goal,
+        set_canonical_branch,
+    )
 
     gid = (kwargs.get("goal_id") or "").strip()
     if not gid:
@@ -1577,14 +1738,15 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     except KeyError:
         return json.dumps({"status": "rejected", "error": f"Goal '{gid}' not found."})
 
-    # Authority: only Goal author or host may set canonical.
     actor = _current_actor()
-    host_actor = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-    if actor != goal["author"] and actor != host_actor:
+    if actor != goal["author"] and not _current_actor_has_capability(
+        CAP_SET_CANONICAL_BRANCH,
+    ):
         return json.dumps({
             "status": "rejected",
             "error": (
-                "Only the Goal author or a host-level actor may set the canonical branch. "
+                "Only the Goal author or an actor with "
+                f"{CAP_SET_CANONICAL_BRANCH!r} may set the canonical branch. "
                 f"Goal author is '{goal['author']}'; request actor is '{actor}'."
             ),
         })
@@ -1763,6 +1925,11 @@ _GOAL_ACTIONS: dict[str, Any] = {
     # dispatch. Honors auto_canonical_via_leaderboard + threshold +
     # in-flight gate; delegates the actual run to run_branch_version.
     "run_canonical": _action_goal_run_canonical,
+    # DESIGN-008 — user-buildable selector primitive. Bind the
+    # published Workflow branch that synthesizes the Goal's
+    # leaderboard. Pass branch_version_id="" to fall back to the
+    # platform default selector.
+    "set_selector": _action_goal_set_selector,
 }
 
 # Provider-routing compatibility: ChatGPT can render `/mcp-directory` tool
@@ -1776,6 +1943,8 @@ _GOAL_ACTION_ALIASES: dict[str, str] = {
 
 _GOAL_WRITE_ACTIONS: frozenset[str] = frozenset({
     "propose", "update", "bind", "set_canonical",
+    # DESIGN-008 — selector branch binding writes to goals row.
+    "set_selector",
 })
 
 
@@ -1877,6 +2046,14 @@ def goals(
       set_canonical Mark a branch_version_id as the Goal's canonical
                    (best-known) branch. Author-only or host-only.
                    Pass branch_version_id="" to unset.
+      set_selector Bind the Goal's selector branch_version — the
+                   published Workflow branch the substrate dispatches
+                   to rank this Goal's bound branches on the
+                   leaderboard (DESIGN-008). Author-only or
+                   host-only. Pass branch_version_id="" to unbind
+                   and fall back to the platform default selector.
+                   The bound selector MUST conform to the contract
+                   in drafts/concepts/selector-branch-contract.md.
       run_canonical Dispatch a run against the Goal's canonical
                    branch_version. PR-127 (M6 cutover): when
                    ``auto_canonical_via_leaderboard`` is enabled on the
@@ -1991,6 +2168,67 @@ def _validate_evidence_url(url: str) -> str:
     )
 
 
+def _validate_conformance_pack_for_claim(
+    *,
+    base_path: str | Path,
+    pack_id: str,
+    goal_id: str,
+    branch_def_id: str,
+    rung_key: str,
+    required_standard_id: str,
+) -> dict[str, Any] | None:
+    from workflow.conformance_packs import get_conformance_pack
+
+    pack = get_conformance_pack(base_path, pack_id)
+    if pack is None:
+        return {
+            "status": "rejected",
+            "error": "conformance_pack_not_found",
+            "conformance_pack_id": pack_id,
+        }
+    if pack.goal_id != goal_id:
+        return {
+            "status": "rejected",
+            "error": "conformance_pack_goal_mismatch",
+            "conformance_pack_id": pack_id,
+            "expected_goal_id": goal_id,
+            "actual_goal_id": pack.goal_id,
+        }
+    if pack.branch_def_id and pack.branch_def_id != branch_def_id:
+        return {
+            "status": "rejected",
+            "error": "conformance_pack_branch_mismatch",
+            "conformance_pack_id": pack_id,
+            "expected_branch_def_id": branch_def_id,
+            "actual_branch_def_id": pack.branch_def_id,
+        }
+    if pack.target_rung and pack.target_rung != rung_key:
+        return {
+            "status": "rejected",
+            "error": "conformance_pack_rung_mismatch",
+            "conformance_pack_id": pack_id,
+            "expected_rung_key": rung_key,
+            "actual_target_rung": pack.target_rung,
+        }
+    if required_standard_id and pack.standard_id != required_standard_id:
+        return {
+            "status": "rejected",
+            "error": "conformance_pack_standard_mismatch",
+            "conformance_pack_id": pack_id,
+            "expected_standard_id": required_standard_id,
+            "actual_standard_id": pack.standard_id,
+        }
+    if pack.status != "ready":
+        return {
+            "status": "rejected",
+            "error": "conformance_pack_not_ready",
+            "conformance_pack_id": pack_id,
+            "pack_status": pack.status,
+            "blockers": pack.blockers,
+        }
+    return None
+
+
 def _action_gates_define_ladder(kwargs: dict[str, Any]) -> str:
     from workflow.api.branches import _ensure_workflow_db
     from workflow.api.engine_helpers import (
@@ -1999,7 +2237,7 @@ def _action_gates_define_ladder(kwargs: dict[str, Any]) -> str:
         _storage_backend,
     )
     from workflow.catalog.layout import slugify
-    from workflow.daemon_server import get_goal
+    from workflow.daemon_server import CAP_DEFINE_GATE_LADDER, get_goal
     from workflow.identity import git_author
 
     gid = (kwargs.get("goal_id") or "").strip()
@@ -2054,11 +2292,14 @@ def _action_gates_define_ladder(kwargs: dict[str, Any]) -> str:
             "error": f"Goal '{gid}' not found.",
         })
     actor = _current_actor_or_anon()
-    if goal.get("author") and goal["author"] != actor and actor != "host":
+    if goal.get("author") and goal["author"] != actor and not (
+        _current_actor_has_capability(CAP_DEFINE_GATE_LADDER)
+    ):
         return json.dumps({
             "status": "rejected",
             "error": (
-                "Only the Goal author can define its ladder. "
+                "Only the Goal author or an actor with "
+                f"{CAP_DEFINE_GATE_LADDER!r} can define its ladder. "
                 f"Owner: {goal['author']}."
             ),
         })
@@ -2198,6 +2439,32 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
             "error": "unknown_rung",
             "available_rungs": available,
         })
+    from workflow.conformance_packs import required_standard_id_for_rung
+
+    required_standard_id = required_standard_id_for_rung(rung_key, ladder)
+    conformance_pack_id = (kwargs.get("conformance_pack_id") or "").strip()
+    if required_standard_id is not None:
+        if not conformance_pack_id:
+            return json.dumps({
+                "status": "rejected",
+                "error": "conformance_pack_required",
+                "rung_key": rung_key,
+                "required_standard_id": required_standard_id,
+                "hint": (
+                    "Record a ready conformance pack first and pass "
+                    "conformance_pack_id with this claim."
+                ),
+            })
+        pack_error = _validate_conformance_pack_for_claim(
+            base_path=_base_path(),
+            pack_id=conformance_pack_id,
+            goal_id=goal_id,
+            branch_def_id=bid,
+            rung_key=rung_key,
+            required_standard_id=required_standard_id,
+        )
+        if pack_error is not None:
+            return json.dumps(pack_error)
     from workflow.daemon_server import BranchRebindError
 
     goal_slug = slugify(goal.get("name") or goal_id)
@@ -2209,6 +2476,7 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
             rung_key=rung_key,
             evidence_url=evidence_url,
             evidence_note=kwargs.get("evidence_note", ""),
+            conformance_pack_id=conformance_pack_id,
             claimed_by=_current_actor_or_anon(),
             goal_slug=goal_slug,
             branch_slug=branch_slug,
@@ -2436,6 +2704,11 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
         "rung_key": rung_key,
         "evidence_url": evidence_url,
         "evidence_note": evidence_note,
+        "conformance_pack_id": (
+            kwargs.get("conformance_pack_id")
+            or output.get("conformance_pack_id")
+            or ""
+        ),
         "force": bool(kwargs.get("force", False)),
     }
     response_json = _action_gates_claim(claim_kwargs)
@@ -2466,6 +2739,7 @@ def _action_gates_retract(kwargs: dict[str, Any]) -> str:
     )
     from workflow.catalog.layout import slugify
     from workflow.daemon_server import (
+        CAP_RETRACT_GATE_CLAIM,
         get_branch_definition,
         get_gate_claim,
         get_goal,
@@ -2508,7 +2782,7 @@ def _action_gates_retract(kwargs: dict[str, Any]) -> str:
             "claim": existing,
         }, default=str)
     actor = _current_actor_or_anon()
-    # Owner-retract: original claimant, Goal author, or ambient host.
+    # Owner-retract: original claimant, Goal author, or explicit action grant.
     claimed_by = existing.get("claimed_by") or ""
     goal_author = ""
     goal_id = existing.get("goal_id") or ""
@@ -2521,11 +2795,14 @@ def _action_gates_retract(kwargs: dict[str, Any]) -> str:
         except KeyError:
             pass
     allowed = {actor_id for actor_id in (claimed_by, goal_author) if actor_id}
-    if actor not in allowed and actor != "host":
+    if actor not in allowed and not _current_actor_has_capability(
+        CAP_RETRACT_GATE_CLAIM,
+    ):
         return json.dumps({
             "status": "rejected",
             "error": (
-                "Only the claim author or Goal owner can retract "
+                "Only the claim author, Goal owner, or an actor with "
+                f"{CAP_RETRACT_GATE_CLAIM!r} can retract "
                 f"(claimant: '{claimed_by}', goal owner: "
                 f"'{goal_author}')."
             ),
@@ -2948,6 +3225,112 @@ def _action_list_gate_events(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _action_record_conformance_pack(kwargs: dict[str, Any]) -> str:
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.conformance_packs import record_conformance_pack
+    from workflow.daemon_server import get_branch_definition, get_goal
+
+    goal_id = (kwargs.get("goal_id") or "").strip()
+    branch_def_id = (kwargs.get("branch_def_id") or "").strip()
+    pack_raw = (kwargs.get("conformance_pack_json") or "").strip()
+    target_rung = (kwargs.get("rung_key") or "").strip()
+    if not pack_raw:
+        return json.dumps({
+            "status": "rejected",
+            "error": "conformance_pack_json is required.",
+        })
+    try:
+        pack_payload = json.loads(pack_raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"conformance_pack_json is not valid JSON: {exc}",
+        })
+    if not isinstance(pack_payload, dict):
+        return json.dumps({
+            "status": "rejected",
+            "error": "conformance_pack_json must be a JSON object.",
+        })
+    if not goal_id:
+        return json.dumps({"status": "rejected", "error": "goal_id is required."})
+    try:
+        get_goal(_base_path(), goal_id=goal_id)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Goal '{goal_id}' not found.",
+        })
+    if branch_def_id:
+        try:
+            branch = get_branch_definition(_base_path(), branch_def_id=branch_def_id)
+        except KeyError:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"Branch '{branch_def_id}' not found.",
+            })
+        if (branch.get("goal_id") or "") != goal_id:
+            return json.dumps({
+                "status": "rejected",
+                "error": "branch_goal_mismatch",
+                "goal_id": goal_id,
+                "branch_goal_id": branch.get("goal_id") or "",
+            })
+    try:
+        pack = record_conformance_pack(
+            _base_path(),
+            goal_id=goal_id,
+            branch_def_id=branch_def_id,
+            target_rung=target_rung,
+            pack=pack_payload,
+            created_by=_current_actor(),
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "rejected", "error": str(exc)})
+    return json.dumps({
+        "status": "recorded",
+        "conformance_pack": pack.to_dict(),
+    }, default=str)
+
+
+def _action_get_conformance_pack(kwargs: dict[str, Any]) -> str:
+    from workflow.conformance_packs import get_conformance_pack
+
+    pack_id = (kwargs.get("conformance_pack_id") or "").strip()
+    if not pack_id:
+        return json.dumps({
+            "status": "rejected",
+            "error": "conformance_pack_id is required.",
+        })
+    pack = get_conformance_pack(_base_path(), pack_id)
+    if pack is None:
+        return json.dumps({
+            "status": "rejected",
+            "error": "conformance_pack_not_found",
+            "conformance_pack_id": pack_id,
+        })
+    return json.dumps({
+        "status": "ok",
+        "conformance_pack": pack.to_dict(),
+    }, default=str)
+
+
+def _action_list_conformance_packs(kwargs: dict[str, Any]) -> str:
+    from workflow.conformance_packs import list_conformance_packs
+
+    records = list_conformance_packs(
+        _base_path(),
+        goal_id=(kwargs.get("goal_id") or "").strip(),
+        branch_def_id=(kwargs.get("branch_def_id") or "").strip(),
+        standard_id=(kwargs.get("standard_id") or "").strip(),
+        limit=int(kwargs.get("limit") or 50),
+    )
+    return json.dumps({
+        "status": "ok",
+        "count": len(records),
+        "conformance_packs": [record.to_dict() for record in records],
+    }, default=str)
+
+
 _GATE_EVENT_ACTIONS: dict[str, Any] = {
     "attest_gate_event": _action_attest_gate_event,
     "verify_gate_event": _action_verify_gate_event,
@@ -2973,6 +3356,9 @@ _GATES_ACTIONS: dict[str, Any] = {
     "get_ladder": _action_gates_get_ladder,
     "claim": _action_gates_claim,
     "claim_from_branch_run": _action_gates_claim_from_branch_run,
+    "record_conformance_pack": _action_record_conformance_pack,
+    "get_conformance_pack": _action_get_conformance_pack,
+    "list_conformance_packs": _action_list_conformance_packs,
     "retract": _action_gates_retract,
     "list_claims": _action_gates_list_claims,
     "leaderboard": _action_gates_leaderboard,
@@ -2980,6 +3366,27 @@ _GATES_ACTIONS: dict[str, Any] = {
     "unstake_bonus": _action_gates_unstake_bonus,
     "release_bonus": _action_gates_release_bonus,
 }
+
+
+def _gates_scope_error(action: str) -> str | None:
+    from workflow.auth.middleware import require_action_scope
+    from workflow.auth.provider import PermissionScope
+
+    try:
+        require_action_scope(
+            "gates",
+            action,
+            scope=PermissionScope(resource_type="outcome-gate", resource_id=action),
+        )
+    except PermissionError as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": str(exc),
+            "auth_scope_required": True,
+            "tool": "gates",
+            "action": action,
+        })
+    return None
 
 
 def gates(
@@ -3001,6 +3408,9 @@ def gates(
     node_last_claimer: str = "",
     node_id: str = "",
     run_id: str = "",
+    conformance_pack_json: str = "",
+    conformance_pack_id: str = "",
+    standard_id: str = "",
 ) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
@@ -3018,6 +3428,9 @@ def gates(
                     and `ladder` (JSON list of {rung_key, name,
                     description}).
       get_ladder    Read a Goal's ladder. Needs goal_id.
+      record_conformance_pack
+                    Store a standards/readiness conformance pack for a
+                    Goal or Branch before a gated rung claim.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url. Idempotent on (branch, rung).
       claim_from_branch_run
@@ -3082,6 +3495,9 @@ def gates(
       run_id: completed-run target for claim_from_branch_run; the run's
               final-state ``recommended_rung_claim`` selects the rung
               and (optionally) the supporting evidence URL.
+      conformance_pack_json: JSON object for record_conformance_pack.
+      conformance_pack_id: ready conformance pack supporting a claim.
+      standard_id: optional list_conformance_packs filter.
     """
     from workflow.api.engine_helpers import (
         _format_dirty_file_conflict,
@@ -3104,6 +3520,9 @@ def gates(
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(_GATES_ACTIONS.keys()),
         })
+    scope_error = _gates_scope_error(action)
+    if scope_error is not None:
+        return scope_error
     kwargs: dict[str, Any] = {
         "goal_id": goal_id,
         "branch_def_id": branch_def_id,
@@ -3122,6 +3541,9 @@ def gates(
         "node_last_claimer": node_last_claimer,
         "node_id": node_id,
         "run_id": run_id,
+        "conformance_pack_json": conformance_pack_json,
+        "conformance_pack_id": conformance_pack_id,
+        "standard_id": standard_id,
     }
     try:
         return handler(kwargs)

@@ -717,6 +717,96 @@ def repoint_goals_after_rollback(
     }
 
 
+def repoint_selectors_after_rollback(
+    base_path: str | Path,
+    version_ids: Iterable[str],
+    *,
+    set_by: str,
+) -> dict[str, Any]:
+    """Clear any Goal whose ``selector_branch_version_id`` is in the
+    rolled-back set.
+
+    DESIGN-008 round 4 — selector pointers are subject to the same
+    active-only lifecycle invariant as canonical pointers. When a
+    selector branch_version is rolled back, every Goal pointing at it
+    must lose the binding so subsequent leaderboard reads fall back
+    to the platform default (instead of falling back at every read
+    via the runtime guard in
+    ``selector_dispatch.resolve_selector_branch_version_id``, which
+    is the merge-blocker safety net but leaves a stale pointer in
+    storage indefinitely).
+
+    Unlike canonical, selectors are NOT walked up to an ancestor
+    version: there is no analog of "fork from canonical" semantics
+    for selectors, and silently re-binding to an ancestor could
+    introduce a different ranking opinion the operator never
+    explicitly chose. Instead the binding is CLEARED (NULL), which
+    triggers the platform-default fallback. The operator can re-bind
+    to a different active version (or fork the rolled-back one) via
+    ``goals action=set_selector``.
+
+    Runs in a separate author_server-DB transaction per the cross-DB
+    refinement, mirroring ``repoint_goals_after_rollback``.
+
+    Returns:
+        ``{"status": "ok", "repointed_count": N, "repoints": [...]}``
+        with a per-goal log of ``{goal_id, old_branch_version_id}``.
+    """
+    from workflow.daemon_server import _connect as _author_connect
+    from workflow.daemon_server import set_selector_branch
+
+    rolled_back_set = set(version_ids)
+    if not rolled_back_set:
+        return {"status": "ok", "repointed_count": 0, "repoints": []}
+
+    repoints: list[dict[str, Any]] = []
+    with _author_connect(base_path) as conn:
+        placeholders = ",".join("?" * len(rolled_back_set))
+        try:
+            affected = conn.execute(
+                f"SELECT goal_id, selector_branch_version_id FROM goals "
+                f"WHERE selector_branch_version_id IN ({placeholders})",
+                tuple(rolled_back_set),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # goals table doesn't exist OR the
+            # selector_branch_version_id column hasn't been migrated
+            # in yet (pre-DESIGN-008 universe). Clean no-op.
+            return {"status": "ok", "repointed_count": 0, "repoints": []}
+
+    for row in affected:
+        goal_id = row["goal_id"]
+        old_bvid = row["selector_branch_version_id"]
+        try:
+            set_selector_branch(
+                base_path,
+                goal_id=goal_id,
+                branch_version_id=None,
+                set_by=set_by,
+            )
+            repoints.append({
+                "goal_id": goal_id,
+                "old_branch_version_id": old_bvid,
+                "new_branch_version_id": None,
+            })
+        except (KeyError, ValueError) as exc:
+            # Per design intent: don't fail the whole batch on one
+            # bad goal. Log the failure so operators can see what
+            # didn't clear.
+            repoints.append({
+                "goal_id": goal_id,
+                "old_branch_version_id": old_bvid,
+                "new_branch_version_id": None,
+                "error": str(exc),
+            })
+
+    return {
+        "status": "ok",
+        "repointed_count": len(repoints),
+        "repoints": repoints,
+    }
+
+
 def _walk_up_to_active_ancestor(
     base_path: str | Path,
     start_bvid: str,
@@ -795,12 +885,19 @@ def rollback_merge_orchestrator(
     repoint_result = repoint_goals_after_rollback(
         base_path, closure, set_by=set_by,
     )
+    # DESIGN-008 round 4 — selectors also need a re-point pass.
+    # Selector pointers are cleared (no ancestor walk) to avoid
+    # silently re-binding to a different ranking opinion.
+    selector_repoint_result = repoint_selectors_after_rollback(
+        base_path, closure, set_by=set_by,
+    )
     return {
         "status": "ok",
         "seed_version_id": branch_version_id,
         "closure": closure,
         "execute": execute_result,
         "repoint": repoint_result,
+        "selector_repoint": selector_repoint_result,
     }
 
 

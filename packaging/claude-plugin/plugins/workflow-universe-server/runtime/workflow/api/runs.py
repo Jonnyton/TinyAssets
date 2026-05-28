@@ -48,6 +48,24 @@ from workflow.api.helpers import (
 
 logger = logging.getLogger("universe_server.runs")
 
+ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
+
+
+def _current_actor_grants() -> tuple[str, ...]:
+    raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
+    return tuple(part for part in raw.replace(",", " ").split() if part)
+
+
+def _current_actor_has_capability(action: str) -> bool:
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.auth.provider import resolve_permission
+
+    return resolve_permission(
+        actor_id=_current_actor(),
+        action=action,
+        grants=_current_actor_grants(),
+    ).allowed
+
 
 _EMPTY_LLM_RESPONSE_ACTION = (
     "Ask the host to check get_status provider availability/cooldowns and fix "
@@ -362,6 +380,48 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     return None
 
 
+def _provider_chain_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the first structured provider_chain recorded on failed events."""
+    for event in reversed(events):
+        detail = event.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        provider_chain = detail.get("provider_chain")
+        if isinstance(provider_chain, dict):
+            return provider_chain
+    return None
+
+
+def _provider_chain_from_error(error: str) -> dict[str, Any] | None:
+    """Parse graph_compiler's compact ``[chain_state]:`` diagnostic suffix."""
+    marker = "[chain_state]:"
+    if marker not in (error or ""):
+        return None
+    suffix = error.rsplit(marker, 1)[1].strip()
+    if not suffix:
+        return None
+    try:
+        parsed = json.loads(suffix)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _run_error_detail(
+    run_record: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build structured error detail for failed run snapshots."""
+    detail: dict[str, Any] = {}
+    provider_chain = (
+        _provider_chain_from_events(events)
+        or _provider_chain_from_error(run_record.get("error", ""))
+    )
+    if provider_chain:
+        detail["provider_chain"] = provider_chain
+    return detail
+
+
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
     """Execute a branch once.
 
@@ -662,6 +722,11 @@ def _compose_run_snapshot(
         "summary": summary,
         "recursion_limit": recursion_limit,
     }
+    output = run_record.get("output")
+    if isinstance(output, dict):
+        for key in ("external_write_results", "external_write_errors"):
+            if key in output:
+                snapshot[key] = output[key]
     # INTERRUPTED runs are terminal in v1 (durability guarantee — see
     # ``_action_run_branch`` docstring + ``runs.recover_in_flight_runs``).
     # The client must rerun with the same ``inputs_json``; it cannot be
@@ -679,6 +744,9 @@ def _compose_run_snapshot(
             snapshot["failure_class"] = error_annotation[0]
             snapshot["suggested_action"] = error_annotation[1]
             snapshot["actionable_by"] = _actionable_by(error_annotation[0])
+        error_detail = _run_error_detail(run_record, events)
+        if error_detail:
+            snapshot["error_detail"] = error_detail
     return snapshot
 
 
@@ -1529,8 +1597,7 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
 
 
 def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
-    """Surgical-rollback (Task #22 Phase B). Host-only authority per
-    design §5 + Hard-Rule emergency-override pattern.
+    """Surgical-rollback (Task #22 Phase B). Explicit rollback capability.
 
     Required kwargs: ``branch_version_id`` (seed), ``reason``.
     Optional kwargs: ``severity`` (P0/P1/P2; default P1).
@@ -1544,6 +1611,7 @@ def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
     docstring).
     """
     from workflow.api.engine_helpers import _current_actor
+    from workflow.daemon_server import CAP_ROLLBACK_BRANCH
     from workflow.rollback import rollback_merge_orchestrator
 
     bvid = (kwargs.get("branch_version_id") or "").strip()
@@ -1555,13 +1623,11 @@ def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
         return json.dumps({"error": "reason is required."})
 
     actor = _current_actor()
-    host_actor = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-    if actor != host_actor:
+    if not _current_actor_has_capability(CAP_ROLLBACK_BRANCH):
         return json.dumps({
             "error": (
-                "host-only authority — only the host actor "
-                f"({host_actor!r}) may roll back versions. "
-                f"Request actor was {actor!r}."
+                f"Missing capability: {CAP_ROLLBACK_BRANCH} "
+                f"(request actor was {actor!r})."
             ),
         })
 
@@ -1587,6 +1653,16 @@ def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
         text_lines.append(
             f"Re-pointed canonical bindings on {repointed_count} Goal(s) "
             "to nearest non-rolled-back ancestor."
+        )
+    # DESIGN-008 round 4 — selector bindings are cleared (not walked up)
+    # so the leaderboard read path falls back to the platform default.
+    selector_repoint = result.get("selector_repoint", {})
+    selector_repointed_count = selector_repoint.get("repointed_count", 0)
+    if selector_repointed_count:
+        text_lines.append(
+            f"Cleared selector bindings on {selector_repointed_count} "
+            "Goal(s); leaderboard falls back to platform default until "
+            "operator re-binds via `goals action=set_selector`."
         )
     return json.dumps({
         "text": "\n".join(text_lines),

@@ -69,6 +69,39 @@ RECIPE_SPEC = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _build_approved_source_branch(us, *, node_id="approved_calc"):
+    _call(
+        us,
+        "register",
+        node_id=node_id,
+        display_name="Approved calc",
+        description="Approved source-code node",
+        phase="custom",
+        input_keys="",
+        output_keys="answer",
+        source_code="def run(state): return {'answer': 1}",
+        dependencies="",
+    )
+    approved = _call(us, "approve", node_id=node_id)
+    assert approved["approved"] is True
+    spec = {
+        "name": "Approved source branch",
+        "entry_point": node_id,
+        "node_defs": [{
+            "node_id": node_id,
+            "node_ref": {"source": "standalone", "node_id": node_id},
+        }],
+        "edges": [
+            {"from": "START", "to": node_id},
+            {"from": node_id, "to": "END"},
+        ],
+        "state_schema": [{"name": "answer", "type": "int"}],
+    }
+    built = _call(us, "build_branch", spec_json=json.dumps(spec))
+    assert built["batch_receipt"]["source_code_approval"]["runnable"] is True
+    return built
+
+
 def test_recipe_tracker_builds_in_one_call(comp_env):
     us, _ = comp_env
     result = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
@@ -79,6 +112,97 @@ def test_recipe_tracker_builds_in_one_call(comp_env):
     assert "text" in result
     assert "Recipe tracker" in result["text"]
     assert "```mermaid" in result["text"]
+
+
+def test_build_branch_returns_batch_receipt(comp_env):
+    us, _ = comp_env
+    result = _call(
+        us,
+        "build_branch",
+        spec_json=json.dumps(RECIPE_SPEC),
+        request_id="chat-plan-123",
+    )
+
+    receipt = result["batch_receipt"]
+    assert receipt["receipt_type"] == "branch_authoring_batch"
+    assert receipt["action"] == "build_branch"
+    assert receipt["actor"] == "tester"
+    assert receipt["branch_def_id"] == result["branch_def_id"]
+    assert receipt["branch_name"] == "Recipe tracker"
+    assert receipt["operation_count"] == 1
+    assert receipt["node_count"] == 3
+    assert receipt["edge_count"] == 4
+    assert receipt["skill_count"] == 0
+    assert receipt["validation"] == {
+        "status": "ok",
+        "valid": True,
+        "error_count": 0,
+    }
+    assert receipt["source_code_approval"]["runnable"] is True
+    assert receipt["source_code_approval"]["unapproved_count"] == 0
+    assert receipt["plan_context"]["request_id"] == "chat-plan-123"
+    assert receipt["plan_context"]["authoritative"] is False
+    assert "not an authorization grant" in receipt["caveats"][0]
+
+
+def test_build_branch_receipt_reports_unapproved_source_code(comp_env):
+    us, _ = comp_env
+    spec = {
+        "name": "Code-backed check",
+        "entry_point": "calculate",
+        "node_defs": [{
+            "node_id": "calculate",
+            "display_name": "Calculate",
+            "source_code": "def run(state): return {'answer': 42}",
+            "output_keys": ["answer"],
+        }],
+        "edges": [
+            {"from": "START", "to": "calculate"},
+            {"from": "calculate", "to": "END"},
+        ],
+        "state_schema": [{"name": "answer", "type": "int"}],
+    }
+
+    result = _call(us, "build_branch", spec_json=json.dumps(spec))
+
+    assert result["status"] == "built", result
+    approval = result["batch_receipt"]["source_code_approval"]
+    assert approval["source_code_node_count"] == 1
+    assert approval["approved_count"] == 0
+    assert approval["unapproved_count"] == 1
+    assert approval["runnable"] is False
+    assert approval["unapproved_nodes"] == [{
+        "node_id": "calculate",
+        "display_name": "Calculate",
+    }]
+
+
+def test_patch_branch_source_code_mutation_clears_prior_approval(comp_env):
+    us, _ = comp_env
+    built = _build_approved_source_branch(us)
+    bid = built["branch_def_id"]
+
+    result = _call(
+        us,
+        "patch_branch",
+        branch_def_id=bid,
+        changes_json=json.dumps([{
+            "op": "update_node",
+            "node_id": "approved_calc",
+            "source_code": "def run(state): return {'answer': 2}",
+        }]),
+    )
+
+    assert result["status"] == "patched", result
+    approval = result["batch_receipt"]["source_code_approval"]
+    assert approval["source_code_node_count"] == 1
+    assert approval["approved_count"] == 0
+    assert approval["unapproved_count"] == 1
+    assert approval["runnable"] is False
+    got = _call(us, "get_branch", branch_def_id=bid)
+    node = next(n for n in got["node_defs"] if n["node_id"] == "approved_calc")
+    assert node["approved"] is False
+    assert got["runnable"] is False
 
 
 def test_build_branch_returns_full_branch_in_structured(comp_env):
@@ -96,6 +220,32 @@ def test_build_branch_persists(comp_env):
     # Atomic get_branch returns the same branch.
     got = _call(us, "get_branch", branch_def_id=bid)
     assert got["name"] == "Recipe tracker"
+
+
+def test_build_branch_preserves_node_timeout_seconds(comp_env):
+    us, _ = comp_env
+    spec = {
+        **RECIPE_SPEC,
+        "node_defs": [{
+            **RECIPE_SPEC["node_defs"][0],
+            "timeout_seconds": 45,
+        }],
+        "edges": [
+            {"from": "START", "to": "capture"},
+            {"from": "capture", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": "raw_recipe", "type": "str"},
+            {"name": "capture_output", "type": "str"},
+        ],
+    }
+
+    built = _call(us, "build_branch", spec_json=json.dumps(spec))
+
+    assert built["status"] == "built", built
+    got = _call(us, "get_branch", branch_def_id=built["branch_def_id"])
+    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
+    assert capture["timeout_seconds"] == 45.0
 
 
 def test_build_branch_preserves_explicit_non_strict_input_isolation(comp_env):
@@ -312,6 +462,12 @@ def test_patch_branch_batch_succeeds(comp_env):
     assert result["status"] == "patched", result
     assert result["ops_applied"] == 5
     assert result["node_count"] == 4
+    receipt = result["batch_receipt"]
+    assert receipt["action"] == "patch_branch"
+    assert receipt["operation_count"] == 5
+    assert receipt["branch_def_id"] == bid
+    assert receipt["node_count"] == 4
+    assert receipt["source_code_approval"]["runnable"] is True
 
     got = _call(us, "get_branch", branch_def_id=bid)
     assert any(n["node_id"] == "novelty_check" for n in got["node_defs"])
@@ -376,6 +532,7 @@ def test_patch_branch_rollback_on_any_op_failure(comp_env):
     result = _call(us, "patch_branch", branch_def_id=bid,
                    changes_json=json.dumps(changes))
     assert result["status"] == "rejected"
+    assert "batch_receipt" not in result
     # Per-op errors include the op_index so clients can target the fix.
     err_indices = [e["op_index"] for e in result["errors"]]
     assert 2 in err_indices
@@ -705,6 +862,30 @@ def test_update_node_switches_from_template_to_source_code(comp_env):
     capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
     assert capture["source_code"]
     assert capture["prompt_template"] == ""
+
+
+def test_update_node_source_code_mutation_clears_prior_approval(comp_env):
+    us, _ = comp_env
+    built = _build_approved_source_branch(us, node_id="approved_update")
+    bid = built["branch_def_id"]
+
+    result = _call(
+        us,
+        "update_node",
+        branch_def_id=bid,
+        node_id="approved_update",
+        source_code="def run(state): return {'answer': 3}",
+    )
+
+    assert result["status"] == "updated", result
+    got = _call(us, "get_branch", branch_def_id=bid)
+    node = next(n for n in got["node_defs"] if n["node_id"] == "approved_update")
+    assert node["approved"] is False
+    assert got["runnable"] is False
+    assert got["unapproved_source_code_nodes"] == [{
+        "node_id": "approved_update",
+        "display_name": "Approved calc",
+    }]
 
 
 def test_update_node_rejects_invalid_phase(comp_env):

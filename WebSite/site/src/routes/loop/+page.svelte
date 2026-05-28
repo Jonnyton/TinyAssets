@@ -3,81 +3,112 @@
   snapshot-backed patch-loop playground to show how live work moves.
 -->
 <script lang="ts">
-  import baked from '$lib/content/mcp-snapshot.json';
-  import type { Snapshot } from '$lib/mcp/types';
-  import LoopLiveFeed from '$lib/components/LoopLiveFeed.svelte';
-  import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
-  import { compactNumber, createPulse, shortHash } from '$lib/live/project';
+  import baked from "$lib/content/mcp-snapshot.json";
+  import type { Snapshot } from "$lib/mcp/types";
+  import LoopLiveFeed from "$lib/components/LoopLiveFeed.svelte";
+  import RitualLabel from "$lib/components/Primitives/RitualLabel.svelte";
+  import { compactNumber, createPulse, shortHash } from "$lib/live/project";
 
-  type StageId = 'intake' | 'investigation' | 'gate' | 'coding' | 'release' | 'observe';
+  type StageId =
+    | "intake"
+    | "investigation"
+    | "gate"
+    | "coding"
+    | "release"
+    | "observe";
 
   const snapshot = baked as unknown as Snapshot;
   const pulse = createPulse();
-  const repoUrl = pulse.repo.repo.remote_url?.replace(/\.git$/, '') || 'https://github.com/Jonnyton/Workflow';
+  const repoUrl =
+    pulse.repo.repo.remote_url?.replace(/\.git$/, "") ||
+    "https://github.com/Jonnyton/Workflow";
 
   const STAGES: Array<{
     id: StageId;
     label: string;
   }> = [
     {
-      id: 'intake',
-      label: 'Intake'
+      id: "intake",
+      label: "Intake",
     },
     {
-      id: 'investigation',
-      label: 'Investigation'
+      id: "investigation",
+      label: "Investigation",
     },
     {
-      id: 'gate',
-      label: 'Gate'
+      id: "gate",
+      label: "Gate",
     },
     {
-      id: 'coding',
-      label: 'Coding'
+      id: "coding",
+      label: "Coding",
     },
     {
-      id: 'release',
-      label: 'Release'
+      id: "release",
+      label: "Release",
     },
     {
-      id: 'observe',
-      label: 'Watch'
-    }
+      id: "observe",
+      label: "Watch",
+    },
   ];
 
-  let selectedStageId = $state<StageId>('intake');
+  let selectedStageId = $state<StageId>("intake");
 </script>
 
 <svelte:head>
   <title>The loop - Workflow</title>
-  <meta name="description" content="Watch live Workflow wiki bugs, work targets, branches, and gates move through the public contribution loop." />
+  <meta
+    name="description"
+    content="Watch live Workflow wiki bugs, work targets, branches, and gates move through the public contribution loop."
+  />
 </svelte:head>
 
 <section class="join-loop join-loop--hero" aria-labelledby="join-loop-title">
   <div class="container">
     <div class="join-copy">
-      <RitualLabel color="var(--signal-live)">· Choose your entry ·</RitualLabel>
-      <h1 id="join-loop-title">Move the loop from the side that fits you.</h1>
-      <p class="lead">The loop is the proof. Community wiki bugs are the public intake; after seeing them move, contribute through GitHub, connect the MCP as a user, or host daemon capacity.</p>
+      <RitualLabel color="var(--signal-live)">· Live loop replay ·</RitualLabel>
+      <h1 id="join-loop-title">The loop is a decision trail, not a feed.</h1>
+      <p class="lead">
+        Start with the latest durable MCP or GitHub evidence, click into the
+        stage that made the call, then choose how you want to join the next
+        pass.
+      </p>
 
       <div class="entry-steps" aria-label="Loop action choices">
-        <a class="entry-step" href={`${repoUrl}/blob/main/CONTRIBUTING.md`} target="_blank" rel="noreferrer">
+        <a
+          class="entry-step"
+          href={`${repoUrl}/blob/main/CONTRIBUTING.md`}
+          target="_blank"
+          rel="noreferrer"
+        >
           <span class="entry-step__number">1</span>
           <strong>Contribute through GitHub</strong>
           <p>Open the repo path.</p>
-          <small>{compactNumber(pulse.mcp.wiki.bugs.length)} wiki bugs · {compactNumber(pulse.branchCount)} branches · head {shortHash(pulse.repo.repo.head)}</small>
+          <small
+            >{compactNumber(pulse.mcp.wiki.bugs.length)} wiki bugs · {compactNumber(
+              pulse.branchCount,
+            )} branches · head {shortHash(pulse.repo.repo.head)}</small
+          >
         </a>
         <a class="entry-step" href="/connect">
           <span class="entry-step__number">2</span>
           <strong>Connect your MCP</strong>
           <p>Use it from your chatbot.</p>
-          <small>{pulse.mcp.source} · {compactNumber(pulse.mcp.goals.length)} work targets · {compactNumber(pulse.mcp.wiki.bugs.length)} bugs</small>
+          <small
+            >{pulse.mcp.source} · {compactNumber(pulse.mcp.goals.length)} work targets
+            · {compactNumber(pulse.mcp.wiki.bugs.length)} bugs</small
+          >
         </a>
         <a class="entry-step" href="/host">
           <span class="entry-step__number">3</span>
           <strong>Host a daemon</strong>
           <p>Add capacity to the loop.</p>
-          <small>{compactNumber(pulse.mcp.universes.length)} universes · {compactNumber(pulse.repo.workflow_branches.length)} workflow branches</small>
+          <small
+            >{compactNumber(pulse.mcp.universes.length)} universes · {compactNumber(
+              pulse.repo.workflow_branches.length,
+            )} workflow branches</small
+          >
         </a>
       </div>
     </div>
@@ -88,31 +119,67 @@
   <div class="container">
     <div class="playground__header">
       <div>
-        <RitualLabel color="var(--violet-400)">· Patch loop playground ·</RitualLabel>
-        <h2>Click through the loop itself</h2>
-        <p>The 1-6 route is the showcase. Real wiki bug reports and work targets from the MCP snapshot fill the route so the stage behavior is grounded instead of decorative.</p>
+        <RitualLabel color="var(--violet-400)"
+          >· Patch loop replay ·</RitualLabel
+        >
+        <h2>Click through the latest evidence</h2>
+        <p>
+          The 1-6 route is the scaffold. The story is the selected run or
+          monitor signal: source, stage, verdict, and the raw JSON behind it.
+        </p>
       </div>
       <div class="snapshot-meter" aria-label="MCP snapshot counts">
         <span><strong>{snapshot.stats.wiki_promoted}</strong> wiki pages</span>
         <span><strong>{snapshot.stats.goals}</strong> work targets</span>
-        <span><strong>{snapshot.stats.edges ?? snapshot.edges?.length ?? 0}</strong> edges</span>
+        <span
+          ><strong>{snapshot.stats.edges ?? snapshot.edges?.length ?? 0}</strong
+          > edges</span
+        >
       </div>
     </div>
 
     <LoopLiveFeed
       stages={STAGES}
-      selectedStageId={selectedStageId}
+      {selectedStageId}
       onSelectStage={(stage) => (selectedStageId = stage)}
     />
   </div>
 </section>
 
 <style>
-  .playground, .join-loop { padding-block: 56px; border-top: 1px solid var(--border-1); }
-  .join-loop--hero { padding-top: 72px; border-top: none; }
-  h1 { font-family: var(--font-display); font-size: clamp(42px, 7vw, 68px); font-weight: 400; letter-spacing: 0; margin: 8px 0 14px; line-height: 0.98; text-wrap: balance; }
-  h2 { font-family: var(--font-display); font-size: clamp(28px, 5vw, 40px); font-weight: 500; letter-spacing: 0; margin: 8px 0 14px; line-height: 1.05; }
-  .lead { font-size: 17px; color: var(--fg-2); line-height: 1.65; margin: 0 0 14px; max-width: 64ch; }
+  .playground,
+  .join-loop {
+    padding-block: 56px;
+    border-top: 1px solid var(--border-1);
+  }
+  .join-loop--hero {
+    padding-top: 72px;
+    border-top: none;
+  }
+  h1 {
+    font-family: var(--font-display);
+    font-size: clamp(42px, 7vw, 68px);
+    font-weight: 400;
+    letter-spacing: 0;
+    margin: 8px 0 14px;
+    line-height: 0.98;
+    text-wrap: balance;
+  }
+  h2 {
+    font-family: var(--font-display);
+    font-size: clamp(28px, 5vw, 40px);
+    font-weight: 500;
+    letter-spacing: 0;
+    margin: 8px 0 14px;
+    line-height: 1.05;
+  }
+  .lead {
+    font-size: 17px;
+    color: var(--fg-2);
+    line-height: 1.65;
+    margin: 0 0 14px;
+    max-width: 64ch;
+  }
 
   .join-loop {
     background: var(--bg-0);
@@ -138,7 +205,10 @@
     border: 1px solid var(--border-1);
     border-radius: 8px;
     background: var(--bg-inset);
-    transition: border-color var(--dur-base) var(--ease-summon), background var(--dur-base) var(--ease-summon), transform var(--dur-base) var(--ease-summon);
+    transition:
+      border-color var(--dur-base) var(--ease-summon),
+      background var(--dur-base) var(--ease-summon),
+      transform var(--dur-base) var(--ease-summon);
   }
   .entry-step:hover {
     border-color: rgba(109, 211, 166, 0.42);
@@ -181,7 +251,11 @@
 
   .playground {
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0)),
+      linear-gradient(
+        180deg,
+        rgba(255, 255, 255, 0.025),
+        rgba(255, 255, 255, 0)
+      ),
       var(--bg-1);
   }
   .playground__header {
@@ -216,7 +290,9 @@
     font-size: 10.5px;
     text-transform: uppercase;
   }
-  .snapshot-meter span:first-child { border-left: 0; }
+  .snapshot-meter span:first-child {
+    border-left: 0;
+  }
   .snapshot-meter strong {
     color: var(--fg-1);
     font-family: var(--font-display);

@@ -121,6 +121,11 @@ def test_list_branches_scope_published_filters_on_published_versions(branch_env)
     names = sorted(b["name"] for b in listing["branches"])
     assert "Versioned" in names
     assert "Probe draft" not in names
+    versioned_summary = next(
+        b for b in listing["branches"] if b["branch_def_id"] == versioned["branch_def_id"]
+    )
+    assert versioned_summary["published"] is True
+    assert versioned_summary["branch_version_id"] == version["branch_version_id"]
 
 
 def test_list_branches_scope_published_is_the_default(branch_env):

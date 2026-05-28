@@ -44,6 +44,8 @@ def authorization_server_metadata() -> dict[str, Any]:
       - registration endpoint (for DCR)
     """
     base = _server_url()
+    from workflow.auth.provider import supported_oauth_scopes
+
     return {
         "issuer": base,
         "authorization_endpoint": f"{base}/oauth/authorize",
@@ -53,7 +55,7 @@ def authorization_server_metadata() -> dict[str, Any]:
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "token_endpoint_auth_methods_supported": ["none"],
         "code_challenge_methods_supported": ["S256"],
-        "scopes_supported": ["read", "write", "admin"],
+        "scopes_supported": supported_oauth_scopes(),
         "service_documentation": f"{base}/docs",
     }
 
@@ -67,10 +69,12 @@ def protected_resource_metadata() -> dict[str, Any]:
     this resource, so they know where to start the auth flow.
     """
     base = _server_url()
+    from workflow.auth.provider import supported_oauth_scopes
+
     return {
         "resource": base,
         "authorization_servers": [base],
-        "scopes_supported": ["read", "write", "admin"],
+        "scopes_supported": supported_oauth_scopes(),
         "bearer_methods_supported": ["header"],
     }
 

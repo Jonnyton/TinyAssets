@@ -113,10 +113,11 @@ def test_set_premise_appends_ledger(universe: str) -> None:
     entry = entries[0]
     assert entry["action"] == "set_premise"
     assert entry["actor"] == "test-user"
-    assert entry["target"] == "PROGRAM.md"
+    assert entry["target"] == "soul.md"
     assert entry["summary"] == "A tower of bones."
     assert "timestamp" in entry
     assert entry["payload"]["bytes"] == len("A tower of bones.".encode("utf-8"))
+    assert entry["payload"]["legacy_program_mirror"] == "PROGRAM.md"
 
 
 def test_set_premise_empty_does_not_append(universe: str) -> None:
@@ -163,6 +164,7 @@ def test_submit_request_appends_ledger(universe: str) -> None:
     assert entries[0]["action"] == "submit_request"
     assert entries[0]["target"] == out["request_id"]
     assert entries[0]["payload"]["request_type"] == "scene_direction"
+    assert entries[0]["payload"]["loop_dispatch"]["source"] == "legacy_no_soul_compat"
 
 
 def test_add_canon_appends_ledger(universe: str) -> None:
@@ -217,6 +219,7 @@ def test_create_universe_appends_ledger_to_new_universe(universe: str) -> None:
     assert entries[0]["action"] == "create_universe"
     assert entries[0]["summary"] == "A seedling kingdom."
     assert entries[0]["payload"]["has_premise"] is True
+    assert entries[0]["payload"]["has_soul"] is True
 
 
 def test_create_universe_surfaces_synthesis_first_run_checklist(
@@ -259,6 +262,10 @@ def test_get_ledger_returns_appended_entries(universe: str) -> None:
 def test_ledger_survives_across_mixed_writes(universe: str) -> None:
     _call("set_premise", text="Premise.")
     _call("give_direction", text="Direction.")
+    us.ensure_universe_soul(
+        us._base_path() / universe,
+        loop_branch_def_id="fantasy_author:universe_cycle_wrapper",
+    )
     _call("submit_request", text="Request.")
     _call("add_canon", filename="a.md", text="x", provenance_tag="test")
 

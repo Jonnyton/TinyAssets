@@ -406,11 +406,14 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
 
     summaries = []
     for r in rows:
+        published_version_id = None
         if scope == "published":
             from workflow.branch_versions import list_branch_versions
 
-            if not list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1):
+            versions = list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1)
+            if not versions:
                 continue
+            published_version_id = versions[0].branch_version_id
         elif scope == "mine":
             if (r.get("author") or "") != actor:
                 continue
@@ -427,7 +430,7 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         # node_defs`` which double-counted because graph.nodes is a
         # compiled-topology view that overlaps with node_defs.
         node_count = len(node_defs)
-        summaries.append({
+        summary = {
             "branch_def_id": r.get("branch_def_id"),
             "name": r.get("name"),
             "author": r.get("author"),
@@ -435,10 +438,13 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             "goal_id": r.get("goal_id"),
             "node_count": node_count,
             "skill_count": len(r.get("skills", []) or []),
-            "published": r.get("published", False),
+            "published": True if scope == "published" else r.get("published", False),
             "visibility": r.get("visibility", "public"),
             "has_sandbox_nodes": has_sandbox_nodes,
-        })
+        }
+        if published_version_id is not None:
+            summary["branch_version_id"] = published_version_id
+        summaries.append(summary)
     return json.dumps({"branches": summaries, "count": len(summaries)})
 
 
@@ -1036,6 +1042,77 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 _VALID_STATE_TYPES = {"str", "int", "float", "bool", "list", "dict", "any"}
 
 
+def _branch_authoring_batch_receipt(
+    branch: Any,
+    *,
+    action: str,
+    operation_count: int,
+    request_id: str = "",
+) -> dict[str, Any]:
+    """Return structured evidence for one composite Branch authoring call."""
+    from workflow.api.engine_helpers import _current_actor
+
+    node_defs = list(getattr(branch, "node_defs", []) or [])
+    source_code_node_count = 0
+    approved_source_code_node_count = 0
+    unapproved_nodes: list[dict[str, str]] = []
+    for node in node_defs:
+        if not getattr(node, "source_code", ""):
+            continue
+        source_code_node_count += 1
+        if bool(getattr(node, "approved", False)):
+            approved_source_code_node_count += 1
+        else:
+            unapproved_nodes.append({
+                "node_id": getattr(node, "node_id", ""),
+                "display_name": getattr(node, "display_name", ""),
+            })
+
+    receipt: dict[str, Any] = {
+        "receipt_type": "branch_authoring_batch",
+        "action": action,
+        "actor": _current_actor(),
+        "branch_def_id": getattr(branch, "branch_def_id", ""),
+        "branch_name": getattr(branch, "name", ""),
+        "operation_count": operation_count,
+        "node_count": len(node_defs),
+        "edge_count": len(getattr(branch, "edges", []) or []),
+        "skill_count": len(getattr(branch, "skills", []) or []),
+        "state_field_count": len(getattr(branch, "state_schema", []) or []),
+        "validation": {
+            "status": "ok",
+            "valid": True,
+            "error_count": 0,
+        },
+        "source_code_approval": {
+            "source_code_node_count": source_code_node_count,
+            "approved_count": approved_source_code_node_count,
+            "unapproved_count": len(unapproved_nodes),
+            "unapproved_nodes": unapproved_nodes,
+            "runnable": len(unapproved_nodes) == 0,
+        },
+        "caveats": [
+            "This receipt records what landed; it is not an authorization grant.",
+            (
+                "It does not bypass source_code approval, host-owned gates, "
+                "or client approval prompts."
+            ),
+        ],
+    }
+
+    normalized_request_id = str(request_id or "").strip()
+    if normalized_request_id:
+        receipt["plan_context"] = {
+            "request_id": normalized_request_id,
+            "authoritative": False,
+            "note": (
+                "Caller-supplied context for correlating this batch; "
+                "not an approval token."
+            ),
+        }
+    return receipt
+
+
 def _suggest_entry_point(branch: Any) -> str:
     if not branch.graph_nodes:
         return ""
@@ -1200,7 +1277,7 @@ def _resolve_node_spec(
         for field_key in (
             "display_name", "description", "phase", "input_keys",
             "output_keys", "strict_input_isolation", "source_code",
-            "prompt_template", "author",
+            "prompt_template", "tools_allowed", "timeout_seconds", "author",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1262,6 +1339,7 @@ def _lookup_node_body(
             "phase": hit.get("phase", "custom"),
             "input_keys": list(hit.get("input_keys") or []),
             "output_keys": list(hit.get("output_keys") or []),
+            "tools_allowed": list(hit.get("tools_allowed") or []),
             "strict_input_isolation": bool(
                 hit.get("strict_input_isolation", True),
             ),
@@ -1292,6 +1370,7 @@ def _lookup_node_body(
                 "phase": nd.get("phase", "custom"),
                 "input_keys": list(nd.get("input_keys") or []),
                 "output_keys": list(nd.get("output_keys") or []),
+                "tools_allowed": list(nd.get("tools_allowed") or []),
                 "strict_input_isolation": bool(
                     nd.get("strict_input_isolation", True),
                 ),
@@ -1341,6 +1420,11 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     out_keys, err = _coerce_node_keys(raw.get("output_keys"), "output_keys")
     if err:
         return err
+    tools_allowed, err = _coerce_node_keys(
+        raw.get("tools_allowed"), "tools_allowed",
+    )
+    if err:
+        return err
     model_hint, err = _coerce_model_hint_update(
         raw.get("model_hint", ""), "model_hint",
     )
@@ -1351,6 +1435,14 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     )
     if err:
         return err
+    timeout_seconds_raw = raw.get("timeout_seconds", 300.0)
+    if timeout_seconds_raw in (None, ""):
+        timeout_seconds = 300.0
+    else:
+        try:
+            timeout_seconds = float(timeout_seconds_raw)
+        except (TypeError, ValueError):
+            return f"node '{nid}' timeout_seconds must be a number."
     # BUG-045: thread the three sub-branch / sibling-run spec fields. The
     # compiler reads them (workflow/graph_compiler.py:_build_invoke_branch /
     # invoke_branch_version / await_run callables) and NodeDefinition
@@ -1388,11 +1480,13 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             phase=phase,
             input_keys=in_keys,
             output_keys=out_keys,
+            tools_allowed=tools_allowed,
             strict_input_isolation=strict_input_isolation,
             source_code=source_code,
             prompt_template=prompt_template,
             model_hint=model_hint,
             llm_policy=llm_policy,
+            timeout_seconds=timeout_seconds,
             author=raw.get("author") or _current_actor(),
             approved=bool(raw.get("approved", False)),
             invoke_branch_spec=invoke_branch_arg,
@@ -1710,6 +1804,10 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             }],
         })
 
+    top_level_goal_id = (kwargs.get("goal_id") or "").strip()
+    if top_level_goal_id:
+        spec = {**spec, "goal_id": top_level_goal_id}
+
     branch, staging_errors = _staged_branch_from_spec(spec)
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
@@ -1760,6 +1858,12 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
         "skill_count": len(persisted.skills),
         "entry_point": persisted.entry_point,
         "validation_summary": "ok",
+        "batch_receipt": _branch_authoring_batch_receipt(
+            persisted,
+            action="build_branch",
+            operation_count=1,
+            request_id=kwargs.get("request_id", ""),
+        ),
     }
     if verbose:
         payload["branch"] = saved
@@ -1865,6 +1969,8 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                 if "prompt_template" in op:
                     n.prompt_template = op["prompt_template"]
                 if "source_code" in op:
+                    if op["source_code"] != n.source_code:
+                        n.approved = False
                     n.source_code = op["source_code"]
                 if "model_hint" in op:
                     model_hint, err = _coerce_model_hint_update(
@@ -1894,6 +2000,13 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     if err:
                         return err
                     n.output_keys = keys
+                if "tools_allowed" in op:
+                    tools_allowed, err = _coerce_node_keys(
+                        op["tools_allowed"], "tools_allowed",
+                    )
+                    if err:
+                        return err
+                    n.tools_allowed = tools_allowed
                 return ""
         return f"update_node: node '{nid}' not found"
     if name == "add_skill":
@@ -2233,6 +2346,12 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         "name_updated": name_updated,
         "new_name": persisted.name,
         "post_patch": post_patch,
+        "batch_receipt": _branch_authoring_batch_receipt(
+            persisted,
+            action="patch_branch",
+            operation_count=len(changes),
+            request_id=kwargs.get("request_id", ""),
+        ),
     }
     if verbose:
         patch_payload["branch"] = saved
@@ -2395,7 +2514,10 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             if target_node.prompt_template:
                 target_node.source_code = ""
         if "source_code" in updates:
-            target_node.source_code = updates["source_code"]
+            next_source = updates["source_code"]
+            if next_source != target_node.source_code:
+                target_node.approved = False
+            target_node.source_code = next_source
             if target_node.source_code:
                 target_node.prompt_template = ""
         if "model_hint" in updates:
@@ -2426,6 +2548,13 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             if err:
                 return json.dumps({"status": "rejected", "error": err})
             target_node.output_keys = keys
+        if "tools_allowed" in updates:
+            tools_allowed, err = _coerce_node_keys(
+                updates["tools_allowed"], "tools_allowed",
+            )
+            if err:
+                return json.dumps({"status": "rejected", "error": err})
+            target_node.tools_allowed = tools_allowed
         # BUG-045: thread the three spec fields onto target_node. Mutual
         # exclusivity vs prompt_template / source_code is enforced by
         # BranchDefinition.validate() at compile time; we accept what
@@ -2998,6 +3127,10 @@ extensions action=build_branch spec_json='{
 
 If validation fails, `build_branch` returns concrete `suggestions` with
 proposed fixes — apply them and retry. No partial branch is ever visible.
+On success, `build_branch` returns a structured `batch_receipt` that records
+what landed, validation status, and source_code approval status. Treat this
+receipt as evidence only: it is not an authorization grant, trust session, or
+approval-token bypass.
 
 ## Branch skills
 
@@ -3027,6 +3160,11 @@ extensions action=patch_branch branch_def_id=... changes_json='[
              "body": "Check tests, code shape, and live proof."}}
 ]'
 ```
+
+Successful `patch_branch` responses also include `batch_receipt`. Rejected
+patches do not. The receipt lets the chatbot summarize the batch and point to
+remaining blockers, but it never overrides `source_code` approval or host-owned
+gates.
 
 ## Atomic actions (single-item surgery only)
 

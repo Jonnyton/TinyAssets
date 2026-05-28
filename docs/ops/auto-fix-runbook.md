@@ -126,6 +126,11 @@ Variable-based toggle preserves secrets; no data loss from toggling.
 - PR labels: `writer:claude` requires `checker:codex`; `writer:codex`
   requires `checker:claude`. The `Daemon request policy` PR check enforces
   that same-family machine review is not accepted.
+- Post-2026-06-15 Codex-written PRs may follow DESIGN-007's weaker
+  GPT-5.5-only checker path when no qualified Claude-family checker is
+  available. That path must be labelled as weaker, must not fabricate
+  `checker:claude`, and must carry the canonical evidence keys listed in
+  `pages/plans/design-007-post-june-15-gpt-5-5-only-checker-path-for-codex-written-pat.md`.
 
 ## Gate and bounty requirements
 

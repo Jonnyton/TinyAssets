@@ -69,6 +69,8 @@ _WIKI_SEARCH_COMPLETENESS_WARNING = (
     "changed_since=<ISO timestamp>; for authoritative content read candidate "
     "pages with action=read."
 )
+_WIKI_READ_DEFAULT_MAX_CHARS = 128_000
+_WIKI_READ_MAX_CHARS = 256_000
 
 
 _logger_wiki = logging.getLogger("universe_server.wiki")
@@ -302,6 +304,24 @@ def _coerce_result_limit(value: Any) -> int:
     return max(1, min(raw, 100))
 
 
+def _coerce_read_offset(value: Any) -> int:
+    try:
+        raw = int(value or 0)
+    except (TypeError, ValueError):
+        raw = 0
+    return max(0, raw)
+
+
+def _coerce_read_max_chars(value: Any) -> int:
+    try:
+        raw = int(value or 0)
+    except (TypeError, ValueError):
+        raw = _WIKI_READ_DEFAULT_MAX_CHARS
+    if raw <= 0:
+        raw = _WIKI_READ_DEFAULT_MAX_CHARS
+    return max(1, min(raw, _WIKI_READ_MAX_CHARS))
+
+
 def _ambient_relevance_feed(
     *,
     source: Path,
@@ -422,6 +442,36 @@ def _sanitize_slug(name: str) -> str:
     return re.sub(r"[^a-z0-9-]", "-", clean.lower()).strip("-")
 
 
+def _wiki_write_slug(category: str, filename: str) -> tuple[str, str | None]:
+    """Normalize action=write filename input to a page slug.
+
+    Chat surfaces sometimes pass the wiki-relative path returned by an earlier
+    write/read call. Treat those as pointing at the final basename instead of
+    folding the path prefix into the slug.
+    """
+    requested = filename.strip().replace("\\", "/")
+    if requested.startswith("/"):
+        return "", "filename must be relative to the wiki root."
+
+    parts = requested.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return "", "filename must not contain empty, current, or parent path parts."
+
+    if len(parts) == 3 and parts[0] in {"pages", "drafts"}:
+        if parts[1] != category:
+            return "", (
+                f"filename category '{parts[1]}' does not match category '{category}'."
+            )
+        requested = parts[2]
+    elif len(parts) == 2 and parts[0] == category:
+        requested = parts[1]
+
+    slug = _sanitize_slug(requested)
+    if not slug:
+        return "", "filename must resolve to a non-empty slug."
+    return slug, None
+
+
 def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
     """Find the canonical bugs/<slug>.md path, preferring uppercase + trailing-hyphen variants.
 
@@ -475,6 +525,8 @@ def _wiki_read(
     query: str = "",
     changed_since: str = "",
     max_results: int = 10,
+    offset: int = 0,
+    max_chars: int = _WIKI_READ_DEFAULT_MAX_CHARS,
     **_kwargs: Any,
 ) -> str:
     if not page:
@@ -507,21 +559,46 @@ def _wiki_read(
         source_body=body,
     )
 
-    if len(text) > 15000:
+    read_start = _coerce_read_offset(offset)
+    read_limit = _coerce_read_max_chars(max_chars)
+    total_chars = len(content)
+    if read_start > total_chars:
+        read_start = total_chars
+    read_end = min(read_start + read_limit, total_chars)
+    chunk = content[read_start:read_end]
+    truncated = read_end < total_chars
+    next_offset = read_end if truncated else None
+
+    if truncated:
+        marker = (
+            "\n\n[WIKI READ TRUNCATED: showing chars "
+            f"{read_start}-{read_end} of {total_chars}. Continue with "
+            f"wiki(action=\"read\", page=\"{page}\", offset={read_end}, "
+            f"max_chars={read_limit}).]"
+        )
         return json.dumps({
             "path": rel,
             "is_draft": is_draft,
-            "content": content[:15000],
+            "content": chunk + marker,
             "truncated": True,
-            "total_chars": len(text),
+            "total_chars": total_chars,
+            "read_start": read_start,
+            "read_end": read_end,
+            "read_limit": read_limit,
+            "next_offset": next_offset,
             "source_read_proof": source_read_proof,
             "ambient_relevance_feed": ambient_feed,
         })
     return json.dumps({
         "path": rel,
         "is_draft": is_draft,
-        "content": content,
+        "content": chunk,
         "truncated": False,
+        "total_chars": total_chars,
+        "read_start": read_start,
+        "read_end": read_end,
+        "read_limit": read_limit,
+        "next_offset": None,
         "source_read_proof": source_read_proof,
         "ambient_relevance_feed": ambient_feed,
     })
@@ -699,7 +776,9 @@ def _wiki_write(
             "valid": list(_WIKI_CATEGORIES),
         })
 
-    slug = _sanitize_slug(filename)
+    slug, slug_error = _wiki_write_slug(category, filename)
+    if slug_error:
+        return json.dumps({"error": slug_error})
     promoted_path = _wiki_pages_dir() / category / (slug + ".md")
 
     # Alias-resolution for the bugs category. Runs BEFORE the .exists() check
@@ -1597,17 +1676,30 @@ def _render_bug_markdown(
         base_tags.extend(t for t in extra_tags if t not in base_tags)
     tags_str = ", ".join(base_tags)
     effort_frontmatter = ""
+    effort_dispatch_section = ""
     if effort_classification:
+        from workflow.api.market import filing_effort_dispatch_route
+
         effort_class = str(effort_classification.get("effort_class") or "standard")
         attention = str(effort_classification.get("attention") or "normal-review-gates")
         raw_signals = effort_classification.get("signals") or []
         signals = [str(signal) for signal in raw_signals if str(signal)]
         signals_str = ", ".join(signals)
+        dispatch_route = filing_effort_dispatch_route(effort_classification)
         effort_frontmatter = (
             f"effort_class: {effort_class}\n"
             f"effort_attention: {attention}\n"
             f"effort_signals: [{signals_str}]\n"
+            f"effort_dispatch_lane: {dispatch_route['lane']}\n"
+            f"effort_pickup_signal_weight: {dispatch_route['pickup_signal_weight']}\n"
         )
+        if effort_class == "ghost-risk":
+            effort_dispatch_section = (
+                "\n\n## Carrier Attention\n\n"
+                "Attention family: opposite-family-checker\n\n"
+                f"Reason: {dispatch_route['visible_reason']}\n\n"
+                f"Signals: {signals_str or '_none_'}\n"
+            )
     return (
         f"---\n"
         f"id: {bug_id}\n"
@@ -1630,11 +1722,15 @@ def _render_bug_markdown(
         f"## Workaround\n\n{workaround or '_none_'}\n\n"
         f"## First seen\n\n{first_seen_date}\n\n"
         f"## Related\n\n_none yet_\n"
+        f"{effort_dispatch_section}"
     )
 
 
 _VALID_BUG_KINDS = frozenset({"bug", "feature", "design", "patch_request"})
 _BUG_DEDUP_THRESHOLD = 0.5
+_BUG_DEDUP_CONTAINMENT_THRESHOLD = 0.8
+_BUG_DEDUP_MIN_SHARED_TOKENS = 6
+_BUG_DEDUP_SECTION_CHAR_LIMIT = 4000
 
 
 def _bug_token_set(text: str) -> set[str]:
@@ -1649,11 +1745,29 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(union) if union else 0.0
 
 
+def _containment(a: set[str], b: set[str]) -> float:
+    if not a and not b:
+        return 1.0
+    smaller = min(len(a), len(b))
+    return len(a & b) / smaller if smaller else 0.0
+
+
+def _bug_duplicate_similarity(a: set[str], b: set[str]) -> float:
+    """Score filing overlap without letting long framing prose dilute the core."""
+    jaccard = _jaccard(a, b)
+    if len(a & b) < _BUG_DEDUP_MIN_SHARED_TOKENS:
+        return jaccard
+    containment = _containment(a, b)
+    if containment >= _BUG_DEDUP_CONTAINMENT_THRESHOLD:
+        return max(jaccard, containment)
+    return jaccard
+
+
 def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
     """Return a list of {bug_id, title, status, haystack_tokens} for all existing bugs.
 
-    Haystack uses only frontmatter title + "What happened" section to avoid
-    dilution from markdown scaffolding tokens (dates, template headings, etc.).
+    Haystack uses only frontmatter title + a bounded "What happened" section
+    to avoid dilution from markdown scaffolding tokens (dates, headings, etc.).
     """
     if not bugs_dir.is_dir():
         return []
@@ -1692,9 +1806,11 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
                         in_observed = False
                     else:
                         observed_text += " " + line
-                if len(observed_text) > 300:
+                if len(observed_text) > _BUG_DEDUP_SECTION_CHAR_LIMIT:
                     break
-        haystack = _bug_token_set(fm_title + " " + observed_text[:300])
+        haystack = _bug_token_set(
+            fm_title + " " + observed_text[:_BUG_DEDUP_SECTION_CHAR_LIMIT]
+        )
         results.append({
             "bug_id": f"{m.group(1).upper()}-{m.group(2)}",
             "title": fm_title,
@@ -1818,8 +1934,8 @@ def _wiki_file_bug(
     create guards against concurrent file_bug races.
 
     ``force_new`` skips the similarity check and always mints a new id.
-    When omitted, a Jaccard similarity ≥ 0.5 against an existing bug's
-    title+body returns {status: "similar_found"} instead of filing.
+    When omitted, a token-overlap similarity score ≥ 0.5 against an existing
+    bug's title+body returns {status: "similar_found"} instead of filing.
     """
     if not title or not component or not severity:
         return json.dumps({
@@ -1848,7 +1964,7 @@ def _wiki_file_bug(
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slug = _slugify_title(title)
-    from workflow.api.market import classify_filing_effort
+    from workflow.api.market import classify_filing_effort, filing_effort_dispatch_route
 
     effort_classification = classify_filing_effort(
         title=title,
@@ -1861,6 +1977,7 @@ def _wiki_file_bug(
         workaround=workaround,
         tags=tags,
     )
+    effort_dispatch_route = filing_effort_dispatch_route(effort_classification)
 
     # Dedup check: scan existing filings of THIS kind for Jaccard similarity
     # ≥ threshold. Per-kind only — a feature-request shouldn't dedup against
@@ -1871,7 +1988,7 @@ def _wiki_file_bug(
         existing = _scan_existing_bugs(pages_dir)
         scored = []
         for entry in existing:
-            sim = _jaccard(query_tokens, entry["haystack_tokens"])
+            sim = _bug_duplicate_similarity(query_tokens, entry["haystack_tokens"])
             if sim >= _BUG_DEDUP_THRESHOLD:
                 scored.append((sim, entry))
         if scored:
@@ -1890,6 +2007,7 @@ def _wiki_file_bug(
                 "bug_id": None,
                 "similar": top3,
                 "effort_classification": effort_classification,
+                "effort_dispatch_route": effort_dispatch_route,
                 "hint": (
                     "Similar filings exist. Use cosign_bug to add your context "
                     "to the top match, or set force_new=true if the symptom is "
@@ -1951,6 +2069,11 @@ def _wiki_file_bug(
             "title": title,
             "type": effective_kind,
             "kind": effective_kind,
+            "effort_class": effort_classification["effort_class"],
+            "effort_attention": effort_classification["attention"],
+            "effort_dispatch_lane": effort_dispatch_route["lane"],
+            "effort_classification": effort_classification,
+            "effort_dispatch_route": effort_dispatch_route,
             "component": component,
             "severity": severity,
             "status": "open",
@@ -2070,6 +2193,7 @@ def _wiki_file_bug(
         "severity": severity,
         "component": component,
         "effort_classification": effort_classification,
+        "effort_dispatch_route": effort_dispatch_route,
         "investigation": investigation,
         "note": "Filing sent to navigator triage pipeline. "
                 f"Use `wiki action=list category={category_dir}` to view.",
@@ -2086,6 +2210,57 @@ def _wiki_file_bug(
 # Dispatch entry — plain function. The MCP tool wrapper lives in
 # workflow/universe_server.py and delegates here (Pattern A2).
 # ---------------------------------------------------------------------------
+
+WIKI_ACTIONS: dict[str, Any] = {
+    "read": _wiki_read,
+    "search": _wiki_search,
+    "since": _wiki_since,
+    "list": _wiki_list,
+    "lint": _wiki_lint,
+    "write": _wiki_write,
+    "patch": _wiki_patch,
+    "delete": _wiki_delete,
+    "consolidate": _wiki_consolidate,
+    "promote": _wiki_promote,
+    "ingest": _wiki_ingest,
+    "supersede": _wiki_supersede,
+    "sync_projects": _wiki_sync_projects,
+    "file_bug": _wiki_file_bug,
+    "cosign_bug": _wiki_cosign_bug,
+}
+
+WIKI_WRITE_ACTIONS: frozenset[str] = frozenset({
+    "write",
+    "patch",
+    "delete",
+    "consolidate",
+    "promote",
+    "ingest",
+    "supersede",
+    "sync_projects",
+    "file_bug",
+    "cosign_bug",
+})
+
+
+def _dispatch_scope_error(tool: str, action: str) -> str | None:
+    from workflow.auth.middleware import require_action_scope
+    from workflow.auth.provider import PermissionScope
+
+    try:
+        require_action_scope(
+            tool,
+            action,
+            scope=PermissionScope(resource_type="wiki", resource_id=action),
+        )
+    except PermissionError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "auth_scope_required": True,
+            "tool": tool,
+            "action": action,
+        })
+    return None
 
 
 def wiki(
@@ -2107,6 +2282,8 @@ def wiki(
     dry_run: bool = True,
     skip_lint: bool = False,
     max_results: int = 10,
+    offset: int = 0,
+    max_chars: int = _WIKI_READ_DEFAULT_MAX_CHARS,
     component: str = "",
     severity: str = "",
     title: str = "",
@@ -2161,30 +2338,16 @@ def wiki(
             ),
         })
 
-    dispatch = {
-        "read": _wiki_read,
-        "search": _wiki_search,
-        "since": _wiki_since,
-        "list": _wiki_list,
-        "lint": _wiki_lint,
-        "write": _wiki_write,
-        "patch": _wiki_patch,
-        "delete": _wiki_delete,
-        "consolidate": _wiki_consolidate,
-        "promote": _wiki_promote,
-        "ingest": _wiki_ingest,
-        "supersede": _wiki_supersede,
-        "sync_projects": _wiki_sync_projects,
-        "file_bug": _wiki_file_bug,
-        "cosign_bug": _wiki_cosign_bug,
-    }
-
+    dispatch = WIKI_ACTIONS
     handler = dispatch.get(action)
     if handler is None:
         return json.dumps({
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(dispatch.keys()),
         })
+    scope_error = _dispatch_scope_error("wiki", action)
+    if scope_error is not None:
+        return scope_error
 
     kwargs: dict[str, Any] = {
         "page": page,
@@ -2204,6 +2367,8 @@ def wiki(
         "dry_run": dry_run,
         "skip_lint": skip_lint,
         "max_results": max_results,
+        "offset": offset,
+        "max_chars": max_chars,
         "component": component,
         "severity": severity,
         "title": title,

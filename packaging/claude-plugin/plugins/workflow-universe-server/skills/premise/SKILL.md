@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Premise
 
-Read or update the story premise (PROGRAM.md) that seeds the daemon's creative direction.
+Read or update the universe purpose/premise that seeds the daemon's creative direction.
 
 ## Usage
 

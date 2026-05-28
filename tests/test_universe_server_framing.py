@@ -189,6 +189,17 @@ def test_control_station_routes_daemon_memory_actions() -> None:
     assert "daemon_id" in text
 
 
+def test_universe_schema_exposes_daemon_id_for_daemon_memory_actions() -> None:
+    """BUG-086: daemon memory status requires daemon_id, so the MCP schema
+    must expose a top-level daemon_id field instead of forcing callers through
+    hidden inputs_json.
+    """
+    tool = next(t for t in _list_tools() if t.name == "universe")
+    properties = tool.parameters.get("properties", {})
+    assert "daemon_id" in properties
+    assert "daemon_id" not in tool.parameters.get("required", [])
+
+
 def test_control_station_routes_treasury_status_as_read_only() -> None:
     """Treasury/cost-ledger status must be discoverable as a read-only route."""
     from workflow.api.prompts import _CONTROL_STATION_PROMPT
@@ -265,6 +276,9 @@ def test_branch_design_guide_prompt_covers_branch_authoring() -> None:
     assert "branch" in text
     # References run_branch so authors understand the runtime contract.
     assert "run_branch" in text or "extensions" in text
+    assert "batch_receipt" in text
+    assert "not an authorization grant" in text
+    assert "source_code approval" in text
 
 
 def test_control_station_pins_register_explicit_ask_rule() -> None:

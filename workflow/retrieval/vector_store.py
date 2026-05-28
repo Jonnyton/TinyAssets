@@ -15,6 +15,7 @@ import lancedb
 import numpy as np
 
 if TYPE_CHECKING:
+    from workflow.knowledge.tag_matrix import KnowledgeTags
     from workflow.memory.scoping import MemoryScope
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,13 @@ class VectorStore:
                 "goal_id": "",
                 "branch_id": "",
                 "user_id": "",
+                "tag_universes": "[]",
+                "tag_domains": "[]",
+                "tag_shapes": "[]",
+                "tag_general": 0,
+                "tag_commons": 0,
+                "tag_private_canon": 0,
+                "promotion_record": "",
                 "embedding": np.zeros(self._embedding_dim, dtype=np.float32).tolist(),
             }]
             self._table = self._db.create_table(self._table_name, data=seed)
@@ -132,6 +140,7 @@ class VectorStore:
         self,
         chunks: Sequence[dict],
         scope: "MemoryScope | None" = None,
+        tags: "KnowledgeTags | None" = None,
     ) -> int:
         """Index prose chunks with pre-computed embeddings.
 
@@ -172,6 +181,15 @@ class VectorStore:
                 "universe_id": "", "goal_id": "",
                 "branch_id": "", "user_id": "",
             }
+        tag_defaults = tags.as_row_metadata() if tags is not None else {
+            "tag_universes": "[]",
+            "tag_domains": "[]",
+            "tag_shapes": "[]",
+            "tag_general": 0,
+            "tag_commons": 0,
+            "tag_private_canon": 0,
+            "promotion_record": "",
+        }
 
         rows = []
         for chunk in chunks:
@@ -192,6 +210,27 @@ class VectorStore:
                 "goal_id": chunk.get("goal_id", scope_defaults["goal_id"]),
                 "branch_id": chunk.get("branch_id", scope_defaults["branch_id"]),
                 "user_id": chunk.get("user_id", scope_defaults["user_id"]),
+                "tag_universes": chunk.get(
+                    "tag_universes", tag_defaults["tag_universes"],
+                ),
+                "tag_domains": chunk.get(
+                    "tag_domains", tag_defaults["tag_domains"],
+                ),
+                "tag_shapes": chunk.get(
+                    "tag_shapes", tag_defaults["tag_shapes"],
+                ),
+                "tag_general": chunk.get(
+                    "tag_general", tag_defaults["tag_general"],
+                ),
+                "tag_commons": chunk.get(
+                    "tag_commons", tag_defaults["tag_commons"],
+                ),
+                "tag_private_canon": chunk.get(
+                    "tag_private_canon", tag_defaults["tag_private_canon"],
+                ),
+                "promotion_record": chunk.get(
+                    "promotion_record", tag_defaults["promotion_record"],
+                ),
                 "embedding": emb,
             })
 

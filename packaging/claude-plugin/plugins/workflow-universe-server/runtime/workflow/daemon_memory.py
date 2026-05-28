@@ -540,11 +540,9 @@ def build_daemon_memory_packet(
     if include_brain and (not truncated or reserved_brain_chars > 0):
         remaining = budget - len(context)
         if remaining > 0:
-            from workflow.daemon_brain import build_daemon_brain_packet
+            from workflow.daemon_brain import DaemonBrain
 
-            brain = build_daemon_brain_packet(
-                base_path,
-                daemon_id=daemon_id,
+            brain = DaemonBrain(base_path, daemon_id=daemon_id).build_packet(
                 query=brain_query if brain_query is not None else _default_brain_query(daemon),
                 max_chars=min(max(0, int(brain_max_chars)), remaining),
                 limit=brain_limit,
