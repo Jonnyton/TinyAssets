@@ -419,7 +419,12 @@ class NodeDefinition:
         # character-by-character, silently corrupting sandbox/state
         # handling. Per Hard Rule #8, we'd rather fail to load than
         # accept malformed data.
-        for field_name in ("input_keys", "output_keys", "effects"):
+        for field_name in (
+            "input_keys",
+            "output_keys",
+            "tools_allowed",
+            "effects",
+        ):
             value = getattr(self, field_name)
             if not isinstance(value, list):
                 raise NodeDefinitionValidationError(

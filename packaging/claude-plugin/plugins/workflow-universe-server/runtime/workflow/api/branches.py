@@ -1206,7 +1206,7 @@ def _resolve_node_spec(
         for field_key in (
             "display_name", "description", "phase", "input_keys",
             "output_keys", "strict_input_isolation", "source_code",
-            "prompt_template", "timeout_seconds", "author",
+            "prompt_template", "tools_allowed", "timeout_seconds", "author",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1268,6 +1268,7 @@ def _lookup_node_body(
             "phase": hit.get("phase", "custom"),
             "input_keys": list(hit.get("input_keys") or []),
             "output_keys": list(hit.get("output_keys") or []),
+            "tools_allowed": list(hit.get("tools_allowed") or []),
             "strict_input_isolation": bool(
                 hit.get("strict_input_isolation", True),
             ),
@@ -1298,6 +1299,7 @@ def _lookup_node_body(
                 "phase": nd.get("phase", "custom"),
                 "input_keys": list(nd.get("input_keys") or []),
                 "output_keys": list(nd.get("output_keys") or []),
+                "tools_allowed": list(nd.get("tools_allowed") or []),
                 "strict_input_isolation": bool(
                     nd.get("strict_input_isolation", True),
                 ),
@@ -1345,6 +1347,11 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     if err:
         return err
     out_keys, err = _coerce_node_keys(raw.get("output_keys"), "output_keys")
+    if err:
+        return err
+    tools_allowed, err = _coerce_node_keys(
+        raw.get("tools_allowed"), "tools_allowed",
+    )
     if err:
         return err
     model_hint, err = _coerce_model_hint_update(
@@ -1402,6 +1409,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             phase=phase,
             input_keys=in_keys,
             output_keys=out_keys,
+            tools_allowed=tools_allowed,
             strict_input_isolation=strict_input_isolation,
             source_code=source_code,
             prompt_template=prompt_template,
@@ -1913,6 +1921,13 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     if err:
                         return err
                     n.output_keys = keys
+                if "tools_allowed" in op:
+                    tools_allowed, err = _coerce_node_keys(
+                        op["tools_allowed"], "tools_allowed",
+                    )
+                    if err:
+                        return err
+                    n.tools_allowed = tools_allowed
                 return ""
         return f"update_node: node '{nid}' not found"
     if name == "add_skill":
@@ -2445,6 +2460,13 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             if err:
                 return json.dumps({"status": "rejected", "error": err})
             target_node.output_keys = keys
+        if "tools_allowed" in updates:
+            tools_allowed, err = _coerce_node_keys(
+                updates["tools_allowed"], "tools_allowed",
+            )
+            if err:
+                return json.dumps({"status": "rejected", "error": err})
+            target_node.tools_allowed = tools_allowed
         # BUG-045: thread the three spec fields onto target_node. Mutual
         # exclusivity vs prompt_template / source_code is enforced by
         # BranchDefinition.validate() at compile time; we accept what

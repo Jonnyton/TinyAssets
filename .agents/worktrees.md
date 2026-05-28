@@ -546,6 +546,17 @@ Notes:
 - Ship condition: focused tests pass, ruff passes, PR opened for Claude/Cowork
   review.
 
+## PR #975 Tools-Allowed Repair - 2026-05-24
+
+- 2026-05-24 create `../wf-pr975-tools-allowed-repair` on
+  `codex/pr975-tools-allowed-repair` by codex-gpt5-desktop-checker-pr975.
+- Source: `outputs/pr-inventory-2026-05-23/checker-batches-2026-05-24.md`
+  repair lane for dirty/conflicted PR #975 / GH issue #974.
+- Purpose: port the #975 runtime MCP affordance onto current main without
+  touching unrelated checker/repair lanes.
+- Ship condition: focused branch-runner/API tests pass and PR/handoff goes to
+  Claude-family checker because original writer family is Codex.
+
 ## BUG-106 Wiki Read Truncation - 2026-05-27
 
 - 2026-05-27 create `../wf-bug106-wiki-read-truncation` on
