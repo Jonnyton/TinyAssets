@@ -326,6 +326,7 @@ def initialize_author_server(base_path: str | Path) -> Path:
         rung_key          TEXT NOT NULL,
         evidence_url      TEXT NOT NULL,
         evidence_note     TEXT NOT NULL DEFAULT '',
+        conformance_pack_id TEXT NOT NULL DEFAULT '',
         claimed_by        TEXT NOT NULL,
         claimed_at        TEXT NOT NULL,
         retracted_at      TEXT,
@@ -444,6 +445,15 @@ def initialize_author_server(base_path: str | Path) -> Path:
             conn.execute(
                 "ALTER TABLE goals ADD COLUMN gate_ladder_json "
                 "TEXT NOT NULL DEFAULT '[]'"
+            )
+        gate_claim_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(gate_claims)")
+        }
+        if "conformance_pack_id" not in gate_claim_cols:
+            conn.execute(
+                "ALTER TABLE gate_claims ADD COLUMN conformance_pack_id "
+                "TEXT NOT NULL DEFAULT ''"
             )
         # fork_from migration: content-addressed lineage tracking.
         if "fork_from" not in existing_cols:
@@ -3216,6 +3226,7 @@ def _gate_claim_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "rung_key": row["rung_key"],
         "evidence_url": row["evidence_url"],
         "evidence_note": row["evidence_note"],
+        "conformance_pack_id": row["conformance_pack_id"],
         "claimed_by": row["claimed_by"],
         "claimed_at": row["claimed_at"],
         "retracted_at": row["retracted_at"],
@@ -3283,6 +3294,7 @@ def claim_gate(
     evidence_url: str,
     evidence_note: str = "",
     claimed_by: str,
+    conformance_pack_id: str = "",
 ) -> dict[str, Any]:
     """Self-report a rung reached. Idempotent on (branch, rung).
 
@@ -3321,13 +3333,14 @@ def claim_gate(
                 """
                 UPDATE gate_claims
                 SET evidence_url = ?, evidence_note = ?, claimed_at = ?,
-                    claimed_by = ?, goal_id = ?,
+                    conformance_pack_id = ?, claimed_by = ?, goal_id = ?,
                     retracted_at = NULL, retracted_reason = ''
                 WHERE claim_id = ?
                 """,
                 (
-                    evidence_url, evidence_note, now_iso, claimed_by,
-                    goal_id, existing["claim_id"],
+                    evidence_url, evidence_note, now_iso,
+                    conformance_pack_id, claimed_by, goal_id,
+                    existing["claim_id"],
                 ),
             )
             claim_id = existing["claim_id"]
@@ -3337,13 +3350,14 @@ def claim_gate(
                 """
                 INSERT INTO gate_claims (
                     claim_id, branch_def_id, goal_id, rung_key,
-                    evidence_url, evidence_note, claimed_by, claimed_at,
-                    retracted_at, retracted_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, '')
+                    evidence_url, evidence_note, conformance_pack_id,
+                    claimed_by, claimed_at, retracted_at, retracted_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '')
                 """,
                 (
                     claim_id, branch_def_id, goal_id, rung_key,
-                    evidence_url, evidence_note, claimed_by, now_iso,
+                    evidence_url, evidence_note, conformance_pack_id,
+                    claimed_by, now_iso,
                 ),
             )
         row = conn.execute(

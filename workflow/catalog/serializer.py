@@ -335,6 +335,7 @@ def gate_claim_to_yaml_payload(claim: dict[str, Any]) -> dict[str, Any]:
     rung_key: draft_complete
     evidence_url: https://example.com/drafts/loral
     evidence_note: Full draft at 82k words
+    conformance_pack_id: ''
     claimed_by: jonathan
     claimed_at: '2026-05-01T14:22:03Z'
     retracted_at: null
@@ -351,6 +352,7 @@ def gate_claim_to_yaml_payload(claim: dict[str, Any]) -> dict[str, Any]:
         "rung_key": claim.get("rung_key", ""),
         "evidence_url": claim.get("evidence_url", ""),
         "evidence_note": claim.get("evidence_note", ""),
+        "conformance_pack_id": claim.get("conformance_pack_id", ""),
         "claimed_by": claim.get("claimed_by", ""),
         "claimed_at": claim.get("claimed_at", ""),
         "retracted_at": claim.get("retracted_at"),
@@ -367,6 +369,7 @@ def gate_claim_from_yaml_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "rung_key": payload.get("rung_key", ""),
         "evidence_url": payload.get("evidence_url", ""),
         "evidence_note": payload.get("evidence_note", ""),
+        "conformance_pack_id": payload.get("conformance_pack_id", ""),
         "claimed_by": payload.get("claimed_by", ""),
         "claimed_at": payload.get("claimed_at", ""),
         "retracted_at": payload.get("retracted_at"),

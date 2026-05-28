@@ -862,6 +862,9 @@ def gates(
     node_last_claimer: str = "",
     node_id: str = "",
     run_id: str = "",
+    conformance_pack_json: str = "",
+    conformance_pack_id: str = "",
+    standard_id: str = "",
 ) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
@@ -879,6 +882,9 @@ def gates(
                     and `ladder` (JSON list of {rung_key, name,
                     description}).
       get_ladder    Read a Goal's ladder. Needs goal_id.
+      record_conformance_pack
+                    Store a standards/readiness conformance pack for a
+                    Goal or Branch before gated rungs.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url.
       claim_from_branch_run
@@ -920,6 +926,9 @@ def gates(
         node_last_claimer=node_last_claimer,
         node_id=node_id,
         run_id=run_id,
+        conformance_pack_json=conformance_pack_json,
+        conformance_pack_id=conformance_pack_id,
+        standard_id=standard_id,
     )
 
 
