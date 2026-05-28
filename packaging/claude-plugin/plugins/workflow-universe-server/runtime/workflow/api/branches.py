@@ -1091,6 +1091,17 @@ def _branch_authoring_batch_receipt(
             "unapproved_nodes": unapproved_nodes,
             "runnable": len(unapproved_nodes) == 0,
         },
+        "authorization_effect": {
+            "grants_authorization": False,
+            "grants_scoped_trust_session": False,
+            "bypasses_client_approval_prompts": False,
+            "approved_action_scope": [],
+            "revocation_handle": None,
+            "note": (
+                "Evidence-only receipt: clients may display or audit it, but must "
+                "not treat it as permission to execute future writes."
+            ),
+        },
         "caveats": [
             "This receipt records what landed; it is not an authorization grant.",
             (
@@ -3130,7 +3141,8 @@ proposed fixes — apply them and retry. No partial branch is ever visible.
 On success, `build_branch` returns a structured `batch_receipt` that records
 what landed, validation status, and source_code approval status. Treat this
 receipt as evidence only: it is not an authorization grant, trust session, or
-approval-token bypass.
+approval-token bypass. Check `batch_receipt.authorization_effect` for the
+machine-readable non-grant/non-bypass flags before narrating approval scope.
 
 ## Branch skills
 
@@ -3164,7 +3176,8 @@ extensions action=patch_branch branch_def_id=... changes_json='[
 Successful `patch_branch` responses also include `batch_receipt`. Rejected
 patches do not. The receipt lets the chatbot summarize the batch and point to
 remaining blockers, but it never overrides `source_code` approval or host-owned
-gates.
+gates. Check `batch_receipt.authorization_effect` for the machine-readable
+non-grant/non-bypass flags before narrating approval scope.
 
 ## Atomic actions (single-item surgery only)
 

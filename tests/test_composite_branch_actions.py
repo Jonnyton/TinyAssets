@@ -142,6 +142,17 @@ def test_build_branch_returns_batch_receipt(comp_env):
     assert receipt["source_code_approval"]["unapproved_count"] == 0
     assert receipt["plan_context"]["request_id"] == "chat-plan-123"
     assert receipt["plan_context"]["authoritative"] is False
+    assert receipt["authorization_effect"] == {
+        "grants_authorization": False,
+        "grants_scoped_trust_session": False,
+        "bypasses_client_approval_prompts": False,
+        "approved_action_scope": [],
+        "revocation_handle": None,
+        "note": (
+            "Evidence-only receipt: clients may display or audit it, but must "
+            "not treat it as permission to execute future writes."
+        ),
+    }
     assert "not an authorization grant" in receipt["caveats"][0]
 
 
