@@ -26,6 +26,7 @@ from workflow.branches import (
     NodeDefinition,
     _validate_llm_policy_shape,
 )
+from workflow.exceptions import AllProvidersExhaustedError
 from workflow.graph_compiler import compile_branch
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -301,6 +302,42 @@ def test_fallback_fires_when_preferred_exhausted():
                 {"topic": "x"},
                 config={"configurable": {"thread_id": "t-fallback"}},
             )
+
+
+def test_policy_dispatch_retries_transient_provider_exhaustion(monkeypatch):
+    """Policy-aware run_branch dispatch should honor the router retry contract."""
+    import workflow.graph_compiler as graph_compiler
+
+    policy = {"preferred": {"provider": "groq-free"}}
+    node = _make_node(llm_policy=policy)
+    branch = _make_branch(node)
+
+    mock_router = MagicMock()
+    mock_router.call_with_policy_sync.side_effect = [
+        AllProvidersExhaustedError(
+            "All providers exhausted for role=writer. Daemon should retry with backoff."
+        ),
+        ("success after retry", "groq-free"),
+    ]
+
+    monkeypatch.setattr(
+        graph_compiler, "_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS", (0.0, 0.0),
+    )
+    with patch(
+        "workflow.graph_compiler._get_shared_router", return_value=mock_router,
+    ):
+        compiled = compile_branch(
+            branch,
+            provider_call=lambda p, s, *, role="writer": "[plain]",
+        )
+        app = compiled.graph.compile()
+        out = app.invoke(
+            {"topic": "x"},
+            config={"configurable": {"thread_id": "t-policy-retry"}},
+        )
+
+    assert out["out"] == "success after retry"
+    assert mock_router.call_with_policy_sync.call_count == 2
 
 
 def test_difficulty_override_passed_through():
