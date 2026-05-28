@@ -1200,7 +1200,7 @@ def _resolve_node_spec(
         for field_key in (
             "display_name", "description", "phase", "input_keys",
             "output_keys", "strict_input_isolation", "source_code",
-            "prompt_template", "author",
+            "prompt_template", "timeout_seconds", "author",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1351,6 +1351,14 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     )
     if err:
         return err
+    timeout_seconds_raw = raw.get("timeout_seconds", 300.0)
+    if timeout_seconds_raw in (None, ""):
+        timeout_seconds = 300.0
+    else:
+        try:
+            timeout_seconds = float(timeout_seconds_raw)
+        except (TypeError, ValueError):
+            return f"node '{nid}' timeout_seconds must be a number."
     # BUG-045: thread the three sub-branch / sibling-run spec fields. The
     # compiler reads them (workflow/graph_compiler.py:_build_invoke_branch /
     # invoke_branch_version / await_run callables) and NodeDefinition
@@ -1393,6 +1401,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             prompt_template=prompt_template,
             model_hint=model_hint,
             llm_policy=llm_policy,
+            timeout_seconds=timeout_seconds,
             author=raw.get("author") or _current_actor(),
             approved=bool(raw.get("approved", False)),
             invoke_branch_spec=invoke_branch_arg,
