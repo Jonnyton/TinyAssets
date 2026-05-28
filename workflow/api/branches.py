@@ -406,11 +406,14 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
 
     summaries = []
     for r in rows:
+        published_version_id = None
         if scope == "published":
             from workflow.branch_versions import list_branch_versions
 
-            if not list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1):
+            versions = list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1)
+            if not versions:
                 continue
+            published_version_id = versions[0].branch_version_id
         elif scope == "mine":
             if (r.get("author") or "") != actor:
                 continue
@@ -427,7 +430,7 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         # node_defs`` which double-counted because graph.nodes is a
         # compiled-topology view that overlaps with node_defs.
         node_count = len(node_defs)
-        summaries.append({
+        summary = {
             "branch_def_id": r.get("branch_def_id"),
             "name": r.get("name"),
             "author": r.get("author"),
@@ -435,10 +438,13 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             "goal_id": r.get("goal_id"),
             "node_count": node_count,
             "skill_count": len(r.get("skills", []) or []),
-            "published": r.get("published", False),
+            "published": True if scope == "published" else r.get("published", False),
             "visibility": r.get("visibility", "public"),
             "has_sandbox_nodes": has_sandbox_nodes,
-        })
+        }
+        if published_version_id is not None:
+            summary["branch_version_id"] = published_version_id
+        summaries.append(summary)
     return json.dumps({"branches": summaries, "count": len(summaries)})
 
 
