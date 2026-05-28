@@ -605,3 +605,37 @@ class TestAgenticSearchPolicy:
         assert search["retrieved_context"]["prose_chunks"] == [
             "Cold rain needled the harbor."
         ]
+
+    def test_assemble_phase_search_context_adds_pinned_soul_lens(
+        self, tmp_path, monkeypatch,
+    ):
+        from workflow.universe_soul import write_universe_soul
+
+        write_universe_soul(
+            tmp_path,
+            purpose="A lab studies civic memory with auditable sources.",
+            why="Keep research claims reusable.",
+            hard_lines=("Cite uncertainty.",),
+            soft_preferences=("Prefer compact steps.",),
+        )
+        monkeypatch.setattr(
+            "workflow.retrieval.agentic_search.assemble_memory_context",
+            lambda state, phase: {},
+        )
+        monkeypatch.setattr(
+            "workflow.retrieval.agentic_search.run_phase_retrieval",
+            lambda state, phase, memory_context=None: {},
+        )
+
+        search = assemble_phase_search_context({
+            "universe_id": "u1",
+            "_universe_path": str(tmp_path),
+        }, "plan")
+
+        soul = search["universe_soul"]
+        assert soul["version_id"] == "soul_versions/0001.md"
+        assert soul["purpose"] == "A lab studies civic memory with auditable sources."
+        assert soul["hard_lines"] == ["Cite uncertainty."]
+        assert soul["soft_preferences"] == ["Prefer compact steps."]
+        assert soul["identity_boundary"].startswith("Universe soul guides")
+        assert "soul:soul_versions/0001.md" in search["sources"]

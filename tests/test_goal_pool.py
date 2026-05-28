@@ -503,13 +503,13 @@ def test_post_to_goal_pool_response_has_git_push_hint(mcp_harness):
     assert "git push" in resp["next_step"]
 
 
-def test_post_to_goal_pool_host_priority_weight_persists(
+def test_post_to_goal_pool_priority_capability_weight_persists(
     mcp_harness, monkeypatch,
 ):
     from workflow.api.universe import _action_post_to_goal_pool
 
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
-    monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "operator")
+    monkeypatch.setenv("UNIVERSE_SERVER_CAPABILITIES", "post_priority_goal_pool")
     resp = json.loads(_action_post_to_goal_pool(
         universe_id=mcp_harness["uid"],
         goal_id="maintenance",
@@ -522,14 +522,14 @@ def test_post_to_goal_pool_host_priority_weight_persists(
     assert data["priority_weight"] == 50.0
 
 
-def test_post_to_goal_pool_non_host_priority_weight_clamped(
+def test_post_to_goal_pool_missing_priority_capability_weight_clamped(
     mcp_harness, monkeypatch,
 ):
     """Invariant 7."""
     from workflow.api.universe import _action_post_to_goal_pool
 
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
+    monkeypatch.delenv("UNIVERSE_SERVER_CAPABILITIES", raising=False)
     resp = json.loads(_action_post_to_goal_pool(
         universe_id=mcp_harness["uid"],
         goal_id="maintenance",

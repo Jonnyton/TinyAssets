@@ -1,58 +1,67 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
+  import { onMount } from "svelte";
+  import RitualLabel from "$lib/components/Primitives/RitualLabel.svelte";
   import {
     fetchPatchLoopFeed,
     type LoopPatchEvent,
     type LoopPatchRun,
     type LoopStageId,
     type PatchLoopFeed,
-    type PatchLoopFeedSource
-  } from '$lib/mcp/live';
-  import { relativeStamp } from '$lib/live/project';
+    type PatchLoopFeedSource,
+  } from "$lib/mcp/live";
+  import { relativeStamp } from "$lib/live/project";
 
   type Stage = {
     id: LoopStageId;
     label: string;
   };
 
-  const STAGE_DETAIL: Record<LoopStageId, { action: string; description: string; empty: string }> = {
+  const STAGE_DETAIL: Record<
+    LoopStageId,
+    { action: string; description: string; empty: string }
+  > = {
     intake: {
-      action: 'File or classify',
-      description: 'User reports, wiki bugs, and daemon requests enter the loop here before they become scoped patch work.',
-      empty: 'No intake signal is visible in the current feed.'
+      action: "File or classify",
+      description:
+        "User reports, wiki bugs, and daemon requests enter the loop here before they become scoped patch work.",
+      empty: "No intake signal is visible in the current feed.",
     },
     investigation: {
-      action: 'Turn bug into packet',
-      description: 'The loop turns raw friction into a reproducible patch packet with the context a writer needs.',
-      empty: 'No investigation packet is visible in the current feed.'
+      action: "Turn bug into packet",
+      description:
+        "The loop turns raw friction into a reproducible patch packet with the context a writer needs.",
+      empty: "No investigation packet is visible in the current feed.",
     },
     gate: {
-      action: 'Scope and evidence check',
-      description: 'Evidence gates decide whether the request is ready, blocked, too broad, or needs a different route.',
-      empty: 'No gate decision is visible in the current feed.'
+      action: "Scope and evidence check",
+      description:
+        "Evidence gates decide whether the request is ready, blocked, too broad, or needs a different route.",
+      empty: "No gate decision is visible in the current feed.",
     },
     coding: {
-      action: 'Agent team builds',
-      description: 'Writer capacity turns accepted packets into branches, diffs, checks, and review handoffs.',
-      empty: 'No coding signal is visible in the current feed.'
+      action: "Agent team builds",
+      description:
+        "Writer capacity turns accepted packets into branches, diffs, checks, and review handoffs.",
+      empty: "No coding signal is visible in the current feed.",
     },
     release: {
-      action: 'Ship with rollback path',
-      description: 'Release signals show deploys, PR handoffs, branch landing, and rollback-aware shipping.',
-      empty: 'No release signal is visible in the current feed.'
+      action: "Ship with rollback path",
+      description:
+        "Release signals show deploys, PR handoffs, branch landing, and rollback-aware shipping.",
+      empty: "No release signal is visible in the current feed.",
     },
     observe: {
-      action: 'Ratify or loop back',
-      description: 'Watch signals show canaries, user-visible checks, monitoring, and whether work loops back.',
-      empty: 'No watch signal is visible in the current feed.'
-    }
+      action: "Ratify or loop back",
+      description:
+        "Watch signals show canaries, user-visible checks, monitoring, and whether work loops back.",
+      empty: "No watch signal is visible in the current feed.",
+    },
   };
 
   let {
     stages,
-    selectedStageId = 'intake',
-    onSelectStage = () => {}
+    selectedStageId = "intake",
+    onSelectStage = () => {},
   }: {
     stages: Stage[];
     selectedStageId?: LoopStageId;
@@ -60,12 +69,17 @@
   } = $props();
 
   let feed = $state<PatchLoopFeed | null>(null);
-  let activeSource = $state<PatchLoopFeedSource>('mcp');
+  let activeSource = $state<PatchLoopFeedSource>("mcp");
   let loadingSource = $state<PatchLoopFeedSource | null>(null);
-  let latestError = $state('');
+  let latestError = $state("");
+  let selectedRunId = $state("");
 
   const activeRun = $derived.by((): LoopPatchRun | null => {
     if (!feed?.runs.length) return null;
+    if (selectedRunId) {
+      const picked = feed.runs.find((run) => run.run_id === selectedRunId);
+      if (picked) return picked;
+    }
     const selected = feed.runs.find((run) => run.run_id === feed?.activeRunId);
     if (selected) return selected;
     return feed.runs.find((run) => !isTerminalRunStatus(run.status)) ?? null;
@@ -74,28 +88,39 @@
   const headline = $derived.by(() => {
     if (activeRun) return activeRun.name || activeRun.run_id;
     if (feed?.events.length) {
-      const sourceName = feed.source.toLowerCase().includes('github') ? 'GitHub loop monitor' : 'MCP loop signals';
-      return `${sourceName}: ${(feed.overall ?? 'active').toUpperCase()}`;
+      const sourceName = feed.source.toLowerCase().includes("github")
+        ? "GitHub loop monitor"
+        : "MCP loop signals";
+      return `${sourceName}: ${(feed.overall ?? "active").toUpperCase()}`;
     }
-    return 'Waiting for change_loop_v1';
+    return "No active patch run is visible right now";
   });
 
   const subhead = $derived.by(() => {
-    if (activeRun) return `${activeRun.status} · ${relativeStamp(activeRun.started_at)}`;
-    if (feed?.events.length) return `${feed.events.length} live stage signal${feed.events.length === 1 ? '' : 's'} · ${relativeStamp(feed.fetchedAt)}`;
-    return feed?.live ? 'no visible run yet' : 'feed not visible yet';
+    if (activeRun)
+      return `${activeRun.status} · ${relativeStamp(activeRun.started_at)}`;
+    if (feed?.events.length)
+      return `${feed.events.length} live stage signal${feed.events.length === 1 ? "" : "s"} · ${relativeStamp(feed.fetchedAt)}`;
+    return feed?.live
+      ? "showing queue and monitor evidence"
+      : "loading durable loop evidence";
   });
 
   const recentEvents = $derived.by((): LoopPatchEvent[] => {
     return [...(feed?.events ?? [])].slice(-8).reverse();
   });
 
+  const selectableRuns = $derived(feed?.runs ?? []);
+
   const selectedStage = $derived.by((): Stage => {
     return stages.find((stage) => stage.id === selectedStageId) ?? stages[0];
   });
 
   const selectedStageNumber = $derived.by(() => {
-    return Math.max(1, stages.findIndex((stage) => stage.id === selectedStageId) + 1);
+    return Math.max(
+      1,
+      stages.findIndex((stage) => stage.id === selectedStageId) + 1,
+    );
   });
 
   const selectedStageEvents = $derived.by((): LoopPatchEvent[] => {
@@ -110,17 +135,65 @@
     return latestFor(selectedStageId);
   });
 
+  const decisionSignal = $derived(
+    selectedStageLatest ?? recentEvents[0] ?? null,
+  );
+
+  const loopVoiceQuote = $derived.by(() => {
+    const text =
+      selectedStageLatest?.detail ||
+      activeRun?.error ||
+      activeRun?.suggested_action ||
+      recentEvents[0]?.detail ||
+      "";
+    return compactQuote(text);
+  });
+
+  const rawStageJson = $derived.by(() =>
+    JSON.stringify(
+      {
+        source: feed?.source ?? activeSource,
+        fetchedAt: feed?.fetchedAt,
+        selectedStage: selectedStageId,
+        activeRun,
+        latestSignal: selectedStageLatest,
+        stageEvents: selectedStageRecentEvents,
+      },
+      null,
+      2,
+    ),
+  );
+
   const relatedStageEvents = $derived.by((): LoopPatchEvent[] => {
-    return recentEvents.filter((event) => event.stage !== selectedStageId).slice(0, 4);
+    return recentEvents
+      .filter((event) => event.stage !== selectedStageId)
+      .slice(0, 4);
+  });
+
+  $effect(() => {
+    if (!feed?.runs.length) {
+      selectedRunId = "";
+      return;
+    }
+    if (
+      !selectedRunId ||
+      !feed.runs.some((run) => run.run_id === selectedRunId)
+    ) {
+      selectedRunId =
+        feed.activeRunId ??
+        feed.runs.find((run) => !isTerminalRunStatus(run.status))?.run_id ??
+        feed.runs[0]?.run_id ??
+        "";
+    }
   });
 
   async function refresh(source: PatchLoopFeedSource = activeSource) {
     activeSource = source;
     loadingSource = source;
-    latestError = '';
+    latestError = "";
     try {
       const nextFeed = await fetchPatchLoopFeed(12, source);
-      if (source === 'mcp' && !nextFeed.live) {
+      if (source === "mcp" && !nextFeed.live) {
         await showGitHubFallback(nextFeed);
         return;
       }
@@ -129,7 +202,7 @@
         latestError = feed.warnings[feed.warnings.length - 1];
       }
     } catch (error) {
-      if (source === 'mcp') {
+      if (source === "mcp") {
         await showGitHubFallback(null, error);
         return;
       }
@@ -139,27 +212,36 @@
     }
   }
 
-  async function showGitHubFallback(mcpFeed: PatchLoopFeed | null, mcpError?: unknown) {
-    const mcpMessage = mcpFeed?.warnings[mcpFeed.warnings.length - 1] ?? errorMessage(mcpError, 'MCP loop feed unavailable');
+  async function showGitHubFallback(
+    mcpFeed: PatchLoopFeed | null,
+    mcpError?: unknown,
+  ) {
+    const mcpMessage =
+      mcpFeed?.warnings[mcpFeed.warnings.length - 1] ??
+      errorMessage(mcpError, "MCP loop feed unavailable");
     try {
-      const fallback = await fetchPatchLoopFeed(12, 'github');
-      activeSource = 'github';
+      const fallback = await fetchPatchLoopFeed(12, "github");
+      activeSource = "github";
       feed = fallback;
       latestError = fallback.live
         ? `${mcpMessage}; showing GitHub monitor instead.`
-        : (fallback.warnings[fallback.warnings.length - 1] ?? `${mcpMessage}; GitHub monitor has no visible events.`);
+        : (fallback.warnings[fallback.warnings.length - 1] ??
+          `${mcpMessage}; GitHub monitor has no visible events.`);
     } catch (fallbackError) {
       feed = mcpFeed;
       latestError = `${mcpMessage}; GitHub monitor unavailable: ${errorMessage(fallbackError)}`;
     }
   }
 
-  function errorMessage(error: unknown, fallback = 'Loop feed unavailable'): string {
+  function errorMessage(
+    error: unknown,
+    fallback = "Loop feed unavailable",
+  ): string {
     return error instanceof Error ? error.message : fallback;
   }
 
   onMount(() => {
-    void refresh('mcp');
+    void refresh("mcp");
     const timer = window.setInterval(() => void refresh(activeSource), 30000);
     return () => window.clearInterval(timer);
   });
@@ -173,22 +255,82 @@
     return matches[matches.length - 1] ?? null;
   }
 
-  function stageStatus(stage: LoopStageId): 'waiting' | 'running' | 'done' | 'failed' {
+  type StageVisualStatus = "waiting" | "running" | "done" | "failed";
+
+  function stageVisualStatusFromStatus(
+    value: string,
+    fallback: StageVisualStatus = "waiting",
+  ): StageVisualStatus {
+    const status = value.trim().toLowerCase();
+    if (!status) return fallback;
+    if (
+      status === "green" ||
+      status === "passed" ||
+      status === "pass" ||
+      status.includes("complete") ||
+      status.includes("success") ||
+      status.includes("succeed") ||
+      status.includes("done") ||
+      status.includes("accept") ||
+      status.includes("merged")
+    )
+      return "done";
+    if (
+      status === "red" ||
+      status.includes("fail") ||
+      status.includes("error") ||
+      status.includes("revert") ||
+      status.includes("block") ||
+      status.includes("interrupt") ||
+      status.includes("cancel") ||
+      status.includes("abort") ||
+      status.includes("timeout") ||
+      status.includes("timed_out")
+    )
+      return "failed";
+    if (
+      status === "yellow" ||
+      status.includes("pending") ||
+      status.includes("queued") ||
+      status.includes("waiting") ||
+      status.includes("handoff") ||
+      status.includes("attempted") ||
+      status.includes("deferred") ||
+      status.includes("parked") ||
+      status.includes("idle") ||
+      status.includes("unknown")
+    )
+      return "waiting";
+    if (
+      status.includes("running") ||
+      status.includes("active") ||
+      status.includes("progress") ||
+      status.includes("started")
+    )
+      return "running";
+    return fallback;
+  }
+
+  function stageStatus(stage: LoopStageId): StageVisualStatus {
+    if (
+      activeRun?.current_stage === stage &&
+      isTerminalRunStatus(activeRun.status)
+    )
+      return stageVisualStatusFromStatus(activeRun.status, "failed");
     const latest = latestFor(stage);
-    if (!latest) return activeRun?.current_stage === stage ? 'running' : 'waiting';
-    const status = latest.status.toLowerCase();
-    if (status.includes('fail') || status.includes('error') || status.includes('revert') || status.includes('block')) return 'failed';
-    if (status.includes('complete') || status.includes('success') || status.includes('done') || status.includes('accept')) return 'done';
-    if (status.includes('pending') || status.includes('queued') || status.includes('waiting')) return 'waiting';
-    return 'running';
+    if (!latest)
+      return activeRun?.current_stage === stage
+        ? stageVisualStatusFromStatus(activeRun.status, "running")
+        : "waiting";
+    return stageVisualStatusFromStatus(latest.status);
   }
 
   function statusLabel(stage: LoopStageId): string {
     const count = eventsFor(stage).length;
-    if (count) return `${count} event${count === 1 ? '' : 's'}`;
-    if (activeRun?.current_stage === stage) return 'active run';
-    if (feed?.live) return 'no event in this run';
-    return 'waiting for feed';
+    if (count) return `${count} event${count === 1 ? "" : "s"}`;
+    if (activeRun?.current_stage === stage) return "active run";
+    if (feed?.live) return "no event in this run";
+    return "waiting for feed";
   }
 
   function stageTimeLabel(stage: LoopStageId): string {
@@ -199,57 +341,87 @@
 
   function stageEventSummary(stage: LoopStageId): string {
     const latest = latestFor(stage);
-    if (!latest) return activeRun?.current_stage === stage ? 'Current stage is waiting for an event' : 'No recent event in this stage';
-    const eventName = latest.title || latest.node_id || sourceLabel(latest.source);
+    if (!latest)
+      return activeRun?.current_stage === stage
+        ? "Selected run is parked here"
+        : STAGE_DETAIL[stage].description;
+    const eventName =
+      latest.title || latest.node_id || sourceLabel(latest.source);
     return `${latest.status} - ${eventName}`;
   }
 
   function stageCueLabel(stage: LoopStageId): string {
     const latest = latestFor(stage);
-    if (!latest) return activeRun?.current_stage === stage ? 'Open active stage' : 'Waiting for live event';
-    return 'See recent events';
+    if (!latest)
+      return activeRun?.current_stage === stage
+        ? "Open active stage"
+        : "Open stage detail";
+    return "See recent events";
   }
 
   function signalLabel(count: number): string {
-    return `${count} live signal${count === 1 ? '' : 's'}`;
+    return `${count} live signal${count === 1 ? "" : "s"}`;
   }
 
   function sourceHref(source?: string): string {
-    const value = source?.trim() ?? '';
-    return /^https?:\/\//i.test(value) ? value : '';
+    const value = source?.trim() ?? "";
+    return /^https?:\/\//i.test(value) ? value : "";
   }
 
   function sourceLabel(source?: string): string {
-    const value = source?.trim() ?? '';
-    if (!value) return 'Live feed';
+    const value = source?.trim() ?? "";
+    if (!value) return "Live feed";
     try {
       const url = new URL(value);
-      return url.hostname.replace(/^www\./, '');
+      return url.hostname.replace(/^www\./, "");
     } catch {
       return value;
     }
   }
 
   function isTerminalRunStatus(status: string): boolean {
-    return ['completed', 'failed', 'cancelled', 'canceled'].includes(status.toLowerCase());
+    return [
+      "completed",
+      "succeeded",
+      "success",
+      "failed",
+      "interrupted",
+      "cancelled",
+      "canceled",
+      "aborted",
+      "timeout",
+      "timed_out",
+    ].includes(status.toLowerCase());
+  }
+
+  function compactQuote(value: string): string {
+    const text = value.replace(/\s+/g, " ").trim();
+    if (!text || text === "{}" || text === "[]") return "";
+    return text.length > 360 ? `${text.slice(0, 357).trimEnd()}...` : text;
   }
 </script>
 
 <section class="live-loop" aria-labelledby="live-loop-title">
   <div class="live-loop__head">
     <div>
-      <RitualLabel color="var(--signal-live)">· Live patch traffic ·</RitualLabel>
-      <h2 id="live-loop-title">Watch patches move through the route.</h2>
-      <p>When the operational loop emits run state, this rail lights up from MCP and the community-loop GitHub monitor: intake, queued requests, writer blockage, release workflows, and observation incidents.</p>
+      <RitualLabel color="var(--signal-live)"
+        >· The loop just decided this ·</RitualLabel
+      >
+      <h2 id="live-loop-title">Replay the latest durable loop evidence.</h2>
+      <p>
+        The page does not depend on a fresh event firing while you watch. It
+        replays the latest MCP run or GitHub loop monitor signal, then lets you
+        click into the stage evidence and raw source data.
+      </p>
     </div>
     <div class="live-loop__actions">
       <button
         class="refresh"
         type="button"
         disabled={loadingSource !== null}
-        aria-pressed={activeSource === 'mcp'}
-        aria-busy={loadingSource === 'mcp'}
-        onclick={() => refresh('mcp')}
+        aria-pressed={activeSource === "mcp"}
+        aria-busy={loadingSource === "mcp"}
+        onclick={() => refresh("mcp")}
       >
         Refresh MCP
       </button>
@@ -257,20 +429,24 @@
         class="refresh"
         type="button"
         disabled={loadingSource !== null}
-        aria-pressed={activeSource === 'github'}
-        aria-busy={loadingSource === 'github'}
-        onclick={() => refresh('github')}
+        aria-pressed={activeSource === "github"}
+        aria-busy={loadingSource === "github"}
+        onclick={() => refresh("github")}
       >
         Refresh GitHub
       </button>
-      <span>{loadingSource ? `Refreshing ${loadingSource === 'mcp' ? 'MCP' : 'GitHub'} feed` : feed?.source ?? 'MCP loop feed'}</span>
+      <span
+        >{loadingSource
+          ? `Refreshing ${loadingSource === "mcp" ? "MCP" : "GitHub"} feed`
+          : (feed?.source ?? "MCP loop feed")}</span
+      >
     </div>
   </div>
 
   <div class="live-loop__body">
     <div class="loop-overview">
       <div class="run-card">
-        <span>{activeRun ? 'Current patch run' : 'Live loop monitor'}</span>
+        <span>{activeRun ? "Selected patch run" : "Durable loop monitor"}</span>
         {#if activeRun}
           <strong>{headline}</strong>
           <p><code>{activeRun.run_id}</code> · {subhead}</p>
@@ -279,7 +455,7 @@
           <p><code>{feed.source}</code> · {subhead}</p>
         {:else}
           <strong>{headline}</strong>
-          <p><code>{feed?.branchDefId ?? 'fd5c66b1d87d'}</code> · {subhead}</p>
+          <p><code>{feed?.branchDefId ?? "fd5c66b1d87d"}</code> · {subhead}</p>
         {/if}
         {#if activeRun?.error}
           <p class="feed-error">{activeRun.error}</p>
@@ -289,6 +465,30 @@
         {/if}
         {#if latestError}
           <p class="feed-error">{latestError}</p>
+        {/if}
+        {#if loopVoiceQuote}
+          <blockquote class="loop-voice">
+            <p>"{loopVoiceQuote}"</p>
+            <footer>
+              {selectedStageLatest
+                ? `${selectedStageLatest.title} · ${sourceLabel(selectedStageLatest.source)}`
+                : activeRun
+                  ? `Run ${activeRun.run_id}`
+                  : sourceLabel(recentEvents[0]?.source)}
+            </footer>
+          </blockquote>
+        {/if}
+        {#if selectableRuns.length > 1}
+          <label class="run-picker">
+            <span>Walk a different run</span>
+            <select bind:value={selectedRunId}>
+              {#each selectableRuns as run}
+                <option value={run.run_id}
+                  >{run.name || run.run_id} · {run.status}</option
+                >
+              {/each}
+            </select>
+          </label>
         {/if}
       </div>
 
@@ -304,7 +504,7 @@
             onclick={() => onSelectStage(stage.id)}
           >
             <span>{index + 1}. {stage.label}</span>
-            <strong>{latest?.title ?? 'Waiting for live event'}</strong>
+            <strong>{latest?.title ?? STAGE_DETAIL[stage.id].action}</strong>
             <p class="live-stage__event">{stageEventSummary(stage.id)}</p>
             <div class="live-stage__footer">
               <small>{stageTimeLabel(stage.id)}</small>
@@ -319,18 +519,31 @@
       <div class="stage-detail__head">
         <div>
           <span>Selected stage</span>
-          <strong>Stage {selectedStageNumber} · {selectedStage?.label ?? 'Loop stage'}</strong>
+          <strong
+            >Stage {selectedStageNumber} · {selectedStage?.label ??
+              "Loop stage"}</strong
+          >
           <p>{STAGE_DETAIL[selectedStageId].action}</p>
         </div>
-        <div class="stage-detail__meta" aria-label="Selected stage live feed status">
+        <div
+          class="stage-detail__meta"
+          aria-label="Selected stage live feed status"
+        >
           <span>{signalLabel(selectedStageEvents.length)}</span>
-          <span>{feed?.source ?? 'MCP loop feed'}</span>
-          <span>{feed ? `Fetched ${relativeStamp(feed.fetchedAt)}` : 'Waiting for live feed'}</span>
+          <span>{feed?.source ?? "MCP loop feed"}</span>
+          <span
+            >{feed
+              ? `Fetched ${relativeStamp(feed.fetchedAt)}`
+              : "Waiting for live feed"}</span
+          >
         </div>
       </div>
 
       <div class="stage-detail__grid">
-        <section class="stage-card stage-card--about" aria-label="Stage purpose">
+        <section
+          class="stage-card stage-card--about"
+          aria-label="Stage purpose"
+        >
           <span>What this stage does</span>
           <p>{STAGE_DETAIL[selectedStageId].description}</p>
           <dl>
@@ -355,7 +568,10 @@
           </dl>
         </section>
 
-        <section class="stage-card stage-card--latest" aria-label="Latest stage signal">
+        <section
+          class="stage-card stage-card--latest"
+          aria-label="Latest stage signal"
+        >
           <span>Latest live signal</span>
           {#if selectedStageLatest}
             {@const href = sourceHref(selectedStageLatest.source)}
@@ -384,28 +600,42 @@
               {/if}
             </dl>
             {#if href}
-              <a class="source-link" href={href} target="_blank" rel="noreferrer">Open {sourceLabel(selectedStageLatest.source)}</a>
+              <a class="source-link" {href} target="_blank" rel="noreferrer"
+                >Open {sourceLabel(selectedStageLatest.source)}</a
+              >
             {:else}
               <small>{sourceLabel(selectedStageLatest.source)}</small>
             {/if}
           {:else}
-            <p>{STAGE_DETAIL[selectedStageId].empty} {feed?.events.length ? `${signalLabel(feed.events.length)} are visible elsewhere in the loop.` : 'Waiting for the first patch event from the operational loop feed.'}</p>
+            <p>
+              {STAGE_DETAIL[selectedStageId].empty}
+              {feed?.events.length
+                ? `${signalLabel(feed.events.length)} are visible elsewhere in the loop.`
+                : "No active run is visible; the monitor still shows durable source state."}
+            </p>
             {#if recentEvents[0]}
               {@const href = sourceHref(recentEvents[0].source)}
               <div class="stage-card__fallback">
                 <span>Most recent loop signal</span>
                 <strong>{recentEvents[0].title}</strong>
                 <p>{recentEvents[0].detail}</p>
-                <small>{recentEvents[0].stage} · {recentEvents[0].status} · {relativeStamp(recentEvents[0].at)}</small>
+                <small
+                  >{recentEvents[0].stage} · {recentEvents[0].status} · {relativeStamp(
+                    recentEvents[0].at,
+                  )}</small
+                >
                 {#if href}
-                  <a href={href} target="_blank" rel="noreferrer">Open source</a>
+                  <a {href} target="_blank" rel="noreferrer">Open source</a>
                 {/if}
               </div>
             {/if}
           {/if}
         </section>
 
-        <section class="stage-card stage-card--events" aria-label="Selected stage event history">
+        <section
+          class="stage-card stage-card--events"
+          aria-label="Selected stage event history"
+        >
           <div class="stage-card__head">
             <span>Stage history</span>
             <strong>{selectedStageEvents.length}</strong>
@@ -421,11 +651,13 @@
                     <p>{event.detail}</p>
                     <small>
                       {relativeStamp(event.at)}
-                      {#if event.node_id} · {event.node_id}{/if}
-                      {#if event.run_id} · {event.run_id}{/if}
+                      {#if event.node_id}
+                        · {event.node_id}{/if}
+                      {#if event.run_id}
+                        · {event.run_id}{/if}
                     </small>
                     {#if href}
-                      <a href={href} target="_blank" rel="noreferrer">Open source</a>
+                      <a {href} target="_blank" rel="noreferrer">Open source</a>
                     {:else}
                       <small>{sourceLabel(event.source)}</small>
                     {/if}
@@ -446,9 +678,12 @@
                       <div>
                         <strong>{event.title}</strong>
                         <p>{event.detail}</p>
-                        <small>{event.status} · {relativeStamp(event.at)}</small>
+                        <small>{event.status} · {relativeStamp(event.at)}</small
+                        >
                         {#if href}
-                          <a href={href} target="_blank" rel="noreferrer">Open source</a>
+                          <a {href} target="_blank" rel="noreferrer"
+                            >Open source</a
+                          >
                         {/if}
                       </div>
                     </li>
@@ -459,6 +694,49 @@
           {/if}
         </section>
       </div>
+
+      <div class="evidence-chain" aria-label="Evidence chain">
+        <span>Evidence chain</span>
+        <ol>
+          <li>
+            <strong>Source</strong><small
+              >{feed?.source ?? activeSource.toUpperCase()}</small
+            >
+          </li>
+          {#if activeRun}
+            <li><strong>Run</strong><small>{activeRun.run_id}</small></li>
+          {/if}
+          <li>
+            <strong>Stage</strong><small
+              >{selectedStage?.label ?? selectedStageId}</small
+            >
+          </li>
+          {#if decisionSignal}
+            <li>
+              <strong>Signal</strong><small>{decisionSignal.title}</small>
+            </li>
+            {@const href = sourceHref(decisionSignal.source)}
+            {#if href}
+              <li>
+                <a {href} target="_blank" rel="noreferrer">Open source</a><small
+                  >{sourceLabel(decisionSignal.source)}</small
+                >
+              </li>
+            {:else}
+              <li>
+                <strong>Source readout</strong><small
+                  >{sourceLabel(decisionSignal.source)}</small
+                >
+              </li>
+            {/if}
+          {/if}
+        </ol>
+      </div>
+
+      <details class="json-disclosure">
+        <summary>Selected-stage JSON</summary>
+        <pre>{rawStageJson}</pre>
+      </details>
 
       {#if recentEvents.length}
         <details class="all-events">
@@ -473,7 +751,7 @@
                   <p>{event.detail}</p>
                   <small>{event.status} · {relativeStamp(event.at)}</small>
                   {#if href}
-                    <a href={href} target="_blank" rel="noreferrer">Open source</a>
+                    <a {href} target="_blank" rel="noreferrer">Open source</a>
                   {/if}
                 </div>
               </li>
@@ -502,7 +780,11 @@
     border: 1px solid rgba(109, 211, 166, 0.22);
     border-radius: 8px;
     background:
-      linear-gradient(135deg, rgba(109, 211, 166, 0.055), rgba(138, 99, 206, 0.045)),
+      linear-gradient(
+        135deg,
+        rgba(109, 211, 166, 0.055),
+        rgba(138, 99, 206, 0.045)
+      ),
       var(--bg-inset);
   }
 
@@ -546,8 +828,10 @@
 
   .live-loop__actions span,
   .run-card span,
+  .run-picker span,
   .stage-detail__head span,
   .stage-detail__meta span,
+  .evidence-chain > span,
   .stage-card > span,
   .stage-card__fallback > span,
   .stage-card__head span,
@@ -555,6 +839,7 @@
   .related-signals > span,
   .stage-card dt,
   .stage-card small,
+  .json-disclosure summary,
   .all-events summary {
     color: var(--fg-3);
     font-family: var(--font-mono);
@@ -574,7 +859,9 @@
     font-family: var(--font-mono);
     font-size: 11px;
     text-transform: uppercase;
-    transition: border-color var(--dur-base) var(--ease-summon), background var(--dur-base) var(--ease-summon);
+    transition:
+      border-color var(--dur-base) var(--ease-summon),
+      background var(--dur-base) var(--ease-summon);
   }
 
   .refresh:hover:not(:disabled) {
@@ -651,6 +938,49 @@
     overflow-wrap: anywhere;
   }
 
+  .loop-voice {
+    display: grid;
+    gap: 8px;
+    margin: 2px 0 0;
+    padding: 12px;
+    border-left: 3px solid rgba(109, 211, 166, 0.58);
+    border-radius: 6px;
+    background: rgba(109, 211, 166, 0.06);
+  }
+
+  .loop-voice p {
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .loop-voice footer {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.4;
+    text-transform: uppercase;
+  }
+
+  .run-picker {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .run-picker select {
+    width: 100%;
+    min-height: 38px;
+    border: 1px solid rgba(109, 211, 166, 0.26);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.18);
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
   .live-rail {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -676,7 +1006,10 @@
     cursor: pointer;
     overflow: hidden;
     text-align: left;
-    transition: transform var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+    transition:
+      transform var(--dur-fast) var(--ease-standard),
+      border-color var(--dur-fast) var(--ease-standard),
+      background var(--dur-fast) var(--ease-standard);
   }
 
   .live-stage::before {
@@ -832,7 +1165,10 @@
 
   .stage-detail__grid {
     display: grid;
-    grid-template-columns: minmax(220px, 0.78fr) minmax(280px, 1fr) minmax(340px, 1.4fr);
+    grid-template-columns: minmax(220px, 0.78fr) minmax(280px, 1fr) minmax(
+        340px,
+        1.4fr
+      );
     align-items: start;
     min-width: 0;
   }
@@ -1012,6 +1348,85 @@
     text-decoration: underline;
   }
 
+  .evidence-chain {
+    display: grid;
+    gap: 10px;
+    padding: 14px 16px;
+    border-top: 1px solid var(--border-1);
+    background: rgba(255, 255, 255, 0.018);
+  }
+
+  .evidence-chain ol {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .evidence-chain li {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--border-1);
+    border-radius: 6px;
+    background: var(--bg-inset);
+  }
+
+  .evidence-chain strong,
+  .evidence-chain a {
+    color: var(--fg-1);
+    font-size: 13px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
+  .evidence-chain a {
+    color: var(--signal-live);
+    text-decoration: none;
+  }
+
+  .evidence-chain a:hover {
+    text-decoration: underline;
+  }
+
+  .evidence-chain small {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .json-disclosure {
+    border-top: 1px solid var(--border-1);
+    padding: 0 16px 4px;
+  }
+
+  .json-disclosure summary {
+    cursor: pointer;
+    padding: 12px 0;
+    width: fit-content;
+  }
+
+  .json-disclosure pre {
+    max-height: min(440px, 58vh);
+    margin: 0 0 12px;
+    padding: 12px;
+    overflow: auto;
+    border: 1px solid var(--border-1);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.22);
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
   .empty {
     color: var(--fg-3) !important;
   }
@@ -1051,8 +1466,13 @@
   }
 
   @keyframes live-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
   }
 
   @media (max-width: 1180px) {
@@ -1060,6 +1480,9 @@
     .stage-detail__head,
     .stage-detail__grid {
       grid-template-columns: 1fr;
+    }
+    .evidence-chain ol {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .stage-detail__meta {
       justify-content: start;
@@ -1114,7 +1537,8 @@
     }
     .stage-card dl div,
     .stage-card--events li,
-    .all-events li {
+    .all-events li,
+    .evidence-chain ol {
       grid-template-columns: 1fr;
     }
   }

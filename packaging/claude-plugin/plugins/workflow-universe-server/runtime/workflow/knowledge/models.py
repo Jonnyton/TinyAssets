@@ -132,6 +132,16 @@ class FactWithContext:
     access_tier: int = 0
     pov_characters: list[str] = field(default_factory=list)
 
+    # Tag-matrix retrieval metadata. Hard scope is enforced separately by
+    # MemoryScope; these tags refine eligible rows by universe/domain/shape.
+    tag_universes: list[str] = field(default_factory=list)
+    tag_domains: list[str] = field(default_factory=list)
+    tag_shapes: list[str] = field(default_factory=list)
+    tag_general: bool = False
+    tag_commons: bool = False
+    tag_private_canon: bool = False
+    promotion_record: str = ""
+
     def is_accessible_to(self, character_id: str, character_knowledge_level: int) -> bool:
         """Check if a character should be able to know this fact."""
         if character_knowledge_level >= self.access_tier:

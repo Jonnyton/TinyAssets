@@ -25,6 +25,12 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from workflow.universe_soul import (
+    ensure_universe_soul,
+    premise_from_soul,
+    read_legacy_premise,
+)
+
 # tkinter requires libtk (system lib). Headless Docker containers
 # don't ship it; the cloud_worker's fantasy_daemon subprocess imports
 # the desktop tree at load time before --no-tray is parsed. Tolerate
@@ -357,6 +363,7 @@ class LauncherApp:
         path = Path(self._universe_var.get())
         canon_path = path / "canon"
         try:
+            ensure_universe_soul(path)
             canon_path.mkdir(parents=True, exist_ok=True)
             self.set_status(f"Created: {path}")
             logger.info("Created universe directory: %s", path)
@@ -653,14 +660,13 @@ class LauncherApp:
         if self._daemon is None:
             return
 
-        # Re-read premise from PROGRAM.md
-        program_md = Path(self.universe_path) / "PROGRAM.md"
-        if program_md.exists():
-            try:
-                premise = program_md.read_text(encoding="utf-8").strip()
-                self._daemon._premise = premise
-            except OSError:
-                pass
+        # Re-read premise from the compatibility file or soul.md purpose.
+        universe_dir = Path(self.universe_path)
+        premise = read_legacy_premise(universe_dir).strip()
+        if not premise:
+            premise = premise_from_soul(universe_dir).strip()
+        if premise:
+            self._daemon._premise = premise
 
     def _reimport_modules(self) -> None:
         """Reimport workflow submodules to pick up code changes."""

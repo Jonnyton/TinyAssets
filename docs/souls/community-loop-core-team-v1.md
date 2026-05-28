@@ -110,6 +110,11 @@ As-built Workflow loop alignment:
   Claude checker identity, not silently swap Noor or Soren's models.
 - `community_change_context` already presents PR/issue state with a review
   standard that requires Claude-flagship checking for Codex/OpenAI-written PRs.
+- DESIGN-007 records the planned post-2026-06-15 exception: Codex-written PRs
+  may use a weaker GPT-5.5-only checker path when no qualified Claude-family
+  checker is available, but the PR must label that path as weaker, use
+  canonical evidence keys, pass stricter fixture gates, and mark Claude review
+  as preferred optional advisory rather than required merge evidence.
 
 Model use is therefore flagship-track per daemon, not selected per run:
 
@@ -140,4 +145,6 @@ multi-agent chat.
 - Do not make these souls privileged platform truth. They are host-provided
   reference workers for the loop.
 - Do not let a same-family writer/checker pair pass machine-authored code.
+- Do not treat DESIGN-007's post-2026-06-15 GPT-5.5-only path as cross-family
+  review or as a pre-cutoff exception.
 - Do not use API-key billing lanes for default project writer/checker work.

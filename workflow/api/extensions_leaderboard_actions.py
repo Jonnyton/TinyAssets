@@ -133,6 +133,19 @@ def _render_leaderboard_text(board: dict[str, Any]) -> str:
         f"'{goal.get('name')}' ({board.get('goal_id')})"
         if goal else f"Goal {board.get('goal_id')}"
     )
+    # DESIGN-008: surface selector failures via the text channel so a
+    # misbehaving selector renders cleanly in the chatbot. The
+    # structured payload also carries error_kind for programmatic
+    # consumers.
+    if board.get("ok") is False:
+        err_kind = board.get("error_kind", "selector_error")
+        err = board.get("error", "")
+        return (
+            f"Selector failed for {goal_label} (`{err_kind}`): {err}. "
+            "Operator action: rebind a working selector via "
+            "`goals action=set_selector branch_version_id=…` or "
+            "unbind to fall back to the platform default."
+        )
     if not entries:
         return (
             f"No Branches are currently bound to {goal_label}. "

@@ -419,7 +419,12 @@ class NodeDefinition:
         # character-by-character, silently corrupting sandbox/state
         # handling. Per Hard Rule #8, we'd rather fail to load than
         # accept malformed data.
-        for field_name in ("input_keys", "output_keys", "effects"):
+        for field_name in (
+            "input_keys",
+            "output_keys",
+            "tools_allowed",
+            "effects",
+        ):
             value = getattr(self, field_name)
             if not isinstance(value, list):
                 raise NodeDefinitionValidationError(
@@ -1106,6 +1111,29 @@ class BranchDefinition:
                         "node ID. Rename the state field or node before "
                         "running this branch."
                     )
+
+        # LangGraph's synthesized TypedDict is built from state_schema.
+        # If a branch declares a partial schema, any undeclared initial
+        # inputs or node outputs can be dropped at runtime. Keep empty-schema
+        # legacy branches in warn-only mode, but make partial schemas exact.
+        if field_names:
+            for n in self.node_defs:
+                for key in n.input_keys or []:
+                    if key not in field_names:
+                        errors.append(
+                            f"Node '{n.node_id}' input_key '{key}' is not "
+                            "declared in state_schema. Add a state_schema "
+                            "field so run_branch preserves this input at "
+                            "runtime."
+                        )
+                for key in n.output_keys or []:
+                    if key not in field_names:
+                        errors.append(
+                            f"Node '{n.node_id}' output_key '{key}' is not "
+                            "declared in state_schema. Add a state_schema "
+                            "field so run_branch preserves this output at "
+                            "runtime."
+                        )
 
         try:
             normalize_branch_skill_snapshots(self.skills)

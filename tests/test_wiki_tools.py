@@ -8,6 +8,7 @@ import json
 import pytest
 
 from workflow.api.wiki import (
+    _WIKI_READ_DEFAULT_MAX_CHARS,
     _extract_keywords,
     _parse_frontmatter,
     _sanitize_slug,
@@ -181,6 +182,49 @@ class TestWikiRead:
         assert result["is_draft"] is True
         assert result["content"].startswith("[DRAFT] # Pending Concept")
         assert not result["content"].startswith("[DRAFT] [DRAFT]")
+
+    def test_read_large_page_wrapper_exposes_offset_window(self, wiki_dir):
+        content = (
+            "---\ntitle: Huge Project\ntype: project\n---\n\n"
+            + ("a" * 6000)
+            + "\nfinal marker\n"
+        )
+        (wiki_dir / "pages" / "projects" / "huge-project.md").write_text(
+            content, encoding="utf-8"
+        )
+
+        first = json.loads(wiki("read", page="huge-project", max_chars=1000))
+        assert first["truncated"] is True
+        assert "WIKI READ TRUNCATED" in first["content"]
+        assert first["next_offset"] == 1000
+
+        second = json.loads(
+            wiki(
+                "read",
+                page="huge-project",
+                offset=first["next_offset"],
+                max_chars=10000,
+            )
+        )
+        assert second["truncated"] is False
+        assert "final marker" in second["content"]
+
+    def test_read_wrapper_default_window_handles_medium_document(self, wiki_dir):
+        content = (
+            "---\ntitle: Medium Project\ntype: project\n---\n\n"
+            + ("a" * 80_000)
+            + "\nfinal marker\n"
+        )
+        (wiki_dir / "pages" / "projects" / "medium-project.md").write_text(
+            content, encoding="utf-8"
+        )
+
+        result = json.loads(wiki("read", page="medium-project"))
+
+        assert result["truncated"] is False
+        assert result["read_limit"] == _WIKI_READ_DEFAULT_MAX_CHARS
+        assert result["next_offset"] is None
+        assert "final marker" in result["content"]
 
 
 class TestWikiList:
@@ -766,9 +810,17 @@ class TestWikiFileBugDispatch:
         assert effort["effort_class"] == "ghost-risk"
         assert effort["attention"] == "carrier-review-before-daemon-pickup"
         assert "research_prior_art" in effort["signals"]
+        assert out["effort_dispatch_route"]["lane"] == "carrier-attention"
+        assert (
+            out["effort_dispatch_route"]["attention_family"]
+            == "opposite-family-checker"
+        )
         body = (wiki_dir / out["path"]).read_text(encoding="utf-8")
         assert "effort_class: ghost-risk" in body
         assert "effort_attention: carrier-review-before-daemon-pickup" in body
+        assert "effort_dispatch_lane: carrier-attention" in body
+        assert "## Carrier Attention" in body
+        assert "Attention family: opposite-family-checker" in body
 
     def test_file_bug_flags_patch_request_merge_instant(self, wiki_dir):
         (wiki_dir / "pages" / "patch-requests").mkdir(parents=True, exist_ok=True)
@@ -790,8 +842,11 @@ class TestWikiFileBugDispatch:
         assert effort["effort_class"] == "merge-instant"
         assert effort["attention"] == "normal-review-gates"
         assert "mechanical_shape" in effort["signals"]
+        assert out["effort_dispatch_route"]["lane"] == "merge-instant-fast-lane"
+        assert out["effort_dispatch_route"]["pickup_signal_weight"] > 0.0
         body = (wiki_dir / out["path"]).read_text(encoding="utf-8")
         assert "effort_class: merge-instant" in body
+        assert "effort_dispatch_lane: merge-instant-fast-lane" in body
 
     def test_file_bug_accepts_tags_via_public_wrapper(self, wiki_dir):
         """BUG-040: public wiki wrapper must pass tags through to file_bug."""

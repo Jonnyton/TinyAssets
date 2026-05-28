@@ -537,7 +537,7 @@ def env(tmp_path, monkeypatch):
     base.mkdir()
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
-    monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
+    monkeypatch.setenv("UNIVERSE_SERVER_CAPABILITIES", "rollback_branch")
     monkeypatch.setenv("_FORCE_MOCK", "true")
     from workflow import universe_server as us
     importlib.reload(us)
@@ -550,7 +550,7 @@ def _call(us, tool, action, **kwargs):
 
 
 class TestRollbackMCPAction:
-    def test_rollback_merge_host_authority(self, env, tmp_path):
+    def test_rollback_merge_capability_authority(self, env, tmp_path):
         us, base = env
         # Publish a version directly via the storage layer (faster + the
         # MCP build_branch path drags in domain registries we don't need).
@@ -565,10 +565,11 @@ class TestRollbackMCPAction:
         assert result.get("status") == "ok", result
         assert v.branch_version_id in result["closure"]
 
-    def test_rollback_merge_non_host_rejected(self, env, tmp_path, monkeypatch):
+    def test_rollback_merge_missing_capability_rejected(self, env, tmp_path, monkeypatch):
         us, base = env
-        # Switch the actor to a non-host user.
+        # Switch the actor to a user with no rollback grant.
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+        monkeypatch.delenv("UNIVERSE_SERVER_CAPABILITIES", raising=False)
         importlib.reload(us)
         from workflow.branch_versions import publish_branch_version
 
@@ -578,7 +579,7 @@ class TestRollbackMCPAction:
         result = _call(us, "extensions", "rollback_merge",
                        branch_version_id=v.branch_version_id,
                        reason="should reject")
-        assert "host-only" in result.get("error", "").lower()
+        assert "missing capability: rollback_branch" in result.get("error", "").lower()
         # Confirm the version was NOT rolled back.
         from workflow.branch_versions import get_branch_version as _get
         assert _get(base, v.branch_version_id).status == "active"

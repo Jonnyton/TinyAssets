@@ -19,6 +19,7 @@ from workflow.knowledge.models import (
     GraphEdge,
     GraphEntity,
 )
+from workflow.knowledge.tag_matrix import KnowledgeTags, knowledge_tags_from_mapping
 from workflow.memory.scoping import MemoryScope
 
 # Memory-scope Stage 2b: shared helpers for injecting scope column
@@ -28,6 +29,15 @@ from workflow.memory.scoping import MemoryScope
 # helpers keeps the three write sites in sync.
 _SCOPE_COL_NAMES: tuple[str, ...] = (
     "universe_id", "goal_id", "branch_id", "user_id",
+)
+_TAG_COL_NAMES: tuple[str, ...] = (
+    "tag_universes",
+    "tag_domains",
+    "tag_shapes",
+    "tag_general",
+    "tag_commons",
+    "tag_private_canon",
+    "promotion_record",
 )
 
 
@@ -68,6 +78,51 @@ def _scope_upsert_fragment(scope: MemoryScope | None) -> str:
     )
 
 
+def _tag_insert_fragment(
+    tags: KnowledgeTags | None,
+) -> tuple[str, tuple[Any, ...]]:
+    """Return tag columns/values for INSERT fragments."""
+    if tags is None:
+        return "", ()
+    metadata = tags.as_row_metadata()
+    cols = ", " + ", ".join(_TAG_COL_NAMES)
+    vals = tuple(metadata[col] for col in _TAG_COL_NAMES)
+    return cols, vals
+
+
+def _tag_upsert_fragment(tags: KnowledgeTags | None) -> str:
+    """Return the tag-column UPSERT fragment when tags are supplied."""
+    if tags is None:
+        return ""
+    return "".join(
+        f", {col}=excluded.{col}" for col in _TAG_COL_NAMES
+    )
+
+
+def _attach_row_tags(target: Any, row: sqlite3.Row) -> None:
+    """Attach flat tag metadata from a SQLite row to a result object."""
+    tags = knowledge_tags_from_mapping(dict(row))
+    if isinstance(target, dict):
+        metadata = tags.as_row_metadata()
+        target.update(metadata)
+        return
+    setattr(target, "tag_universes", list(tags.universes))
+    setattr(target, "tag_domains", list(tags.domains))
+    setattr(target, "tag_shapes", list(tags.shapes))
+    setattr(target, "tag_general", tags.general)
+    setattr(target, "tag_commons", tags.commons)
+    setattr(target, "tag_private_canon", tags.private_canon)
+    setattr(
+        target,
+        "promotion_record",
+        (
+            json.dumps(tags.promotion_record.__dict__)
+            if tags.promotion_record is not None
+            else ""
+        ),
+    )
+
+
 class KnowledgeGraph:
     """SQLite-backed knowledge graph with igraph construction.
 
@@ -104,6 +159,15 @@ class KnowledgeGraph:
         ("goal_id", "TEXT"),
         ("branch_id", "TEXT"),
         ("user_id", "TEXT"),
+    )
+    _TAG_COLUMNS: tuple[tuple[str, str], ...] = (
+        ("tag_universes", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tag_domains", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tag_shapes", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tag_general", "INTEGER NOT NULL DEFAULT 0"),
+        ("tag_commons", "INTEGER NOT NULL DEFAULT 0"),
+        ("tag_private_canon", "INTEGER NOT NULL DEFAULT 0"),
+        ("promotion_record", "TEXT NOT NULL DEFAULT ''"),
     )
     _SCOPED_TABLES: tuple[str, ...] = (
         "entities", "edges", "facts", "communities",
@@ -189,6 +253,18 @@ class KnowledgeGraph:
                 self._conn.execute(
                     f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
                 )
+            existing = {
+                row["name"]
+                for row in self._conn.execute(
+                    f"PRAGMA table_info({table})"
+                )
+            }
+            for col_name, col_type in self._TAG_COLUMNS:
+                if col_name in existing:
+                    continue
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
+                )
         # Shared index over (universe_id, goal_id, branch_id) per
         # design-note §4 — this is the hot read path.
         for table in self._SCOPED_TABLES:
@@ -234,6 +310,7 @@ class KnowledgeGraph:
         self,
         entity: GraphEntity,
         scope: MemoryScope | None = None,
+        tags: KnowledgeTags | None = None,
     ) -> None:
         """Insert or update an entity.
 
@@ -243,21 +320,26 @@ class KnowledgeGraph:
         legacy/universe-public semantics per design §4). The write is
         a no-op for reads until Stage 2c flips
         ``WORKFLOW_TIERED_SCOPE`` on.
+
+        PR-139 slice 6: optional ``tags`` attach the tag-matrix labels
+        used by retrieval. Tags refine rows after hard MemoryScope
+        filtering; they do not replace scope columns.
         """
         scope_cols, scope_vals = _scope_insert_fragment(scope)
+        tag_cols, tag_vals = _tag_insert_fragment(tags)
         self._conn.execute(
             f"""
             INSERT INTO entities (entity_id, entity_type, access_tier,
                                   public_description, hidden_description,
-                                  secret_description, aliases{scope_cols})
-            VALUES (?, ?, ?, ?, ?, ?, ?{', ?' * len(scope_vals)})
+                                  secret_description, aliases{scope_cols}{tag_cols})
+            VALUES (?, ?, ?, ?, ?, ?, ?{', ?' * (len(scope_vals) + len(tag_vals))})
             ON CONFLICT(entity_id) DO UPDATE SET
                 entity_type=excluded.entity_type,
                 access_tier=excluded.access_tier,
                 public_description=excluded.public_description,
                 hidden_description=excluded.hidden_description,
                 secret_description=excluded.secret_description,
-                aliases=excluded.aliases{_scope_upsert_fragment(scope)}
+                aliases=excluded.aliases{_scope_upsert_fragment(scope)}{_tag_upsert_fragment(tags)}
             """,
             (
                 entity["entity_id"],
@@ -268,6 +350,7 @@ class KnowledgeGraph:
                 entity["secret_description"],
                 json.dumps(entity.get("aliases", [])),
                 *scope_vals,
+                *tag_vals,
             ),
         )
         self._conn.commit()
@@ -325,6 +408,7 @@ class KnowledgeGraph:
         self,
         edge: GraphEdge,
         scope: MemoryScope | None = None,
+        tags: KnowledgeTags | None = None,
     ) -> None:
         """Insert or update an edge.
 
@@ -332,19 +416,20 @@ class KnowledgeGraph:
         contract. Scope tagging is advisory until 2c.
         """
         scope_cols, scope_vals = _scope_insert_fragment(scope)
+        tag_cols, tag_vals = _tag_insert_fragment(tags)
         self._conn.execute(
             f"""
             INSERT INTO edges (source, target, relation_type, access_tier,
                                temporal_scope, pov_characters, weight,
-                               valid_from_chapter, valid_to_chapter{scope_cols})
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?{', ?' * len(scope_vals)})
+                               valid_from_chapter, valid_to_chapter{scope_cols}{tag_cols})
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?{', ?' * (len(scope_vals) + len(tag_vals))})
             ON CONFLICT(source, target, relation_type) DO UPDATE SET
                 access_tier=excluded.access_tier,
                 temporal_scope=excluded.temporal_scope,
                 pov_characters=excluded.pov_characters,
                 weight=excluded.weight,
                 valid_from_chapter=excluded.valid_from_chapter,
-                valid_to_chapter=excluded.valid_to_chapter{_scope_upsert_fragment(scope)}
+                valid_to_chapter=excluded.valid_to_chapter{_scope_upsert_fragment(scope)}{_tag_upsert_fragment(tags)}
             """,
             (
                 edge["source"],
@@ -357,6 +442,7 @@ class KnowledgeGraph:
                 edge.get("valid_from_chapter"),
                 edge.get("valid_to_chapter"),
                 *scope_vals,
+                *tag_vals,
             ),
         )
         self._conn.commit()
@@ -387,8 +473,9 @@ class KnowledgeGraph:
             sql += " AND access_tier <= ?"
             params.append(access_tier)
         rows = self._conn.execute(sql, params).fetchall()
-        return [
-            GraphEdge(
+        edges: list[GraphEdge] = []
+        for r in rows:
+            edge = GraphEdge(
                 source=r["source"],
                 target=r["target"],
                 relation_type=r["relation_type"],
@@ -399,8 +486,9 @@ class KnowledgeGraph:
                 valid_from_chapter=r["valid_from_chapter"],
                 valid_to_chapter=r["valid_to_chapter"],
             )
-            for r in rows
-        ]
+            _attach_row_tags(edge, r)
+            edges.append(edge)
+        return edges
 
     # ------------------------------------------------------------------
     # Fact CRUD
@@ -410,6 +498,7 @@ class KnowledgeGraph:
         self,
         facts: Sequence[FactWithContext],
         scope: MemoryScope | None = None,
+        tags: KnowledgeTags | None = None,
     ) -> None:
         """Insert or update a batch of facts.
 
@@ -417,7 +506,10 @@ class KnowledgeGraph:
         contract.
         """
         scope_cols, scope_vals = _scope_insert_fragment(scope)
-        placeholders = ",".join(["?"] * (21 + len(scope_vals)))
+        tag_cols, tag_vals = _tag_insert_fragment(tags)
+        placeholders = ",".join(
+            ["?"] * (21 + len(scope_vals) + len(tag_vals))
+        )
         for f in facts:
             self._conn.execute(
                 f"""
@@ -426,7 +518,7 @@ class KnowledgeGraph:
                     truth_value_initial, truth_value_final, truth_value_revealed,
                     language_type, narrative_function, importance, weight,
                     hardness, horizon, provenance, confidence, seeded_scene,
-                    access_tier, pov_characters{scope_cols})
+                    access_tier, pov_characters{scope_cols}{tag_cols})
                 VALUES ({placeholders})
                 ON CONFLICT(fact_id) DO UPDATE SET
                     text=excluded.text,
@@ -448,7 +540,7 @@ class KnowledgeGraph:
                     confidence=excluded.confidence,
                     seeded_scene=excluded.seeded_scene,
                     access_tier=excluded.access_tier,
-                    pov_characters=excluded.pov_characters{_scope_upsert_fragment(scope)}
+                    pov_characters=excluded.pov_characters{_scope_upsert_fragment(scope)}{_tag_upsert_fragment(tags)}
                 """,
                 (
                     f.fact_id, f.text, f.source_type.value, f.narrator,
@@ -458,6 +550,7 @@ class KnowledgeGraph:
                     f.weight, f.hardness, f.horizon, f.provenance, f.confidence,
                     f.seeded_scene, f.access_tier, json.dumps(f.pov_characters),
                     *scope_vals,
+                    *tag_vals,
                 ),
             )
         self._conn.commit()
@@ -526,6 +619,7 @@ class KnowledgeGraph:
             if character_id is not None:
                 if fact.pov_characters and character_id not in fact.pov_characters:
                     continue
+            _attach_row_tags(fact, r)
             results.append(fact)
         return results
 

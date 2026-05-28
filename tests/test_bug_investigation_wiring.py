@@ -231,6 +231,11 @@ def test_wiki_file_bug_invokes_maybe_enqueue_investigation(tmp_path, monkeypatch
     assert (call_kwargs.get("bug_id") == bug_id) or (
         call_args and call_args[0] == bug_id
     )
+    assert call_kwargs["frontmatter"]["effort_class"] == "standard"
+    assert (
+        call_kwargs["frontmatter"]["effort_dispatch_route"]["lane"]
+        == "standard-triage"
+    )
     assert "## Investigation" in (wiki_root / result["path"]).read_text(
         encoding="utf-8"
     )

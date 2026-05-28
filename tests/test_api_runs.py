@@ -296,3 +296,124 @@ def test_failed_run_snapshot_marks_last_running_node_failed(monkeypatch):
     by_id = {node["node_id"]: node["status"] for node in snapshot["node_statuses"]}
     assert by_id["step1"] == "failed"
     assert "- step1: failed" in snapshot["summary"]
+
+
+def test_failed_run_snapshot_surfaces_provider_chain_from_failed_event(monkeypatch):
+    provider_chain = {
+        "role": "writer",
+        "chain": ["claude-code", "codex", "ollama-local"],
+        "attempts": [
+            {
+                "provider": "claude-code",
+                "status": "skipped",
+                "skip_class": "not_in_registry",
+            },
+            {
+                "provider": "codex",
+                "status": "failed",
+                "skip_class": "auth_invalid",
+                "detail": "token expired",
+            },
+        ],
+    }
+
+    def _science_branch(*_args, **_kwargs):
+        return {
+            "branch_def_id": "b1",
+            "name": "Science Branch",
+            "description": "",
+            "author": "tester",
+            "domain_id": "workflow",
+            "goal_id": "goal-1",
+            "tags": [],
+            "version": 1,
+            "parent_def_id": "",
+            "fork_from": None,
+            "graph_nodes": [{"id": "step1", "node_def_id": "step1", "position": 0}],
+            "edges": [],
+            "conditional_edges": [],
+            "entry_point": "step1",
+            "node_defs": [],
+            "state_schema": [],
+            "published": False,
+            "visibility": "public",
+            "created_at": "",
+            "updated_at": "",
+            "stats": {},
+            "default_llm_policy": None,
+            "concurrency_budget": None,
+        }
+
+    monkeypatch.setattr(
+        "workflow.daemon_server.get_branch_definition",
+        _science_branch,
+    )
+    monkeypatch.setattr(
+        runs_mod,
+        "_run_mermaid_from_events",
+        lambda _branch_def_id, _node_statuses: "```mermaid\nflowchart LR\n```",
+    )
+
+    snapshot = _compose_run_snapshot(
+        {
+            "run_id": "run-1",
+            "branch_def_id": "b1",
+            "status": "failed",
+            "actor": "tester",
+            "last_node_id": "step1",
+            "error": (
+                "CompilerError: Provider call failed in node 'step1': "
+                "All providers exhausted for role=writer."
+            ),
+        },
+        [{
+            "node_id": "step1",
+            "status": "failed",
+            "detail": {"provider_chain": provider_chain},
+        }],
+    )
+
+    assert snapshot["failure_class"] == "provider_exhausted"
+    assert snapshot["error_detail"]["provider_chain"] == provider_chain
+
+
+def test_failed_run_snapshot_surfaces_provider_chain_from_error_suffix(monkeypatch):
+    provider_chain = {
+        "role": "writer",
+        "chain": ["codex"],
+        "attempts": [
+            {"provider": "codex", "status": "failed", "skip_class": "auth_invalid"}
+        ],
+    }
+    error = (
+        "CompilerError: Provider call failed in node 'step1': "
+        "All providers exhausted for role=writer. "
+        f"[chain_state]: {json.dumps(provider_chain, separators=(',', ':'))}"
+    )
+
+    def _missing_branch(*_args, **_kwargs):
+        raise KeyError("b1")
+
+    monkeypatch.setattr(
+        "workflow.daemon_server.get_branch_definition",
+        _missing_branch,
+    )
+    monkeypatch.setattr(
+        runs_mod,
+        "_run_mermaid_from_events",
+        lambda _branch_def_id, _node_statuses: "```mermaid\nflowchart LR\n```",
+    )
+
+    snapshot = _compose_run_snapshot(
+        {
+            "run_id": "run-1",
+            "branch_def_id": "b1",
+            "status": "failed",
+            "actor": "tester",
+            "last_node_id": "step1",
+            "error": error,
+        },
+        [],
+    )
+
+    assert snapshot["error_detail"]["provider_chain"] == provider_chain

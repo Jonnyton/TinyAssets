@@ -270,6 +270,7 @@ class TestWorldbuildAutoPremise:
         assert result == "A story of Ryn navigating the shattered glass realm."
         assert (universe_dir / "PROGRAM.md").exists()
         assert "Ryn" in (universe_dir / "PROGRAM.md").read_text(encoding="utf-8")
+        assert "Ryn" in (universe_dir / "soul.md").read_text(encoding="utf-8")
 
     def test_skips_when_program_md_exists(self, tmp_path):
         """Should not generate if PROGRAM.md already exists."""

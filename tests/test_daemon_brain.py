@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from workflow.daemon_brain import (
+    DaemonBrain,
     build_daemon_brain_packet,
     capture_daemon_memory,
     daemon_memory_cost_ledger_status,
@@ -251,7 +252,7 @@ def test_session_trace_summary_is_recognized_kind_with_full_lifecycle(
 def test_experience_lesson_is_recognized_kind_with_full_lifecycle(
     tmp_path: Path,
 ) -> None:
-    """Slice 2 of ExperiencePool (per docs/design-notes/2026-05-02-experience-pool-and-group-evolution.md).
+    """Slice 2 of ExperiencePool.
 
     Verifies experience_lesson is a recognized memory_kind that moves
     through the existing promotion state machine: candidate (capture) →
@@ -375,3 +376,38 @@ def test_open_brain_status_surface_summarizes_soul_daemons(tmp_path: Path) -> No
     assert status["daemon_count"] == 1
     assert status["daemons"][0]["daemon_id"] == ada["daemon_id"]
     assert status["daemons"][0]["cost_ledger"]["estimated_total_tokens"] > 0
+
+
+def test_tiny_daemon_external_write_packet_uses_daemonbrain_facade(
+    tmp_path: Path,
+) -> None:
+    """PR-048 Phase B first-migration acceptance: Tiny uses DaemonBrain."""
+    tiny = _create_daemon(tmp_path, "Tiny")
+    brain = DaemonBrain(tmp_path, daemon_id=tiny["daemon_id"])
+    memory = brain.capture(
+        memory_kind="policy",
+        content=(
+            "Tiny daemon external-write packets for twitter_post must check "
+            "the Brain for consent, idempotency, and voice policy before any "
+            "sink adapter writes outside Workflow."
+        ),
+        source_type="patch_request",
+        source_id="WIKI-PATCH-908",
+        reliability="host_observed",
+        language_type="policy",
+        importance=0.92,
+        visibility="borrowable_role_context",
+        promotion_state="accepted",
+    )
+
+    packet = build_daemon_memory_packet(
+        tmp_path,
+        daemon_id=tiny["daemon_id"],
+        max_chars=2600,
+        brain_query="Tiny daemon twitter_post external-write consent idempotency",
+        brain_max_chars=900,
+    )
+
+    assert packet["brain"]["selected_count"] == 1
+    assert packet["brain"]["entries"][0]["entry_id"] == memory["entry_id"]
+    assert "twitter_post must check the Brain" in packet["context"]

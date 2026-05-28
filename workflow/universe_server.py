@@ -57,6 +57,41 @@ logger = logging.getLogger("universe_server")
 # Server
 # ---------------------------------------------------------------------------
 
+_MCP_TEXT_CONTENT_MAX_CHARS = 6000
+
+
+def _summarize_structured_content(value: object) -> str:
+    """Small text-channel summary for large structured MCP payloads."""
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in ("status", "action", "tool", "goal_id", "branch_def_id"):
+            item = value.get(key)
+            if isinstance(item, str) and item:
+                parts.append(f"{key}={item}")
+        for key in ("count", "returned", "total", "total_count"):
+            item = value.get(key)
+            if isinstance(item, int):
+                parts.append(f"{key}={item}")
+        list_counts = [
+            f"{key}={len(item)}"
+            for key, item in value.items()
+            if isinstance(item, list)
+        ]
+        parts.extend(list_counts[:4])
+        if parts:
+            return (
+                "Tool result: "
+                + "; ".join(parts)
+                + ". Full payload is in structuredContent."
+            )
+    if isinstance(value, list):
+        return (
+            f"Tool result: {len(value)} items. "
+            "Full payload is in structuredContent."
+        )
+    return "Tool result available in structuredContent."
+
+
 def _structured_return(raw):
     """Wrap an MCP tool result so FastMCP populates ``structured_content``.
 
@@ -70,19 +105,33 @@ def _structured_return(raw):
     ``structured_content`` automatically — Apps SDK then renders cleanly.
     """
     import json as _json
+
+    from fastmcp.tools.base import ToolResult
+    from mcp.types import TextContent
+
     if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, list):
-        return {"result": raw}
-    if isinstance(raw, str):
+        structured = raw
+    elif isinstance(raw, list):
+        structured = {"result": raw}
+    elif isinstance(raw, str):
         try:
             parsed = _json.loads(raw)
         except (_json.JSONDecodeError, ValueError):
             return {"text": raw}
         if isinstance(parsed, dict):
-            return parsed
-        return {"result": parsed}
-    return {"result": raw}
+            structured = parsed
+        else:
+            structured = {"result": parsed}
+    else:
+        structured = {"result": raw}
+
+    text = _json.dumps(structured, separators=(",", ":"), default=str)
+    if len(text) > _MCP_TEXT_CONTENT_MAX_CHARS:
+        text = _summarize_structured_content(structured)
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured,
+    )
 
 
 def _register_structured_tool(fn, *, title, tags, annotations):
@@ -325,6 +374,7 @@ def universe(
     pickup_incentive: str = "",
     directed_daemon_id: str = "",
     directed_daemon_instruction: str = "",
+    daemon_id: str = "",
     branch_task_id: str = "",
     goal_id: str = "",
     branch_def_id: str = "",
@@ -369,6 +419,7 @@ def universe(
         branch_id/request_type: Request routing fields.
         pickup_incentive/directed_daemon_id: Optional patch-request pickup
             signals; these do not affect acceptance, release, or merge odds.
+        daemon_id: Target daemon for daemon memory/status actions.
         filename/provenance_tag/limit/tag: Optional read/write filters.
         anchor_json: Optional JSON object for `give_direction` line/span notes.
     """
@@ -390,6 +441,7 @@ def universe(
         pickup_incentive=pickup_incentive,
         directed_daemon_id=directed_daemon_id,
         directed_daemon_instruction=directed_daemon_instruction,
+        daemon_id=daemon_id,
         branch_task_id=branch_task_id,
         goal_id=goal_id,
         branch_def_id=branch_def_id,
@@ -531,6 +583,9 @@ def extensions(
     filters_json: str = "",
     select: str = "",
     aggregate_json: str = "",
+    receipt_type: str = "",
+    payload_json: str = "",
+    subject_id: str = "",
     branch_spec_json: str = "",
     from_run_id: str = "",
     to_node_id: str = "",
@@ -601,8 +656,12 @@ def extensions(
 
     Core actions include build_branch, patch_branch, list_branches,
     describe_branch, get_branch, run_branch, get_run, wait_for_run,
-    judge_run, publish_version, schedule_branch, fork_tree, and search_nodes.
+    judge_run, publish_version, schedule_branch, fork_tree, search_nodes,
+    get_action_scope_status, record_run_receipt, and list_run_receipts.
     Pass `action` plus the matching ids or JSON payload fields.
+    Receipt actions use `run_id`, `receipt_type`, `payload_json`, and optional
+    `node_id` / `subject_id` to preserve source acquisition, claim lineage,
+    and revision evidence for later gates and runs.
     Use `scope` with list_branches to filter the result:
     `"published"` (default) = only Branches that have a published version
     snapshot — production-ready entries, drafts hidden;
@@ -666,6 +725,9 @@ def extensions(
         filters_json=filters_json,
         select=select,
         aggregate_json=aggregate_json,
+        receipt_type=receipt_type,
+        payload_json=payload_json,
+        subject_id=subject_id,
         branch_spec_json=branch_spec_json,
         from_run_id=from_run_id,
         to_node_id=to_node_id,
@@ -782,6 +844,12 @@ def goals(
                    unbind. Needs branch_def_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
                    branch. Author-only or host-only.
+      set_selector Bind the Goal's selector branch_version
+                   (DESIGN-008). The bound branch ranks competitors
+                   on this Goal's leaderboard. Author-only or
+                   host-only. Pass branch_version_id="" to fall back
+                   to the platform default selector. The branch must
+                   conform to the selector-branch contract.
       run_canonical Dispatch a run on the Goal's canonical
                    branch_version. When auto_canonical_via_leaderboard
                    is on, the canonical is first refreshed via the
@@ -855,6 +923,9 @@ def gates(
     node_last_claimer: str = "",
     node_id: str = "",
     run_id: str = "",
+    conformance_pack_json: str = "",
+    conformance_pack_id: str = "",
+    standard_id: str = "",
 ) -> str:
     """Outcome Gates — real-world impact claims per Branch.
 
@@ -872,6 +943,9 @@ def gates(
                     and `ladder` (JSON list of {rung_key, name,
                     description}).
       get_ladder    Read a Goal's ladder. Needs goal_id.
+      record_conformance_pack
+                    Store a standards/readiness conformance pack for a
+                    Goal or Branch before gated rungs.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url.
       claim_from_branch_run
@@ -913,6 +987,9 @@ def gates(
         node_last_claimer=node_last_claimer,
         node_id=node_id,
         run_id=run_id,
+        conformance_pack_json=conformance_pack_json,
+        conformance_pack_id=conformance_pack_id,
+        standard_id=standard_id,
     )
 
 
@@ -954,6 +1031,8 @@ def wiki(
     dry_run: bool = True,
     skip_lint: bool = False,
     max_results: int = 10,
+    offset: int = 0,
+    max_chars: int = 128000,
     component: str = "",
     severity: str = "",
     title: str = "",
@@ -1006,6 +1085,8 @@ def wiki(
         changed_since: Optional ISO timestamp for action="read" ambient feed
             and required ISO timestamp for action="since"; only pages updated
             after this timestamp are returned.
+        offset/max_chars: For action="read", read a bounded character window
+            from large pages. Truncated responses include `next_offset`.
     """
     return _wiki_impl(
         action=action,
@@ -1026,6 +1107,8 @@ def wiki(
         dry_run=dry_run,
         skip_lint=skip_lint,
         max_results=max_results,
+        offset=offset,
+        max_chars=max_chars,
         component=component,
         severity=severity,
         title=title,
@@ -1110,10 +1193,10 @@ _mcp_get_status = _register_structured_tool(
 # MCP endpoint discovery (substrate-fix #11 / Family A Phase 1.A)
 # ═══════════════════════════════════════════════════════════════════════════
 # When a browser, recruiter, or fresh AI session GETs /mcp or /mcp-directory
-# with Accept: text/html (no MCP transport handshake), return a discovery
-# page explaining what the endpoint is and how to connect via MCP client.
+# without an MCP transport handshake, return discovery metadata explaining
+# what the endpoint is and how to connect via MCP client.
 # MCP clients (POST with JSON-RPC, GET with text/event-stream for SSE leg,
-# or any request with MCP-Protocol-Version header) pass through unchanged.
+# or any request with MCP transport/session headers) pass through unchanged.
 
 _MCP_DISCOVERY_HTML = """<!doctype html>
 <html lang="en">
@@ -1183,32 +1266,56 @@ Workflow MCP Server &middot; Streamable HTTP transport (MCP spec) &middot; 2026
 """
 
 
-def _wants_discovery_html(request) -> bool:  # type: ignore[no-untyped-def]
-    """Return True iff this is a browser-style GET that should see the
-    discovery HTML page rather than the MCP transport surface.
+_MCP_DISCOVERY_JSON = {
+    "name": "workflow",
+    "type": "mcp_server_endpoint",
+    "transport": "streamable-http",
+    "description": (
+        "Workflow is a domain-agnostic multi-step AI workflow platform. "
+        "This URL is an MCP endpoint, not a normal JSON API route."
+    ),
+    "how_to_connect": {
+        "url": "https://tinyassets.io/mcp",
+        "client_accept_header": "application/json, text/event-stream",
+        "protocol_header": "MCP-Protocol-Version: 2025-03-26",
+        "method": "POST JSON-RPC initialize, then MCP Streamable HTTP",
+    },
+    "related": {
+        "landing_page": "https://tinyassets.io/",
+        "source": "https://github.com/Jonnyton/Workflow",
+        "directory_endpoint": "https://tinyassets.io/mcp-directory",
+    },
+}
 
-    Keep narrow: GET only, Accept includes text/html, NO MCP-Protocol-Version
-    header (real MCP clients send that), Accept does NOT include
-    text/event-stream (real Streamable HTTP clients send that).
-    """
+
+def _is_mcp_transport_request(request) -> bool:  # type: ignore[no-untyped-def]
     if request.method.upper() not in {"GET", "HEAD"}:
-        return False
+        return True
     if request.headers.get("mcp-protocol-version"):
-        return False
-    accept = request.headers.get("accept", "")
-    if "text/event-stream" in accept:
-        return False
+        return True
+    if request.headers.get("mcp-session-id"):
+        return True
+    accept = request.headers.get("accept", "").lower()
+    return "text/event-stream" in accept
+
+
+def _wants_discovery_html(request) -> bool:  # type: ignore[no-untyped-def]
+    accept = request.headers.get("accept", "").lower()
     return "text/html" in accept
 
 
 class _MCPDiscoveryMiddleware:
-    """Starlette middleware: serve discovery HTML on /mcp + /mcp-directory
-    GETs from browser-like clients; pass everything else through to the
-    FastMCP Streamable HTTP transport unchanged.
+    """Serve discovery output on non-transport /mcp + /mcp-directory GETs.
+
+    Browser-like clients receive HTML. Default curl and JSON probes receive
+    compact JSON. FastMCP transport traffic passes through unchanged.
     """
 
     def __init__(self, app):  # type: ignore[no-untyped-def]
         self.app = app
+
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        return getattr(self.app, name)
 
     async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
         if scope.get("type") != "http":
@@ -1222,12 +1329,15 @@ class _MCPDiscoveryMiddleware:
         from starlette.requests import Request
 
         request = Request(scope, receive=receive)
-        if not _wants_discovery_html(request):
+        if _is_mcp_transport_request(request):
             await self.app(scope, receive, send)
             return
-        from starlette.responses import HTMLResponse
+        from starlette.responses import HTMLResponse, JSONResponse
 
-        response = HTMLResponse(_MCP_DISCOVERY_HTML)
+        if _wants_discovery_html(request):
+            response = HTMLResponse(_MCP_DISCOVERY_HTML)
+        else:
+            response = JSONResponse(_MCP_DISCOVERY_JSON)
         await response(scope, receive, send)
 
 

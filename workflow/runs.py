@@ -341,6 +341,28 @@ def initialize_runs_db(base_path: str | Path) -> Path:
 
     CREATE INDEX IF NOT EXISTS idx_child_attachments_child
         ON run_child_attachments(child_run_id);
+
+    CREATE TABLE IF NOT EXISTS run_receipts (
+        receipt_id      TEXT PRIMARY KEY,
+        run_id          TEXT NOT NULL,
+        receipt_type    TEXT NOT NULL,
+        subject_id      TEXT NOT NULL DEFAULT '',
+        node_id         TEXT NOT NULL DEFAULT '',
+        payload_json    TEXT NOT NULL DEFAULT '{}',
+        created_at      REAL NOT NULL,
+        -- The runs DB does not enable PRAGMA foreign_keys today, and runs
+        -- are append-only. The explicit existence check in
+        -- record_run_receipt is the load-bearing insert validation; this
+        -- declaration is forward-compatible for future run deletion paths.
+        FOREIGN KEY(run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_run_receipts_run
+        ON run_receipts(run_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_run_receipts_type
+        ON run_receipts(receipt_type, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_run_receipts_subject
+        ON run_receipts(subject_id);
     """
     from workflow.branch_versions import BRANCH_VERSIONS_SCHEMA
     from workflow.contribution_events import CONTRIBUTION_EVENTS_SCHEMA
@@ -459,6 +481,215 @@ def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
         "started_at": row["started_at"],
         "finished_at": row["finished_at"],
         "detail": detail,
+    }
+
+
+VALID_RECEIPT_TYPES = frozenset({
+    "source_acquisition_receipt",
+    "claim_lineage_receipt",
+    "revision_receipt",
+})
+
+_SOURCE_RECEIPT_FLAGS = (
+    "fetched",
+    "viewed",
+    "verified",
+    "snapshotted",
+    "unavailable",
+    "not_searched",
+)
+
+_DEFAULT_RECEIPT_PAYLOAD_MAX_BYTES = 65_536
+
+
+def _iso_now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _receipt_payload_max_bytes() -> int:
+    raw = os.environ.get(
+        "WORKFLOW_RECEIPT_PAYLOAD_MAX_BYTES",
+        str(_DEFAULT_RECEIPT_PAYLOAD_MAX_BYTES),
+    )
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "WORKFLOW_RECEIPT_PAYLOAD_MAX_BYTES must be an integer"
+        ) from exc
+    if value <= 0:
+        raise ValueError("WORKFLOW_RECEIPT_PAYLOAD_MAX_BYTES must be positive")
+    return value
+
+
+def _receipt_payload_size_bytes(payload: dict[str, Any]) -> int:
+    return len(
+        json.dumps(
+            payload,
+            default=str,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+
+
+def _as_string_list(value: Any, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    out: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ValueError(f"{field_name}[{idx}] must be a string")
+        item = item.strip()
+        if item:
+            out.append(item)
+    return out
+
+
+def _as_bool(value: Any, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} must be a boolean")
+
+
+def _normalize_receipt_payload(
+    receipt_type: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Normalize known receipt fields while preserving extension metadata.
+
+    Unknown payload keys outside the documented schema round-trip unchanged
+    for forward compatibility. The substrate makes no claim about their
+    meaning, type, or future canonical reservation; standards and domain
+    packs that need their own schema should put custom material under an
+    ``extensions`` object and validate it before recording the receipt.
+    """
+    if receipt_type not in VALID_RECEIPT_TYPES:
+        raise ValueError(
+            "receipt_type must be one of: "
+            f"{', '.join(sorted(VALID_RECEIPT_TYPES))}"
+        )
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a JSON object")
+
+    normalized = dict(payload)
+    subject_id = ""
+
+    if receipt_type == "source_acquisition_receipt":
+        source_ref = str(
+            normalized.get("source_ref")
+            or normalized.get("source")
+            or normalized.get("file_ref")
+            or normalized.get("corpus_ref")
+            or ""
+        ).strip()
+        if not source_ref:
+            raise ValueError(
+                "source_acquisition_receipt requires source_ref, source, "
+                "file_ref, or corpus_ref"
+            )
+        normalized["source_ref"] = source_ref
+        normalized.setdefault("retrieval_timestamp", _iso_now())
+        normalized.setdefault("search_scope", "")
+        normalized.setdefault("snapshot_hash", "")
+        normalized.setdefault("rights_state", "")
+        normalized.setdefault("access_state", "")
+        for flag in _SOURCE_RECEIPT_FLAGS:
+            normalized[flag] = _as_bool(normalized.get(flag, False), flag)
+        acquired_flags = ("fetched", "viewed", "verified", "snapshotted")
+        if normalized["not_searched"] and any(
+            normalized[flag] for flag in acquired_flags
+        ):
+            raise ValueError(
+                "not_searched cannot be combined with fetched, viewed, "
+                "verified, or snapshotted"
+            )
+        if normalized["not_searched"] and normalized["unavailable"]:
+            raise ValueError(
+                "not_searched cannot be combined with unavailable"
+            )
+        if normalized["unavailable"] and any(
+            normalized[flag] for flag in acquired_flags
+        ):
+            raise ValueError(
+                "unavailable cannot be combined with fetched, viewed, "
+                "verified, or snapshotted"
+            )
+        subject_id = source_ref
+
+    elif receipt_type == "claim_lineage_receipt":
+        claim_id = str(normalized.get("claim_id") or "").strip()
+        if not claim_id:
+            raise ValueError("claim_lineage_receipt requires claim_id")
+        normalized["claim_id"] = claim_id
+        normalized["evidence_refs"] = _as_string_list(
+            normalized.get("evidence_refs"), "evidence_refs"
+        )
+        normalized["imported_prior_run_claims"] = _as_string_list(
+            normalized.get("imported_prior_run_claims"),
+            "imported_prior_run_claims",
+        )
+        normalized["counter_evidence_refs"] = _as_string_list(
+            normalized.get("counter_evidence_refs"), "counter_evidence_refs"
+        )
+        normalized["changed_claims"] = _as_string_list(
+            normalized.get("changed_claims"), "changed_claims"
+        )
+        normalized.setdefault("confidence", "")
+        normalized.setdefault("status", "")
+        normalized.setdefault("rationale", "")
+        subject_id = claim_id
+
+    elif receipt_type == "revision_receipt":
+        old_run_id = str(normalized.get("old_run_id") or "").strip()
+        old_claim_id = str(normalized.get("old_claim_id") or "").strip()
+        if not old_run_id and not old_claim_id:
+            raise ValueError(
+                "revision_receipt requires old_run_id or old_claim_id"
+            )
+        normalized["old_run_id"] = old_run_id
+        normalized["old_claim_id"] = old_claim_id
+        normalized["new_evidence_refs"] = _as_string_list(
+            normalized.get("new_evidence_refs"), "new_evidence_refs"
+        )
+        normalized["affected_outputs"] = _as_string_list(
+            normalized.get("affected_outputs"), "affected_outputs"
+        )
+        normalized["recommended_reruns"] = _as_string_list(
+            normalized.get("recommended_reruns"), "recommended_reruns"
+        )
+        normalized.setdefault("changed_status", "")
+        normalized.setdefault("changed_confidence", "")
+        normalized.setdefault("rationale", "")
+        subject_id = old_claim_id or old_run_id
+
+    payload_bytes = _receipt_payload_size_bytes(normalized)
+    max_bytes = _receipt_payload_max_bytes()
+    if payload_bytes > max_bytes:
+        raise ValueError(
+            f"payload exceeds max {max_bytes} bytes (got {payload_bytes})"
+        )
+
+    return normalized, subject_id
+
+
+def _row_to_receipt(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return {
+        "receipt_id": row["receipt_id"],
+        "run_id": row["run_id"],
+        "receipt_type": row["receipt_type"],
+        "subject_id": row["subject_id"],
+        "node_id": row["node_id"],
+        "payload": payload,
+        "created_at": row["created_at"],
     }
 
 
@@ -595,6 +826,111 @@ def update_run_status(
                     "status update preserved",
                     run_id, status, exc,
                 )
+
+
+def record_run_receipt(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    receipt_type: str,
+    payload: dict[str, Any],
+    node_id: str = "",
+    receipt_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist a generic, machine-checkable receipt for a run.
+
+    Receipts deliberately record acquisition/lineage/revision facts without
+    assigning truth rank. Gates and later runs can inspect the normalized
+    payload and decide how to use it. Insert-time run existence is checked
+    explicitly here; the run_receipts foreign key is declarative until the
+    runs DB enables SQLite foreign-key enforcement.
+    """
+    initialize_runs_db(base_path)
+    run_id = run_id.strip()
+    if not run_id:
+        raise ValueError("run_id is required")
+
+    normalized, subject_id = _normalize_receipt_payload(receipt_type, payload)
+    receipt_id = receipt_id or uuid.uuid4().hex[:16]
+    created_at = _now()
+
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT run_id FROM runs WHERE run_id = ?", (run_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"run_id '{run_id}' not found")
+        conn.execute(
+            """
+            INSERT INTO run_receipts (
+                receipt_id, run_id, receipt_type, subject_id, node_id,
+                payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                receipt_id,
+                run_id,
+                receipt_type,
+                subject_id,
+                node_id.strip(),
+                json.dumps(normalized, default=str, sort_keys=True),
+                created_at,
+            ),
+        )
+
+    return {
+        "receipt_id": receipt_id,
+        "run_id": run_id,
+        "receipt_type": receipt_type,
+        "subject_id": subject_id,
+        "node_id": node_id.strip(),
+        "payload": normalized,
+        "created_at": created_at,
+    }
+
+
+def list_run_receipts(
+    base_path: str | Path,
+    *,
+    run_id: str = "",
+    receipt_type: str = "",
+    subject_id: str = "",
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    initialize_runs_db(base_path)
+    limit = min(max(1, int(limit)), 1000)
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if run_id:
+        clauses.append("run_id = ?")
+        params.append(run_id.strip())
+    if receipt_type:
+        if receipt_type not in VALID_RECEIPT_TYPES:
+            raise ValueError(
+                "receipt_type must be one of: "
+                f"{', '.join(sorted(VALID_RECEIPT_TYPES))}"
+            )
+        clauses.append("receipt_type = ?")
+        params.append(receipt_type)
+    if subject_id:
+        clauses.append("subject_id = ?")
+        params.append(subject_id.strip())
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT receipt_id, run_id, receipt_type, subject_id, node_id,
+                   payload_json, created_at
+            FROM run_receipts
+            {where}
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+    return [_row_to_receipt(row) for row in rows]
 
 
 def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
@@ -3659,6 +3995,7 @@ __all__ = [
     "RunCancelledError",
     "RunOutcome",
     "RunStepEvent",
+    "VALID_RECEIPT_TYPES",
     # Phase 4 storage helpers
     "add_judgment",
     "attach_existing_child_run",
@@ -3676,6 +4013,7 @@ __all__ = [
     "list_events",
     "list_judgments",
     "list_node_edit_audits",
+    "list_run_receipts",
     "list_runs",
     "latest_run_by_name",
     "list_recent_runs",
@@ -3683,6 +4021,7 @@ __all__ = [
     "record_event",
     "record_lineage",
     "record_node_edit_audit",
+    "record_run_receipt",
     "recover_in_flight_runs",
     "request_cancel",
     "runs_db_path",

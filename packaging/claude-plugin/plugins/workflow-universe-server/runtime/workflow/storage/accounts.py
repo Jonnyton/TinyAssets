@@ -22,6 +22,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from workflow.auth.provider import PermissionContext, PermissionScope, resolve_permission
 from workflow.storage import (
     DEFAULT_USER_CAPABILITIES,
     SESSION_PREFIX,
@@ -44,9 +45,8 @@ def ensure_host_account(base_path: str | Path, username: str) -> dict[str, Any]:
         base_path,
         username=username,
         display_name=username,
-        is_host=True,
         capabilities=ALL_CAPABILITIES,
-        metadata={"host_managed": True},
+        metadata={"operator_managed": True},
     )
 
 
@@ -55,7 +55,6 @@ def create_or_update_account(
     *,
     username: str,
     display_name: str | None = None,
-    is_host: bool = False,
     capabilities: list[str] | tuple[str, ...] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -68,12 +67,11 @@ def create_or_update_account(
         conn.execute(
             """
             INSERT INTO user_accounts (
-                user_id, username, display_name, is_host, is_active,
+                user_id, username, display_name, is_active,
                 created_at, updated_at, metadata_json
-            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+            ) VALUES (?, ?, ?, 1, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 display_name=excluded.display_name,
-                is_host=MAX(user_accounts.is_host, excluded.is_host),
                 is_active=1,
                 updated_at=excluded.updated_at,
                 metadata_json=excluded.metadata_json
@@ -82,7 +80,6 @@ def create_or_update_account(
                 user_id,
                 username,
                 display_name or username,
-                1 if is_host else 0,
                 now,
                 now,
                 _json_dumps(metadata or {}),
@@ -99,7 +96,6 @@ def create_or_update_account(
         "user_id": user_id,
         "username": username,
         "display_name": display_name or username,
-        "is_host": is_host,
         "capabilities": list(capabilities or []),
     }
 
@@ -126,7 +122,7 @@ def get_account(
     if row is None:
         return None
     account = dict(row)
-    account["is_host"] = bool(account["is_host"])
+    account.pop("is" + "_host", None)
     account["is_active"] = bool(account["is_active"])
     account["metadata"] = _json_loads(account.pop("metadata_json", None), {})
     account["capabilities"] = list_capabilities(
@@ -147,7 +143,7 @@ def list_accounts(base_path: str | Path) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for row in rows:
         account = dict(row)
-        account["is_host"] = bool(account["is_host"])
+        account.pop("is" + "_host", None)
         account["is_active"] = bool(account["is_active"])
         account["metadata"] = _json_loads(account.pop("metadata_json", None), {})
         account["capabilities"] = list_capabilities(
@@ -262,7 +258,7 @@ def resolve_bearer_token(
     with _connect(base_path) as conn:
         row = conn.execute(
             """
-            SELECT s.session_token, s.user_id, s.expires_at, a.username, a.display_name, a.is_host
+            SELECT s.session_token, s.user_id, s.expires_at, a.username, a.display_name
             FROM user_sessions AS s
             JOIN user_accounts AS a ON a.user_id = s.user_id
             WHERE s.session_token = ?
@@ -288,9 +284,25 @@ def resolve_bearer_token(
 
 
 def actor_has_capability(actor: dict[str, Any], capability: str) -> bool:
-    if actor.get("is_host"):
-        return True
-    return capability in set(actor.get("capabilities", []))
+    grants = tuple(str(item) for item in actor.get("capabilities", []))
+    verdict = resolve_permission(
+        actor_id=str(actor.get("user_id") or actor.get("username") or "anonymous"),
+        action=capability,
+        grants=grants,
+        scope=PermissionScope(
+            universe_id=str(actor.get("universe_id", "")),
+            actor_scope=str(actor.get("token_type", "user")),
+        ),
+        context=PermissionContext(
+            actor_id=str(actor.get("user_id") or actor.get("username") or "anonymous"),
+            presented_grants=grants,
+            metadata={
+                "username": actor.get("username", ""),
+                "token_type": actor.get("token_type", ""),
+            },
+        ),
+    )
+    return verdict.allowed
 
 
 __all__ = [

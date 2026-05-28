@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from workflow.memory.core import CoreMemory
 from workflow.memory.episodic import EpisodicMemory
 from workflow.memory.manager import DRAFT, EVALUATE, ORIENT, PLAN, MemoryManager
@@ -175,6 +177,48 @@ class TestEpisodicMemory:
         recent = ep.get_recent(chapter=1, k=5)
         assert len(recent) == 1
         assert recent[0].summary == "Version 2"
+
+    def test_store_episode_summary_keeps_generic_rows_domain_neutral(self):
+        ep = self._make_episodic()
+        ep.store_episode_summary(
+            episode_id="research-session-1",
+            sequence_number=7,
+            summary="Synthesized current standards evidence.",
+            word_count=120,
+            domain_id="research_probe",
+            domain_payload={"query": "data rules"},
+        )
+
+        recent = ep.get_recent_episodes(max_sequence=7, k=5, domain_id="research_probe")
+        assert len(recent) == 1
+        assert recent[0].episode_id == "research-session-1"
+        assert recent[0].sequence_number == 7
+        assert recent[0].domain_payload == {"query": "data rules"}
+
+        row = ep._conn.execute(
+            "SELECT book_number, chapter_number, scene_number "
+            "FROM scene_summaries WHERE domain_id = ?",
+            ("research_probe",),
+        ).fetchone()
+        assert row == (None, None, None)
+
+    def test_legacy_summary_call_records_fantasy_domain_payload(self):
+        ep = self._make_episodic()
+        ep.store_summary(1, 2, 3, "Fantasy scene summary.", 90)
+
+        row = ep._conn.execute(
+            "SELECT domain_id, episode_id, sequence_number, domain_payload "
+            "FROM scene_summaries WHERE universe_id = ?",
+            ("test",),
+        ).fetchone()
+        assert row[0] == "fantasy_author"
+        assert row[1] == "book:1/chapter:2/scene:3"
+        assert row[2] == 2
+        assert json.loads(row[3]) == {
+            "book_number": 1,
+            "chapter_number": 2,
+            "scene_number": 3,
+        }
 
 
 # =====================================================================

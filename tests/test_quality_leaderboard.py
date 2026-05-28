@@ -1,34 +1,43 @@
-"""Tests for workflow.api.quality_leaderboard.
+"""DESIGN-008 — quality leaderboard now dispatches via selector branches.
 
-PR-123 substrate (M2). Covers:
+PR-123 round-1 baked an opinionated scoring formula into Python.
+PR #978 tried to patch a bug in it; host closed PR #978 because
+patching entrenches the wrong architecture. DESIGN-008 replaces the
+formula with a per-Goal selector-branch dispatch. These tests now
+exercise the dispatch contract, not formula arithmetic.
 
-- Empty Goal (no branches bound) -> empty entries + parent-rec returns None.
-- Single entry -> rank 1, score reflects signals.
-- Multiple entries with diverse signals -> correct ranking.
-- Recency decay correctness (older success ranks lower vs newer).
-- Goal with many branches (realistic scale, 15+).
-- Numeric tag parsing from judgments (quality:8, novelty:7, risk:3).
-- Fork count signal (parent_def_id + fork_from both contribute).
-- Best-effort safe_to_publish lookup in branch.stats.
-- Gate-rung claim signal.
-- ``recommend_parent_for_fork`` rationale shape.
+Strategy: monkeypatch ``workflow.api.selector_dispatch.dispatch_selector``
+so tests don't depend on a live LLM provider. The mock takes the
+``candidate_branches`` input and returns deterministic
+``ranked_entries`` based on a per-test choice of dominant signal
+(quality_score, run_count, etc.) — that exercises the substrate's
+candidate-collection, output-parsing, error-surface paths without
+LLM cost.
 
-Storage is exercised through the canonical helpers
-(``save_goal`` / ``save_branch_definition`` / ``create_run`` /
-``update_run_status`` / ``add_judgment`` / ``record_gate_claim``)
-so any future schema migration is exercised here too.
+Coverage:
+
+- Empty Goal -> empty entries + parent-rec returns None.
+- Single entry -> rank 1.
+- Multiple entries -> mock-driven ranking respects selector output.
+- Selector returns invalid output -> structured error, leaderboard
+  ``ok=False``, no crash.
+- Selector run fails (status != completed) -> structured error.
+- Selector resolution: explicit binding wins over platform default;
+  no binding falls back to platform default.
+- Signals collected per branch are still queryable (run_count,
+  judgment_score_avg, fork_count, gate_rung, safe_to_publish).
 """
 
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from workflow.api.quality_leaderboard import (
-    JUDGMENT_MAX_SCALE,
-    RECENCY_HALFLIFE_DAYS,
     build_quality_leaderboard,
     recommend_parent_for_fork,
 )
@@ -39,7 +48,6 @@ from workflow.daemon_server import (
 )
 from workflow.runs import (
     RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
     add_judgment,
     create_run,
     initialize_runs_db,
@@ -113,7 +121,7 @@ def _record_run(
     *,
     branch_def_id: str,
     status: str,
-    finished_at: float | None = None,
+    finished_at: float | str | None = None,
 ) -> str:
     run_id = create_run(
         base_path,
@@ -146,31 +154,136 @@ def _record_judgment(
     )
 
 
+def _mock_dispatch_selector(
+    *,
+    ranked_entries: list[dict] | None = None,
+    by_signal: str | None = None,
+    fail_with: dict | None = None,
+):
+    """Build a mock ``dispatch_selector`` that emits ``ranked_entries``.
+
+    Pass exactly one of:
+
+    * ``ranked_entries`` — verbatim entries to return.
+    * ``by_signal`` — order the input ``candidate_branches`` by the
+      named signal field descending and emit them as ``ranked_entries``.
+    * ``fail_with`` — return ``{"ok": False, "error_kind": ..., "error": ...}``.
+
+    The returned function is patched into ``workflow.api.quality_leaderboard``
+    via ``patch("workflow.api.quality_leaderboard.dispatch_selector",
+    side_effect=mock)``.
+    """
+    def _mock(
+        base_path,
+        *,
+        goal_id,
+        candidate_branches,
+        actor="anonymous",
+        timeout_s=None,
+        **_extra,
+    ):
+        if fail_with is not None:
+            return dict(fail_with)
+        if not candidate_branches:
+            return {
+                "ok": True,
+                "branch_version_id": None,
+                "source": "empty_candidate_set",
+                "run_id": None,
+                "ranked_entries": [],
+            }
+        if ranked_entries is not None:
+            return {
+                "ok": True,
+                "branch_version_id": "mock_selector@deadbeef",
+                "source": "platform_default",
+                "run_id": "mock-run",
+                "ranked_entries": list(ranked_entries),
+            }
+        if by_signal is not None:
+            def _key(c):
+                value = (c.get("signals") or {}).get(by_signal)
+                if value is None:
+                    return float("-inf")
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return float("-inf")
+            ordered = sorted(
+                candidate_branches, key=_key, reverse=True,
+            )
+            entries = [
+                {
+                    "branch_def_id": c["branch_def_id"],
+                    "branch_version_id": c.get("branch_version_id", ""),
+                    "score": float(_key(c)) if _key(c) != float("-inf") else 0.0,
+                    "rationale": (
+                        f"ranked by {by_signal}={(c.get('signals') or {}).get(by_signal)!r}"
+                    ),
+                }
+                for c in ordered
+            ]
+            return {
+                "ok": True,
+                "branch_version_id": "mock_selector@deadbeef",
+                "source": "platform_default",
+                "run_id": "mock-run",
+                "ranked_entries": entries,
+            }
+        # Default: emit candidates in original order with score 0.0.
+        return {
+            "ok": True,
+            "branch_version_id": "mock_selector@deadbeef",
+            "source": "platform_default",
+            "run_id": "mock-run",
+            "ranked_entries": [
+                {
+                    "branch_def_id": c["branch_def_id"],
+                    "branch_version_id": c.get("branch_version_id", ""),
+                    "score": 0.0,
+                    "rationale": "",
+                }
+                for c in candidate_branches
+            ],
+        }
+    return _mock
+
+
 # ---------------------------------------------------------------------------
 # Empty Goal
 # ---------------------------------------------------------------------------
 
 
-def test_empty_goal_returns_no_entries(base_path):
+def test_empty_goal_returns_empty_entries(base_path):
+    """No bound branches -> dispatch is short-circuited (no LLM call)
+    and the leaderboard returns ok=True with entries=[]."""
     _make_goal(base_path, "g-empty")
-    board = build_quality_leaderboard(base_path, goal_id="g-empty", viewer="")
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(),
+    ) as mock_dispatch:
+        board = build_quality_leaderboard(
+            base_path, goal_id="g-empty", viewer="",
+        )
+    assert board["ok"] is True
     assert board["entries"] == []
-    assert board["goal_id"] == "g-empty"
-    assert board["goal"] is not None
-    assert board["formula"]["weights"]["judgment"] > 0
-    # Recency halflife exposed for tuning visibility.
-    assert board["formula"]["recency_halflife_days"] == RECENCY_HALFLIFE_DAYS
-
-
-def test_unknown_goal_id_returns_empty_entries_and_none_goal(base_path):
-    board = build_quality_leaderboard(base_path, goal_id="nope", viewer="")
-    assert board["entries"] == []
-    assert board["goal"] is None
+    # Substrate short-circuit fires inside dispatch_selector itself
+    # — but our mock is the substitute for dispatch_selector, so it
+    # IS called with the empty candidate set. Confirm.
+    assert mock_dispatch.call_count == 1
+    assert mock_dispatch.call_args.kwargs["candidate_branches"] == []
 
 
 def test_recommend_parent_when_no_entries(base_path):
     _make_goal(base_path, "g-empty")
-    rec = recommend_parent_for_fork(base_path, goal_id="g-empty", viewer="")
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(),
+    ):
+        rec = recommend_parent_for_fork(
+            base_path, goal_id="g-empty", viewer="",
+        )
+    assert rec["ok"] is True
     assert rec["recommended_parent"] is None
     assert "No Branch is bound" in rec["rationale"]
     assert rec["leaderboard_size"] == 0
@@ -184,102 +297,84 @@ def test_recommend_parent_when_no_entries(base_path):
 def test_single_branch_ranks_first(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b1", goal_id="g1")
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(by_signal="completed_run_count"),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is True
     assert len(board["entries"]) == 1
     entry = board["entries"][0]
     assert entry["rank"] == 1
     assert entry["branch_def_id"] == "b1"
-    # No runs, no judgments -> score is 0 (or possibly negative from
-    # failed-penalty term, but we have no failed runs either).
-    assert entry["score"] == 0.0
-    assert entry["signals"]["completed_run_count"] == 0
-    assert entry["signals"]["fork_count"] == 0
-    assert entry["signals"]["has_gate_rung"] is False
-    assert entry["signals"]["safe_to_publish"] is False
 
 
-def test_single_branch_with_completed_run_scores_above_zero(base_path):
+def test_completed_run_with_iso_finished_at_does_not_crash(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b1", goal_id="g1")
     _record_run(
         base_path,
         branch_def_id="b1",
         status=RUN_STATUS_COMPLETED,
-        finished_at=time.time(),
+        finished_at="2026-05-22T00:00:00Z",
     )
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
+
+    now = datetime(2026, 5, 23, tzinfo=timezone.utc).timestamp()
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(by_signal="last_successful_run_at"),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="", now=now,
+        )
+
     entry = board["entries"][0]
-    assert entry["score"] > 0
+    expected_ts = datetime(2026, 5, 22, tzinfo=timezone.utc).timestamp()
     assert entry["signals"]["completed_run_count"] == 1
-    # Recency near 1.0 for a just-finished run.
-    assert entry["signals"]["recency_decay"] > 0.95
+    assert entry["signals"]["last_successful_run_at"] == expected_ts
+    assert entry["signals"]["age_days_since_success"] == pytest.approx(1.0)
 
 
-# ---------------------------------------------------------------------------
-# Numeric judgment parsing
-# ---------------------------------------------------------------------------
-
-
-def test_judgment_tag_parsing_produces_score_avg(base_path):
+def test_mixed_finished_at_storage_uses_latest_normalized_timestamp(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b1", goal_id="g1")
-    run_id = _record_run(
-        base_path, branch_def_id="b1",
-        status=RUN_STATUS_COMPLETED, finished_at=time.time(),
+    older_iso = "2026-05-22T00:00:00Z"
+    newer_seconds = datetime(2026, 5, 23, tzinfo=timezone.utc).timestamp()
+    _record_run(
+        base_path,
+        branch_def_id="b1",
+        status=RUN_STATUS_COMPLETED,
+        finished_at=older_iso,
     )
-    _record_judgment(base_path, run_id=run_id, tags=["quality:8.0", "novelty:7.0"])
-    _record_judgment(base_path, run_id=run_id, tags=["quality:9.0"])
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
-    entry = board["entries"][0]
-    # avg of 8.0, 7.0, 9.0 = 8.0
-    assert entry["signals"]["judgment_score_avg"] == pytest.approx(8.0)
-    assert entry["signals"]["judgment_score_samples"] == 3
-    assert entry["signals"]["judgment_count"] == 2  # two judgment rows
+    _record_run(
+        base_path,
+        branch_def_id="b1",
+        status=RUN_STATUS_COMPLETED,
+        finished_at=newer_seconds,
+    )
 
+    now = datetime(2026, 5, 24, tzinfo=timezone.utc).timestamp()
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(by_signal="last_successful_run_at"),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="", now=now,
+        )
 
-def test_other_numeric_tags_recorded_separately(base_path):
-    """Tags like ``risk:3`` are numeric but NOT in the headline score
-    average; they appear under ``other_numeric_tags``."""
-    _make_goal(base_path, "g1")
-    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
-    run_id = _record_run(
-        base_path, branch_def_id="b1",
-        status=RUN_STATUS_COMPLETED, finished_at=time.time(),
-    )
-    _record_judgment(
-        base_path, run_id=run_id,
-        tags=["quality:8", "risk:3", "cost:42"],
-    )
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
     signals = board["entries"][0]["signals"]
-    assert signals["judgment_score_avg"] == pytest.approx(8.0)
-    assert signals["other_numeric_tags"] == {"risk": 1, "cost": 1}
-
-
-def test_non_numeric_tags_ignored(base_path):
-    _make_goal(base_path, "g1")
-    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
-    run_id = _record_run(
-        base_path, branch_def_id="b1",
-        status=RUN_STATUS_COMPLETED, finished_at=time.time(),
-    )
-    _record_judgment(
-        base_path, run_id=run_id,
-        tags=["needs-revision", "writer:loop-2"],
-    )
-    signals = build_quality_leaderboard(
-        base_path, goal_id="g1", viewer="",
-    )["entries"][0]["signals"]
-    assert signals["judgment_score_avg"] is None
-    assert signals["other_numeric_tags"] == {}
+    assert signals["last_successful_run_at"] == newer_seconds
+    assert signals["age_days_since_success"] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
-# Multi-branch ranking
+# Multi-branch ranking via mock selector
 # ---------------------------------------------------------------------------
 
 
-def test_higher_judgment_wins_over_lower(base_path):
+def test_mock_selector_ranking_by_judgment_avg(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b-low", goal_id="g1")
     _make_branch(base_path, branch_def_id="b-high", goal_id="g1")
@@ -294,111 +389,205 @@ def test_higher_judgment_wins_over_lower(base_path):
     )
     _record_judgment(base_path, run_id=r_low, tags=["quality:3.0"])
     _record_judgment(base_path, run_id=r_high, tags=["quality:9.0"])
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="", now=now)
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(by_signal="judgment_score_avg"),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
     ranks = {e["branch_def_id"]: e["rank"] for e in board["entries"]}
     assert ranks["b-high"] == 1
     assert ranks["b-low"] == 2
 
 
-def test_recency_decay_breaks_score_ties_among_equal_quality(base_path):
-    """Two branches with identical judgments but different recency.
-    Fresher success should rank first."""
+def test_substrate_passes_signal_bundle_to_selector(base_path):
+    """Selector should see signals for each candidate: completed_run_count,
+    judgment_score_avg, fork_count, etc."""
     _make_goal(base_path, "g1")
-    _make_branch(base_path, branch_def_id="b-old", goal_id="g1")
-    _make_branch(base_path, branch_def_id="b-new", goal_id="g1")
-    now = 1_700_000_000.0
-    # 'b-old' finished 60 days ago, 'b-new' finished today.
-    sixty_days_ago = now - 60 * 86400
-    r_old = _record_run(
-        base_path, branch_def_id="b-old",
-        status=RUN_STATUS_COMPLETED, finished_at=sixty_days_ago,
-    )
-    r_new = _record_run(
-        base_path, branch_def_id="b-new",
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    now = time.time()
+    rid = _record_run(
+        base_path, branch_def_id="b1",
         status=RUN_STATUS_COMPLETED, finished_at=now,
     )
-    _record_judgment(base_path, run_id=r_old, tags=["quality:8.0"])
-    _record_judgment(base_path, run_id=r_new, tags=["quality:8.0"])
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="", now=now)
-    entries = board["entries"]
-    assert entries[0]["branch_def_id"] == "b-new"
-    assert entries[1]["branch_def_id"] == "b-old"
-    # Recency decay should differ meaningfully.
-    new_decay = entries[0]["signals"]["recency_decay"]
-    old_decay = entries[1]["signals"]["recency_decay"]
-    assert new_decay > old_decay
-    # 60 days at 30-day halflife ~ exp(-2) ~ 0.135.
-    assert 0.10 < old_decay < 0.20
+    _record_judgment(base_path, run_id=rid, tags=["quality:8.0"])
+    captured: dict = {}
+
+    def _capturing(
+        base_path,
+        *,
+        goal_id,
+        candidate_branches,
+        actor="anonymous",
+        timeout_s=None,
+        **_extra,
+    ):
+        captured["candidate_branches"] = candidate_branches
+        return {
+            "ok": True,
+            "branch_version_id": "mock@x",
+            "source": "platform_default",
+            "run_id": "r",
+            "ranked_entries": [
+                {
+                    "branch_def_id": "b1",
+                    "branch_version_id": "",
+                    "score": 8.0,
+                    "rationale": "captured",
+                }
+            ],
+        }
+
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_capturing,
+    ):
+        build_quality_leaderboard(base_path, goal_id="g1", viewer="")
+
+    candidates = captured["candidate_branches"]
+    assert len(candidates) == 1
+    signals = candidates[0]["signals"]
+    assert signals["completed_run_count"] == 1
+    assert signals["judgment_score_avg"] == 8.0
+    assert signals["judgment_score_samples"] == 1
+    assert "last_successful_run_at" in signals
+    assert "fork_count" in signals
+    assert "has_gate_rung" in signals
 
 
-def test_fork_count_contributes_to_score(base_path):
-    """A branch with community forks ranks above one without."""
+# ---------------------------------------------------------------------------
+# Signal collection invariants — preserved from PR-123 round-2
+# ---------------------------------------------------------------------------
+
+
+def test_other_numeric_tags_bucketed_separately(base_path):
+    """Tags like ``risk:3`` are numeric but NOT in the headline
+    judgment_score_avg; they appear under other_numeric_tags. The
+    selector branch can choose to weight them or ignore them — the
+    substrate just exposes them."""
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    rid = _record_run(
+        base_path, branch_def_id="b1",
+        status=RUN_STATUS_COMPLETED, finished_at=time.time(),
+    )
+    _record_judgment(
+        base_path, run_id=rid,
+        tags=["quality:8", "risk:3", "cost:42"],
+    )
+    captured: dict = {}
+
+    def _capturing(
+        base_path, *, goal_id, candidate_branches, actor="anonymous",
+        timeout_s=None, **_extra,
+    ):
+        captured["candidates"] = candidate_branches
+        return {
+            "ok": True,
+            "branch_version_id": "mock@x",
+            "source": "platform_default",
+            "run_id": "r",
+            "ranked_entries": [
+                {"branch_def_id": "b1", "score": 8.0, "rationale": ""}
+            ],
+        }
+
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_capturing,
+    ):
+        build_quality_leaderboard(base_path, goal_id="g1", viewer="")
+
+    signals = captured["candidates"][0]["signals"]
+    assert signals["judgment_score_avg"] == pytest.approx(8.0)
+    assert signals["other_numeric_tags"] == {"risk": 1, "cost": 1}
+
+
+def test_non_numeric_tags_ignored(base_path):
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    rid = _record_run(
+        base_path, branch_def_id="b1",
+        status=RUN_STATUS_COMPLETED, finished_at=time.time(),
+    )
+    _record_judgment(
+        base_path, run_id=rid,
+        tags=["needs-revision", "writer:loop-2"],
+    )
+    captured: dict = {}
+
+    def _capturing(
+        base_path, *, goal_id, candidate_branches, actor="anonymous",
+        timeout_s=None, **_extra,
+    ):
+        captured["candidates"] = candidate_branches
+        return {
+            "ok": True,
+            "branch_version_id": "mock@x",
+            "source": "platform_default",
+            "run_id": "r",
+            "ranked_entries": [
+                {"branch_def_id": "b1", "score": 0.0, "rationale": ""}
+            ],
+        }
+
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_capturing,
+    ):
+        build_quality_leaderboard(base_path, goal_id="g1", viewer="")
+
+    signals = captured["candidates"][0]["signals"]
+    assert signals["judgment_score_avg"] is None
+    assert signals["other_numeric_tags"] == {}
+
+
+def test_fork_count_signal_present(base_path):
+    """Fork count is calculated visibility-respecting and passed to
+    the selector. The PR-127 round-2 P1.2 contract still applies."""
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b-popular", goal_id="g1")
-    _make_branch(base_path, branch_def_id="b-lonely", goal_id="g1")
-    # 3 forks of b-popular via parent_def_id.
+    # 3 forks of b-popular.
     _make_branch(
-        base_path, branch_def_id="fork-1",
+        base_path, branch_def_id="f1",
         goal_id="g1", parent_def_id="b-popular",
     )
     _make_branch(
-        base_path, branch_def_id="fork-2",
+        base_path, branch_def_id="f2",
         goal_id="g1", parent_def_id="b-popular",
     )
-    # 1 fork via fork_from.
     _make_branch(
-        base_path, branch_def_id="fork-3",
+        base_path, branch_def_id="f3",
         goal_id="g1", fork_from="b-popular",
     )
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
-    pop_entry = next(
-        e for e in board["entries"] if e["branch_def_id"] == "b-popular"
-    )
-    lonely_entry = next(
-        e for e in board["entries"] if e["branch_def_id"] == "b-lonely"
-    )
-    assert pop_entry["signals"]["fork_count"] == 3
-    assert lonely_entry["signals"]["fork_count"] == 0
-    assert pop_entry["score"] > lonely_entry["score"]
-    assert pop_entry["rank"] < lonely_entry["rank"]
+    captured: dict = {}
 
+    def _capturing(
+        base_path, *, goal_id, candidate_branches, actor="anonymous",
+        timeout_s=None, **_extra,
+    ):
+        captured["candidates"] = candidate_branches
+        return {
+            "ok": True,
+            "branch_version_id": "mock@x",
+            "source": "platform_default",
+            "run_id": "r",
+            "ranked_entries": [
+                {"branch_def_id": c["branch_def_id"], "score": 0.0}
+                for c in candidate_branches
+            ],
+        }
 
-def test_failed_runs_apply_penalty(base_path):
-    _make_goal(base_path, "g1")
-    _make_branch(base_path, branch_def_id="b-clean", goal_id="g1")
-    _make_branch(base_path, branch_def_id="b-buggy", goal_id="g1")
-    now = time.time()
-    _record_run(
-        base_path, branch_def_id="b-clean",
-        status=RUN_STATUS_COMPLETED, finished_at=now,
-    )
-    _record_run(
-        base_path, branch_def_id="b-buggy",
-        status=RUN_STATUS_COMPLETED, finished_at=now,
-    )
-    for _ in range(5):
-        _record_run(
-            base_path, branch_def_id="b-buggy",
-            status=RUN_STATUS_FAILED, finished_at=now,
-        )
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="", now=now)
-    clean = next(
-        e for e in board["entries"] if e["branch_def_id"] == "b-clean"
-    )
-    buggy = next(
-        e for e in board["entries"] if e["branch_def_id"] == "b-buggy"
-    )
-    assert buggy["signals"]["failed_run_count"] == 5
-    assert clean["signals"]["failed_run_count"] == 0
-    # Penalty should be visible in score_components.
-    assert clean["score_components"]["failed_penalty"] == 0.0
-    assert buggy["score_components"]["failed_penalty"] < 0
-    assert clean["score"] > buggy["score"]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_capturing,
+    ):
+        build_quality_leaderboard(base_path, goal_id="g1", viewer="")
 
-
-# ---------------------------------------------------------------------------
-# safe_to_publish best-effort signal
-# ---------------------------------------------------------------------------
+    by_id = {c["branch_def_id"]: c["signals"] for c in captured["candidates"]}
+    assert by_id["b-popular"]["fork_count"] == 3
+    assert by_id["f1"]["fork_count"] == 0
 
 
 def test_safe_to_publish_signal_from_branch_stats(base_path):
@@ -410,44 +599,39 @@ def test_safe_to_publish_signal_from_branch_stats(base_path):
         stats={"next_action_packet": {"safe_to_publish": True}},
     )
     _make_branch(base_path, branch_def_id="b-unsafe", goal_id="g1")
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
-    safe = next(
-        e for e in board["entries"] if e["branch_def_id"] == "b-safe"
-    )
-    unsafe = next(
-        e for e in board["entries"] if e["branch_def_id"] == "b-unsafe"
-    )
-    assert safe["signals"]["safe_to_publish"] is True
-    assert unsafe["signals"]["safe_to_publish"] is False
-    assert safe["score"] > unsafe["score"]
+    captured: dict = {}
 
+    def _capturing(
+        base_path, *, goal_id, candidate_branches, actor="anonymous",
+        timeout_s=None, **_extra,
+    ):
+        captured["candidates"] = candidate_branches
+        return {
+            "ok": True,
+            "branch_version_id": "mock@x",
+            "source": "platform_default",
+            "run_id": "r",
+            "ranked_entries": [
+                {"branch_def_id": c["branch_def_id"], "score": 0.0}
+                for c in candidate_branches
+            ],
+        }
 
-def test_safe_to_publish_absent_or_falsy_does_not_crash(base_path):
-    _make_goal(base_path, "g1")
-    _make_branch(base_path, branch_def_id="b-no-packet", goal_id="g1")
-    _make_branch(
-        base_path, branch_def_id="b-empty-packet",
-        goal_id="g1", stats={"next_action_packet": {}},
-    )
-    _make_branch(
-        base_path, branch_def_id="b-not-a-dict",
-        goal_id="g1", stats={"next_action_packet": "not a packet"},
-    )
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
-    for entry in board["entries"]:
-        assert entry["signals"]["safe_to_publish"] is False
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_capturing,
+    ):
+        build_quality_leaderboard(base_path, goal_id="g1", viewer="")
 
-
-# ---------------------------------------------------------------------------
-# Gate-rung signal
-# ---------------------------------------------------------------------------
+    by_id = {c["branch_def_id"]: c["signals"] for c in captured["candidates"]}
+    assert by_id["b-safe"]["safe_to_publish"] is True
+    assert by_id["b-unsafe"]["safe_to_publish"] is False
 
 
 def test_gate_rung_signal_populates_when_claim_present(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b-rung", goal_id="g1")
     _make_branch(base_path, branch_def_id="b-no-rung", goal_id="g1")
-    # Insert a gate claim directly.
     from workflow.storage import _connect
     with _connect(base_path) as conn:
         conn.execute(
@@ -463,153 +647,502 @@ def test_gate_rung_signal_populates_when_claim_present(base_path):
                 "2026-01-01T00:00:00",
             ),
         )
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
-    rung = next(
-        e for e in board["entries"] if e["branch_def_id"] == "b-rung"
-    )
-    no_rung = next(
-        e for e in board["entries"] if e["branch_def_id"] == "b-no-rung"
-    )
-    assert rung["signals"]["gate_rung_top"] == "submission"
-    assert rung["signals"]["has_gate_rung"] is True
-    assert no_rung["signals"]["has_gate_rung"] is False
-    assert rung["score"] > no_rung["score"]
+    captured: dict = {}
+
+    def _capturing(
+        base_path, *, goal_id, candidate_branches, actor="anonymous",
+        timeout_s=None, **_extra,
+    ):
+        captured["candidates"] = candidate_branches
+        return {
+            "ok": True,
+            "branch_version_id": "mock@x",
+            "source": "platform_default",
+            "run_id": "r",
+            "ranked_entries": [
+                {"branch_def_id": c["branch_def_id"], "score": 0.0}
+                for c in candidate_branches
+            ],
+        }
+
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_capturing,
+    ):
+        build_quality_leaderboard(base_path, goal_id="g1", viewer="")
+
+    by_id = {c["branch_def_id"]: c["signals"] for c in captured["candidates"]}
+    assert by_id["b-rung"]["gate_rung_top"] == "submission"
+    assert by_id["b-rung"]["has_gate_rung"] is True
+    assert by_id["b-no-rung"]["has_gate_rung"] is False
 
 
 # ---------------------------------------------------------------------------
-# Realistic scale — Goal with 15+ entries
+# Selector failure modes — leaderboard surfaces structured error
 # ---------------------------------------------------------------------------
 
 
-def test_realistic_goal_with_fifteen_entries(base_path):
-    """Smoke + correctness at the scale of Goal 4ff5862cc26d (~15+
-    bound branches). Verifies rank monotonicity and that the top entry
-    has the highest score."""
+def test_selector_invalid_output_surfaces_structured_error(base_path):
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    fail_response = {
+        "ok": False,
+        "error_kind": "selector_invalid_output",
+        "error": "ranked_entries missing",
+        "branch_version_id": "selector@x",
+        "run_id": "run-bad",
+    }
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(fail_with=fail_response),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is False
+    assert board["error_kind"] == "selector_invalid_output"
+    assert board["entries"] == []
+    assert board["selector"]["branch_version_id"] == "selector@x"
+
+
+def test_selector_timeout_surfaces_structured_error(base_path):
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    fail_response = {
+        "ok": False,
+        "error_kind": "selector_timeout",
+        "error": "selector run timed out after 60s",
+        "branch_version_id": "selector@x",
+        "run_id": "run-stuck",
+    }
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(fail_with=fail_response),
+    ):
+        rec = recommend_parent_for_fork(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert rec["ok"] is False
+    assert rec["error_kind"] == "selector_timeout"
+    assert rec["recommended_parent"] is None
+
+
+def test_selector_run_failed_surfaces_structured_error(base_path):
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    fail_response = {
+        "ok": False,
+        "error_kind": "selector_run_failed",
+        "error": "graph execution raised",
+        "branch_version_id": "selector@x",
+        "run_id": "run-crashed",
+    }
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(fail_with=fail_response),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is False
+    assert board["error_kind"] == "selector_run_failed"
+
+
+# ---------------------------------------------------------------------------
+# Substrate filters dupe / unknown branch_def_ids from selector output
+# ---------------------------------------------------------------------------
+
+
+def test_substrate_filters_duplicate_entries_from_selector_output(base_path):
+    """A misbehaving selector that emits the same branch_def_id twice
+    must NOT corrupt the leaderboard. Substrate keeps the first
+    occurrence and skips the rest."""
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    duplicates = [
+        {"branch_def_id": "b1", "score": 9.0, "rationale": "first"},
+        {"branch_def_id": "b1", "score": 8.0, "rationale": "dupe"},
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=duplicates),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is True
+    assert len(board["entries"]) == 1
+    assert board["entries"][0]["rationale"] == "first"
+
+
+# ---------------------------------------------------------------------------
+# DESIGN-008 round 2 P1.2 — substrate rejects fabricated branch_def_ids
+# ---------------------------------------------------------------------------
+
+
+def test_substrate_drops_phantom_branch_def_ids_from_selector(base_path):
+    """Round-2 P1.2 regression guard.
+
+    A selector that fabricates a branch_def_id (private branch the
+    viewer cannot see, made-up id, etc.) must NOT inject the entry
+    into the leaderboard. Substrate filters by candidate set
+    membership.
+    """
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    # Selector returns one real id + one fabricated id (a private
+    # branch the viewer can't see, or just made up).
+    poisoned = [
+        {"branch_def_id": "phantom_private_branch", "score": 99.0,
+         "rationale": "fabricated"},
+        {"branch_def_id": "b1", "score": 5.0, "rationale": "real one"},
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=poisoned),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is True
+    # Only the real branch survives.
+    bids = [e["branch_def_id"] for e in board["entries"]]
+    assert bids == ["b1"]
+    # Phantom id surfaces in the structured payload so audit tools
+    # / chatbots can detect a misbehaving selector.
+    assert board["phantom_branch_def_ids"] == ["phantom_private_branch"]
+    # Rank starts at 1 for the surviving entry (no rank gap).
+    assert board["entries"][0]["rank"] == 1
+
+
+def test_substrate_phantom_filter_does_not_leave_rank_gaps(base_path):
+    """When the selector emits a mix of real + phantom ids,
+    ranks are reassigned post-filter so the user sees a clean
+    sequence (1, 2, 3) not (1, 3, 5)."""
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    _make_branch(base_path, branch_def_id="b2", goal_id="g1")
+    interleaved = [
+        {"branch_def_id": "phantom_a", "score": 10.0},
+        {"branch_def_id": "b1", "score": 8.0},
+        {"branch_def_id": "phantom_b", "score": 7.0},
+        {"branch_def_id": "b2", "score": 5.0},
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=interleaved),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    ranks = [e["rank"] for e in board["entries"]]
+    bids = [e["branch_def_id"] for e in board["entries"]]
+    assert ranks == [1, 2]
+    assert bids == ["b1", "b2"]
+    assert set(board["phantom_branch_def_ids"]) == {"phantom_a", "phantom_b"}
+
+
+def test_substrate_logs_phantom_attempts(base_path, caplog):
+    """Phantom rejections must be logged so an operator can detect a
+    misbehaving (or adversarial) selector in their logs."""
+    import logging
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    poisoned = [
+        {"branch_def_id": "evil_phantom", "score": 99.0,
+         "rationale": "private leak attempt"},
+        {"branch_def_id": "b1", "score": 5.0},
+    ]
+    with caplog.at_level(logging.WARNING, logger="workflow.api.quality_leaderboard"):
+        with patch(
+            "workflow.api.quality_leaderboard.dispatch_selector",
+            side_effect=_mock_dispatch_selector(ranked_entries=poisoned),
+        ):
+            build_quality_leaderboard(
+                base_path, goal_id="g1", viewer="",
+            )
+    # Find at least one warning mentioning the phantom id.
+    matching = [
+        rec for rec in caplog.records
+        if rec.levelno >= logging.WARNING
+        and "evil_phantom" in str(rec.getMessage())
+    ]
+    assert matching, (
+        "expected a WARNING log entry naming the phantom id; "
+        f"got records: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DESIGN-008 round 3 P1.A — selector-emitted branch_version_id is ignored
+# ---------------------------------------------------------------------------
+
+
+def test_substrate_ignores_selector_emitted_branch_version_id(base_path):
+    """Round-3 P1.A regression guard.
+
+    A selector that returns a real visible ``branch_def_id`` paired
+    with an arbitrary (private / rolled-back / fabricated)
+    ``branch_version_id`` must NOT have that version id surface in
+    the leaderboard. The candidate set's authoritative bvid is the
+    only one the substrate trusts.
+    """
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    # Selector tries to spoof the bvid for the real def_id.
+    spoofed = [
+        {
+            "branch_def_id": "b1",
+            "branch_version_id": "private-or-wrong@deadbeef",
+            "score": 7.0,
+            "rationale": "spoof attempt",
+        },
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=spoofed),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is True
+    assert len(board["entries"]) == 1
+    entry = board["entries"][0]
+    assert entry["branch_def_id"] == "b1"
+    # The selector's emitted bvid MUST NOT appear. The authoritative
+    # value from branch_meta_by_id is what surfaces (empty string in
+    # this test because no version has been published for b1 yet).
+    assert entry["branch_version_id"] != "private-or-wrong@deadbeef"
+    # Spoof attempt surfaces in the audit list on the response.
+    assert len(board["selector_bvid_spoofs"]) == 1
+    spoof = board["selector_bvid_spoofs"][0]
+    assert spoof["branch_def_id"] == "b1"
+    assert spoof["selector_emitted"] == "private-or-wrong@deadbeef"
+
+
+def test_substrate_logs_selector_bvid_spoof_attempt(base_path, caplog):
+    """Spoof attempts must be logged at WARNING so operators can
+    detect a misbehaving / adversarial selector."""
+    import logging
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    spoofed = [
+        {
+            "branch_def_id": "b1",
+            "branch_version_id": "evil_spoof@99999999",
+            "score": 7.0,
+        },
+    ]
+    with caplog.at_level(
+        logging.WARNING, logger="workflow.api.quality_leaderboard",
+    ):
+        with patch(
+            "workflow.api.quality_leaderboard.dispatch_selector",
+            side_effect=_mock_dispatch_selector(ranked_entries=spoofed),
+        ):
+            build_quality_leaderboard(
+                base_path, goal_id="g1", viewer="",
+            )
+    matching = [
+        rec for rec in caplog.records
+        if rec.levelno >= logging.WARNING
+        and "evil_spoof@99999999" in str(rec.getMessage())
+    ]
+    assert matching, (
+        "expected WARNING log naming the spoofed bvid; "
+        f"got records: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_substrate_accepts_selector_matching_authoritative_bvid(base_path):
+    """When the selector's emitted bvid matches the authoritative
+    candidate-set bvid, no spoof is recorded. (Authoritative value
+    is still used either way — this test just locks the no-spoof
+    path so the spoof-list doesn't generate false positives when a
+    well-behaved selector echoes the input bvid back.)"""
+    from workflow.branch_versions import publish_branch_version
+    from workflow.daemon_server import get_branch_definition
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    branch_dict = get_branch_definition(base_path, branch_def_id="b1")
+    branch_dict["name"] = "b1"
+    branch_dict["graph_nodes"] = [
+        {"id": "n1", "type": "prompt", "input_keys": [], "output_keys": ["x"]},
+    ]
+    branch_dict["edges"] = [
+        {"from": "START", "to": "n1"},
+        {"from": "n1", "to": "END"},
+    ]
+    branch_dict["state_schema"] = [{"name": "x", "type": "str"}]
+    branch_dict["entry_point"] = "n1"
+    version = publish_branch_version(base_path, branch_dict, publisher="host")
+    authoritative = version.branch_version_id
+
+    echoed = [
+        {
+            "branch_def_id": "b1",
+            "branch_version_id": authoritative,
+            "score": 7.0,
+        },
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=echoed),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is True
+    assert board["entries"][0]["branch_version_id"] == authoritative
+    # No spoof recorded — selector and authoritative agree.
+    assert board["selector_bvid_spoofs"] == []
+
+
+# ---------------------------------------------------------------------------
+# Determinism — same inputs + mock -> same ranking
+# ---------------------------------------------------------------------------
+
+
+def test_substrate_assigns_rank_1_to_first_entry(base_path):
+    """The selector's emitted order IS the leaderboard order. Rank 1
+    is whatever the selector put first."""
+    _make_goal(base_path, "g1")
+    for i in range(3):
+        _make_branch(base_path, branch_def_id=f"b{i}", goal_id="g1")
+    fixed_order = [
+        {"branch_def_id": "b2", "score": 5.0, "rationale": "second-but-best"},
+        {"branch_def_id": "b0", "score": 4.0},
+        {"branch_def_id": "b1", "score": 3.0},
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=fixed_order),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert [e["branch_def_id"] for e in board["entries"]] == ["b2", "b0", "b1"]
+    assert board["entries"][0]["rank"] == 1
+    assert board["entries"][0]["rationale"] == "second-but-best"
+
+
+# ---------------------------------------------------------------------------
+# recommend_parent_for_fork happy path
+# ---------------------------------------------------------------------------
+
+
+def test_recommend_parent_returns_top_with_selector_rationale(base_path):
+    _make_goal(base_path, "g1", name="Patch Loop")
+    _make_branch(base_path, branch_def_id="b-top", goal_id="g1")
+    _make_branch(base_path, branch_def_id="b-mid", goal_id="g1")
+    ranked = [
+        {
+            "branch_def_id": "b-top",
+            "score": 9.5,
+            "rationale": "highest avg judgment (9.5) with 12 runs",
+        },
+        {"branch_def_id": "b-mid", "score": 6.0, "rationale": "mid"},
+    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(ranked_entries=ranked),
+    ):
+        rec = recommend_parent_for_fork(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert rec["ok"] is True
+    assert rec["recommended_parent"]["branch_def_id"] == "b-top"
+    assert rec["leaderboard_size"] == 2
+    assert "highest avg judgment" in rec["rationale"]
+
+
+# ---------------------------------------------------------------------------
+# Realistic scale (15+ entries) still works under selector dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_realistic_goal_with_eighteen_entries_under_mock_selector(base_path):
+    """Smoke at the scale of Goal 4ff5862cc26d. Mock selector ranks
+    by branch_def_id ascending; substrate respects that order."""
     _make_goal(base_path, "g-big")
-    now = 1_700_000_000.0
     for i in range(18):
-        bid = f"b-{i:02d}"
-        _make_branch(base_path, branch_def_id=bid, goal_id="g-big")
-        # Spread completed-run counts + judgment scores so ranking is
-        # non-trivial.
-        for _ in range(i % 5):
-            rid = _record_run(
-                base_path, branch_def_id=bid,
-                status=RUN_STATUS_COMPLETED,
-                finished_at=now - (i * 86400),  # older for higher i
-            )
-            _record_judgment(
-                base_path, run_id=rid,
-                tags=[f"quality:{(i % 9) + 1}"],
-            )
-    board = build_quality_leaderboard(
-        base_path, goal_id="g-big", viewer="", now=now,
-    )
+        _make_branch(
+            base_path, branch_def_id=f"b-{i:02d}", goal_id="g-big",
+        )
+    def _ranker(
+        base_path, *, goal_id, candidate_branches, actor="anonymous",
+        timeout_s=None, **_extra,
+    ):
+        ordered = sorted(
+            candidate_branches, key=lambda c: c["branch_def_id"],
+        )
+        return {
+            "ok": True,
+            "branch_version_id": "mock@x",
+            "source": "platform_default",
+            "run_id": "r",
+            "ranked_entries": [
+                {"branch_def_id": c["branch_def_id"], "score": float(i)}
+                for i, c in enumerate(ordered)
+            ],
+        }
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_ranker,
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g-big", viewer="",
+        )
     assert len(board["entries"]) == 18
     # Ranks are 1..18 with no gaps.
     ranks = sorted(e["rank"] for e in board["entries"])
     assert ranks == list(range(1, 19))
-    # First entry's score >= every other entry's score.
-    top_score = board["entries"][0]["score"]
-    for entry in board["entries"][1:]:
-        assert top_score >= entry["score"]
 
 
 # ---------------------------------------------------------------------------
-# recommend_parent_for_fork
+# Goal-binding precedence for selector resolution
 # ---------------------------------------------------------------------------
 
 
-def test_recommend_parent_returns_top_with_rationale(base_path):
-    _make_goal(base_path, "g1", name="Patch Loop")
-    _make_branch(
-        base_path, branch_def_id="b-top",
-        goal_id="g1", name="High-Quality Take",
-    )
-    _make_branch(base_path, branch_def_id="b-other", goal_id="g1")
-    now = time.time()
-    rid = _record_run(
-        base_path, branch_def_id="b-top",
-        status=RUN_STATUS_COMPLETED, finished_at=now,
-    )
-    _record_judgment(base_path, run_id=rid, tags=["quality:9.5"])
-    # Add a fork of b-top so the rationale has community-vote signal.
-    _make_branch(
-        base_path, branch_def_id="b-top-fork",
-        goal_id="g1", parent_def_id="b-top",
-    )
-    rec = recommend_parent_for_fork(base_path, goal_id="g1", viewer="", now=now)
-    assert rec["recommended_parent"] is not None
-    assert rec["recommended_parent"]["branch_def_id"] == "b-top"
-    rationale = rec["rationale"]
-    # Rationale should mention some of the signals we exercised.
-    assert "ranked first" in rationale.lower()
-    assert "judgment" in rationale.lower() or "9.5" in rationale
-    assert "fork" in rationale.lower()
-    assert rec["leaderboard_size"] == 3  # b-top, b-other, b-top-fork
-
-
-def test_recommend_parent_no_judgments_yet_tentative_phrase(base_path):
-    _make_goal(base_path, "g1")
-    _make_branch(base_path, branch_def_id="b-bare", goal_id="g1")
-    rec = recommend_parent_for_fork(base_path, goal_id="g1", viewer="")
-    assert rec["recommended_parent"] is not None
-    # When the top entry has no signals at all, the rationale should
-    # call out the lack of quality data.
-    rationale_lc = rec["rationale"].lower()
-    assert "tentative" in rationale_lc or "no quality signals" in rationale_lc
-
-
-# ---------------------------------------------------------------------------
-# Formula disclosure surfaces all weights
-# ---------------------------------------------------------------------------
-
-
-def test_formula_disclosure_includes_all_weights(base_path):
-    _make_goal(base_path, "g1")
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
-    weights = board["formula"]["weights"]
-    expected_keys = {
-        "judgment", "runs", "forks", "recency",
-        "gate", "safe_publish", "failed_penalty",
-    }
-    assert set(weights.keys()) == expected_keys
-    # judgment_max_scale is published.
-    assert board["formula"]["judgment_max_scale"] == JUDGMENT_MAX_SCALE
-
-
-def test_score_components_sum_to_score(base_path):
+def test_goal_binding_takes_precedence_over_default(base_path):
+    """When a Goal has selector_branch_version_id set, the substrate
+    uses it instead of publishing/using the platform default. This
+    test mocks dispatch_selector so we don't need a real published
+    selector; we just confirm the resolver path the substrate
+    takes by inspecting selector_branch_version_id in the response."""
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b1", goal_id="g1")
-    rid = _record_run(
-        base_path, branch_def_id="b1",
-        status=RUN_STATUS_COMPLETED, finished_at=time.time(),
+    # Bind a non-platform-default selector at the storage layer.
+    from workflow.daemon_server import update_goal
+    update_goal(
+        base_path,
+        goal_id="g1",
+        updates={"selector_branch_version_id": "custom_selector@abc12345"},
     )
-    _record_judgment(base_path, run_id=rid, tags=["quality:7"])
-    board = build_quality_leaderboard(base_path, goal_id="g1", viewer="")
-    entry = board["entries"][0]
-    component_sum = sum(entry["score_components"].values())
-    assert entry["score"] == pytest.approx(component_sum, abs=1e-3)
+    captured: dict = {}
 
+    def _capturing(
+        base_path, *, goal_id, candidate_branches, actor="anonymous",
+        timeout_s=None, **_extra,
+    ):
+        captured["goal_id"] = goal_id
+        return {
+            "ok": True,
+            "branch_version_id": "custom_selector@abc12345",
+            "source": "goal_binding",
+            "run_id": "r",
+            "ranked_entries": [
+                {"branch_def_id": "b1", "score": 7.0, "rationale": ""}
+            ],
+        }
 
-# ---------------------------------------------------------------------------
-# Determinism — same input -> same ranking
-# ---------------------------------------------------------------------------
-
-
-def test_ranking_is_deterministic(base_path):
-    _make_goal(base_path, "g1")
-    for i in range(5):
-        _make_branch(base_path, branch_def_id=f"b{i}", goal_id="g1")
-    now = 1_700_000_000.0
-    board_a = build_quality_leaderboard(
-        base_path, goal_id="g1", viewer="", now=now,
-    )
-    board_b = build_quality_leaderboard(
-        base_path, goal_id="g1", viewer="", now=now,
-    )
-    assert [
-        e["branch_def_id"] for e in board_a["entries"]
-    ] == [
-        e["branch_def_id"] for e in board_b["entries"]
-    ]
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_capturing,
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="",
+        )
+    assert board["ok"] is True
+    assert board["selector"]["branch_version_id"] == "custom_selector@abc12345"
+    assert board["selector"]["source"] == "goal_binding"

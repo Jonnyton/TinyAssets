@@ -154,6 +154,7 @@ class StorageBackend(Protocol):
         author: str,
         message: str,
         force: bool = False,
+        conformance_pack_id: str = "",
     ) -> tuple[dict[str, Any], "git_bridge.CommitResult | None"]:
         """Claim a rung — SQLite + YAML + commit in one call.
 
@@ -253,6 +254,7 @@ class SqliteOnlyBackend:
         author: str,  # noqa: ARG002
         message: str,  # noqa: ARG002
         force: bool = False,  # noqa: ARG002
+        conformance_pack_id: str = "",
     ) -> tuple[dict[str, Any], git_bridge.CommitResult | None]:
         """SQLite-only path for a gate claim. No git seam."""
         from workflow.daemon_server import claim_gate
@@ -264,6 +266,7 @@ class SqliteOnlyBackend:
             rung_key=rung_key,
             evidence_url=evidence_url,
             evidence_note=evidence_note,
+            conformance_pack_id=conformance_pack_id,
             claimed_by=claimed_by,
         )
         return saved, None
@@ -665,6 +668,7 @@ class SqliteCachedBackend:
         author: str,
         message: str,
         force: bool = False,
+        conformance_pack_id: str = "",
     ) -> tuple[dict[str, Any], git_bridge.CommitResult | None]:
         """Claim + YAML emit + git commit, ONE atomic action.
 
@@ -691,6 +695,7 @@ class SqliteCachedBackend:
             rung_key=rung_key,
             evidence_url=evidence_url,
             evidence_note=evidence_note,
+            conformance_pack_id=conformance_pack_id,
             claimed_by=claimed_by,
         )
         self._write_gate_claim_yaml(

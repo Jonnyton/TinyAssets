@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Callable
 
+from workflow.knowledge.tag_matrix import TagMatrixQuery
 from workflow.memory.scoping import MemoryScope
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,7 @@ def assemble_phase_search_context(
 ) -> dict[str, Any]:
     """Build the unified search surface for a graph phase."""
     memory_context = assemble_memory_context(state, phase)
+    universe_soul = assemble_soul_lens_context(state)
     prior_retrieved = state.get("retrieved_context", {}) or {}
     phase_retrieved = run_phase_retrieval(
         state,
@@ -67,6 +70,7 @@ def assemble_phase_search_context(
 
     sources = _dedupe_strings(
         [
+            _soul_source(universe_soul),
             *(retrieved_context.get("sources", []) or []),
             f"memory:{phase}" if memory_context else "",
             "world_state" if world_state else "",
@@ -75,6 +79,7 @@ def assemble_phase_search_context(
 
     return {
         "phase": phase,
+        "universe_soul": universe_soul,
         "memory_context": memory_context,
         "retrieved_context": retrieved_context,
         "world_state": world_state,
@@ -95,6 +100,25 @@ def assemble_phase_search_context(
     }
 
 
+def assemble_soul_lens_context(state: dict[str, Any]) -> dict[str, Any]:
+    """Read the universe's pinned soul profile for prompt/context assembly."""
+    universe_dir = _universe_dir_from_state(state)
+    if universe_dir is None:
+        return {}
+
+    try:
+        from workflow.universe_soul import read_pinned_universe_soul
+
+        pinned = read_pinned_universe_soul(universe_dir)
+    except Exception as exc:
+        logger.warning("Failed to read universe soul lens: %s", exc)
+        return {}
+
+    if pinned is None:
+        return {}
+    return dict(pinned.context())
+
+
 def assemble_memory_context(state: dict[str, Any], phase: str) -> dict[str, Any]:
     """Call MemoryManager.assemble_context if available."""
     from workflow import runtime_singletons as runtime
@@ -107,6 +131,23 @@ def assemble_memory_context(state: dict[str, Any], phase: str) -> dict[str, Any]
     except Exception as exc:
         logger.warning("MemoryManager.assemble_context(%s) failed: %s", phase, exc)
         return state.get("memory_context", {})
+
+
+def _universe_dir_from_state(state: dict[str, Any]) -> Path | None:
+    explicit_path = state.get("_universe_path") or state.get("universe_path")
+    if explicit_path:
+        return Path(str(explicit_path))
+
+    base_path = state.get("_base_path") or state.get("base_path")
+    universe_id = state.get("universe_id") or state.get("_universe_id")
+    if base_path and universe_id:
+        return Path(str(base_path)) / str(universe_id)
+    return None
+
+
+def _soul_source(universe_soul: dict[str, Any]) -> str:
+    version_id = str(universe_soul.get("version_id", "") or "")
+    return f"soul:{version_id}" if version_id else ""
 
 
 def run_phase_retrieval(
@@ -128,6 +169,7 @@ def run_phase_retrieval(
             phase,
         )
         return {}
+    tag_query = _tag_query_from_state(state)
 
     kg = None
     owns_kg = False
@@ -166,6 +208,7 @@ def run_phase_retrieval(
             access_tier=int(orient_result.get("access_tier", 0) or 0),
             pov_character=orient_result.get("pov_character"),
             chapter_number=state.get("chapter_number"),
+            tag_query=tag_query,
         )
 
         try:
@@ -205,6 +248,28 @@ def run_phase_retrieval(
                 kg.close()
             except Exception:
                 logger.debug("Failed to close temporary knowledge graph", exc_info=True)
+
+
+def _tag_query_from_state(state: dict[str, Any]) -> TagMatrixQuery | None:
+    """Derive an optional tag-matrix filter from graph state."""
+    raw = (
+        state.get("tag_matrix")
+        or state.get("tag_filter")
+        or state.get("knowledge_tags")
+    )
+    if raw is None:
+        return None
+    if isinstance(raw, TagMatrixQuery):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+    return TagMatrixQuery(
+        domain_tags=raw.get("domain_tags") or raw.get("domains") or (),
+        shape_tags=raw.get("shape_tags") or raw.get("shapes") or (),
+        include_general=bool(raw.get("include_general", True)),
+        include_commons=bool(raw.get("include_commons", True)),
+        include_untagged=bool(raw.get("include_untagged", False)),
+    )
 
 
 def build_phase_query(

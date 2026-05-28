@@ -20,6 +20,8 @@ from workflow.api.wiki import (
     _VALID_BUG_KINDS,
     _VALID_SEVERITIES,
     _WIKI_CATEGORIES,
+    _WIKI_READ_DEFAULT_MAX_CHARS,
+    _WIKI_READ_MAX_CHARS,
     _bug_token_set,
     _ensure_wiki_scaffold,
     _extract_keywords,
@@ -356,6 +358,91 @@ def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
     assert "ambient" in fresh["matched_terms"]
 
 
+def test_wiki_read_large_page_marks_content_and_supports_offset(wiki_env):
+    path = wiki_env / "pages" / "notes" / "large-read.md"
+    body = "start marker\n" + ("x" * 16000) + "\nend marker\n"
+    path.write_text(
+        "---\n"
+        "title: Large Read\n"
+        "type: note\n"
+        "updated: 2026-05-27T00:00:00Z\n"
+        "---\n\n"
+        + body,
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    first = json.loads(wiki(action="read", page="large-read", max_chars=4000))
+
+    assert first["truncated"] is True
+    assert first["read_start"] == 0
+    assert first["read_end"] == 4000
+    assert first["next_offset"] == 4000
+    assert "WIKI READ TRUNCATED" in first["content"]
+    assert "offset=4000" in first["content"]
+    assert "end marker" not in first["content"]
+
+    second = json.loads(
+        wiki(
+            action="read",
+            page="large-read",
+            offset=first["next_offset"],
+            max_chars=20000,
+        )
+    )
+
+    assert second["truncated"] is False
+    assert second["read_start"] == 4000
+    assert second["next_offset"] is None
+    assert "end marker" in second["content"]
+
+
+def test_wiki_read_default_window_handles_medium_design_doc(wiki_env):
+    path = wiki_env / "pages" / "notes" / "medium-design-doc.md"
+    body = "start marker\n" + ("x" * 80_000) + "\nend marker\n"
+    path.write_text(
+        "---\n"
+        "title: Medium Design Doc\n"
+        "type: note\n"
+        "updated: 2026-05-27T00:00:00Z\n"
+        "---\n\n"
+        + body,
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    res = json.loads(wiki(action="read", page="medium-design-doc"))
+
+    assert res["truncated"] is False
+    assert res["read_limit"] == _WIKI_READ_DEFAULT_MAX_CHARS
+    assert res["next_offset"] is None
+    assert "end marker" in res["content"]
+
+
+def test_wiki_read_max_chars_is_capped(wiki_env):
+    path = wiki_env / "pages" / "notes" / "oversize-design-doc.md"
+    body = "start marker\n" + ("x" * 300_000) + "\nend marker\n"
+    path.write_text(
+        "---\n"
+        "title: Oversize Design Doc\n"
+        "type: note\n"
+        "updated: 2026-05-27T00:00:00Z\n"
+        "---\n\n"
+        + body,
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    res = json.loads(
+        wiki(action="read", page="oversize-design-doc", max_chars=999_999)
+    )
+
+    assert res["truncated"] is True
+    assert res["read_limit"] == _WIKI_READ_MAX_CHARS
+    assert res["next_offset"] == _WIKI_READ_MAX_CHARS
+    assert "WIKI READ TRUNCATED" in res["content"]
+
+
 def test_wiki_write_requires_filename_and_content(wiki_env):
     res = json.loads(wiki(action="write", category="notes"))
     assert "error" in res
@@ -391,12 +478,30 @@ def test_wiki_write_drafts_then_promote_roundtrip(wiki_env):
     assert "pages/notes/my-note.md" in promoted["path"]
 
 
+def test_wiki_write_accepts_wiki_relative_draft_filename(wiki_env):
+    res = json.loads(
+        wiki(
+            action="write",
+            category="notes",
+            filename="drafts/notes/path-note.md",
+            content="body",
+        )
+    )
+
+    assert res["status"] == "drafted"
+    assert res["path"] == "drafts/notes/path-note.md"
+    assert (wiki_env / "drafts" / "notes" / "path-note.md").read_text(
+        encoding="utf-8"
+    ) == "body"
+    assert not (wiki_env / "drafts" / "notes" / "drafts-notes-path-note.md").exists()
+
+
 def test_wiki_patch_updates_long_page_without_full_replace(wiki_env):
     path = wiki_env / "pages" / "notes" / "long-note.md"
     original = (
         "---\ntitle: Long Note\ntype: note\nsources: []\n---\n\n"
         "intro marker\n"
-        + ("x" * 16000)
+        + ("x" * (_WIKI_READ_DEFAULT_MAX_CHARS + 1_000))
         + "\noriginal tail marker\n"
     )
     path.write_text(original, encoding="utf-8")
@@ -422,7 +527,7 @@ def test_wiki_patch_updates_long_page_without_full_replace(wiki_env):
     patched = path.read_text(encoding="utf-8")
     assert "intro marker\npatched detail" in patched
     assert "original tail marker" in patched
-    assert len(patched) > 15000
+    assert len(patched) > _WIKI_READ_DEFAULT_MAX_CHARS
 
 
 def test_wiki_patch_dry_run_reports_without_writing(wiki_env):
@@ -616,6 +721,7 @@ def test_wiki_file_bug_dedup_returns_similar_found(wiki_env):
     assert dup["bug_id"] is None
     assert isinstance(dup["similar"], list)
     assert len(dup["similar"]) >= 1
+    assert dup["effort_dispatch_route"]["lane"] == "standard-triage"
 
 
 def test_wiki_cosign_bug_requires_args(wiki_env):

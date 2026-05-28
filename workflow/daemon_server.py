@@ -22,6 +22,7 @@ from typing import Any
 from workflow.storage import (  # noqa: F401  (re-exports for in-flight R7 split; unused-in-this-module symbols are still imported by external callers of `workflow.daemon_server`)
     ALL_CAPABILITIES,
     CAP_ASSIGN_RUNTIME_PROVIDER,
+    CAP_DEFINE_GATE_LADDER,
     CAP_EDIT_UNIVERSE_RULES,
     CAP_FORK_BRANCH,
     CAP_GRANT_CAPABILITIES,
@@ -29,7 +30,11 @@ from workflow.storage import (  # noqa: F401  (re-exports for in-flight R7 split
     CAP_PROMOTE_BRANCH,
     CAP_PROPOSE_AUTHOR_FORK,
     CAP_READ_PUBLIC_UNIVERSE,
+    CAP_RESOLVE_VOTE,
+    CAP_RETRACT_GATE_CLAIM,
     CAP_ROLLBACK_BRANCH,
+    CAP_SET_CANONICAL_BRANCH,
+    CAP_SET_GOAL_SELECTOR,
     CAP_SPAWN_RUNTIME_CAPACITY,
     CAP_SUBMIT_REQUEST,
     CAP_SUPERSEDE_BRANCH,
@@ -91,7 +96,6 @@ def initialize_author_server(base_path: str | Path) -> Path:
         user_id TEXT PRIMARY KEY,
         username TEXT NOT NULL UNIQUE COLLATE NOCASE,
         display_name TEXT NOT NULL,
-        is_host INTEGER NOT NULL DEFAULT 0,
         is_active INTEGER NOT NULL DEFAULT 1,
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL,
@@ -322,6 +326,7 @@ def initialize_author_server(base_path: str | Path) -> Path:
         rung_key          TEXT NOT NULL,
         evidence_url      TEXT NOT NULL,
         evidence_note     TEXT NOT NULL DEFAULT '',
+        conformance_pack_id TEXT NOT NULL DEFAULT '',
         claimed_by        TEXT NOT NULL,
         claimed_at        TEXT NOT NULL,
         retracted_at      TEXT,
@@ -441,6 +446,15 @@ def initialize_author_server(base_path: str | Path) -> Path:
                 "ALTER TABLE goals ADD COLUMN gate_ladder_json "
                 "TEXT NOT NULL DEFAULT '[]'"
             )
+        gate_claim_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(gate_claims)")
+        }
+        if "conformance_pack_id" not in gate_claim_cols:
+            conn.execute(
+                "ALTER TABLE gate_claims ADD COLUMN conformance_pack_id "
+                "TEXT NOT NULL DEFAULT ''"
+            )
         # fork_from migration: content-addressed lineage tracking.
         if "fork_from" not in existing_cols:
             conn.execute(
@@ -480,6 +494,24 @@ def initialize_author_server(base_path: str | Path) -> Path:
             conn.execute(
                 "ALTER TABLE goals ADD COLUMN min_completed_runs_for_canonical "
                 "INTEGER NOT NULL DEFAULT 5"
+            )
+        # DESIGN-008: user-buildable selector primitive. A Goal can
+        # bind a "selector branch" (a published Workflow branch) that
+        # the substrate dispatches whenever the leaderboard is built;
+        # the selector reads input signals + emits ``ranked_entries``,
+        # replacing the round-1 platform-opinionated formula.
+        #
+        # NULL is the post-migration "use platform default" state.
+        # The default selector branch is materialized lazily on first
+        # leaderboard read (see
+        # ``workflow.api.selector_dispatch.ensure_default_selector_published``)
+        # and stored under a deterministic branch_def_id; the migration
+        # at the bottom of this function backfills the column for any
+        # Goal that has bound branches.
+        if "selector_branch_version_id" not in goal_cols:
+            conn.execute(
+                "ALTER TABLE goals ADD COLUMN selector_branch_version_id "
+                "TEXT DEFAULT NULL"
             )
         # Variant canonicals (Task #61 Step 1) — backfill canonical_bindings
         # from existing goals.canonical_branch_version_id. INSERT OR IGNORE
@@ -2451,6 +2483,13 @@ def _goal_from_row(row: sqlite3.Row) -> dict[str, Any]:
         min_runs = int(row["min_completed_runs_for_canonical"] or 5)
     except (IndexError, KeyError, TypeError, ValueError):
         min_runs = 5
+    # DESIGN-008 — user-buildable selector primitive. NULL post-migration
+    # is the "use platform default selector" signal; the leaderboard
+    # call resolves the default on demand.
+    try:
+        selector_bvid = row["selector_branch_version_id"]
+    except (IndexError, KeyError):
+        selector_bvid = None
     return {
         "goal_id": row["goal_id"],
         "name": row["name"],
@@ -2467,6 +2506,7 @@ def _goal_from_row(row: sqlite3.Row) -> dict[str, Any]:
         ),
         "auto_canonical_via_leaderboard": bool(auto_flag),
         "min_completed_runs_for_canonical": min_runs,
+        "selector_branch_version_id": selector_bvid,
     }
 
 
@@ -2565,6 +2605,15 @@ def update_goal(
             )
         sets.append("min_completed_runs_for_canonical = ?")
         params.append(threshold)
+    # DESIGN-008 — selector branch_version pointer. Storage helpers
+    # do NOT enforce active-version validation here; the dedicated
+    # set_selector_branch() helper does. update_goal accepts the
+    # field for host scripts / migration backfill that bypass the
+    # MCP auth+validate path.
+    if "selector_branch_version_id" in updates:
+        bvid = updates["selector_branch_version_id"]
+        sets.append("selector_branch_version_id = ?")
+        params.append(bvid if bvid else None)
     params.append(goal_id)
     with _connect(base_path) as conn:
         conn.execute(
@@ -2805,6 +2854,168 @@ def delete_goal(
     )
 
 
+class SelectorHasEffectsError(ValueError):
+    """Raised when a selector branch is not pure / read-only.
+
+    DESIGN-008 round-2/3 purity guard: selector branches run on every
+    leaderboard read (``quality_leaderboard`` /
+    ``recommend_parent_for_fork``). The substrate forbids any selector
+    branch that could trigger external writes, including transitively:
+
+    * **Round 2 P1.3** — node declares non-empty ``effects``
+      (e.g. ``github_pull_request``). Each read would fire the
+      effector directly.
+    * **Round 3 P1.B** — node declares ``invoke_branch_spec`` or
+      ``invoke_branch_version_spec``. The child run executes through
+      the normal graph path, and child completion fires the child's
+      effectors — bypassing the direct-effects scan. Worse,
+      ``invoke_branch_spec`` resolves at run time against a live
+      ``branch_def_id`` that the operator can mutate AFTER bind, so
+      transitive scanning at bind time is not a reliable safeguard.
+      Reject child-invocation nodes outright; a pure selector is a
+      single graph.
+
+    Bind-time rejection is the loud + early gate. The single error
+    type covers both classes because the failure mode is the same:
+    "read became a write."
+    """
+
+
+def set_selector_branch(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    branch_version_id: str | None,
+    set_by: str,
+) -> dict[str, Any]:
+    """Bind (or unbind) the selector branch_version for a Goal.
+
+    DESIGN-008 — user-buildable selector primitive. The selector
+    branch is the published Workflow branch that synthesizes the
+    Goal's leaderboard rankings. ``branch_version_id=None`` unsets
+    the binding, falling back to the platform default selector.
+
+    Authority: the caller must enforce "only Goal author or host"
+    before calling this; the helper does NOT re-check authority
+    (matches the contract of ``set_canonical_branch``).
+
+    Raises
+    ------
+    KeyError
+        ``goal_id`` is not in the goals table.
+    ValueError
+        ``branch_version_id`` is provided but the version row does
+        not exist in ``branch_versions`` OR its status is not
+        ``'active'`` (defense in depth — rolled-back / superseded
+        versions cannot be promoted to selector, mirroring the
+        PR-127 round-2 P1.1 contract on ``set_canonical_branch``).
+    SelectorHasEffectsError
+        ``branch_version_id`` is provided but the snapshot contains
+        a node with non-empty ``effects`` (DESIGN-008 round-2 P1.3).
+        Reads must not silently fire external writes.
+    """
+    initialize_author_server(base_path)
+    now = _now()
+    # Validate goal exists — get_goal raises KeyError when missing.
+    # Authority enforcement is the caller's responsibility (see docstring).
+    get_goal(base_path, goal_id=goal_id)
+
+    if branch_version_id is not None:
+        from workflow.branch_versions import get_branch_version
+        version = get_branch_version(base_path, branch_version_id)
+        if version is None:
+            raise ValueError(
+                f"branch_version_id {branch_version_id!r} not found in "
+                "branch_versions — only published versions may be "
+                "selector branches."
+            )
+        version_status = getattr(version, "status", "active") or "active"
+        if version_status != "active":
+            raise ValueError(
+                f"branch_version_id {branch_version_id!r} has "
+                f"status={version_status!r}; only versions with "
+                "status='active' may be promoted to selector."
+            )
+        # Selector purity scan (rounds 2 + 3). Selector branches run
+        # on every leaderboard read; the substrate forbids ANY shape
+        # that could result in a real external write, directly or
+        # transitively.
+        node_defs = (version.snapshot or {}).get("node_defs") or []
+        # P1.3 (round 2) — direct effects declarations.
+        effectful: list[str] = []
+        # P1.B (round 3) — child-branch invocation specs. A node with
+        # invoke_branch_spec / invoke_branch_version_spec spawns a
+        # child run; the child's normal completion path fires its
+        # OWN effectors, bypassing the direct-effects scan above.
+        # ``invoke_branch_spec`` resolves at run time against a live
+        # branch_def_id that operators can mutate AFTER bind, so
+        # transitive scanning of the bind-time graph is not reliable.
+        # Reject child-invocation outright — selectors must be a
+        # single graph.
+        child_invokers: list[str] = []
+        for nd in node_defs:
+            if not isinstance(nd, dict):
+                continue
+            node_id = nd.get("node_id") or "(unnamed)"
+            effects = nd.get("effects") or []
+            if effects:
+                effectful.append(f"{node_id}:{list(effects)}")
+            ibs = nd.get("invoke_branch_spec")
+            if ibs:
+                target = ""
+                if isinstance(ibs, dict):
+                    target = ibs.get("branch_def_id") or ""
+                child_invokers.append(
+                    f"{node_id}:invoke_branch_spec"
+                    + (f"({target})" if target else "")
+                )
+            ivs = nd.get("invoke_branch_version_spec")
+            if ivs:
+                target = ""
+                if isinstance(ivs, dict):
+                    target = ivs.get("branch_version_id") or ""
+                child_invokers.append(
+                    f"{node_id}:invoke_branch_version_spec"
+                    + (f"({target})" if target else "")
+                )
+        # Both classes route through the same error type because the
+        # failure mode is identical: "read became a write."
+        violations: list[str] = []
+        if effectful:
+            violations.append(
+                "declares external-write effects "
+                f"({', '.join(effectful)})"
+            )
+        if child_invokers:
+            violations.append(
+                "declares child-branch invocation "
+                f"({', '.join(child_invokers)})"
+            )
+        if violations:
+            raise SelectorHasEffectsError(
+                f"branch_version_id {branch_version_id!r} cannot be "
+                "bound as a selector: selector branches run on every "
+                "leaderboard read and MUST be pure (no external "
+                "writes, no child-branch invocation). Violations: "
+                + "; ".join(violations)
+                + ". Remove the offending fields on those nodes (or "
+                "fork into a pure selector branch) before binding. "
+                "If you need rich ranking that requires running other "
+                "graphs, build a selector that emits a recommendation "
+                "and let a separate Goal / canonical handler perform "
+                "the side-effecting work."
+            )
+
+    with _connect(base_path) as conn:
+        conn.execute(
+            "UPDATE goals SET selector_branch_version_id = ?, "
+            "    updated_at = ? "
+            "WHERE goal_id = ?",
+            (branch_version_id, now, goal_id),
+        )
+    return get_goal(base_path, goal_id=goal_id)
+
+
 def branches_for_goal(
     base_path: str | Path,
     *,
@@ -3015,6 +3226,7 @@ def _gate_claim_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "rung_key": row["rung_key"],
         "evidence_url": row["evidence_url"],
         "evidence_note": row["evidence_note"],
+        "conformance_pack_id": row["conformance_pack_id"],
         "claimed_by": row["claimed_by"],
         "claimed_at": row["claimed_at"],
         "retracted_at": row["retracted_at"],
@@ -3082,6 +3294,7 @@ def claim_gate(
     evidence_url: str,
     evidence_note: str = "",
     claimed_by: str,
+    conformance_pack_id: str = "",
 ) -> dict[str, Any]:
     """Self-report a rung reached. Idempotent on (branch, rung).
 
@@ -3120,13 +3333,14 @@ def claim_gate(
                 """
                 UPDATE gate_claims
                 SET evidence_url = ?, evidence_note = ?, claimed_at = ?,
-                    claimed_by = ?, goal_id = ?,
+                    conformance_pack_id = ?, claimed_by = ?, goal_id = ?,
                     retracted_at = NULL, retracted_reason = ''
                 WHERE claim_id = ?
                 """,
                 (
-                    evidence_url, evidence_note, now_iso, claimed_by,
-                    goal_id, existing["claim_id"],
+                    evidence_url, evidence_note, now_iso,
+                    conformance_pack_id, claimed_by, goal_id,
+                    existing["claim_id"],
                 ),
             )
             claim_id = existing["claim_id"]
@@ -3136,13 +3350,14 @@ def claim_gate(
                 """
                 INSERT INTO gate_claims (
                     claim_id, branch_def_id, goal_id, rung_key,
-                    evidence_url, evidence_note, claimed_by, claimed_at,
-                    retracted_at, retracted_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, '')
+                    evidence_url, evidence_note, conformance_pack_id,
+                    claimed_by, claimed_at, retracted_at, retracted_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '')
                 """,
                 (
                     claim_id, branch_def_id, goal_id, rung_key,
-                    evidence_url, evidence_note, claimed_by, now_iso,
+                    evidence_url, evidence_note, conformance_pack_id,
+                    claimed_by, now_iso,
                 ),
             )
         row = conn.execute(

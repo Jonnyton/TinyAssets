@@ -96,7 +96,7 @@ def _resolve_universe_path() -> Path:
       1. ``WORKFLOW_UNIVERSE`` env var (explicit override).
       2. ``$WORKFLOW_DATA_DIR/$UNIVERSE_SERVER_DEFAULT_UNIVERSE``.
       3. First directory under ``WORKFLOW_DATA_DIR`` that has a
-         ``PROGRAM.md`` (auto-selects the active universe in the common
+         ``PROGRAM.md`` or ``soul.md`` (auto-selects the active universe in the common
          "one universe" droplet deployment).
       4. ``$WORKFLOW_DATA_DIR/default-universe`` as a last-resort fallback.
     """
@@ -119,7 +119,10 @@ def _resolve_universe_path() -> Path:
 
     if base.is_dir():
         for entry in sorted(base.iterdir()):
-            if entry.is_dir() and (entry / "PROGRAM.md").exists():
+            if (
+                entry.is_dir()
+                and ((entry / "PROGRAM.md").exists() or (entry / "soul.md").exists())
+            ):
                 return entry
 
     return base / "default-universe"
@@ -528,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
         "--universe",
         default="",
         help="Explicit universe path. Default: WORKFLOW_UNIVERSE / "
-             "first-PROGRAM.md / WORKFLOW_DATA_DIR/default-universe.",
+             "first PROGRAM.md or soul.md / WORKFLOW_DATA_DIR/default-universe.",
     )
     parser.add_argument(
         "--idle-backoff", type=float, default=DEFAULT_IDLE_BACKOFF_S,

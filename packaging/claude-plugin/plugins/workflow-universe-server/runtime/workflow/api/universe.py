@@ -70,8 +70,43 @@ from workflow.api.helpers import (
     _universe_dir,
 )
 from workflow.catalog import list_unreconciled_writes
+from workflow.universe_soul import (
+    NO_LOOP_DECLARED,
+    SOUL_FILENAME,
+    ensure_universe_soul,
+    has_soul,
+    legacy_premise_path,
+    premise_from_soul,
+    read_legacy_premise,
+    read_universe_soul,
+    write_universe_soul,
+)
 
 logger = logging.getLogger("universe_server.universe")
+
+ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
+ACTION_SUBMIT_PRIORITY_REQUEST = "submit_priority_request"
+ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
+ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
+LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
+
+
+def _env_actor_grants() -> tuple[str, ...]:
+    raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
+    return tuple(part for part in re.split(r"[\s,]+", raw.strip()) if part)
+
+
+def _env_actor_can(action: str, *, universe_id: str = "") -> bool:
+    from workflow.auth.provider import PermissionScope, resolve_permission
+
+    actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    grants = _env_actor_grants()
+    return resolve_permission(
+        actor_id=actor,
+        action=action,
+        grants=grants,
+        scope=PermissionScope(universe_id=universe_id),
+    ).allowed
 
 # WRITE_ACTIONS is the single source of truth for which `universe` tool
 # actions are writes. The dispatcher consults this table; any action
@@ -101,6 +136,7 @@ def _extract_submit_request(
             "pickup_incentive": kwargs.get("pickup_incentive", "") or None,
             "directed_daemon_id": kwargs.get("directed_daemon_id", "") or None,
             "request_classification": result.get("request_classification"),
+            "loop_dispatch": result.get("loop_dispatch"),
         },
     )
 
@@ -126,9 +162,12 @@ def _extract_set_premise(
     from workflow.api.engine_helpers import _truncate
     text = kwargs.get("text", "")
     return (
-        "PROGRAM.md",
+        SOUL_FILENAME,
         _truncate(text),
-        {"bytes": len(text.encode("utf-8"))},
+        {
+            "bytes": len(text.encode("utf-8")),
+            "legacy_program_mirror": "PROGRAM.md",
+        },
     )
 
 
@@ -193,7 +232,12 @@ def _extract_create_universe(
     uid = kwargs.get("universe_id", "")
     text = kwargs.get("text", "")
     summary = _truncate(text) if text.strip() else f"created {uid}"
-    return (uid, summary, {"has_premise": bool(text.strip())})
+    return (uid, summary, {
+        "has_premise": bool(text.strip()),
+        "has_soul": True,
+        "soul_path": SOUL_FILENAME,
+        "loop_branch_def_id": str(kwargs.get("branch_def_id") or "").strip(),
+    })
 
 
 def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
@@ -201,7 +245,7 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
     steps = [
         {
             "id": "premise",
-            "label": "Save a premise with create_universe text or set_premise.",
+            "label": "Save a soul purpose with create_universe text or set_premise.",
             "complete": has_premise,
         },
         {
@@ -239,6 +283,37 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
         ),
         "steps": steps,
         "next_action": next_action,
+    }
+
+
+def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
+    soul = read_universe_soul(udir)
+    if soul is None:
+        return LEGACY_FANTASY_LOOP_BRANCH_DEF_ID, {
+            "source": "legacy_no_soul_compat",
+            "has_soul": False,
+            "branch_def_id": LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
+            "caveat": (
+                "Legacy universe has no soul.md; keeping the existing fantasy "
+                "loop only until the universe is migrated to a soul-declared loop."
+            ),
+        }
+    branch_def_id = soul.loop_branch_def_id.strip()
+    if not branch_def_id:
+        return NO_LOOP_DECLARED, {
+            "source": SOUL_FILENAME,
+            "has_soul": True,
+            "branch_def_id": "",
+            "error": "universe_loop_not_declared",
+            "note": (
+                "This universe has a soul.md but no Loop branch declaration; "
+                "new souled universes do not silently attach the fantasy loop."
+            ),
+        }
+    return branch_def_id, {
+        "source": SOUL_FILENAME,
+        "has_soul": True,
+        "branch_def_id": branch_def_id,
     }
 
 
@@ -830,7 +905,9 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     same interpreted fields, so legibility fixes in one place land
     everywhere at once.
     """
-    has_premise = (udir / "PROGRAM.md").exists()
+    has_premise = bool(
+        read_legacy_premise(udir).strip() or premise_from_soul(udir).strip()
+    )
     targets = _read_json(udir / "work_targets.json")
     has_work = isinstance(targets, list) and any(
         t.get("lifecycle") == "active" for t in targets if isinstance(t, dict)
@@ -858,6 +935,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
         ),
         "is_paused": is_paused,
         "has_premise": has_premise,
+        "has_soul": has_soul(udir),
         "has_work": has_work,
         "last_activity_at": last_activity,
         "staleness": staleness,
@@ -895,6 +973,7 @@ def _action_list_universes(**_kwargs: Any) -> str:
         info: dict[str, Any] = {
             "id": child.name,
             "has_premise": liveness["has_premise"],
+            "has_soul": liveness["has_soul"],
             "word_count": liveness["word_count"],
             "phase": liveness["phase"],
             "phase_human": liveness["phase_human"],
@@ -941,6 +1020,7 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         "phase_human": liveness["phase_human"],
         "is_paused": liveness["is_paused"],
         "has_premise": liveness["has_premise"],
+        "has_soul": liveness["has_soul"],
         "has_work": liveness["has_work"],
         "last_activity_at": liveness["last_activity_at"],
         "staleness": liveness["staleness"],
@@ -950,12 +1030,21 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         "accept_rate_sample": liveness["accept_rate_sample"],
     }
 
-    # Premise — always present as a boolean so callers can't silently miss
-    # the "no premise set" case. Full text included only when non-empty.
-    program = _read_text(udir / "PROGRAM.md")
-    result["has_premise"] = bool(program)
-    if program:
-        result["premise"] = program[:500] + ("..." if len(program) > 500 else "")
+    soul = read_universe_soul(udir)
+    if soul is not None:
+        result["has_soul"] = True
+        result["soul"] = soul.summary()
+
+    # Premise remains the public compatibility field. The durable source is
+    # now soul.md when PROGRAM.md is absent or empty.
+    program = _normalize_escaped_text(read_legacy_premise(udir))
+    premise = program.strip() or (soul.purpose if soul is not None else "")
+    result["has_premise"] = bool(premise)
+    if premise:
+        result["premise"] = premise[:500] + ("..." if len(premise) > 500 else "")
+        result["premise_source"] = (
+            "PROGRAM.md" if program.strip() else SOUL_FILENAME
+        )
 
     # Notes summary
     notes = _read_json(udir / "notes.json")
@@ -1109,6 +1198,14 @@ def _action_submit_request(
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
 
+    loop_branch_def_id, loop_dispatch = _universe_loop_dispatch(udir)
+    if not loop_branch_def_id:
+        return json.dumps({
+            "error": "universe_loop_not_declared",
+            "universe_id": uid,
+            "loop_dispatch": loop_dispatch,
+        })
+
     # 8 KiB cap keeps requests.json bounded and discourages pasting
     # entire drafts into the request channel (add_canon is the right
     # tool for that). UTF-8 byte length, not char count.
@@ -1141,9 +1238,11 @@ def _action_submit_request(
             "error": "priority_weight must be >= 0.",
         })
     source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-    host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-    is_host = source == host_id
-    if not is_host:
+    can_prioritize = _env_actor_can(
+        ACTION_SUBMIT_PRIORITY_REQUEST,
+        universe_id=uid,
+    )
+    if not can_prioritize:
         pw = 0.0
 
     request_id = f"req_{int(time.time())}_{os.urandom(4).hex()}"
@@ -1174,7 +1273,7 @@ def _action_submit_request(
         text=text,
         request_type=request_type,
         requester_id=source,
-        host_id=host_id,
+        priority_authorized=can_prioritize,
         directed_daemon=requester_directed_daemon is not None,
     )
     request_obj = {
@@ -1188,6 +1287,7 @@ def _action_submit_request(
         "pickup_incentive": incentive,
         "authority_boundary": authority_boundary,
         "request_classification": request_classification,
+        "loop_dispatch": loop_dispatch,
     }
     if requester_directed_daemon is not None:
         request_obj["requester_directed_daemon"] = requester_directed_daemon
@@ -1216,7 +1316,7 @@ def _action_submit_request(
     try:
         task = BranchTask(
             branch_task_id=new_task_id(),
-            branch_def_id="fantasy_author:universe_cycle_wrapper",
+            branch_def_id=loop_branch_def_id,
             universe_id=uid,
             inputs={
                 "work_target_ref": None,
@@ -1227,11 +1327,12 @@ def _action_submit_request(
                 "authority_boundary": authority_boundary,
                 "request_classification": request_classification,
                 "requester_directed_daemon": requester_directed_daemon,
+                "loop_dispatch": loop_dispatch,
             },
             trigger_source=(
                 "owner_queued"
                 if requester_directed_daemon is not None
-                else "host_request" if is_host else "user_request"
+                else "operator_request" if can_prioritize else "user_request"
             ),
             priority_weight=pw,
             pickup_signal_weight=float(incentive.get("pickup_signal_weight") or 0.0),
@@ -1267,6 +1368,7 @@ def _action_submit_request(
         "authority_boundary": authority_boundary,
         "request_classification": request_classification,
         "requester_directed_daemon": requester_directed_daemon,
+        "loop_dispatch": loop_dispatch,
         "queue_position": pending_count,
         "ahead_of_yours": ahead,
         "what_happens_next": (
@@ -1654,21 +1756,23 @@ def _as_string_list(value: Any) -> list[str] | None:
 def _daemon_memory_inputs(
     inputs_json: str,
     *,
+    daemon_id: str = "",
     node_def_id: str = "",
 ) -> tuple[dict[str, Any], str, str | None]:
     data, err = _parse_inputs_object(inputs_json)
     if err:
         return {}, "", err
-    daemon_id = str(data.get("daemon_id") or node_def_id or "").strip()
-    if not daemon_id:
+    resolved_daemon_id = str(data.get("daemon_id") or daemon_id or node_def_id or "").strip()
+    if not resolved_daemon_id:
         return data, "", "daemon_id is required."
-    return data, daemon_id, None
+    return data, resolved_daemon_id, None
 
 
 def _action_daemon_memory_capture(
     universe_id: str = "",
     inputs_json: str = "",
     text: str = "",
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
@@ -1676,7 +1780,9 @@ def _action_daemon_memory_capture(
     from workflow.daemon_brain import capture_daemon_memory
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     content = str(data.get("content") or text or "").strip()
@@ -1720,13 +1826,16 @@ def _action_daemon_memory_search(
     text: str = "",
     filter_text: str = "",
     limit: Any = 5,
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.daemon_brain import search_daemon_memory
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     query = str(data.get("query") or text or filter_text or "").strip()
@@ -1754,13 +1863,16 @@ def _action_daemon_memory_list(
     universe_id: str = "",
     inputs_json: str = "",
     limit: Any = 50,
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.daemon_brain import list_daemon_memory
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     try:
@@ -1782,6 +1894,7 @@ def _action_daemon_memory_review(
     inputs_json: str = "",
     text: str = "",
     branch_task_id: str = "",
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
@@ -1789,7 +1902,9 @@ def _action_daemon_memory_review(
     from workflow.daemon_brain import review_daemon_memory
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     entry_id = str(data.get("entry_id") or branch_task_id or "").strip()
@@ -1821,13 +1936,16 @@ def _action_daemon_memory_promote(
     inputs_json: str = "",
     text: str = "",
     branch_task_id: str = "",
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.daemon_brain import promote_daemon_memory_to_wiki
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     entry_ids = _as_string_list(data.get("entry_ids")) or _as_string_list(branch_task_id)
@@ -1852,13 +1970,16 @@ def _action_daemon_memory_promote(
 def _action_daemon_memory_status(
     universe_id: str = "",
     inputs_json: str = "",
+    daemon_id: str = "",
     node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.daemon_brain import memory_observability_status
 
     uid = universe_id or _default_universe()
-    data, daemon_id, err = _daemon_memory_inputs(inputs_json, node_def_id=node_def_id)
+    data, daemon_id, err = _daemon_memory_inputs(
+        inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     try:
@@ -2690,19 +2811,21 @@ def _action_queue_cancel(
         })
     if target.status == "running":
         source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-        host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-        is_host = source == host_id
         is_owner = bool(target.claimed_by) and source == target.claimed_by
-        if not (is_host or is_owner):
+        can_cancel = _env_actor_can(
+            ACTION_CANCEL_BRANCH_TASK,
+            universe_id=uid,
+        )
+        if not (can_cancel or is_owner):
             return json.dumps({
                 "universe_id": uid,
                 "status": "rejected",
                 "error": "cancel_not_authorized",
                 "branch_task_id": branch_task_id,
                 "hint": (
-                    "Running-task cancel requires the host or the "
-                    "claiming daemon. Set UNIVERSE_SERVER_USER to the "
-                    "task owner or the host identity."
+                    "Running-task cancel requires the claiming daemon "
+                    f"or the {ACTION_CANCEL_BRANCH_TASK!r} capability "
+                    f"in {ENV_CAPABILITIES_VAR}."
                 ),
             })
         try:
@@ -2926,9 +3049,7 @@ def _action_post_to_goal_pool(
             "error": "priority_weight must be >= 0.",
         })
     source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-    host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-    is_host = source == host_id
-    if not is_host:
+    if not _env_actor_can(ACTION_POST_PRIORITY_GOAL_POOL, universe_id=uid):
         pw = 0.0
 
     try:
@@ -3329,20 +3450,29 @@ def _query_world_db(
 def _action_read_premise(universe_id: str = "", **_kwargs: Any) -> str:
     uid = universe_id or _default_universe()
     udir = _universe_dir(uid)
-    program_path = udir / "PROGRAM.md"
+    content = _normalize_escaped_text(read_legacy_premise(udir))
+    source = "PROGRAM.md"
+    if not content.strip():
+        soul = read_universe_soul(udir)
+        content = soul.purpose if soul is not None else ""
+        source = SOUL_FILENAME
+    else:
+        soul = read_universe_soul(udir)
 
-    content = _read_text(program_path)
-    if not content:
+    if not content.strip():
         return json.dumps({
             "universe_id": uid,
             "premise": None,
+            "has_soul": soul is not None,
+            "soul": soul.summary() if soul is not None else None,
             "note": "No premise set. Use action='set_premise' to create one.",
         })
-    # Read-time fallback: decode any pre-existing files that were written
-    # with literal \n sequences by a buggy client before the write-side fix.
     return json.dumps({
         "universe_id": uid,
-        "premise": _normalize_escaped_text(content),
+        "premise": content,
+        "source": source,
+        "has_soul": soul is not None,
+        "soul": soul.summary() if soul is not None else None,
     })
 
 
@@ -3375,17 +3505,21 @@ def _normalize_escaped_text(text: str) -> str:
 def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -> str:
     uid = universe_id or _default_universe()
     udir = _universe_dir(uid)
-    program_path = udir / "PROGRAM.md"
 
     if not text.strip():
         return json.dumps({"error": "Premise text cannot be empty."})
     text = _normalize_escaped_text(text)
     try:
         udir.mkdir(parents=True, exist_ok=True)
-        program_path.write_text(text, encoding="utf-8")
+        soul = write_universe_soul(
+            udir, purpose=text, lineage="created-from-premise",
+        )
+        legacy_premise_path(udir).write_text(text, encoding="utf-8")
         return json.dumps({
             "universe_id": uid,
             "status": "updated",
+            "has_soul": True,
+            "soul": soul.summary(),
             "note": "Premise saved. The daemon will read it at next startup.",
         })
     except OSError as exc:
@@ -4183,6 +4317,7 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
 def _action_create_universe(
     universe_id: str = "",
     text: str = "",
+    branch_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     if not universe_id:
@@ -4200,11 +4335,16 @@ def _action_create_universe(
 
     try:
         udir.mkdir(parents=True, exist_ok=True)
+        normalized_text = _normalize_escaped_text(text) if text.strip() else ""
+        loop_branch_def_id = str(branch_def_id or "").strip()
+        soul = ensure_universe_soul(
+            udir,
+            purpose=normalized_text,
+            loop_branch_def_id=loop_branch_def_id,
+        )
         # Write premise if provided
-        if text.strip():
-            (udir / "PROGRAM.md").write_text(
-                _normalize_escaped_text(text), encoding="utf-8",
-            )
+        if normalized_text.strip():
+            legacy_premise_path(udir).write_text(normalized_text, encoding="utf-8")
 
         # Initialize empty state files
         (udir / "notes.json").write_text("[]", encoding="utf-8")
@@ -4213,9 +4353,16 @@ def _action_create_universe(
         result: dict[str, Any] = {
             "universe_id": uid,
             "status": "created",
-            "has_premise": bool(text.strip()),
+            "has_premise": bool(normalized_text.strip()),
+            "has_soul": True,
+            "soul": soul.summary(),
+            "loop_dispatch": {
+                "source": SOUL_FILENAME,
+                "branch_def_id": soul.loop_branch_def_id,
+                "declared": bool(soul.loop_branch_def_id),
+            },
             "first_run_checklist": _synthesis_first_run_checklist(
-                has_premise=bool(text.strip()),
+                has_premise=bool(normalized_text.strip()),
             ),
         }
 
@@ -4240,6 +4387,82 @@ def _action_create_universe(
 # ───────────────────────────────────────────────────────────────────────────
 
 
+UNIVERSE_ACTIONS: dict[str, Any] = {
+    "list": _action_list_universes,
+    "inspect": _action_inspect_universe,
+    "read_output": _action_read_output,
+    "query_world": _action_query_world,
+    "get_activity": _action_get_activity,
+    "get_recent_events": _action_get_recent_events,
+    "get_ledger": _action_get_ledger,
+    "submit_request": _action_submit_request,
+    "give_direction": _action_give_direction,
+    "read_premise": _action_read_premise,
+    "set_premise": _action_set_premise,
+    "add_canon": _action_add_canon,
+    "add_canon_from_path": _action_add_canon_from_path,
+    "list_canon": _action_list_canon,
+    "read_canon": _action_read_canon,
+    "list_sources": _action_list_sources,
+    "read_source": _action_read_source,
+    "control_daemon": _action_control_daemon,
+    "switch_universe": _action_switch_universe,
+    "create_universe": _action_create_universe,
+    "queue_list": _action_queue_list,
+    "queue_cancel": _action_queue_cancel,
+    "subscribe_goal": _action_subscribe_goal,
+    "unsubscribe_goal": _action_unsubscribe_goal,
+    "list_subscriptions": _action_list_subscriptions,
+    "post_to_goal_pool": _action_post_to_goal_pool,
+    "submit_node_bid": _action_submit_node_bid,
+    "community_change_context": _action_community_change_context,
+    "daemon_overview": _action_daemon_overview,
+    "daemon_list": _action_daemon_list,
+    "daemon_get": _action_daemon_get,
+    "daemon_create": _action_daemon_create,
+    "daemon_summon": _action_daemon_summon,
+    "daemon_pause": _action_daemon_pause,
+    "daemon_resume": _action_daemon_resume,
+    "daemon_restart": _action_daemon_restart,
+    "daemon_banish": _action_daemon_banish,
+    "daemon_update_behavior": _action_daemon_update_behavior,
+    "daemon_control_status": _action_daemon_control_status,
+    "daemon_memory_capture": _action_daemon_memory_capture,
+    "daemon_memory_search": _action_daemon_memory_search,
+    "daemon_memory_list": _action_daemon_memory_list,
+    "daemon_memory_review": _action_daemon_memory_review,
+    "daemon_memory_promote": _action_daemon_memory_promote,
+    "daemon_memory_status": _action_daemon_memory_status,
+    "treasury_status": _action_treasury_status,
+    "set_tier_config": _action_set_tier_config,
+}
+
+
+def _dispatch_scope_error(
+    tool: str,
+    action: str,
+    *,
+    universe_id: str = "",
+) -> str | None:
+    from workflow.auth.middleware import require_action_scope
+    from workflow.auth.provider import PermissionScope
+
+    try:
+        require_action_scope(
+            tool,
+            action,
+            scope=PermissionScope(universe_id=universe_id),
+        )
+    except PermissionError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "auth_scope_required": True,
+            "tool": tool,
+            "action": action,
+        })
+    return None
+
+
 def _universe_impl(
     action: str,
     universe_id: str = "",
@@ -4258,6 +4481,7 @@ def _universe_impl(
     pickup_incentive: str = "",
     directed_daemon_id: str = "",
     directed_daemon_instruction: str = "",
+    daemon_id: str = "",
     branch_task_id: str = "",
     goal_id: str = "",
     branch_def_id: str = "",
@@ -4274,62 +4498,16 @@ def _universe_impl(
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
     forwards every argument unchanged.
     """
-    dispatch = {
-        "list": _action_list_universes,
-        "inspect": _action_inspect_universe,
-        "read_output": _action_read_output,
-        "query_world": _action_query_world,
-        "get_activity": _action_get_activity,
-        "get_recent_events": _action_get_recent_events,
-        "get_ledger": _action_get_ledger,
-        "submit_request": _action_submit_request,
-        "give_direction": _action_give_direction,
-        "read_premise": _action_read_premise,
-        "set_premise": _action_set_premise,
-        "add_canon": _action_add_canon,
-        "add_canon_from_path": _action_add_canon_from_path,
-        "list_canon": _action_list_canon,
-        "read_canon": _action_read_canon,
-        "list_sources": _action_list_sources,
-        "read_source": _action_read_source,
-        "control_daemon": _action_control_daemon,
-        "switch_universe": _action_switch_universe,
-        "create_universe": _action_create_universe,
-        "queue_list": _action_queue_list,
-        "queue_cancel": _action_queue_cancel,
-        "subscribe_goal": _action_subscribe_goal,
-        "unsubscribe_goal": _action_unsubscribe_goal,
-        "list_subscriptions": _action_list_subscriptions,
-        "post_to_goal_pool": _action_post_to_goal_pool,
-        "submit_node_bid": _action_submit_node_bid,
-        "community_change_context": _action_community_change_context,
-        "daemon_overview": _action_daemon_overview,
-        "daemon_list": _action_daemon_list,
-        "daemon_get": _action_daemon_get,
-        "daemon_create": _action_daemon_create,
-        "daemon_summon": _action_daemon_summon,
-        "daemon_pause": _action_daemon_pause,
-        "daemon_resume": _action_daemon_resume,
-        "daemon_restart": _action_daemon_restart,
-        "daemon_banish": _action_daemon_banish,
-        "daemon_update_behavior": _action_daemon_update_behavior,
-        "daemon_control_status": _action_daemon_control_status,
-        "daemon_memory_capture": _action_daemon_memory_capture,
-        "daemon_memory_search": _action_daemon_memory_search,
-        "daemon_memory_list": _action_daemon_memory_list,
-        "daemon_memory_review": _action_daemon_memory_review,
-        "daemon_memory_promote": _action_daemon_memory_promote,
-        "daemon_memory_status": _action_daemon_memory_status,
-        "treasury_status": _action_treasury_status,
-        "set_tier_config": _action_set_tier_config,
-    }
-
+    dispatch = UNIVERSE_ACTIONS
     handler = dispatch.get(action)
     if handler is None:
         return json.dumps({
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(dispatch.keys()),
         })
+    scope_error = _dispatch_scope_error("universe", action, universe_id=universe_id)
+    if scope_error is not None:
+        return scope_error
 
     # Build kwargs from all optional params
     kwargs: dict[str, Any] = {
@@ -4349,6 +4527,7 @@ def _universe_impl(
         "pickup_incentive": pickup_incentive,
         "directed_daemon_id": directed_daemon_id,
         "directed_daemon_instruction": directed_daemon_instruction,
+        "daemon_id": daemon_id,
         "branch_task_id": branch_task_id,
         "goal_id": goal_id,
         "branch_def_id": branch_def_id,

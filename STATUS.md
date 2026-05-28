@@ -31,14 +31,6 @@ universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11
 |------|-------|---------|--------|
 | **#906 host merge key** — Open-brain v2 slice C cost-ledger READ surface; Claude checker APPROVED 2026-05-19 | workflow/daemon_brain.py, workflow/api/status.py + plugin mirrors | - | host-action |
 | **#907 host merge key** — Bounded autonomous spend CI writer-prompt guardrail; Claude checker APPROVED 2026-05-19 | .github/workflows/auto-fix-bug.yml, docs/ops/auto-fix-runbook.md | - | host-action |
-| Claude review gate: ExperiencePool + GroupEvolutionRun frontier (audit doc absent on disk) | docs/audits/2026-05-02-experience-pool-claude-review.md | - | dev-ready |
-| Claude review gate: AgencyBench acceptance scenario (audit doc absent on disk) | docs/audits/2026-05-02-agencybench-claude-review.md | - | dev-ready |
-| Claude review gate: OpenTraces private trace commons (audit doc absent on disk) | docs/audits/2026-05-02-opentraces-claude-review.md | - | dev-ready |
-| Claude review gate: Origin Quantum optional capability pack (audit doc absent on disk; navigator memory flagged DEFER) | docs/audits/2026-05-02-origin-quantum-claude-review.md | - | dev-ready |
-| Review-blocked worktree lane: ExperiencePool + GroupEvolutionRun Slice 1 | docs/design-notes/2026-05-02-experience-pool-and-group-evolution.md | review approve/adapt | pending |
-| Review-blocked worktree lane: Acceptance Scenario Packs Slice 1 | docs/design-notes/2026-05-02-acceptance-scenario-packs.md | review approve/adapt | pending |
-| Review-blocked worktree lane: Private Trace Commons Slice 1 | docs/design-notes/2026-05-02-private-trace-commons.md | review approve/adapt | pending |
-| Review-blocked worktree lane: Origin Quantum Slice Q0/Q1 | docs/design-notes/proposed/2026-05-02-origin-quantum-workflow-integration.md, workflow/quantum/ | review approve/adapt; post-uptime | pending |
 | External directory acceptance — PRs landed, public canaries green 2026-05-02T12:34-07:00; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |
 | OpenAI app submission hardening — docs/code never landed; chatgpt-app-submission.json absent on disk | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT approval/mobile proof | dev-ready |
 | **#23 Arc B phase 2** — `codex/old-session-consolidation` at c967272; focused gates green | tests/, workflow/api/runs.py, fantasy_daemon/api.py | - | host-review |
@@ -46,7 +38,6 @@ universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11
 | **#24 Arc C** — env-var deprecation aliases (UNIVERSE_SERVER_BASE, WIKI_PATH) | workflow/storage/__init__.py | #25 | dev-ready |
 | **Phase 6** — `.workflow.db`, `db_path()` fn, Option A migration, 30s restart, plugin minor-bump | workflow/storage/__init__.py + plugin mirror, tests/ | #24 | dev-ready |
 | `run_branch resume_from=<run_id>` param (F2 ACCEPTED 2026-04-28) | workflow/api/runs.py, tests/ | #23 | dev-ready |
-| Site wiki+loop lane — PR #158 was CLOSED not merged; site-wiki-live-lens branch work orphan; /loop redesign unbuilt | WebSite/site/src/routes/wiki/+page.svelte, WebSite/site/src/routes/loop/+page.svelte | - | dev-ready |
 | Windows full-suite backup.sh path fix | tests/test_backup_script.py | #18,#23 | dev-ready |
 | Clean-clone MCP config test mismatch | tests/test_mcp_server.py, .mcp.example.json | #18,#23 | dev-ready |
 | Card-matcher cleanup vs legacy-connector fallback contract | scripts/claude_chat.py, tests/test_claude_chat_inline_dismiss.py | - | dev-ready |
@@ -64,6 +55,7 @@ Substantive work flowing through the live MCP brain — not duplicated here. Cur
 - **PR-129** (filed 2026-05-19) — Goal-bound branch protocols / ordered branch family runbook with typed artifact handoffs. Real community-build case (chatbot already composed manually via wiki prose; needs first-class durability). Dispatcher `ec15c952-aefa-42ab-b50b-eee1524d3ef9` queued.
 - **PR-131** (filed 2026-05-19) — Host-local Windows desktop effect adapter; closes BUG-043 generalized. First consumer of #914 external-write design. Dispatcher `bc6ed9df-e764-495a-b466-c5c86d7e0e2e` queued.
 - **PR-130** (Markovic) — peer-reviewed simulation-biology publication strategy.
+- **PR-139 / GH #1090** — souled-universe consolidation; slices #1089/#1091/#1092 landed; slice 4 permission lane in flight.
 - **New universes in flight:** Meridian Ashes (fantasy prose-lab), Etsy Printify v2 (commerce via effect packets), Markovic (scientific publication).
 
 For full live-brain enumeration see `.claude/agent-memory/navigator/wiki_sweep_cursor.md` (refreshed 2026-05-19: 890 promoted + 134 drafts + theme distribution).
@@ -72,6 +64,6 @@ For full live-brain enumeration see `.claude/agent-memory/navigator/wiki_sweep_c
 
 1. **Live brain is primary** for substantive work flow — wiki + dispatcher + auto-change loop. STATUS.md is the project-folder-access coordination layer; check both.
 2. **PRs in your queue:** #906 + #907 (Claude APPROVED 2026-05-19, awaiting host merge key).
-3. **4 review-gate audits never written** — ExperiencePool, AgencyBench, OpenTraces, Origin Quantum. Each blocks a worktree lane.
+3. **Auto-change loop is landing slice work** — ExperiencePool/AcceptanceScenario/PrivateTraceCommons Slices 1-3 merged (#936/#937/#938/#954/#956) without the Claude review-gate audits the prior STATUS rows referenced. Treat live brain as the substantive build surface; review gates re-enter only if a slice trips a real concern.
 4. **No-shims-ever rule active** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 5. **Scoping rules apply to design questions themselves** (per `feedback_design_questions_apply_scoping_rules_first.md`) — if X composes from primitives or has open-ended variations, do NOT present "platform builds it" as an option when steering.

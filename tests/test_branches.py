@@ -196,6 +196,15 @@ class TestNodeDefinition:
         })
         assert n.node_id == "x"
 
+    def test_tools_allowed_rejects_non_list_shape(self):
+        with pytest.raises(NodeDefinitionValidationError) as exc_info:
+            NodeDefinition(
+                node_id="x",
+                display_name="X",
+                tools_allowed="goals.leaderboard",  # type: ignore[arg-type]
+            )
+        assert exc_info.value.field == "tools_allowed"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # GraphNodeRef
@@ -537,6 +546,50 @@ class TestBranchDefinition:
         assert "state_schema field 'orient'" in fixes
         assert "graph node ID 'orient'" in fixes
         assert "before running" in fixes
+
+    def test_validate_input_key_must_be_declared_when_state_schema_exists(self):
+        b = _make_sample_branch()
+        b.node_defs[0].input_keys.append("missing_runtime_input")
+
+        errors = b.validate()
+
+        assert any(
+            "Node 'orient-def' input_key 'missing_runtime_input' "
+            "is not declared in state_schema" in e
+            for e in errors
+        )
+
+    def test_validate_output_key_must_be_declared_when_state_schema_exists(self):
+        b = _make_sample_branch()
+        b.node_defs[0].output_keys.append("missing_runtime_output")
+
+        errors = b.validate()
+
+        assert any(
+            "Node 'orient-def' output_key 'missing_runtime_output' "
+            "is not declared in state_schema" in e
+            for e in errors
+        )
+
+    def test_validate_legacy_empty_state_schema_remains_allowed(self):
+        b = BranchDefinition(name="legacy", entry_point="n1")
+        b.node_defs = [
+            NodeDefinition(
+                node_id="n1",
+                display_name="N1",
+                input_keys=["topic"],
+                output_keys=["draft"],
+                prompt_template="{topic}",
+            )
+        ]
+        b.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
+        b.edges = [
+            EdgeDefinition(from_node="START", to_node="n1"),
+            EdgeDefinition(from_node="n1", to_node="END"),
+        ]
+        b.state_schema = []
+
+        assert b.validate() == []
 
     def test_fork(self):
         b = _make_sample_branch()
