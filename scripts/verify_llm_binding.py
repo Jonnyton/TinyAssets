@@ -99,6 +99,10 @@ def _post(
 
 
 def _parse_status(result: dict[str, Any]) -> dict[str, Any]:
+    structured = result.get("structuredContent")
+    if isinstance(structured, dict):
+        return structured
+
     for item in result.get("content", []):
         if item.get("type") == "text":
             try:
@@ -110,11 +114,11 @@ def _parse_status(result: dict[str, Any]) -> dict[str, Any]:
 
 def _llm_endpoint_bound(status: dict[str, Any]) -> Any:
     """Return the LLM binding from either historical or current status shape."""
+    active_host = status.get("active_host")
+    if isinstance(active_host, dict) and "llm_endpoint_bound" in active_host:
+        return active_host.get("llm_endpoint_bound")
     if "llm_endpoint_bound" in status:
         return status.get("llm_endpoint_bound")
-    active_host = status.get("active_host")
-    if isinstance(active_host, dict):
-        return active_host.get("llm_endpoint_bound", "unset")
     return "unset"
 
 

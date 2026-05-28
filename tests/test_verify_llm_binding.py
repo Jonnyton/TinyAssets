@@ -45,6 +45,42 @@ _STATUS_BOUND_NESTED = {
         ]
     },
 }
+_STATUS_BOUND_NESTED_WITH_STALE_TOP_LEVEL = {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "result": {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    '{"llm_endpoint_bound": "unset", '
+                    '"active_host": {"llm_endpoint_bound": "codex"}, '
+                    '"phase": "idle"}'
+                ),
+            }
+        ]
+    },
+}
+_STATUS_BOUND_STRUCTURED_CONTENT = {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "result": {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "Tool result: caveats=2. "
+                    "Full payload is in structuredContent."
+                ),
+            }
+        ],
+        "structuredContent": {
+            "schema_version": 1,
+            "active_host": {"llm_endpoint_bound": "codex"},
+            "sandbox_status": {"bwrap_available": True, "reason": None},
+        },
+    },
+}
 _STATUS_BOUND_SANDBOX_OK = {
     "jsonrpc": "2.0",
     "id": 10,
@@ -138,6 +174,31 @@ def test_llm_bound_accepts_current_nested_status_shape():
     )
     result = check_llm_binding("http://fake/mcp", 10.0, post_fn=post_fn)
     assert result["active_host"]["llm_endpoint_bound"] == "codex"
+
+
+def test_llm_bound_prefers_nested_status_over_stale_top_level():
+    post_fn = _make_post_fn(
+        (_INIT_OK, "sid1"),
+        (_NOTIF_NONE, "sid1"),
+        (_STATUS_BOUND_NESTED_WITH_STALE_TOP_LEVEL, "sid1"),
+        (_ADD_CANON_OK, "sid1"),
+    )
+    result = check_llm_binding("http://fake/mcp", 10.0, post_fn=post_fn)
+    assert result["active_host"]["llm_endpoint_bound"] == "codex"
+
+
+def test_llm_bound_accepts_structured_content_status_payload():
+    post_fn = _make_post_fn(
+        (_INIT_OK, "sid1"),
+        (_NOTIF_NONE, "sid1"),
+        (_STATUS_BOUND_STRUCTURED_CONTENT, "sid1"),
+        (_ADD_CANON_OK, "sid1"),
+    )
+    result = check_llm_binding(
+        "http://fake/mcp", 10.0, require_sandbox=True, post_fn=post_fn
+    )
+    assert result["active_host"]["llm_endpoint_bound"] == "codex"
+    assert result["sandbox_status"]["bwrap_available"] is True
 
 
 def test_llm_bound_add_canon_non_fatal():
