@@ -276,6 +276,9 @@ def test_branch_design_guide_prompt_covers_branch_authoring() -> None:
     assert "branch" in text
     # References run_branch so authors understand the runtime contract.
     assert "run_branch" in text or "extensions" in text
+    assert "batch_receipt" in text
+    assert "not an authorization grant" in text
+    assert "source_code approval" in text
 
 
 def test_control_station_pins_register_explicit_ask_rule() -> None:

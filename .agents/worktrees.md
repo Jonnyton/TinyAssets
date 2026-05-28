@@ -579,6 +579,18 @@ Notes:
 - Ship condition: focused resolution contract tests pass, branch pushed, PR
   opened for opposite-family checker review.
 
+## #961 Branch Authoring Receipts - 2026-05-27
+
+- 2026-05-27 create `../wf-pr961-branch-authoring-receipts` on
+  `codex/pr961-branch-authoring-receipts` by codex-gpt5-desktop.
+- Source: GH #961 asks for faster online Branch authoring with approvals,
+  scoped trust sessions, and batch receipts.
+- Purpose: ship the safe runtime slice: structured receipts on existing
+  `build_branch` / `patch_branch`, without changing authorization semantics.
+- PR: #1093.
+- Ship condition: focused composite-action tests pass, mirror parity passes,
+  PR opened for checker review.
+
 ## PR-139 Soul From Premise - 2026-05-27
 
 - 2026-05-27 create `../wf-pr139-soul` on `codex/pr139-soul` by
