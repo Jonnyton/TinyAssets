@@ -26,7 +26,12 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.branches import BranchDefinition, NodeDefinition
+from workflow.branches import (
+    BranchDefinition,
+    EdgeDefinition,
+    GraphNodeRef,
+    NodeDefinition,
+)
 from workflow.effectors import (
     EXTERNAL_WRITE_SINK_GITHUB_PR,
     run_effects_for_branch,
@@ -464,6 +469,70 @@ def test_runs_external_write_results_overwrites_quarantined_value():
         "fake": "forgery",
     }
     assert output["_branch_authored_external_write_errors"] == [{"fake": "row"}]
+
+
+def test_get_run_snapshot_surfaces_external_write_results(tmp_path, monkeypatch):
+    """Regression for BUG-099: the dry-run effector receipt persisted
+    in run output must be visible from the get_run snapshot, not only
+    from get_run_output.
+    """
+    import workflow.daemon_server as daemon_server
+    from workflow.api.runs import _compose_run_snapshot
+    from workflow.runs import execute_branch, get_run, list_events
+
+    packet = {
+        "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,
+        "payload": {
+            "title": "Fix BUG-099",
+            "body": "Surface the dry-run effector evidence.",
+            "base_branch": "main",
+            "head_branch": "auto/bug-099",
+        },
+    }
+    branch = BranchDefinition(
+        name="emit-pr",
+        entry_point="draft",
+        node_defs=[
+            NodeDefinition(
+                node_id="draft",
+                display_name="Draft",
+                approved=True,
+                source_code=(
+                    "def run(state):\n"
+                    "    return {'pr_packet': state['packet']}\n"
+                ),
+                output_keys=["pr_packet"],
+                effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
+            ),
+        ],
+        graph_nodes=[GraphNodeRef(id="draft", node_def_id="draft")],
+        edges=[
+            EdgeDefinition(from_node="START", to_node="draft"),
+            EdgeDefinition(from_node="draft", to_node="END"),
+        ],
+        state_schema=[
+            {"name": "packet", "type": "dict"},
+            {"name": "pr_packet", "type": "dict"},
+        ],
+    )
+    monkeypatch.setattr(
+        daemon_server,
+        "get_branch_definition",
+        lambda *_args, **_kwargs: branch.to_dict(),
+    )
+
+    outcome = execute_branch(tmp_path, branch=branch, inputs={"packet": packet})
+    assert outcome.status == "completed"
+    record = get_run(tmp_path, outcome.run_id)
+    events = list_events(tmp_path, outcome.run_id)
+
+    snapshot = _compose_run_snapshot(record, events)
+
+    receipt = snapshot["external_write_results"]["draft"][
+        EXTERNAL_WRITE_SINK_GITHUB_PR
+    ]
+    assert receipt["dry_run"] is True
+    assert receipt["matched_output_key"] == "pr_packet"
 
 
 # ─── 8. BranchDefinition node_defs roundtrip through full to_dict path ────
