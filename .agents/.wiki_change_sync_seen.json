@@ -204,6 +204,7 @@
     "pages/patch-requests/pr-141-add-review-depth-enum-field-to-operator-checker-position-rec.md",
     "pages/patch-requests/pr-142-auto-dispatcher-resilience-separate-bot-identity-for-posting.md",
     "pages/patch-requests/pr-144-make-source-code-genuinely-user-buildable-and-runnable-real-.md",
+    "pages/patch-requests/pr-145-actor-agnostic-repo-platform-sync-contract-reconcile-github-.md",
     "pages/plans/archon-fantasy-rts-fps-v0-map-blockout-2026-05-20.md",
     "pages/plans/archon-fantasy-rts-fps-v0-prototype-spec-2026-05-20.md",
     "pages/plans/archon-fantasy-rts-fps-v0-technical-plan-2026-05-20.md",
