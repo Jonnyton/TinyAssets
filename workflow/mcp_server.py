@@ -22,6 +22,13 @@ from pathlib import Path
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from workflow.universe_soul import (
+    legacy_premise_path,
+    premise_from_soul,
+    read_legacy_premise,
+    write_universe_soul,
+)
+
 mcp = FastMCP(
     "workflow",
     instructions=(
@@ -176,17 +183,18 @@ def steer(directive: str, category: str = "direction") -> str:
 
 
 def get_premise() -> str:
-    """Read the current story premise from PROGRAM.md.
+    """Read the current story premise from PROGRAM.md or soul.md.
 
     The premise seeds the daemon's creative direction.
     """
-    program_path = _universe_dir() / "PROGRAM.md"
-    if not program_path.exists():
-        return "No PROGRAM.md found. Use set_premise() to create one."
-    try:
-        return program_path.read_text(encoding="utf-8")
-    except OSError as e:
-        return f"Error reading PROGRAM.md: {e}"
+    universe_dir = _universe_dir()
+    premise = read_legacy_premise(universe_dir).strip()
+    if premise:
+        return premise
+    premise = premise_from_soul(universe_dir).strip()
+    if premise:
+        return premise
+    return "No premise found. Use set_premise() to create one."
 
 
 _mcp_get_premise = _register_structured_tool(
@@ -198,19 +206,22 @@ _mcp_get_premise = _register_structured_tool(
 
 
 def set_premise(text: str) -> str:
-    """Write or overwrite the story premise in PROGRAM.md.
+    """Write or overwrite the story premise as soul.md plus PROGRAM.md.
 
     The daemon reads this at startup to seed the story direction.
     Overwrites any existing premise — use get_premise first if you want to
     edit rather than replace.
     """
-    program_path = _universe_dir() / "PROGRAM.md"
+    universe_dir = _universe_dir()
     try:
-        _universe_dir().mkdir(parents=True, exist_ok=True)
-        program_path.write_text(text, encoding="utf-8")
-        return "PROGRAM.md updated."
+        universe_dir.mkdir(parents=True, exist_ok=True)
+        write_universe_soul(
+            universe_dir, purpose=text, lineage="created-from-premise",
+        )
+        legacy_premise_path(universe_dir).write_text(text, encoding="utf-8")
+        return "soul.md updated."
     except OSError as e:
-        return f"Error writing PROGRAM.md: {e}"
+        return f"Error writing premise: {e}"
 
 
 _mcp_set_premise = _register_structured_tool(

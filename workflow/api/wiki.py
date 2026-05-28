@@ -69,6 +69,8 @@ _WIKI_SEARCH_COMPLETENESS_WARNING = (
     "changed_since=<ISO timestamp>; for authoritative content read candidate "
     "pages with action=read."
 )
+_WIKI_READ_DEFAULT_MAX_CHARS = 128_000
+_WIKI_READ_MAX_CHARS = 256_000
 
 
 _logger_wiki = logging.getLogger("universe_server.wiki")
@@ -302,6 +304,24 @@ def _coerce_result_limit(value: Any) -> int:
     return max(1, min(raw, 100))
 
 
+def _coerce_read_offset(value: Any) -> int:
+    try:
+        raw = int(value or 0)
+    except (TypeError, ValueError):
+        raw = 0
+    return max(0, raw)
+
+
+def _coerce_read_max_chars(value: Any) -> int:
+    try:
+        raw = int(value or 0)
+    except (TypeError, ValueError):
+        raw = _WIKI_READ_DEFAULT_MAX_CHARS
+    if raw <= 0:
+        raw = _WIKI_READ_DEFAULT_MAX_CHARS
+    return max(1, min(raw, _WIKI_READ_MAX_CHARS))
+
+
 def _ambient_relevance_feed(
     *,
     source: Path,
@@ -475,6 +495,8 @@ def _wiki_read(
     query: str = "",
     changed_since: str = "",
     max_results: int = 10,
+    offset: int = 0,
+    max_chars: int = _WIKI_READ_DEFAULT_MAX_CHARS,
     **_kwargs: Any,
 ) -> str:
     if not page:
@@ -507,21 +529,46 @@ def _wiki_read(
         source_body=body,
     )
 
-    if len(text) > 15000:
+    read_start = _coerce_read_offset(offset)
+    read_limit = _coerce_read_max_chars(max_chars)
+    total_chars = len(content)
+    if read_start > total_chars:
+        read_start = total_chars
+    read_end = min(read_start + read_limit, total_chars)
+    chunk = content[read_start:read_end]
+    truncated = read_end < total_chars
+    next_offset = read_end if truncated else None
+
+    if truncated:
+        marker = (
+            "\n\n[WIKI READ TRUNCATED: showing chars "
+            f"{read_start}-{read_end} of {total_chars}. Continue with "
+            f"wiki(action=\"read\", page=\"{page}\", offset={read_end}, "
+            f"max_chars={read_limit}).]"
+        )
         return json.dumps({
             "path": rel,
             "is_draft": is_draft,
-            "content": content[:15000],
+            "content": chunk + marker,
             "truncated": True,
-            "total_chars": len(text),
+            "total_chars": total_chars,
+            "read_start": read_start,
+            "read_end": read_end,
+            "read_limit": read_limit,
+            "next_offset": next_offset,
             "source_read_proof": source_read_proof,
             "ambient_relevance_feed": ambient_feed,
         })
     return json.dumps({
         "path": rel,
         "is_draft": is_draft,
-        "content": content,
+        "content": chunk,
         "truncated": False,
+        "total_chars": total_chars,
+        "read_start": read_start,
+        "read_end": read_end,
+        "read_limit": read_limit,
+        "next_offset": None,
         "source_read_proof": source_read_proof,
         "ambient_relevance_feed": ambient_feed,
     })
@@ -2107,6 +2154,8 @@ def wiki(
     dry_run: bool = True,
     skip_lint: bool = False,
     max_results: int = 10,
+    offset: int = 0,
+    max_chars: int = _WIKI_READ_DEFAULT_MAX_CHARS,
     component: str = "",
     severity: str = "",
     title: str = "",
@@ -2204,6 +2253,8 @@ def wiki(
         "dry_run": dry_run,
         "skip_lint": skip_lint,
         "max_results": max_results,
+        "offset": offset,
+        "max_chars": max_chars,
         "component": component,
         "severity": severity,
         "title": title,

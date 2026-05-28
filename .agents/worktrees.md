@@ -36,6 +36,23 @@ Format for future entries:
 
 ---
 
+## 2026-05-27 12:00 - create pr139-universe-state
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/pr139-universe-state
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-pr139-universe-state
+- STATUS/Issue/PR: wiki PR-139; pages/notes/pr-139-in-flight-slice-2-universe-state-codex-2026-05-27.md
+- PLAN refs: Module: Engine & Domains; Reference: State & Artifacts
+- Purpose: PR-139 slice 2, additive domain-neutral universe-state substrate.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-pr139-universe-state\_PURPOSE.md
+- Memory refs: drafts/notes/souled-universe-parent.md; pages/notes/pr-139-in-flight-slice-1-codex-2026-05-27.md
+- Related implications: PR-139 build-order step 2; merged resolver contract PR #1089 at 71c8d5f6
+- Idea feed refs: none
+- Ship/abandon: PR pending; abandon if parent invariants change or another lane owns the same universe-state files
+
+---
+
 ## 2026-05-12 21:08 - create pr828-skill-sync-refactor
 
 - Provider: codex
@@ -539,3 +556,36 @@ Notes:
   touching unrelated checker/repair lanes.
 - Ship condition: focused branch-runner/API tests pass and PR/handoff goes to
   Claude-family checker because original writer family is Codex.
+
+## BUG-106 Wiki Read Truncation - 2026-05-27
+
+- 2026-05-27 create `../wf-bug106-wiki-read-truncation` on
+  `codex/bug106-wiki-read-truncation` by codex-gpt5-desktop.
+- Source: live wiki BUG-106 filed from the souled-universe draft review:
+  `wiki read` returns partial large documents without an in-band marker.
+- Purpose: make wiki read truncation unmistakable and actionable for connector
+  users.
+- Ship condition: focused wiki read tests pass, PR opened for Claude-family
+  checker review.
+
+## PR-139 Resolver Contract - 2026-05-27
+
+- 2026-05-27 create `../wf-pr139-resolver-contract` on
+  `codex/pr139-resolver-contract` by codex-gpt5-desktop.
+- Source: live wiki PR-139 souled-universe consolidation program; dispatcher
+  request failed from provider exhaustion before creating a GitHub lane.
+- Purpose: implement build-order step 1 only: frozen resolver decision contract,
+  fixture shape, and tests.
+- Ship condition: focused resolution contract tests pass, branch pushed, PR
+  opened for opposite-family checker review.
+
+## PR-139 Soul From Premise - 2026-05-27
+
+- 2026-05-27 create `../wf-pr139-soul` on `codex/pr139-soul` by
+  codex-gpt5-desktop.
+- Source: live wiki PR-139 souled-universe consolidation program; host key
+  now approved for all PR-139 slices.
+- Purpose: implement build-order step 3 only: generalize `soul.md` from the
+  current premise mechanism.
+- Ship condition: focused soul/premise tests pass, branch pushed, PR opened
+  for opposite-family checker review.

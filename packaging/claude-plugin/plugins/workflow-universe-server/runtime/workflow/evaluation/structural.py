@@ -887,16 +887,17 @@ def _check_premise_grounding(state: dict[str, Any]) -> CheckResult:
     if not premise:
         premise = state.get("premise_kernel", "")
     if not premise:
-        # Fallback: read PROGRAM.md from universe directory
+        # Fallback: read PROGRAM.md or soul.md from universe directory.
         uni_path = state.get("_universe_path", "")
         if uni_path:
             from pathlib import Path as _P
-            program_md = _P(uni_path) / "PROGRAM.md"
-            try:
-                if program_md.exists():
-                    premise = program_md.read_text(encoding="utf-8").strip()
-            except OSError:
-                pass
+
+            from workflow.universe_soul import premise_from_soul, read_legacy_premise
+            universe_dir = _P(uni_path)
+            premise = (
+                read_legacy_premise(universe_dir).strip()
+                or premise_from_soul(universe_dir).strip()
+            )
 
     if not premise:
         return CheckResult(

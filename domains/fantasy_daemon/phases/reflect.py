@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from workflow.universe_soul import premise_from_soul, read_legacy_premise
 from workflow.utils.json_parsing import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -190,15 +191,13 @@ def _review_canon_quality(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _read_premise(universe_dir: Path, state: dict[str, Any]) -> str:
-    """Read the story premise from PROGRAM.md or state."""
-    program_path = universe_dir / "PROGRAM.md"
-    if program_path.exists():
-        try:
-            content = program_path.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-        except OSError:
-            logger.debug("Failed to read PROGRAM.md", exc_info=True)
+    """Read the story premise from PROGRAM.md, soul.md, or state."""
+    content = read_legacy_premise(universe_dir).strip()
+    if content:
+        return content
+    content = premise_from_soul(universe_dir).strip()
+    if content:
+        return content
     return state.get("premise_kernel", "")
 
 

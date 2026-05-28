@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from workflow.universe_soul import premise_from_soul, read_legacy_premise
 from workflow.work_targets import (
     WorkTarget,
     ensure_seed_targets,
@@ -28,12 +29,9 @@ logger = logging.getLogger(__name__)
 
 
 def _read_premise(universe_path: Path) -> str:
-    """Read premise from ``PROGRAM.md`` (fantasy on-disk convention)."""
-    program = Path(universe_path) / "PROGRAM.md"
-    try:
-        return program.read_text(encoding="utf-8")
-    except OSError:
-        return ""
+    """Read premise from compatibility file or soul.md purpose."""
+    path = Path(universe_path)
+    return read_legacy_premise(path) or premise_from_soul(path)
 
 
 class SeedProducer:

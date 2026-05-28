@@ -27,6 +27,16 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from workflow.universe_soul import (
+    ensure_universe_soul,
+    has_soul,
+    legacy_premise_path,
+    premise_from_soul,
+    read_legacy_premise,
+    read_universe_soul,
+    write_universe_soul,
+)
+
 logger = logging.getLogger("fantasy_daemon.api")
 
 # ---------------------------------------------------------------------------
@@ -409,7 +419,10 @@ def _read_universe_info(udir: Path, uid: str) -> dict[str, Any]:
         info["word_count"] = 0
         info["daemon_state"] = "idle"
 
-    info["has_premise"] = (udir / "PROGRAM.md").exists()
+    info["has_premise"] = bool(
+        read_legacy_premise(udir).strip() or premise_from_soul(udir).strip()
+    )
+    info["has_soul"] = has_soul(udir)
     return info
 
 
@@ -764,6 +777,7 @@ def create_universe(
 
     try:
         udir.mkdir(parents=True, exist_ok=True)
+        soul = ensure_universe_soul(udir)
         (udir / "canon").mkdir(exist_ok=True)
         (udir / "output").mkdir(exist_ok=True)
         (udir / "universe.json").write_text(
@@ -774,7 +788,7 @@ def create_universe(
             status_code=500, detail=f"Failed to create universe: {e}",
         )
 
-    return {"id": slug, "name": name}
+    return {"id": slug, "name": name, "has_soul": True, "soul": soul.summary()}
 
 
 @app.patch("/v1/universes/{uid}")
@@ -838,34 +852,42 @@ def delete_universe(
 
 
 @app.get("/v1/universes/{uid}/premise")
-def get_premise(uid: str, _user: str = Depends(_require_auth)) -> dict[str, str]:
-    """Read the current story premise from PROGRAM.md."""
+def get_premise(uid: str, _user: str = Depends(_require_auth)) -> dict[str, Any]:
+    """Read the current premise, falling back to soul.md purpose."""
     udir = _validate_universe_id(uid)
-    program_path = udir / "PROGRAM.md"
-    if not program_path.exists():
+    text = read_legacy_premise(udir)
+    source = "PROGRAM.md"
+    soul = read_universe_soul(udir)
+    if not text.strip() and soul is not None:
+        text = soul.purpose
+        source = "soul.md"
+    if not text.strip():
         raise HTTPException(
             status_code=404,
             detail="No premise set yet. Use the set premise endpoint to create one.",
         )
-    try:
-        text = program_path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read premise: {e}")
-    return {"text": text}
+    return {
+        "text": text,
+        "source": source,
+        "has_soul": soul is not None,
+        "soul": soul.summary() if soul is not None else None,
+    }
 
 
 @app.post("/v1/universes/{uid}/premise", status_code=200)
 def set_premise(
     uid: str, body: PremiseBody, _user: str = Depends(_require_auth),
-) -> dict[str, str]:
-    """Write or overwrite the story premise in PROGRAM.md."""
+) -> dict[str, Any]:
+    """Write or overwrite the premise as soul.md purpose plus legacy mirror."""
     udir = _validate_universe_id(uid)
-    program_path = udir / "PROGRAM.md"
     try:
-        program_path.write_text(body.text, encoding="utf-8")
+        soul = write_universe_soul(
+            udir, purpose=body.text, lineage="created-from-premise",
+        )
+        legacy_premise_path(udir).write_text(body.text, encoding="utf-8")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to write premise: {e}")
-    return {"status": "ok"}
+    return {"status": "ok", "has_soul": True, "soul": soul.summary()}
 
 
 # -- Notes -----------------------------------------------------------------
@@ -1148,7 +1170,9 @@ def get_overview(uid: str, _user: str = Depends(_require_auth)) -> dict[str, Any
         except OSError:
             pass
 
-    premise_set = (udir / "PROGRAM.md").exists()
+    premise_set = bool(
+        read_legacy_premise(udir).strip() or premise_from_soul(udir).strip()
+    )
     daemon_state = status.get("daemon_state", "idle")
 
     # Check if daemon is actually on this universe

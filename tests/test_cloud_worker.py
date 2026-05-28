@@ -586,6 +586,20 @@ def test_resolve_universe_auto_picks_first_with_program_md(tmp_path, monkeypatch
     assert resolved == with_premise
 
 
+def test_resolve_universe_auto_picks_first_with_soul_md(tmp_path, monkeypatch):
+    empty = tmp_path / "empty-candidate"
+    empty.mkdir()
+    with_soul = tmp_path / "has-soul"
+    with_soul.mkdir()
+    (with_soul / "soul.md").write_text("# Universe Soul\n", encoding="utf-8")
+
+    monkeypatch.delenv("WORKFLOW_UNIVERSE", raising=False)
+    monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
+    with patch("workflow.storage.data_dir", return_value=tmp_path):
+        resolved = cw._resolve_universe_path()
+    assert resolved == with_soul
+
+
 def test_resolve_universe_falls_back_to_default_universe_name(tmp_path, monkeypatch):
     """Empty data dir with nothing — falls back to 'default-universe'
     under data_dir so fantasy_daemon creates it on first run."""

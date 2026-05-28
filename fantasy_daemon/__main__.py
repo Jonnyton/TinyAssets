@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from workflow.universe_soul import premise_from_soul, read_legacy_premise
+
 # Suppress langchain-core Pydantic V1 deprecation warning on Python 3.14+
 warnings.filterwarnings(
     "ignore",
@@ -1309,15 +1311,13 @@ class DaemonController:
         with SqliteSaver.from_conn_string(self._checkpoint_path) as checkpointer:
             compiled = graph_builder.compile(checkpointer=checkpointer)
 
-            # Resolve premise: explicit value > PROGRAM.md fallback
+            # Resolve premise: explicit value > compatibility file > soul.md.
             premise = self._premise
             if not premise:
-                program_md = output_dir / "PROGRAM.md"
-                if program_md.exists():
-                    try:
-                        premise = program_md.read_text(encoding="utf-8").strip()
-                    except OSError:
-                        logger.warning("Could not read %s", program_md)
+                premise = (
+                    read_legacy_premise(output_dir).strip()
+                    or premise_from_soul(output_dir).strip()
+                )
 
             # Workflow configuration
             workflow = {"premise": premise}
@@ -2478,7 +2478,13 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
     if not universe_path:
         try:
             for entry in sorted(Path(base_path).iterdir()):
-                if entry.is_dir() and (entry / "PROGRAM.md").exists():
+                if (
+                    entry.is_dir()
+                    and (
+                        (entry / "PROGRAM.md").exists()
+                        or (entry / "soul.md").exists()
+                    )
+                ):
                     universe_path = str(entry)
                     break
         except OSError:
@@ -2642,7 +2648,7 @@ def main() -> None:
     parser.add_argument(
         "--premise",
         default="",
-        help="Story premise / prompt (overrides PROGRAM.md in universe dir)",
+        help="Story premise / prompt (overrides PROGRAM.md or soul.md in universe dir)",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -2790,7 +2796,7 @@ def main() -> None:
 
         # Resolve which universe to write in.  Priority:
         # 1. .active_universe file (persisted from last session)
-        # 2. First universe subdir that has a PROGRAM.md
+        # 2. First universe subdir that has a PROGRAM.md or soul.md
         # 3. Don't start a daemon — let the API handle it on demand
         active_file = Path(base_path) / ".active_universe"
         universe_path = ""
@@ -2808,7 +2814,13 @@ def main() -> None:
             # Scan for a universe with a premise
             try:
                 for entry in sorted(Path(base_path).iterdir()):
-                    if entry.is_dir() and (entry / "PROGRAM.md").exists():
+                    if (
+                        entry.is_dir()
+                        and (
+                            (entry / "PROGRAM.md").exists()
+                            or (entry / "soul.md").exists()
+                        )
+                    ):
                         universe_path = str(entry)
                         logger.info("Auto-selected universe with premise: %s", entry.name)
                         break

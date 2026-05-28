@@ -8,6 +8,7 @@ import json
 import pytest
 
 from workflow.api.wiki import (
+    _WIKI_READ_DEFAULT_MAX_CHARS,
     _extract_keywords,
     _parse_frontmatter,
     _sanitize_slug,
@@ -181,6 +182,49 @@ class TestWikiRead:
         assert result["is_draft"] is True
         assert result["content"].startswith("[DRAFT] # Pending Concept")
         assert not result["content"].startswith("[DRAFT] [DRAFT]")
+
+    def test_read_large_page_wrapper_exposes_offset_window(self, wiki_dir):
+        content = (
+            "---\ntitle: Huge Project\ntype: project\n---\n\n"
+            + ("a" * 6000)
+            + "\nfinal marker\n"
+        )
+        (wiki_dir / "pages" / "projects" / "huge-project.md").write_text(
+            content, encoding="utf-8"
+        )
+
+        first = json.loads(wiki("read", page="huge-project", max_chars=1000))
+        assert first["truncated"] is True
+        assert "WIKI READ TRUNCATED" in first["content"]
+        assert first["next_offset"] == 1000
+
+        second = json.loads(
+            wiki(
+                "read",
+                page="huge-project",
+                offset=first["next_offset"],
+                max_chars=10000,
+            )
+        )
+        assert second["truncated"] is False
+        assert "final marker" in second["content"]
+
+    def test_read_wrapper_default_window_handles_medium_document(self, wiki_dir):
+        content = (
+            "---\ntitle: Medium Project\ntype: project\n---\n\n"
+            + ("a" * 80_000)
+            + "\nfinal marker\n"
+        )
+        (wiki_dir / "pages" / "projects" / "medium-project.md").write_text(
+            content, encoding="utf-8"
+        )
+
+        result = json.loads(wiki("read", page="medium-project"))
+
+        assert result["truncated"] is False
+        assert result["read_limit"] == _WIKI_READ_DEFAULT_MAX_CHARS
+        assert result["next_offset"] is None
+        assert "final marker" in result["content"]
 
 
 class TestWikiList:

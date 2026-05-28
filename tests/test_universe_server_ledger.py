@@ -113,10 +113,11 @@ def test_set_premise_appends_ledger(universe: str) -> None:
     entry = entries[0]
     assert entry["action"] == "set_premise"
     assert entry["actor"] == "test-user"
-    assert entry["target"] == "PROGRAM.md"
+    assert entry["target"] == "soul.md"
     assert entry["summary"] == "A tower of bones."
     assert "timestamp" in entry
     assert entry["payload"]["bytes"] == len("A tower of bones.".encode("utf-8"))
+    assert entry["payload"]["legacy_program_mirror"] == "PROGRAM.md"
 
 
 def test_set_premise_empty_does_not_append(universe: str) -> None:
@@ -217,6 +218,7 @@ def test_create_universe_appends_ledger_to_new_universe(universe: str) -> None:
     assert entries[0]["action"] == "create_universe"
     assert entries[0]["summary"] == "A seedling kingdom."
     assert entries[0]["payload"]["has_premise"] is True
+    assert entries[0]["payload"]["has_soul"] is True
 
 
 def test_create_universe_surfaces_synthesis_first_run_checklist(
