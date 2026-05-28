@@ -31,6 +31,7 @@ Coverage:
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -120,7 +121,7 @@ def _record_run(
     *,
     branch_def_id: str,
     status: str,
-    finished_at: float | None = None,
+    finished_at: float | str | None = None,
 ) -> str:
     run_id = create_run(
         base_path,
@@ -308,6 +309,64 @@ def test_single_branch_ranks_first(base_path):
     entry = board["entries"][0]
     assert entry["rank"] == 1
     assert entry["branch_def_id"] == "b1"
+
+
+def test_completed_run_with_iso_finished_at_does_not_crash(base_path):
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    _record_run(
+        base_path,
+        branch_def_id="b1",
+        status=RUN_STATUS_COMPLETED,
+        finished_at="2026-05-22T00:00:00Z",
+    )
+
+    now = datetime(2026, 5, 23, tzinfo=timezone.utc).timestamp()
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(by_signal="last_successful_run_at"),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="", now=now,
+        )
+
+    entry = board["entries"][0]
+    expected_ts = datetime(2026, 5, 22, tzinfo=timezone.utc).timestamp()
+    assert entry["signals"]["completed_run_count"] == 1
+    assert entry["signals"]["last_successful_run_at"] == expected_ts
+    assert entry["signals"]["age_days_since_success"] == pytest.approx(1.0)
+
+
+def test_mixed_finished_at_storage_uses_latest_normalized_timestamp(base_path):
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="b1", goal_id="g1")
+    older_iso = "2026-05-22T00:00:00Z"
+    newer_seconds = datetime(2026, 5, 23, tzinfo=timezone.utc).timestamp()
+    _record_run(
+        base_path,
+        branch_def_id="b1",
+        status=RUN_STATUS_COMPLETED,
+        finished_at=older_iso,
+    )
+    _record_run(
+        base_path,
+        branch_def_id="b1",
+        status=RUN_STATUS_COMPLETED,
+        finished_at=newer_seconds,
+    )
+
+    now = datetime(2026, 5, 24, tzinfo=timezone.utc).timestamp()
+    with patch(
+        "workflow.api.quality_leaderboard.dispatch_selector",
+        side_effect=_mock_dispatch_selector(by_signal="last_successful_run_at"),
+    ):
+        board = build_quality_leaderboard(
+            base_path, goal_id="g1", viewer="", now=now,
+        )
+
+    signals = board["entries"][0]["signals"]
+    assert signals["last_successful_run_at"] == newer_seconds
+    assert signals["age_days_since_success"] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

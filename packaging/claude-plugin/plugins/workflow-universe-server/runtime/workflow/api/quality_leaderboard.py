@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -203,8 +204,8 @@ def build_quality_leaderboard(
             "name": branch.get("name", ""),
             "author": branch.get("author", ""),
             "description": branch.get("description", ""),
-            "created_at": branch.get("created_at", 0.0),
-            "updated_at": branch.get("updated_at", 0.0),
+            "created_at": _timestamp_seconds(branch.get("created_at")),
+            "updated_at": _timestamp_seconds(branch.get("updated_at")),
             "branch_version_id": latest_bvid,
         }
 
@@ -306,8 +307,8 @@ def build_quality_leaderboard(
             "name": meta.get("name", ""),
             "author": meta.get("author", ""),
             "description": meta.get("description", ""),
-            "created_at": meta.get("created_at", 0.0),
-            "updated_at": meta.get("updated_at", 0.0),
+            "created_at": _timestamp_seconds(meta.get("created_at")),
+            "updated_at": _timestamp_seconds(meta.get("updated_at")),
             "score": float(raw.get("score") or 0.0),
             "rationale": raw.get("rationale", ""),
             # Pass the signal map through so the chatbot can surface
@@ -508,44 +509,60 @@ def _run_stats(base_path: str | Path, branch_def_id: str) -> dict[str, Any]:
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-                SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
-                MAX(CASE WHEN status = 'completed' THEN finished_at END)
-                    AS last_successful_run_at
+                SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed
             FROM runs
             WHERE branch_def_id = ?
             """,
             (branch_def_id,),
         ).fetchone()
+        finished_rows = conn.execute(
+            """
+            SELECT finished_at
+            FROM runs
+            WHERE branch_def_id = ? AND status = 'completed'
+            """,
+            (branch_def_id,),
+        ).fetchall()
     if row is None:
         return {
             "total": 0, "completed": 0, "failed": 0,
             "last_successful_run_at": 0.0,
         }
-    # last_successful_run_at is REAL but SQLite type-affinity is
-    # permissive. We coerce defensively because the selector branch
-    # consumes the value as a number (and the prompt template
-    # renderer will just str() whatever it gets). An ISO string here
-    # would be confusing for the LLM, so we normalize to a float
-    # epoch when the value is parseable as such.
-    raw = row["last_successful_run_at"]
-    if raw is None or raw == "":
-        last_ok = 0.0
-    else:
-        try:
-            last_ok = float(raw)
-        except (TypeError, ValueError):
-            # Best-effort: try ISO 8601.
-            try:
-                from datetime import datetime
-                last_ok = datetime.fromisoformat(str(raw)).timestamp()
-            except (TypeError, ValueError):
-                last_ok = 0.0
+    # SQLite type-affinity permits mixed REAL/TEXT values in finished_at.
+    # Normalize in Python before max selection so an ISO text row cannot win
+    # lexicographically over a later numeric timestamp.
+    last_ok = max(
+        (_timestamp_seconds(finished_row["finished_at"]) for finished_row in finished_rows),
+        default=0.0,
+    )
     return {
         "total": int(row["total"] or 0),
         "completed": int(row["completed"] or 0),
         "failed": int(row["failed"] or 0),
         "last_successful_run_at": last_ok,
     }
+
+
+def _timestamp_seconds(value: Any) -> float:
+    """Normalize Unix seconds or ISO timestamps to epoch seconds."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def _judgment_stats(
