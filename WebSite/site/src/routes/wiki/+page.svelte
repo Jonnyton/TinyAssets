@@ -4,17 +4,25 @@
   explicit actions because Cloudflare Access currently gates the public route.
 -->
 <script lang="ts">
-  import baked from '$lib/content/mcp-snapshot.json';
-  import { fetchLive, fetchPageBody, liveToSnapshotShape } from '$lib/mcp/live';
-  import type { Snapshot } from '$lib/mcp/types';
-  import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
-  import StatusPill from '$lib/components/Primitives/StatusPill.svelte';
-  import LiveBadge from '$lib/components/LiveBadge.svelte';
+  import baked from "$lib/content/mcp-snapshot.json";
+  import { fetchLive, fetchPageBody, liveToSnapshotShape } from "$lib/mcp/live";
+  import type { Snapshot } from "$lib/mcp/types";
+  import RitualLabel from "$lib/components/Primitives/RitualLabel.svelte";
+  import StatusPill from "$lib/components/Primitives/StatusPill.svelte";
+  import LiveBadge from "$lib/components/LiveBadge.svelte";
 
-  type Lens = 'explore' | 'bugs' | 'work' | 'plans' | 'graph' | 'pulse';
-  type SortMode = 'connected' | 'type' | 'title';
-  type ItemType = 'goal' | 'universe' | 'bug' | 'concept' | 'note' | 'plan' | 'draft';
-  type BodyStatus = 'idle' | 'loading' | 'ready' | 'error';
+  type Lens = "explore" | "bugs" | "work" | "plans" | "graph" | "pulse";
+  type SortMode = "connected" | "type" | "title";
+  type ItemType =
+    | "goal"
+    | "universe"
+    | "bug"
+    | "concept"
+    | "note"
+    | "plan"
+    | "draft";
+  type BodyStatus = "idle" | "loading" | "ready" | "error";
+  type CopyState = "idle" | "copied" | "error";
   type WikiItem = {
     key: string;
     nodeId: string;
@@ -27,51 +35,56 @@
   };
 
   const LENSES: Array<{ id: Lens; label: string }> = [
-    { id: 'explore', label: 'Explore' },
-    { id: 'bugs', label: 'Bugs' },
-    { id: 'work', label: 'Work' },
-    { id: 'plans', label: 'Plans' },
-    { id: 'graph', label: 'Graph' },
-    { id: 'pulse', label: 'Pulse' }
+    { id: "explore", label: "Explore" },
+    { id: "bugs", label: "Bugs" },
+    { id: "work", label: "Work" },
+    { id: "plans", label: "Plans" },
+    { id: "graph", label: "Graph" },
+    { id: "pulse", label: "Pulse" },
   ];
 
+  const WIKI_PROMPT =
+    "Use Workflow to browse the community wiki. Show me current bugs, work targets, universes, and the most connected wiki pages, then suggest one patch or wiki improvement I can help with.";
+
   const TYPE_LABEL: Record<ItemType, string> = {
-    goal: 'work target',
-    universe: 'universe',
-    bug: 'bug',
-    concept: 'concept',
-    note: 'note',
-    plan: 'plan',
-    draft: 'draft'
+    goal: "work target",
+    universe: "universe",
+    bug: "bug",
+    concept: "concept",
+    note: "note",
+    plan: "plan",
+    draft: "draft",
   };
 
   const TYPE_TONE: Record<ItemType, string> = {
-    goal: 'var(--ember-600)',
-    universe: 'var(--signal-live)',
-    bug: 'var(--ember-500)',
-    concept: 'var(--violet-200)',
-    note: 'var(--violet-400)',
-    plan: 'var(--ember-300)',
-    draft: 'var(--signal-idle)'
+    goal: "var(--ember-600)",
+    universe: "var(--signal-live)",
+    bug: "var(--ember-500)",
+    concept: "var(--violet-200)",
+    note: "var(--violet-400)",
+    plan: "var(--ember-300)",
+    draft: "var(--signal-idle)",
   };
 
   let snapshot: Snapshot = $state(baked as unknown as Snapshot);
   let loading = $state(false);
   let liveError = $state<string | null>(null);
-  let query = $state('');
-  let lens = $state<Lens>('explore');
-  let sortMode = $state<SortMode>('connected');
+  let query = $state("");
+  let lens = $state<Lens>("explore");
+  let sortMode = $state<SortMode>("connected");
   let selectedKey = $state<string | null>(null);
   let bodyByKey = $state<Record<string, string>>({});
   let bodyStatusByKey = $state<Record<string, BodyStatus>>({});
   let bodyErrorByKey = $state<Record<string, string>>({});
+  let copyState = $state<CopyState>("idle");
+  let copyTimer = $state<number | undefined>(undefined);
 
   function slugId(path: string): string {
-    return path.split('/').pop()?.replace(/\.md$/, '') ?? path;
+    return path.split("/").pop()?.replace(/\.md$/, "") ?? path;
   }
 
   function pageArg(path: string): string {
-    return path.replace(/\.md$/, '');
+    return path.replace(/\.md$/, "");
   }
 
   function uniqueTags(tags: string[]): string[] {
@@ -79,15 +92,25 @@
   }
 
   function itemMatchesLens(item: WikiItem): boolean {
-    if (lens === 'explore' || lens === 'graph' || lens === 'pulse') return true;
-    if (lens === 'bugs') return item.type === 'bug';
-    if (lens === 'work') return item.type === 'goal' || item.type === 'universe';
-    return item.type === 'plan' || item.type === 'concept' || item.type === 'note' || item.type === 'draft';
+    if (lens === "explore" || lens === "graph" || lens === "pulse") return true;
+    if (lens === "bugs") return item.type === "bug";
+    if (lens === "work")
+      return item.type === "goal" || item.type === "universe";
+    return (
+      item.type === "plan" ||
+      item.type === "concept" ||
+      item.type === "note" ||
+      item.type === "draft"
+    );
   }
 
   function bySort(a: WikiItem, b: WikiItem): number {
-    if (sortMode === 'connected') return b.connectionCount - a.connectionCount || a.title.localeCompare(b.title);
-    if (sortMode === 'type') return a.type.localeCompare(b.type) || a.title.localeCompare(b.title);
+    if (sortMode === "connected")
+      return (
+        b.connectionCount - a.connectionCount || a.title.localeCompare(b.title)
+      );
+    if (sortMode === "type")
+      return a.type.localeCompare(b.type) || a.title.localeCompare(b.title);
     return a.title.localeCompare(b.title);
   }
 
@@ -109,11 +132,11 @@
       items.push({
         key: nodeId,
         nodeId,
-        type: 'goal',
+        type: "goal",
         title: goal.name,
         subtitle: goal.summary || goal.id,
         tags: uniqueTags(goal.tags ?? tags[nodeId] ?? []),
-        connectionCount: degreeByNode.get(nodeId) ?? 0
+        connectionCount: degreeByNode.get(nodeId) ?? 0,
       });
     }
 
@@ -122,11 +145,11 @@
       items.push({
         key: nodeId,
         nodeId,
-        type: 'universe',
+        type: "universe",
         title: universe.id,
-        subtitle: `${universe.phase} · ${universe.word_count.toLocaleString()} words${universe.last_activity_at ? ` · ${universe.last_activity_at}` : ''}`,
-        tags: uniqueTags(['universe', universe.phase]),
-        connectionCount: degreeByNode.get(nodeId) ?? 0
+        subtitle: `${universe.phase} · ${universe.word_count.toLocaleString()} words${universe.last_activity_at ? ` · ${universe.last_activity_at}` : ""}`,
+        tags: uniqueTags(["universe", universe.phase]),
+        connectionCount: degreeByNode.get(nodeId) ?? 0,
       });
     }
 
@@ -135,12 +158,12 @@
       items.push({
         key: nodeId,
         nodeId,
-        type: 'bug',
+        type: "bug",
         title: `${bug.id} — ${bug.title}`,
         subtitle: bug.slug ?? bug.id,
         slug: bug.slug,
-        tags: uniqueTags(tags[nodeId] ?? ['bug']),
-        connectionCount: degreeByNode.get(nodeId) ?? 0
+        tags: uniqueTags(tags[nodeId] ?? ["bug"]),
+        connectionCount: degreeByNode.get(nodeId) ?? 0,
       });
     }
 
@@ -149,12 +172,12 @@
       items.push({
         key: nodeId,
         nodeId,
-        type: 'plan',
+        type: "plan",
         title: plan.title,
         subtitle: plan.slug,
         slug: plan.slug,
-        tags: uniqueTags(tags[nodeId] ?? ['plan']),
-        connectionCount: degreeByNode.get(nodeId) ?? 0
+        tags: uniqueTags(tags[nodeId] ?? ["plan"]),
+        connectionCount: degreeByNode.get(nodeId) ?? 0,
       });
     }
 
@@ -163,12 +186,12 @@
       items.push({
         key: nodeId,
         nodeId,
-        type: 'concept',
+        type: "concept",
         title: concept.title,
         subtitle: concept.slug,
         slug: concept.slug,
-        tags: uniqueTags(tags[nodeId] ?? ['concept']),
-        connectionCount: degreeByNode.get(nodeId) ?? 0
+        tags: uniqueTags(tags[nodeId] ?? ["concept"]),
+        connectionCount: degreeByNode.get(nodeId) ?? 0,
       });
     }
 
@@ -177,12 +200,12 @@
       items.push({
         key: nodeId,
         nodeId,
-        type: 'note',
+        type: "note",
         title: note.title,
         subtitle: note.slug,
         slug: note.slug,
-        tags: uniqueTags(tags[nodeId] ?? ['note']),
-        connectionCount: degreeByNode.get(nodeId) ?? 0
+        tags: uniqueTags(tags[nodeId] ?? ["note"]),
+        connectionCount: degreeByNode.get(nodeId) ?? 0,
       });
     }
 
@@ -191,12 +214,12 @@
       items.push({
         key: nodeId,
         nodeId,
-        type: 'draft',
+        type: "draft",
         title: draft.title,
         subtitle: draft.slug,
         slug: draft.slug,
-        tags: uniqueTags(tags[nodeId] ?? ['draft']),
-        connectionCount: degreeByNode.get(nodeId) ?? 0
+        tags: uniqueTags(tags[nodeId] ?? ["draft"]),
+        connectionCount: degreeByNode.get(nodeId) ?? 0,
       });
     }
 
@@ -209,30 +232,50 @@
       .filter(itemMatchesLens)
       .filter((item) => {
         if (!needle) return true;
-        return [item.title, item.subtitle, item.type, ...item.tags].join(' ').toLowerCase().includes(needle);
+        return [item.title, item.subtitle, item.type, ...item.tags]
+          .join(" ")
+          .toLowerCase()
+          .includes(needle);
       })
       .toSorted(bySort);
   });
 
-  const topConnected = $derived.by(() => allItems.toSorted((a, b) => b.connectionCount - a.connectionCount).slice(0, 8));
-  const selectedItem = $derived(selectedKey ? allItems.find((item) => item.key === selectedKey) ?? null : null);
-  const selectedBody = $derived(selectedKey ? bodyByKey[selectedKey] : undefined);
-  const selectedBodyStatus = $derived(selectedKey ? bodyStatusByKey[selectedKey] ?? 'idle' : 'idle');
-  const selectedBodyError = $derived(selectedKey ? bodyErrorByKey[selectedKey] : undefined);
+  const topConnected = $derived.by(() =>
+    allItems
+      .toSorted((a, b) => b.connectionCount - a.connectionCount)
+      .slice(0, 8),
+  );
+  const selectedItem = $derived(
+    selectedKey
+      ? (allItems.find((item) => item.key === selectedKey) ?? null)
+      : null,
+  );
+  const selectedBody = $derived(
+    selectedKey ? bodyByKey[selectedKey] : undefined,
+  );
+  const selectedBodyStatus = $derived(
+    selectedKey ? (bodyStatusByKey[selectedKey] ?? "idle") : "idle",
+  );
+  const selectedBodyError = $derived(
+    selectedKey ? bodyErrorByKey[selectedKey] : undefined,
+  );
 
   const relatedItems = $derived.by(() => {
     if (!selectedItem) return [];
     return (snapshot.edges ?? [])
-      .filter((edge) => edge.from === selectedItem.nodeId || edge.to === selectedItem.nodeId)
+      .filter(
+        (edge) =>
+          edge.from === selectedItem.nodeId || edge.to === selectedItem.nodeId,
+      )
       .map((edge) => {
         const otherId = edge.from === selectedItem.nodeId ? edge.to : edge.from;
         const item = allItems.find((candidate) => candidate.nodeId === otherId);
         return {
           key: item?.key ?? otherId,
           title: item?.title ?? otherId,
-          type: item?.type ?? 'note',
-          kind: edge.kind ?? 'ref',
-          direction: edge.from === selectedItem.nodeId ? 'out' : 'in'
+          type: item?.type ?? "note",
+          kind: edge.kind ?? "ref",
+          direction: edge.from === selectedItem.nodeId ? "out" : "in",
         };
       })
       .slice(0, 12);
@@ -243,41 +286,44 @@
       return {
         request: {
           calls: [
-            { tool: 'wiki', arguments: { action: 'list' } },
-            { tool: 'goals', arguments: { action: 'list' } },
-            { tool: 'universe', arguments: { action: 'list' } }
-          ]
+            { tool: "wiki", arguments: { action: "list" } },
+            { tool: "goals", arguments: { action: "list" } },
+            { tool: "universe", arguments: { action: "list" } },
+          ],
         },
         response: {
           source: snapshot.source,
           fetched_at: snapshot.fetched_at,
-          counts: snapshot.stats
-        }
+          counts: snapshot.stats,
+        },
       };
     }
 
     if (selectedItem.slug) {
       return {
-        request: { tool: 'wiki', arguments: { action: 'read', page: pageArg(selectedItem.slug) } },
+        request: {
+          tool: "wiki",
+          arguments: { action: "read", page: pageArg(selectedItem.slug) },
+        },
         response: {
           status: selectedBodyStatus,
           content_chars: selectedBody?.length ?? 0,
           related_edges: relatedItems.length,
-          error: selectedBodyError
-        }
+          error: selectedBodyError,
+        },
       };
     }
 
     return {
       request: {
-        tool: selectedItem.type === 'goal' ? 'goals' : 'universe',
-        arguments: { action: 'list' }
+        tool: selectedItem.type === "goal" ? "goals" : "universe",
+        arguments: { action: "list" },
       },
       response: {
-        status: 'snapshot metadata',
+        status: "snapshot metadata",
         node_id: selectedItem.nodeId,
-        related_edges: relatedItems.length
-      }
+        related_edges: relatedItems.length,
+      },
     };
   });
 
@@ -294,24 +340,48 @@
     }
   }
 
+  async function copyWikiPrompt() {
+    try {
+      await navigator.clipboard.writeText(WIKI_PROMPT);
+      copyState = "copied";
+    } catch {
+      copyState = "error";
+    }
+
+    if (copyTimer) window.clearTimeout(copyTimer);
+    if (copyState === "copied") {
+      copyTimer = window.setTimeout(() => {
+        copyState = "idle";
+      }, 2400);
+    }
+  }
+
   function selectItem(item: WikiItem) {
     selectedKey = item.key;
   }
 
   async function loadBody(item: WikiItem | null) {
-    if (!item?.slug || bodyByKey[item.key] || bodyStatusByKey[item.key] === 'loading') return;
+    if (
+      !item?.slug ||
+      bodyByKey[item.key] ||
+      bodyStatusByKey[item.key] === "loading"
+    )
+      return;
 
-    bodyStatusByKey = { ...bodyStatusByKey, [item.key]: 'loading' };
-    bodyErrorByKey = { ...bodyErrorByKey, [item.key]: '' };
+    bodyStatusByKey = { ...bodyStatusByKey, [item.key]: "loading" };
+    bodyErrorByKey = { ...bodyErrorByKey, [item.key]: "" };
     try {
       const body = await fetchPageBody(item.slug);
-      const content = body?.content ?? '';
-      if (!content) throw new Error('read returned no content');
+      const content = body?.content ?? "";
+      if (!content) throw new Error("read returned no content");
       bodyByKey = { ...bodyByKey, [item.key]: content };
-      bodyStatusByKey = { ...bodyStatusByKey, [item.key]: 'ready' };
+      bodyStatusByKey = { ...bodyStatusByKey, [item.key]: "ready" };
     } catch (e: any) {
-      bodyStatusByKey = { ...bodyStatusByKey, [item.key]: 'error' };
-      bodyErrorByKey = { ...bodyErrorByKey, [item.key]: e?.message ?? String(e) };
+      bodyStatusByKey = { ...bodyStatusByKey, [item.key]: "error" };
+      bodyErrorByKey = {
+        ...bodyErrorByKey,
+        [item.key]: e?.message ?? String(e),
+      };
     }
   }
 
@@ -327,26 +397,66 @@
 
 <svelte:head>
   <title>Live wiki — Workflow</title>
-  <meta name="description" content="Browse the live Workflow community wiki: bugs, plans, work targets, universes, graph links, and MCP proof in one public surface." />
+  <meta
+    name="description"
+    content="Browse the live Workflow community wiki: bugs, plans, work targets, universes, graph links, and MCP proof in one public surface."
+  />
 </svelte:head>
 
 <section class="hero">
   <div class="container">
     <div class="head__row">
-      <RitualLabel color="var(--ember-500)">· {snapshot.source} · community wiki ·</RitualLabel>
+      <RitualLabel color="var(--ember-500)"
+        >· {snapshot.source} · community wiki ·</RitualLabel
+      >
       <div class="head__actions">
-        <LiveBadge fetchedAt={snapshot.fetched_at} source={snapshot.source} {loading} />
-        <button type="button" class="refresh" disabled={loading} aria-busy={loading} onclick={refreshLive}>
+        <LiveBadge
+          fetchedAt={snapshot.fetched_at}
+          source={snapshot.source}
+          {loading}
+        />
+        <button
+          type="button"
+          class="refresh"
+          disabled={loading}
+          aria-busy={loading}
+          onclick={refreshLive}
+        >
           Refresh MCP
         </button>
       </div>
     </div>
     <h1>The community wiki is the public work surface.</h1>
     <p class="lead">
-      Bugs, plans, work targets, universes, drafts, tags, and graph edges all resolve here through the same MCP-shaped records a connected chatbot can read.
+      Bugs, plans, work targets, universes, drafts, tags, and graph edges all
+      resolve here through the same MCP-shaped records a connected chatbot can
+      read.
+    </p>
+    <div class="hero__actions" aria-label="Community wiki actions">
+      <a class="hero__action hero__action--primary" href="/connect"
+        >Add it to chat</a
+      >
+      <button type="button" class="hero__action" onclick={copyWikiPrompt}>
+        {copyState === "copied"
+          ? "Copied prompt"
+          : copyState === "error"
+            ? "Copy failed"
+            : "Copy wiki prompt"}
+      </button>
+      <a class="hero__action" href="/graph">Open graph</a>
+    </div>
+    <p class="copy-status" aria-live="polite">
+      {copyState === "copied"
+        ? "Prompt copied for any MCP-capable chatbot."
+        : copyState === "error"
+          ? `Copy manually: ${WIKI_PROMPT}`
+          : ""}
     </p>
     {#if liveError}
-      <p class="error">Live browser fetch failed: <code>{liveError}</code> — showing the baked MCP snapshot.</p>
+      <p class="error">
+        Live browser fetch failed: <code>{liveError}</code> — showing the baked MCP
+        snapshot.
+      </p>
     {/if}
   </div>
 </section>
@@ -357,7 +467,11 @@
       <div class="toolbar" aria-label="Wiki controls">
         <label class="search">
           <span>Search wiki</span>
-          <input bind:value={query} type="search" placeholder="BUG-034, patch loop, agent teams..." />
+          <input
+            bind:value={query}
+            type="search"
+            placeholder="BUG-034, patch loop, agent teams..."
+          />
         </label>
         <div class="segments" role="tablist" aria-label="Wiki lenses">
           {#each LENSES as option}
@@ -382,16 +496,29 @@
         </label>
       </div>
 
-      {#if lens === 'pulse'}
+      {#if lens === "pulse"}
         <div class="pulse">
           <article>
-            <RitualLabel color="var(--signal-live)">· Current pulse ·</RitualLabel>
-            <h2>{snapshot.universes.length} universes, {snapshot.goals.length} work targets.</h2>
-            <p>The public feed is thin live state: identity, phase, counts, and artifact handles. The durable material stays in community wiki pages and graph references.</p>
+            <RitualLabel color="var(--signal-live)"
+              >· Current pulse ·</RitualLabel
+            >
+            <h2>
+              {snapshot.universes.length} universes, {snapshot.goals.length} work
+              targets.
+            </h2>
+            <p>
+              The public feed is thin live state: identity, phase, counts, and
+              artifact handles. The durable material stays in community wiki
+              pages and graph references.
+            </p>
           </article>
           <div class="pulse__facts">
             {#each snapshot.universes as universe}
-              <button type="button" class="pulse__fact" onclick={() => selectByKey(`universe:${universe.id}`)}>
+              <button
+                type="button"
+                class="pulse__fact"
+                onclick={() => selectByKey(`universe:${universe.id}`)}
+              >
                 <span>{universe.id}</span>
                 <strong>{universe.phase}</strong>
                 <small>{universe.word_count.toLocaleString()} words</small>
@@ -399,12 +526,18 @@
             {/each}
           </div>
         </div>
-      {:else if lens === 'graph'}
+      {:else if lens === "graph"}
         <div class="graphlens">
           <article>
-            <RitualLabel color="var(--violet-400)">· Relationship lens ·</RitualLabel>
+            <RitualLabel color="var(--violet-400)"
+              >· Relationship lens ·</RitualLabel
+            >
             <h2>The graph is already in the snapshot.</h2>
-            <p>Edges come from page bodies: wiki links, bare bug tokens, and frontmatter references. The list below is ordered by how much each node ties the community wiki together.</p>
+            <p>
+              Edges come from page bodies: wiki links, bare bug tokens, and
+              frontmatter references. The list below is ordered by how much each
+              node ties the community wiki together.
+            </p>
           </article>
           <ol class="connected">
             {#each topConnected as item}
@@ -424,7 +557,7 @@
 
       <div class="results__head">
         <RitualLabel>· {filteredItems.length} visible ·</RitualLabel>
-        <span>{query ? `filtered by "${query}"` : 'snapshot browse'}</span>
+        <span>{query ? `filtered by "${query}"` : "snapshot browse"}</span>
       </div>
 
       <ul class="results">
@@ -436,7 +569,9 @@
               class:selected={selectedKey === item.key}
               onclick={() => selectItem(item)}
             >
-              <span class="item__type" style:color={TYPE_TONE[item.type]}>{TYPE_LABEL[item.type]}</span>
+              <span class="item__type" style:color={TYPE_TONE[item.type]}
+                >{TYPE_LABEL[item.type]}</span
+              >
               <span class="item__main">
                 <strong>{item.title}</strong>
                 <small>{item.subtitle}</small>
@@ -456,8 +591,16 @@
     <aside class="detail" aria-label="Selected wiki item">
       {#if selectedItem}
         <div class="detail__head">
-          <RitualLabel color={TYPE_TONE[selectedItem.type]}>· {TYPE_LABEL[selectedItem.type]} ·</RitualLabel>
-          <StatusPill kind={selectedItem.type === 'universe' ? 'live' : selectedItem.type === 'draft' ? 'idle' : 'self'}>
+          <RitualLabel color={TYPE_TONE[selectedItem.type]}
+            >· {TYPE_LABEL[selectedItem.type]} ·</RitualLabel
+          >
+          <StatusPill
+            kind={selectedItem.type === "universe"
+              ? "live"
+              : selectedItem.type === "draft"
+                ? "idle"
+                : "self"}
+          >
             {selectedItem.connectionCount} edges
           </StatusPill>
         </div>
@@ -472,19 +615,37 @@
         <div class="readout">
           <RitualLabel>· Body readout ·</RitualLabel>
           {#if selectedItem.slug}
-            {#if selectedBodyStatus === 'loading'}
-              <p class="muted">Fetching <code>wiki action=read</code> through the browser MCP path...</p>
-            {:else if selectedBodyStatus === 'ready'}
+            {#if selectedBodyStatus === "loading"}
+              <p class="muted">
+                Fetching <code>wiki action=read</code> through the browser MCP path...
+              </p>
+            {:else if selectedBodyStatus === "ready"}
               <pre class="body"><code>{selectedBody}</code></pre>
-            {:else if selectedBodyStatus === 'error'}
-              <p class="error error--panel">Browser-side read failed: <code>{selectedBodyError}</code></p>
-              <p class="muted">The snapshot still carries this page's title, tags, and graph links. True browser reads need the public read-only MCP route described in DEPLOY.md.</p>
+            {:else if selectedBodyStatus === "error"}
+              <p class="error error--panel">
+                Browser-side read failed: <code>{selectedBodyError}</code>
+              </p>
+              <p class="muted">
+                The snapshot still carries this page's title, tags, and graph
+                links. True browser reads need the public read-only MCP route
+                described in DEPLOY.md.
+              </p>
             {:else}
-              <p class="muted">Fetch the body through <code>wiki action=read</code>. This may fail in-browser until the public read-only MCP route is open.</p>
-              <button type="button" class="inline-action" onclick={loadSelectedBody}>Fetch body</button>
+              <p class="muted">
+                Fetch the body through <code>wiki action=read</code>. This may
+                fail in-browser until the public read-only MCP route is open.
+              </p>
+              <button
+                type="button"
+                class="inline-action"
+                onclick={loadSelectedBody}>Fetch body</button
+              >
             {/if}
           {:else}
-            <p class="muted">This item comes from a list endpoint, so the detail is snapshot metadata rather than a wiki page body.</p>
+            <p class="muted">
+              This item comes from a list endpoint, so the detail is snapshot
+              metadata rather than a wiki page body.
+            </p>
           {/if}
         </div>
 
@@ -506,13 +667,19 @@
       {:else}
         <RitualLabel>· Select a wiki item ·</RitualLabel>
         <h2>The detail pane shows the proof path.</h2>
-        <p>Choose a wiki page, work target, draft, or universe to inspect tags, edges, body text, and the MCP request shape behind it.</p>
+        <p>
+          Choose a wiki page, work target, draft, or universe to inspect tags,
+          edges, body text, and the MCP request shape behind it.
+        </p>
       {/if}
 
-      <div class="trace">
-        <RitualLabel color="var(--violet-400)">· MCP trace ·</RitualLabel>
+      <details class="trace">
+        <summary>
+          <span>Technical proof</span>
+          <strong>MCP request trace</strong>
+        </summary>
         <pre><code>{JSON.stringify(protocolTrace, null, 2)}</code></pre>
-      </div>
+      </details>
     </aside>
   </div>
 </section>
@@ -537,6 +704,54 @@
     display: flex;
     gap: 10px;
     flex-wrap: wrap;
+  }
+
+  .hero__actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 22px;
+  }
+
+  .hero__action {
+    align-items: center;
+    background: var(--bg-2);
+    border: 1px solid var(--border-2);
+    border-radius: 6px;
+    color: var(--fg-1);
+    cursor: pointer;
+    display: inline-flex;
+    font: 12px var(--font-mono);
+    justify-content: center;
+    letter-spacing: 0.08em;
+    min-height: 38px;
+    padding: 0 14px;
+    text-decoration: none;
+    text-transform: uppercase;
+  }
+
+  .hero__action:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.28);
+  }
+
+  .hero__action--primary {
+    background: var(--ember-600);
+    border-color: var(--ember-600);
+    color: var(--bg-0);
+  }
+
+  .hero__action--primary:hover {
+    background: var(--ember-500);
+  }
+
+  .copy-status {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    min-height: 18px;
+    margin: 8px 0 0;
   }
 
   .lead {
@@ -967,6 +1182,36 @@
     line-height: 1.55;
     padding: 0;
     white-space: pre-wrap;
+  }
+
+  .trace summary {
+    align-items: center;
+    color: var(--fg-1);
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    list-style: none;
+    min-height: 38px;
+    padding-block: 4px;
+    touch-action: manipulation;
+  }
+
+  .trace summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .trace summary span {
+    color: var(--violet-200);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .trace summary strong {
+    font-size: 13px;
+    font-weight: 600;
   }
 
   .related__list {
