@@ -45,6 +45,13 @@ HOST_KEY_PATTERNS = (
 
 CHECKER_VERDICT_MARKER = "workflow-checker-verdict:v1"
 CHECKER_VERDICT_ATTR_RE = re.compile(r"([a-z_]+)=([^\s>]+)")
+REVIEW_DEPTHS = frozenset({
+    "shape-only",
+    "collision-lens",
+    "substantive",
+    "domain-deferred",
+})
+MERGE_APPROVAL_REVIEW_DEPTH = "substantive"
 
 INDEPENDENT_CHECKER_BLOCKER_TERMS = (
     "independent checker",
@@ -129,6 +136,7 @@ class PullRequestFacts:
     approve_with_amendment: bool = False
     precheck_blocked: bool = False
     checker_executor_ineligible: bool = False
+    checker_review_depth_blockers: tuple[str, ...] = ()
     consensus_mirror: ConsensusMirrorFacts = ConsensusMirrorFacts()
 
     @classmethod
@@ -174,6 +182,9 @@ class PullRequestFacts:
             checker_executor_ineligible=bool(
                 pr.get("checker_executor_ineligible")
                 or _has_checker_executor_ineligibility(comments, checker_family)
+            ),
+            checker_review_depth_blockers=tuple(
+                _checker_review_depth_blockers(comments, checker_family, head_oid)
             ),
             consensus_mirror=ConsensusMirrorFacts.from_mapping(pr.get("consensus_mirror")),
         )
@@ -328,7 +339,9 @@ def classify_pr(facts: PullRequestFacts) -> ReadinessResult:
             f"route to {checker_name} checker",
             risk_class,
             "blocked",
-            reasons + [f"required_checker_family={checker_family}"],
+            reasons
+            + list(facts.checker_review_depth_blockers)
+            + [f"required_checker_family={checker_family}"],
         )
 
     if not facts.host_keyed:
@@ -453,10 +466,40 @@ def _has_required_checker_verdict(
         if (
             verdict.get("family") == checker_family
             and verdict.get("verdict") == "approve"
+            and verdict.get("review_depth") == MERGE_APPROVAL_REVIEW_DEPTH
             and _head_matches(verdict, head_oid)
         ):
             return True
     return False
+
+
+def _checker_review_depth_blockers(
+    comments: Any,
+    checker_family: str | None,
+    head_oid: Any,
+) -> list[str]:
+    if not checker_family:
+        return []
+    blockers: list[str] = []
+    for verdict in _checker_verdicts(comments):
+        if (
+            verdict.get("family") != checker_family
+            or verdict.get("verdict") != "approve"
+            or not _head_matches(verdict, head_oid)
+        ):
+            continue
+        review_depth = verdict.get("review_depth")
+        if review_depth not in REVIEW_DEPTHS:
+            blockers.append(
+                "checker approval missing valid review_depth "
+                f"({', '.join(sorted(REVIEW_DEPTHS))})"
+            )
+        elif review_depth != MERGE_APPROVAL_REVIEW_DEPTH:
+            blockers.append(
+                f"checker approval review_depth={review_depth}; "
+                f"merge requires {MERGE_APPROVAL_REVIEW_DEPTH}"
+            )
+    return blockers
 
 
 def _has_checker_send_back_verdict(

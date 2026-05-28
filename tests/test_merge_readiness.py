@@ -93,7 +93,8 @@ def test_independent_checker_verdict_for_current_head_clears_ineligible_executor
                     {
                         "body": (
                             "<!-- workflow-checker-verdict:v1 "
-                            "family=codex verdict=approve head=abc123 run=42 -->\n"
+                            "family=codex verdict=approve review_depth=substantive "
+                            "head=abc123 run=42 -->\n"
                             "**Automated independent Codex checker verdict:** approve"
                         )
                     },
@@ -122,7 +123,8 @@ def test_independent_checker_verdict_for_stale_head_is_ignored():
                     {
                         "body": (
                             "<!-- workflow-checker-verdict:v1 "
-                            "family=codex verdict=approve head=old-head run=42 -->\n"
+                            "family=codex verdict=approve review_depth=substantive "
+                            "head=old-head run=42 -->\n"
                             "**Automated independent Codex checker verdict:** approve"
                         )
                     },
@@ -132,6 +134,59 @@ def test_independent_checker_verdict_for_stale_head_is_ignored():
     )
 
     assert result.state == "needs_independent_codex_checker"
+
+
+def test_checker_approval_without_review_depth_does_not_clear_merge_gate():
+    result = classify_pr(
+        PullRequestFacts.from_mapping(
+            _claude_pr(
+                headRefOid="abc123",
+                comments=[
+                    {
+                        "body": (
+                            "Host key recorded: user explicitly said `720 approved`.\n\n"
+                            "<!-- workflow-checker-verdict:v1 "
+                            "family=codex verdict=approve head=abc123 run=42 -->\n"
+                            "**Automated independent Codex checker verdict:** approve"
+                        )
+                    }
+                ],
+            )
+        )
+    )
+
+    assert result.state == "needs_codex_checker"
+    assert any(
+        "checker approval missing valid review_depth" in reason
+        for reason in result.reasons
+    )
+
+
+def test_shape_only_checker_approval_does_not_clear_merge_gate():
+    result = classify_pr(
+        PullRequestFacts.from_mapping(
+            _claude_pr(
+                headRefOid="abc123",
+                comments=[
+                    {
+                        "body": (
+                            "Host key recorded: user explicitly said `720 approved`.\n\n"
+                            "<!-- workflow-checker-verdict:v1 "
+                            "family=codex verdict=approve review_depth=shape-only "
+                            "head=abc123 run=42 -->\n"
+                            "**Automated independent Codex checker verdict:** approve"
+                        )
+                    }
+                ],
+            )
+        )
+    )
+
+    assert result.state == "needs_codex_checker"
+    assert (
+        "checker approval review_depth=shape-only; merge requires substantive"
+        in result.reasons
+    )
 
 
 def test_structured_checker_send_back_blocks_routing():
