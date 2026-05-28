@@ -613,3 +613,14 @@ Notes:
   fixture handle, and legacy `is_host` equivalence evidence.
 - Ship condition: focused permission/auth/universe tests pass, branch pushed,
   PR opened for opposite-family checker review.
+
+## P0 Canary StructuredContent Parser - 2026-05-27
+
+- 2026-05-27 create `../wf-p0-canary-structured-content` on
+  `codex/p0-canary-structured-content` by codex-gpt5-desktop.
+- Source: public MCP uptime canary run 26557828602 failed because the live
+  tool result text is a preview and the JSON payload is in `structuredContent`.
+- Purpose: fix the canary parser to accept current structured MCP tool
+  payloads while preserving text-JSON fallback.
+- Ship condition: focused canary tests pass, local live canary passes, branch
+  pushed, PR opened for checker/host review.

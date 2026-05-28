@@ -52,6 +52,7 @@ if str(_SCRIPTS) not in sys.path:
 
 from _canary_common import (  # noqa: E402
     _INITIALIZED_NOTIF,  # noqa: F401
+    _extract_structured_tool_payload,
     _extract_tool_text,
     _init_payload,
 )
@@ -247,17 +248,19 @@ def fetch_status_activity_tail(
     if result.get("isError"):
         text = _extract_tool_text(result)[:300]
         raise RevertLoopError(5, f"get_status isError=true: {text!r}")
-    text = _extract_tool_text(result)
-    if not text:
-        raise RevertLoopError(
-            5, f"get_status returned no text content: {result!r}",
-        )
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RevertLoopError(
-            5, f"get_status text not JSON: {exc}; preview={text[:200]!r}",
-        ) from exc
+    payload = _extract_structured_tool_payload(result)
+    if payload is None:
+        text = _extract_tool_text(result)
+        if not text:
+            raise RevertLoopError(
+                5, f"get_status returned no text content: {result!r}",
+            )
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RevertLoopError(
+                5, f"get_status text not JSON: {exc}; preview={text[:200]!r}",
+            ) from exc
 
     caveats = payload.get("evidence_caveats")
     if isinstance(caveats, dict):

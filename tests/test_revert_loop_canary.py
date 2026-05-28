@@ -258,6 +258,8 @@ def _make_tool_response(
     tail: list[str],
     *,
     evidence_caveats: dict | None = None,
+    raw_text: str | None = None,
+    structured_content: dict | None = None,
 ) -> dict:
     import json as _json
     payload = {
@@ -266,11 +268,17 @@ def _make_tool_response(
     }
     if evidence_caveats is not None:
         payload["evidence_caveats"] = evidence_caveats
+    result = {
+        "content": [{
+            "type": "text",
+            "text": raw_text if raw_text is not None else _json.dumps(payload),
+        }],
+    }
+    if structured_content is not None:
+        result["structuredContent"] = structured_content
     return {
         "jsonrpc": "2.0", "id": 2,
-        "result": {
-            "content": [{"type": "text", "text": _json.dumps(payload)}],
-        },
+        "result": result,
     }
 
 
@@ -291,6 +299,28 @@ class TestFetchStatusActivityTail:
             (_make_init_response(), "sid-abc"),
             (None, "sid-abc"),
             (_make_tool_response(tail), "sid-abc"),
+        ])
+        result = rlc.fetch_status_activity_tail(
+            "http://fake/mcp", 10.0, post_fn=stub,
+        )
+        assert result == tail
+
+    def test_happy_path_accepts_structured_content_when_text_is_preview(self):
+        tail = [_revert_line(5)]
+        stub = _StubPost([
+            (_make_init_response(), "sid-abc"),
+            (None, "sid-abc"),
+            (
+                _make_tool_response(
+                    [],
+                    raw_text="Tool result available in structuredContent.",
+                    structured_content={
+                        "active_host": {"host_id": "test"},
+                        "evidence": {"activity_log_tail": tail},
+                    },
+                ),
+                "sid-abc",
+            ),
         ])
         result = rlc.fetch_status_activity_tail(
             "http://fake/mcp", 10.0, post_fn=stub,

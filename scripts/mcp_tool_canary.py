@@ -49,6 +49,7 @@ if str(_SCRIPTS) not in sys.path:
 
 from _canary_common import (  # noqa: E402
     _INITIALIZED_NOTIF,  # noqa: F401
+    _extract_structured_tool_payload,
     _extract_tool_text,
     _init_payload,
 )
@@ -112,6 +113,9 @@ def _parse_tool_json_result(resp: dict[str, Any] | None, label: str) -> dict[str
         raise ToolCanaryError(
             5, f"{label} isError=true: {text!r}",
         )
+    structured = _extract_structured_tool_payload(result)
+    if structured is not None:
+        return structured
     text = _extract_tool_text(result)
     if not text:
         raise ToolCanaryError(

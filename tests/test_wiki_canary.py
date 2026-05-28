@@ -66,21 +66,35 @@ def _notif_resp(sid: str = "sess-wiki") -> tuple[None, str]:
     return (None, sid)
 
 
-def _wiki_write_ok_resp(sid: str = "sess-wiki") -> tuple[dict, str]:
+def _wiki_write_ok_resp(
+    sid: str = "sess-wiki",
+    raw_text: str | None = None,
+    structured_content: dict | None = None,
+) -> tuple[dict, str]:
     body = json.dumps({
         "status": "drafted",
         "path": f"drafts/{wc._CANARY_CATEGORY}/{wc._CANARY_FILENAME}.md",
     })
+    result = {
+        "content": [{
+            "type": "text",
+            "text": raw_text if raw_text is not None else body,
+        }],
+        "isError": False,
+    }
+    if structured_content is not None:
+        result["structuredContent"] = structured_content
     return (
-        {"jsonrpc": "2.0", "id": 2, "result": {
-            "content": [{"type": "text", "text": body}],
-            "isError": False,
-        }},
+        {"jsonrpc": "2.0", "id": 2, "result": result},
         sid,
     )
 
 
-def _wiki_read_ok_resp(sid: str = "sess-wiki") -> tuple[dict, str]:
+def _wiki_read_ok_resp(
+    sid: str = "sess-wiki",
+    raw_text: str | None = None,
+    structured_content: dict | None = None,
+) -> tuple[dict, str]:
     # Read response body must contain the canary content text.
     body = json.dumps({
         "path": f"drafts/{wc._CANARY_CATEGORY}/{wc._CANARY_FILENAME}.md",
@@ -88,11 +102,17 @@ def _wiki_read_ok_resp(sid: str = "sess-wiki") -> tuple[dict, str]:
         "content": f"[DRAFT] {wc._CANARY_CONTENT}",
         "truncated": False,
     })
+    result = {
+        "content": [{
+            "type": "text",
+            "text": raw_text if raw_text is not None else body,
+        }],
+        "isError": False,
+    }
+    if structured_content is not None:
+        result["structuredContent"] = structured_content
     return (
-        {"jsonrpc": "2.0", "id": 3, "result": {
-            "content": [{"type": "text", "text": body}],
-            "isError": False,
-        }},
+        {"jsonrpc": "2.0", "id": 3, "result": result},
         sid,
     )
 
@@ -111,6 +131,30 @@ def _happy_scripted() -> ScriptedPost:
 
 def test_happy_path_run_canary_no_raise():
     wc.run_canary("https://fake/mcp", 5.0, post_fn=_happy_scripted())
+
+
+def test_happy_path_accepts_structured_content_previews():
+    scripted = ScriptedPost([
+        _init_resp(),
+        _notif_resp(),
+        _wiki_write_ok_resp(
+            raw_text="Tool result available in structuredContent.",
+            structured_content={
+                "status": "updated",
+                "path": f"drafts/{wc._CANARY_CATEGORY}/{wc._CANARY_FILENAME}.md",
+            },
+        ),
+        _wiki_read_ok_resp(
+            raw_text="Tool result available in structuredContent.",
+            structured_content={
+                "path": f"drafts/{wc._CANARY_CATEGORY}/{wc._CANARY_FILENAME}.md",
+                "is_draft": True,
+                "content": f"[DRAFT] {wc._CANARY_CONTENT}",
+                "truncated": False,
+            },
+        ),
+    ])
+    wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
 
 
 def test_run_canary_can_scope_filename_for_bisect_replay():
