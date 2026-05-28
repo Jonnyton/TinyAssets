@@ -241,6 +241,25 @@ def test_compose_env_file_covers_daemon_service():
     )
 
 
+def test_compose_codex_auth_mount_matches_home_for_cli_binding():
+    """Services that invoke codex must keep HOME aligned with /app/.codex."""
+    yaml = __import__("yaml")
+    data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+    for service_name in ("daemon", "worker"):
+        service = data["services"][service_name]
+        environment = service.get("environment") or {}
+        volumes = service.get("volumes") or []
+        assert environment.get("HOME") == "/app", (
+            f"{service_name} must set HOME=/app so Codex CLI and get_status "
+            "look for subscription auth at /app/.codex/auth.json"
+        )
+        assert "/var/lib/workflow-codex:/app/.codex" in volumes, (
+            f"{service_name} must mount the persistent Codex auth volume at "
+            "/app/.codex to match HOME=/app"
+        )
+
+
 # ---------------------------------------------------------------------------
 # codex_provider.py — --skip-git-repo-check flag (BUG-004 fix A)
 # ---------------------------------------------------------------------------

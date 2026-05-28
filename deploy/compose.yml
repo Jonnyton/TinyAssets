@@ -43,6 +43,10 @@ services:
     ports:
       - "127.0.0.1:8001:8001"
     environment:
+      # Keep Codex CLI + get_status provider binding aligned with the
+      # persistent bind mount below. If HOME drifts, ~/.codex points away
+      # from /app/.codex and the mounted subscription auth becomes invisible.
+      HOME: /app
       WORKFLOW_DATA_DIR: /data
       WORKFLOW_REPO_ROOT: /data/community-pool
       WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
@@ -160,6 +164,8 @@ services:
       - apparmor=unconfined
     command: ["python", "-m", "workflow.cloud_worker"]
     environment:
+      # Same HOME/auth alignment as `daemon`; worker also invokes codex exec.
+      HOME: /app
       WORKFLOW_DATA_DIR: /data
       WORKFLOW_REPO_ROOT: /data/community-pool
       WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
