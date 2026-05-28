@@ -1746,6 +1746,17 @@ class TestEdgeCaseUniverseCreation:
         assert data["has_soul"] is True
         assert (base_dir / data["id"] / "soul.md").exists()
 
+    def test_create_universe_declares_loop_branch_in_soul(self, client, base_dir):
+        resp = client.post(
+            "/v1/universes",
+            json={"name": "Workflow Lab", "branch_def_id": "workflow:review_loop"},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["soul"]["loop_branch_def_id"] == "workflow:review_loop"
+        soul_md = (base_dir / data["id"] / "soul.md").read_text(encoding="utf-8")
+        assert "- Loop branch: workflow:review_loop" in soul_md
+
     def test_create_universe_empty_name(self, client):
         """Explicit empty string name should auto-generate."""
         resp = client.post("/v1/universes", json={"name": ""})

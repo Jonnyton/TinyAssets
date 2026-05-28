@@ -284,6 +284,10 @@ class CreateUniverseBody(BaseModel):
         None,
         description="Human-readable display name (auto-generated if omitted)",
     )
+    branch_def_id: str | None = Field(
+        None,
+        description="Optional workflow loop branch declared in the new universe soul.",
+    )
 
 
 class UpdateUniverseBody(BaseModel):
@@ -781,7 +785,12 @@ def create_universe(
 
     try:
         udir.mkdir(parents=True, exist_ok=True)
-        soul = ensure_universe_soul(udir)
+        soul = ensure_universe_soul(
+            udir,
+            loop_branch_def_id=(
+                body.branch_def_id if body and body.branch_def_id else ""
+            ),
+        )
         (udir / "canon").mkdir(exist_ok=True)
         (udir / "output").mkdir(exist_ok=True)
         (udir / "universe.json").write_text(
