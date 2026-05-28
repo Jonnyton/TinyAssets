@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.api.market import classify_filing_effort
+from workflow.api.market import classify_filing_effort, filing_effort_dispatch_route
 from workflow.branch_tasks import BranchTask, read_queue
 from workflow.dispatcher import DispatcherConfig, score_task
 from workflow.work_targets import (
@@ -229,6 +229,67 @@ def test_filing_effort_classifier_flags_merge_instant_without_ghost_signals():
     assert result["attention"] == "normal-review-gates"
     assert "mechanical_shape" in result["signals"]
     assert "low_runtime_risk" in result["signals"]
+
+
+def test_merge_instant_effort_route_boosts_dispatcher_pickup_not_host_tier():
+    effort = classify_filing_effort(
+        title="Fix typo in connector docs",
+        kind="patch_request",
+        observed="Mechanical docs-only copy edit with no runtime behavior change.",
+    )
+    route = filing_effort_dispatch_route(effort)
+
+    assert route["lane"] == "merge-instant-fast-lane"
+    assert route["triage_policy"] == "skip-extended-triage-when-no-ghost-signals"
+    assert 0.0 < route["pickup_signal_weight"] <= 5.0
+
+    now = "2026-05-22T00:00:00+00:00"
+    merge_instant = BranchTask(
+        branch_task_id="merge-instant",
+        branch_def_id="branch",
+        universe_id="u",
+        trigger_source="owner_queued",
+        queued_at=now,
+        pickup_signal_weight=route["pickup_signal_weight"],
+    )
+    standard = BranchTask(
+        branch_task_id="standard",
+        branch_def_id="branch",
+        universe_id="u",
+        trigger_source="owner_queued",
+        queued_at=now,
+    )
+    host = BranchTask(
+        branch_task_id="host",
+        branch_def_id="branch",
+        universe_id="u",
+        trigger_source="host_request",
+        queued_at=now,
+    )
+    cfg = DispatcherConfig()
+
+    assert (
+        score_task(merge_instant, now_iso=now, config=cfg)
+        > score_task(standard, now_iso=now, config=cfg)
+    )
+    assert (
+        score_task(host, now_iso=now, config=cfg)
+        > score_task(merge_instant, now_iso=now, config=cfg)
+    )
+
+
+def test_ghost_risk_effort_route_requests_carrier_attention_without_pickup_boost():
+    effort = classify_filing_effort(
+        title="Mechanical classifier follow-up with MSR benchmark prior art",
+        kind="patch_request",
+        observed="Needs opposite-family checker attention before ten-day stall.",
+    )
+    route = filing_effort_dispatch_route(effort)
+
+    assert route["lane"] == "carrier-attention"
+    assert route["triage_policy"] == "notify-carrier-before-daemon-pickup"
+    assert route["attention_family"] == "opposite-family-checker"
+    assert route["pickup_signal_weight"] == 0.0
 
 
 def test_requester_directed_daemon_requires_ownership(

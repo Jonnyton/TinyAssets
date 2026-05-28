@@ -1676,17 +1676,30 @@ def _render_bug_markdown(
         base_tags.extend(t for t in extra_tags if t not in base_tags)
     tags_str = ", ".join(base_tags)
     effort_frontmatter = ""
+    effort_dispatch_section = ""
     if effort_classification:
+        from workflow.api.market import filing_effort_dispatch_route
+
         effort_class = str(effort_classification.get("effort_class") or "standard")
         attention = str(effort_classification.get("attention") or "normal-review-gates")
         raw_signals = effort_classification.get("signals") or []
         signals = [str(signal) for signal in raw_signals if str(signal)]
         signals_str = ", ".join(signals)
+        dispatch_route = filing_effort_dispatch_route(effort_classification)
         effort_frontmatter = (
             f"effort_class: {effort_class}\n"
             f"effort_attention: {attention}\n"
             f"effort_signals: [{signals_str}]\n"
+            f"effort_dispatch_lane: {dispatch_route['lane']}\n"
+            f"effort_pickup_signal_weight: {dispatch_route['pickup_signal_weight']}\n"
         )
+        if effort_class == "ghost-risk":
+            effort_dispatch_section = (
+                "\n\n## Carrier Attention\n\n"
+                "Attention family: opposite-family-checker\n\n"
+                f"Reason: {dispatch_route['visible_reason']}\n\n"
+                f"Signals: {signals_str or '_none_'}\n"
+            )
     return (
         f"---\n"
         f"id: {bug_id}\n"
@@ -1709,6 +1722,7 @@ def _render_bug_markdown(
         f"## Workaround\n\n{workaround or '_none_'}\n\n"
         f"## First seen\n\n{first_seen_date}\n\n"
         f"## Related\n\n_none yet_\n"
+        f"{effort_dispatch_section}"
     )
 
 
@@ -1950,7 +1964,7 @@ def _wiki_file_bug(
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slug = _slugify_title(title)
-    from workflow.api.market import classify_filing_effort
+    from workflow.api.market import classify_filing_effort, filing_effort_dispatch_route
 
     effort_classification = classify_filing_effort(
         title=title,
@@ -1963,6 +1977,7 @@ def _wiki_file_bug(
         workaround=workaround,
         tags=tags,
     )
+    effort_dispatch_route = filing_effort_dispatch_route(effort_classification)
 
     # Dedup check: scan existing filings of THIS kind for Jaccard similarity
     # ≥ threshold. Per-kind only — a feature-request shouldn't dedup against
@@ -1992,6 +2007,7 @@ def _wiki_file_bug(
                 "bug_id": None,
                 "similar": top3,
                 "effort_classification": effort_classification,
+                "effort_dispatch_route": effort_dispatch_route,
                 "hint": (
                     "Similar filings exist. Use cosign_bug to add your context "
                     "to the top match, or set force_new=true if the symptom is "
@@ -2053,6 +2069,11 @@ def _wiki_file_bug(
             "title": title,
             "type": effective_kind,
             "kind": effective_kind,
+            "effort_class": effort_classification["effort_class"],
+            "effort_attention": effort_classification["attention"],
+            "effort_dispatch_lane": effort_dispatch_route["lane"],
+            "effort_classification": effort_classification,
+            "effort_dispatch_route": effort_dispatch_route,
             "component": component,
             "severity": severity,
             "status": "open",
@@ -2172,6 +2193,7 @@ def _wiki_file_bug(
         "severity": severity,
         "component": component,
         "effort_classification": effort_classification,
+        "effort_dispatch_route": effort_dispatch_route,
         "investigation": investigation,
         "note": "Filing sent to navigator triage pipeline. "
                 f"Use `wiki action=list category={category_dir}` to view.",
