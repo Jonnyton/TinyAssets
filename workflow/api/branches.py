@@ -1710,6 +1710,10 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             }],
         })
 
+    top_level_goal_id = (kwargs.get("goal_id") or "").strip()
+    if top_level_goal_id:
+        spec = {**spec, "goal_id": top_level_goal_id}
+
     branch, staging_errors = _staged_branch_from_spec(spec)
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
