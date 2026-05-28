@@ -45,6 +45,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from _canary_common import _extract_structured_tool_payload
+
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 20.0
 GITHUB_API = "https://api.github.com"
@@ -272,6 +274,19 @@ def _parse_text_result(result: dict[str, Any]) -> str:
     raise SyncError(1, "tool returned no text content")
 
 
+def _parse_json_result(result: dict[str, Any]) -> dict[str, Any]:
+    structured = _extract_structured_tool_payload(result)
+    if structured is not None:
+        return structured
+    text = _parse_text_result(result)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SyncError(
+            1, f"tool text not JSON: {exc}; preview={text[:200]!r}",
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Cursor
 # ---------------------------------------------------------------------------
@@ -464,12 +479,16 @@ def fetch_wiki_page_detail(
     result = _mcp_call_tool(
         url, sid, "wiki", {"action": "read", "page": page}, timeout, post_fn
     )
-    text = _parse_text_result(result)
-    try:
-        data = json.loads(text)
-        content = data.get("content", "")
-    except (json.JSONDecodeError, AttributeError):
-        content = text
+    structured = _extract_structured_tool_payload(result)
+    if structured is not None:
+        content = structured.get("content", "")
+    else:
+        text = _parse_text_result(result)
+        try:
+            data = json.loads(text)
+            content = data.get("content", "")
+        except (json.JSONDecodeError, AttributeError):
+            content = text
 
     meta, body = _split_frontmatter(content)
     return {"meta": meta, "body": body, "content": content}
@@ -822,7 +841,7 @@ def sync(
 
         # Fetch wiki list
         list_result = _mcp_call_tool(url, sid, "wiki", {"action": "list"}, timeout, post_fn)
-        wiki_list = json.loads(_parse_text_result(list_result))
+        wiki_list = _parse_json_result(list_result)
 
         cursor = read_cursor(cursor_path)
         new_bugs = list_new_bugs(wiki_list, cursor)

@@ -624,3 +624,16 @@ Notes:
   payloads while preserving text-JSON fallback.
 - Ship condition: focused canary tests pass, local live canary passes, branch
   pushed, PR opened for checker/host review.
+
+## P0 Wiki Bug Sync StructuredContent Parser - 2026-05-28
+
+- 2026-05-28 create `../wf-wiki-bug-sync-structured-content` on
+  `codex/wiki-bug-sync-structured-content` by codex-gpt5-desktop.
+- Source: community loop watch issue #1118 red; `wiki-bug-sync.yml` run
+  26605636623 crashed because `scripts/wiki_bug_sync.py` parsed text only while
+  MCP list payload now lives in `structuredContent`.
+- Purpose: port the structuredContent/text-fallback parser pattern from #1125
+  into the intake sync script and prove it with regression coverage.
+- Ship condition: focused tests pass, branch pushed, PR opened, GitHub
+  `wiki-bug-sync.yml` dispatch succeeds, community loop watch recovers or
+  residual non-intake blockers are documented.
