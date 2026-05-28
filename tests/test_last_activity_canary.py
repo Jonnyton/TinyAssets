@@ -161,6 +161,7 @@ def _universe_inspect_resp(
     raw_text: str | None = None,
     last_activity_at: str | None = "2026-04-22T11:55:00+00:00",
     is_error: bool = False,
+    structured_content: dict | None = None,
     sid: str = "sess-x",
 ):
     if raw_text is None:
@@ -172,11 +173,14 @@ def _universe_inspect_resp(
                 "staleness": "fresh",
             },
         })
+    result = {
+        "content": [{"type": "text", "text": raw_text}],
+        "isError": is_error,
+    }
+    if structured_content is not None:
+        result["structuredContent"] = structured_content
     return (
-        {"jsonrpc": "2.0", "id": 2, "result": {
-            "content": [{"type": "text", "text": raw_text}],
-            "isError": is_error,
-        }},
+        {"jsonrpc": "2.0", "id": 2, "result": result},
         sid,
     )
 
@@ -188,6 +192,32 @@ def test_run_canary_fresh_returns_zero():
     scripted = ScriptedPost([
         _init_resp(), _notif_resp(),
         _universe_inspect_resp(last_activity_at="2026-04-22T11:55:00+00:00"),
+    ])
+    code, msg = lac.run_canary(
+        "https://fake/mcp", 5.0, 30,
+        post_fn=scripted, now=_utc("2026-04-22T12:00:00+00:00"),
+    )
+    assert code == 0
+    assert "FRESH" in msg
+
+
+def test_run_canary_accepts_structured_content_when_text_is_preview():
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(),
+        _universe_inspect_resp(
+            raw_text=(
+                "Tool result: active_targets=5; recent_activity=10. "
+                "Full payload is in structuredContent."
+            ),
+            structured_content={
+                "universe_id": "concordance",
+                "daemon": {
+                    "phase": "writing",
+                    "last_activity_at": "2026-04-22T11:55:00+00:00",
+                    "staleness": "fresh",
+                },
+            },
+        ),
     ])
     code, msg = lac.run_canary(
         "https://fake/mcp", 5.0, 30,

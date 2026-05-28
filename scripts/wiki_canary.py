@@ -46,7 +46,12 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 from _canary_common import _INITIALIZED_NOTIF, _init_payload  # noqa: E402
-from mcp_tool_canary import ToolCanaryError, _extract_tool_text, _post  # noqa: E402
+from mcp_tool_canary import (  # noqa: E402
+    ToolCanaryError,
+    _extract_structured_tool_payload,
+    _extract_tool_text,
+    _post,
+)
 from uptime_canary import _append_log, _now_local_iso  # noqa: E402
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
@@ -176,15 +181,17 @@ def run_canary(
     if write_result.get("isError"):
         text = _extract_tool_text(write_result)[:300]
         raise ToolCanaryError(6, f"wiki write isError=true: {text!r}")
-    write_text = _extract_tool_text(write_result)
-    if not write_text:
-        raise ToolCanaryError(6, f"wiki write returned no text content: {write_result!r}")
-    try:
-        write_obj = json.loads(write_text)
-    except json.JSONDecodeError as exc:
-        raise ToolCanaryError(
-            6, f"wiki write text not JSON: {exc}; preview={write_text[:200]!r}"
-        ) from exc
+    write_obj = _extract_structured_tool_payload(write_result)
+    if write_obj is None:
+        write_text = _extract_tool_text(write_result)
+        if not write_text:
+            raise ToolCanaryError(6, f"wiki write returned no text content: {write_result!r}")
+        try:
+            write_obj = json.loads(write_text)
+        except json.JSONDecodeError as exc:
+            raise ToolCanaryError(
+                6, f"wiki write text not JSON: {exc}; preview={write_text[:200]!r}"
+            ) from exc
     # Server returns "drafted" on first write of a new draft, "updated" on
     # any subsequent write to the same path. Both are healthy for the canary.
     if write_obj.get("status") not in (
@@ -208,9 +215,13 @@ def run_canary(
     if read_result.get("isError"):
         text = _extract_tool_text(read_result)[:300]
         raise ToolCanaryError(7, f"wiki read isError=true: {text!r}")
-    read_text = _extract_tool_text(read_result)
-    if not read_text:
-        raise ToolCanaryError(7, f"wiki read returned no text content: {read_result!r}")
+    read_obj = _extract_structured_tool_payload(read_result)
+    if read_obj is not None:
+        read_text = json.dumps(read_obj, default=str)
+    else:
+        read_text = _extract_tool_text(read_result)
+        if not read_text:
+            raise ToolCanaryError(7, f"wiki read returned no text content: {read_result!r}")
     if _CANARY_CONTENT not in read_text:
         raise ToolCanaryError(
             7,

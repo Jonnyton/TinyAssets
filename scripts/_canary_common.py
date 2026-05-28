@@ -10,7 +10,7 @@ BUG-028 demonstrated for the wiki path.
 Scope (intentionally tight):
     - HTTP POST + parse logic.
     - MCP `initialize` payload builder + `notifications/initialized` constant.
-    - Tool-result text extraction.
+    - Tool-result text / structured payload extraction.
 
 Out of scope (per Task #14 conservative-scope rule):
     - Per-canary exception classes (ToolCanaryError, LastActivityError,
@@ -130,3 +130,16 @@ def _extract_tool_text(tool_result: dict[str, Any]) -> str:
         for item in tool_result.get("content", [])
         if item.get("type") == "text"
     )
+
+
+def _extract_structured_tool_payload(
+    tool_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return a dict payload from MCP structuredContent when available."""
+    structured = tool_result.get("structuredContent")
+    if not isinstance(structured, dict):
+        return None
+    nested = structured.get("result")
+    if set(structured) == {"result"} and isinstance(nested, dict):
+        return nested
+    return structured

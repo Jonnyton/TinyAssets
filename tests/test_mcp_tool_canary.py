@@ -55,6 +55,7 @@ def _universe_inspect_resp(
     universe_id: str = "demo-universe",
     is_error: bool = False,
     raw_text: str | None = None,
+    structured_content: dict | None = None,
     sid: str = "sess-123",
 ) -> tuple[dict, str]:
     if raw_text is None:
@@ -62,11 +63,14 @@ def _universe_inspect_resp(
             "universe_id": universe_id,
             "daemon": {"phase": "idle"},
         })
+    result = {
+        "content": [{"type": "text", "text": raw_text}],
+        "isError": is_error,
+    }
+    if structured_content is not None:
+        result["structuredContent"] = structured_content
     return (
-        {"jsonrpc": "2.0", "id": 3, "result": {
-            "content": [{"type": "text", "text": raw_text}],
-            "isError": is_error,
-        }},
+        {"jsonrpc": "2.0", "id": 3, "result": result},
         sid,
     )
 
@@ -75,6 +79,7 @@ def _workflow_status_resp(
     schema_version: int = 1,
     is_error: bool = False,
     raw_text: str | None = None,
+    structured_content: dict | None = None,
     sid: str = "sess-123",
 ) -> tuple[dict, str]:
     if raw_text is None:
@@ -83,11 +88,14 @@ def _workflow_status_resp(
             "universe_id": "demo-universe",
             "active_host": {"host_id": "host"},
         })
+    result = {
+        "content": [{"type": "text", "text": raw_text}],
+        "isError": is_error,
+    }
+    if structured_content is not None:
+        result["structuredContent"] = structured_content
     return (
-        {"jsonrpc": "2.0", "id": 3, "result": {
-            "content": [{"type": "text", "text": raw_text}],
-            "isError": is_error,
-        }},
+        {"jsonrpc": "2.0", "id": 3, "result": result},
         sid,
     )
 
@@ -138,6 +146,26 @@ def test_happy_path_returns_inspect_dict():
     assert scripted.calls[3]["step_code"] == 5  # tools/call
 
 
+def test_happy_path_accepts_structured_content_when_text_is_preview():
+    scripted = ScriptedPost([
+        _init_resp(),
+        _initialized_notif_resp(),
+        _tools_list_resp(),
+        _universe_inspect_resp(
+            raw_text=(
+                "Tool result: active_targets=5; recent_activity=10. "
+                "Full payload is in structuredContent."
+            ),
+            structured_content={
+                "universe_id": "structured-uni",
+                "daemon": {"phase": "idle"},
+            },
+        ),
+    ])
+    result = tc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert result["universe_id"] == "structured-uni"
+
+
 def test_directory_tool_set_uses_workflow_status_probe():
     scripted = ScriptedPost([
         _init_resp(),
@@ -155,6 +183,28 @@ def test_directory_tool_set_uses_workflow_status_probe():
         "name": "read.graph",
         "arguments": {"target": "status"},
     }
+
+
+def test_directory_probe_accepts_nested_structured_content_result():
+    scripted = ScriptedPost([
+        _init_resp(),
+        _initialized_notif_resp(),
+        _tools_list_resp(tools=[
+            {"name": "read.graph", "description": "..."},
+        ]),
+        _workflow_status_resp(
+            raw_text="Tool result available in structuredContent.",
+            structured_content={
+                "result": {
+                    "schema_version": 1,
+                    "universe_id": "directory-uni",
+                },
+            },
+        ),
+    ])
+    result = tc.run_canary("https://fake/mcp-directory", 5.0, post_fn=scripted)
+    assert result["schema_version"] == 1
+    assert result["universe_id"] == "directory-uni"
 
 
 def test_main_exit_zero_on_happy_path(monkeypatch, capsys):
