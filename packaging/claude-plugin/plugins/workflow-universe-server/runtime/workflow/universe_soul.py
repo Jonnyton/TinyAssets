@@ -33,6 +33,11 @@ class UniverseSoul:
     lineage: str = "template"
     edit_authority: str = DEFAULT_EDIT_AUTHORITY
     loop_branch_def_id: str = NO_LOOP_DECLARED
+    # Each entry is a "<sink>:<destination>" grant naming a real-world hand
+    # this universe's founder authorizes (e.g. "github_pull_request:owner/repo").
+    # Empty = nothing declared (transitional: effectors fall through to the
+    # legacy env-capability + consent gates until the soul-authority cutover).
+    effect_authority: tuple[str, ...] = ()
 
     def summary(self) -> dict[str, object]:
         return {
@@ -43,6 +48,7 @@ class UniverseSoul:
             "lineage": self.lineage,
             "edit_authority": self.edit_authority,
             "loop_branch_def_id": self.loop_branch_def_id,
+            "effect_authority": list(self.effect_authority),
             "versions_dir": SOUL_VERSIONS_DIR,
         }
 
@@ -71,6 +77,7 @@ class PinnedUniverseSoul:
             "lineage": self.soul.lineage,
             "edit_authority": self.soul.edit_authority,
             "loop_branch_def_id": self.soul.loop_branch_def_id,
+            "effect_authority": list(self.soul.effect_authority),
             "identity_boundary": (
                 "Universe soul guides this context only; it does not change "
                 "the actor identity or user memory scope."
@@ -126,6 +133,10 @@ def render_soul_markdown(soul: UniverseSoul) -> str:
         "",
         soul.edit_authority.strip() or DEFAULT_EDIT_AUTHORITY,
         "",
+        "## Effect Authority",
+        "",
+        _render_list(soul.effect_authority),
+        "",
     ])
 
 
@@ -152,6 +163,7 @@ def read_universe_soul(universe_dir: Path) -> UniverseSoul | None:
             or _read_meta(text, "Edit authority", DEFAULT_EDIT_AUTHORITY)
         ),
         loop_branch_def_id=_read_loop_branch_meta(text),
+        effect_authority=_read_list_section(text, "Effect Authority"),
     )
 
 
@@ -190,6 +202,7 @@ def write_universe_soul(
     lineage: str = "template",
     edit_authority: str = DEFAULT_EDIT_AUTHORITY,
     loop_branch_def_id: str = NO_LOOP_DECLARED,
+    effect_authority: tuple[str, ...] = (),
 ) -> UniverseSoul:
     universe_dir.mkdir(parents=True, exist_ok=True)
     existing = read_universe_soul(universe_dir)
@@ -208,6 +221,9 @@ def write_universe_soul(
             lineage=lineage.strip() or "template",
             edit_authority=edit_authority.strip() or DEFAULT_EDIT_AUTHORITY,
             loop_branch_def_id=loop_branch_def_id.strip(),
+            effect_authority=tuple(
+                item.strip() for item in effect_authority if item.strip()
+            ),
         )
     else:
         soul = replace(
@@ -231,6 +247,10 @@ def write_universe_soul(
             edit_authority=edit_authority.strip() or existing.edit_authority,
             loop_branch_def_id=(
                 loop_branch_def_id.strip() or existing.loop_branch_def_id
+            ),
+            effect_authority=(
+                tuple(item.strip() for item in effect_authority if item.strip())
+                or existing.effect_authority
             ),
         )
 
@@ -277,6 +297,12 @@ def premise_from_soul(universe_dir: Path) -> str:
 def loop_branch_from_soul(universe_dir: Path) -> str:
     soul = read_universe_soul(universe_dir)
     return soul.loop_branch_def_id if soul is not None else NO_LOOP_DECLARED
+
+
+def effect_authority_from_soul(universe_dir: Path) -> tuple[str, ...]:
+    """Return the soul-declared effect-authority grants, or () if none/no soul."""
+    soul = read_universe_soul(universe_dir)
+    return soul.effect_authority if soul is not None else ()
 
 
 def _render_list(items: tuple[str, ...]) -> str:

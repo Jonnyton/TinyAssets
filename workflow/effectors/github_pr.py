@@ -82,6 +82,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from workflow.effectors.authority import (
+    DENIED as SOUL_AUTHORITY_DENIED,
+)
+from workflow.effectors.authority import (
+    effect_authority_key,
+    resolve_soul_effect_authority,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -626,6 +634,34 @@ def run_github_pr_effector(
         }
 
     universe_dir = _resolve_universe_dir(base_path)
+
+    # ── Gate 0: soul-scoped effect-authority ───────────────────────────
+    # The running universe's soul is the source of effect-authority (gap 1 of
+    # the souled-universe self-maintenance model). A universe whose soul.md
+    # declares effect_authority grants must include this sink:destination, or
+    # the write fails closed here. A universe that declares NOTHING falls
+    # through to the legacy env-capability + consent gates below — transitional
+    # behavior the cutover removes once souls declare their grants. See
+    # docs/design-notes/2026-05-28-souled-universe-effect-authority.md.
+    soul_authority = resolve_soul_effect_authority(
+        universe_dir, EXTERNAL_WRITE_SINK_GITHUB_PR, destination
+    )
+    if soul_authority == SOUL_AUTHORITY_DENIED:
+        return {
+            "dry_run": True,
+            "phase": "phase_2",
+            "reason": "soul_not_authorized",
+            "destination": destination,
+            "intent": packet,
+            "matched_output_key": matched_key,
+            "hint": (
+                "This universe's soul declares effect_authority grants but "
+                "none match "
+                f'"{effect_authority_key(EXTERNAL_WRITE_SINK_GITHUB_PR, destination)}". '
+                "Add that grant to the soul's '## Effect Authority' section to "
+                "authorize this hand."
+            ),
+        }
 
     # ── Gate 1: capability env ─────────────────────────────────────────
     # Round-2 P1.2: lookup is by exact destination string against the
