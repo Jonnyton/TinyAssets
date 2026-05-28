@@ -147,6 +147,14 @@ The MCP `gates claim` path should validate this metadata once the current
 `workflow/api/market.py` sweep clears; until then, request labels and PR policy
 checks enforce the cloud-visible subset.
 
+Post-2026-06-15 Codex-written patch-loop PRs may use the weaker GPT-5.5-only
+checker path defined in
+`pages/plans/design-007-post-june-15-gpt-5-5-only-checker-path-for-codex-written-pat.md`
+when no qualified Claude-family checker is available. That path must not be
+advertised as `checker:cross-family`; it requires explicit weaker-path metadata,
+canonical evidence keys, stricter fixture gates, and Claude-family review marked
+as preferred but optional advisory.
+
 ---
 
 ## 5. Worked example — change_loop_v1's investigation gate
