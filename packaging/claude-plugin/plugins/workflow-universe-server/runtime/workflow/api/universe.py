@@ -946,6 +946,22 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     }
 
 
+_TOP_LEVEL_OPERATIONAL_DATA_DIRS = frozenset({
+    "lance",
+    "output",
+    "runs",
+    "wiki",
+})
+
+
+def _is_listable_universe_dir(path: Path) -> bool:
+    return (
+        path.is_dir()
+        and not path.name.startswith(".")
+        and path.name not in _TOP_LEVEL_OPERATIONAL_DATA_DIRS
+    )
+
+
 def _action_list_universes(**_kwargs: Any) -> str:
     base = _base_path()
     if not base.is_dir():
@@ -966,7 +982,7 @@ def _action_list_universes(**_kwargs: Any) -> str:
 
     universes = []
     for child in sorted(all_entries):
-        if not child.is_dir() or child.name.startswith("."):
+        if not _is_listable_universe_dir(child):
             continue
         status = _read_json(child / "status.json")
         liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
@@ -990,7 +1006,8 @@ def _action_list_universes(**_kwargs: Any) -> str:
         else:
             result["note"] = (
                 f"Base directory has {len(all_entries)} entries but none "
-                f"are valid universes (all hidden or non-directories): {base}"
+                f"are valid universes (all hidden or non-directories or "
+                f"reserved operational data directories): {base}"
             )
     return json.dumps(result)
 

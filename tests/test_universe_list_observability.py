@@ -16,6 +16,8 @@ import pytest
 
 from workflow.api.universe import _action_list_universes
 from workflow.universe_server import get_status
+
+
 @pytest.fixture
 def empty_base(tmp_path, monkeypatch):
     """Point WORKFLOW_DATA_DIR at an empty existing directory."""
@@ -50,6 +52,16 @@ def populated_base(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def operational_dirs_base(tmp_path, monkeypatch):
+    """Base dir contains storage subsystem directories beside universes."""
+    (tmp_path / "alpha").mkdir()
+    for name in ("wiki", "runs", "lance", "output"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
 class TestListUniversesEmptyNote:
     def test_missing_base_returns_does_not_exist_note(self, missing_base):
         result = json.loads(_action_list_universes())
@@ -74,6 +86,11 @@ class TestListUniversesEmptyNote:
         assert result["count"] == 1
         assert result["universes"][0]["id"] == "alpha"
         assert "note" not in result
+
+    def test_operational_storage_dirs_are_not_universes(self, operational_dirs_base):
+        result = json.loads(_action_list_universes())
+        assert result["count"] == 1
+        assert [u["id"] for u in result["universes"]] == ["alpha"]
 
 
 class TestGetStatusUniverseExists:
