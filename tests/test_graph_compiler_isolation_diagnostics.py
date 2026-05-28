@@ -28,11 +28,12 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.branches import NodeDefinition
+from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
 from workflow.graph_compiler import (
     CompilerError,
     _build_prompt_template_node,
     _state_schema_defaults,
+    compile_branch,
     seed_initial_state,
 )
 
@@ -590,3 +591,68 @@ def test_build_branch_state_schema_default_seeded_to_strict_prompt(
         assert result["draft"] == "drafted"
     finally:
         importlib.reload(us)
+
+
+# ─── BUG-091: partial state_schema must fail before runtime drops keys ───
+
+
+def test_compile_rejects_output_key_missing_from_partial_state_schema():
+    """A partial state_schema used to validate successfully, then LangGraph
+    dropped the node's undeclared output at invoke time. Validation must fail
+    before compile/run_branch can reach that silent-drop path.
+    """
+    branch = BranchDefinition(name="BUG-091 output drop", entry_point="n1")
+    branch.node_defs = [
+        NodeDefinition(
+            node_id="n1",
+            display_name="N1",
+            output_keys=["draft"],
+            prompt_template="write",
+        )
+    ]
+    branch.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node="n1"),
+        EdgeDefinition(from_node="n1", to_node="END"),
+    ]
+    branch.state_schema = [{"name": "other", "type": "str"}]
+
+    with pytest.raises(CompilerError) as exc:
+        compile_branch(
+            branch,
+            provider_call=lambda prompt, system="", *, role="writer": "draft",
+        )
+
+    msg = str(exc.value)
+    assert "output_key 'draft' is not declared in state_schema" in msg
+
+
+def test_compile_rejects_input_key_missing_from_partial_state_schema():
+    """Initial inputs outside a non-empty state_schema are dropped by the
+    synthesized runtime state. Validation must catch the undeclared key.
+    """
+    branch = BranchDefinition(name="BUG-091 input drop", entry_point="n1")
+    branch.node_defs = [
+        NodeDefinition(
+            node_id="n1",
+            display_name="N1",
+            input_keys=["topic"],
+            output_keys=["draft"],
+            prompt_template="{topic}",
+        )
+    ]
+    branch.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node="n1"),
+        EdgeDefinition(from_node="n1", to_node="END"),
+    ]
+    branch.state_schema = [{"name": "draft", "type": "str"}]
+
+    with pytest.raises(CompilerError) as exc:
+        compile_branch(
+            branch,
+            provider_call=lambda prompt, system="", *, role="writer": "draft",
+        )
+
+    msg = str(exc.value)
+    assert "input_key 'topic' is not declared in state_schema" in msg
