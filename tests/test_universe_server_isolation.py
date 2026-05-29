@@ -19,6 +19,43 @@ from pathlib import Path
 import pytest
 
 import workflow.api.universe as us
+from workflow.auth.middleware import auth_middleware, set_provider
+from workflow.auth.provider import AuthProvider, DevAuthProvider, Identity
+from workflow.daemon_server import grant_universe_access
+
+
+class _StaticAuthProvider(AuthProvider):
+    def __init__(self, identity: Identity | None) -> None:
+        self.identity = identity
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self.identity if token == "ok" else None
+
+    def is_auth_required(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict) -> dict:
+        return {"client_id": "test-client", **metadata}
+
+    def create_authorization(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        scope: str,
+        state: str,
+        code_challenge: str,
+        code_challenge_method: str,
+    ) -> str:
+        return "test-code"
+
+    def exchange_code(
+        self,
+        code: str,
+        client_id: str,
+        redirect_uri: str,
+        code_verifier: str,
+    ) -> dict | None:
+        return None
 
 
 @pytest.fixture
@@ -27,6 +64,29 @@ def universe_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     base.mkdir()
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
     return base
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_provider() -> None:
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+    yield
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+def _authenticate(user_id: str, scopes: list[str] | None = None) -> None:
+    identity = Identity(
+        user_id=user_id,
+        username=user_id,
+        capabilities=scopes or [
+            "workflow.universe.read",
+            "workflow.universe.write",
+            "workflow.universe.admin",
+        ],
+    )
+    set_provider(_StaticAuthProvider(identity))
+    auth_middleware("ok")
 
 
 def _make_universe(base: Path, uid: str) -> Path:
@@ -126,6 +186,99 @@ class TestUniverseIdInResponses:
         _make_universe(universe_base, "alpha")
         out = json.loads(us._action_inspect_universe(universe_id="alpha"))
         assert out["universe_id"] == "alpha"
+
+
+class TestUniverseAclEnforcement:
+    def test_private_universe_rejects_unlisted_reader(self, universe_base):
+        udir = _make_universe(universe_base, "private")
+        (udir / "output").mkdir()
+        (udir / "output" / "secret.md").write_text("secret", encoding="utf-8")
+        grant_universe_access(
+            universe_base,
+            universe_id="private",
+            actor_id="owner",
+            permission="admin",
+            granted_by="owner",
+        )
+
+        _authenticate("intruder", ["workflow.universe.read"])
+
+        inspect_out = json.loads(us._universe_impl(
+            action="inspect",
+            universe_id="private",
+        ))
+        read_out = json.loads(us._universe_impl(
+            action="read_output",
+            universe_id="private",
+            path="secret.md",
+        ))
+
+        assert inspect_out["error"] == "universe_access_denied"
+        assert inspect_out["universe_id"] == "private"
+        assert inspect_out["required_permission"] == "read"
+        assert read_out["error"] == "universe_access_denied"
+
+    def test_private_universe_rejects_reader_write(self, universe_base):
+        _make_universe(universe_base, "private")
+        grant_universe_access(
+            universe_base,
+            universe_id="private",
+            actor_id="reader",
+            permission="read",
+            granted_by="owner",
+        )
+
+        _authenticate("reader", ["workflow.universe.write"])
+
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="private",
+            text="Overwrite attempt.",
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["required_permission"] == "write"
+        assert not (universe_base / "private" / "PROGRAM.md").exists()
+
+    def test_private_universe_allows_granted_writer(self, universe_base):
+        _make_universe(universe_base, "private")
+        grant_universe_access(
+            universe_base,
+            universe_id="private",
+            actor_id="writer",
+            permission="write",
+            granted_by="owner",
+        )
+
+        _authenticate("writer", ["workflow.universe.write"])
+
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="private",
+            text="Allowed update.",
+        ))
+
+        assert out["status"] == "updated"
+        assert (universe_base / "private" / "PROGRAM.md").read_text(
+            encoding="utf-8",
+        ) == "Allowed update."
+
+    def test_list_filters_private_universes_without_grant(self, universe_base):
+        _make_universe(universe_base, "public")
+        _make_universe(universe_base, "private")
+        grant_universe_access(
+            universe_base,
+            universe_id="private",
+            actor_id="owner",
+            permission="admin",
+            granted_by="owner",
+        )
+
+        _authenticate("intruder", ["workflow.universe.read"])
+
+        out = json.loads(us._universe_impl(action="list"))
+
+        assert [row["id"] for row in out["universes"]] == ["public"]
 
 
 class TestScopeHeader:

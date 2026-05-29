@@ -89,6 +89,8 @@ ACTION_SUBMIT_PRIORITY_REQUEST = "submit_priority_request"
 ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
 ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
 LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
+_ACL_READ_PERMISSIONS = frozenset({"read", "write", "admin"})
+_ACL_WRITE_PERMISSIONS = frozenset({"write", "admin"})
 
 
 def _env_actor_grants() -> tuple[str, ...]:
@@ -107,6 +109,50 @@ def _env_actor_can(action: str, *, universe_id: str = "") -> bool:
         grants=grants,
         scope=PermissionScope(universe_id=universe_id),
     ).allowed
+
+
+def _current_actor_id() -> str:
+    from workflow.auth.middleware import current_identity
+
+    identity = current_identity()
+    return identity.user_id or "anonymous"
+
+
+def _universe_acl_allows(uid: str, *, write: bool = False) -> bool:
+    from workflow.daemon_server import (
+        universe_access_permission,
+        universe_is_private,
+    )
+
+    if not uid:
+        return True
+    base = _base_path()
+    if not universe_is_private(base, universe_id=uid):
+        return True
+    permission = universe_access_permission(
+        base,
+        universe_id=uid,
+        actor_id=_current_actor_id(),
+    )
+    allowed = _ACL_WRITE_PERMISSIONS if write else _ACL_READ_PERMISSIONS
+    return permission in allowed
+
+
+def _universe_acl_error(action: str, *, universe_id: str = "") -> str | None:
+    if action in {"list", "create_universe"}:
+        return None
+
+    uid = universe_id or _default_universe()
+    write = action in WRITE_ACTIONS
+    if _universe_acl_allows(uid, write=write):
+        return None
+
+    return json.dumps({
+        "error": "universe_access_denied",
+        "universe_id": uid,
+        "actor_id": _current_actor_id(),
+        "required_permission": "write" if write else "read",
+    })
 
 # WRITE_ACTIONS is the single source of truth for which `universe` tool
 # actions are writes. The dispatcher consults this table; any action
@@ -983,6 +1029,8 @@ def _action_list_universes(**_kwargs: Any) -> str:
     universes = []
     for child in sorted(all_entries):
         if not _is_listable_universe_dir(child):
+            continue
+        if not _universe_acl_allows(child.name):
             continue
         status = _read_json(child / "status.json")
         liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
@@ -4525,6 +4573,9 @@ def _universe_impl(
     scope_error = _dispatch_scope_error("universe", action, universe_id=universe_id)
     if scope_error is not None:
         return scope_error
+    acl_error = _universe_acl_error(action, universe_id=universe_id)
+    if acl_error is not None:
+        return acl_error
 
     # Build kwargs from all optional params
     kwargs: dict[str, Any] = {
