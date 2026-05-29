@@ -78,6 +78,42 @@ def test_happy_substring_match_and_ranking(monkeypatch):
     assert status["ref"] == "main"
 
 
+def test_exact_path_term_outranks_basename_flood(monkeypatch):
+    # PR-157 regression: a query carrying the exact path AND a common basename
+    # must surface the exact file at the top, not let a crowd of same-basename
+    # files truncate it out under the result cap.
+    flood = [f"pkg{i}/__init__.py" for i in range(40)]
+    http = _fake_http(tree=_tree("workflow/api/__init__.py", *flood))
+    matched, status = _run(
+        {"search_destination": _DEST,
+         "search_query": "workflow/api/__init__.py __init__.py"},
+        monkeypatch, http, env={"WORKFLOW_GITHUB_SEARCH_MAX_RESULTS": "5"},
+    )
+    # Even capped at 5 of 41 matches, the exact-path file ranks first.
+    assert matched[0] == "workflow/api/__init__.py"
+
+
+def test_path_suffix_term_ranks_above_basename(monkeypatch):
+    http = _fake_http(tree=_tree(
+        "workflow/api/runs.py", "tests/test_runs.py", "other/runs.py",
+    ))
+    matched, _status = _run(
+        {"search_destination": _DEST, "search_query": "api/runs.py runs.py"},
+        monkeypatch, http,
+    )
+    assert matched[0] == "workflow/api/runs.py"
+
+
+def test_rank_exact_path_beats_suffix_beats_basename():
+    # Unit check on the rank tiers for a path-like term.
+    terms = ["workflow/api/wiki.py"]
+    assert gs._match_rank("workflow/api/wiki.py", terms) == 6      # exact
+    assert gs._match_rank("x/workflow/api/wiki.py", terms) == 5    # suffix
+    assert gs._match_rank("workflow/api/wiki.py.bak", terms) == 4  # contains
+    # basename-only candidate: a path-like term does not match it at all.
+    assert gs._match_rank("other/wiki.py", terms) == 0
+
+
 def test_dotted_module_matches_slash_path(monkeypatch):
     http = _fake_http(tree=_tree("workflow/api/wiki.py", "workflow/api/runs.py"))
     matched, _status = _run(

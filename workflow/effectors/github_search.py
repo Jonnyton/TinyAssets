@@ -197,9 +197,19 @@ def _term_variants(term: str) -> list[str]:
 def _match_rank(path: str, terms: list[str]) -> int:
     """Rank a path against terms. 0 = no match; higher = better.
 
-    3 = a term matches the basename exactly or as a prefix;
-    2 = a term matches inside the basename (or glob matches the path);
-    1 = a term matches inside the full path only.
+    A path-like term (contains ``/``) is the strongest signal a caller can
+    give — it names a location, not just a filename — so it must outrank the
+    flood of same-basename hits. Without this, a query carrying both the exact
+    path ``workflow/api/__init__.py`` and a common basename term gets the exact
+    file buried among hundreds of rank-3 ``__init__.py`` matches and truncated
+    out by the result cap (the PR-157 localization miss).
+
+    6 = exact full-path equality (term == path);
+    5 = path-suffix match (path ends with the slash-bearing term);
+    4 = the slash-bearing term appears anywhere in the path;
+    3 = basename equals or is prefixed by the term;
+    2 = the term appears inside the basename, or a glob matches;
+    1 = the term appears anywhere in the full path.
     """
     lower = path.lower()
     basename = path.rsplit("/", 1)[-1].lower()
@@ -210,6 +220,15 @@ def _match_rank(path: str, terms: list[str]) -> int:
             if _GLOB_CHARS.search(variant):
                 if fnmatch.fnmatch(lower, v) or fnmatch.fnmatch(basename, v):
                     best = max(best, 2)
+                continue
+            if "/" in v:
+                # Path-like term: location signal beats basename-only matches.
+                if lower == v:
+                    best = max(best, 6)
+                elif lower.endswith("/" + v) or lower.endswith(v):
+                    best = max(best, 5)
+                elif v in lower:
+                    best = max(best, 4)
                 continue
             if basename == v or basename.startswith(v):
                 best = max(best, 3)
