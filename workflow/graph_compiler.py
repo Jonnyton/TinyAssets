@@ -2135,6 +2135,14 @@ def _build_node(
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if domain_id:
+        # Ensure platform opaque callables (e.g. read_repo_files) are
+        # registered before we resolve — importing the effectors package runs
+        # its registration side effects. Lazy + best-effort so a missing
+        # optional dependency can't break compilation of unrelated branches.
+        try:
+            import workflow.effectors  # noqa: F401
+        except Exception:  # pragma: no cover - registration is best-effort
+            logger.debug("effectors import for opaque registration failed", exc_info=True)
         opaque = resolve_domain_callable(domain_id, node.node_id)
         if opaque is not None:
             inner = _build_opaque_node(node, opaque, event_sink=event_sink)
