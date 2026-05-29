@@ -432,6 +432,7 @@ def _extensions_impl(
         "scope": scope,
         "force": force,
         "request_id": request_id,
+        "reason": reason,
     }
     if node_ref_json:
         try:

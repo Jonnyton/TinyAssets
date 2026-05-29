@@ -1,7 +1,7 @@
 """Branch authoring + node CRUD subsystem — extracted from
 ``workflow/universe_server.py`` (Task #15 — decomp Step 8).
 
-The largest single submodule extracted from the monolith: 17 ``_ext_branch_*``
+The largest single submodule extracted from the monolith: 18 ``_ext_branch_*``
 handlers, the ``_action_fork_tree`` action
 handlers, the build/patch composite engine (``_ext_branch_build`` /
 ``_ext_branch_patch`` / ``_ext_branch_update_node`` / ``_ext_branch_patch_nodes``),
@@ -28,7 +28,7 @@ sees the chatbot-facing signature exactly as before. The
 ``_branch_design_guide_prompt()`` from this module.
 
 Public surface (back-compat re-exported via ``workflow.universe_server``):
-    _BRANCH_ACTIONS                : dispatch table (17 handlers)
+    _BRANCH_ACTIONS                : dispatch table (18 handlers)
     _BRANCH_WRITE_ACTIONS          : frozenset of write actions for ledger gating
     _RELATED_WIKI_CAP              : cap on related-wiki page list
     _dispatch_branch_action        : ledger-aware dispatcher
@@ -69,10 +69,12 @@ symbols from this module). ``_gates_enabled`` is also lazy-imported, but from
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +183,18 @@ def _append_global_ledger(
         _base_path(), action,
         target=target, summary=summary, payload=payload,
     )
+
+
+def _source_code_hash(source_code: str) -> str:
+    return hashlib.sha256(source_code.encode("utf-8")).hexdigest()
+
+
+def _clear_source_code_approval(node: Any) -> None:
+    node.approved = False
+    node.approved_by = ""
+    node.approved_at = ""
+    node.approved_source_hash = ""
+    node.approval_reason = ""
 
 
 def _ensure_workflow_db() -> None:
@@ -369,6 +383,78 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     branch["unapproved_source_code_nodes"] = unapproved_sc
     branch["runnable"] = not unapproved_sc
     return json.dumps(branch, default=str)
+
+
+def _ext_branch_approve_source_code(kwargs: dict[str, Any]) -> str:
+    from workflow.api.engine_helpers import _current_actor
+    from workflow.branches import BranchDefinition
+    from workflow.daemon_server import (
+        get_branch_definition,
+        save_branch_definition,
+    )
+
+    bid = _resolve_branch_id(
+        (kwargs.get("branch_def_id") or "").strip(), str(_base_path()),
+    )
+    nid = (kwargs.get("node_id") or "").strip()
+    if not bid or not nid:
+        return json.dumps({
+            "status": "rejected",
+            "error": "branch_def_id and node_id are required.",
+        })
+
+    try:
+        source = get_branch_definition(_base_path(), branch_def_id=bid)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Branch '{bid}' not found.",
+        })
+
+    staging = BranchDefinition.from_dict(source)
+    target_node = next(
+        (n for n in staging.node_defs if n.node_id == nid), None,
+    )
+    if target_node is None:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Node '{nid}' not found on branch '{bid}'.",
+        })
+    if not target_node.source_code:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Node '{nid}' has no source_code to approve.",
+        })
+
+    actor = _current_actor()
+    source_hash = _source_code_hash(target_node.source_code)
+    target_node.approved = True
+    target_node.approved_by = actor
+    target_node.approved_at = datetime.now(timezone.utc).isoformat()
+    target_node.approved_source_hash = source_hash
+    target_node.approval_reason = (kwargs.get("reason") or "").strip()
+
+    saved = save_branch_definition(_base_path(), branch_def=staging.to_dict())
+    persisted = BranchDefinition.from_dict(saved)
+    approved_node = next(
+        (n for n in persisted.node_defs if n.node_id == nid), target_node,
+    )
+    warning = (
+        "approval recorded with anonymous actor; configure authenticated "
+        "host identity before relying on this for shared-host policy"
+        if actor == "anonymous" else ""
+    )
+    return json.dumps({
+        "status": "approved",
+        "branch_def_id": bid,
+        "node_id": nid,
+        "approved": approved_node.approved,
+        "approved_by": approved_node.approved_by,
+        "approved_at": approved_node.approved_at,
+        "approved_source_hash": approved_node.approved_source_hash,
+        "approval_reason": approved_node.approval_reason,
+        "approval_warning": warning,
+    }, default=str)
 
 
 _VALID_BRANCH_LIST_SCOPES = {"published", "all", "mine"}
@@ -1979,9 +2065,12 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                     n.description = op["description"]
                 if "prompt_template" in op:
                     n.prompt_template = op["prompt_template"]
+                    if n.prompt_template:
+                        n.source_code = ""
+                        _clear_source_code_approval(n)
                 if "source_code" in op:
                     if op["source_code"] != n.source_code:
-                        n.approved = False
+                        _clear_source_code_approval(n)
                     n.source_code = op["source_code"]
                 if "model_hint" in op:
                     model_hint, err = _coerce_model_hint_update(
@@ -2524,10 +2613,11 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             target_node.prompt_template = updates["prompt_template"]
             if target_node.prompt_template:
                 target_node.source_code = ""
+                _clear_source_code_approval(target_node)
         if "source_code" in updates:
             next_source = updates["source_code"]
             if next_source != target_node.source_code:
-                target_node.approved = False
+                _clear_source_code_approval(target_node)
             target_node.source_code = next_source
             if target_node.source_code:
                 target_node.prompt_template = ""
@@ -3009,6 +3099,7 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
 
 _BRANCH_ACTIONS: dict[str, Any] = {
     "create_branch": _ext_branch_create,
+    "approve_source_code": _ext_branch_approve_source_code,
     "get_branch": _ext_branch_get,
     "list_branches": _ext_branch_list,
     "delete_branch": _ext_branch_delete,
@@ -3030,6 +3121,7 @@ _BRANCH_WRITE_ACTIONS: frozenset[str] = frozenset({
     "create_branch", "add_node", "connect_nodes",
     "set_entry_point", "add_state_field", "delete_branch",
     "build_branch", "patch_branch", "patch_nodes", "update_node",
+    "approve_source_code",
 })
 
 

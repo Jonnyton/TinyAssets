@@ -403,6 +403,10 @@ class NodeDefinition:
     registered_at: str = ""
     enabled: bool = True
     approved: bool = False
+    approved_by: str = ""
+    approved_at: str = ""
+    approved_source_hash: str = ""
+    approval_reason: str = ""
 
     def __post_init__(self) -> None:
         if self.phase not in VALID_PHASES:

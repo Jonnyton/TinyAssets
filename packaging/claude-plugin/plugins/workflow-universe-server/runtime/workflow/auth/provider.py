@@ -304,6 +304,7 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
 })
 _EXTENSIONS_ADMIN_ACTIONS = frozenset({
     "delete_branch",
+    "approve_source_code",
     "cancel_run",
     "grant_effector_consent",
     "revoke_effector_consent",
