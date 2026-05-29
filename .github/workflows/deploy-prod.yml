@@ -572,6 +572,13 @@ jobs:
           if [ -n "${config_hash}" ]; then
             config_hash="sha256:${config_hash}"
           fi
+          release_state_host_dir="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo docker volume inspect workflow-data --format '{{ .Mountpoint }}' 2>/dev/null" || true)"
+          if [ -z "${release_state_host_dir}" ]; then
+            echo "::error::Could not resolve workflow-data Docker volume mountpoint"
+            exit 1
+          fi
 
           export image_digest config_hash BUILD_RUN_URL DEPLOY_RUN_ID DEPLOY_RUN_URL
           python - <<'PY' > /tmp/workflow-release-state.json
@@ -605,11 +612,14 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/workflow-release-state.json"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo install -m 0644 -o workflow -g workflow /tmp/workflow-release-state.json /data/release-state.json"
+              "set -e; \
+               sudo install -d -m 0755 -o workflow -g workflow '${release_state_host_dir}'; \
+               sudo install -m 0644 -o workflow -g workflow /tmp/workflow-release-state.json '${release_state_host_dir}/release-state.json'"
           {
             echo "### Release-state receipt"
             echo ""
-            echo "- Path: \`/data/release-state.json\`"
+            echo "- Container path: \`/data/release-state.json\`"
+            echo "- Host volume path: \`${release_state_host_dir}/release-state.json\`"
             echo "- Source SHA: \`${SOURCE_SHA}\`"
             echo "- Image: \`${TARGET_IMAGE}\`"
             echo "- Digest: \`${image_digest:-unknown}\`"

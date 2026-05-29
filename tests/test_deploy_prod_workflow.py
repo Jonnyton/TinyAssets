@@ -415,7 +415,11 @@ def test_deploy_publishes_release_state_after_canaries_and_access_gate():
     assert "WORKFLOW_EVENT" in step_env
     assert "docker image inspect" in run_script
     assert "sha256sum /etc/workflow/env" in run_script
+    assert "docker volume inspect workflow-data" in run_script
+    assert "release_state_host_dir" in run_script
     assert "/data/release-state.json" in run_script
+    assert "${release_state_host_dir}/release-state.json" in run_script
+    assert "/tmp/workflow-release-state.json /data/release-state.json" not in run_script
     assert "canary_bundle_status\": \"passed\"" in run_script
 
 
