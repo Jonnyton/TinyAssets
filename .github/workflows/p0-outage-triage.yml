@@ -119,7 +119,7 @@ jobs:
       #                          dedicated issue + pages priority=2
       #   oom                  — compose restart (memory ratchet NOT auto)
       #   disk_full            — docker system prune -af
-      #   image_pull_failure   — fall back to :latest in /etc/workflow/env
+      #   image_pull_failure   — roll back to release-state rollback_target
       #   watchdog_hotloop     — stop → sleep 60 → start (reset limit)
       #   provider_exhaustion  — stop worker + write .pause sentinel;
       #                          page host priority=2 (Lane 4b)
@@ -194,25 +194,48 @@ jobs:
                df -h / /var/lib/docker 2>&1" 2>&1
 
       # --- Repair branch 4: image pull failure -------------------------
-      # Fall back to :latest. Log loudly: we've come off the pinned SHA,
-      # which loses deterministic-deploy guarantees until the next
-      # deploy-prod.yml run re-pins.
+      # Roll back to the immutable release-state rollback_target. Do not
+      # fall back to mutable tags; if no recorded rollback target exists,
+      # fail this branch and let the issue escalate to human handling.
       #
       # Env mutation routes through deploy/install-workflow-env.sh —
       # atomic install(1) write at root:workflow 640. Replaces the
       # legacy sed -i + chown + chmod chain (RC-1 in
       # docs/audits/2026-04-25-etc-workflow-env-mode-flip.md).
-      - name: Repair — image pull failure (fall back to :latest)
+      - name: Repair — image pull failure (release-state rollback target)
         id: repair_pull
         if: steps.classify.outputs.class == 'image_pull_failure'
         run: |
-          echo "::warning::image-pull failed — falling back to :latest (lose SHA pin)"
+          echo "::warning::image-pull failed — rolling back to recorded immutable release-state target"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/install-workflow-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-workflow-env.sh"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' 'ghcr.io/jonnyton/workflow-daemon:latest' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_IMAGE"
+              'set -euo pipefail
+               rollback_target="$(sudo python3 - <<'"'"'PY'"'"'
+          import json
+          from pathlib import Path
+
+          path = Path("/data/release-state.json")
+          try:
+              value = json.loads(path.read_text(encoding="utf-8")).get("rollback_target", "")
+          except Exception:
+              value = ""
+          print(value)
+          PY
+               )"
+               if [ -z "${rollback_target}" ]; then
+                 echo "::error::No release-state rollback_target found; refusing mutable image fallback" >&2
+                 exit 1
+               fi
+               case "${rollback_target}" in
+                 *@sha256:*) ;;
+                 *) echo "::error::rollback_target is not digest-pinned: ${rollback_target}" >&2; exit 1 ;;
+               esac
+               printf "%s" "${rollback_target}" | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_IMAGE
+               sudo docker pull "${rollback_target}"
+               sudo systemctl restart workflow-daemon'
 
       # --- Repair branch 5: watchdog hot-loop --------------------------
       # stop → sleep 60 → start lets the systemd start-limit counter

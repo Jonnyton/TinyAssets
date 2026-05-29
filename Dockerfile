@@ -26,7 +26,16 @@
 
 # ---------- Stage 1: builder ----------
 
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS builder
+
+ARG TARGETARCH
+ARG NODEJS_VERSION=20.20.2-1nodesource1
+ARG CODEX_CLI_VERSION=0.135.0
+ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
+ARG RUSTUP_VERSION=1.28.2
+ARG RUSTUP_SHA256_AMD64=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
+ARG RUSTUP_SHA256_ARM64=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c
+ARG RUST_TOOLCHAIN=1.85.1
 
 # Native build-deps for lancedb (rust), clingo (cmake), spacy (cython),
 # and general C extensions. Removed from the final image.
@@ -36,21 +45,43 @@ FROM python:3.11-slim AS builder
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
+        ca-certificates \
         cmake \
         curl \
         git \
+        gnupg \
         pkg-config \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs \
+    && mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        -o /tmp/nodesource-repo.gpg.key \
+    && echo "${NODESOURCE_REPO_CHECKSUM}  /tmp/nodesource-repo.gpg.key" | sha256sum -c - \
+    && gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource-repo.gpg.key \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs="${NODEJS_VERSION}" \
+    && rm -f /tmp/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/*
 
 # Install rust toolchain for lancedb wheels that lack pre-built linux
-# binaries. Pinned to a known-good version; bump when lancedb upgrades.
+# binaries. Pinned to known-good rustup + toolchain versions; bump when
+# lancedb upgrades.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain stable --profile minimal
+RUN set -e; \
+    case "${TARGETARCH}" in \
+      amd64) rustup_arch="x86_64-unknown-linux-gnu"; rustup_sha="${RUSTUP_SHA256_AMD64}" ;; \
+      arm64) rustup_arch="aarch64-unknown-linux-gnu"; rustup_sha="${RUSTUP_SHA256_ARM64}" ;; \
+      *) echo "unsupported TARGETARCH for pinned rustup: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${rustup_arch}/rustup-init" \
+        -o /tmp/rustup-init; \
+    echo "${rustup_sha}  /tmp/rustup-init" | sha256sum -c -; \
+    chmod 0755 /tmp/rustup-init; \
+    /tmp/rustup-init -y --default-toolchain "${RUST_TOOLCHAIN}" --profile minimal; \
+    rm -f /tmp/rustup-init
 
 # Install codex CLI to an explicit prefix so the path is deterministic
 # across distros. npm global prefix under nodesource Debian may be
@@ -63,7 +94,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # the builder stage would just be dead weight, so we run the binary
 # directly here.
 RUN mkdir -p /opt/codex-install && \
-    npm install --prefix /opt/codex-install @openai/codex && \
+    npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" && \
     /opt/codex-install/node_modules/.bin/codex --version
 
 WORKDIR /build
@@ -86,7 +117,11 @@ RUN python -m venv /opt/venv && \
 
 # ---------- Stage 2: final ----------
 
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
+
+ARG NODEJS_VERSION=20.20.2-1nodesource1
+ARG GH_VERSION=2.93.0
+ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
 
 # Runtime-only deps. No build-essential here.
 # libgomp1 is a common transitive native dep for numpy/scipy-backed
@@ -105,20 +140,27 @@ RUN apt-get update && \
         bubblewrap \
         ca-certificates \
         curl \
+        gnupg \
         libgomp1 \
         tini \
         util-linux \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs \
     && mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        -o /tmp/nodesource-repo.gpg.key \
+    && echo "${NODESOURCE_REPO_CHECKSUM}  /tmp/nodesource-repo.gpg.key" | sha256sum -c - \
+    && gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource-repo.gpg.key \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
-    && apt-get purge -y curl \
+    && apt-get install -y --no-install-recommends nodejs="${NODEJS_VERSION}" \
+    && apt-get install -y --no-install-recommends gh="${GH_VERSION}" \
+    && apt-get purge -y curl gnupg \
+    && rm -f /tmp/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/* && \
     groupadd --system --gid 1001 workflow && \
     useradd --system --uid 1001 --gid workflow --home /app --shell /bin/bash workflow

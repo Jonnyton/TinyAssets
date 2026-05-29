@@ -29,10 +29,9 @@
 
 services:
   daemon:
-    # Pinned via env to support rollbacks. `latest` is the default
-    # for first-deploy convenience; production pins a short-SHA tag
-    # emitted by .github/workflows/build-image.yml.
-    image: ${WORKFLOW_IMAGE:-ghcr.io/jonnyton/workflow-daemon:latest}
+    # Required immutable image reference. Production writes a digest ref
+    # resolved from the short-SHA tag emitted by build-image.yml.
+    image: ${WORKFLOW_IMAGE:?Set WORKFLOW_IMAGE to an immutable ghcr.io/jonnyton/workflow-daemon@sha256:<digest> ref}
     container_name: workflow-daemon
     restart: unless-stopped
     security_opt:
@@ -86,9 +85,9 @@ services:
       org.workflow.role: mcp-server
 
   cloudflared:
-    # Official image, pinned to a known-stable tag. Bump by hand
-    # after testing on a staging box; don't track `latest` in prod.
-    image: cloudflare/cloudflared:2026.3.0
+    # Official image, pinned to a known-stable tag + digest. Bump by
+    # hand after testing on a staging box.
+    image: cloudflare/cloudflared:2026.3.0@sha256:6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0
     container_name: workflow-tunnel
     restart: unless-stopped
     # cloudflared runs in host network namespace so that the tunnel's
@@ -121,7 +120,7 @@ services:
   #   - vector-betterstack.yaml loaded only when token is non-empty
   # This prevents 401 error noise when the token is unset.
   logs:
-    image: timberio/vector:0.40.0-alpine
+    image: timberio/vector:0.40.0-alpine@sha256:7a81fdd62e056321055a9e4bdec4073d752ecf68f4c192e676b85001721523c2
     container_name: workflow-logs
     restart: unless-stopped
     env_file:
@@ -156,7 +155,7 @@ services:
   # Shares the workflow-data volume + /etc/workflow/env with `daemon`
   # so state persists across deploys and secrets are centralized.
   worker:
-    image: ${WORKFLOW_IMAGE:-ghcr.io/jonnyton/workflow-daemon:latest}
+    image: ${WORKFLOW_IMAGE:?Set WORKFLOW_IMAGE to an immutable ghcr.io/jonnyton/workflow-daemon@sha256:<digest> ref}
     container_name: workflow-worker
     restart: unless-stopped
     security_opt:

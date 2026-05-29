@@ -39,7 +39,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Image tag to deploy (default = latest main commit short-SHA)'
+        description: 'Image tag to deploy (default = current main commit short-SHA)'
         required: false
         type: string
 
@@ -88,9 +88,9 @@ jobs:
       # Derive the image tag to deploy. workflow_dispatch override wins;
       # otherwise use the build-image run's head SHA.
       #
-      # Fallback: if the resolved SHA tag does not exist in GHCR, fall back
-      # to :latest. Doc-only commits can skip build-image.yml, leaving no
-      # image for that commit SHA; :latest is the last successful built tag.
+      # Resolve the requested tag to an immutable digest before deploy.
+      # Doc-only commits can skip build-image.yml, leaving no image for
+      # that commit SHA; in that case fail before mutating production.
       - name: Resolve image tag
         id: tag
         env:
@@ -111,16 +111,25 @@ jobs:
           if docker manifest inspect "${image}:${tag}" >/dev/null 2>&1; then
             echo "::notice::image ${image}:${tag} exists in GHCR; deploying it"
           else
-            echo "::warning::${image}:${tag} not found in GHCR; falling back to :latest"
-            tag="latest"
+            echo "::error::${image}:${tag} not found in GHCR; refusing mutable image fallback"
+            exit 1
           fi
+
+          digest="$(docker buildx imagetools inspect "${image}:${tag}" | awk '/^Digest:/ {print $2; exit}')"
+          if [ -z "${digest}" ]; then
+            echo "::error::could not resolve digest for ${image}:${tag}"
+            exit 1
+          fi
+          image_ref="${image}@${digest}"
 
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
           {
             echo "## Image resolution"
             echo ""
             echo "- effective tag: \`${image}:${tag}\`"
+            echo "- immutable ref: \`${image_ref}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify secrets present
@@ -153,8 +162,17 @@ jobs:
               "sudo grep -E '^WORKFLOW_IMAGE=' /etc/workflow/env | head -1 | cut -d= -f2-" \
               || echo '')
           if [ -z "$prev" ]; then
-            echo "::warning::no previous WORKFLOW_IMAGE found on box; rollback will use :latest fallback"
-            prev="${{ steps.tag.outputs.image }}:latest"
+            echo "::warning::no previous WORKFLOW_IMAGE found on box; rollback unavailable for this deploy"
+          elif [[ "${prev}" != *@sha256:* ]]; then
+            prev_digest="$(docker buildx imagetools inspect "${prev}" | awk '/^Digest:/ {print $2; exit}' || true)"
+            if [ -z "${prev_digest}" ]; then
+              echo "::warning::previous WORKFLOW_IMAGE is not digest-pinned and could not be resolved; rollback unavailable"
+              prev=""
+            else
+              prev_image="${prev%%:*}"
+              prev="${prev_image}@${prev_digest}"
+              echo "::notice::resolved previous WORKFLOW_IMAGE to immutable rollback ref: ${prev}"
+            fi
           fi
           echo "previous=${prev}" >> "$GITHUB_OUTPUT"
           echo "Previous: ${prev}"
@@ -336,7 +354,7 @@ jobs:
           # invocation time; never echoed into branch-visible state.
           WORKFLOW_GITHUB_PR_CAPABILITIES: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES }}
         run: |
-          NEW_IMAGE="${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}"
+          NEW_IMAGE="${{ steps.tag.outputs.image_ref }}"
           echo "Deploying: ${NEW_IMAGE}"
           # Pin the new tag in /etc/workflow/env via the atomic helper.
           # Helper enforces root:workflow 640 in a single install(1)
@@ -551,6 +569,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           TARGET_IMAGE: ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
+          TARGET_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
           BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
           BUILD_RUN_URL: ${{ github.event.workflow_run.html_url }}
@@ -565,7 +584,7 @@ jobs:
 
           image_digest="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker image inspect '${TARGET_IMAGE}' --format '{{index .RepoDigests 0}}' 2>/dev/null || true")"
+              "sudo docker image inspect '${TARGET_IMAGE_REF}' --format '{{index .RepoDigests 0}}' 2>/dev/null || true")"
           config_hash="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo sha256sum /etc/workflow/env 2>/dev/null | awk '{print \$1}' || true")"
@@ -589,6 +608,7 @@ jobs:
           receipt = {
               "git_sha": os.environ["SOURCE_SHA"],
               "image_tag": os.environ["TARGET_IMAGE"],
+              "image_ref": os.environ["TARGET_IMAGE_REF"],
               "image_digest": os.environ.get("image_digest", ""),
               "build_run_id": os.environ["BUILD_RUN_ID"],
               "build_run_url": os.environ["BUILD_RUN_URL"],
@@ -622,11 +642,12 @@ jobs:
             echo "- Host volume path: \`${release_state_host_dir}/release-state.json\`"
             echo "- Source SHA: \`${SOURCE_SHA}\`"
             echo "- Image: \`${TARGET_IMAGE}\`"
+            echo "- Immutable ref: \`${TARGET_IMAGE_REF}\`"
             echo "- Digest: \`${image_digest:-unknown}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rollback on failure
-        if: failure() && steps.deploy.outcome == 'success'
+        if: failure() && steps.deploy.outcome == 'success' && steps.prev.outputs.previous != ''
         env:
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
         run: |

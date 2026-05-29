@@ -138,6 +138,14 @@ def test_triage_uses_live_systemd_compose_file():
     assert "/opt/workflow/deploy/compose.yml" not in text
 
 
+def test_image_pull_repair_uses_immutable_release_state_rollback_target():
+    text = _text()
+    assert "ghcr.io/jonnyton/workflow-daemon:latest" not in text
+    assert "release-state.json" in text
+    assert "rollback_target" in text
+    assert "*@sha256:*" in text
+
+
 # ---------------------------------------------------------------------------
 # (f) Re-probe uses canonical URL
 # ---------------------------------------------------------------------------

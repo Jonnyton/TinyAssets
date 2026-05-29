@@ -14,6 +14,7 @@ installed and run in < 0.1s.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,6 +37,9 @@ def test_dockerfile_installs_codex_npm():
     assert "@openai/codex" in text, (
         "Dockerfile must install @openai/codex — required by codex_provider.py"
     )
+    assert "CODEX_CLI_VERSION=0." in text, (
+        "Dockerfile must pin the Codex CLI package version for reproducible builds"
+    )
 
 
 def test_dockerfile_builder_has_nodejs_for_npm():
@@ -45,7 +49,9 @@ def test_dockerfile_builder_has_nodejs_for_npm():
         "Dockerfile must use nodesource to install Node.js 20 "
         "(Debian default nodejs is too old for @openai/codex)"
     )
-    assert "setup_20.x" in text, "Dockerfile must pin Node.js 20 via setup_20.x"
+    assert "NODEJS_VERSION=20." in text, (
+        "Dockerfile must pin the exact NodeSource nodejs package version"
+    )
 
 
 def test_dockerfile_final_stage_has_nodejs_runtime():
@@ -59,6 +65,33 @@ def test_dockerfile_final_stage_has_nodejs_runtime():
     assert "nodejs" in final_stage_text, (
         "Final image stage must install nodejs runtime for codex CLI"
     )
+    assert "GH_VERSION=2." in text, (
+        "Final image stage must pin the GitHub CLI package version"
+    )
+
+
+def test_dockerfile_base_images_are_digest_pinned():
+    """Both stages must use an immutable python base image digest."""
+    from_lines = [
+        line for line in DOCKERFILE.read_text(encoding="utf-8").splitlines()
+        if line.startswith("FROM ")
+    ]
+    assert from_lines, "Dockerfile must contain FROM lines"
+    assert all("@sha256:" in line for line in from_lines), (
+        "Dockerfile FROM images must be pinned by digest, not mutable tags"
+    )
+
+
+def test_dockerfile_does_not_pipe_remote_installers_to_shell():
+    """Build-time installers must be fetched/verified explicitly."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    executable_text = "\n".join(
+        line for line in text.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert re.search(r"\|\s*(?:ba)?sh\b", executable_text) is None
+    assert "RUSTUP_SHA256" in text
+    assert "NODESOURCE_REPO_CHECKSUM" in text
 
 
 def test_dockerfile_copies_codex_binary():
@@ -225,6 +258,31 @@ def test_compose_daemon_uses_env_file():
         "compose.yml daemon service must reference /etc/workflow/env as env_file "
         "so subscription auth material and other secrets are passed to the container"
     )
+
+
+def test_compose_requires_explicit_workflow_image_without_latest_default():
+    """daemon + worker must not silently pull mutable :latest."""
+    yaml = __import__("yaml")
+    data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+    for service_name in ("daemon", "worker"):
+        image = data["services"][service_name].get("image", "")
+        assert "${WORKFLOW_IMAGE:?" in image, (
+            f"{service_name} image must require WORKFLOW_IMAGE instead of "
+            "defaulting to ghcr.io/jonnyton/workflow-daemon:latest"
+        )
+        assert ":latest" not in image
+
+
+def test_compose_sidecar_images_are_digest_pinned():
+    yaml = __import__("yaml")
+    data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+    for service_name in ("cloudflared", "logs"):
+        image = data["services"][service_name].get("image", "")
+        assert "@sha256:" in image, (
+            f"{service_name} image must pin the version tag by digest"
+        )
 
 
 def test_compose_env_file_covers_daemon_service():

@@ -25,6 +25,10 @@ def _load() -> dict:
     return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
 
 
+def _text() -> str:
+    return _WORKFLOW.read_text(encoding="utf-8")
+
+
 def _triggers(wf: dict) -> dict:
     return wf.get(True, {}) or {}
 
@@ -60,3 +64,9 @@ def test_build_image_push_is_limited_to_runtime_paths():
 def test_build_image_keeps_manual_dispatch():
     triggers = _triggers(_load())
     assert "workflow_dispatch" in triggers
+
+
+def test_build_image_publishes_only_short_sha_tag():
+    text = _text()
+    assert "${image}:${short_sha}" in text
+    assert "${image}:latest" not in text

@@ -100,7 +100,7 @@ documents each):
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase dashboard → Project Settings → API → service_role key (keep secret; never ship to clients). |
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub → Settings → Developer settings → OAuth Apps → Workflow → Client ID. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | Same page → "Generate a new client secret" → copy once. |
-| `WORKFLOW_IMAGE` | Optional; default is `ghcr.io/jonnyton/workflow-daemon:latest`. For production pinning, use a short-SHA tag from .github/workflows/build-image.yml. |
+| `WORKFLOW_IMAGE` | Required immutable GHCR digest ref. `deploy-prod.yml` resolves the short-SHA tag from `.github/workflows/build-image.yml` to `ghcr.io/jonnyton/workflow-daemon@sha256:<digest>` before writing `/etc/workflow/env`. |
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
@@ -267,7 +267,7 @@ cutover for the post-cutover playbook.
 
 - **`CLOUDFLARE_TUNNEL_TOKEN` not set or wrong.** `docker logs workflow-tunnel` shows `Unauthorized` or hangs at "Tried to connect to tunnel". Fix: re-copy the token from the Cloudflare dashboard; tokens don't expire but do get regenerated on tunnel rotation.
 - **Healthcheck never passes.** `docker inspect workflow-daemon | jq '.[].State.Health'` shows consecutive failures. The healthcheck runs `mcp_public_canary.py` against `http://127.0.0.1:8001/mcp`; if daemon didn't bind, check `docker logs workflow-daemon`.
-- **Short-SHA image pin not pullable.** Image tag doesn't exist in GHCR. Fall back to `WORKFLOW_IMAGE=ghcr.io/jonnyton/workflow-daemon:latest` in `/etc/workflow/env`, `systemctl restart workflow-daemon`.
+- **Short-SHA image pin not pullable.** Image tag doesn't exist in GHCR. Pick a known-good short-SHA tag from GHCR, resolve it to a digest ref, write `WORKFLOW_IMAGE=ghcr.io/jonnyton/workflow-daemon@sha256:<digest>` in `/etc/workflow/env`, then `systemctl restart workflow-daemon`.
 - **`/etc/workflow/env` permissions wrong.** Compose reads env file via docker; mode must allow the `workflow` user to read. `chown root:workflow /etc/workflow/env && chmod 640 /etc/workflow/env`.
 - **Docker pull fails (GHCR auth).** If the image is private, the box needs a pull credential. This runbook assumes the GHCR image is public; if not, add `docker login ghcr.io` to the bootstrap + supply a PAT with `read:packages`.
 

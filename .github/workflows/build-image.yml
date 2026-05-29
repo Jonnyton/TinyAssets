@@ -54,7 +54,6 @@ jobs:
             echo "image=${image}"
             echo "short_sha=${short_sha}"
             echo "tags<<EOF"
-            echo "${image}:latest"
             echo "${image}:${short_sha}"
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
@@ -87,6 +86,5 @@ jobs:
         run: |
           {
             echo "Published image:"
-            echo "- ${{ steps.image.outputs.image }}:latest"
             echo "- ${{ steps.image.outputs.image }}:${{ steps.image.outputs.short_sha }}"
           } >> "${GITHUB_STEP_SUMMARY}"

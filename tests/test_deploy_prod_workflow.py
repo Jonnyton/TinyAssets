@@ -75,6 +75,23 @@ def test_workflow_dispatch_has_image_tag_input():
     assert "image_tag" in inputs, "workflow_dispatch must expose image_tag input"
 
 
+def test_deploy_resolves_image_to_digest_and_never_latest():
+    text = _text()
+    assert "image_ref=" in text
+    assert "docker buildx imagetools inspect" in text
+    assert "tag=\"latest\"" not in text
+    assert ":latest" not in text, (
+        "deploy-prod must not use :latest for deploy or rollback targets"
+    )
+
+
+def test_deploy_resolves_previous_image_to_digest_for_rollback():
+    text = _text()
+    assert "previous WORKFLOW_IMAGE to immutable rollback ref" in text
+    assert "prev_digest=" in text
+    assert "prev_image=\"${prev%%:*}\"" in text
+
+
 # ---------------------------------------------------------------------------
 # (c) workflow_run trigger fires on build-image success
 # ---------------------------------------------------------------------------
@@ -217,6 +234,9 @@ def test_rollback_conditioned_on_failure():
         if "rollback on failure" in (step.get("name") or "").lower():
             cond = step.get("if", "")
             assert "failure" in cond, "rollback step must be conditioned on failure()"
+            assert "steps.prev.outputs.previous != ''" in cond, (
+                "rollback must be skipped when no immutable previous image exists"
+            )
             return
     pytest.fail("'Rollback on failure' step not found")
 
