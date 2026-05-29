@@ -96,6 +96,61 @@ def test_absolute_and_traversal_paths_rejected(monkeypatch):
     assert reader.calls == []
 
 
+def test_encoded_traversal_and_backslash_paths_rejected(monkeypatch):
+    reader = _scripted_reader({})
+    paths = [
+        "%2e%2e/secrets.env",
+        ".%2e/secrets.env",
+        "safe\\evil.py",
+        "a/%2F/b.py",
+        "a/./b.py",
+    ]
+    _contents, status = _run(
+        {"read_destination": _DEST, "target_paths": paths},
+        monkeypatch,
+        reader,
+    )
+    for path in paths:
+        assert status[path] == "rejected"
+        assert status["_errors"][path] == "read_path_rejected"
+    assert reader.calls == []
+
+
+def test_read_request_quotes_path_component(monkeypatch):
+    urls = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"type": "file", "size": 1, "content": _b64("x")}
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        urls.append(req.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr(gr.urllib.request, "urlopen", fake_urlopen)
+
+    parsed, err = gr._read_request(
+        destination=_DEST,
+        path="dir/a b#c?ref=other.py",
+        token="",
+    )
+
+    assert err is None
+    assert parsed["type"] == "file"
+    assert urls == [
+        "https://api.github.com/repos/Jonnyton/Workflow/contents/"
+        "dir/a%20b%23c%3Fref%3Dother.py"
+    ]
+
+
 def test_directory_type_rejected(monkeypatch):
     reader = _scripted_reader({"src": ({"type": "dir"}, None)})
     _contents, status = _run(

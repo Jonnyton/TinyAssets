@@ -47,6 +47,7 @@ import logging
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ DOMAIN_ID = "workflow"
 NODE_ID = "read_repo_files"
 
 _REPO_RE = re.compile(r"[\w.-]+/[\w.-]+")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _int_env(name: str, default: int) -> int:
@@ -124,11 +126,30 @@ def _parse_paths(raw: object) -> list[str]:
 
 
 def _path_rejected(path: str) -> bool:
-    """True when a path is unsafe (absolute or parent-traversal)."""
-    if path.startswith("/") or path.startswith("\\"):
+    """True when a path is unsafe or not a normalized repo-relative path."""
+    if not path or path.startswith("/") or "\\" in path or _CONTROL_CHAR_RE.search(path):
         return True
-    parts = re.split(r"[\\/]+", path)
-    return any(p == ".." for p in parts)
+    for part in path.split("/"):
+        if part in {"", ".", ".."}:
+            return True
+        decoded = part
+        for _ in range(3):
+            unquoted = urllib.parse.unquote(decoded)
+            if unquoted == decoded:
+                break
+            decoded = unquoted
+        if (
+            decoded in {".", ".."}
+            or "/" in decoded
+            or "\\" in decoded
+            or _CONTROL_CHAR_RE.search(decoded)
+        ):
+            return True
+    return False
+
+
+def _quote_contents_path(path: str) -> str:
+    return urllib.parse.quote(path, safe="/")
 
 
 def _read_request(
@@ -146,8 +167,9 @@ def _read_request(
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    encoded_path = _quote_contents_path(path)
     req = urllib.request.Request(
-        f"{_GITHUB_API}/repos/{destination}/contents/{path}",
+        f"{_GITHUB_API}/repos/{destination}/contents/{encoded_path}",
         method="GET",
         headers=headers,
     )
