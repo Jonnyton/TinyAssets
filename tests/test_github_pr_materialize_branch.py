@@ -12,8 +12,6 @@ Codex checker key: PR #1144.
 
 from __future__ import annotations
 
-import pytest
-
 from workflow.effectors import github_pr
 
 _DEST = "Jonnyton/Workflow"
