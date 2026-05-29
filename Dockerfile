@@ -94,6 +94,12 @@ FROM python:3.11-slim
 # Node.js 20 LTS via nodesource — same version as builder so the copied
 # codex binary's native addons are ABI-compatible. No npm needed at
 # runtime; the codex module tree is COPY'd from the builder.
+#
+# GitHub CLI (gh) — the github_pull_request effector shells out to
+# `gh pr create` (workflow/effectors/github_pr.py). Without gh on the
+# runtime PATH the effector fails with error_kind=gh_not_installed
+# (BUG-110), which blocks every real PR open from the patch-request loop.
+# Installed from cli.github.com before curl is purged below.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         bubblewrap \
@@ -104,6 +110,14 @@ RUN apt-get update && \
         util-linux \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs \
+    && mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
     && apt-get purge -y curl \
     && rm -rf /var/lib/apt/lists/* && \
     groupadd --system --gid 1001 workflow && \
