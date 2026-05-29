@@ -547,6 +547,74 @@ jobs:
             echo "Access gate confirmed: ${DIRECT_URL} → HTTP ${http_code} (expected 403/401)"
           fi
 
+      - name: Publish release-state receipt
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          TARGET_IMAGE: ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
+          PREV_IMAGE: ${{ steps.prev.outputs.previous }}
+          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+          BUILD_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          WORKFLOW_EVENT: ${{ github.event_name }}
+        run: |
+          DEPLOY_RUN_ID="${GITHUB_RUN_ID}"
+          DEPLOY_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ -z "${BUILD_RUN_ID}" ]; then
+            BUILD_RUN_ID="manual:${GITHUB_RUN_ID}"
+            BUILD_RUN_URL="${DEPLOY_RUN_URL}"
+          fi
+
+          image_digest="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo docker image inspect '${TARGET_IMAGE}' --format '{{index .RepoDigests 0}}' 2>/dev/null || true")"
+          config_hash="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo sha256sum /etc/workflow/env 2>/dev/null | awk '{print \$1}' || true")"
+          if [ -n "${config_hash}" ]; then
+            config_hash="sha256:${config_hash}"
+          fi
+
+          export image_digest config_hash BUILD_RUN_URL DEPLOY_RUN_ID DEPLOY_RUN_URL
+          python - <<'PY' > /tmp/workflow-release-state.json
+          import json
+          import os
+          from datetime import UTC, datetime
+
+          receipt = {
+              "git_sha": os.environ["SOURCE_SHA"],
+              "image_tag": os.environ["TARGET_IMAGE"],
+              "image_digest": os.environ.get("image_digest", ""),
+              "build_run_id": os.environ["BUILD_RUN_ID"],
+              "build_run_url": os.environ["BUILD_RUN_URL"],
+              "deploy_run_id": os.environ["DEPLOY_RUN_ID"],
+              "deploy_run_url": os.environ["DEPLOY_RUN_URL"],
+              "config_hash": os.environ.get("config_hash", ""),
+              "config_version": "workflow-env-v1",
+              "schema_migration_rev": "not_applicable",
+              "canary_bundle_status": "passed",
+              "deployed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+              "rollback_target": os.environ["PREV_IMAGE"],
+              "actor": os.environ["GITHUB_ACTOR"],
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow_event": os.environ["WORKFLOW_EVENT"],
+          }
+          print(json.dumps(receipt, sort_keys=True, indent=2))
+          PY
+
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              /tmp/workflow-release-state.json \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/workflow-release-state.json"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo install -m 0644 -o workflow -g workflow /tmp/workflow-release-state.json /data/release-state.json"
+          {
+            echo "### Release-state receipt"
+            echo ""
+            echo "- Path: \`/data/release-state.json\`"
+            echo "- Source SHA: \`${SOURCE_SHA}\`"
+            echo "- Image: \`${TARGET_IMAGE}\`"
+            echo "- Digest: \`${image_digest:-unknown}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Rollback on failure
         if: failure() && steps.deploy.outcome == 'success'
         env:

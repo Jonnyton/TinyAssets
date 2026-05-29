@@ -379,13 +379,14 @@ _Last audited: 2026-05-19_
 - *Any MCP-compatible client is a control station, not a creator.* The daemon does the creative work. If a chat surface writes story content itself, that indicates a missing daemon path.
 - *Tools publish explicit titles, tags, and behavior hints.* The daemon exposes a small number of coarse-grained tools; discoverability metadata is part of the interface contract.
 - *Trust-critical tools are self-auditing.* Tools that touch privacy, cost, routing, scope, or moderation expose structured evidence + structured caveats; the chatbot composes the user-facing narrative on top. Caveats are part of the tool's contract. (See `docs/design-notes/2026-04-19-self-auditing-tools.md`.)
+- *Release state is a status contract.* `get_status.release_state` reads the deploy-published receipt that ties the live daemon to source SHA, image tag/digest, build/deploy runs, config hash, canary status, deployment time, rollback target, and actor metadata. Missing receipts surface as caveats, not probe failures.
 - *Module shape rule.* API surfaces live in `workflow/api/` as mounted submodules per capability cluster. Server shells in `workflow/servers/` route to them. **No god-modules.**
 
 **Substrate:** `workflow/api/` (helpers, wiki, status, runs, evaluation, runtime_ops, market, branches), `workflow/servers/` (workflow_server, daemon_server, mcp_server). Universe-server decomposition is in-flight per `docs/audits/2026-04-25-universe-server-decomposition.md` — universe_server.py is down from 14k peak to 972 LOC live in main.
 
 **Open evolution:** Final cluster extraction completion. ChatGPT-host first-response UX caveat (large MCP responses → "something went wrong"; see memory `project_chatgpt_response_too_large_failure.md`) — SUMMARY-by-default response shape with `verbose=true` opt-in is unscoped.
 
-_Last audited: 2026-05-19_
+_Last audited: 2026-05-28_
 
 ---
 
@@ -445,7 +446,7 @@ _Last audited: 2026-05-19_
 
 **Principles:**
 - *Defense in depth, and the alarm path itself is host-independent.* Every self-heal layer assumes the layers below it will fail; the alarm ladder assumes every self-heal layer will fail. None run on a host machine.
-- *Three self-heal layers, each catches a different class.* 1. Container restart (`systemd Restart=always` + `workflow-watchdog.timer`) — transient crashes, OOM recovery, hung-but-not-crashed. 2. GHA `p0-outage-triage.yml` auto-repair — six classes covered (OOM, disk-full, image-pull, watchdog-hot-loop, tunnel-token-manual, env-unreadable). 3. Deploy-side invariants — `deploy-prod.yml` asserts `/etc/workflow/env` is readable by the daemon user post-mutation and post-restart.
+- *Three self-heal layers, each catches a different class.* 1. Container restart (`systemd Restart=always` + `workflow-watchdog.timer`) — transient crashes, OOM recovery, hung-but-not-crashed. 2. GHA `p0-outage-triage.yml` auto-repair — six classes covered (OOM, disk-full, image-pull, watchdog-hot-loop, tunnel-token-manual, env-unreadable). 3. Deploy-side invariants — `deploy-prod.yml` asserts `/etc/workflow/env` is readable by the daemon user post-mutation and post-restart, then publishes `/data/release-state.json` for live status reconciliation.
 - *Alarm ladder, host-phone-independent.* Pushover paging from GHA `alarm-sink` at threshold-cross (2 consecutive reds ≈ 10 min outage), `priority=2` + vibrate-tier initial, escalating re-page at 1h / 4h / 24h if `p0-outage` issue stays open with no human comment. Probe-without-paging is not an alarm path (2026-04-21 lesson).
 - *DR validated end-to-end.* Weekly drill provisions a fresh VM, bootstraps, restores `/etc/workflow/env` + data volume from offsite, starts daemon, asserts canary-green within SLA. Decoupled restore + start, exit-code propagation, SSH-tunnel probe; no host keystrokes bridge any step.
 - *Loop-uptime-maintenance is the authorized escape.* Skill at `.agents/skills/loop-uptime-maintenance/SKILL.md` handles failure classes not yet graduated to layers 1-3. Entry condition: the loop is too broken to self-heal via its own loop. Success metric: usage trends to zero — every incident graduates a failure class out of the skill into layers 1-3.
@@ -455,7 +456,7 @@ _Last audited: 2026-05-19_
 
 **Open evolution:** Validation of the testable assumption — if the host's phone is off for 24h, a secondary paging path (email / desktop / secondary device) still fires at the 4h escalation tick.
 
-_Last audited: 2026-05-19_
+_Last audited: 2026-05-28_
 
 ---
 

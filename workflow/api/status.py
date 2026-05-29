@@ -53,6 +53,24 @@ _STUCK_PENDING_THRESHOLD_S = 120
 _AUTO_SHIP_OBSERVATION_WINDOW_S = 24 * 60 * 60
 _AUTO_SHIP_RECENT_ATTEMPT_LIMIT = 10
 _AUTO_SHIP_TEXT_FIELD_LIMIT = 500
+_RELEASE_STATE_FIELDS = (
+    "git_sha",
+    "image_tag",
+    "image_digest",
+    "build_run_id",
+    "build_run_url",
+    "deploy_run_id",
+    "deploy_run_url",
+    "config_hash",
+    "config_version",
+    "schema_migration_rev",
+    "canary_bundle_status",
+    "deployed_at",
+    "rollback_target",
+    "actor",
+    "repository",
+    "workflow_event",
+)
 
 
 def _parse_iso_to_epoch(value: str) -> float | None:
@@ -104,6 +122,61 @@ def _compact_status_text(value: str) -> str:
     if len(value) <= _AUTO_SHIP_TEXT_FIELD_LIMIT:
         return value
     return value[:_AUTO_SHIP_TEXT_FIELD_LIMIT] + "...[truncated]"
+
+
+def _release_state_path() -> Path:
+    override = os.environ.get("WORKFLOW_RELEASE_STATE_PATH", "").strip()
+    if override:
+        return Path(override)
+    return _base_path() / "release-state.json"
+
+
+def _load_release_state() -> dict[str, Any]:
+    """Read the deploy-published release receipt for public status.
+
+    The deploy pipeline owns writes. This status helper is deliberately
+    read-only and best-effort so a missing or malformed receipt cannot break
+    the core MCP health probe.
+    """
+    path = _release_state_path()
+    out: dict[str, Any] = {
+        "receipt_available": False,
+        "receipt_path": str(path),
+        "warnings": [],
+    }
+
+    try:
+        if not path.is_file():
+            out["warnings"].append("release_state_receipt_missing")
+            return out
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — status probe must survive bad I/O
+        out["warnings"].append(f"release_state_read_failed: {exc}")
+        return out
+
+    if not isinstance(payload, dict):
+        out["warnings"].append("release_state_receipt_not_object")
+        return out
+
+    out["receipt_available"] = True
+    for field in _RELEASE_STATE_FIELDS:
+        value = payload.get(field, "")
+        out[field] = value if value is not None else ""
+
+    extra = {
+        str(key): value
+        for key, value in payload.items()
+        if key not in _RELEASE_STATE_FIELDS
+    }
+    if extra:
+        out["extra"] = extra
+
+    missing = [field for field in _RELEASE_STATE_FIELDS if not out.get(field)]
+    if missing:
+        out["warnings"].append(
+            "release_state_missing_fields: " + ", ".join(missing)
+        )
+    return out
 
 
 def _compact_ship_attempt(attempt: Any) -> dict[str, Any]:
@@ -850,6 +923,8 @@ def get_status(universe_id: str = "") -> str:
             "read_only": True,
         }
 
+    release_state = _load_release_state()
+
     response = {
         "schema_version": 1,
         "active_host": policy_payload["active_host"],
@@ -872,6 +947,7 @@ def get_status(universe_id: str = "") -> str:
         "supervisor_liveness": supervisor_liveness,
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
+        "release_state": release_state,
         "universe_id": uid,
         "universe_exists": universe_exists,
     }

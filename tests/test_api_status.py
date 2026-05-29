@@ -94,6 +94,7 @@ def test_get_status_returns_versioned_contract_keys(status_env):
         "supervisor_liveness",
         "auto_ship_health",
         "open_brain",
+        "release_state",
         "universe_id",
         "universe_exists",
     }
@@ -116,6 +117,50 @@ def test_get_status_evidence_includes_policy_hash(status_env):
     h = parsed["evidence"]["policy_hash"]
     assert isinstance(h, str)
     assert len(h) == 64
+
+
+def test_get_status_release_state_reports_missing_receipt(status_env):
+    parsed = json.loads(get_status())
+    release_state = parsed["release_state"]
+
+    assert release_state["receipt_available"] is False
+    assert release_state["receipt_path"].endswith("release-state.json")
+    assert "release_state_receipt_missing" in release_state["warnings"]
+
+
+def test_get_status_release_state_reads_deploy_receipt(status_env):
+    receipt = {
+        "git_sha": "868b8d04abcdef",
+        "image_tag": "ghcr.io/jonnyton/workflow-daemon:868b8d04abcd",
+        "image_digest": "ghcr.io/jonnyton/workflow-daemon@sha256:abc123",
+        "build_run_id": "111",
+        "build_run_url": "https://github.com/Jonnyton/Workflow/actions/runs/111",
+        "deploy_run_id": "222",
+        "deploy_run_url": "https://github.com/Jonnyton/Workflow/actions/runs/222",
+        "config_hash": "sha256:deadbeef",
+        "config_version": "workflow-env-v1",
+        "schema_migration_rev": "not_applicable",
+        "canary_bundle_status": "passed",
+        "deployed_at": "2026-05-28T12:00:00Z",
+        "rollback_target": "ghcr.io/jonnyton/workflow-daemon:previous",
+        "actor": "codex-wiki-patch",
+        "repository": "Jonnyton/Workflow",
+        "workflow_event": "workflow_run",
+    }
+    (status_env.parent / "release-state.json").write_text(
+        json.dumps(receipt),
+        encoding="utf-8",
+    )
+
+    parsed = json.loads(get_status())
+    release_state = parsed["release_state"]
+
+    assert release_state["receipt_available"] is True
+    assert release_state["git_sha"] == receipt["git_sha"]
+    assert release_state["image_digest"] == receipt["image_digest"]
+    assert release_state["canary_bundle_status"] == "passed"
+    assert release_state["actor"] == "codex-wiki-patch"
+    assert release_state["warnings"] == []
 
 
 def test_get_status_includes_read_only_open_brain_surface(status_env, tmp_path):

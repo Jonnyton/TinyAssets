@@ -372,6 +372,53 @@ def test_deploy_requires_llm_binding_even_without_visible_deploy_secret():
     assert "::warning::No deploy-visible WORKFLOW_CODEX_AUTH_JSON_B64" not in run_script
 
 
+def test_deploy_publishes_release_state_after_canaries_and_access_gate():
+    wf = _load()
+    steps = _steps(wf)
+    names = [s.get("name", "") for s in steps]
+
+    canary_idx = names.index("Post-deploy canary — canonical URL only")
+    access_idx = names.index("Verify CF Access gates direct URL (expects 403/401)")
+    receipt_idx = names.index("Publish release-state receipt")
+    rollback_idx = names.index("Rollback on failure")
+
+    assert canary_idx < receipt_idx < rollback_idx
+    assert access_idx < receipt_idx
+
+    receipt_step = steps[receipt_idx]
+    run_script = receipt_step.get("run", "") or ""
+    step_env = receipt_step.get("env") or {}
+
+    for field in (
+        "git_sha",
+        "image_tag",
+        "image_digest",
+        "build_run_id",
+        "build_run_url",
+        "deploy_run_id",
+        "deploy_run_url",
+        "config_hash",
+        "config_version",
+        "schema_migration_rev",
+        "canary_bundle_status",
+        "deployed_at",
+        "rollback_target",
+        "actor",
+        "repository",
+        "workflow_event",
+    ):
+        assert field in run_script
+
+    assert "SOURCE_SHA" in step_env
+    assert "TARGET_IMAGE" in step_env
+    assert "PREV_IMAGE" in step_env
+    assert "WORKFLOW_EVENT" in step_env
+    assert "docker image inspect" in run_script
+    assert "sha256sum /etc/workflow/env" in run_script
+    assert "/data/release-state.json" in run_script
+    assert "canary_bundle_status\": \"passed\"" in run_script
+
+
 # ---------------------------------------------------------------------------
 # Codex auth persistent volume (PR #965) — idempotence + ownership repair
 # ---------------------------------------------------------------------------
