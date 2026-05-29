@@ -552,6 +552,292 @@ def _github_api_request(
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _git_data_api(
+    *,
+    method: str,
+    path: str,
+    capability_token: str,
+    body: dict[str, Any] | None = None,
+) -> tuple[Any, dict[str, Any] | None]:
+    """Call the GitHub Git Data / REST API. Returns ``(parsed, error)``.
+
+    On success ``error`` is ``None`` and ``parsed`` is the decoded JSON
+    (``{}`` for empty bodies). On failure ``parsed`` is ``None`` and
+    ``error`` is ``{"http_status": int|None, "detail": str}`` so the
+    caller can map it to a step-specific ``error_kind`` (BUG-111 review
+    constraint 3: never collapse the materialize path into a single
+    ``gh_nonzero_exit``). A 401/403/404 on a write step signals a token
+    scope problem (constraint 1: Contents write must be present).
+    """
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        f"{_GITHUB_API}{path}",
+        data=data,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {capability_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "workflow-github-pr-effector/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_GH_PR_TIMEOUT_S) as resp:
+            raw = resp.read().decode("utf-8")
+            return (json.loads(raw) if raw.strip() else {}), None
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:400]
+        return None, {"http_status": exc.code, "detail": detail}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return None, {"http_status": None, "detail": str(exc)}
+    except (TypeError, ValueError) as exc:
+        return None, {"http_status": None, "detail": f"parse error: {exc}"}
+
+
+def _scope_or(error: dict[str, Any], step_kind: str) -> str:
+    """Pick a step error_kind, upgrading auth/scope failures distinctly.
+
+    BUG-111 review constraint 1: a 401/403/404 from a Git-Data write step
+    is a capability/scope problem (the token lacks Contents write), not a
+    generic step failure — surface it as ``github_contents_write_denied``
+    so triage points the host at the token scope, not the code.
+    """
+    if (error or {}).get("http_status") in (401, 403, 404):
+        return "github_contents_write_denied"
+    return step_kind
+
+
+def _materialize_branch(
+    *,
+    changes_json: Any,
+    destination: str,
+    base_branch: str,
+    head_branch: str,
+    commit_message: str,
+    capability_token: str,
+) -> dict[str, Any]:
+    """Build a remote head branch from ``changes_json`` via the Git Data API.
+
+    BUG-111: the effector previously called ``gh pr create`` against a
+    head branch nothing ever created, so GitHub rejected with "No commits
+    between base and head". This builds the branch entirely through the
+    GitHub Git Data API (blobs → tree → commit → ref) using the same
+    capability token — no ``git`` binary, no local clone, no second
+    credential (design note 2026-05-29, Option B; Codex checker key on
+    PR #1144).
+
+    ``changes_json`` is ``{path: full-new-contents}``; a value of ``None``
+    deletes that path (tree entry sha=null). Returns ``{}`` on success
+    (branch ready) or ``{"error": ..., "error_kind": ...}`` on failure.
+    Every step has a distinct ``error_kind`` (constraint 3). Never raises.
+    """
+    owner_repo = destination.strip().strip("/")
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", owner_repo):
+        return {
+            "error": f"invalid GitHub repository destination: {destination!r}",
+            "error_kind": "invalid_destination",
+        }
+    if not isinstance(changes_json, dict) or not changes_json:
+        # Constraint: no silent empty-branch PR. A real-write packet must
+        # carry the change set; failing loudly beats opening an empty PR.
+        return {
+            "error": (
+                "packet.payload.changes_json is required and must be a "
+                "non-empty object mapping repo-relative paths to full new "
+                "file contents (null to delete)"
+            ),
+            "error_kind": "missing_changes",
+        }
+    if not head_branch:
+        return {
+            "error": "packet.payload.head_branch is required to materialize a branch",
+            "error_kind": "missing_head_branch",
+        }
+    for path_key, contents in changes_json.items():
+        if not isinstance(path_key, str) or not path_key.strip():
+            return {
+                "error": "changes_json keys must be non-empty repo-relative path strings",
+                "error_kind": "invalid_changes",
+            }
+        if contents is not None and not isinstance(contents, str):
+            return {
+                "error": f"changes_json[{path_key!r}] must be a string or null (delete)",
+                "error_kind": "invalid_changes",
+            }
+
+    # Step 1: base ref → base commit sha.
+    ref_obj, err = _git_data_api(
+        method="GET",
+        path=f"/repos/{owner_repo}/git/ref/heads/{base_branch}",
+        capability_token=capability_token,
+    )
+    if err is not None:
+        return {
+            "error": f"base ref lookup failed for heads/{base_branch}: {err['detail']}",
+            "error_kind": _scope_or(err, "base_ref_lookup_failed"),
+        }
+    base_commit_sha = ((ref_obj or {}).get("object") or {}).get("sha")
+    if not isinstance(base_commit_sha, str) or not base_commit_sha:
+        return {
+            "error": f"base ref heads/{base_branch} returned no commit sha",
+            "error_kind": "base_ref_lookup_failed",
+        }
+
+    # Step 2: base commit → base tree sha (review correction: the ref
+    # gives a COMMIT sha, not a tree sha; a commit lookup is required).
+    commit_obj, err = _git_data_api(
+        method="GET",
+        path=f"/repos/{owner_repo}/git/commits/{base_commit_sha}",
+        capability_token=capability_token,
+    )
+    if err is not None:
+        return {
+            "error": f"base commit lookup failed for {base_commit_sha}: {err['detail']}",
+            "error_kind": _scope_or(err, "base_commit_lookup_failed"),
+        }
+    base_tree_sha = ((commit_obj or {}).get("tree") or {}).get("sha")
+    if not isinstance(base_tree_sha, str) or not base_tree_sha:
+        return {
+            "error": f"base commit {base_commit_sha} returned no tree sha",
+            "error_kind": "base_commit_lookup_failed",
+        }
+
+    # Step 3: one blob per modified/created path (deletions carry no blob).
+    tree_entries: list[dict[str, Any]] = []
+    for path_key, contents in changes_json.items():
+        if contents is None:
+            tree_entries.append(
+                {"path": path_key, "mode": "100644", "type": "blob", "sha": None}
+            )
+            continue
+        blob, err = _git_data_api(
+            method="POST",
+            path=f"/repos/{owner_repo}/git/blobs",
+            capability_token=capability_token,
+            body={"content": contents, "encoding": "utf-8"},
+        )
+        if err is not None:
+            return {
+                "error": f"blob create failed for {path_key}: {err['detail']}",
+                "error_kind": _scope_or(err, "blob_create_failed"),
+            }
+        blob_sha = (blob or {}).get("sha")
+        if not isinstance(blob_sha, str) or not blob_sha:
+            return {
+                "error": f"blob create for {path_key} returned no sha",
+                "error_kind": "blob_create_failed",
+            }
+        tree_entries.append(
+            {"path": path_key, "mode": "100644", "type": "blob", "sha": blob_sha}
+        )
+
+    # Step 4: new tree on top of the base tree.
+    tree, err = _git_data_api(
+        method="POST",
+        path=f"/repos/{owner_repo}/git/trees",
+        capability_token=capability_token,
+        body={"base_tree": base_tree_sha, "tree": tree_entries},
+    )
+    if err is not None:
+        return {
+            "error": f"tree create failed: {err['detail']}",
+            "error_kind": _scope_or(err, "tree_create_failed"),
+        }
+    new_tree_sha = (tree or {}).get("sha")
+    if not isinstance(new_tree_sha, str) or not new_tree_sha:
+        return {"error": "tree create returned no sha", "error_kind": "tree_create_failed"}
+
+    # Step 5: commit pointing at the new tree, parented on the base commit.
+    commit, err = _git_data_api(
+        method="POST",
+        path=f"/repos/{owner_repo}/git/commits",
+        capability_token=capability_token,
+        body={
+            "message": commit_message,
+            "tree": new_tree_sha,
+            "parents": [base_commit_sha],
+        },
+    )
+    if err is not None:
+        return {
+            "error": f"commit create failed: {err['detail']}",
+            "error_kind": _scope_or(err, "commit_create_failed"),
+        }
+    new_commit_sha = (commit or {}).get("sha")
+    if not isinstance(new_commit_sha, str) or not new_commit_sha:
+        return {
+            "error": "commit create returned no sha",
+            "error_kind": "commit_create_failed",
+        }
+
+    # Step 6: create refs/heads/<head_branch>. If it already exists, this
+    # is a retry — reuse ONLY when the existing branch points at a commit
+    # whose tree matches what we just built (same materialized content);
+    # otherwise fail closed rather than clobber another writer's branch
+    # (review constraint 2).
+    _ref, err = _git_data_api(
+        method="POST",
+        path=f"/repos/{owner_repo}/git/refs",
+        capability_token=capability_token,
+        body={"ref": f"refs/heads/{head_branch}", "sha": new_commit_sha},
+    )
+    if err is None:
+        return {
+            "materialized": True,
+            "head_branch": head_branch,
+            "commit_sha": new_commit_sha,
+            "tree_sha": new_tree_sha,
+        }
+    if err.get("http_status") != 422:
+        return {
+            "error": f"ref create failed for refs/heads/{head_branch}: {err['detail']}",
+            "error_kind": _scope_or(err, "ref_create_failed"),
+        }
+
+    # 422 → reference already exists. Inspect it for idempotent reuse.
+    existing_ref, lookup_err = _git_data_api(
+        method="GET",
+        path=f"/repos/{owner_repo}/git/ref/heads/{head_branch}",
+        capability_token=capability_token,
+    )
+    if lookup_err is not None:
+        return {
+            "error": (
+                f"head ref refs/heads/{head_branch} already exists but could "
+                f"not be inspected: {lookup_err['detail']}"
+            ),
+            "error_kind": "head_ref_conflict",
+        }
+    existing_commit_sha = ((existing_ref or {}).get("object") or {}).get("sha")
+    existing_tree_sha = None
+    if isinstance(existing_commit_sha, str) and existing_commit_sha:
+        existing_commit, _e = _git_data_api(
+            method="GET",
+            path=f"/repos/{owner_repo}/git/commits/{existing_commit_sha}",
+            capability_token=capability_token,
+        )
+        existing_tree_sha = ((existing_commit or {}).get("tree") or {}).get("sha")
+    if existing_tree_sha == new_tree_sha:
+        # Same materialized content already on the branch — idempotent
+        # retry, safe to proceed to PR creation against it.
+        return {
+            "materialized": True,
+            "head_branch": head_branch,
+            "commit_sha": existing_commit_sha,
+            "tree_sha": new_tree_sha,
+            "head_ref_reused": True,
+        }
+    return {
+        "error": (
+            f"head ref refs/heads/{head_branch} already exists with different "
+            f"content (existing tree {existing_tree_sha}, wanted {new_tree_sha}); "
+            "refusing to force-update"
+        ),
+        "error_kind": "head_ref_conflict",
+    }
+
+
 def _invoke_github_api_pr_create(
     *,
     payload: dict[str, Any],
@@ -918,8 +1204,37 @@ def run_github_pr_effector(
 
     # ── Real write ─────────────────────────────────────────────────────
     payload = packet.get("payload") or {}
+    payload = payload if isinstance(payload, dict) else {}
+
+    # BUG-111: materialize the change set into the remote head branch
+    # BEFORE opening the PR. Without this the head ref has no commits and
+    # `gh pr create` fails "No commits between base and head". Reuses the
+    # capability token via the Git Data API (no git binary / clone).
+    head_branch = payload.get("head_branch") or ""
+    materialize = _materialize_branch(
+        changes_json=payload.get("changes_json"),
+        destination=destination,
+        base_branch=payload.get("base_branch") or "main",
+        head_branch=head_branch,
+        commit_message=(payload.get("title") or f"Automated change for {head_branch}"),
+        capability_token=capability,
+    )
+    if materialize.get("error"):
+        _release_reservation(
+            universe_dir,
+            idempotency_hint=idempotency_hint,
+            run_id=run_id,
+        )
+        materialize.setdefault("matched_output_key", matched_key)
+        materialize.setdefault("destination", destination)
+        materialize.setdefault("phase", "phase_2")
+        if idempotency_hint:
+            materialize.setdefault("idempotency_hint", idempotency_hint)
+            materialize.setdefault("reservation_released", True)
+        return materialize
+
     invocation = _invoke_gh_pr_create(
-        payload=payload if isinstance(payload, dict) else {},
+        payload=payload,
         destination=destination,
         capability_token=capability,
     )
@@ -948,8 +1263,12 @@ def run_github_pr_effector(
         "pr_number": invocation.get("pr_number"),
         "invocation_mode": invocation.get("invocation_mode", "gh"),
         "stdout": invocation.get("stdout", ""),
+        "head_branch": materialize.get("head_branch"),
+        "commit_sha": materialize.get("commit_sha"),
         "recorded_at": time.time(),
     }
+    if materialize.get("head_ref_reused"):
+        evidence["head_ref_reused"] = True
     if invocation.get("label_error"):
         evidence["label_error"] = invocation["label_error"]
     if idempotency_hint:
