@@ -30,6 +30,7 @@ from workflow.api.wiki import (
     _parse_frontmatter,
     _sanitize_slug,
     _slugify_title,
+    _wiki_file_bug,
     _wiki_similarity_score,
     wiki,
 )
@@ -672,6 +673,37 @@ def test_wiki_file_bug_files_clean_when_no_dups(wiki_env):
     )
     assert res["status"] == "filed"
     assert res["bug_id"].startswith("BUG-")
+
+
+def test_wiki_file_bug_rejects_unsupported_body_field(wiki_env):
+    res = json.loads(
+        wiki(
+            action="file_bug",
+            component="api.wiki",
+            severity="major",
+            title="Content body should not be discarded",
+            content="This body would be lost if file_bug silently accepted it.",
+        )
+    )
+
+    assert "error" in res
+    assert "content" in res["error"]
+    assert not list((wiki_env / "pages" / "bugs").glob("bug-*.md"))
+
+
+def test_wiki_file_bug_rejects_unknown_direct_kwarg(wiki_env):
+    res = json.loads(
+        _wiki_file_bug(
+            component="api.wiki",
+            severity="major",
+            title="Unknown direct kwarg should not be discarded",
+            body="This field is not part of the file_bug contract.",
+        )
+    )
+
+    assert "error" in res
+    assert "body" in res["error"]
+    assert not list((wiki_env / "pages" / "bugs").glob("bug-*.md"))
 
 
 def test_wiki_file_bug_queued_investigation_returns_branch_task_lease_shape(
