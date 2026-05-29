@@ -72,6 +72,7 @@ Design source: ``drafts/concepts/external-write-phase-2-authority.md``.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -80,6 +81,7 @@ import sqlite3
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -608,6 +610,126 @@ def _scope_or(error: dict[str, Any], step_kind: str) -> str:
     return step_kind
 
 
+_MAX_EDIT_BLOCKS_PER_FILE = 100
+
+
+def _fetch_file_at_ref(
+    *, owner_repo: str, path: str, ref: str, capability_token: str
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Fetch a file's decoded text at ``ref`` via the Contents API.
+
+    Returns ``(contents, None)`` on success or ``(None, error)`` where error is
+    the ``_git_data_api`` error dict. A 404 means the path does not exist at the
+    ref — edits cannot anchor on a missing file, so the caller maps that to
+    ``edit_target_missing``.
+    """
+    encoded = urllib.parse.quote(path, safe="/")
+    encoded_ref = urllib.parse.quote(ref, safe="")
+    obj, err = _git_data_api(
+        method="GET",
+        path=f"/repos/{owner_repo}/contents/{encoded}?ref={encoded_ref}",
+        capability_token=capability_token,
+    )
+    if err is not None:
+        return None, err
+    if not isinstance(obj, dict) or obj.get("type") != "file":
+        return None, {"http_status": None, "detail": "path is not a file"}
+    encoded_content = obj.get("content")
+    if not isinstance(encoded_content, str) or not encoded_content:
+        # Files >1MB return no inline content via the Contents API.
+        return None, {"http_status": None, "detail": "no inline content (file too large?)"}
+    try:
+        return base64.b64decode(encoded_content).decode("utf-8"), None
+    except (ValueError, UnicodeDecodeError) as exc:
+        return None, {"http_status": None, "detail": f"decode failed: {exc}"}
+
+
+def _apply_edit_blocks(
+    contents: str, blocks: Any
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Apply ordered search/replace blocks to ``contents`` (exact, unique).
+
+    Each block is ``{"search": <str>, "replace": <str>}``. The ``search`` text
+    must occur EXACTLY ONCE in the current contents (anchoring on real fetched
+    text — read_repo_files gives the model that text). Zero matches or multiple
+    matches fail closed so a bad edit never produces a corrupt commit. Blocks
+    apply in order; a later block sees the result of earlier ones.
+    """
+    def _bad(kind: str, detail: str):
+        return None, {"error_kind": kind, "detail": detail}
+
+    if not isinstance(blocks, list) or not blocks:
+        return _bad("invalid_edits", "edits must be a non-empty list of blocks")
+    if len(blocks) > _MAX_EDIT_BLOCKS_PER_FILE:
+        return _bad("invalid_edits", f"too many edit blocks (>{_MAX_EDIT_BLOCKS_PER_FILE})")
+    out = contents
+    for i, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            return _bad("invalid_edits", f"block {i} is not an object")
+        search = block.get("search")
+        replace = block.get("replace")
+        if not isinstance(search, str) or not search:
+            return _bad("invalid_edits", f"block {i} has empty/non-string search")
+        if not isinstance(replace, str):
+            return _bad("invalid_edits", f"block {i} has non-string replace")
+        count = out.count(search)
+        if count == 0:
+            return _bad("edit_search_not_found", f"block {i} search text not found")
+        if count > 1:
+            return _bad(
+                "edit_search_not_unique",
+                f"block {i} search matches {count}x (must be unique; add context)",
+            )
+        out = out.replace(search, replace, 1)
+    return out, None
+
+
+def _resolve_edits(
+    *, edits_json: Any, destination: str, base_branch: str, capability_token: str
+) -> tuple[dict[str, str], dict[str, Any] | None]:
+    """Resolve ``edits_json`` ({path: [blocks]}) to ``{path: full_new_contents}``.
+
+    Fetches each target file at ``base_branch`` and applies its blocks. Returns
+    ``(resolved, None)`` or ``({}, error)`` with a distinct ``error_kind``. This
+    is the large-file path: the model emits only the changed hunks, never the
+    whole file, so it cannot truncate a big file into placeholders.
+    """
+    if not isinstance(edits_json, dict) or not edits_json:
+        return {}, {"error": "edits_json must be a non-empty object", "error_kind": "invalid_edits"}
+    resolved: dict[str, str] = {}
+    for path_key, blocks in edits_json.items():
+        if not isinstance(path_key, str) or not path_key.strip():
+            return {}, {
+                "error": "edits_json keys must be non-empty path strings",
+                "error_kind": "invalid_edits",
+            }
+        current, err = _fetch_file_at_ref(
+            owner_repo=destination, path=path_key, ref=base_branch,
+            capability_token=capability_token,
+        )
+        if err is not None:
+            if err.get("http_status") == 404:
+                return {}, {
+                    "error": (
+                        f"edit target {path_key!r} does not exist at {base_branch} "
+                        "(cannot edit a missing file; use changes_json to create it)"
+                    ),
+                    "error_kind": "edit_target_missing",
+                }
+            return {}, {
+                "error": f"could not fetch {path_key!r} to apply edits: {err.get('detail')}",
+                "error_kind": _scope_or(err, "edit_fetch_failed"),
+            }
+        new_contents, edit_err = _apply_edit_blocks(current, blocks)
+        if edit_err is not None:
+            return {}, {
+                "error": f"edits for {path_key!r}: {edit_err['detail']}",
+                "error_kind": edit_err["error_kind"],
+            }
+        resolved[path_key] = new_contents
+    return resolved, None
+
+
 def _materialize_branch(
     *,
     changes_json: Any,
@@ -616,6 +738,7 @@ def _materialize_branch(
     head_branch: str,
     commit_message: str,
     capability_token: str,
+    edits_json: Any = None,
 ) -> dict[str, Any]:
     """Build a remote head branch from ``changes_json`` via the Git Data API.
 
@@ -638,33 +761,68 @@ def _materialize_branch(
             "error": f"invalid GitHub repository destination: {destination!r}",
             "error_kind": "invalid_destination",
         }
-    if not isinstance(changes_json, dict) or not changes_json:
-        # Constraint: no silent empty-branch PR. A real-write packet must
-        # carry the change set; failing loudly beats opening an empty PR.
-        return {
-            "error": (
-                "packet.payload.changes_json is required and must be a "
-                "non-empty object mapping repo-relative paths to full new "
-                "file contents (null to delete)"
-            ),
-            "error_kind": "missing_changes",
-        }
     if not head_branch:
         return {
             "error": "packet.payload.head_branch is required to materialize a branch",
             "error_kind": "missing_head_branch",
         }
-    for path_key, contents in changes_json.items():
-        if not isinstance(path_key, str) or not path_key.strip():
+
+    # Build the effective {path: full-new-contents|None} map from two sources:
+    #   - changes_json: full-file replacements / creates / deletes (null).
+    #   - edits_json:   {path: [search/replace blocks]} resolved server-side
+    #                   against the file fetched at base_branch — the large-file
+    #                   path, so the model never has to re-emit a whole big file.
+    effective: dict[str, Any] = {}
+    if changes_json is not None:
+        if not isinstance(changes_json, dict):
             return {
-                "error": "changes_json keys must be non-empty repo-relative path strings",
+                "error": "packet.payload.changes_json must be an object or omitted",
                 "error_kind": "invalid_changes",
             }
-        if contents is not None and not isinstance(contents, str):
-            return {
-                "error": f"changes_json[{path_key!r}] must be a string or null (delete)",
-                "error_kind": "invalid_changes",
-            }
+        for path_key, contents in changes_json.items():
+            if not isinstance(path_key, str) or not path_key.strip():
+                return {
+                    "error": "changes_json keys must be non-empty repo-relative path strings",
+                    "error_kind": "invalid_changes",
+                }
+            if contents is not None and not isinstance(contents, str):
+                return {
+                    "error": f"changes_json[{path_key!r}] must be a string or null (delete)",
+                    "error_kind": "invalid_changes",
+                }
+            effective[path_key] = contents
+    if edits_json is not None:
+        resolved, edit_err = _resolve_edits(
+            edits_json=edits_json,
+            destination=owner_repo,
+            base_branch=base_branch,
+            capability_token=capability_token,
+        )
+        if edit_err is not None:
+            return edit_err
+        for path_key, contents in resolved.items():
+            if path_key in effective:
+                return {
+                    "error": (
+                        f"{path_key!r} appears in both changes_json and "
+                        "edits_json — supply only one per path"
+                    ),
+                    "error_kind": "invalid_edits",
+                }
+            effective[path_key] = contents
+    if not effective:
+        # Constraint: no silent empty-branch PR. A real-write packet must carry
+        # the change set in changes_json (full files) and/or edits_json
+        # (search/replace blocks); failing loudly beats opening an empty PR.
+        return {
+            "error": (
+                "packet.payload must carry changes_json (object mapping "
+                "repo-relative paths to full new file contents, null to delete) "
+                "and/or edits_json (object mapping paths to a list of "
+                "{search, replace} blocks)"
+            ),
+            "error_kind": "missing_changes",
+        }
 
     # Step 1: base ref → base commit sha.
     ref_obj, err = _git_data_api(
@@ -705,7 +863,7 @@ def _materialize_branch(
 
     # Step 3: one blob per modified/created path (deletions carry no blob).
     tree_entries: list[dict[str, Any]] = []
-    for path_key, contents in changes_json.items():
+    for path_key, contents in effective.items():
         if contents is None:
             tree_entries.append(
                 {"path": path_key, "mode": "100644", "type": "blob", "sha": None}
@@ -1213,6 +1371,7 @@ def run_github_pr_effector(
     head_branch = payload.get("head_branch") or ""
     materialize = _materialize_branch(
         changes_json=payload.get("changes_json"),
+        edits_json=payload.get("edits_json"),
         destination=destination,
         base_branch=payload.get("base_branch") or "main",
         head_branch=head_branch,
