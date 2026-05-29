@@ -57,7 +57,9 @@ def test_auto_check_codex_lane_posts_structured_verdict_marker():
     assert "WORKFLOW_CODEX_AUTH_JSON_B64" in text
     assert "workflow-checker-verdict:v1 family=codex" in text
     assert "verdict=${markerVerdict}" in text
+    assert "review_depth=substantive" in text
     assert "approve_with_amendment" in text
+    assert "send_back" in text
     assert "auto-checker-amendment-required" in text
     assert "head=${process.env.HEAD_SHA}" in text
     assert "Do not commit, push, merge" in text

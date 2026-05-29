@@ -325,7 +325,7 @@ jobs:
               repo: context.repo.repo,
               issue_number: prNumber,
               body: [
-                `<!-- workflow-checker-verdict:v1 family=codex verdict=${markerVerdict} head=${process.env.HEAD_SHA} run=${process.env.GITHUB_RUN_ID} -->`,
+                `<!-- workflow-checker-verdict:v1 family=codex verdict=${markerVerdict} review_depth=substantive head=${process.env.HEAD_SHA} run=${process.env.GITHUB_RUN_ID} -->`,
                 `**Automated independent Codex checker verdict:** ${renderedVerdict}`,
                 '',
                 checkerBody,
