@@ -26,20 +26,27 @@ from workflow.effectors.github_read import (
     read_repo_files,
     register_read_repo_files,
 )
+from workflow.effectors.github_search import (
+    register_search_repo_files,
+    search_repo_files,
+)
 from workflow.effectors.windows_desktop import (
     EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME,
     run_windows_desktop_effector,
 )
 
-# Register the read_repo_files opaque domain callable at package import so a
-# branch that uses it resolves a body at compile time (read side of BUG-111).
+# Register the opaque domain callables at package import so a branch that uses
+# them resolves a body at compile time (read + search side of the loop).
 register_read_repo_files()
+register_search_repo_files()
 
 __all__ = [
     "EXTERNAL_WRITE_SINK_GITHUB_PR",
     "EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME",
     "read_repo_files",
     "register_read_repo_files",
+    "search_repo_files",
+    "register_search_repo_files",
     "run_github_pr_effector",
     "run_windows_desktop_effector",
     "run_effects_for_branch",
