@@ -6,6 +6,7 @@ user-buildable loop EDIT existing files: a node named ``read_repo_files`` (in th
 GitHub repository and writes them into run state, so a downstream
 ``propose_changes`` node can base a correct diff on the real file contents
 instead of guessing.
+See also: ``search_repo_files`` in ``workflow/effectors/github_search.py`` — the localization/search counterpart to ``read_repo_files``.
 
 Design note: docs/design-notes/2026-05-29-read-repo-files-primitive.md
 (Option A — opaque domain callable; Cowork + Codex review, amendments folded).
