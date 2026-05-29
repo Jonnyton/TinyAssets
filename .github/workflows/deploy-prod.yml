@@ -573,7 +573,7 @@ jobs:
             config_hash="sha256:${config_hash}"
           fi
 
-          export image_digest config_hash DEPLOY_RUN_ID DEPLOY_RUN_URL
+          export image_digest config_hash BUILD_RUN_URL DEPLOY_RUN_ID DEPLOY_RUN_URL
           python - <<'PY' > /tmp/workflow-release-state.json
           import json
           import os
