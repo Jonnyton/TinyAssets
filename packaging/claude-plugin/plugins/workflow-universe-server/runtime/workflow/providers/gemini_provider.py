@@ -8,6 +8,7 @@ Optional dependency: ``pip install fantasy-author[gemini]``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 
@@ -55,7 +56,8 @@ class GeminiProvider(BaseProvider):
         start = time.monotonic()
 
         try:
-            response = self._client.models.generate_content(
+            response = await asyncio.to_thread(
+                self._client.models.generate_content,
                 model=self._model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
