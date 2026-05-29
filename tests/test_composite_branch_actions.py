@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -82,7 +83,15 @@ def _build_approved_source_branch(us, *, node_id="approved_calc"):
         source_code="def run(state): return {'answer': 1}",
         dependencies="",
     )
-    approved = _call(us, "approve", node_id=node_id)
+    prior_actor = os.environ.get("UNIVERSE_SERVER_USER")
+    os.environ["UNIVERSE_SERVER_USER"] = "host-operator"
+    try:
+        approved = _call(us, "approve", node_id=node_id)
+    finally:
+        if prior_actor is None:
+            os.environ.pop("UNIVERSE_SERVER_USER", None)
+        else:
+            os.environ["UNIVERSE_SERVER_USER"] = prior_actor
     assert approved["approved"] is True
     spec = {
         "name": "Approved source branch",

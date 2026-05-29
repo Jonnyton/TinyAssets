@@ -258,15 +258,21 @@ class TestExplicitNodeRefCopiesCanonicalBody:
         assert nd["prompt_template"] == "audit: {x}"
         assert nd["description"] == "canonical audit node"
 
-    def test_build_branch_node_ref_preserves_standalone_approval(self, ext_env):
+    def test_build_branch_node_ref_preserves_standalone_approval(
+        self, ext_env, monkeypatch,
+    ):
         us, base = ext_env
         _register_standalone(
             us, "approved_recipe", "Approved Recipe",
             source="def run(state): return {'manifest': 'ok'}\n",
         )
-        approved = _call(
-            us, "extensions", "approve", node_id="approved_recipe",
-        )
+        monkeypatch.setenv("UNIVERSE_SERVER_USER", "host-operator")
+        try:
+            approved = _call(
+                us, "extensions", "approve", node_id="approved_recipe",
+            )
+        finally:
+            monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
         assert approved["approved"] is True
 
         spec = {
@@ -284,7 +290,10 @@ class TestExplicitNodeRefCopiesCanonicalBody:
                 {"from": "START", "to": "approved_recipe"},
                 {"from": "approved_recipe", "to": "END"},
             ],
-            "state_schema": [{"name": "manifest", "type": "str"}],
+            "state_schema": [
+                {"name": "manifest", "type": "str"},
+                {"name": "state", "type": "dict"},
+            ],
         }
         built = _call(us, "extensions", "build_branch",
                       spec_json=json.dumps(spec))
