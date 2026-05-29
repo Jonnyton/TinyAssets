@@ -78,6 +78,8 @@ class TestPublishedPaperEvaluator:
         ev = PublishedPaperEvaluator()
         result = ev.evaluate({"doi": "10.1234/example"})
         assert result.verdict == "fail"
+        assert result.details["verification_status"] == "unverified"
+        assert result.details["resolved"] is None
 
 
 # ── MergedPREvaluator ─────────────────────────────────────────────────────────
@@ -114,6 +116,13 @@ class TestMergedPREvaluator:
             ev = MergedPREvaluator(prober=lambda url, r=prober_result: r)
             result = ev.evaluate({"pr_url": "https://github.com/x/y/pull/1"})
             assert -1.0 <= result.score <= 1.0
+
+    def test_default_prober_reports_unverified(self):
+        ev = MergedPREvaluator()
+        result = ev.evaluate({"pr_url": "https://github.com/org/repo/pull/42"})
+        assert result.verdict == "fail"
+        assert result.details["verification_status"] == "unverified"
+        assert result.details["merged"] is None
 
 
 # ── DeployedAppEvaluator ──────────────────────────────────────────────────────
@@ -155,6 +164,8 @@ class TestDeployedAppEvaluator:
         ev = DeployedAppEvaluator()
         result = ev.evaluate({"app_url": "https://example.com"})
         assert result.verdict == "fail"
+        assert result.details["verification_status"] == "unverified"
+        assert result.details["live"] is None
 
 
 # ── EvalResult shape invariants ───────────────────────────────────────────────
@@ -232,6 +243,11 @@ class TestPeerReviewAcceptedEvaluator:
         result = PeerReviewAcceptedEvaluator().evaluate(state)
         assert result.verdict == "pass"
 
+    def test_not_accepted_is_fail(self):
+        state = {**self._VALID, "decision": "not accepted"}
+        result = PeerReviewAcceptedEvaluator().evaluate(state)
+        assert result.verdict == "fail"
+
     def test_missing_venue_returns_fail(self):
         state = {k: v for k, v in self._VALID.items() if k != "venue"}
         result = PeerReviewAcceptedEvaluator().evaluate(state)
@@ -263,6 +279,7 @@ class TestPeerReviewAcceptedEvaluator:
 class TestConferenceAcceptedEvaluator:
     _VALID = {
         "conference_name": "NeurIPS 2026",
+        "decision": "accepted",
         "talk_date": "2026-12-10",
         "accepted_at": "2026-09-01",
     }
@@ -288,6 +305,18 @@ class TestConferenceAcceptedEvaluator:
         state = {k: v for k, v in self._VALID.items() if k != "accepted_at"}
         result = ConferenceAcceptedEvaluator().evaluate(state)
         assert result.verdict == "fail"
+
+    def test_missing_decision_returns_fail(self):
+        state = {k: v for k, v in self._VALID.items() if k != "decision"}
+        result = ConferenceAcceptedEvaluator().evaluate(state)
+        assert result.verdict == "fail"
+        assert "decision" in result.details["missing"]
+
+    def test_rejected_decision_returns_fail(self):
+        state = {**self._VALID, "decision": "rejected"}
+        result = ConferenceAcceptedEvaluator().evaluate(state)
+        assert result.verdict == "fail"
+        assert result.score == 0.0
 
     def test_optional_recording_url_included_in_details(self):
         state = {**self._VALID, "recording_url": "https://rec.example.com/talk"}

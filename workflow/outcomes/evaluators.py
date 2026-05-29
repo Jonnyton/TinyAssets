@@ -9,10 +9,10 @@ State keys consumed per evaluator:
   MergedPREvaluator:       state["pr_url"]        → str or None
   DeployedAppEvaluator:    state["app_url"]       → str or None
 
-All evaluators are probe-free by default. To avoid real network calls in tests,
-callers inject a `prober` callable: `prober(url: str) -> bool`.
-When no prober is injected, `_default_prober` is used (always returns False
-to avoid network calls during import/test collection).
+Network-backed evaluators are probe-free by default. To avoid real network
+calls in tests, callers inject a `prober` callable: `prober(url: str) -> bool`.
+When no prober is injected, `_unverified_prober` is used so the result is
+explicitly unverified instead of silently treated as a checked failure.
 """
 
 from __future__ import annotations
@@ -22,12 +22,32 @@ from typing import Any, Callable
 from workflow.evaluation import EvalResult
 
 # Default prober: never fires real network requests; override at call-site.
-_ProberFn = Callable[[str], bool]
+_ProbeResult = bool | None
+_ProberFn = Callable[[str], _ProbeResult]
+_ACCEPTED_DECISIONS = frozenset(
+    {
+        "accept",
+        "accepted",
+        "accepted_with_revisions",
+        "accepted_with_minor_revisions",
+        "accepted_with_major_revisions",
+        "conditional_accept",
+        "conditionally_accepted",
+    }
+)
 
 
-def _no_network_prober(url: str) -> bool:  # noqa: ARG001
-    """Default prober — network-free, always returns False."""
-    return False
+def _unverified_prober(url: str) -> None:  # noqa: ARG001
+    """Default prober: network-free and explicitly unverified."""
+    return None
+
+
+def _verification_status(probe_result: _ProbeResult) -> str:
+    return "unverified" if probe_result is None else "verified"
+
+
+def _is_accepted_decision(decision: Any) -> bool:
+    return str(decision).strip().lower().replace(" ", "_").replace("-", "_") in _ACCEPTED_DECISIONS
 
 
 class PublishedPaperEvaluator:
@@ -39,7 +59,7 @@ class PublishedPaperEvaluator:
 
     label = "published_paper"
 
-    def __init__(self, prober: _ProberFn = _no_network_prober) -> None:
+    def __init__(self, prober: _ProberFn = _unverified_prober) -> None:
         self._prober = prober
 
     def evaluate(self, state: dict[str, Any]) -> EvalResult:
@@ -53,13 +73,19 @@ class PublishedPaperEvaluator:
                 details={"reason": "no doi in state"},
             )
         doi_url = f"https://doi.org/{doi}"
-        resolved = self._prober(doi_url)
+        probe_result = self._prober(doi_url)
+        resolved = None if probe_result is None else bool(probe_result)
         return EvalResult(
             score=1.0 if resolved else 0.0,
             verdict="pass" if resolved else "fail",
             kind="custom",
             label=self.label,
-            details={"doi": doi, "doi_url": doi_url, "resolved": resolved},
+            details={
+                "doi": doi,
+                "doi_url": doi_url,
+                "resolved": resolved,
+                "verification_status": _verification_status(probe_result),
+            },
         )
 
 
@@ -72,7 +98,7 @@ class MergedPREvaluator:
 
     label = "merged_pr"
 
-    def __init__(self, prober: _ProberFn = _no_network_prober) -> None:
+    def __init__(self, prober: _ProberFn = _unverified_prober) -> None:
         self._prober = prober
 
     def evaluate(self, state: dict[str, Any]) -> EvalResult:
@@ -85,13 +111,18 @@ class MergedPREvaluator:
                 label=self.label,
                 details={"reason": "no pr_url in state"},
             )
-        merged = self._prober(pr_url)
+        probe_result = self._prober(pr_url)
+        merged = None if probe_result is None else bool(probe_result)
         return EvalResult(
             score=1.0 if merged else 0.0,
             verdict="pass" if merged else "fail",
             kind="custom",
             label=self.label,
-            details={"pr_url": pr_url, "merged": merged},
+            details={
+                "pr_url": pr_url,
+                "merged": merged,
+                "verification_status": _verification_status(probe_result),
+            },
         )
 
 
@@ -104,7 +135,7 @@ class DeployedAppEvaluator:
 
     label = "deployed_app"
 
-    def __init__(self, prober: _ProberFn = _no_network_prober) -> None:
+    def __init__(self, prober: _ProberFn = _unverified_prober) -> None:
         self._prober = prober
 
     def evaluate(self, state: dict[str, Any]) -> EvalResult:
@@ -117,13 +148,18 @@ class DeployedAppEvaluator:
                 label=self.label,
                 details={"reason": "no app_url in state"},
             )
-        live = self._prober(app_url)
+        probe_result = self._prober(app_url)
+        live = None if probe_result is None else bool(probe_result)
         return EvalResult(
             score=1.0 if live else 0.0,
             verdict="pass" if live else "fail",
             kind="custom",
             label=self.label,
-            details={"app_url": app_url, "live": live},
+            details={
+                "app_url": app_url,
+                "live": live,
+                "verification_status": _verification_status(probe_result),
+            },
         )
 
 
@@ -150,8 +186,7 @@ class PeerReviewAcceptedEvaluator:
                 label=self.label,
                 details={"reason": "missing required fields", "missing": missing},
             )
-        decision = str(state["decision"]).lower()
-        accepted = "accept" in decision
+        accepted = _is_accepted_decision(state["decision"])
         details: dict[str, Any] = {
             "venue": state["venue"],
             "decision": state["decision"],
@@ -174,6 +209,7 @@ class ConferenceAcceptedEvaluator:
     state keys (required):
       conference_name (str): Conference name, e.g. "NeurIPS 2026".
       talk_date (str):       ISO-8601 date of the talk.
+      decision (str):        Structured acceptance decision, e.g. "accepted".
       accepted_at (str):     ISO-8601 date of the acceptance notification.
     state keys (optional):
       recording_url (str):   URL to the talk recording once available.
@@ -182,7 +218,11 @@ class ConferenceAcceptedEvaluator:
     label = "conference_accepted"
 
     def evaluate(self, state: dict[str, Any]) -> EvalResult:
-        missing = [k for k in ("conference_name", "talk_date", "accepted_at") if not state.get(k)]
+        missing = [
+            k
+            for k in ("conference_name", "decision", "talk_date", "accepted_at")
+            if not state.get(k)
+        ]
         if missing:
             return EvalResult(
                 score=0.0,
@@ -191,16 +231,18 @@ class ConferenceAcceptedEvaluator:
                 label=self.label,
                 details={"reason": "missing required fields", "missing": missing},
             )
+        accepted = _is_accepted_decision(state["decision"])
         details: dict[str, Any] = {
             "conference_name": state["conference_name"],
+            "decision": state["decision"],
             "talk_date": state["talk_date"],
             "accepted_at": state["accepted_at"],
         }
         if state.get("recording_url"):
             details["recording_url"] = state["recording_url"]
         return EvalResult(
-            score=1.0,
-            verdict="pass",
+            score=1.0 if accepted else 0.0,
+            verdict="pass" if accepted else "fail",
             kind="custom",
             label=self.label,
             details=details,
