@@ -17,6 +17,11 @@ runtime, and user forks without creating another hidden source of truth. Brain
 pages are the durable exchange record; local skill folders and runtime caches
 are projections.
 
+This page covers portable skill text. Runtime capabilities that skill text
+depends on, such as MCP servers and LSP-backed tools, are tracked separately in
+[[capability-provisioning-via-brain-pages]] so a skill can declare what it
+needs without making one runtime's plugin wrapper canonical for every host.
+
 This page preserves the useful design content from closed PR #828 in the brain
 surface instead of `docs/design-notes/proposed/`.
 
@@ -47,6 +52,8 @@ Each portable skill page should include:
 - `applies_to`: project, domain, host, runtime, or user fork
 - `projected_paths`: expected file materializations
 - `review_gate`: required checker family or review rule before adoption
+- `requires_capability`: optional list of capability IDs defined by accepted
+  or proposed capability pages
 - `body`: inline skill text, or a lossless pointer to a body page
 
 ## Projection Rules
