@@ -26,10 +26,13 @@ import functools
 import json
 import logging
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+_IDEMPOTENCY_TTL = timedelta(days=30)
 
 
 class IdempotencyStore:
@@ -50,6 +53,18 @@ class IdempotencyStore:
         conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
+    def _now(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _expiry_cutoff(self) -> str:
+        return (datetime.now(timezone.utc) - _IDEMPOTENCY_TTL).isoformat()
+
+    def _prune_expired(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "DELETE FROM idempotent_results WHERE accessed_at < ?",
+            (self._expiry_cutoff(),),
+        )
+
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -59,34 +74,62 @@ class IdempotencyStore:
                     step_id     TEXT NOT NULL,
                     result_json TEXT NOT NULL,
                     recorded_at TEXT NOT NULL,
+                    accessed_at TEXT NOT NULL,
                     PRIMARY KEY (run_id, step_id)
                 )
                 """
             )
 
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(idempotent_results)")
+            }
+            now = self._now()
+            if "accessed_at" not in columns:
+                conn.execute(
+                    "ALTER TABLE idempotent_results ADD COLUMN accessed_at TEXT"
+                )
+                conn.execute(
+                    "UPDATE idempotent_results SET accessed_at = COALESCE(recorded_at, ?)",
+                    (now,),
+                )
+            conn.execute(
+                "UPDATE idempotent_results SET accessed_at = COALESCE(accessed_at, recorded_at, ?)",
+                (now,),
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_idempotent_results_accessed_at "
+                "ON idempotent_results(accessed_at)"
+            )
+            self._prune_expired(conn)
+
     def get(self, run_id: str, step_id: str) -> Any | None:
         """Return stored result for (run_id, step_id), or None if not found."""
         with self._connect() as conn:
+            self._prune_expired(conn)
             row = conn.execute(
                 "SELECT result_json FROM idempotent_results WHERE run_id = ? AND step_id = ?",
                 (run_id, step_id),
             ).fetchone()
-        if row is None:
-            return None
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE idempotent_results SET accessed_at = ? WHERE run_id = ? AND step_id = ?",
+                (self._now(), run_id, step_id),
+            )
         return json.loads(row["result_json"])
 
     def set(self, run_id: str, step_id: str, result: Any) -> None:
         """Store result for (run_id, step_id). Ignores conflicts (idempotent)."""
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+        now = self._now()
         with self._connect() as conn:
+            self._prune_expired(conn)
             conn.execute(
                 """
                 INSERT OR IGNORE INTO idempotent_results
-                    (run_id, step_id, result_json, recorded_at)
-                VALUES (?, ?, ?, ?)
+                    (run_id, step_id, result_json, recorded_at, accessed_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (run_id, step_id, json.dumps(result, default=str), now),
+                (run_id, step_id, json.dumps(result, default=str), now, now),
             )
 
     def has(self, run_id: str, step_id: str) -> bool:
