@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from domains.fantasy_daemon.phases.world_state_db import connect, get_all_facts, init_db
+from workflow.ingestion.canon_names import safe_canon_filename, safe_canon_slug
 from workflow.universe_soul import (
     premise_from_soul,
     read_legacy_premise,
@@ -479,7 +480,7 @@ def _handle_new_element(
     """Create a focused canon document for a newly discovered element."""
     from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
 
-    topic_slug = topic.lower().replace(" ", "_").replace("-", "_")
+    topic_slug = safe_canon_slug(topic)
     topic_label = topic.replace("_", " ").title()
 
     # Read existing canon for context
@@ -510,7 +511,7 @@ def _handle_new_element(
         fallback_response=_mock_worldbuild_response(topic),
     )
     if content:
-        filename = f"{topic_slug}.md"
+        filename = safe_canon_filename(topic_slug)
         _write_canon_file(canon_dir, filename, content, model=last_provider)
         logger.info("Created canon for new element: %s", filename)
 
@@ -529,7 +530,7 @@ def _handle_contradiction(
     """
     from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
 
-    topic_slug = topic.lower().replace(" ", "_").replace("-", "_")
+    topic_slug = safe_canon_slug(topic)
 
     # Find the relevant canon file
     canon_content = ""
@@ -597,7 +598,7 @@ def _handle_expansion(
     """Expand an existing thin canon document with new details from prose."""
     from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
 
-    topic_slug = topic.lower().replace(" ", "_").replace("-", "_")
+    topic_slug = safe_canon_slug(topic)
 
     # Find the relevant canon file
     canon_content = ""
@@ -864,10 +865,10 @@ def _generate_canon_documents(state: dict[str, Any]) -> list[str]:
             )
             if content:
                 from domains.fantasy_daemon.phases._provider_stub import last_provider
-                filename = f"{topic}.md"
+                filename = safe_canon_filename(topic)
                 _write_canon_file(canon_dir, filename, content, model=last_provider)
                 # Verify the file actually exists on disk
-                written_path = canon_dir / filename
+                written_path = (canon_dir / filename).resolve()
                 if written_path.exists():
                     generated.append(filename)
                     logger.info(
@@ -1033,11 +1034,18 @@ def _write_canon_file(
     import time as _time
 
     canon_dir.mkdir(parents=True, exist_ok=True)
-    filepath = canon_dir / filename
-    filepath.write_text(content, encoding="utf-8")
+    safe_filename = safe_canon_filename(filename)
+    canon_root = canon_dir.resolve()
+    filepath = (canon_dir / safe_filename).resolve()
+    if not filepath.is_relative_to(canon_root):
+        raise ValueError(f"canon filename escapes canon directory: {filename!r}")
 
     # Write provenance marker
-    marker = canon_dir / f".{filename}.reviewed"
+    marker = (canon_dir / f".{safe_filename}.reviewed").resolve()
+    if not marker.is_relative_to(canon_root):
+        raise ValueError(f"canon marker escapes canon directory: {filename!r}")
+
+    filepath.write_text(content, encoding="utf-8")
     try:
         marker.write_text(
             _json.dumps({"reviewed_at": _time.time(), "model": model}),

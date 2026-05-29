@@ -39,6 +39,7 @@ from domains.fantasy_daemon.phases.worldbuild import (
     _read_direction_notes,
     _read_premise,
     _scan_existing_canon,
+    _write_canon_file,
     worldbuild,
 )
 from workflow.notes import add_note, update_note_status
@@ -569,6 +570,40 @@ class TestWorldbuildCanonGeneration:
         """No gaps when everything is covered."""
         existing = set(WORLDBUILD_TOPICS)
         assert _identify_gaps(existing) == []
+
+    def test_write_canon_file_sanitizes_traversal_filename(self, tmp_path):
+        """LLM-derived canon filenames must not escape canon_dir."""
+        canon_dir = tmp_path / "canon"
+
+        _write_canon_file(canon_dir, "../../escape.md", "# Escaped")
+
+        assert (canon_dir / "escape.md").read_text(encoding="utf-8") == "# Escaped"
+        assert not (tmp_path / "escape.md").exists()
+
+    def test_write_canon_file_rejects_empty_safe_filename(self, tmp_path):
+        """A filename that sanitizes to empty is not written."""
+        canon_dir = tmp_path / "canon"
+
+        try:
+            _write_canon_file(canon_dir, "../..", "# Empty")
+        except ValueError as exc:
+            assert "non-empty safe slug" in str(exc)
+        else:
+            raise AssertionError("expected unsafe empty canon filename to fail")
+
+    def test_write_canon_file_rejects_marker_symlink_escape(self, tmp_path):
+        """The provenance marker write must stay under canon_dir too."""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        (canon_dir / ".escape.md.reviewed").symlink_to(tmp_path / "marker-outside")
+
+        try:
+            _write_canon_file(canon_dir, "escape.md", "# Escaped")
+        except ValueError as exc:
+            assert "canon marker escapes" in str(exc)
+        else:
+            raise AssertionError("expected escaped marker path to fail")
+        assert not (canon_dir / "escape.md").exists()
 
     def test_mock_worldbuild_response_has_content(self):
         """Mock response should produce valid markdown."""

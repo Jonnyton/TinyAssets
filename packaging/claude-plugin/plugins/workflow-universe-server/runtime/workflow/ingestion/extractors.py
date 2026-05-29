@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from workflow.ingestion.canon_names import safe_canon_filename
 from workflow.ingestion.core import FileType, detect_file_type
 from workflow.utils.json_parsing import parse_llm_json
 
@@ -278,8 +279,11 @@ def synthesize_source(
     for topic, content in docs.items():
         if not content or not content.strip():
             continue
-        slug = topic.lower().replace("-", "_").replace(" ", "_")
-        doc_filename = f"{slug}.md"
+        try:
+            doc_filename = safe_canon_filename(topic)
+        except ValueError:
+            logger.warning("Skipping synthesized canon topic with unsafe empty slug: %r", topic)
+            continue
 
         # Don't overwrite user-authored canon (check for .reviewed marker)
         marker = canon_dir / f".{doc_filename}.reviewed"
