@@ -363,6 +363,14 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "printf '%s' '0ca6e9c97f65' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID"
+          # Autonomous backlog intake (PR #1207): the daemon re-enqueues
+          # unresolved bug_investigation work itself (no hand-feeding), paced by
+          # its own concurrency cap + per-cycle cap. Enabling this drains the
+          # stuck backlog through the cutover loop above. Idempotent set;
+          # set to 'off' (or remove this block) to disable.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "printf '%s' 'on' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_BUG_INVESTIGATION_BACKFILL"
           if [ "${HAS_CODEX_AUTH_BUNDLE}" = "true" ]; then
             echo "Deploy-visible WORKFLOW_CODEX_AUTH_JSON_B64 found; syncing subscription auth bundle."
             printf '%s' "${WORKFLOW_CODEX_AUTH_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
