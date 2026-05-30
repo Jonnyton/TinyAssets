@@ -88,6 +88,24 @@ def test_succeeded_overrides_old_failed(tmp_path, monkeypatch):
     assert backfill_investigations(tmp_path) == 0
 
 
+def test_succeeded_under_old_loop_version_parks_bug(tmp_path, monkeypatch):
+    # Version-agnostic resolution: a succeeded run under a PRIOR loop version
+    # (e.g. the retired cheat branch) parks the bug — a loop-version change /
+    # cutover must NOT re-drive bugs the old loop already resolved. Regression
+    # for the current-canonical-scoped dedup that re-drove the whole corpus.
+    _set(monkeypatch)
+    append_task(tmp_path, _task("BUG-1", "succeeded", branch_def_id=OLD))
+    assert backfill_investigations(tmp_path) == 0
+
+
+def test_in_flight_under_old_loop_version_skips(tmp_path, monkeypatch):
+    # In-flight is also version-agnostic: a pending/running task under any loop
+    # version means the bug is already being worked — do not double-enqueue.
+    _set(monkeypatch)
+    append_task(tmp_path, _task("BUG-1", "running", branch_def_id=OLD))
+    assert backfill_investigations(tmp_path) == 0
+
+
 def test_skips_in_flight(tmp_path, monkeypatch):
     _set(monkeypatch)
     append_task(tmp_path, _task("BUG-1", "running"))
