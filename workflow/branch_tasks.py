@@ -98,6 +98,10 @@ class BranchTask:
     heartbeat_at: str = ""
     last_progress_at: str = ""
     rung_claim_recommendations: list[dict] = field(default_factory=list)
+    # Spawn depth. 0 for user/forward-triggered tasks. A task enqueued from
+    # inside a running branch (via the in-node enqueue verb) carries
+    # parent_depth + 1; a depth cap bounds runaway self-enqueue chains.
+    depth: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -1225,15 +1225,134 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
     "wiki_since": ("wiki", "since"),
     "wiki.lint": ("wiki", "lint"),
     "wiki_lint": ("wiki", "lint"),
+    # Paced ENQUEUE — append a run request to this universe's dispatcher queue.
+    # NOT a synchronous spawn: the daemon's concurrency cap + per-provider
+    # cooldown pace execution. Bounded by a spawn-depth cap + a per-run enqueue
+    # budget, and gated behind WORKFLOW_NODE_ENQUEUE_ENABLED (ships dark).
+    "enqueue_branch_run": ("dispatch", "enqueue"),
+    "dispatch.enqueue": ("dispatch", "enqueue"),
 }
+
+
+def _node_enqueue_enabled() -> bool:
+    """Capability gate for the in-node enqueue verb (ships dark, default off).
+
+    The first side-effecting in-node verb. Kept fail-closed until the
+    concurrency proof + opposite-provider review clear it for live use.
+    """
+    return os.environ.get(
+        "WORKFLOW_NODE_ENQUEUE_ENABLED", ""
+    ).strip().lower() in {"on", "1", "true", "yes"}
+
+
+def _node_enqueue_max_depth() -> int:
+    """Spawn-depth cap for queue enqueues — bounds chain LENGTH.
+
+    Default 2 (a driver at depth 0 enqueues leaf runs at depth 1; one extra
+    level of headroom), tighter than the in-graph invoke-branch cap because
+    each queue level is a full independent run. Host-tunable.
+    """
+    raw = os.environ.get("WORKFLOW_NODE_ENQUEUE_MAX_DEPTH", "").strip()
+    try:
+        val = int(raw) if raw else 2
+    except ValueError:
+        val = 2
+    return val if val >= 1 else 2
+
+
+def _node_enqueue_budget() -> int:
+    """Per-run enqueue budget — bounds branching FACTOR (default 50)."""
+    raw = os.environ.get("WORKFLOW_NODE_ENQUEUE_MAX_PER_RUN", "").strip()
+    try:
+        val = int(raw) if raw else 50
+    except ValueError:
+        val = 50
+    return val if val > 0 else 50
+
+
+def _node_enqueue_branch_run(
+    node: "NodeDefinition",
+    invocation_depth: int,
+    enqueued_count: list[int],
+    kwargs: dict[str, Any],
+) -> str:
+    """Append ONE paced run-request to this universe's dispatcher queue.
+
+    Not a synchronous spawn — the daemon's concurrency cap + cooldown pace
+    execution. Bounded three ways: a capability flag (ships dark), a spawn-
+    depth cap (chain length), and a per-run budget (branching factor). Returns
+    a JSON string so the caller's standard parse step applies.
+    """
+    if not _node_enqueue_enabled():
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: the in-node enqueue verb "
+            f"is disabled. Set WORKFLOW_NODE_ENQUEUE_ENABLED to enable."
+        )
+
+    # Guard 1 — spawn-depth cap bounds chain length (self-enqueue can't recurse
+    # forever). A task at depth D enqueues children at D+1.
+    cap = _node_enqueue_max_depth()
+    next_depth = int(invocation_depth) + 1
+    if next_depth > cap:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: spawn depth {next_depth} "
+            f"exceeds cap {cap} (WORKFLOW_NODE_ENQUEUE_MAX_DEPTH)."
+        )
+
+    # Guard 2 — per-run budget bounds branching factor (one run can't flood).
+    budget = _node_enqueue_budget()
+    if enqueued_count[0] >= budget:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: this run already enqueued "
+            f"{enqueued_count[0]} task(s) (budget {budget})."
+        )
+
+    target = str(kwargs.get("branch_def_id", "")).strip()
+    if not target:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue requires a non-empty branch_def_id."
+        )
+    run_inputs = kwargs.get("inputs") or {}
+    if not isinstance(run_inputs, dict):
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue inputs must be an object, got "
+            f"{type(run_inputs).__name__}."
+        )
+
+    from workflow.api.helpers import _default_universe, _universe_dir
+    from workflow.branch_tasks import BranchTask, append_task, new_task_id
+
+    uid = str(kwargs.get("universe_id", "")).strip() or _default_universe()
+    task = BranchTask(
+        branch_task_id=new_task_id(),
+        branch_def_id=target,
+        universe_id=uid,
+        inputs=dict(run_inputs),
+        trigger_source="owner_queued",
+        request_type=str(kwargs.get("request_type", "") or "branch_run"),
+        depth=next_depth,
+    )
+    append_task(_universe_dir(uid), task)
+    enqueued_count[0] += 1
+    return json.dumps({
+        "status": "enqueued",
+        "branch_task_id": task.branch_task_id,
+        "branch_def_id": target,
+        "universe_id": uid,
+        "depth": next_depth,
+    })
 
 
 def _build_node_mcp_invoker(
     node: NodeDefinition,
     *,
     event_sink: Callable[..., None] | None,
+    invocation_depth: int = 0,
 ) -> Callable[..., dict[str, Any]]:
     allowed = set(node.tools_allowed or [])
+    # Per-run enqueue budget (mutable closure cell) — bounds branching factor:
+    # one branch run may enqueue at most _node_enqueue_budget() tasks total.
+    enqueued_count = [0]
 
     def _invoke_mcp_action(action_name: str, **kwargs: Any) -> dict[str, Any]:
         requested = str(action_name or "").strip()
@@ -1291,6 +1410,10 @@ def _build_node_mcp_invoker(
                     f"'{action}' is a write and is not exposed in-node."
                 )
             raw = wiki(action=action, **kwargs)
+        elif tool_name == "dispatch":
+            raw = _node_enqueue_branch_run(
+                node, invocation_depth, enqueued_count, kwargs,
+            )
         else:  # pragma: no cover - mapping owns the dispatch domains.
             raise CompilerError(
                 f"Node '{node.node_id}' requested unsupported MCP tool "
@@ -1318,6 +1441,7 @@ def _build_source_code_node(
     *,
     event_sink: Callable[..., None] | None,
     concurrency_tracker: ConcurrencyTracker | None = None,
+    invocation_depth: int = 0,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that exec()s the approved source_code.
 
@@ -1328,7 +1452,9 @@ def _build_source_code_node(
     _validate_source_code(node)
     src = node.source_code
     timeout_s = float(node.timeout_seconds or 300.0)
-    invoke_mcp_action = _build_node_mcp_invoker(node, event_sink=event_sink)
+    invoke_mcp_action = _build_node_mcp_invoker(
+        node, event_sink=event_sink, invocation_depth=invocation_depth,
+    )
 
     # BUG-112: exec into a SINGLE namespace (globals == locals). With split
     # globals/locals, top-level defs land in locals, but each function's
@@ -2151,6 +2277,7 @@ def _build_node(
     if has_source:
         inner = _build_source_code_node(
             node, event_sink=event_sink, concurrency_tracker=concurrency_tracker,
+            invocation_depth=invocation_depth,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if has_template:

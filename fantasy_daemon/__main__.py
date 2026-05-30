@@ -852,6 +852,9 @@ def _try_execute_claimed_branch_task(
             actor=actor,
             provider_call=provider_call,
             on_node_status=on_node_status,
+            # Carry spawn depth across the queue boundary so an in-node enqueue
+            # from this run is depth+1 and the depth cap can bound the chain.
+            _invocation_depth=int(getattr(claimed_task, "depth", 0) or 0),
         )
         metadata = {
             "branch_def_id": branch_def_id,
