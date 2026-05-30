@@ -2,11 +2,12 @@
 
 Spec: project_monetization_crypto_1pct + project_node_escrow_and_abandonment.
 
-Four tables:
-  escrow_balance     — per-node locked funds (node is the escrow holder)
-  pending_settlement — individual settlement events awaiting batch or direct settle
-  settlement_batch   — grouped settlements flushed together (sub-$1 batching)
-  transaction_log    — immutable append-only audit trail for every state change
+Five tables:
+  staker_escrow_budget — per-staker funded budget for escrow reservations
+  escrow_balance       — per-node locked funds (node is the escrow holder)
+  pending_settlement   — individual settlement events awaiting batch or direct settle
+  settlement_batch     — grouped settlements flushed together (sub-$1 batching)
+  transaction_log      — immutable append-only audit trail for every state change
 
 Treasury fee (1%) is computed at settlement time from MicroToken.treasury_fee().
 Batch threshold: pending_settlements with amount < 1 Token defer to a batch.
@@ -31,6 +32,21 @@ TransactionKind = Literal[
 ]
 
 # ── DDL ───────────────────────────────────────────────────────────────────────
+
+STAKER_ESCROW_BUDGET_SCHEMA = """
+CREATE TABLE IF NOT EXISTS staker_escrow_budget (
+    staker_id       TEXT NOT NULL,
+    currency        TEXT NOT NULL,
+    total_amount    INTEGER NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
+    reserved_amount INTEGER NOT NULL DEFAULT 0 CHECK (reserved_amount >= 0),
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (staker_id, currency),
+    CHECK (reserved_amount <= total_amount)
+);
+
+CREATE INDEX IF NOT EXISTS idx_staker_escrow_budget_currency
+    ON staker_escrow_budget(currency);
+"""
 
 SETTLEMENT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS escrow_balance (
@@ -117,6 +133,38 @@ CREATE INDEX IF NOT EXISTS idx_txlog_recorded
 """
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
+
+@dataclass
+class StakerEscrowBudget:
+    """Spendable and reserved escrow funds for one staker/currency pair."""
+
+    staker_id: ActorId
+    currency: str
+    total_amount: MicroToken
+    reserved_amount: MicroToken
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        if int(self.reserved_amount) > int(self.total_amount):
+            raise ValueError(
+                f"reserved_amount ({self.reserved_amount}) cannot exceed "
+                f"total_amount ({self.total_amount})"
+            )
+
+    @property
+    def spendable_amount(self) -> int:
+        return int(self.total_amount) - int(self.reserved_amount)
+
+    @classmethod
+    def from_row(cls, row: dict) -> StakerEscrowBudget:
+        return cls(
+            staker_id=ActorId(row["staker_id"]),
+            currency=row["currency"],
+            total_amount=MicroToken(int(row.get("total_amount") or 0)),
+            reserved_amount=MicroToken(int(row.get("reserved_amount") or 0)),
+            updated_at=row["updated_at"],
+        )
+
 
 @dataclass
 class EscrowEntry:
@@ -279,4 +327,4 @@ class BatchedTransaction:
 
 def migrate_settlement_schema(conn) -> None:  # type: ignore[no-untyped-def]
     """Create settlement tables if absent. Idempotent."""
-    conn.executescript(SETTLEMENT_SCHEMA)
+    conn.executescript(STAKER_ESCROW_BUDGET_SCHEMA + "\n" + SETTLEMENT_SCHEMA)

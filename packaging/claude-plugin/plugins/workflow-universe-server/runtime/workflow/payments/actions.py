@@ -16,6 +16,7 @@ from typing import Any
 from workflow.payments.escrow import (
     DuplicateLockError,
     EscrowLock,
+    InsufficientFundsError,
     LockAlreadyResolvedError,
     LockNotFoundError,
     get_lock,
@@ -83,6 +84,7 @@ def action_escrow_lock(
             gate_claim_id=node_id,
             staker_id=claimer,
             amount=amount,
+            currency=currency,
             locked_at=locked_at,
         )
     except DuplicateLockError:
@@ -95,13 +97,15 @@ def action_escrow_lock(
             ),
             "existing_lock_id": existing.lock_id if existing else None,
         }
+    except InsufficientFundsError as exc:
+        return {"status": "rejected", "error": str(exc)}
 
     return {
         "status": "ok",
         "lock_id": lock.lock_id,
         "node_id": node_id,
         "amount": lock.amount,
-        "currency": currency,
+        "currency": lock.currency,
         "claimer": claimer,
         "locked_at": lock.locked_at,
     }
@@ -223,6 +227,7 @@ def action_escrow_inspect(
             "node_id": lk.gate_claim_id,
             "claimer": lk.staker_id,
             "amount": lk.amount,
+            "currency": lk.currency,
             "status": lk.status,
             "locked_at": lk.locked_at,
             "resolved_at": lk.resolved_at,

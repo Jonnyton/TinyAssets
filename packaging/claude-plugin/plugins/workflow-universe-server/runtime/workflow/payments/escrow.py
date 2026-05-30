@@ -28,13 +28,18 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal
 
+from workflow.payments.schema import STAKER_ESCROW_BUDGET_SCHEMA, StakerEscrowBudget
+
+DEFAULT_CURRENCY = "MicroToken"
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
-ESCROW_SCHEMA = """
+ESCROW_LOCKS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS escrow_locks (
     lock_id         TEXT PRIMARY KEY,
     gate_claim_id   TEXT NOT NULL,
     staker_id       TEXT NOT NULL,
+    currency        TEXT NOT NULL DEFAULT 'MicroToken',
     amount          INTEGER NOT NULL CHECK (amount >= 0),
     status          TEXT NOT NULL DEFAULT 'locked'
                         CHECK (status IN ('locked', 'released', 'refunded')),
@@ -50,6 +55,8 @@ CREATE INDEX IF NOT EXISTS idx_escrow_gate_claim
 CREATE INDEX IF NOT EXISTS idx_escrow_staker
     ON escrow_locks(staker_id);
 """
+
+ESCROW_SCHEMA = STAKER_ESCROW_BUDGET_SCHEMA + "\n" + ESCROW_LOCKS_SCHEMA
 
 # ── Status type ───────────────────────────────────────────────────────────────
 
@@ -74,6 +81,10 @@ class LockAlreadyResolvedError(EscrowError):
     """Raised when attempting to release/refund an already-resolved lock."""
 
 
+class InsufficientFundsError(EscrowError):
+    """Raised when a staker budget lacks enough uncommitted funds."""
+
+
 class UnauthorizedUnstakeError(EscrowError):
     """Raised when a non-staker attempts to unstake."""
 
@@ -87,6 +98,7 @@ class EscrowLock:
     lock_id: str
     gate_claim_id: str
     staker_id: str
+    currency: str
     amount: int
     status: EscrowStatus
     locked_at: str
@@ -112,6 +124,7 @@ class EscrowLock:
             lock_id=d["lock_id"],
             gate_claim_id=d["gate_claim_id"],
             staker_id=d["staker_id"],
+            currency=d.get("currency") or DEFAULT_CURRENCY,
             amount=int(d["amount"]),
             status=d["status"],
             locked_at=d["locked_at"],
@@ -122,9 +135,190 @@ class EscrowLock:
 
 # ── Migration ─────────────────────────────────────────────────────────────────
 
+def _canonical_currency(currency: str) -> str:
+    return DEFAULT_CURRENCY if currency == "token" else currency or DEFAULT_CURRENCY
+
+
 def migrate_escrow_schema(conn: sqlite3.Connection) -> None:
-    """Create escrow_locks table if absent. Idempotent."""
+    """Create escrow tables if absent and backfill required columns."""
     conn.executescript(ESCROW_SCHEMA)
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(escrow_locks)").fetchall()
+    }
+    if "currency" not in columns:
+        conn.execute(
+            "ALTER TABLE escrow_locks "
+            "ADD COLUMN currency TEXT NOT NULL DEFAULT 'MicroToken'"
+        )
+
+
+def get_staker_balance(
+    conn: sqlite3.Connection,
+    *,
+    staker_id: str,
+    currency: str = DEFAULT_CURRENCY,
+) -> StakerEscrowBudget | None:
+    """Return the persisted budget for a staker/currency pair, if present."""
+    row = conn.execute(
+        """
+        SELECT * FROM staker_escrow_budget
+        WHERE staker_id = ? AND currency = ?
+        """,
+        (staker_id, _canonical_currency(currency)),
+    ).fetchone()
+    return StakerEscrowBudget.from_row(row) if row else None
+
+
+def upsert_staker_balance(
+    conn: sqlite3.Connection,
+    *,
+    staker_id: str,
+    currency: str = DEFAULT_CURRENCY,
+    total_amount: int,
+    reserved_amount: int = 0,
+    updated_at: str,
+) -> StakerEscrowBudget:
+    """Create or replace a staker budget record."""
+    if total_amount < 0:
+        raise EscrowError(f"total_amount must be >= 0, got {total_amount!r}")
+    if reserved_amount < 0:
+        raise EscrowError(
+            f"reserved_amount must be >= 0, got {reserved_amount!r}"
+        )
+    if reserved_amount > total_amount:
+        raise EscrowError(
+            "reserved_amount cannot exceed total_amount "
+            f"({reserved_amount!r} > {total_amount!r})"
+        )
+    currency = _canonical_currency(currency)
+    conn.execute(
+        """
+        INSERT INTO staker_escrow_budget
+            (staker_id, currency, total_amount, reserved_amount, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(staker_id, currency) DO UPDATE SET
+            total_amount = excluded.total_amount,
+            reserved_amount = excluded.reserved_amount,
+            updated_at = excluded.updated_at
+        """,
+        (staker_id, currency, total_amount, reserved_amount, updated_at),
+    )
+    row = conn.execute(
+        """
+        SELECT * FROM staker_escrow_budget
+        WHERE staker_id = ? AND currency = ?
+        """,
+        (staker_id, currency),
+    ).fetchone()
+    return StakerEscrowBudget.from_row(row)
+
+
+def reserve_staker_balance(
+    conn: sqlite3.Connection,
+    *,
+    staker_id: str,
+    currency: str = DEFAULT_CURRENCY,
+    amount: int,
+    updated_at: str,
+) -> StakerEscrowBudget:
+    """Reserve spendable balance for a pending escrow lock."""
+    if amount <= 0:
+        raise EscrowError(f"amount must be > 0, got {amount!r}")
+    currency = _canonical_currency(currency)
+    cursor = conn.execute(
+        """
+        UPDATE staker_escrow_budget
+        SET reserved_amount = reserved_amount + ?,
+            updated_at = ?
+        WHERE staker_id = ?
+          AND currency = ?
+          AND (total_amount - reserved_amount) >= ?
+        """,
+        (amount, updated_at, staker_id, currency, amount),
+    )
+    if cursor.rowcount != 1:
+        current = get_staker_balance(conn, staker_id=staker_id, currency=currency)
+        available = current.spendable_amount if current else 0
+        raise InsufficientFundsError(
+            "Insufficient uncommitted funds for "
+            f"claimer={staker_id!r} currency={currency!r}: "
+            f"requested {amount}, available {available}."
+        )
+    row = conn.execute(
+        """
+        SELECT * FROM staker_escrow_budget
+        WHERE staker_id = ? AND currency = ?
+        """,
+        (staker_id, currency),
+    ).fetchone()
+    return StakerEscrowBudget.from_row(row)
+
+
+def _release_reserved_staker_balance(
+    conn: sqlite3.Connection,
+    *,
+    staker_id: str,
+    currency: str,
+    amount: int,
+    updated_at: str,
+) -> None:
+    cursor = conn.execute(
+        """
+        UPDATE staker_escrow_budget
+        SET reserved_amount = reserved_amount - ?,
+            updated_at = ?
+        WHERE staker_id = ?
+          AND currency = ?
+          AND reserved_amount >= ?
+        """,
+        (amount, updated_at, staker_id, _canonical_currency(currency), amount),
+    )
+    if cursor.rowcount != 1:
+        raise EscrowError(
+            "Cannot refund reserved escrow funds for "
+            f"staker={staker_id!r} currency={currency!r} amount={amount!r}."
+        )
+
+
+def _consume_reserved_staker_balance(
+    conn: sqlite3.Connection,
+    *,
+    staker_id: str,
+    currency: str,
+    amount: int,
+    updated_at: str,
+) -> None:
+    cursor = conn.execute(
+        """
+        UPDATE staker_escrow_budget
+        SET total_amount = total_amount - ?,
+            reserved_amount = reserved_amount - ?,
+            updated_at = ?
+        WHERE staker_id = ?
+          AND currency = ?
+          AND reserved_amount >= ?
+          AND total_amount >= ?
+        """,
+        (
+            amount,
+            amount,
+            updated_at,
+            staker_id,
+            _canonical_currency(currency),
+            amount,
+            amount,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise EscrowError(
+            "Cannot release reserved escrow funds for "
+            f"staker={staker_id!r} currency={currency!r} amount={amount!r}."
+        )
+
+
+def _rollback_savepoint(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute(f"ROLLBACK TO SAVEPOINT {name}")
+    conn.execute(f"RELEASE SAVEPOINT {name}")
 
 
 # ── Primitives ────────────────────────────────────────────────────────────────
@@ -136,6 +330,7 @@ def lock_bonus(
     gate_claim_id: str,
     staker_id: str,
     amount: int,
+    currency: str = DEFAULT_CURRENCY,
     locked_at: str,
 ) -> EscrowLock:
     """Lock ``amount`` from staker's budget for a gate bonus claim.
@@ -143,22 +338,37 @@ def lock_bonus(
     Raises DuplicateLockError if a lock already exists for
     (gate_claim_id, staker_id).
     """
-    if amount < 0:
-        raise EscrowError(f"amount must be >= 0, got {amount!r}")
+    if amount <= 0:
+        raise EscrowError(f"amount must be > 0, got {amount!r}")
+    currency = _canonical_currency(currency)
+    savepoint = "escrow_lock_bonus"
+    conn.execute(f"SAVEPOINT {savepoint}")
     try:
+        reserve_staker_balance(
+            conn,
+            staker_id=staker_id,
+            currency=currency,
+            amount=amount,
+            updated_at=locked_at,
+        )
         conn.execute(
             """
             INSERT INTO escrow_locks
-                (lock_id, gate_claim_id, staker_id, amount, status, locked_at)
-            VALUES (?, ?, ?, ?, 'locked', ?)
+                (lock_id, gate_claim_id, staker_id, currency, amount, status, locked_at)
+            VALUES (?, ?, ?, ?, ?, 'locked', ?)
             """,
-            (lock_id, gate_claim_id, staker_id, amount, locked_at),
+            (lock_id, gate_claim_id, staker_id, currency, amount, locked_at),
         )
     except sqlite3.IntegrityError as exc:
+        _rollback_savepoint(conn, savepoint)
         raise DuplicateLockError(
             f"Escrow lock already exists for claim={gate_claim_id!r} "
             f"staker={staker_id!r}"
         ) from exc
+    except Exception:
+        _rollback_savepoint(conn, savepoint)
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
     row = conn.execute(
         "SELECT * FROM escrow_locks WHERE lock_id = ?", (lock_id,)
     ).fetchone()
@@ -187,14 +397,28 @@ def release_bonus(
         raise LockAlreadyResolvedError(
             f"Lock {lock_id!r} is already {lock.status!r}"
         )
-    conn.execute(
-        """
-        UPDATE escrow_locks
-        SET status = 'released', recipient_id = ?, resolved_at = ?
-        WHERE lock_id = ?
-        """,
-        (recipient_id, resolved_at, lock_id),
-    )
+    savepoint = "escrow_release_bonus"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        _consume_reserved_staker_balance(
+            conn,
+            staker_id=lock.staker_id,
+            currency=lock.currency,
+            amount=lock.amount,
+            updated_at=resolved_at,
+        )
+        conn.execute(
+            """
+            UPDATE escrow_locks
+            SET status = 'released', recipient_id = ?, resolved_at = ?
+            WHERE lock_id = ?
+            """,
+            (recipient_id, resolved_at, lock_id),
+        )
+    except Exception:
+        _rollback_savepoint(conn, savepoint)
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
     row = conn.execute(
         "SELECT * FROM escrow_locks WHERE lock_id = ?", (lock_id,)
     ).fetchone()
@@ -222,14 +446,28 @@ def refund_bonus(
         raise LockAlreadyResolvedError(
             f"Lock {lock_id!r} is already {lock.status!r}"
         )
-    conn.execute(
-        """
-        UPDATE escrow_locks
-        SET status = 'refunded', recipient_id = staker_id, resolved_at = ?
-        WHERE lock_id = ?
-        """,
-        (resolved_at, lock_id),
-    )
+    savepoint = "escrow_refund_bonus"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        _release_reserved_staker_balance(
+            conn,
+            staker_id=lock.staker_id,
+            currency=lock.currency,
+            amount=lock.amount,
+            updated_at=resolved_at,
+        )
+        conn.execute(
+            """
+            UPDATE escrow_locks
+            SET status = 'refunded', recipient_id = staker_id, resolved_at = ?
+            WHERE lock_id = ?
+            """,
+            (resolved_at, lock_id),
+        )
+    except Exception:
+        _rollback_savepoint(conn, savepoint)
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
     row = conn.execute(
         "SELECT * FROM escrow_locks WHERE lock_id = ?", (lock_id,)
     ).fetchone()
