@@ -363,6 +363,22 @@ class SummarizationGuardrail:
         return result
 
 
+class GuardrailPipelineError(RuntimeError):
+    """Raised when a guardrail pipeline step fails."""
+
+    def __init__(
+        self, step: Callable[[Any], Any], step_index: int, cause: Exception
+    ) -> None:
+        """Capture the failing step and original exception."""
+        step_name = getattr(step, "__name__", step.__class__.__name__)
+        super().__init__(
+            f"Guardrail pipeline step {step_index} ({step_name}) failed: {cause}"
+        )
+        self.step = step
+        self.step_index = step_index
+        self.__cause__ = cause
+
+
 class GuardrailPipeline:
     """Chains multiple guardrails in sequence.
 
@@ -403,13 +419,16 @@ class GuardrailPipeline:
             Output from final pipeline step.
         """
         result = data
-        for step in self._steps:
+        for step_index, step in enumerate(self._steps):
             try:
                 result = step(result)
             except Exception as e:
-                logger.warning("Pipeline step failed: %s", e)
-                # Continue to next step on error
-                pass
+                logger.warning(
+                    "Pipeline step %d failed; aborting guardrail pipeline",
+                    step_index,
+                    exc_info=e,
+                )
+                raise GuardrailPipelineError(step, step_index, e) from e
 
         return result
 
