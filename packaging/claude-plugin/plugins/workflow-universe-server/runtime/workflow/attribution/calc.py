@@ -14,6 +14,7 @@ Shares are normalized so the total sums to 1.0.
 from __future__ import annotations
 
 from workflow.attribution.schema import AttributionCredit, AttributionEdge
+from workflow.payments.identifiers import MicroToken
 
 _DEFAULT_DEPTH_CAP = 10
 
@@ -145,34 +146,52 @@ def _shares_from_edges(
 def compute_payout_shares(
     edges: list[AttributionEdge],
     credits: list[AttributionCredit],
-    total_payout: float,
+    total_payout: MicroToken,
     fee_pct: float = 0.01,
     depth_cap: int = _DEFAULT_DEPTH_CAP,
-) -> dict[str, float]:
+) -> dict[str, MicroToken]:
     """Compute per-actor payout amounts after deducting the platform fee.
 
     Args:
         edges: provenance edges (used when credits is empty).
         credits: per-actor AttributionCredit records for share weighting.
-        total_payout: gross payout amount (any currency unit).
+        total_payout: gross payout amount in MicroTokens.
         fee_pct: platform fee fraction (default 1% = 0.01). Routed to treasury.
         depth_cap: max lineage depth.
 
     Returns:
-        dict mapping actor_id → net payout amount.
-        Special key "_treasury" holds the platform fee.
+        dict mapping actor_id → net payout amount in MicroTokens.
+        Special key "_treasury" holds the platform fee in MicroTokens.
+        All returned amounts are integers, and the result sums exactly to
+        `total_payout`.
     """
-    if total_payout <= 0.0:
-        return {"_treasury": 0.0}
+    gross_total = int(total_payout)
+    if gross_total <= 0:
+        return {"_treasury": MicroToken(0)}
 
     shares = compute_credit_shares(edges=edges, credits=credits or None, depth_cap=depth_cap)
     if not shares:
-        return {"_treasury": total_payout * fee_pct}
+        return {"_treasury": MicroToken(gross_total)}
 
-    fee = total_payout * fee_pct
-    distributable = total_payout - fee
+    fee = int(gross_total * fee_pct)
+    distributable = gross_total - fee
 
-    result: dict[str, float] = {"_treasury": fee}
+    floored_allocations: dict[str, int] = {}
+    remainders: list[tuple[float, str]] = []
+    allocated = 0
     for actor_id, share in shares.items():
-        result[actor_id] = distributable * share
+        raw_payout = distributable * share
+        payout = int(raw_payout)
+        floored_allocations[actor_id] = payout
+        allocated += payout
+        remainders.append((raw_payout - payout, actor_id))
+
+    remainder = distributable - allocated
+    remainders.sort(key=lambda item: (-item[0], item[1]))
+    for _, actor_id in remainders[:remainder]:
+        floored_allocations[actor_id] += 1
+
+    result: dict[str, MicroToken] = {"_treasury": MicroToken(fee)}
+    for actor_id, payout in floored_allocations.items():
+        result[actor_id] = MicroToken(payout)
     return result
