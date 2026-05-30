@@ -486,15 +486,21 @@ def backfill_investigations(base_path: "Path | str", *, universe_id: str = "") -
             continue
         # Carry the original bug frontmatter forward (observed/expected/etc.).
         inputs_by_bug.setdefault(bid, dict(t.inputs or {}))
-        if t.branch_def_id != canonical:
-            # Other-loop history (e.g. the retired cheat branch) supplies inputs
-            # but does NOT count toward this loop's resolved/failed state.
-            continue
+        # Resolved + in-flight are VERSION-AGNOSTIC: a succeeded run under ANY
+        # loop version parks the bug permanently, and a pending/running task
+        # under any version means it is already in flight. This is what keeps a
+        # loop-version change (or the cheat->v5 cutover) from re-driving the
+        # entire historical corpus — only genuinely-unresolved bugs are driven.
         if t.status == "succeeded":
             succeeded.add(bid)
-        elif t.status in ("pending", "running"):
+            continue
+        if t.status in ("pending", "running"):
             active.add(bid)
-        elif t.status == "failed":
+            continue
+        # The failed RETRY BUDGET stays scoped to the CURRENT canonical, so a
+        # new/better loop gets a fresh retry budget on bugs that only ever
+        # errored under a prior loop version (those are unresolved, not parked).
+        if t.status == "failed" and t.branch_def_id == canonical:
             failed[bid] += 1
 
     retry_cap = _backfill_int("WORKFLOW_BUG_INVESTIGATION_BACKFILL_RETRIES", 3)
