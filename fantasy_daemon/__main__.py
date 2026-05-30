@@ -365,6 +365,15 @@ def _try_dispatcher_pick(
         if not _workflow_unified_execution_enabled():
             return None, {}
         cfg = load_dispatcher_config(universe_path)
+        # Autonomous backlog intake: before picking, top up the queue with any
+        # unresolved bug_investigation work (flag-gated + per-cycle-capped, so
+        # the daemon's own concurrency control paces it — no direct-run flood).
+        # Never raises.
+        try:
+            from workflow.bug_investigation import backfill_investigations
+            backfill_investigations(universe_path)
+        except Exception:  # noqa: BLE001 — backfill must never break the pick
+            logger.exception("dispatcher_pick: backfill_investigations failed")
         picked = select_next_task(universe_path, config=cfg)
         if picked is None:
             return None, {}
