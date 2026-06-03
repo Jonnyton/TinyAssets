@@ -188,6 +188,50 @@ class TestFileBugWrites:
         assert "BUG-001" in body
         assert "First bug" in body
 
+    def test_title_only_success_path_uses_placeholders(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="extensions.patch_branch",
+                severity="major",
+                title="Title only bug",
+            )
+        )
+        assert out["status"] == "filed"
+        path = wiki_dir / out["path"]
+        body = path.read_text(encoding="utf-8")
+        assert "## What happened\n\n_not specified_" in body
+        assert "## What was expected\n\n_not specified_" in body
+        assert "## Workaround\n\n_none_" in body
+
+    def test_falsey_content_kwarg_preserves_dispatch_behavior(self, wiki_dir):
+        out = json.loads(
+            wiki(
+                action="file_bug",
+                component="extensions.patch_branch",
+                severity="major",
+                title="Dispatch title only",
+                content="",
+            )
+        )
+        assert out["status"] == "filed"
+        path = wiki_dir / out["path"]
+        assert path.exists()
+
+    def test_truthy_content_kwarg_returns_clear_error(self, wiki_dir):
+        out = json.loads(
+            wiki(
+                action="file_bug",
+                component="extensions.patch_branch",
+                severity="major",
+                title="Body kwarg should fail",
+                content="free-form bug body",
+            )
+        )
+        assert "error" in out
+        assert "title-only bug filing" in out["error"]
+        assert "content" in out["hint"]
+        assert list((wiki_dir / "pages" / "bugs").glob("*.md")) == []
+
     def test_log_appended(self, wiki_dir):
         _wiki_file_bug(
             component="x",

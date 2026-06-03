@@ -1728,6 +1728,12 @@ def _render_bug_markdown(
 
 
 _VALID_BUG_KINDS = frozenset({"bug", "feature", "design", "patch_request"})
+_UNSUPPORTED_FILE_BUG_BODY_KWARGS = frozenset({
+    "body",
+    "content",
+    "description",
+    "markdown_body",
+})
 _BUG_DEDUP_THRESHOLD = 0.5
 _BUG_DEDUP_CONTAINMENT_THRESHOLD = 0.8
 _BUG_DEDUP_MIN_SHARED_TOKENS = 6
@@ -1940,9 +1946,29 @@ def _wiki_file_bug(
     When omitted, a token-overlap similarity score ≥ 0.5 against an existing
     bug's title+body returns {status: "similar_found"} instead of filing.
     """
+    unsupported_body_kwargs = sorted(
+        key for key, value in _kwargs.items()
+        if key in _UNSUPPORTED_FILE_BUG_BODY_KWARGS
+        and value not in ("", None, False)
+    )
+    if unsupported_body_kwargs:
+        fields = ", ".join(unsupported_body_kwargs)
+        return json.dumps({
+            "error": (
+                "wiki action=file_bug currently supports title-only bug filing "
+                "for generic body/content kwargs."
+            ),
+            "unsupported_fields": unsupported_body_kwargs,
+            "hint": (
+                "Remove the unsupported field(s) "
+                f"({fields}) or use the supported file_bug interface with repro, "
+                "observed, expected, and workaround."
+            ),
+        })
     dropped_kwargs = sorted(
         key for key, value in _kwargs.items()
-        if value not in ("", None, False)
+        if key not in _UNSUPPORTED_FILE_BUG_BODY_KWARGS
+        and value not in ("", None, False)
         and not (
             (key == "dry_run" and value is True)
             or (key == "similarity_threshold" and value == 0.25)
