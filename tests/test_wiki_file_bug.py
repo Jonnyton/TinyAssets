@@ -412,6 +412,38 @@ class TestBug028SlugCaseRoundtrip:
             "BUG-028: write must update in-place, not create a duplicate."
         )
 
+    def test_write_updates_uppercase_bug_page_in_place(self, wiki_dir):
+        filed = json.loads(wiki(
+            action="file_bug",
+            title="Canonical Case Bug",
+            component="wiki",
+            severity="minor",
+            observed="before",
+            expected="after",
+        ))
+        assert filed.get("status") == "filed"
+        original_path = wiki_dir / filed["path"]
+        canonical_path = original_path.with_name(
+            original_path.name.replace("bug-", "BUG-", 1)
+        )
+        original_path.rename(canonical_path)
+
+        updated_content = "---\nid: BUG-001\ntitle: Canonical Update\n---\n# Canonical Update\n"
+        write_result = json.loads(wiki(
+            action="write",
+            category="bugs",
+            filename=original_path.name,
+            content=updated_content,
+        ))
+        assert write_result["status"] == "updated"
+        assert write_result["path"] == f"pages/bugs/{canonical_path.name}"
+        assert canonical_path.read_text(encoding="utf-8") == updated_content
+        assert not original_path.exists()
+        assert list((wiki_dir / "drafts" / "bugs").glob("*.md")) == []
+        assert [p.name for p in (wiki_dir / "pages" / "bugs").glob("*.md")] == [
+            canonical_path.name
+        ]
+
     def test_next_bug_id_finds_lowercase_files(self, wiki_dir):
         """_next_bug_id must find lowercase bug-NNN-... files written by file_bug."""
         bugs_dir = wiki_dir / "pages" / "bugs"
