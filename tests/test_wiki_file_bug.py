@@ -166,6 +166,20 @@ class TestFileBugValidation:
         )
         assert "error" in out
 
+    def test_truthy_unsupported_body_kwargs_rejected(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="x",
+                severity="major",
+                title="t",
+                content="Observed body that would be dropped",
+                body="More dropped details",
+            )
+        )
+        assert out["error"] == "Unsupported file_bug field(s): body, content."
+        assert "repro, observed, expected, and workaround" in out["hint"]
+        assert list((wiki_dir / "pages" / "bugs").glob("*.md")) == []
+
 
 class TestFileBugWrites:
     def test_happy_path_creates_page(self, wiki_dir):
@@ -187,6 +201,19 @@ class TestFileBugWrites:
         body = path.read_text(encoding="utf-8")
         assert "BUG-001" in body
         assert "First bug" in body
+
+    def test_falsy_unsupported_body_kwargs_still_allowed(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="x",
+                severity="minor",
+                title="still files",
+                content="",
+                body=None,
+            )
+        )
+        assert out["status"] == "filed"
+        assert out["bug_id"] == "BUG-001"
 
     def test_log_appended(self, wiki_dir):
         _wiki_file_bug(
