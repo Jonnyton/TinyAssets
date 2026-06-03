@@ -443,6 +443,35 @@ def _sanitize_slug(name: str) -> str:
     return re.sub(r"[^a-z0-9-]", "-", clean.lower()).strip("-")
 
 
+def _canonical_write_slug(category: str, requested: str) -> str:
+    """Normalize action=write slugs to the same canonical form used at creation.
+
+    Bug filings created via ``file_bug`` use a stricter ``<id>-<slugified-title>``
+    format than the generic write-path sanitizer. Reuse that shape here so a
+    write against an existing filing updates the canonical page instead of
+    creating a stale duplicate whose slug differs only by punctuation or case.
+    """
+    slug = _sanitize_slug(requested)
+    if category != _BUGS_CATEGORY:
+        return slug
+
+    clean = requested.removesuffix(".md").strip()
+    kind_prefixes = {prefix.lower() for _, prefix in _KIND_ROUTING.values()}
+    match = re.match(r"^([a-z]+)[-_\s]+(\d{3,})(.*)$", clean, re.IGNORECASE)
+    if not match:
+        return slug
+
+    prefix = match.group(1).lower()
+    if prefix not in kind_prefixes:
+        return slug
+
+    suffix_source = match.group(3).strip(" -_:")
+    canonical_id = f"{prefix}-{int(match.group(2)):03d}"
+    if not suffix_source:
+        return canonical_id
+    return f"{canonical_id}-{_slugify_title(suffix_source)}"
+
+
 def _wiki_write_slug(category: str, filename: str) -> tuple[str, str | None]:
     """Normalize action=write filename input to a page slug.
 
@@ -467,7 +496,7 @@ def _wiki_write_slug(category: str, filename: str) -> tuple[str, str | None]:
     elif len(parts) == 2 and parts[0] == category:
         requested = parts[1]
 
-    slug = _sanitize_slug(requested)
+    slug = _canonical_write_slug(category, requested)
     if not slug:
         return "", "filename must resolve to a non-empty slug."
     return slug, None
