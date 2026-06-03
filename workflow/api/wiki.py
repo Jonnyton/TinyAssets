@@ -793,28 +793,32 @@ def _wiki_write(
     # BUG-018: canonical filename has a trailing hyphen the slug sanitizer
     # strips → match a "<slug>-.md" sibling as the canonical.
     if category == _BUGS_CATEGORY:
-        parent = _wiki_pages_dir() / category
+        parent = promoted_path.parent
         if parent.is_dir():
             canonical = _resolve_bugs_canonical(parent, slug)
-            if canonical is not None and canonical != promoted_path:
-                _logger_wiki.warning(
-                    "wiki write alias: '%s' resolved to canonical '%s'. "
-                    "Rename '%s' → '%s' (or remove duplicate) to eliminate.",
-                    slug + ".md",
-                    canonical.name,
-                    canonical.name if canonical.name != (slug + ".md") else slug,
-                    slug + ".md",
-                )
+            if canonical is not None:
+                if canonical != promoted_path:
+                    _logger_wiki.warning(
+                        "wiki write alias: '%s' resolved to canonical '%s'. "
+                        "Rename '%s' → '%s' (or remove duplicate) to eliminate.",
+                        slug + ".md",
+                        canonical.name,
+                        canonical.name if canonical.name != (slug + ".md") else slug,
+                        slug + ".md",
+                    )
                 promoted_path = canonical
+
+    promoted_rel_path = _page_rel_path(promoted_path)
+    promoted_log_path = promoted_rel_path.removesuffix(".md")
 
     if promoted_path.exists():
         try:
             promoted_path.write_text(content, encoding="utf-8")
             _append_wiki_log(
-                f"update | pages/{category}/{slug} | {log_entry or 'in-place update'}"
+                f"update | {promoted_log_path} | {log_entry or 'in-place update'}"
             )
             return json.dumps({
-                "path": f"pages/{category}/{slug}.md",
+                "path": promoted_rel_path,
                 "status": "updated",
                 "note": "Updated existing promoted page in-place.",
             })
