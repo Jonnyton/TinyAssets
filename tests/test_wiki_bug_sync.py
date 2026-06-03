@@ -694,6 +694,27 @@ def test_fetch_wiki_page_detail_accepts_structured_content_preview():
     assert "Full payload is in structuredContent" not in detail["body"]
 
 
+def test_fetch_bug_detail_accepts_structured_content_preview():
+    detail = fetch_bug_detail(
+        "http://fake/mcp",
+        "sid1",
+        "pages/bugs/BUG-003-new.md",
+        5.0,
+        post_fn=CapturingPost([
+            (_wiki_read_structured_resp(
+                {"title": "Bug", "severity": "high", "component": "chatbot"},
+                "# Body",
+            ), "sid1"),
+        ]),
+    )
+
+    assert detail == {
+        "title": "Bug",
+        "severity": "high",
+        "component": "chatbot",
+    }
+
+
 def test_format_change_issue_body_includes_bounded_source_context():
     body = format_change_issue_body(
         {"type": "plan"},

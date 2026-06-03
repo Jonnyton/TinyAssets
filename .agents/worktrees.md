@@ -631,9 +631,10 @@ Notes:
   `codex/wiki-bug-sync-structured-content` by codex-gpt5-desktop.
 - Source: community loop watch issue #1118 red; `wiki-bug-sync.yml` run
   26605636623 crashed because `scripts/wiki_bug_sync.py` parsed text only while
-  MCP list payload now lives in `structuredContent`.
-- Purpose: port the structuredContent/text-fallback parser pattern from #1125
-  into the intake sync script and prove it with regression coverage.
+  MCP list/read payloads now live in `structuredContent`.
+- Purpose: route both wiki list/read call sites through the shared
+  structuredContent-first parser pattern from #1125 and prove it with
+  regression coverage.
 - Ship condition: focused tests pass, branch pushed, PR opened, GitHub
   `wiki-bug-sync.yml` dispatch succeeds, community loop watch recovers or
   residual non-intake blockers are documented.

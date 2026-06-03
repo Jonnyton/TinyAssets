@@ -22,13 +22,13 @@ Community loop watch issue #1118 stayed red after PR #1125 recovered the public 
 
 ## Immediate Fix Applied
 
-`scripts/wiki_bug_sync.py` now prefers MCP `structuredContent` for wiki list/read results and keeps the old text JSON fallback. Regression tests cover preview-text plus structuredContent for both `wiki action=list` and `wiki action=read`.
+`scripts/wiki_bug_sync.py` now routes both `wiki action=list` and `wiki action=read` through a local `_parse_json_result` helper that prefers MCP `structuredContent` via `_extract_structured_tool_payload` and keeps the old text JSON fallback. Regression tests cover preview-text plus structuredContent for both call sites.
 
 ## Verification
 
 - Reproduction tests failed before the code fix:
   - `test_sync_no_new_bugs_accepts_structured_content_list_preview`
-  - `test_fetch_wiki_page_detail_accepts_structured_content_preview`
+  - `test_fetch_bug_detail_accepts_structured_content_preview`
 - Focused tests after fix: `python -m pytest tests/test_wiki_bug_sync.py tests/test_canary_scripts_import_smoke.py -q` -> 88 passed.
 - Compile check: `python -m compileall -q scripts/wiki_bug_sync.py scripts/_canary_common.py` -> passed.
 - Live dry-run against `https://tinyassets.io/mcp` -> passed.
