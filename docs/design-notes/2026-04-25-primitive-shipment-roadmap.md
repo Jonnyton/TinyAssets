@@ -6,7 +6,7 @@ status: active
 
 **Date:** 2026-04-25
 **Author:** navigator
-**Status:** Roadmap synthesis — pulls from v1 self-evolving-platform vision §4 + canonical primitive audit + variant-canonicals proposal. Sequencing is design-truth-target; specific dispatch ordering remains lead/host call.
+**Status:** Roadmap synthesis for the Next-Level Primitives push — pulls from v1 self-evolving-platform vision §4 + canonical primitive audit + variant-canonicals proposal, and consolidates the 22 filed bugs into a single strategic execution plan. Sequencing is design-truth-target; specific dispatch ordering remains lead/host call.
 **Builds on:**
 - `docs/design-notes/2026-04-25-self-evolving-platform-vision.md` (v1 vision §4 audit table)
 - `docs/audits/2026-04-25-canonical-primitive-audit.md` (G1 — current state of canonical primitive)
@@ -132,6 +132,79 @@ ASCII DAG. Arrows show "blocks" — A → B means A must ship before B.
    [P27: meta-patch_request lane — constitutional changes,
          host-veto + DAO quorum future]
 ```
+
+---
+
+## Next-Level Primitives strategic roadmap
+
+This section is the execution overlay for the **Next-Level Primitives** push. It turns the current backlog of **22 filed bugs** into **22 actionable work items**, grouped by theme and ordered in the sequence that unlocks the most downstream capability first. The intent is to give lead/host a bug-to-program view: fix the substrate first, then attribution, then closed-loop automation, then external/economic flow.
+
+### Theme A — Core substrate and authority
+
+| Priority | Work item | Why it is first |
+|---|---|---|
+| 1 | Storage-layer authority refactor | Removes the current enforcement mismatch and is the prerequisite for safe variant authority. |
+| 2 | Variant `canonical_bindings` table + `scope_token` | Establishes the data model for scoped canonicals and unlocks user-specific primitive routing. |
+| 3 | `lookup_canonical(goal_id, scope)` surface | Makes scoped canonicals actually callable from nodes and MCP clients. |
+| 4 | `visibility=private` for Branch / Node / Soul / Evaluator | Preserves symmetric privacy before broader variant-canonical adoption. |
+
+### Theme B — Invocation and routing correctness
+
+| Priority | Work item | Why it follows |
+|---|---|---|
+| 5 | Sub-branch invocation primitive (`BUG-005`) | Enables gates to hand work off instead of stopping at evaluation. |
+| 6 | `run_branch_version` frozen-definition resolution | Ensures invoked work runs against an immutable target rather than a drifting branch head. |
+| 7 | Gate-series typed-output contract + named checkpoints | Gives gate branches stable routing targets and predictable downstream behavior. |
+
+### Theme C — Attribution substrate
+
+| Priority | Work item | Why it follows |
+|---|---|---|
+| 8 | `ContributionEvent` ledger schema | Establishes the durable economic and attribution record. |
+| 9 | Lineage walk + N-generation decay | Extends credit assignment across forks and derivative primitives. |
+| 10 | Per-step `daemon_actor_id` on runs | Adds direct execution accountability at the run-step level. |
+| 11 | Derived `execute_step` events on insert | Converts run facts into ledger events automatically. |
+| 12 | `design_used` events from artifact references | Completes attribution for designers whose artifacts are reused. |
+
+### Theme D — Closed-loop request pipeline
+
+| Priority | Work item | Why it follows |
+|---|---|---|
+| 13 | Generalize bug → `patch_request` | Broadens the system from bug handling to a general change-request substrate. |
+| 14 | Canary-failure → `file_bug` seam | Creates the first autonomous trigger for the repair loop. |
+| 15 | Outcome attribution + aggregation per `branch_version_id` | Makes branch behavior measurable over time. |
+| 16 | Outcome → drift-detected → auto-`patch_request` | Turns repeated bad outcomes into self-generated maintenance work. |
+
+### Theme E — External bridge and marketplace flow
+
+| Priority | Work item | Why it follows |
+|---|---|---|
+| 17 | GitHub PR webhook → `patch_request` bridge | Connects external contribution flow into the same internal request pipeline. |
+| 18 | PR-merge auto-update of `patch_request` status | Closes status drift between GitHub and internal workflow state. |
+| 19 | Bounty-distribution calculation | Allows routine payout logic once attribution and request flow exist. |
+| 20 | Sybil-resistance primitives | Protects payout and trust systems before open external scaling. |
+
+### Theme F — Trust, rollback, and negative feedback
+
+| Priority | Work item | Why it follows |
+|---|---|---|
+| 21 | Negative `ContributionEvents` + designer/gate reputation | Introduces downside signals only after attribution and payout semantics exist. |
+| 22 | Rollback-set truth source for negative events | Grounds penalties and regressions in auditable rollback evidence. |
+
+### Strategic sequence summary
+
+1. **Fix substrate first.** Items 1-7 are the minimum set that makes Next-Level Primitives routable, private where required, and safe to invoke by frozen definition.
+2. **Make every action legible.** Items 8-12 ensure the platform can explain who authored, ran, and influenced each result before economic consequences are attached.
+3. **Close the loop.** Items 13-16 turn bug intake into a generalized autonomous repair pipeline.
+4. **Bridge outward carefully.** Items 17-20 connect GitHub and payouts only after internal request and attribution semantics are stable.
+5. **Add penalties last.** Items 21-22 depend on reliable rollback and attribution evidence; shipping them earlier would create noisy or unjust negative signals.
+
+### Dispatch guidance
+
+- Treat the 22 filed bugs as one program with six themes, not as isolated one-off fixes.
+- Keep the execution order above even if individual bug tickets move between engineers; the sequence is dependency-driven, not ownership-driven.
+- Use the existing Phase A-D roadmap below as the implementation graph; this strategic layer is the backlog-consolidation view requested for Next-Level Primitives.
+- Sandbox work remains a parallel critical track, but it is intentionally outside the 22-item consolidation because it is a broader safety program rather than a single backlog theme.
 
 ---
 
