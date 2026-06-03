@@ -193,10 +193,10 @@ def _resolve_page(name: str) -> Path | None:
             if fp.exists():
                 return fp
 
-    needle = clean.lower().replace("-", "").replace("_", "").replace(" ", "")
+    needle = _slug_lookup_key(clean)
     all_pages = _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
     for p in all_pages:
-        base = p.stem.lower().replace("-", "").replace("_", "").replace(" ", "")
+        base = _slug_lookup_key(p.stem)
         if base == needle or needle in base or base in needle:
             return p
 
@@ -437,10 +437,15 @@ def _append_wiki_log(msg: str) -> None:
         pass
 
 
+def _slug_lookup_key(value: str) -> str:
+    """Collapse slug variants to a canonical lookup key."""
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
 def _sanitize_slug(name: str) -> str:
-    """Convert a filename into a safe wiki slug."""
+    """Convert a filename into the canonical wiki slug form."""
     clean = name.removesuffix(".md")
-    return re.sub(r"[^a-z0-9-]", "-", clean.lower()).strip("-")
+    return re.sub(r"[^a-z0-9]+", "-", clean.lower()).strip("-")
 
 
 def _wiki_write_slug(category: str, filename: str) -> tuple[str, str | None]:
@@ -494,23 +499,26 @@ def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
     """
     direct = parent / (slug + ".md")
     direct_dash = parent / (slug + "-.md")
+    slug_key = _slug_lookup_key(slug)
 
     candidates: list[Path] = []
     for candidate in parent.glob("*.md"):
-        cstem = candidate.stem
-        if cstem.lower() == slug or cstem.lower() == slug + "-":
+        if _slug_lookup_key(candidate.stem) == slug_key:
             candidates.append(candidate)
 
     if not candidates:
         return None
 
-    def _rank(p: Path) -> tuple[int, int, str]:
+    def _rank(p: Path) -> tuple[int, int, int, str]:
         name = p.name
-        # Lower number wins. Prefer uppercase BUG-prefix (canonical convention)
-        # then prefer exact slug-name match over trailing-hyphen variant.
+        stem = p.stem
+        # Lower number wins. Prefer uppercase BUG-prefix (canonical convention),
+        # then prefer a slug that already matches the canonical sanitized form,
+        # then prefer the direct slug-name match over a trailing-hyphen variant.
         is_upper_bug = 0 if name.startswith("BUG-") else 1
+        is_canonical_slug = 0 if _sanitize_slug(stem) == slug else 1
         is_exact = 0 if p == direct else (1 if p == direct_dash else 2)
-        return (is_upper_bug, is_exact, name)
+        return (is_upper_bug, is_canonical_slug, is_exact, name)
 
     candidates.sort(key=_rank)
     return candidates[0]
@@ -810,11 +818,12 @@ def _wiki_write(
     if promoted_path.exists():
         try:
             promoted_path.write_text(content, encoding="utf-8")
+            resolved_slug = promoted_path.stem
             _append_wiki_log(
-                f"update | pages/{category}/{slug} | {log_entry or 'in-place update'}"
+                f"update | pages/{category}/{resolved_slug} | {log_entry or 'in-place update'}"
             )
             return json.dumps({
-                "path": f"pages/{category}/{slug}.md",
+                "path": f"pages/{category}/{promoted_path.name}",
                 "status": "updated",
                 "note": "Updated existing promoted page in-place.",
             })
@@ -1652,7 +1661,7 @@ def _next_bug_id(bugs_pages_dir: Path) -> str:
 
 
 def _slugify_title(title: str, max_len: int = 60) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    slug = _sanitize_slug(title)
     return slug[:max_len] or "untitled"
 
 
