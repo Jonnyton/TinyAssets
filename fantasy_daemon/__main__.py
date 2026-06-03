@@ -378,7 +378,13 @@ def _try_dispatcher_pick(
 
         if not dispatcher_enabled():
             return None, {}
-        if not _workflow_unified_execution_enabled():
+        # Soul-loop dispatch also needs the pick active so a souled universe
+        # drains the child BranchTasks its driver enqueues — otherwise the
+        # driver re-runs every cycle and the queue starves (Codex review).
+        if not (
+            _workflow_unified_execution_enabled()
+            or _soul_loop_dispatch_enabled()
+        ):
             return None, {}
         cfg = load_dispatcher_config(universe_path)
         picked = select_next_task(universe_path, config=cfg)
@@ -1429,16 +1435,15 @@ class DaemonController:
         off by default, opt-in only.
 
         Option A (soul-loop dispatch, ships dark): if this universe is
-        soul-declared with a real ``loop_branch_def_id``, run that user-built
-        branch directly via ``execute_branch`` and return — bypassing the
-        fantasy cycle entirely. Gated behind ``WORKFLOW_SOUL_LOOP_DISPATCH``;
-        off by default so soulless/legacy universes are unchanged.
+        soul-declared with a real ``loop_branch_def_id``, the daemon runs that
+        user-built branch via ``execute_branch`` *in place of the fantasy
+        cycle* — but ONLY after the normal dispatcher pick has had its chance
+        to claim any pending child BranchTasks the driver enqueued (see the
+        no-claim slot below). Gated behind ``WORKFLOW_SOUL_LOOP_DISPATCH``; off
+        by default so soulless/legacy universes are unchanged. The queue is
+        never starved: pick drains children first, the driver only runs when
+        there is nothing to claim.
         """
-        if _soul_loop_dispatch_enabled() and self._try_execute_soul_loop(
-            universe_id,
-        ):
-            return
-
         if _workflow_unified_execution_enabled():
             graph_builder = _build_unified_graph_builder()
         else:
@@ -1679,6 +1684,19 @@ class DaemonController:
                     success=branch_success, error=branch_error,
                 )
                 claimed_task = None  # prevent wrapper finalization
+                self._cleanup()
+                return
+
+            # No-claim slot: nothing pending to drain this cycle. For a
+            # soul-declared universe, run its declared loop branch (the driver)
+            # via execute_branch instead of the fantasy cycle. Reached only
+            # when no BranchTask was claimed, so child tasks the driver
+            # enqueues are always drained first by the pick on later cycles.
+            if (
+                claimed_task is None
+                and _soul_loop_dispatch_enabled()
+                and self._try_execute_soul_loop(universe_id)
+            ):
                 self._cleanup()
                 return
 

@@ -113,6 +113,36 @@ def test_declared_loop_runs_via_execute_branch_with_enqueue_context(
     assert kw["run_name"] == "soul-loop-my-universe"
 
 
+def _seed_pending_child(universe_path, tid="child-1"):
+    from workflow.branch_tasks import BranchTask, append_task
+    append_task(universe_path, BranchTask(
+        branch_task_id=tid, branch_def_id="0ca6e9c97f65",
+        universe_id="u", trigger_source="owner_queued",
+        request_type="branch_run", status="pending",
+    ))
+
+
+def test_pick_inactive_when_all_dispatch_flags_off(monkeypatch, tmp_path):
+    # Baseline: neither unified-execution nor soul-loop → pick stays gated off.
+    monkeypatch.delenv("WORKFLOW_UNIFIED_EXECUTION", raising=False)
+    monkeypatch.delenv("WORKFLOW_SOUL_LOOP_DISPATCH", raising=False)
+    _seed_pending_child(tmp_path)
+    claimed, _inputs = dm._try_dispatcher_pick(tmp_path, "daemon-x")
+    assert claimed is None
+
+
+def test_soul_loop_mode_keeps_queue_unstarved(monkeypatch, tmp_path):
+    # Codex regression: with soul-loop ON (and UNIFIED_EXECUTION OFF), the
+    # dispatcher pick must still claim pending child tasks the driver enqueued
+    # — otherwise the driver re-runs each cycle and the children starve.
+    monkeypatch.delenv("WORKFLOW_UNIFIED_EXECUTION", raising=False)
+    monkeypatch.setenv("WORKFLOW_SOUL_LOOP_DISPATCH", "on")
+    _seed_pending_child(tmp_path, tid="child-42")
+    claimed, _inputs = dm._try_dispatcher_pick(tmp_path, "daemon-x")
+    assert claimed is not None
+    assert claimed.branch_task_id == "child-42"
+
+
 def test_declared_loop_not_found_refuses_no_fantasy_fallback(
     monkeypatch, tmp_path,
 ):
