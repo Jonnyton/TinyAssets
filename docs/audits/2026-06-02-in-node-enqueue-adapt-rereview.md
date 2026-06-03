@@ -194,3 +194,36 @@ Verification (claude-code, 2026-06-03):
 
 Append a `## Verdict (codex round 3, YYYY-MM-DD)` section: approve / adapt /
 reject.
+
+## Verdict (codex round 3, 2026-06-03)
+
+**approve** - the round-2 blocker is closed, and flipping
+`WORKFLOW_NODE_ENQUEUE_ENABLED` on is unblocked from this review gate.
+
+Round-3 answers:
+
+1. `request_type` is now fully server-controlled for this verb. Both the source
+   helper and packaged runtime mirror force `request_type="branch_run"` and no
+   longer read `request_type` from branch-authored kwargs. `branch_run` is the
+   correct sole scheduler class for an `enqueue_branch_run` primitive; other
+   classes such as `bug_investigation` or `paid_market` need their own reviewed
+   primitives or server-side routing policy.
+2. No other branch-authored kwarg reaches a scheduler-class or privileged
+   side-effect task field. The remaining caller-controlled surface is
+   `branch_def_id` (required, existence-validated, and checked against
+   public/private branch authority), `inputs` (the intended opaque payload for
+   the target branch), and an optional `universe_id` echo that is refused unless
+   it matches the trusted run universe.
+3. With the original universe targeting, queue cap, target-branch authority,
+   lineage/migration, and now request-type containment checks in place, this
+   review gate is approved for production flag enablement.
+
+Verification run by Codex:
+
+- `python -m pytest tests/test_node_enqueue_verb.py tests/test_node_enqueue_concurrency.py -q`
+  -> 20 passed.
+- `python -m pytest tests/test_branch_runner.py::test_execute_branch_end_to_end tests/test_branch_runner.py::test_async_run_completes_successfully tests/test_api_runs.py::test_compile_failure_records_actionable_run_error -q`
+  -> 3 passed.
+- GitHub PR #1221 at head `d472abe8379bf8fb45510595de71b81958ee4074` was
+  open, mergeable, and green/pass for policy, import probe, and Docker smoke;
+  tagged-release pack was skipped as expected.
