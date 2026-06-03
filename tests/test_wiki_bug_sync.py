@@ -656,6 +656,25 @@ def test_fetch_bug_detail_reads_with_page_not_path():
     assert detail["title"] == "Bug"
 
 
+def test_fetch_bug_detail_accepts_structured_content_preview():
+    detail = fetch_bug_detail(
+        "http://fake/mcp",
+        "sid1",
+        "pages/bugs/BUG-003-new.md",
+        5.0,
+        post_fn=CapturingPost([
+            (_wiki_read_structured_resp(
+                {"title": "Bug", "severity": "high", "component": "wiki"},
+                "# Body",
+            ), "sid1"),
+        ]),
+    )
+
+    assert detail["title"] == "Bug"
+    assert detail["severity"] == "high"
+    assert detail["component"] == "wiki"
+
+
 def test_fetch_wiki_page_detail_returns_body_without_frontmatter():
     detail = fetch_wiki_page_detail(
         "http://fake/mcp",
