@@ -188,6 +188,50 @@ class TestFileBugWrites:
         assert "BUG-001" in body
         assert "First bug" in body
 
+    def test_rejects_truthy_content_without_creating_artifacts(self, wiki_dir):
+        log_before = (wiki_dir / "log.md").read_text(encoding="utf-8")
+        with pytest.raises(ValueError, match="file_bug is currently title-only"):
+            _wiki_file_bug(
+                component="extensions.patch_branch",
+                severity="major",
+                title="Content should fail",
+                content="unexpected body payload",
+            )
+        assert list((wiki_dir / "pages" / "bugs").glob("*.md")) == []
+        assert (wiki_dir / "log.md").read_text(encoding="utf-8") == log_before
+
+    def test_rejects_truthy_body_without_creating_artifacts(self, wiki_dir):
+        log_before = (wiki_dir / "log.md").read_text(encoding="utf-8")
+        with pytest.raises(ValueError, match="file_bug is currently title-only"):
+            _wiki_file_bug(
+                component="extensions.patch_branch",
+                severity="major",
+                title="Body should fail",
+                body="unexpected body payload",
+            )
+        assert list((wiki_dir / "pages" / "bugs").glob("*.md")) == []
+        assert (wiki_dir / "log.md").read_text(encoding="utf-8") == log_before
+
+    def test_tolerates_falsey_and_default_passthrough_kwargs(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="extensions.patch_branch",
+                severity="major",
+                title="Default passthroughs are fine",
+                content="",
+                body="",
+                dry_run=True,
+                similarity_threshold=0.25,
+                max_results=10,
+                offset=0,
+                max_chars=128_000,
+                reporter_context="",
+            )
+        )
+        assert out["status"] == "filed"
+        assert out["bug_id"] == "BUG-001"
+        assert (wiki_dir / out["path"]).exists()
+
     def test_log_appended(self, wiki_dir):
         _wiki_file_bug(
             component="x",
@@ -247,6 +291,7 @@ class TestFileBugViaWikiDispatch:
         )
         assert out["status"] == "filed"
         assert out["bug_id"] == "BUG-001"
+        assert out["path"] == "pages/bugs/bug-001-dispatched.md"
 
     def test_bugs_in_valid_categories(self):
         """Smoke test that 'bugs' is registered via patch (a)."""

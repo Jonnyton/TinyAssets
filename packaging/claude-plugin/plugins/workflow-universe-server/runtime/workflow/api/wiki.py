@@ -1732,6 +1732,18 @@ _BUG_DEDUP_THRESHOLD = 0.5
 _BUG_DEDUP_CONTAINMENT_THRESHOLD = 0.8
 _BUG_DEDUP_MIN_SHARED_TOKENS = 6
 _BUG_DEDUP_SECTION_CHAR_LIMIT = 4000
+_FILE_BUG_SAFE_PASSTHROUGH_DEFAULTS: dict[str, Any] = {
+    "dry_run": True,
+    "similarity_threshold": 0.25,
+    "max_results": 10,
+    "offset": 0,
+    "max_chars": _WIKI_READ_DEFAULT_MAX_CHARS,
+}
+_FILE_BUG_UNSUPPORTED_DETAIL_FIELDS = ("content", "body")
+_FILE_BUG_TITLE_ONLY_ERROR = (
+    "wiki file_bug is currently title-only for freeform body payloads; "
+    "use repro, observed, expected, and workaround for details."
+)
 
 
 def _bug_token_set(text: str) -> set[str]:
@@ -1909,6 +1921,27 @@ def _wiki_cosign_bug(
     })
 
 
+def _validate_file_bug_kwargs(kwargs: dict[str, Any]) -> None:
+    unsupported: list[str] = []
+    for key, value in kwargs.items():
+        if key in _FILE_BUG_UNSUPPORTED_DETAIL_FIELDS:
+            if value not in ("", None, False):
+                unsupported.append(key)
+            continue
+        if key in _FILE_BUG_SAFE_PASSTHROUGH_DEFAULTS:
+            if value != _FILE_BUG_SAFE_PASSTHROUGH_DEFAULTS[key]:
+                unsupported.append(key)
+            continue
+        if value not in ("", None, False):
+            unsupported.append(key)
+    if unsupported:
+        joined = ", ".join(sorted(unsupported))
+        raise ValueError(
+            f"Unsupported wiki file_bug field(s): {joined}. {_FILE_BUG_TITLE_ONLY_ERROR}"
+        )
+
+
+
 def _wiki_file_bug(
     component: str = "",
     severity: str = "",
@@ -1940,17 +1973,7 @@ def _wiki_file_bug(
     When omitted, a token-overlap similarity score ≥ 0.5 against an existing
     bug's title+body returns {status: "similar_found"} instead of filing.
     """
-    dropped_kwargs = sorted(
-        key for key, value in _kwargs.items()
-        if value not in ("", None, False)
-        and not (
-            (key == "dry_run" and value is True)
-            or (key == "similarity_threshold" and value == 0.25)
-            or (key == "max_results" and value == 10)
-            or (key == "offset" and value == 0)
-            or (key == "max_chars" and value == _WIKI_READ_DEFAULT_MAX_CHARS)
-        )
-    )
+    _validate_file_bug_kwargs(_kwargs)
     if not title or not component or not severity:
         return json.dumps({
             "error": "title, component, and severity are required.",
@@ -2213,13 +2236,6 @@ def _wiki_file_bug(
         "note": "Filing sent to navigator triage pipeline. "
                 f"Use `wiki action=list category={category_dir}` to view.",
     }
-    if dropped_kwargs:
-        response_body["warning"] = (
-            "Dropped unsupported file_bug field(s): "
-            + ", ".join(dropped_kwargs)
-            + ". Use repro, observed, expected, and workaround for the filing body; "
-              "content is only for wiki write/patch actions."
-        )
     if trigger_block is not None:
         # FEAT-004: surface the structured trigger receipt so callers (canaries
         # / chatbots / operators) have a per-request-id join key without log
