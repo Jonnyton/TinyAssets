@@ -276,15 +276,20 @@ def _parse_text_result(result: dict[str, Any]) -> str:
 
 def _parse_json_result(result: dict[str, Any]) -> dict[str, Any]:
     structured = _extract_structured_tool_payload(result)
-    if structured is not None:
+    if isinstance(structured, dict):
         return structured
     text = _parse_text_result(result)
     try:
-        return json.loads(text)
+        payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise SyncError(
             1, f"tool text not JSON: {exc}; preview={text[:200]!r}",
         ) from exc
+    if not isinstance(payload, dict):
+        raise SyncError(
+            1, f"tool JSON payload not object: {type(payload).__name__}",
+        )
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -479,16 +484,11 @@ def fetch_wiki_page_detail(
     result = _mcp_call_tool(
         url, sid, "wiki", {"action": "read", "page": page}, timeout, post_fn
     )
-    structured = _extract_structured_tool_payload(result)
-    if structured is not None:
-        content = structured.get("content", "")
-    else:
-        text = _parse_text_result(result)
-        try:
-            data = json.loads(text)
-            content = data.get("content", "")
-        except (json.JSONDecodeError, AttributeError):
-            content = text
+    try:
+        data = _parse_json_result(result)
+        content = data.get("content", "")
+    except SyncError:
+        content = _parse_text_result(result)
 
     meta, body = _split_frontmatter(content)
     return {"meta": meta, "body": body, "content": content}

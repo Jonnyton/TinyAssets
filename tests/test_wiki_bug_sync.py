@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from wiki_bug_sync import (  # noqa: E402
     SyncError,
     _bug_number,
+    _parse_json_result,
     create_gh_change_issue,
     create_gh_issue,
     fetch_bug_detail,
@@ -654,6 +655,27 @@ def test_fetch_bug_detail_reads_with_page_not_path():
     args = post.calls[0]["params"]["arguments"]
     assert args == {"action": "read", "page": "BUG-003-new"}
     assert detail["title"] == "Bug"
+
+
+def test_parse_json_result_prefers_structured_content_over_preview_text():
+    parsed = _parse_json_result(
+        _wiki_list_structured_resp([{"path": "bugs/BUG-005-e"}])["result"]
+    )
+
+    assert parsed == {
+        "promoted": [
+            {"path": "bugs/BUG-005-e", "title": "bugs/BUG-005-e", "type": "bug"}
+        ],
+        "drafts": [],
+    }
+
+
+def test_parse_json_result_falls_back_to_text_json_payload():
+    parsed = _parse_json_result(
+        _wiki_read_resp({"title": "Bug", "severity": "high"})["result"]
+    )
+
+    assert parsed["content"].startswith("---\ntitle: Bug\nseverity: high\n---")
 
 
 def test_fetch_wiki_page_detail_returns_body_without_frontmatter():
