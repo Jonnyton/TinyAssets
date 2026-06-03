@@ -88,10 +88,12 @@ class TestBuildRunPayload:
         assert payload["request_text"] == "custom request body"
 
     def test_payload_keys_are_stable(self):
-        """The 9 canonical fields plus request_text are always present."""
+        """The canonical fields (incl. effort classification) plus request_text
+        are always present."""
         payload = self._call({})
         assert set(payload.keys()) == {
             "bug_id", "title", "component", "severity", "kind",
+            "effort_class", "effort_attention", "effort_dispatch_lane",
             "observed", "expected", "repro", "workaround", "request_text",
         }
 
