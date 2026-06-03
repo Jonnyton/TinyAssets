@@ -516,6 +516,31 @@ def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
     return candidates[0]
 
 
+def _wiki_write_promoted_path(category: str, slug: str) -> Path:
+    """Resolve the promoted write target, honoring canonical bug-page filenames."""
+    promoted_path = _wiki_pages_dir() / category / (slug + ".md")
+    if category != _BUGS_CATEGORY:
+        return promoted_path
+
+    parent = promoted_path.parent
+    if not parent.is_dir():
+        return promoted_path
+
+    canonical = _resolve_bugs_canonical(parent, slug)
+    if canonical is None:
+        return promoted_path
+    if canonical != promoted_path:
+        _logger_wiki.warning(
+            "wiki write alias: '%s' resolved to canonical '%s'. "
+            "Rename '%s' → '%s' (or remove duplicate) to eliminate.",
+            slug + ".md",
+            canonical.name,
+            canonical.name if canonical.name != (slug + ".md") else slug,
+            slug + ".md",
+        )
+    return canonical
+
+
 # ---------------------------------------------------------------------------
 # Wiki action implementations
 # ---------------------------------------------------------------------------
@@ -780,41 +805,22 @@ def _wiki_write(
     slug, slug_error = _wiki_write_slug(category, filename)
     if slug_error:
         return json.dumps({"error": slug_error})
-    promoted_path = _wiki_pages_dir() / category / (slug + ".md")
-
-    # Alias-resolution for the bugs category. Runs BEFORE the .exists() check
-    # so a pre-existing lowercase-duplicate (BUG-003) or trailing-hyphen
-    # canonical (BUG-018) cannot bypass canonical-preferring resolution.
-    #
-    # BUG-003: lowercase duplicate already exists alongside an uppercase
-    # canonical → we must prefer the uppercase canonical.
-    # BUG-028: file_bug filename is lowercase but a wrong-case canonical
-    # already exists → resolve to canonical.
-    # BUG-018: canonical filename has a trailing hyphen the slug sanitizer
-    # strips → match a "<slug>-.md" sibling as the canonical.
-    if category == _BUGS_CATEGORY:
-        parent = _wiki_pages_dir() / category
-        if parent.is_dir():
-            canonical = _resolve_bugs_canonical(parent, slug)
-            if canonical is not None and canonical != promoted_path:
-                _logger_wiki.warning(
-                    "wiki write alias: '%s' resolved to canonical '%s'. "
-                    "Rename '%s' → '%s' (or remove duplicate) to eliminate.",
-                    slug + ".md",
-                    canonical.name,
-                    canonical.name if canonical.name != (slug + ".md") else slug,
-                    slug + ".md",
-                )
-                promoted_path = canonical
+    promoted_path = _wiki_write_promoted_path(category, slug)
+    promoted_response_path = _page_rel_path(promoted_path)
+    promoted_log_path = (
+        promoted_response_path
+        if category == _BUGS_CATEGORY
+        else f"pages/{category}/{slug}"
+    )
 
     if promoted_path.exists():
         try:
             promoted_path.write_text(content, encoding="utf-8")
             _append_wiki_log(
-                f"update | pages/{category}/{slug} | {log_entry or 'in-place update'}"
+                f"update | {promoted_log_path} | {log_entry or 'in-place update'}"
             )
             return json.dumps({
-                "path": f"pages/{category}/{slug}.md",
+                "path": promoted_response_path,
                 "status": "updated",
                 "note": "Updated existing promoted page in-place.",
             })

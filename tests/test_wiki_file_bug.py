@@ -412,6 +412,30 @@ class TestBug028SlugCaseRoundtrip:
             "BUG-028: write must update in-place, not create a duplicate."
         )
 
+    def test_write_updates_uppercase_canonical_bug_page_in_place(self, wiki_dir):
+        """Lowercase bug slugs must update the canonical BUG-NNN page in-place."""
+        canonical_path = wiki_dir / "pages" / "bugs" / "BUG-001-case-sensitive.md"
+        canonical_path.write_text(
+            "---\nid: BUG-001\ntitle: Original\n---\n# Original\n",
+            encoding="utf-8",
+        )
+
+        updated_content = "---\nid: BUG-001\ntitle: Updated\n---\n# Updated\n"
+        write_result = json.loads(wiki(
+            action="write",
+            category="bugs",
+            filename="bug-001-case-sensitive.md",
+            content=updated_content,
+            log_entry="canonical bug rewrite",
+        ))
+        assert write_result["status"] == "updated"
+        assert write_result["path"] == "pages/bugs/BUG-001-case-sensitive.md"
+        assert canonical_path.read_text(encoding="utf-8") == updated_content
+        assert not (wiki_dir / "pages" / "bugs" / "bug-001-case-sensitive.md").exists()
+        assert not (wiki_dir / "drafts" / "bugs" / "bug-001-case-sensitive.md").exists()
+        log = (wiki_dir / "log.md").read_text(encoding="utf-8")
+        assert "update | pages/bugs/BUG-001-case-sensitive.md | canonical bug rewrite" in log
+
     def test_next_bug_id_finds_lowercase_files(self, wiki_dir):
         """_next_bug_id must find lowercase bug-NNN-... files written by file_bug."""
         bugs_dir = wiki_dir / "pages" / "bugs"
