@@ -787,34 +787,36 @@ def _wiki_write(
     # canonical (BUG-018) cannot bypass canonical-preferring resolution.
     #
     # BUG-003: lowercase duplicate already exists alongside an uppercase
-    # canonical → we must prefer the uppercase canonical.
+    # canonical -> we must prefer the uppercase canonical.
     # BUG-028: file_bug filename is lowercase but a wrong-case canonical
-    # already exists → resolve to canonical.
+    # already exists -> resolve to canonical.
     # BUG-018: canonical filename has a trailing hyphen the slug sanitizer
-    # strips → match a "<slug>-.md" sibling as the canonical.
+    # strips -> match a "<slug>-.md" sibling as the canonical.
     if category == _BUGS_CATEGORY:
         parent = _wiki_pages_dir() / category
         if parent.is_dir():
             canonical = _resolve_bugs_canonical(parent, slug)
-            if canonical is not None and canonical != promoted_path:
-                _logger_wiki.warning(
-                    "wiki write alias: '%s' resolved to canonical '%s'. "
-                    "Rename '%s' → '%s' (or remove duplicate) to eliminate.",
-                    slug + ".md",
-                    canonical.name,
-                    canonical.name if canonical.name != (slug + ".md") else slug,
-                    slug + ".md",
-                )
+            if canonical is not None:
+                if canonical != promoted_path:
+                    _logger_wiki.warning(
+                        "wiki write alias: '%s' resolved to canonical '%s'. "
+                        "Rename '%s' -> '%s' (or remove duplicate) to eliminate.",
+                        slug + ".md",
+                        canonical.name,
+                        canonical.name if canonical.name != (slug + ".md") else slug,
+                        slug + ".md",
+                    )
                 promoted_path = canonical
 
     if promoted_path.exists():
+        promoted_rel = _page_rel_path(promoted_path)
         try:
             promoted_path.write_text(content, encoding="utf-8")
             _append_wiki_log(
-                f"update | pages/{category}/{slug} | {log_entry or 'in-place update'}"
+                f"update | {promoted_rel.removesuffix('.md')} | {log_entry or 'in-place update'}"
             )
             return json.dumps({
-                "path": f"pages/{category}/{slug}.md",
+                "path": promoted_rel,
                 "status": "updated",
                 "note": "Updated existing promoted page in-place.",
             })

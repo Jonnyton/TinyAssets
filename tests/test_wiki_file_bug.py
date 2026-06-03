@@ -390,27 +390,62 @@ class TestBug028SlugCaseRoundtrip:
             expected="works",
         ))
         assert filed.get("status") == "filed"
-        path_str = filed["path"]
-        filename = path_str.split("/")[-1]  # e.g. bug-001-roundtrip-test-bug.md
+        original_path = wiki_dir / filed["path"]
+        canonical_name = "BUG-001-roundtrip-test-bug.md"
+        canonical_path = original_path.with_name(canonical_name)
+        original_path.rename(canonical_path)
 
-        # Write an update to the same file using the same filename.
         updated_content = "---\nid: BUG-001\ntitle: Updated\n---\n# Updated\n"
         write_result = json.loads(wiki(
             action="write",
             category="bugs",
-            filename=filename,
+            filename=original_path.name,
             content=updated_content,
         ))
-        assert write_result.get("status") in ("updated", "drafted", "draft-update"), (
-            f"Expected an update, got: {write_result}"
-        )
-        # Verify only one file exists for this bug (no duplicate).
-        bugs_dir = wiki_dir / "pages" / "bugs"
-        bug_files = list(bugs_dir.glob("*.md"))
-        assert len(bug_files) == 1, (
-            f"Expected exactly 1 bug file, got {[f.name for f in bug_files]}. "
-            "BUG-028: write must update in-place, not create a duplicate."
-        )
+        assert write_result == {
+            "path": f"pages/bugs/{canonical_name}",
+            "status": "updated",
+            "note": "Updated existing promoted page in-place.",
+        }
+        assert canonical_path.read_text(encoding="utf-8") == updated_content
+        assert not original_path.exists()
+        assert not (wiki_dir / "drafts" / "bugs" / original_path.name).exists()
+        bug_files = sorted(p.name for p in (wiki_dir / "pages" / "bugs").glob("*.md"))
+        assert bug_files == [canonical_name]
+
+    def test_file_bug_write_resolves_trailing_hyphen_canonical(self, wiki_dir):
+        """Writes must reuse canonical BUG filenames even when the disk name keeps a trailing hyphen."""
+        filed = json.loads(wiki(
+            action="file_bug",
+            title="Trailing Hyphen Alias",
+            component="wiki",
+            severity="minor",
+            observed="broken",
+            expected="works",
+        ))
+        assert filed.get("status") == "filed"
+        original_path = wiki_dir / filed["path"]
+        canonical_name = "BUG-001-trailing-hyphen-alias-.md"
+        canonical_path = original_path.with_name(canonical_name)
+        original_path.rename(canonical_path)
+
+        updated_content = "---\nid: BUG-001\ntitle: Trailing Updated\n---\n# Updated\n"
+        write_result = json.loads(wiki(
+            action="write",
+            category="bugs",
+            filename=original_path.name,
+            content=updated_content,
+        ))
+        assert write_result == {
+            "path": f"pages/bugs/{canonical_name}",
+            "status": "updated",
+            "note": "Updated existing promoted page in-place.",
+        }
+        assert canonical_path.read_text(encoding="utf-8") == updated_content
+        assert not original_path.exists()
+        assert not (wiki_dir / "drafts" / "bugs" / original_path.name).exists()
+        bug_files = sorted(p.name for p in (wiki_dir / "pages" / "bugs").glob("*.md"))
+        assert bug_files == [canonical_name]
 
     def test_next_bug_id_finds_lowercase_files(self, wiki_dir):
         """_next_bug_id must find lowercase bug-NNN-... files written by file_bug."""
