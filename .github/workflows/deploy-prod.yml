@@ -363,6 +363,20 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "printf '%s' '0ca6e9c97f65' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID"
+          # Enqueue go-live (2026-06-03): turn ON the in-node paced enqueue verb
+          # so a user-built driver branch can append run-requests to its own
+          # universe's dispatcher queue. The verb shipped dark in #1214 and was
+          # hardened in #1221 (trusted-universe targeting, global + per-origin
+          # queue caps, target-branch authority, forced request_type=branch_run).
+          # Codex cleared the review gate round-3 APPROVE (2026-06-03).
+          # ORDERING INVARIANT: this line is only safe once #1221 is merged AND
+          # deployed — flipping it while prod runs the pre-#1221 (un-contained)
+          # verb would enable the unguarded path. Do not merge this PR until the
+          # release-state sha includes #1221. Idempotent set; reverting this
+          # block returns the verb to fail-closed dark on the next deploy.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "printf '%s' 'on' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_NODE_ENQUEUE_ENABLED"
           if [ "${HAS_CODEX_AUTH_BUNDLE}" = "true" ]; then
             echo "Deploy-visible WORKFLOW_CODEX_AUTH_JSON_B64 found; syncing subscription auth bundle."
             printf '%s' "${WORKFLOW_CODEX_AUTH_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
