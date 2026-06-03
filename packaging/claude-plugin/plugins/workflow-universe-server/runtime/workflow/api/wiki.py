@@ -1732,6 +1732,13 @@ _BUG_DEDUP_THRESHOLD = 0.5
 _BUG_DEDUP_CONTAINMENT_THRESHOLD = 0.8
 _BUG_DEDUP_MIN_SHARED_TOKENS = 6
 _BUG_DEDUP_SECTION_CHAR_LIMIT = 4000
+_FILE_BUG_IGNORED_KWARG_DEFAULTS: dict[str, Any] = {
+    "dry_run": True,
+    "similarity_threshold": 0.25,
+    "max_results": 10,
+    "offset": 0,
+    "max_chars": _WIKI_READ_DEFAULT_MAX_CHARS,
+}
 
 
 def _bug_token_set(text: str) -> set[str]:
@@ -1820,6 +1827,18 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
             "path": str(p),
         })
     return results
+
+
+def _wiki_file_bug_rejected_kwargs(kwargs: dict[str, Any]) -> list[str]:
+    rejected: list[str] = []
+    for key, value in kwargs.items():
+        if value in ("", None, False):
+            continue
+        if key in _FILE_BUG_IGNORED_KWARG_DEFAULTS:
+            if value == _FILE_BUG_IGNORED_KWARG_DEFAULTS[key]:
+                continue
+        rejected.append(key)
+    return sorted(rejected)
 
 
 def _wiki_cosign_bug(
@@ -1940,17 +1959,19 @@ def _wiki_file_bug(
     When omitted, a token-overlap similarity score ≥ 0.5 against an existing
     bug's title+body returns {status: "similar_found"} instead of filing.
     """
-    dropped_kwargs = sorted(
-        key for key, value in _kwargs.items()
-        if value not in ("", None, False)
-        and not (
-            (key == "dry_run" and value is True)
-            or (key == "similarity_threshold" and value == 0.25)
-            or (key == "max_results" and value == 10)
-            or (key == "offset" and value == 0)
-            or (key == "max_chars" and value == _WIKI_READ_DEFAULT_MAX_CHARS)
-        )
-    )
+    rejected_kwargs = _wiki_file_bug_rejected_kwargs(_kwargs)
+    if rejected_kwargs:
+        return json.dumps({
+            "error": (
+                "Unsupported file_bug field(s): "
+                + ", ".join(rejected_kwargs)
+            ),
+            "rejected_fields": rejected_kwargs,
+            "hint": (
+                "Use repro, observed, expected, and workaround for filing "
+                "content. content/body belong to wiki write/patch actions instead."
+            ),
+        })
     if not title or not component or not severity:
         return json.dumps({
             "error": "title, component, and severity are required.",
@@ -2213,13 +2234,6 @@ def _wiki_file_bug(
         "note": "Filing sent to navigator triage pipeline. "
                 f"Use `wiki action=list category={category_dir}` to view.",
     }
-    if dropped_kwargs:
-        response_body["warning"] = (
-            "Dropped unsupported file_bug field(s): "
-            + ", ".join(dropped_kwargs)
-            + ". Use repro, observed, expected, and workaround for the filing body; "
-              "content is only for wiki write/patch actions."
-        )
     if trigger_block is not None:
         # FEAT-004: surface the structured trigger receipt so callers (canaries
         # / chatbots / operators) have a per-request-id join key without log
