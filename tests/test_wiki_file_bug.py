@@ -166,6 +166,21 @@ class TestFileBugValidation:
         )
         assert "error" in out
 
+    def test_truthy_body_and_content_rejected_without_writes(self, wiki_dir):
+        log_before = (wiki_dir / "log.md").read_text(encoding="utf-8")
+
+        with pytest.raises(ValueError, match="body, content"):
+            _wiki_file_bug(
+                component="x",
+                severity="major",
+                title="t",
+                body="details",
+                content="extra details",
+            )
+
+        assert list((wiki_dir / "pages" / "bugs").glob("*.md")) == []
+        assert (wiki_dir / "log.md").read_text(encoding="utf-8") == log_before
+
 
 class TestFileBugWrites:
     def test_happy_path_creates_page(self, wiki_dir):
@@ -187,6 +202,40 @@ class TestFileBugWrites:
         body = path.read_text(encoding="utf-8")
         assert "BUG-001" in body
         assert "First bug" in body
+
+    def test_falsey_and_default_passthrough_kwargs_are_allowed(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="x",
+                severity="minor",
+                title="passthrough defaults",
+                body="",
+                content="",
+                page="",
+                dry_run=True,
+                similarity_threshold=0.25,
+                max_results=10,
+                offset=0,
+                max_chars=128000,
+            )
+        )
+        assert out["status"] == "filed"
+        assert out["path"] == "pages/bugs/bug-001-passthrough-defaults.md"
+        assert "warning" not in out
+
+    def test_title_only_filing_path_and_response_preserved(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="x",
+                severity="minor",
+                title="Title only",
+            )
+        )
+        assert out["status"] == "filed"
+        assert out["bug_id"] == "BUG-001"
+        assert out["path"] == "pages/bugs/bug-001-title-only.md"
+        assert out["kind"] == "bug"
+        assert "warning" not in out
 
     def test_log_appended(self, wiki_dir):
         _wiki_file_bug(

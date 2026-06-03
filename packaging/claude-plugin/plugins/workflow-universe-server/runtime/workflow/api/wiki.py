@@ -1822,6 +1822,30 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
     return results
 
 
+_FILE_BUG_ALLOWED_DEFAULT_KWARGS: dict[str, Any] = {
+    "dry_run": True,
+    "similarity_threshold": 0.25,
+    "max_results": 10,
+    "offset": 0,
+    "max_chars": _WIKI_READ_DEFAULT_MAX_CHARS,
+}
+
+
+def _validate_file_bug_passthrough_kwargs(kwargs: dict[str, Any]) -> None:
+    rejected = sorted(
+        key for key, value in kwargs.items()
+        if value and _FILE_BUG_ALLOWED_DEFAULT_KWARGS.get(key) != value
+    )
+    if rejected:
+        rejected_fields = ", ".join(rejected)
+        raise ValueError(
+            "Unsupported file_bug field(s): "
+            f"{rejected_fields}. "
+            "file_bug currently files title-only requests; use repro, observed, "
+            "expected, and workaround for details."
+        )
+
+
 def _wiki_cosign_bug(
     bug_id: str = "",
     reporter_context: str = "",
@@ -1940,17 +1964,7 @@ def _wiki_file_bug(
     When omitted, a token-overlap similarity score ≥ 0.5 against an existing
     bug's title+body returns {status: "similar_found"} instead of filing.
     """
-    dropped_kwargs = sorted(
-        key for key, value in _kwargs.items()
-        if value not in ("", None, False)
-        and not (
-            (key == "dry_run" and value is True)
-            or (key == "similarity_threshold" and value == 0.25)
-            or (key == "max_results" and value == 10)
-            or (key == "offset" and value == 0)
-            or (key == "max_chars" and value == _WIKI_READ_DEFAULT_MAX_CHARS)
-        )
-    )
+    _validate_file_bug_passthrough_kwargs(_kwargs)
     if not title or not component or not severity:
         return json.dumps({
             "error": "title, component, and severity are required.",
@@ -2213,13 +2227,6 @@ def _wiki_file_bug(
         "note": "Filing sent to navigator triage pipeline. "
                 f"Use `wiki action=list category={category_dir}` to view.",
     }
-    if dropped_kwargs:
-        response_body["warning"] = (
-            "Dropped unsupported file_bug field(s): "
-            + ", ".join(dropped_kwargs)
-            + ". Use repro, observed, expected, and workaround for the filing body; "
-              "content is only for wiki write/patch actions."
-        )
     if trigger_block is not None:
         # FEAT-004: surface the structured trigger receipt so callers (canaries
         # / chatbots / operators) have a per-request-id join key without log
