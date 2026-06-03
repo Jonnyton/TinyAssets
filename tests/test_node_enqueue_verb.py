@@ -285,6 +285,24 @@ def test_enqueue_stamps_parent_and_origin(monkeypatch):
     assert task.origin_branch_task_id == "O1"  # propagated, not reset
 
 
+def test_enqueue_ignores_branch_authored_request_type(monkeypatch):
+    # request_type steers scheduler class + privileged downstream handling
+    # (e.g. bug_investigation direct-execution). A source node must NOT be able
+    # to pick it through enqueue_branch_run — it's forced to "branch_run".
+    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    captured = _patch_storage(monkeypatch)
+    src = (
+        "def run(state):\n"
+        "    invoke_mcp_action('enqueue_branch_run', branch_def_id='x',\n"
+        "        inputs={}, request_type='bug_investigation')\n"
+        "    return {'status': 'x'}\n"
+    )
+    b = _branch(src, ["enqueue_branch_run"])
+    _run(b, thread="enq-reqtype")
+    assert len(captured) == 1
+    assert captured[0][1].request_type == "branch_run"  # not 'bug_investigation'
+
+
 def test_enqueue_surfaces_queue_cap_as_compiler_error(monkeypatch):
     monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
     _patch_storage(monkeypatch)

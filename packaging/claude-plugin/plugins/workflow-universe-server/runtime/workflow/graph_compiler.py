@@ -1444,7 +1444,13 @@ def _node_enqueue_branch_run(
         universe_id=uid,
         inputs=dict(run_inputs),
         trigger_source="owner_queued",
-        request_type=str(kwargs.get("request_type", "") or "branch_run"),
+        # request_type is FORCED to "branch_run" — never from kwargs. It is not
+        # mere metadata: the dispatcher filters claims on it and the daemon
+        # treats classes like "bug_investigation" as direct-execution with
+        # special input shaping + post-run side effects. Letting a source node
+        # name it would let an enqueue_branch_run verb steer scheduler class /
+        # privileged downstream behavior (Codex round-2 review, 2026-06-03).
+        request_type="branch_run",
         depth=next_depth,
         parent_branch_task_id=parent,
         origin_branch_task_id=origin,
