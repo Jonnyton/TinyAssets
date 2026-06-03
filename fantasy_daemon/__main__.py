@@ -151,6 +151,22 @@ def _workflow_unified_execution_enabled() -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _soul_loop_dispatch_enabled() -> bool:
+    """Capability gate for soul-declared loop dispatch (Option A, ships dark).
+
+    When ON, the daemon runs a souled universe's declared
+    ``loop_branch_def_id`` (resolved via ``_universe_loop_dispatch``) directly
+    through ``execute_branch`` — the same path that runs claimed BranchTasks,
+    so the user-built loop gets its own state schema and the trusted in-node
+    enqueue context. Default OFF: a soulless / legacy universe is untouched and
+    keeps running the fantasy cycle. See
+    docs/design-notes/2026-06-03-soul-loop-dispatch-activation-plan.md.
+    """
+    return os.environ.get(
+        "WORKFLOW_SOUL_LOOP_DISPATCH", "",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _dispatcher_startup(universe_path: Path) -> None:
     """Phase E startup hook: recover claimed tasks + run GC.
 
@@ -1287,6 +1303,112 @@ class DaemonController:
             except Exception:
                 logger.debug("Heartbeat status write failed", exc_info=True)
 
+    def _try_execute_soul_loop(self, universe_id: str) -> bool:
+        """Run a souled universe's declared loop branch via execute_branch.
+
+        Returns True if soul-loop dispatch HANDLED this cycle (the universe is
+        soul-declared with a real, non-legacy loop branch — we ran it, or
+        refused loudly), so the caller skips the fantasy cycle. Returns False
+        when soul-loop dispatch does not apply (no soul, no declared loop, or
+        the declared loop is the legacy fantasy wrapper) — the caller falls
+        through to the existing fantasy path unchanged.
+
+        Mirrors ``_try_execute_claimed_branch_task`` but sources the branch
+        from the universe soul instead of a claimed BranchTask. The run is a
+        root activation: its in-node enqueue context is THIS universe
+        (trusted), with empty parent/origin so any enqueued children start a
+        fresh spawn lineage.
+        """
+        universe_path = Path(self._universe_path)
+        try:
+            from workflow.api.universe import (
+                LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
+                _universe_loop_dispatch,
+            )
+
+            loop_branch_def_id, _info = _universe_loop_dispatch(universe_path)
+        except Exception:
+            logger.exception("soul_loop: loop-dispatch resolution failed")
+            return False
+
+        if (
+            not loop_branch_def_id
+            or loop_branch_def_id == LEGACY_FANTASY_LOOP_BRANCH_DEF_ID
+        ):
+            # No soul / no declared loop / legacy loop → not our path.
+            return False
+
+        try:
+            from workflow.branches import BranchDefinition
+            from workflow.daemon_server import get_branch_definition
+            from workflow.runs import execute_branch
+            from workflow.storage import data_dir
+
+            base_path = data_dir()
+            try:
+                source_dict = get_branch_definition(
+                    base_path, branch_def_id=loop_branch_def_id,
+                )
+            except KeyError:
+                logger.error(
+                    "soul_loop: declared loop branch %s not found; refusing "
+                    "to run the fantasy fallback for souled universe %s",
+                    loop_branch_def_id, universe_id,
+                )
+                return True  # handled (refuse) — do NOT run fantasy fallback
+
+            branch = BranchDefinition.from_dict(source_dict)
+            errors = branch.validate()
+            if errors:
+                logger.error(
+                    "soul_loop: declared loop branch %s failed validation: %s",
+                    loop_branch_def_id, errors,
+                )
+                return True
+
+            provider_call: Any = None
+            try:
+                from domains.fantasy_daemon.phases._provider_stub import (
+                    call_provider as provider_call,
+                )
+            except ImportError:
+                provider_call = None
+
+            actor = (
+                os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+                or "anonymous"
+            )
+            outcome = execute_branch(
+                base_path,
+                branch=branch,
+                inputs={},
+                run_name=f"soul-loop-{universe_id}",
+                actor=actor,
+                provider_call=provider_call,
+                # Root activation for the universe's own loop: trusted in-node
+                # enqueue context is THIS universe; empty parent/origin so an
+                # enqueued child starts a fresh spawn lineage.
+                _enqueue_universe_id=universe_id,
+                _parent_branch_task_id="",
+                _origin_branch_task_id="",
+            )
+            logger.info(
+                "soul_loop: ran declared loop branch=%s universe=%s run=%s "
+                "status=%s",
+                loop_branch_def_id, universe_id,
+                getattr(outcome, "run_id", ""),
+                getattr(outcome, "status", ""),
+            )
+            return True
+        except Exception:
+            logger.exception(
+                "soul_loop: execution of declared loop %s failed",
+                loop_branch_def_id,
+            )
+            # Souled + declared: do NOT silently fall back to the fantasy
+            # cycle. Treat the cycle as handled (errored), logged loud.
+            return True
+
     def _run_graph(self, universe_id: str) -> None:
         """Build and execute the universe graph.
 
@@ -1305,7 +1427,18 @@ class DaemonController:
         via the normal dispatch path (preflight §4.11). Both
         regressions are accepted for v1 by lead direction; flag is
         off by default, opt-in only.
+
+        Option A (soul-loop dispatch, ships dark): if this universe is
+        soul-declared with a real ``loop_branch_def_id``, run that user-built
+        branch directly via ``execute_branch`` and return — bypassing the
+        fantasy cycle entirely. Gated behind ``WORKFLOW_SOUL_LOOP_DISPATCH``;
+        off by default so soulless/legacy universes are unchanged.
         """
+        if _soul_loop_dispatch_enabled() and self._try_execute_soul_loop(
+            universe_id,
+        ):
+            return
+
         if _workflow_unified_execution_enabled():
             graph_builder = _build_unified_graph_builder()
         else:
