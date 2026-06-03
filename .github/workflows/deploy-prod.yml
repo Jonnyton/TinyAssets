@@ -377,6 +377,19 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "printf '%s' 'on' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_NODE_ENQUEUE_ENABLED"
+          # Soul-loop go-live (2026-06-03): turn ON soul-declared loop dispatch
+          # so the daemon runs a souled universe's declared loop_branch_def_id
+          # (a user-built branch) via execute_branch instead of the fantasy
+          # cycle. Shipped dark in #1223, Codex round-2 APPROVE (2026-06-03).
+          # SAFE because it is inert until a souled universe with a declared
+          # loop exists; soulless/legacy universes are untouched. The pick is
+          # active in this mode so child tasks the driver enqueues drain (no
+          # starvation). ORDERING INVARIANT: only flip once #1223 is merged AND
+          # deployed (release-state sha includes #1223). Idempotent set;
+          # reverting returns soul-loop dispatch to fail-closed dark next deploy.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "printf '%s' 'on' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_SOUL_LOOP_DISPATCH"
           if [ "${HAS_CODEX_AUTH_BUNDLE}" = "true" ]; then
             echo "Deploy-visible WORKFLOW_CODEX_AUTH_JSON_B64 found; syncing subscription auth bundle."
             printf '%s' "${WORKFLOW_CODEX_AUTH_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
