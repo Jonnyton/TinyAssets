@@ -1270,19 +1270,74 @@ def _node_enqueue_budget() -> int:
     return val if val > 0 else 50
 
 
+def _node_enqueue_max_queue() -> int:
+    """Global active-queue cap — bounds TOTAL queue growth (default 500).
+
+    Depth + per-run budget bound a single run's shape, but not the total pile
+    across a whole spawn tree (worst case depth*budget). This is the absolute
+    ceiling on pending+running tasks one enqueue may grow the queue to.
+    """
+    raw = os.environ.get("WORKFLOW_NODE_ENQUEUE_MAX_QUEUE", "").strip()
+    try:
+        val = int(raw) if raw else 500
+    except ValueError:
+        val = 500
+    return val if val > 0 else 500
+
+
+def _node_enqueue_max_lineage() -> int:
+    """Per-origin spawn-lineage cap — bounds one origin run's total descendants
+    across all depths (default 200). Stops a single driver chain from consuming
+    the whole global queue and starving other work.
+    """
+    raw = os.environ.get("WORKFLOW_NODE_ENQUEUE_MAX_LINEAGE", "").strip()
+    try:
+        val = int(raw) if raw else 200
+    except ValueError:
+        val = 200
+    return val if val > 0 else 200
+
+
+@dataclass(frozen=True)
+class NodeEnqueueContext:
+    """Trusted, server-set execution context for the in-node enqueue verb.
+
+    Carries the *current run's* universe, actor, and spawn lineage from the
+    dispatcher down to the enqueue helper. None of it is branch-authored — a
+    node controls its ``inputs``, never this context — so it is the trusted
+    basis for universe targeting (Fix 1), branch authority (Fix 3), and the
+    per-origin lineage cap (Fix 2).
+    """
+
+    universe_id: str = ""
+    actor: str = ""
+    parent_branch_task_id: str = ""
+    origin_branch_task_id: str = ""
+
+
 def _node_enqueue_branch_run(
     node: "NodeDefinition",
     invocation_depth: int,
     enqueued_count: list[int],
     kwargs: dict[str, Any],
+    *,
+    base_path: str | Path | None = None,
+    context: "NodeEnqueueContext | None" = None,
 ) -> str:
-    """Append ONE paced run-request to this universe's dispatcher queue.
+    """Append ONE paced run-request to this run's universe dispatcher queue.
 
     Not a synchronous spawn — the daemon's concurrency cap + cooldown pace
-    execution. Bounded three ways: a capability flag (ships dark), a spawn-
-    depth cap (chain length), and a per-run budget (branching factor). Returns
-    a JSON string so the caller's standard parse step applies.
+    execution. Containment (Codex enqueue review, 2026-05-30):
+      * capability flag (ships dark);
+      * spawn-depth cap (chain length) + per-run budget (branching factor);
+      * trusted current-universe targeting — never a branch-named universe
+        (Fix 1);
+      * global active-queue cap + per-origin spawn-lineage cap (Fix 2);
+      * target branch must exist and be runnable by the actor under the
+        existing public/private visibility model (Fix 3).
+    Returns a JSON string so the caller's standard parse step applies.
     """
+    ctx = context or NodeEnqueueContext()
     if not _node_enqueue_enabled():
         raise CompilerError(
             f"Node '{node.node_id}' enqueue refused: the in-node enqueue verb "
@@ -1319,27 +1374,108 @@ def _node_enqueue_branch_run(
             f"{type(run_inputs).__name__}."
         )
 
-    from workflow.api.helpers import _default_universe, _universe_dir
-    from workflow.branch_tasks import BranchTask, append_task, new_task_id
+    # Fix 1 — universe targeting. A queue write is side-effecting, so it goes
+    # ONLY to the run's own trusted universe (set server-side from the claimed
+    # task), never a branch-named one. A caller-supplied universe_id may only
+    # echo the trusted one; anything else is refused. Absent trusted context
+    # we fail closed — in-node enqueue is for dispatched runs.
+    trusted_uid = str(ctx.universe_id or "").strip()
+    if not trusted_uid:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: no trusted universe "
+            f"context. In-node enqueue is available only for dispatched runs."
+        )
+    requested_uid = str(kwargs.get("universe_id", "")).strip()
+    if requested_uid and requested_uid != trusted_uid:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: cannot target universe "
+            f"'{requested_uid}'; this run executes in '{trusted_uid}'."
+        )
+    uid = trusted_uid
 
-    uid = str(kwargs.get("universe_id", "")).strip() or _default_universe()
+    from workflow.api.helpers import _universe_dir
+    from workflow.branch_tasks import (
+        BranchTask,
+        QueueCapExceeded,
+        append_task_capped,
+        new_task_id,
+    )
+
+    # Fix 3 — target branch authority. Reuse the existing visibility model
+    # (no new policy): the branch must exist, and a private branch is runnable
+    # only by its author. Public branches: any actor. Existence is validated
+    # BEFORE append so an unknown id can't land a doomed task.
+    if base_path is None:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: no run context available "
+            f"to validate the target branch."
+        )
+    from workflow.daemon_server import get_branch_definition
+
+    try:
+        target_meta = get_branch_definition(base_path, branch_def_id=target)
+    except KeyError:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: target branch '{target}' "
+            f"does not exist."
+        ) from None
+    visibility = str(target_meta.get("visibility", "public") or "public").strip().lower()
+    target_author = str(target_meta.get("author", "") or "")
+    actor = str(ctx.actor or "").strip()
+    if visibility == "private" and target_author != actor:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: target branch '{target}' "
+            f"is private; only its owner may run it."
+        )
+
+    # Fix 2 — lineage. parent = the current run's task; origin = the root of
+    # the spawn chain (propagated, or this task when it starts a new chain).
+    # Sourced from trusted context, never inputs.
+    new_id = new_task_id()
+    parent = str(ctx.parent_branch_task_id or "").strip()
+    origin = (
+        str(ctx.origin_branch_task_id or "").strip()
+        or parent
+        or new_id
+    )
     task = BranchTask(
-        branch_task_id=new_task_id(),
+        branch_task_id=new_id,
         branch_def_id=target,
         universe_id=uid,
         inputs=dict(run_inputs),
         trigger_source="owner_queued",
-        request_type=str(kwargs.get("request_type", "") or "branch_run"),
+        # request_type is FORCED to "branch_run" — never from kwargs. It is not
+        # mere metadata: the dispatcher filters claims on it and the daemon
+        # treats classes like "bug_investigation" as direct-execution with
+        # special input shaping + post-run side effects. Letting a source node
+        # name it would let an enqueue_branch_run verb steer scheduler class /
+        # privileged downstream behavior (Codex round-2 review, 2026-06-03).
+        request_type="branch_run",
         depth=next_depth,
+        parent_branch_task_id=parent,
+        origin_branch_task_id=origin,
     )
-    append_task(_universe_dir(uid), task)
+    # Fix 2 — global active-queue cap + per-origin lineage cap, enforced
+    # atomically under one lock (no read-then-append race).
+    try:
+        append_task_capped(
+            _universe_dir(uid),
+            task,
+            max_active=_node_enqueue_max_queue(),
+            max_lineage=_node_enqueue_max_lineage(),
+        )
+    except QueueCapExceeded as exc:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: {exc}."
+        ) from exc
     enqueued_count[0] += 1
     return json.dumps({
         "status": "enqueued",
-        "branch_task_id": task.branch_task_id,
+        "branch_task_id": new_id,
         "branch_def_id": target,
         "universe_id": uid,
         "depth": next_depth,
+        "origin_branch_task_id": origin,
     })
 
 
@@ -1348,6 +1484,8 @@ def _build_node_mcp_invoker(
     *,
     event_sink: Callable[..., None] | None,
     invocation_depth: int = 0,
+    base_path: str | Path | None = None,
+    enqueue_context: "NodeEnqueueContext | None" = None,
 ) -> Callable[..., dict[str, Any]]:
     allowed = set(node.tools_allowed or [])
     # Per-run enqueue budget (mutable closure cell) — bounds branching factor:
@@ -1413,6 +1551,7 @@ def _build_node_mcp_invoker(
         elif tool_name == "dispatch":
             raw = _node_enqueue_branch_run(
                 node, invocation_depth, enqueued_count, kwargs,
+                base_path=base_path, context=enqueue_context,
             )
         else:  # pragma: no cover - mapping owns the dispatch domains.
             raise CompilerError(
@@ -1442,6 +1581,8 @@ def _build_source_code_node(
     event_sink: Callable[..., None] | None,
     concurrency_tracker: ConcurrencyTracker | None = None,
     invocation_depth: int = 0,
+    base_path: str | Path | None = None,
+    enqueue_context: "NodeEnqueueContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that exec()s the approved source_code.
 
@@ -1454,6 +1595,7 @@ def _build_source_code_node(
     timeout_s = float(node.timeout_seconds or 300.0)
     invoke_mcp_action = _build_node_mcp_invoker(
         node, event_sink=event_sink, invocation_depth=invocation_depth,
+        base_path=base_path, enqueue_context=enqueue_context,
     )
 
     # BUG-112: exec into a SINGLE namespace (globals == locals). With split
@@ -2251,6 +2393,7 @@ def _build_node(
     base_path: str | Path | None = None,
     parent_run_id: str = "",
     invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2278,6 +2421,7 @@ def _build_node(
         inner = _build_source_code_node(
             node, event_sink=event_sink, concurrency_tracker=concurrency_tracker,
             invocation_depth=invocation_depth,
+            base_path=base_path, enqueue_context=enqueue_context,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if has_template:
@@ -2432,6 +2576,7 @@ def compile_branch(
     base_path: str | Path | None = None,
     parent_run_id: str = "",
     invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -2545,6 +2690,7 @@ def compile_branch(
             base_path=base_path,
             parent_run_id=parent_run_id,
             invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
         )
         graph.add_node(gn.id, fn)
 

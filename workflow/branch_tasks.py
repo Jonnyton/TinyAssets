@@ -102,6 +102,12 @@ class BranchTask:
     # inside a running branch (via the in-node enqueue verb) carries
     # parent_depth + 1; a depth cap bounds runaway self-enqueue chains.
     depth: int = 0
+    # Spawn lineage for the per-origin enqueue cap (Codex enqueue review,
+    # 2026-05-30). ``parent`` = the task whose run enqueued this one; ``origin``
+    # = the root of the whole spawn chain. Both are server-set from trusted
+    # dispatch context, never from branch-authored inputs.
+    parent_branch_task_id: str = ""
+    origin_branch_task_id: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -245,6 +251,63 @@ def append_task(universe_path: Path, task: BranchTask) -> None:
     qp = queue_path(universe_path)
     with _file_lock(universe_path):
         raw = _read_raw(qp)
+        raw.append(task.to_dict())
+        _write_raw(qp, raw)
+
+
+class QueueCapExceeded(RuntimeError):
+    """A queue-growth cap (global active or per-origin lineage) would be
+    exceeded. The task was NOT appended."""
+
+
+def append_task_capped(
+    universe_path: Path,
+    task: BranchTask,
+    *,
+    max_active: int | None = None,
+    max_lineage: int | None = None,
+) -> None:
+    """File-locked append with atomic queue-growth containment.
+
+    Under a SINGLE lock: count the current queue, enforce a global
+    active-task cap and a per-origin spawn-lineage cap, then append. This is
+    race-free — no read-then-append TOCTOU, so concurrent enqueues cannot
+    overshoot a cap. Raises :class:`QueueCapExceeded` (task not appended)
+    when a cap would be exceeded.
+
+    Caps are skipped when their argument is ``None``. The lineage cap only
+    applies when ``task.origin_branch_task_id`` is set.
+    """
+    if task.trigger_source not in VALID_TRIGGER_SOURCES:
+        raise ValueError(f"Invalid trigger_source: {task.trigger_source}")
+    if task.status not in VALID_STATUSES:
+        raise ValueError(f"Invalid status: {task.status}")
+    if not task.queued_at:
+        task.queued_at = _now_iso()
+    qp = queue_path(universe_path)
+    with _file_lock(universe_path):
+        raw = _read_raw(qp)
+        if max_active is not None:
+            active = sum(
+                1 for r in raw
+                if isinstance(r, dict)
+                and r.get("status") in ("pending", "running")
+            )
+            if active >= max_active:
+                raise QueueCapExceeded(
+                    f"queue has {active} active task(s) (cap {max_active})"
+                )
+        if max_lineage is not None and task.origin_branch_task_id:
+            lineage = sum(
+                1 for r in raw
+                if isinstance(r, dict)
+                and r.get("origin_branch_task_id") == task.origin_branch_task_id
+            )
+            if lineage >= max_lineage:
+                raise QueueCapExceeded(
+                    f"spawn lineage '{task.origin_branch_task_id}' already has "
+                    f"{lineage} task(s) (cap {max_lineage})"
+                )
         raw.append(task.to_dict())
         _write_raw(qp, raw)
 

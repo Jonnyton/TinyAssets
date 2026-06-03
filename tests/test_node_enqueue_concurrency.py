@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from langgraph.checkpoint.memory import InMemorySaver
 
 import workflow.api.helpers as helpers
+import workflow.daemon_server as ds
 from workflow.branch_tasks import read_queue
 from workflow.branches import (
     BranchDefinition,
@@ -28,7 +29,7 @@ from workflow.branches import (
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import compile_branch
+from workflow.graph_compiler import NodeEnqueueContext, compile_branch
 
 _BUDGET = 5
 _RUNS = 8  # concurrent branch runs
@@ -72,7 +73,17 @@ def _branch() -> BranchDefinition:
 
 
 def _one_run(run_id: int) -> str:
-    compiled = compile_branch(_branch(), invocation_depth=0)
+    # Each run is its own dispatched task → its own trusted universe context.
+    # Distinct origin per run (parent empty → origin = the run's own enqueued
+    # task), so the per-origin lineage cap never trips here.
+    ctx = NodeEnqueueContext(
+        universe_id="uni", actor="anyone",
+        parent_branch_task_id="", origin_branch_task_id="",
+    )
+    compiled = compile_branch(
+        _branch(), invocation_depth=0,
+        base_path="/fake/base", enqueue_context=ctx,
+    )
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     out = app.invoke(
         {"run": run_id},
@@ -86,8 +97,13 @@ def test_concurrent_enqueue_bounded_and_lock_safe(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_MAX_PER_RUN", str(_BUDGET))
     uni = tmp_path / "uni"
     uni.mkdir()
-    monkeypatch.setattr(helpers, "_default_universe", lambda: "uni")
     monkeypatch.setattr(helpers, "_universe_dir", lambda uid: uni)
+    # Stub the target-branch existence/visibility check as a public branch so
+    # the real append path (file lock + caps) is what's under test here.
+    monkeypatch.setattr(
+        ds, "get_branch_definition",
+        lambda base_path, *, branch_def_id: {"visibility": "public", "author": "anyone"},
+    )
 
     with ThreadPoolExecutor(max_workers=_RUNS) as ex:
         results = list(ex.map(_one_run, range(_RUNS)))

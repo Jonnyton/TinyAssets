@@ -855,6 +855,18 @@ def _try_execute_claimed_branch_task(
             # Carry spawn depth across the queue boundary so an in-node enqueue
             # from this run is depth+1 and the depth cap can bound the chain.
             _invocation_depth=int(getattr(claimed_task, "depth", 0) or 0),
+            # Trusted enqueue context (Codex review 2026-05-30): the run's own
+            # universe + spawn lineage, server-set from the claimed task so an
+            # in-node enqueue targets THIS universe and the per-origin cap can
+            # bound the whole spawn chain. origin falls back to this task when
+            # it starts a new chain (resolved in the enqueue helper).
+            _enqueue_universe_id=str(getattr(claimed_task, "universe_id", "") or ""),
+            _parent_branch_task_id=str(
+                getattr(claimed_task, "branch_task_id", "") or ""
+            ),
+            _origin_branch_task_id=str(
+                getattr(claimed_task, "origin_branch_task_id", "") or ""
+            ),
         )
         metadata = {
             "branch_def_id": branch_def_id,

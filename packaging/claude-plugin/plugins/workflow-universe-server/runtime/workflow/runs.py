@@ -40,6 +40,7 @@ from workflow.branches import BranchDefinition
 from workflow.graph_compiler import (
     CompilerError,
     EmptyResponseError,
+    NodeEnqueueContext,
     NodeTimeoutError,
     UnapprovedNodeError,
     compile_branch,
@@ -2047,6 +2048,7 @@ def _invoke_graph(
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
 ) -> RunOutcome:
     """Compile + invoke the graph for an already-prepared run_id.
 
@@ -2189,6 +2191,7 @@ def _invoke_graph(
             base_path=base_path,
             parent_run_id=run_id,
             invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -2660,6 +2663,9 @@ def execute_branch(
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
+    _parent_branch_task_id: str = "",
+    _origin_branch_task_id: str = "",
 ) -> RunOutcome:
     """Synchronous end-to-end execution.
 
@@ -2681,6 +2687,12 @@ def execute_branch(
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
     )
+    enqueue_context = NodeEnqueueContext(
+        universe_id=_enqueue_universe_id,
+        actor=actor,
+        parent_branch_task_id=_parent_branch_task_id,
+        origin_branch_task_id=_origin_branch_task_id,
+    )
     return _invoke_graph(
         base_path,
         run_id=run_id, branch=branch, inputs=inputs,
@@ -2689,6 +2701,7 @@ def execute_branch(
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
         invocation_depth=_invocation_depth,
+        enqueue_context=enqueue_context,
     )
 
 
