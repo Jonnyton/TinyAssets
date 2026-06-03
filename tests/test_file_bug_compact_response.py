@@ -138,6 +138,42 @@ class TestWikiDispatchThreadsVerbose:
         assert "branch_task" in inv
 
 
+# ── Unsupported raw body/content kwargs now fail fast ──────────────────────
+
+
+class TestUnsupportedBodyContentKwargs:
+    def test_direct_file_bug_rejects_body_and_content_kwargs(self, wired_wiki):
+        raw = _wiki_file_bug(
+            component="probe",
+            severity="cosmetic",
+            title="reject-raw-body-content",
+            kind="feature",
+            body="raw body text",
+            content="raw markdown blob",
+        )
+        resp = json.loads(raw)
+        assert "error" in resp
+        assert "does not accept raw body/content fields" in resp["error"]
+        assert "body, content" in resp["error"]
+        assert "supported filing fields" in resp["hint"]
+        assert list((wired_wiki / "pages" / "feature-requests").glob("*.md")) == []
+
+    def test_wiki_dispatch_rejects_content_kwarg_instead_of_filing_empty_shell(self, wired_wiki):
+        raw = wiki(
+            action="file_bug",
+            component="probe",
+            severity="cosmetic",
+            title="reject-dispatch-content",
+            kind="feature",
+            content="# pasted body that used to be ignored",
+        )
+        resp = json.loads(raw)
+        assert "error" in resp
+        assert "content" in resp["error"]
+        assert resp.get("status") != "filed"
+        assert list((wired_wiki / "pages" / "feature-requests").glob("*.md")) == []
+
+
 # ── Trigger receipt block (FEAT-004) is unaffected by verbose flag ────────
 
 

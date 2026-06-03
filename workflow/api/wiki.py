@@ -1940,9 +1940,29 @@ def _wiki_file_bug(
     When omitted, a token-overlap similarity score ≥ 0.5 against an existing
     bug's title+body returns {status: "similar_found"} instead of filing.
     """
+    unsupported_body_kwargs = sorted(
+        key for key, value in _kwargs.items()
+        if key in {"body", "content"}
+        and value not in ("", None, False)
+    )
+    if unsupported_body_kwargs:
+        return json.dumps({
+            "error": (
+                "wiki action=file_bug does not accept raw body/content fields: "
+                + ", ".join(unsupported_body_kwargs)
+                + "."
+            ),
+            "hint": (
+                "Use title, component, severity, and the supported filing fields "
+                "repro, observed, expected, and workaround. For raw page content, "
+                "use wiki action=write or wiki action=patch instead."
+            ),
+        })
+
     dropped_kwargs = sorted(
         key for key, value in _kwargs.items()
-        if value not in ("", None, False)
+        if key not in {"body", "content"}
+        and value not in ("", None, False)
         and not (
             (key == "dry_run" and value is True)
             or (key == "similarity_threshold" and value == 0.25)
