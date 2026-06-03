@@ -108,3 +108,95 @@ record.
   validation `ok`, `runnable=false` only because its source_code nodes are
   unapproved (a separate, legitimate gate).
 - STATUS.md "Codex review gate" Work row references this file.
+
+## Verdict (codex, 2026-05-30)
+
+**Verdict: adapt before enabling `WORKFLOW_NODE_ENQUEUE_ENABLED` in
+production.** The dark merge is acceptable: the verb is default-off, the local
+depth/budget guards are real, `BranchTask.depth` is threaded across the
+dispatcher boundary, and the focused tests pass. It is not ready for live
+enable because the first side-effecting in-node primitive still lacks
+production-scope containment for queue growth, current-universe targeting, and
+target branch authority.
+
+### Answers to the six adversarial questions
+
+1. **Total spawn bound: adapt required.** The current bounds limit chain length
+   and per-run branching factor, but they do not bound total queued work at the
+   origin or universe level. With the defaults, one depth-0 driver can enqueue
+   50 depth-1 tasks, and each of those can enqueue 50 depth-2 tasks: 2,550
+   descendant tasks before repeated origin runs are counted. The dispatcher cap
+   paces execution, not queue growth. Before the flag flips, add a trusted
+   global pending/running queue cap and a system-owned per-origin lineage cap
+   such as `origin_branch_task_id` / `spawn_chain_id` plus `parent_branch_task_id`
+   on `BranchTask`. Do not rely on `inputs` for lineage because branch code
+   controls it.
+2. **Cross-process lock safety: acceptable for the current single-host
+   filesystem model.** `workflow/branch_tasks.py` locks a sidecar
+   `branch_tasks.json.lock` with `msvcrt.locking` on Windows and `fcntl.flock`
+   on POSIX, and `read_queue`, `append_task`, and claim/update paths all operate
+   under that lock before atomically replacing the JSON file. The checked-in
+   concurrency proof is thread-based, so I also ran an ad hoc child-process
+   probe on Windows: 6 Python processes appended 12 tasks each to one queue,
+   producing 72 rows and 72 unique task IDs. This is still not a distributed
+   lock guarantee for multiple hosts or weak network filesystems; document that
+   boundary if the runtime ever shares one queue across machines.
+3. **Universe targeting: adapt required.** `_node_enqueue_branch_run` currently
+   uses `kwargs["universe_id"]` if branch code supplies it, otherwise
+   `_default_universe()`. That means the current run's universe is not a
+   trusted runtime context. A node running in universe B can accidentally append
+   to the active default universe, or deliberately name another safe
+   `universe_id`. Read-only goals/gates calls can tolerate default-universe
+   semantics more easily; a queue write cannot. Thread the current universe
+   through the dispatcher, `execute_branch`, `compile_branch`, and the source
+   invoker as trusted context, then default to that context or fail closed when
+   it is absent. Treat caller-supplied cross-universe targeting as a separate
+   explicit authority decision.
+4. **`branch_def_id` authority: adapt required.** `tools_allowed` gates access
+   to the verb, but the target branch is only a string. Unknown IDs are deferred
+   to dispatch-time failure, and exact branch IDs bypass the visibility-aware
+   name-search path. Before production enable, validate that the target branch
+   exists before appending, and enforce the intended authority rule for the
+   current actor/source branch. A conservative first policy is: same trusted
+   universe/run context, target branch exists, and private branches are runnable
+   only by their owner or an explicitly privileged actor. Same-goal or
+   same-author constraints can be layered after the existence/visibility check
+   is in place.
+5. **Depth integrity: acceptable within the queue-writer trust boundary.** The
+   node controls `inputs`, but `_node_enqueue_branch_run` ignores any caller
+   `depth` argument and writes `BranchTask.depth = invocation_depth + 1`
+   server-side. The daemon passes `claimed_task.depth` into
+   `execute_branch(... _invocation_depth=...)`, `execute_branch` threads it into
+   `_invoke_graph`, and `compile_branch` threads it into source-code node MCP
+   invokers. An `inputs={"depth": 0}` value remains ordinary branch input and
+   does not reset `BranchTask.depth`. If another public queue-writing surface is
+   added, it must enforce the same server-owned depth rule.
+6. **Failure modes: acceptable with one audit caveat.** `append_task` failures
+   are not swallowed by the verb. They escape `_node_enqueue_branch_run`, the
+   source-code wrapper logs and wraps them as `CompilerError`, and the run layer
+   marks the run failed when the exception is not caught by branch code. As with
+   any Python helper call, branch source can catch `Exception` and choose to
+   continue; that is branch-authored behavior, not a silent platform drop. For
+   live enable, consider adding an event/audit record for failed enqueue
+   attempts so broad source-code `except Exception` blocks cannot hide storage
+   pressure from operators.
+
+### Required changes before production enable
+
+- Add a trusted current-universe context to enqueued tasks and stop defaulting
+  side-effecting queue writes to `_default_universe()`.
+- Add queue-growth containment beyond local depth and per-run budget: a global
+  queue cap plus a persisted per-origin spawn lineage/descendant cap.
+- Validate target `branch_def_id` before append and enforce the target branch
+  visibility/authority posture for the current actor/source branch.
+- Add regression tests for multi-universe enqueue targeting, unknown/private
+  branch refusal before append, and the new queue/lineage cap. Keep the existing
+  depth, per-run budget, and lock tests.
+
+Verification run from `C:\Users\Jonathan\Projects\wf-node-enqueue-review` on
+2026-05-30:
+
+- `python -m pytest tests/test_node_enqueue_verb.py tests/test_node_enqueue_concurrency.py -q`
+  -> `9 passed`.
+- Ad hoc child-process lock probe: 6 processes x 12 appends -> 72 queued rows,
+  72 unique task IDs.
