@@ -52,12 +52,22 @@ def _wiki_list_resp(bugs: list[dict]) -> dict:
     }
 
 
-def _wiki_list_structured_resp(bugs: list[dict]) -> dict:
+def _wiki_list_structured_resp(
+    bugs: list[dict], text_payload: dict | None = None
+) -> dict:
     """Build a wiki list response with preview text plus structuredContent."""
     promoted = [
         {"path": b["path"], "title": b.get("title", b["path"]), "type": "bug"}
         for b in bugs
     ]
+    text = (
+        json.dumps(text_payload)
+        if text_payload is not None
+        else (
+            "Tool result: promoted=%d; drafts=0. "
+            "Full payload is in structuredContent."
+        ) % len(promoted)
+    )
     return {
         "jsonrpc": "2.0",
         "id": 10,
@@ -65,10 +75,7 @@ def _wiki_list_structured_resp(bugs: list[dict]) -> dict:
             "content": [
                 {
                     "type": "text",
-                    "text": (
-                        "Tool result: promoted=%d; drafts=0. "
-                        "Full payload is in structuredContent."
-                    ) % len(promoted),
+                    "text": text,
                 }
             ],
             "structuredContent": {"promoted": promoted, "drafts": []},
@@ -91,10 +98,19 @@ def _wiki_read_resp(meta: dict, body: str = "# Body") -> dict:
     }
 
 
-def _wiki_read_structured_resp(meta: dict, body: str = "# Body") -> dict:
+def _wiki_read_structured_resp(
+    meta: dict,
+    body: str = "# Body",
+    text_payload: dict[str, str] | None = None,
+) -> dict:
     """Build a wiki read response with preview text plus structuredContent."""
     fm_lines = "\n".join(f"{k}: {v}" for k, v in meta.items())
     content = f"---\n{fm_lines}\n---\n\n{body}"
+    text = (
+        json.dumps(text_payload)
+        if text_payload is not None
+        else "Tool result: content preview. Full payload is in structuredContent."
+    )
     return {
         "jsonrpc": "2.0",
         "id": 10,
@@ -102,7 +118,7 @@ def _wiki_read_structured_resp(meta: dict, body: str = "# Body") -> dict:
             "content": [
                 {
                     "type": "text",
-                    "text": "Tool result: content preview. Full payload is in structuredContent.",
+                    "text": text,
                 }
             ],
             "structuredContent": {"content": content},
@@ -694,6 +710,28 @@ def test_fetch_wiki_page_detail_accepts_structured_content_preview():
     assert "Full payload is in structuredContent" not in detail["body"]
 
 
+def test_fetch_wiki_page_detail_structured_payload_wins_over_text_json_fallback():
+    detail = fetch_wiki_page_detail(
+        "http://fake/mcp",
+        "sid1",
+        "pages/plans/user-buildable-community-change-loop-v0-substrate-readiness-baseline.md",
+        5.0,
+        post_fn=CapturingPost([
+            (_wiki_read_structured_resp(
+                {"title": "Structured Title"},
+                "## Main finding\n\nStructured payloads win.",
+                text_payload={
+                    "content": "---\ntitle: Preview Title\n---\n\nPreview body.",
+                },
+            ), "sid1"),
+        ]),
+    )
+
+    assert detail["meta"]["title"] == "Structured Title"
+    assert "Structured payloads win." in detail["body"]
+    assert "Preview body." not in detail["body"]
+
+
 def test_format_change_issue_body_includes_bounded_source_context():
     body = format_change_issue_body(
         {"type": "plan"},
@@ -739,6 +777,32 @@ def test_sync_no_new_bugs_accepts_structured_content_list_preview(tmp_path):
             {"path": "bugs/BUG-001-a"},
             {"path": "bugs/BUG-005-e"},
         ]), "sid1"),
+    )
+    rc = sync("http://fake/mcp", 5.0, dry_run=True, cursor_path=cursor_path, post_fn=post_fn)
+    assert rc == 0
+    assert read_cursor(cursor_path) == 5
+
+
+def test_sync_list_structured_payload_wins_over_text_json_fallback(tmp_path):
+    cursor_path = tmp_path / "cursor"
+    write_cursor(5, cursor_path)
+
+    post_fn = _make_post_fn(
+        (_INIT_OK, "sid1"),
+        (_NOTIF_NONE, "sid1"),
+        (_wiki_list_structured_resp(
+            [{"path": "bugs/BUG-005-e"}],
+            text_payload={
+                "promoted": [
+                    {
+                        "path": "bugs/BUG-006-preview",
+                        "title": "Preview bug",
+                        "type": "bug",
+                    }
+                ],
+                "drafts": [],
+            },
+        ), "sid1"),
     )
     rc = sync("http://fake/mcp", 5.0, dry_run=True, cursor_path=cursor_path, post_fn=post_fn)
     assert rc == 0
