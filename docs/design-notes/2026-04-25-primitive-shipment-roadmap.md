@@ -302,7 +302,24 @@ Primitives that cannot ship until host answers an open question.
 
 ---
 
-## 8. Cross-references
+## 8. Next-Level Primitives intake hold
+
+This roadmap document is the current owning area for strategic primitive-shipment planning. The newly filed "Next-Level Primitives" bug batch cannot yet be converted into dispatchable roadmap items because the request payload omitted the minimum triage fields needed to classify each item.
+
+**Current intake status for the 22 filed bugs:** blocked pending per-item details.
+
+Each filed bug must supply all of the following before it is summarized here as a roadmap item:
+- owning component / primitive
+- expected behavior
+- concrete reproduction details
+
+Until those fields are present, the batch remains an intake placeholder only, not a committed change list, ship-order amendment, or phase-plan update.
+
+**Follow-up rule for later synthesis:** once the missing details are supplied for all 22 items, add them to this roadmap as roadmap-only entries grouped by owning primitive / phase, without treating them as implementation-ready code changes.
+
+---
+
+## 9. Cross-references
 
 - v1 vision: `docs/design-notes/2026-04-25-self-evolving-platform-vision.md` §4 (audit table) + §5 (open questions) + §6 (convergence path).
 - G1 audit: `docs/audits/2026-04-25-canonical-primitive-audit.md` (gap list informs Phase A items 1, 2, 3, 5, 6).
@@ -312,7 +329,7 @@ Primitives that cannot ship until host answers an open question.
 
 ---
 
-## 9. Convergence path for v2 vision doc
+## 10. Convergence path for v2 vision doc
 
 When v2 of the self-evolving-platform vision drafts, this roadmap feeds:
 - §4 audit table → expand with Phase column + ship-order number.
