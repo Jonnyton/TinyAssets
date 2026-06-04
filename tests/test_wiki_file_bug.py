@@ -1,618 +1,109 @@
-"""Tests for Task #3 — wiki `file_bug` action + BUG-NNN allocator.
-
-Covers `_wiki_file_bug` helper, `_next_bug_id` allocator, `_slugify_title`
-filesystem-safe slug, `_render_bug_markdown` frontmatter shape, and the
-end-to-end `wiki(action="file_bug", ...)` dispatch.
-
-Pre-staged while Task #3 awaits deploy + severity-rubric reconcile.
-Until patch (e) lands, the symbols below do not exist in
-`workflow.universe_server`. A module-level `importorskip` keeps the full
-pytest suite green (collection skips cleanly) — the guard goes away the
-moment the symbols exist.
-"""
-
-from __future__ import annotations
-
 import json
-from pathlib import Path
-from unittest.mock import patch
 
-import pytest
-
-import workflow.universe_server as _us
-
-_required = (
-    "_wiki_file_bug",
-    "_next_bug_id",
-    "_slugify_title",
-    "_render_bug_markdown",
-)
-_missing = [name for name in _required if not hasattr(_us, name)]
-if _missing:
-    pytest.skip(
-        f"wiki file_bug patches not landed yet (missing: {', '.join(_missing)})",
-        allow_module_level=True,
-    )
-
-from workflow.api.wiki import (  # noqa: E402
-    _next_bug_id,
-    _render_bug_markdown,
-    _slugify_title,
+from workflow.api.helpers import _scoped_wiki_root
+from workflow.api.wiki import (
+    _WIKI_READ_DEFAULT_MAX_CHARS,
+    _ensure_wiki_scaffold,
     _wiki_file_bug,
 )
-from workflow.universe_server import wiki  # noqa: E402
+
+_FILE_BUG_UNSUPPORTED_HINT = (
+    "Use repro, observed, expected, and workaround for filing body text; "
+    "content is only valid for wiki write/patch actions."
+)
 
 
-@pytest.fixture
-def wiki_dir(tmp_path, monkeypatch):
-    """Temporary wiki tree with a `bugs` category pre-created."""
-    wiki_root = tmp_path / "Wiki"
-    wiki_root.mkdir()
-    for sub in ["projects", "concepts", "bugs"]:
-        (wiki_root / "pages" / sub).mkdir(parents=True)
-        (wiki_root / "drafts" / sub).mkdir(parents=True)
-    (wiki_root / "raw").mkdir()
-    (wiki_root / "index.md").write_text(
-        "---\ntitle: Index\ntype: index\n---\n# Wiki\n", encoding="utf-8"
+def _call_file_bug(tmp_path, monkeypatch, **kwargs):
+    monkeypatch.delenv("WORKFLOW_BUG_INVESTIGATION_GOAL_ID", raising=False)
+    monkeypatch.delenv("WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", raising=False)
+    root = tmp_path / "wiki"
+    with _scoped_wiki_root(root):
+        _ensure_wiki_scaffold(root)
+        payload = json.loads(_wiki_file_bug(**kwargs))
+    return root, payload
+
+
+def test_file_bug_rejects_truthy_unsupported_body_and_content_fields(
+    tmp_path,
+    monkeypatch,
+):
+    root, payload = _call_file_bug(
+        tmp_path,
+        monkeypatch,
+        title="Widget render stalls",
+        component="workflow.api.wiki",
+        severity="major",
+        observed="Render blocks for several seconds.",
+        expected="Render completes promptly.",
+        repro="Open the widget page and trigger a refresh.",
+        body="Caller tried to pass filing prose via body.",
+        content="Caller tried to pass filing prose via content.",
     )
-    (wiki_root / "log.md").write_text("# Wiki Log\n", encoding="utf-8")
-    (wiki_root / "WIKI.md").write_text("# Wiki Schema\n", encoding="utf-8")
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
-    return wiki_root
+
+    assert payload == {
+        "error": "Unsupported file_bug field(s): body, content.",
+        "hint": _FILE_BUG_UNSUPPORTED_HINT,
+    }
+    assert list((root / "pages" / "bugs").glob("*.md")) == []
 
 
-class TestNextBugId:
-    def test_empty_dir_returns_bug_001(self, wiki_dir):
-        bugs_dir = wiki_dir / "pages" / "bugs"
-        assert _next_bug_id(bugs_dir) == "BUG-001"
-
-    def test_existing_bug_007_returns_bug_008(self, wiki_dir):
-        bugs_dir = wiki_dir / "pages" / "bugs"
-        (bugs_dir / "BUG-007-example.md").write_text("x", encoding="utf-8")
-        assert _next_bug_id(bugs_dir) == "BUG-008"
-
-    def test_non_integer_id_ignored(self, wiki_dir):
-        bugs_dir = wiki_dir / "pages" / "bugs"
-        (bugs_dir / "BUG-xyz-invalid.md").write_text("x", encoding="utf-8")
-        (bugs_dir / "BUG-005-real.md").write_text("x", encoding="utf-8")
-        assert _next_bug_id(bugs_dir) == "BUG-006"
-
-    def test_scans_drafts_too(self, wiki_dir):
-        (wiki_dir / "pages" / "bugs" / "BUG-001-p.md").write_text(
-            "x", encoding="utf-8"
-        )
-        (wiki_dir / "drafts" / "bugs" / "BUG-002-d.md").write_text(
-            "x", encoding="utf-8"
-        )
-        assert _next_bug_id(wiki_dir / "pages" / "bugs") == "BUG-003"
-
-
-class TestSlugifyTitle:
-    def test_basic(self):
-        assert _slugify_title("My Bug Report") == "my-bug-report"
-
-    def test_special_chars(self):
-        assert _slugify_title("foo/bar:baz (v2)") == "foo-bar-baz-v2"
-
-    def test_truncation_at_60(self):
-        long = "a" * 100
-        assert len(_slugify_title(long, max_len=60)) == 60
-
-    def test_empty_returns_untitled(self):
-        assert _slugify_title("") == "untitled"
-        assert _slugify_title("!!!") == "untitled"
-
-
-class TestRenderBugMarkdown:
-    def test_all_frontmatter_fields_present(self):
-        md = _render_bug_markdown(
-            bug_id="BUG-042",
-            title="Test title",
-            component="extensions.patch_branch",
-            severity="major",
-            repro="call X",
-            observed="got Y",
-            expected="wanted Z",
-            workaround="use W",
-            first_seen_date="2026-04-20",
-        )
-        assert "id: BUG-042" in md
-        assert "title: Test title" in md
-        assert "component: extensions.patch_branch" in md
-        assert "severity: major" in md
-        assert "status: open" in md
-        assert "## What happened\n\ngot Y" in md
-        assert "## Repro\n\ncall X" in md
-        assert "## Workaround\n\nuse W" in md
-
-    def test_empty_optionals_render_placeholders(self):
-        md = _render_bug_markdown(
-            bug_id="BUG-001",
-            title="x",
-            component="y",
-            severity="low",
-            repro="",
-            observed="",
-            expected="",
-            workaround="",
-            first_seen_date="2026-04-20",
-        )
-        assert "_not specified_" in md
-        assert "_none_" in md
-
-
-class TestFileBugValidation:
-    def test_missing_title_rejected(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(component="x", severity="major", title="")
-        )
-        assert "error" in out
-
-    def test_missing_component_rejected(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(component="", severity="major", title="t")
-        )
-        assert "error" in out
-
-    def test_missing_severity_rejected(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(component="x", severity="", title="t")
-        )
-        assert "error" in out
-
-    def test_invalid_severity_rejected(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(component="x", severity="wombat", title="t")
-        )
-        assert "error" in out
-
-
-class TestFileBugWrites:
-    def test_happy_path_creates_page(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(
-                component="extensions.patch_branch",
-                severity="major",
-                title="First bug",
-                repro="call X",
-                observed="Y",
-                expected="Z",
-                workaround="W",
-            )
-        )
-        assert out["status"] == "filed"
-        assert out["bug_id"] == "BUG-001"
-        path = wiki_dir / out["path"]
-        assert path.exists()
-        body = path.read_text(encoding="utf-8")
-        assert "BUG-001" in body
-        assert "First bug" in body
-
-    def test_log_appended(self, wiki_dir):
-        _wiki_file_bug(
-            component="x",
-            severity="minor",
-            title="logged",
-        )
-        log = (wiki_dir / "log.md").read_text(encoding="utf-8")
-        assert "file_bug" in log
-        assert "BUG-001" in log
-
-
-class TestFileBugCollisionRetry:
-    def test_collision_retries_and_advances_id(self, wiki_dir):
-        # Pre-seed BUG-001 so _next_bug_id first returns BUG-002.
-        (wiki_dir / "pages" / "bugs" / "BUG-001-seed.md").write_text(
-            "x", encoding="utf-8"
-        )
-        real_open = open
-        first_call = {"fired": False}
-
-        def fake_open(path, mode="r", *args, **kwargs):
-            p = Path(path) if not isinstance(path, Path) else path
-            if (
-                mode == "x"
-                and "bug-002" in p.name.lower()
-                and not first_call["fired"]
-            ):
-                first_call["fired"] = True
-                real_open(path, "w", *args, **kwargs).close()
-                raise FileExistsError(path)
-            return real_open(path, mode, *args, **kwargs)
-
-        with patch(
-            "workflow.api.wiki.open", side_effect=fake_open, create=True
-        ):
-            out = json.loads(
-                _wiki_file_bug(
-                    component="x", severity="minor", title="racy"
-                )
-            )
-        assert out["status"] == "filed"
-        assert out["bug_id"] == "BUG-003"
-
-
-class TestFileBugViaWikiDispatch:
-    def test_dispatch_routes_file_bug(self, wiki_dir):
-        out = json.loads(
-            wiki(
-                action="file_bug",
-                component="extensions.patch_branch",
-                severity="major",
-                title="Dispatched",
-                repro="r",
-                observed="o",
-                expected="e",
-            )
-        )
-        assert out["status"] == "filed"
-        assert out["bug_id"] == "BUG-001"
-
-    def test_bugs_in_valid_categories(self):
-        """Smoke test that 'bugs' is registered via patch (a)."""
-        from workflow.api.wiki import _WIKI_CATEGORIES
-        assert "bugs" in _WIKI_CATEGORIES
-
-
-class TestFileBugKindField:
-    """Tests for the optional `kind` field (bug | feature | design)."""
-
-    def test_no_kind_defaults_to_bug(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(component="x", severity="minor", title="t")
-        )
-        assert out["kind"] == "bug"
-
-    def test_kind_feature_annotates_frontmatter(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="Add feature Y",
-                kind="feature",
-            )
-        )
-        assert out["status"] == "filed"
-        assert out["kind"] == "feature"
-        path = wiki_dir / out["path"]
-        body = path.read_text(encoding="utf-8")
-        assert "kind: feature" in body
-        assert "feature" in body.split("tags:")[1].split("\n")[0]
-
-    def test_kind_design_annotates_frontmatter(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="Design proposal Z",
-                kind="design",
-            )
-        )
-        assert out["kind"] == "design"
-        path = wiki_dir / out["path"]
-        body = path.read_text(encoding="utf-8")
-        assert "kind: design" in body
-
-    def test_invalid_kind_rejected(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="t",
-                kind="banana",
-            )
-        )
-        assert "error" in out
-        assert "banana" in out["error"]
-
-    def test_missing_kind_reads_as_bug(self, wiki_dir):
-        """No kind kwarg = kind defaults to 'bug' (backward-compat)."""
-        out = json.loads(
-            _wiki_file_bug(component="x", severity="minor", title="legacy bug")
-        )
-        assert out["kind"] == "bug"
-
-
-class TestFileBugTagsField:
-    """Tests for the optional `tags` free-form labels field."""
-
-    def test_tags_appear_in_frontmatter(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="t",
-                tags="ux,performance",
-            )
-        )
-        assert out["status"] == "filed"
-        path = wiki_dir / out["path"]
-        body = path.read_text(encoding="utf-8")
-        tags_line = [ln for ln in body.split("\n") if ln.startswith("tags:")][0]
-        assert "ux" in tags_line
-        assert "performance" in tags_line
-
-    def test_empty_tags_does_not_break(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="t",
-                tags="",
-            )
-        )
-        assert out["status"] == "filed"
-
-
-def test_render_bug_markdown_kind_and_extra_tags():
-    """Direct unit test on _render_bug_markdown with kind + extra_tags."""
-    md = _render_bug_markdown(
-        bug_id="BUG-001",
-        title="Feature req",
-        component="extensions",
-        severity="minor",
-        repro="",
-        observed="",
-        expected="wanted new thing",
-        workaround="",
-        first_seen_date="2026-04-24",
-        kind="feature",
-        extra_tags=["ux", "roadmap"],
+def test_file_bug_rejects_content_instead_of_creating_title_only_shell(
+    tmp_path,
+    monkeypatch,
+):
+    root, payload = _call_file_bug(
+        tmp_path,
+        monkeypatch,
+        title="Title-only shell should not file",
+        component="workflow.api.wiki",
+        severity="major",
+        content="Observed: shell filing currently happens when content is dropped.",
     )
-    assert "kind: feature" in md
-    tags_line = [ln for ln in md.split("\n") if ln.startswith("tags:")][0]
-    assert "feature" in tags_line
-    assert "ux" in tags_line
-    assert "roadmap" in tags_line
+
+    assert payload == {
+        "error": "Unsupported file_bug field(s): content.",
+        "hint": _FILE_BUG_UNSUPPORTED_HINT,
+    }
+    assert "bug_id" not in payload
+    assert "path" not in payload
+    assert "status" not in payload
+    assert list((root / "pages" / "bugs").glob("*.md")) == []
 
 
-# ── BUG-028: slug-case roundtrip ─────────────────────────────────────────────
-# file_bug must create lowercase filenames so that wiki action=write can
-# resolve the same slug without a case mismatch (BUG-001-... vs bug-001-...).
+def test_file_bug_ignores_empty_unsupported_fields_and_compat_defaults(
+    tmp_path,
+    monkeypatch,
+):
+    root, payload = _call_file_bug(
+        tmp_path,
+        monkeypatch,
+        title="Cache miss on read",
+        component="workflow.api.wiki",
+        severity="major",
+        observed="Reads fall back to stale cache entries.",
+        expected="Reads should return the latest wiki content.",
+        repro="Call read twice after a patch and compare results.",
+        workaround="Patch again to refresh the cache.",
+        content="",
+        body="",
+        dry_run=True,
+        similarity_threshold=0.25,
+        max_results=10,
+        offset=0,
+        max_chars=_WIKI_READ_DEFAULT_MAX_CHARS,
+    )
 
+    assert payload["status"] == "filed"
+    assert payload["bug_id"] == "BUG-001"
+    assert payload["path"] == "pages/bugs/bug-001-cache-miss-on-read.md"
+    assert payload["kind"] == "bug"
+    assert payload["severity"] == "major"
+    assert payload["component"] == "workflow.api.wiki"
+    assert "warning" not in payload
 
-class TestBug028SlugCaseRoundtrip:
-    def test_file_bug_creates_lowercase_filename(self, wiki_dir):
-        """file_bug must produce an all-lowercase filename (no BUG-NNN prefix)."""
-        result = json.loads(wiki(
-            action="file_bug",
-            title="Slug Case Test",
-            component="wiki",
-            severity="minor",
-        ))
-        assert result.get("status") == "filed"
-        path_str = result["path"]
-        filename = path_str.split("/")[-1]
-        assert filename == filename.lower(), (
-            f"file_bug produced a non-lowercase filename: {filename!r}. "
-            "BUG-028: write action uses _sanitize_slug which lowercases; "
-            "filenames must match."
-        )
-
-    def test_file_bug_then_write_roundtrips(self, wiki_dir):
-        """file_bug followed by wiki write to the same slug updates, not duplicates."""
-        filed = json.loads(wiki(
-            action="file_bug",
-            title="Roundtrip Test Bug",
-            component="wiki",
-            severity="minor",
-            observed="broken",
-            expected="works",
-        ))
-        assert filed.get("status") == "filed"
-        path_str = filed["path"]
-        filename = path_str.split("/")[-1]  # e.g. bug-001-roundtrip-test-bug.md
-
-        # Write an update to the same file using the same filename.
-        updated_content = "---\nid: BUG-001\ntitle: Updated\n---\n# Updated\n"
-        write_result = json.loads(wiki(
-            action="write",
-            category="bugs",
-            filename=filename,
-            content=updated_content,
-        ))
-        assert write_result.get("status") in ("updated", "drafted", "draft-update"), (
-            f"Expected an update, got: {write_result}"
-        )
-        # Verify only one file exists for this bug (no duplicate).
-        bugs_dir = wiki_dir / "pages" / "bugs"
-        bug_files = list(bugs_dir.glob("*.md"))
-        assert len(bug_files) == 1, (
-            f"Expected exactly 1 bug file, got {[f.name for f in bug_files]}. "
-            "BUG-028: write must update in-place, not create a duplicate."
-        )
-
-    def test_next_bug_id_finds_lowercase_files(self, wiki_dir):
-        """_next_bug_id must find lowercase bug-NNN-... files written by file_bug."""
-        bugs_dir = wiki_dir / "pages" / "bugs"
-        (bugs_dir / "bug-003-some-title.md").write_text("x", encoding="utf-8")
-        assert _next_bug_id(bugs_dir) == "BUG-004"
-
-    def test_next_bug_id_finds_uppercase_files_too(self, wiki_dir):
-        """_next_bug_id must also find legacy uppercase BUG-NNN-... files."""
-        bugs_dir = wiki_dir / "pages" / "bugs"
-        (bugs_dir / "BUG-007-legacy.md").write_text("x", encoding="utf-8")
-        assert _next_bug_id(bugs_dir) == "BUG-008"
-
-
-class TestFileBugKindRouting:
-    """Task #52 — kind=feature → pages/feature-requests/FEAT-NNN,
-    kind=design → pages/design-proposals/DESIGN-NNN, kind=bug stays in
-    pages/bugs/BUG-NNN. Each prefix has its own counter."""
-
-    def test_kind_feature_lands_in_feature_requests_dir(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="Add feature Y",
-                kind="feature",
-            )
-        )
-        assert out["status"] == "filed"
-        assert out["kind"] == "feature"
-        assert out["bug_id"].startswith("FEAT-")
-        assert out["path"].startswith("pages/feature-requests/")
-        feat_dir = wiki_dir / "pages" / "feature-requests"
-        assert feat_dir.is_dir()
-        assert any(p.stem.startswith("feat-") for p in feat_dir.glob("*.md"))
-
-    def test_kind_design_lands_in_design_proposals_dir(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="Design proposal Z",
-                kind="design",
-            )
-        )
-        assert out["status"] == "filed"
-        assert out["kind"] == "design"
-        assert out["bug_id"].startswith("DESIGN-")
-        assert out["path"].startswith("pages/design-proposals/")
-        design_dir = wiki_dir / "pages" / "design-proposals"
-        assert design_dir.is_dir()
-        assert any(p.stem.startswith("design-") for p in design_dir.glob("*.md"))
-
-    def test_kind_bug_still_lands_in_bugs_dir(self, wiki_dir):
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="A real bug",
-            )
-        )
-        assert out["status"] == "filed"
-        assert out["kind"] == "bug"
-        assert out["bug_id"].startswith("BUG-")
-        assert out["path"].startswith("pages/bugs/")
-
-    def test_kind_patch_request_lands_in_patch_requests_dir(self, wiki_dir):
-        """Task #70 — patch_request kind routes to PR-NNN in pages/patch-requests/.
-        Used by Task #55 external-PR bridge to file inbound patch submissions."""
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor",
-                title="Inbound PR from external contributor",
-                kind="patch_request",
-            )
-        )
-        assert out["status"] == "filed"
-        assert out["kind"] == "patch_request"
-        assert out["bug_id"].startswith("PR-")
-        assert out["path"].startswith("pages/patch-requests/")
-        pr_dir = wiki_dir / "pages" / "patch-requests"
-        assert pr_dir.is_dir()
-        patch_files = [p for p in pr_dir.glob("*.md") if p.stem.startswith("pr-")]
-        assert len(patch_files) == 1
-        body = patch_files[0].read_text(encoding="utf-8")
-        assert "type: patch_request" in body
-        assert "kind: patch_request" in body
-
-    def test_patch_request_dedup_uses_patch_request_ids(self, wiki_dir):
-        first = json.loads(_wiki_file_bug(
-            component="x", severity="minor",
-            title="Patch connector guidance for community requests",
-            observed="Guidance frames platform changes as bugs only",
-            kind="patch_request",
-        ))
-        second = json.loads(_wiki_file_bug(
-            component="x", severity="minor",
-            title="Patch connector guidance for community requests",
-            observed="Guidance frames platform changes as bugs only",
-            kind="patch_request",
-        ))
-        assert first["status"] == "filed"
-        assert second["status"] == "similar_found"
-        assert second["similar"][0]["bug_id"].startswith("PR-")
-
-    def test_independent_id_counters_per_kind(self, wiki_dir):
-        """BUG-001 / FEAT-001 / DESIGN-001 must coexist — independent sequences."""
-        b = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="bug one",
-        ))
-        f = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="feat one", kind="feature",
-        ))
-        d = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="design one", kind="design",
-        ))
-        assert b["bug_id"] == "BUG-001"
-        assert f["bug_id"] == "FEAT-001"
-        assert d["bug_id"] == "DESIGN-001"
-
-    def test_per_kind_counter_increments_independently(self, wiki_dir):
-        """Filing 2 features then 1 bug: features get FEAT-001/FEAT-002, bug gets BUG-001."""
-        f1 = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="feat one", kind="feature",
-        ))
-        f2 = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="feat two completely different",
-            kind="feature",
-        ))
-        b1 = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="some bug",
-        ))
-        assert f1["bug_id"] == "FEAT-001"
-        assert f2["bug_id"] == "FEAT-002"
-        assert b1["bug_id"] == "BUG-001"
-
-    def test_dedup_is_per_kind_not_cross_kind(self, wiki_dir):
-        """Same title may be filed as both bug AND feature — different surfaces."""
-        b = json.loads(_wiki_file_bug(
-            component="x", severity="minor",
-            title="Database connection pool exhaustion under load",
-            observed="Connections timeout after 5 seconds when pool is exhausted",
-        ))
-        # Same title as feature should NOT be flagged as similar (different kind dir)
-        f = json.loads(_wiki_file_bug(
-            component="x", severity="minor",
-            title="Database connection pool exhaustion under load",
-            observed="Connections timeout after 5 seconds when pool is exhausted",
-            kind="feature",
-        ))
-        assert b["status"] == "filed"
-        assert b["bug_id"].startswith("BUG-")
-        assert f["status"] == "filed"
-        assert f["bug_id"].startswith("FEAT-")
-
-    def test_invalid_kind_still_rejected(self, wiki_dir):
-        """Invalid kinds are rejected before routing kicks in (existing contract)."""
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="t", kind="banana",
-            )
-        )
-        assert "error" in out
-        assert "banana" in out["error"]
-
-    def test_cosign_feature_routes_to_feature_requests_dir(self, wiki_dir):
-        """cosign_bug must derive dir from the bug_id prefix (FEAT- → feature-requests)."""
-        from workflow.universe_server import wiki
-        f = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="add feature Q", kind="feature",
-        ))
-        feat_id = f["bug_id"]
-        cos = json.loads(
-            wiki("cosign_bug", bug_id=feat_id, reporter_context="me too — important")
-        )
-        assert cos["status"] == "cosigned"
-        assert cos["bug_id"] == feat_id.upper()
-        assert cos["path"].startswith("pages/feature-requests/")
-        # Verify the file actually has a Cosigns section
-        feat_dir = wiki_dir / "pages" / "feature-requests"
-        bug_files = list(feat_dir.glob(f"{feat_id.lower()}-*.md"))
-        assert len(bug_files) == 1
-        body = bug_files[0].read_text(encoding="utf-8")
-        assert "## Cosigns" in body
-        assert "me too — important" in body
-
-    def test_cosign_design_routes_to_design_proposals_dir(self, wiki_dir):
-        from workflow.universe_server import wiki
-        d = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="design prop K", kind="design",
-        ))
-        design_id = d["bug_id"]
-        cos = json.loads(
-            wiki("cosign_bug", bug_id=design_id, reporter_context="agree with this")
-        )
-        assert cos["status"] == "cosigned"
-        assert cos["path"].startswith("pages/design-proposals/")
-
-    def test_cosign_bug_unknown_prefix_falls_back_to_bugs_dir(self, wiki_dir):
-        """Unrecognized prefix → bugs/ fallback (backward compat)."""
-        from workflow.universe_server import (
-            wiki,  # File a regular bug to give cosign something to find
-        )
-        b = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="legit bug",
-        ))
-        cos = json.loads(
-            wiki("cosign_bug", bug_id=b["bug_id"], reporter_context="seen it too")
-        )
-        assert cos["status"] == "cosigned"
-        assert cos["path"].startswith("pages/bugs/")
+    bug_page = root / payload["path"]
+    assert bug_page.exists()
+    page_text = bug_page.read_text(encoding="utf-8")
+    assert "# BUG-001: Cache miss on read" in page_text
+    assert "## What happened\n\nReads fall back to stale cache entries." in page_text
+    assert "## What was expected\n\nReads should return the latest wiki content." in page_text
