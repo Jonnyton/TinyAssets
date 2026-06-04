@@ -35,14 +35,13 @@
       <a href="#risk-factors">Risk factors</a>
       <a href="#dmca">DMCA</a>
       <a href="#dispute">Disputes</a>
-      <a href="#references">References</a>
       <a href="#contact">Contact</a>
     </nav>
 
     <h2 id="license">License</h2>
     <ul>
       <li><strong>Platform code</strong> (engine, MCP gateway, tray, connectors): <a href="https://github.com/Jonnyton/Workflow/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT</a>. Fork it, run it, sell services on it. Attribution required.</li>
-      <li><strong>Public wiki content</strong> (work targets, branches, nodes, prompt templates, gates, wiki pages): <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noreferrer">CC0-1.0</a>. Public domain. Use without permission.</li>
+      <li><strong>Public goal content</strong> (goals, branches, nodes, prompt templates, gates, wiki pages): <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noreferrer">CC0-1.0</a>. Public domain. Use without permission.</li>
       <li><strong>This site</strong>: same MIT for site code, CC0 for site content where original; fonts retain their respective licenses (IBM Plex Sans/Mono, Fraunces — all OFL).</li>
     </ul>
 
@@ -51,8 +50,6 @@
     <p>Per-piece visibility is judged by your chatbot per request, not by us. <strong>The chatbot proposes; you confirm. No cached consent.</strong></p>
     <p>You may export or delete your data at any time. The <code>/account</code> page (Phase 2) provides a 30-day grace-window deletion flow per CCPA / GDPR Article 17.</p>
     <p><strong>Cookies / analytics:</strong> we plan to use Plausible (privacy-friendly, no PII, no third-party trackers). No advertising cookies, no cross-site tracking pixels.</p>
-    <p><strong>Chatbot connector data.</strong> When you use Workflow through ChatGPT, Claude, or another MCP client, the connector receives the specific tool inputs needed for your request, such as goal names, goal descriptions, tags, visibility, request text, and optional universe or branch identifiers. It may return Workflow status, goal, branch, wiki, run, queue, and daemon metadata needed to answer you. Directory-safe status responses redact raw activity logs, recent-call diagnostics, local filesystem paths, host account identifiers, and internal policy hashes.</p>
-    <p><strong>Connector retention.</strong> Public goal proposals and public wiki/work records are durable project records. Queued Workflow requests and operational metadata are retained as long as needed to run, debug, audit, and improve the Workflow loop. We do not ask for passwords, API keys, MFA codes, payment card data, government IDs, biometrics, SSNs, PHI, or PCI data through the public directory connector.</p>
     <p><strong>Minimum age.</strong> Workflow is not directed at children. You must be at least <strong>18 years old</strong> to use the service or hold a wallet connection. We self-declare age at wallet-connect; misrepresentation is grounds for termination. We do not knowingly collect data from minors; if you believe we have, contact <a href="mailto:{legal.contact.legal}">{legal.contact.legal}</a>.</p>
 
     <h2 id="terms">Terms of use</h2>
@@ -118,7 +115,7 @@
     </ul>
 
     <h2 id="dmca">DMCA</h2>
-    <p>If you believe content on the public community wiki infringes your copyright, send a DMCA takedown notice to <a href="mailto:{legal.contact.dmca_agent}">{legal.contact.dmca_agent}</a> including: identification of the work, identification of the infringing material with URL, your contact info, statement of good-faith belief, statement under penalty of perjury, and your physical or electronic signature.</p>
+    <p>If you believe content on the public goals surface or wiki infringes your copyright, send a DMCA takedown notice to <a href="mailto:{legal.contact.dmca_agent}">{legal.contact.dmca_agent}</a> including: identification of the work, identification of the infringing material with URL, your contact info, statement of good-faith belief, statement under penalty of perjury, and your physical or electronic signature.</p>
     <p>Counter-notices follow standard <a href="https://www.copyright.gov/dmca/" target="_blank" rel="noreferrer">17 U.S.C. § 512</a> procedure. Designated DMCA agent registration with the U.S. Copyright Office is in progress.</p>
 
     <h2 id="dispute">Disputes &amp; governing law</h2>
@@ -129,14 +126,6 @@
     <p><strong>Indemnification.</strong> You will indemnify us for misuse of the service, IP infringement in your content, sanctions-law violations, and false geo-attestations. We will indemnify you for IP infringement of the platform code within the scope of the MIT license, capped at the liability limit above.</p>
     <p><strong>Force majeure.</strong> Neither party is liable for delay or failure caused by events beyond reasonable control: {legal.force_majeure.join("; ")}. We may suspend performance for up to 30 days; longer suspensions trigger pro-rated refund of any prepaid fees.</p>
     <p><strong>Severability + entire agreement.</strong> If any provision is unenforceable, the rest survives. These terms are the entire agreement between you and us regarding the service.</p>
-
-    <h2 id="references">References</h2>
-    <ul>
-      <li><a href="https://github.com/Jonnyton/Workflow/blob/main/LICENSE" target="_blank" rel="noreferrer">Workflow MIT license</a>.</li>
-      <li><a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noreferrer">CC0-1.0 public-domain dedication</a> for public catalog content.</li>
-      <li><a href="https://github.com/Jonnyton/Workflow/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">Contributor response and review process</a>.</li>
-      <li><a href="https://github.com/Jonnyton/Workflow/blob/main/WebSite/07-legal-pass-notes.md" target="_blank" rel="noreferrer">Website legal-pass notes</a> tracking open counsel-review items.</li>
-    </ul>
 
     <h2 id="contact">Contact</h2>
     <p>

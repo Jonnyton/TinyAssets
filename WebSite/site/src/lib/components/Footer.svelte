@@ -27,25 +27,25 @@
       <RitualLabel>Use</RitualLabel>
       <ul>
         <li><a href="/connect">Connect</a></li>
-        <li><a href="/loop">Join the loop</a></li>
         <li><a href="/host">Host a daemon</a></li>
-        <li><a href="/wiki">Community wiki</a></li>
+        <li><a href="/goals">Goals</a></li>
+        <li><a href="/alliance">Alliance</a></li>
       </ul>
     </div>
     <div class="col">
       <RitualLabel>Browse</RitualLabel>
       <ul>
-        <li><a href="/alliance">Alliance</a></li>
+        <li><a href="/wiki">Wiki</a></li>
         <li><a href="/graph">Graph</a></li>
-        <li><a href="/status">Status</a></li>
-        <li><a href="/economy">Economy</a></li>
+        <li><a href="/patch-loop">Patch loop</a></li>
+        <li><a href="/soul">Soul</a></li>
+        <li><a href="/fine-print">Fine print</a></li>
       </ul>
     </div>
     <div class="col">
       <RitualLabel>Build</RitualLabel>
       <ul>
         <li><a href="/connect">Connect MCP</a></li>
-        <li><a href="/proof">Proof packet</a></li>
         <li><a href="https://github.com/Jonnyton/Workflow" target="_blank" rel="noreferrer">GitHub ↗</a></li>
         <li><a href="https://github.com/Jonnyton/Workflow/blob/main/PLAN.md" target="_blank" rel="noreferrer">PLAN.md ↗</a></li>
         <li><a href="https://github.com/Jonnyton/Workflow/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">CONTRIBUTING.md ↗</a></li>
@@ -66,16 +66,11 @@
     <RitualLabel color="var(--ember-500)">{token.display_name} · reference-only</RitualLabel>
     <span class="supply">Workflow rail: {token.workflow_test_currency.name}</span>
     <span class="supply__chains">BASE · PulseChain · BSC</span>
-    <a class="supply__more" href="/economy">All chains →</a>
+    <a class="supply__more" href="/legal#token-disclosures">Disclosures →</a>
   </div>
 
   <div class="container footer__bottom">
     <span class="copyright">© {year} Tiny Assets · All rights reserved.</span>
-    <span class="socials" aria-label="Project links">
-      <a href="https://github.com/Jonnyton/Workflow" target="_blank" rel="noreferrer">GitHub</a> ·
-      <a href="https://github.com/Jonnyton/Workflow/issues" target="_blank" rel="noreferrer">Issues</a> ·
-      <a href="/alliance">Alliance</a>
-    </span>
     <span class="contact">
       <a href="mailto:{legal.contact.general}">{legal.contact.general}</a> ·
       <a href="mailto:{legal.contact.security}">{legal.contact.security}</a>
@@ -109,8 +104,6 @@
   .supply__more:hover { text-decoration: underline; }
 
   .footer__bottom { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-top: var(--s-4); font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); }
-  .socials a,
   .contact a { color: var(--fg-2); text-decoration: none; }
-  .socials a:hover,
   .contact a:hover { color: var(--ember-600); }
 </style>

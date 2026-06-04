@@ -19,7 +19,7 @@
       <a href="/connect">
         <span>User</span>
         <strong>Connect your MCP</strong>
-        <small>{compactNumber(pulse.mcp.goals.length)} work targets · {compactNumber(pulse.mcp.wiki.bugs.length)} bugs</small>
+        <small>{compactNumber(pulse.mcp.goals.length)} goals · {compactNumber(pulse.mcp.wiki.bugs.length)} bugs</small>
       </a>
       <a href="https://github.com/Jonnyton/Workflow" target="_blank" rel="noreferrer">
         <span>Contributor</span>
@@ -31,14 +31,6 @@
         <strong>Run a daemon</strong>
         <small>{compactNumber(pulse.mcp.universes.length)} universes visible</small>
       </a>
-    </div>
-    <div class="auth-boundary">
-      <span>Current auth boundary</span>
-      <ul>
-        <li>No website session, cookie account, or wallet sign-in is active on this static site.</li>
-        <li>Chatbot users authorize through their installed MCP connector.</li>
-        <li>Contributors use GitHub identity; hosts use the local or cloud daemon host they control.</li>
-      </ul>
     </div>
     <p class="phase">Phase 2 will add GitHub sign-in, export, deletion, and session management. Until then, this page stays honest instead of showing inactive account controls.</p>
   </div>
@@ -54,10 +46,6 @@
   .actions a:hover { border-color: rgba(109, 211, 166, 0.42); background: rgba(109, 211, 166, 0.045); transform: translateY(-1px); }
   .actions span, .actions small { color: var(--fg-3); font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
   .actions strong { color: var(--fg-1); font-family: var(--font-display); font-size: 22px; font-weight: 500; line-height: 1.1; }
-  .auth-boundary { background: var(--bg-2); border: 1px solid var(--border-1); border-radius: 8px; margin: 0 0 18px; padding: 18px; }
-  .auth-boundary span { color: var(--fg-3); display: block; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; margin-bottom: 10px; text-transform: uppercase; }
-  .auth-boundary ul { line-height: 1.65; margin: 0; padding-left: 18px; }
-  .auth-boundary li { margin-bottom: 6px; }
   .phase { color: var(--fg-3); font-size: 14px; }
   @media (max-width: 760px) { .actions { grid-template-columns: 1fr; } }
 </style>

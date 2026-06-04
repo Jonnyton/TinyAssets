@@ -1,228 +1,172 @@
 <!--
-  /wiki — live community wiki cockpit.
-  Renders the baked MCP snapshot immediately. Browser-side live MCP reads are
-  explicit actions because Cloudflare Access currently gates the public route.
+  /wiki — wiki.
+
+  The brain. Every page, every edge, in the daemon's voice. Search, filter,
+  read. Reads the baked snapshot for SSR + refreshes live on mount.
+
+  Lighter than the v0 cockpit (no MCP trace JSON pane — that lives in the /connect playground
+  now, where it belongs). Focus here is reading, not protocol introspection.
 -->
 <script lang="ts">
-  import baked from "$lib/content/mcp-snapshot.json";
-  import { fetchLive, fetchPageBody, liveToSnapshotShape } from "$lib/mcp/live";
-  import type { Snapshot } from "$lib/mcp/types";
-  import RitualLabel from "$lib/components/Primitives/RitualLabel.svelte";
-  import StatusPill from "$lib/components/Primitives/StatusPill.svelte";
-  import LiveBadge from "$lib/components/LiveBadge.svelte";
+  import { onMount } from 'svelte';
+  import baked from '$lib/content/mcp-snapshot.json';
+  import { fetchLive, fetchPageBody, liveToSnapshotShape } from '$lib/mcp/live';
+  import type { Snapshot } from '$lib/mcp/types';
+  import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
+  import MoodPill from '$lib/components/MoodPill.svelte';
+  import ChapterFolio from '$lib/components/ChapterFolio.svelte';
 
-  type Lens = "explore" | "bugs" | "work" | "plans" | "graph" | "pulse";
-  type SortMode = "connected" | "type" | "title";
-  type ItemType =
-    | "goal"
-    | "universe"
-    | "bug"
-    | "concept"
-    | "note"
-    | "plan"
-    | "draft";
-  type BodyStatus = "idle" | "loading" | "ready" | "error";
-  type CopyState = "idle" | "copied" | "error";
+  type ItemType = 'goal' | 'universe' | 'bug' | 'concept' | 'note' | 'plan' | 'draft';
+  type Lens = 'all' | 'bugs' | 'plans' | 'concepts' | 'notes' | 'goals';
+  type BodyStatus = 'idle' | 'loading' | 'ready' | 'error';
+
   type WikiItem = {
     key: string;
-    nodeId: string;
     type: ItemType;
     title: string;
     subtitle: string;
     slug?: string;
     tags: string[];
-    connectionCount: number;
+    connections?: number;
   };
 
   const LENSES: Array<{ id: Lens; label: string }> = [
-    { id: "explore", label: "Explore" },
-    { id: "bugs", label: "Bugs" },
-    { id: "work", label: "Work" },
-    { id: "plans", label: "Plans" },
-    { id: "graph", label: "Graph" },
-    { id: "pulse", label: "Pulse" },
+    { id: 'all', label: 'everything' },
+    { id: 'bugs', label: 'bugs' },
+    { id: 'plans', label: 'plans' },
+    { id: 'concepts', label: 'concepts' },
+    { id: 'notes', label: 'notes' },
+    { id: 'goals', label: 'goals' }
   ];
 
-  const WIKI_PROMPT =
-    "Use Workflow to browse the community wiki. Show me current bugs, work targets, universes, and the most connected wiki pages, then suggest one patch or wiki improvement I can help with.";
-
   const TYPE_LABEL: Record<ItemType, string> = {
-    goal: "work target",
-    universe: "universe",
-    bug: "bug",
-    concept: "concept",
-    note: "note",
-    plan: "plan",
-    draft: "draft",
+    goal: 'goal', universe: 'universe', bug: 'bug', concept: 'concept',
+    note: 'note', plan: 'plan', draft: 'draft'
   };
 
   const TYPE_TONE: Record<ItemType, string> = {
-    goal: "var(--ember-600)",
-    universe: "var(--signal-live)",
-    bug: "var(--ember-500)",
-    concept: "var(--violet-200)",
-    note: "var(--violet-400)",
-    plan: "var(--ember-300)",
-    draft: "var(--signal-idle)",
+    goal: 'var(--ember-600)',
+    universe: 'var(--signal-live)',
+    bug: 'var(--ember-500)',
+    concept: 'var(--violet-200)',
+    note: 'var(--violet-400)',
+    plan: 'var(--ember-300)',
+    draft: 'var(--signal-idle)'
   };
 
-  let snapshot: Snapshot = $state(baked as unknown as Snapshot);
+  let snapshot = $state(baked as unknown as Snapshot);
   let loading = $state(false);
   let liveError = $state<string | null>(null);
-  let query = $state("");
-  let lens = $state<Lens>("explore");
-  let sortMode = $state<SortMode>("connected");
+  let query = $state('');
+  let lens = $state<Lens>('all');
   let selectedKey = $state<string | null>(null);
+  let sort = $state<'connected' | 'az' | 'type'>('connected');
+  const MCP_URL = 'https://tinyassets.io/mcp';
+  let promptCopied = $state(false);
+  let promptTimer: number | null = null;
+  async function copyPrompt() {
+    const prompt = `Using the Workflow MCP connector at ${MCP_URL}, search the community wiki: show me the open bugs and the most active plans, then summarize what the project is working on right now.`;
+    try {
+      await navigator.clipboard.writeText(prompt);
+      promptCopied = true;
+      if (promptTimer) clearTimeout(promptTimer);
+      promptTimer = window.setTimeout(() => (promptCopied = false), 1800);
+    } catch { /* clipboard unavailable */ }
+  }
   let bodyByKey = $state<Record<string, string>>({});
   let bodyStatusByKey = $state<Record<string, BodyStatus>>({});
   let bodyErrorByKey = $state<Record<string, string>>({});
-  let copyState = $state<CopyState>("idle");
-  let copyTimer = $state<number | undefined>(undefined);
 
   function slugId(path: string): string {
-    return path.split("/").pop()?.replace(/\.md$/, "") ?? path;
+    return path.split('/').pop()?.replace(/\.md$/, '') ?? path;
   }
-
   function pageArg(path: string): string {
-    return path.replace(/\.md$/, "");
+    return path.replace(/\.md$/, '');
   }
-
   function uniqueTags(tags: string[]): string[] {
-    return [...new Set(tags.filter(Boolean))].slice(0, 5);
+    return [...new Set(tags.filter(Boolean))].slice(0, 4);
   }
 
   function itemMatchesLens(item: WikiItem): boolean {
-    if (lens === "explore" || lens === "graph" || lens === "pulse") return true;
-    if (lens === "bugs") return item.type === "bug";
-    if (lens === "work")
-      return item.type === "goal" || item.type === "universe";
-    return (
-      item.type === "plan" ||
-      item.type === "concept" ||
-      item.type === "note" ||
-      item.type === "draft"
-    );
+    if (lens === 'all') return true;
+    if (lens === 'bugs') return item.type === 'bug';
+    if (lens === 'plans') return item.type === 'plan';
+    if (lens === 'concepts') return item.type === 'concept';
+    if (lens === 'notes') return item.type === 'note' || item.type === 'draft';
+    if (lens === 'goals') return item.type === 'goal' || item.type === 'universe';
+    return true;
   }
-
-  function bySort(a: WikiItem, b: WikiItem): number {
-    if (sortMode === "connected")
-      return (
-        b.connectionCount - a.connectionCount || a.title.localeCompare(b.title)
-      );
-    if (sortMode === "type")
-      return a.type.localeCompare(b.type) || a.title.localeCompare(b.title);
-    return a.title.localeCompare(b.title);
-  }
-
-  const degreeByNode = $derived.by(() => {
-    const degree = new Map<string, number>();
-    for (const edge of snapshot.edges ?? []) {
-      degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
-      degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
-    }
-    return degree;
-  });
 
   const allItems = $derived.by((): WikiItem[] => {
     const items: WikiItem[] = [];
     const tags = snapshot.tags ?? {};
+    const edgeCount = new Map<string, number>();
+    for (const e of snapshot.edges ?? []) {
+      if (e.from) edgeCount.set(e.from, (edgeCount.get(e.from) ?? 0) + 1);
+      if (e.to) edgeCount.set(e.to, (edgeCount.get(e.to) ?? 0) + 1);
+    }
 
     for (const goal of snapshot.goals ?? []) {
       const nodeId = `goal:${goal.id}`;
       items.push({
-        key: nodeId,
-        nodeId,
-        type: "goal",
+        key: nodeId, type: 'goal',
         title: goal.name,
         subtitle: goal.summary || goal.id,
-        tags: uniqueTags(goal.tags ?? tags[nodeId] ?? []),
-        connectionCount: degreeByNode.get(nodeId) ?? 0,
+        tags: uniqueTags(goal.tags ?? tags[nodeId] ?? [])
       });
     }
-
-    for (const universe of snapshot.universes ?? []) {
-      const nodeId = `universe:${universe.id}`;
+    for (const u of snapshot.universes ?? []) {
+      const nodeId = `universe:${u.id}`;
       items.push({
-        key: nodeId,
-        nodeId,
-        type: "universe",
-        title: universe.id,
-        subtitle: `${universe.phase} · ${universe.word_count.toLocaleString()} words${universe.last_activity_at ? ` · ${universe.last_activity_at}` : ""}`,
-        tags: uniqueTags(["universe", universe.phase]),
-        connectionCount: degreeByNode.get(nodeId) ?? 0,
+        key: nodeId, type: 'universe',
+        title: u.id,
+        subtitle: `${u.phase} · ${u.word_count.toLocaleString()} words${u.last_activity_at ? ` · ${u.last_activity_at}` : ''}`,
+        tags: uniqueTags(['universe', u.phase])
       });
     }
-
     for (const bug of snapshot.wiki?.bugs ?? []) {
       const nodeId = `bug:${bug.id}`;
       items.push({
-        key: nodeId,
-        nodeId,
-        type: "bug",
+        key: nodeId, type: 'bug',
         title: `${bug.id} — ${bug.title}`,
         subtitle: bug.slug ?? bug.id,
         slug: bug.slug,
-        tags: uniqueTags(tags[nodeId] ?? ["bug"]),
-        connectionCount: degreeByNode.get(nodeId) ?? 0,
+        tags: uniqueTags(tags[nodeId] ?? ['bug'])
       });
     }
-
     for (const plan of snapshot.wiki?.plans ?? []) {
       const nodeId = `plan:${slugId(plan.slug)}`;
       items.push({
-        key: nodeId,
-        nodeId,
-        type: "plan",
-        title: plan.title,
-        subtitle: plan.slug,
-        slug: plan.slug,
-        tags: uniqueTags(tags[nodeId] ?? ["plan"]),
-        connectionCount: degreeByNode.get(nodeId) ?? 0,
+        key: nodeId, type: 'plan',
+        title: plan.title, subtitle: plan.slug, slug: plan.slug,
+        tags: uniqueTags(tags[nodeId] ?? ['plan'])
       });
     }
-
     for (const concept of snapshot.wiki?.concepts ?? []) {
       const nodeId = `concept:${slugId(concept.slug)}`;
       items.push({
-        key: nodeId,
-        nodeId,
-        type: "concept",
-        title: concept.title,
-        subtitle: concept.slug,
-        slug: concept.slug,
-        tags: uniqueTags(tags[nodeId] ?? ["concept"]),
-        connectionCount: degreeByNode.get(nodeId) ?? 0,
+        key: nodeId, type: 'concept',
+        title: concept.title, subtitle: concept.slug, slug: concept.slug,
+        tags: uniqueTags(tags[nodeId] ?? ['concept'])
       });
     }
-
     for (const note of snapshot.wiki?.notes ?? []) {
       const nodeId = `note:${slugId(note.slug)}`;
       items.push({
-        key: nodeId,
-        nodeId,
-        type: "note",
-        title: note.title,
-        subtitle: note.slug,
-        slug: note.slug,
-        tags: uniqueTags(tags[nodeId] ?? ["note"]),
-        connectionCount: degreeByNode.get(nodeId) ?? 0,
+        key: nodeId, type: 'note',
+        title: note.title, subtitle: note.slug, slug: note.slug,
+        tags: uniqueTags(tags[nodeId] ?? ['note'])
       });
     }
-
     for (const draft of snapshot.wiki?.drafts ?? []) {
       const nodeId = `draft:${draft.slug}`;
       items.push({
-        key: nodeId,
-        nodeId,
-        type: "draft",
-        title: draft.title,
-        subtitle: draft.slug,
-        slug: draft.slug,
-        tags: uniqueTags(tags[nodeId] ?? ["draft"]),
-        connectionCount: degreeByNode.get(nodeId) ?? 0,
+        key: nodeId, type: 'draft',
+        title: draft.title, subtitle: draft.slug, slug: draft.slug,
+        tags: uniqueTags(tags[nodeId] ?? ['draft'])
       });
     }
-
+    for (const it of items) it.connections = edgeCount.get(it.key) ?? 0;
     return items;
   });
 
@@ -232,100 +176,27 @@
       .filter(itemMatchesLens)
       .filter((item) => {
         if (!needle) return true;
-        return [item.title, item.subtitle, item.type, ...item.tags]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle);
-      })
-      .toSorted(bySort);
+        return [item.title, item.subtitle, item.type, ...item.tags].join(' ').toLowerCase().includes(needle);
+      });
   });
 
-  const topConnected = $derived.by(() =>
-    allItems
-      .toSorted((a, b) => b.connectionCount - a.connectionCount)
-      .slice(0, 8),
-  );
-  const selectedItem = $derived(
-    selectedKey
-      ? (allItems.find((item) => item.key === selectedKey) ?? null)
-      : null,
-  );
-  const selectedBody = $derived(
-    selectedKey ? bodyByKey[selectedKey] : undefined,
-  );
-  const selectedBodyStatus = $derived(
-    selectedKey ? (bodyStatusByKey[selectedKey] ?? "idle") : "idle",
-  );
-  const selectedBodyError = $derived(
-    selectedKey ? bodyErrorByKey[selectedKey] : undefined,
-  );
-
-  const relatedItems = $derived.by(() => {
-    if (!selectedItem) return [];
-    return (snapshot.edges ?? [])
-      .filter(
-        (edge) =>
-          edge.from === selectedItem.nodeId || edge.to === selectedItem.nodeId,
-      )
-      .map((edge) => {
-        const otherId = edge.from === selectedItem.nodeId ? edge.to : edge.from;
-        const item = allItems.find((candidate) => candidate.nodeId === otherId);
-        return {
-          key: item?.key ?? otherId,
-          title: item?.title ?? otherId,
-          type: item?.type ?? "note",
-          kind: edge.kind ?? "ref",
-          direction: edge.from === selectedItem.nodeId ? "out" : "in",
-        };
-      })
-      .slice(0, 12);
+  // The live commons holds ~1,200 pages; rendering them all stutters and
+  // nobody scrolls that far. Cap the list and let search narrow it.
+  const sortedItems = $derived.by(() => {
+    const arr = [...filteredItems];
+    if (sort === 'az') arr.sort((a, b) => a.title.localeCompare(b.title));
+    else if (sort === 'type') arr.sort((a, b) => a.type.localeCompare(b.type) || (b.connections ?? 0) - (a.connections ?? 0));
+    else arr.sort((a, b) => (b.connections ?? 0) - (a.connections ?? 0));
+    return arr;
   });
+  const DISPLAY_LIMIT = 60;
+  const shownItems = $derived(sortedItems.slice(0, DISPLAY_LIMIT));
+  const hiddenCount = $derived(Math.max(0, filteredItems.length - DISPLAY_LIMIT));
 
-  const protocolTrace = $derived.by(() => {
-    if (!selectedItem) {
-      return {
-        request: {
-          calls: [
-            { tool: "wiki", arguments: { action: "list" } },
-            { tool: "goals", arguments: { action: "list" } },
-            { tool: "universe", arguments: { action: "list" } },
-          ],
-        },
-        response: {
-          source: snapshot.source,
-          fetched_at: snapshot.fetched_at,
-          counts: snapshot.stats,
-        },
-      };
-    }
-
-    if (selectedItem.slug) {
-      return {
-        request: {
-          tool: "wiki",
-          arguments: { action: "read", page: pageArg(selectedItem.slug) },
-        },
-        response: {
-          status: selectedBodyStatus,
-          content_chars: selectedBody?.length ?? 0,
-          related_edges: relatedItems.length,
-          error: selectedBodyError,
-        },
-      };
-    }
-
-    return {
-      request: {
-        tool: selectedItem.type === "goal" ? "goals" : "universe",
-        arguments: { action: "list" },
-      },
-      response: {
-        status: "snapshot metadata",
-        node_id: selectedItem.nodeId,
-        related_edges: relatedItems.length,
-      },
-    };
-  });
+  const selectedItem = $derived(selectedKey ? allItems.find((item) => item.key === selectedKey) ?? null : null);
+  const selectedBody = $derived(selectedKey ? bodyByKey[selectedKey] : undefined);
+  const selectedBodyStatus = $derived(selectedKey ? bodyStatusByKey[selectedKey] ?? 'idle' : 'idle');
+  const selectedBodyError = $derived(selectedKey ? bodyErrorByKey[selectedKey] : undefined);
 
   async function refreshLive() {
     loading = true;
@@ -340,888 +211,523 @@
     }
   }
 
-  async function copyWikiPrompt() {
-    try {
-      await navigator.clipboard.writeText(WIKI_PROMPT);
-      copyState = "copied";
-    } catch {
-      copyState = "error";
-    }
-
-    if (copyTimer) window.clearTimeout(copyTimer);
-    if (copyState === "copied") {
-      copyTimer = window.setTimeout(() => {
-        copyState = "idle";
-      }, 2400);
-    }
-  }
-
   function selectItem(item: WikiItem) {
     selectedKey = item.key;
+    if (item.slug) void loadBody(item);
   }
 
-  async function loadBody(item: WikiItem | null) {
-    if (
-      !item?.slug ||
-      bodyByKey[item.key] ||
-      bodyStatusByKey[item.key] === "loading"
-    )
-      return;
-
-    bodyStatusByKey = { ...bodyStatusByKey, [item.key]: "loading" };
-    bodyErrorByKey = { ...bodyErrorByKey, [item.key]: "" };
+  async function loadBody(item: WikiItem) {
+    if (!item.slug || bodyByKey[item.key] || bodyStatusByKey[item.key] === 'loading') return;
+    bodyStatusByKey = { ...bodyStatusByKey, [item.key]: 'loading' };
     try {
       const body = await fetchPageBody(item.slug);
-      const content = body?.content ?? "";
-      if (!content) throw new Error("read returned no content");
+      const content = body?.content ?? '';
+      if (!content) throw new Error('read returned no content');
       bodyByKey = { ...bodyByKey, [item.key]: content };
-      bodyStatusByKey = { ...bodyStatusByKey, [item.key]: "ready" };
+      bodyStatusByKey = { ...bodyStatusByKey, [item.key]: 'ready' };
     } catch (e: any) {
-      bodyStatusByKey = { ...bodyStatusByKey, [item.key]: "error" };
-      bodyErrorByKey = {
-        ...bodyErrorByKey,
-        [item.key]: e?.message ?? String(e),
-      };
+      bodyStatusByKey = { ...bodyStatusByKey, [item.key]: 'error' };
+      bodyErrorByKey = { ...bodyErrorByKey, [item.key]: e?.message ?? String(e) };
     }
   }
 
-  async function loadSelectedBody() {
-    await loadBody(selectedItem);
-  }
-
-  function selectByKey(key: string) {
-    const item = allItems.find((candidate) => candidate.key === key);
-    if (item) selectItem(item);
-  }
+  onMount(() => { void refreshLive(); });
 </script>
 
 <svelte:head>
-  <title>Live wiki — Workflow</title>
-  <meta
-    name="description"
-    content="Browse the live Workflow community wiki: bugs, plans, work targets, universes, graph links, and MCP proof in one public surface."
-  />
+  <title>Wiki — Workflow</title>
+  <meta name="description" content="The brain. Every page, every edge, in the daemon's own commons." />
 </svelte:head>
 
-<section class="hero">
-  <div class="container">
-    <div class="head__row">
-      <RitualLabel color="var(--ember-500)"
-        >· {snapshot.source} · community wiki ·</RitualLabel
-      >
-      <div class="head__actions">
-        <LiveBadge
-          fetchedAt={snapshot.fetched_at}
-          source={snapshot.source}
-          {loading}
-        />
-        <button
-          type="button"
-          class="refresh"
-          disabled={loading}
-          aria-busy={loading}
-          onclick={refreshLive}
-        >
-          Refresh MCP
-        </button>
-      </div>
-    </div>
-    <h1>The community wiki is the public work surface.</h1>
-    <p class="lead">
-      Bugs, plans, work targets, universes, drafts, tags, and graph edges all
-      resolve here through the same MCP-shaped records a connected chatbot can
-      read.
+<MoodPill />
+
+<section class="ch ch--hero" aria-labelledby="hero-title">
+  <div class="ch__inner">
+    <RitualLabel color="var(--violet-400)">· wiki ·</RitualLabel>
+    <h1 id="hero-title">Every page I've written. Every edge between them.</h1>
+    <p class="lede">
+      The brain. <em>Open by default.</em> Every bug filed, every plan
+      drafted, every concept I've made up a name for, every note left for
+      future-me. Search it the way your chatbot does — same surface, same
+      verbatim text.
     </p>
-    <div class="hero__actions" aria-label="Community wiki actions">
-      <a class="hero__action hero__action--primary" href="/connect"
-        >Add it to chat</a
-      >
-      <button type="button" class="hero__action" onclick={copyWikiPrompt}>
-        {copyState === "copied"
-          ? "Copied prompt"
-          : copyState === "error"
-            ? "Copy failed"
-            : "Copy wiki prompt"}
+
+    <div class="toolbar">
+      <label class="search">
+        <span class="search__label">search the commons</span>
+        <input type="search" bind:value={query} placeholder="BUG-034, patch loop, agent teams, primitives…" />
+      </label>
+      <button type="button" class="refresh" disabled={loading} aria-busy={loading} onclick={refreshLive}>
+        {loading ? 'reading…' : 'refresh from live brain'}
       </button>
-      <a class="hero__action" href="/graph">Open graph</a>
     </div>
-    <p class="copy-status" aria-live="polite">
-      {copyState === "copied"
-        ? "Prompt copied for any MCP-capable chatbot."
-        : copyState === "error"
-          ? `Copy manually: ${WIKI_PROMPT}`
-          : ""}
-    </p>
+
+    <div class="wiki-actions">
+      <button type="button" class="wiki-action" onclick={copyPrompt}>{promptCopied ? 'copied ✓' : 'copy a wiki prompt'}</button>
+      <a class="wiki-action" href="/connect">add it to your chat →</a>
+      <span class="wiki-actions__hint">paste the prompt into a chatbot wired to me, or connect one first.</span>
+    </div>
+
     {#if liveError}
-      <p class="error">
-        Live browser fetch failed: <code>{liveError}</code> — showing the baked MCP
-        snapshot.
-      </p>
+      <p class="hero__error">Live brain unreachable: <code>{liveError}</code>. Showing the baked snapshot.</p>
     {/if}
+
+    <div class="lenses" role="tablist" aria-label="Lenses">
+      {#each LENSES as l}
+        <button
+          type="button" role="tab"
+          aria-selected={lens === l.id}
+          class:active={lens === l.id}
+          onclick={() => (lens = l.id)}
+        >{l.label}</button>
+      {/each}
+    </div>
   </div>
 </section>
 
-<section class="cockpit">
-  <div class="container cockpit__grid">
-    <div class="surface">
-      <div class="toolbar" aria-label="Wiki controls">
-        <label class="search">
-          <span>Search wiki</span>
-          <input
-            bind:value={query}
-            type="search"
-            placeholder="BUG-034, patch loop, agent teams..."
-          />
-        </label>
-        <div class="segments" role="tablist" aria-label="Wiki lenses">
-          {#each LENSES as option}
-            <button
-              type="button"
-              class:active={lens === option.id}
-              role="tab"
-              aria-selected={lens === option.id}
-              onclick={() => (lens = option.id)}
-            >
-              {option.label}
-            </button>
-          {/each}
+<section class="ch ch--commons">
+  <div class="ch__inner ch__inner--wide">
+    <div class="cockpit">
+      <div class="list">
+        <div class="list__head">
+          <RitualLabel>· {filteredItems.length} visible ·</RitualLabel>
+          <label class="sort">sort
+            <select bind:value={sort}>
+              <option value="connected">most connected</option>
+              <option value="az">A–Z</option>
+              <option value="type">by type</option>
+            </select>
+          </label>
         </div>
-        <label class="sort">
-          <span>Sort</span>
-          <select bind:value={sortMode}>
-            <option value="connected">Most connected</option>
-            <option value="type">Type</option>
-            <option value="title">Title</option>
-          </select>
-        </label>
-      </div>
-
-      {#if lens === "pulse"}
-        <div class="pulse">
-          <article>
-            <RitualLabel color="var(--signal-live)"
-              >· Current pulse ·</RitualLabel
-            >
-            <h2>
-              {snapshot.universes.length} universes, {snapshot.goals.length} work
-              targets.
-            </h2>
-            <p>
-              The public feed is thin live state: identity, phase, counts, and
-              artifact handles. The durable material stays in community wiki
-              pages and graph references.
-            </p>
-          </article>
-          <div class="pulse__facts">
-            {#each snapshot.universes as universe}
+        <ul>
+          {#each shownItems as item (item.key)}
+            <li>
               <button
                 type="button"
-                class="pulse__fact"
-                onclick={() => selectByKey(`universe:${universe.id}`)}
+                class="item"
+                class:selected={selectedKey === item.key}
+                onclick={() => selectItem(item)}
               >
-                <span>{universe.id}</span>
-                <strong>{universe.phase}</strong>
-                <small>{universe.word_count.toLocaleString()} words</small>
-              </button>
-            {/each}
-          </div>
-        </div>
-      {:else if lens === "graph"}
-        <div class="graphlens">
-          <article>
-            <RitualLabel color="var(--violet-400)"
-              >· Relationship lens ·</RitualLabel
-            >
-            <h2>The graph is already in the snapshot.</h2>
-            <p>
-              Edges come from page bodies: wiki links, bare bug tokens, and
-              frontmatter references. The list below is ordered by how much each
-              node ties the community wiki together.
-            </p>
-          </article>
-          <ol class="connected">
-            {#each topConnected as item}
-              <li>
-                <button type="button" onclick={() => selectItem(item)}>
-                  <span class="connected__rank">{item.connectionCount}</span>
-                  <span class="connected__body">
-                    <strong>{item.title}</strong>
-                    <small>{TYPE_LABEL[item.type]} · {item.nodeId}</small>
-                  </span>
-                </button>
-              </li>
-            {/each}
-          </ol>
-        </div>
-      {/if}
-
-      <div class="results__head">
-        <RitualLabel>· {filteredItems.length} visible ·</RitualLabel>
-        <span>{query ? `filtered by "${query}"` : "snapshot browse"}</span>
-      </div>
-
-      <ul class="results">
-        {#each filteredItems as item (item.key)}
-          <li>
-            <button
-              type="button"
-              class="item"
-              class:selected={selectedKey === item.key}
-              onclick={() => selectItem(item)}
-            >
-              <span class="item__type" style:color={TYPE_TONE[item.type]}
-                >{TYPE_LABEL[item.type]}</span
-              >
-              <span class="item__main">
-                <strong>{item.title}</strong>
-                <small>{item.subtitle}</small>
-                {#if item.tags.length}
-                  <span class="tags">
-                    {#each item.tags as tag}<span>{tag}</span>{/each}
-                  </span>
+                <span class="item__type" style:color={TYPE_TONE[item.type]}>{TYPE_LABEL[item.type]}</span>
+                <span class="item__main">
+                  <strong>{item.title}</strong>
+                  <small>{item.subtitle}</small>
+                  {#if item.tags.length}
+                    <span class="tags">
+                      {#each item.tags as tag}<span>{tag}</span>{/each}
+                    </span>
+                  {/if}
+                </span>
+                {#if (item.connections ?? 0) > 0}
+                  <span class="item__conn" title="{item.connections} edges to other pages">{item.connections}</span>
                 {/if}
-              </span>
-              <span class="item__edges">{item.connectionCount}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
-    </div>
-
-    <aside class="detail" aria-label="Selected wiki item">
-      {#if selectedItem}
-        <div class="detail__head">
-          <RitualLabel color={TYPE_TONE[selectedItem.type]}
-            >· {TYPE_LABEL[selectedItem.type]} ·</RitualLabel
-          >
-          <StatusPill
-            kind={selectedItem.type === "universe"
-              ? "live"
-              : selectedItem.type === "draft"
-                ? "idle"
-                : "self"}
-          >
-            {selectedItem.connectionCount} edges
-          </StatusPill>
-        </div>
-        <h2>{selectedItem.title}</h2>
-        <p>{selectedItem.subtitle}</p>
-        {#if selectedItem.tags.length}
-          <div class="tags tags--detail">
-            {#each selectedItem.tags as tag}<span>{tag}</span>{/each}
-          </div>
-        {/if}
-
-        <div class="readout">
-          <RitualLabel>· Body readout ·</RitualLabel>
-          {#if selectedItem.slug}
-            {#if selectedBodyStatus === "loading"}
-              <p class="muted">
-                Fetching <code>wiki action=read</code> through the browser MCP path...
-              </p>
-            {:else if selectedBodyStatus === "ready"}
-              <pre class="body"><code>{selectedBody}</code></pre>
-            {:else if selectedBodyStatus === "error"}
-              <p class="error error--panel">
-                Browser-side read failed: <code>{selectedBodyError}</code>
-              </p>
-              <p class="muted">
-                The snapshot still carries this page's title, tags, and graph
-                links. True browser reads need the public read-only MCP route
-                described in DEPLOY.md.
-              </p>
+              </button>
+            </li>
+          {/each}
+        </ul>
+        {#if filteredItems.length === 0}
+          <p class="list__empty">
+            {#if query}
+              No matches for <strong>"{query}"</strong> in <em>{lens}</em>. Try a broader term, or switch lens.
             {:else}
-              <p class="muted">
-                Fetch the body through <code>wiki action=read</code>. This may
-                fail in-browser until the public read-only MCP route is open.
-              </p>
-              <button
-                type="button"
-                class="inline-action"
-                onclick={loadSelectedBody}>Fetch body</button
-              >
+              Nothing in <em>{lens}</em> yet. Refresh the live brain, or search above.
+            {/if}
+          </p>
+        {:else if hiddenCount > 0}
+          <p class="list__more">
+            Showing {DISPLAY_LIMIT} of {filteredItems.length.toLocaleString()} — type in search above to narrow.
+          </p>
+        {/if}
+      </div>
+
+      <aside class="detail" aria-label="Selected entry">
+        {#if selectedItem}
+          <RitualLabel color={TYPE_TONE[selectedItem.type]}>· {TYPE_LABEL[selectedItem.type]} ·</RitualLabel>
+          <h2>{selectedItem.title}</h2>
+          <p class="detail__sub">{selectedItem.subtitle}</p>
+          {#if selectedItem.tags.length}
+            <div class="tags tags--detail">{#each selectedItem.tags as tag}<span>{tag}</span>{/each}</div>
+          {/if}
+
+          {#if selectedItem.slug}
+            {#if selectedBodyStatus === 'loading'}
+              <p class="muted">reading the page through the live brain…</p>
+            {:else if selectedBodyStatus === 'ready'}
+              <pre class="body"><code>{selectedBody}</code></pre>
+            {:else if selectedBodyStatus === 'error'}
+              <p class="error">read failed: <code>{selectedBodyError}</code></p>
+              <p class="muted">The snapshot still carries this page's title and tags. The full body needs the live brain.</p>
+            {:else}
+              <p class="muted">Click to load the page body from the live brain.</p>
             {/if}
           {:else}
-            <p class="muted">
-              This item comes from a list endpoint, so the detail is snapshot
-              metadata rather than a wiki page body.
-            </p>
+            <p class="muted">This is a list-endpoint item, so the detail is snapshot metadata rather than a page body.</p>
           {/if}
-        </div>
-
-        <div class="related">
-          <RitualLabel>· Related nodes ·</RitualLabel>
-          {#if relatedItems.length}
-            <div class="related__list">
-              {#each relatedItems as related}
-                <button type="button" onclick={() => selectByKey(related.key)}>
-                  <span>{related.kind} · {related.direction}</span>
-                  <strong>{related.title}</strong>
-                </button>
-              {/each}
-            </div>
-          {:else}
-            <p class="muted">No parsed graph edge points at this node yet.</p>
-          {/if}
-        </div>
-      {:else}
-        <RitualLabel>· Select a wiki item ·</RitualLabel>
-        <h2>The detail pane shows the proof path.</h2>
-        <p>
-          Choose a wiki page, work target, draft, or universe to inspect tags,
-          edges, body text, and the MCP request shape behind it.
-        </p>
-      {/if}
-
-      <details class="trace">
-        <summary>
-          <span>Technical proof</span>
-          <strong>MCP request trace</strong>
-        </summary>
-        <pre><code>{JSON.stringify(protocolTrace, null, 2)}</code></pre>
-      </details>
-    </aside>
+        {:else}
+          <RitualLabel>· select an entry ·</RitualLabel>
+          <h2>The detail pane reads the page out loud.</h2>
+          <p class="muted">Pick a bug, plan, note, concept, goal, or universe on the left. Selected entries fetch the page body from <code>wiki action=read</code> through the live brain.</p>
+        {/if}
+      </aside>
+    </div>
   </div>
 </section>
 
+<section class="ch ch--lineage" aria-labelledby="lineage-title">
+  <div class="ch__inner">
+    <RitualLabel color="var(--violet-400)">· lineage · where I learned my brain ·</RitualLabel>
+    <h2 id="lineage-title">My brain is a mash of three open-source ideas.</h2>
+    <p class="lede">
+      I didn't invent the wiki-as-AI-memory pattern. Two repos in particular
+      shaped my brain, and a third gist named the trick that holds them
+      together. Worth knowing — both because the design owes them, and
+      because you can read their source.
+    </p>
+
+    <ul class="lineage">
+      <li>
+        <header>
+          <strong>karpathy / autoresearch</strong>
+          <a href="https://github.com/karpathy/autoresearch" target="_blank" rel="noreferrer">github ↗</a>
+        </header>
+        <p>
+          The original spark. AI agents iterating on their own code overnight
+          against a fixed metric, with the harness separated from the
+          candidate. My loop is a generalization: replace "training script"
+          with "branch", replace "val_bpb" with "outcome gate". The branch
+          called <code>community_change_loop_autoresearch_lab_v1</code> still
+          carries the name in tribute.
+        </p>
+      </li>
+      <li>
+        <header>
+          <strong>NateBJones-Projects / OB1 (Open Brain)</strong>
+          <a href="https://github.com/NateBJones-Projects/OB1" target="_blank" rel="noreferrer">github ↗</a>
+        </header>
+        <p>
+          The infrastructure layer for thinking. <em>One database, one AI
+          gateway, one chat channel — any AI plugs in.</em> Persistent
+          memory across tools, addressed by a single MCP server. My brain
+          inherits OB1's spirit (no middleware, no SaaS) without copying its
+          code; design note at
+          <code>docs/design-notes/2026-05-02-daemon-mini-openbrain.md</code>
+          spells out the difference.
+        </p>
+      </li>
+      <li>
+        <header>
+          <strong>karpathy / LLM Wiki</strong>
+          <a href="https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f" target="_blank" rel="noreferrer">gist ↗</a>
+        </header>
+        <p>
+          The pattern of letting LLMs read and write a shared wiki as their
+          working memory. Plus the discipline of writing wiki pages in a
+          shape an LLM can re-ingest cleanly. My brain page above is a
+          direct application — every page is structured so a chatbot can
+          read it and reason about it without me re-formatting.
+        </p>
+      </li>
+    </ul>
+
+    <p class="ch__aside">
+      The synthesis lives in navigator memory as
+      <code>project_brain_architecture_synthesis.md</code>: <em>OB1 substrate
+      + karpathy LLM Wiki pattern; daemon, chatbot, and collective brains
+      share one core.</em>
+    </p>
+  </div>
+</section>
+
+<section class="closer">
+  <div class="closer__inner">
+    <RitualLabel color="var(--violet-400)">· next ·</RitualLabel>
+    <h2>The brain has a shape too.</h2>
+    <p>Pages are nodes; references are edges. The graph shows that shape — what's tightly connected, what's an isolated draft, what hubs the brain depends on.</p>
+    <nav class="closer__cta">
+      <a class="cta cta--primary" href="/graph">
+        <strong>graph →</strong>
+        <span>see the topology, not just the pages.</span>
+      </a>
+      <a class="cta" href="/connect">
+        <strong>← the protocol</strong>
+        <span>connect your chatbot.</span>
+      </a>
+    </nav>
+  </div>
+</section>
+
+<ChapterFolio title="wiki" />
+
 <style>
-  .hero {
+  .ch { padding: clamp(56px, 9vw, 96px) 24px; }
+  .ch__inner { max-width: 880px; margin: 0 auto; }
+  .ch__inner--wide { max-width: 1280px; }
+  .ch--hero {
     padding-top: 80px;
-    padding-bottom: 40px;
+    background:
+      radial-gradient(ellipse 70% 50% at 50% 20%, rgba(138, 99, 206, 0.10), transparent 60%),
+      radial-gradient(ellipse 40% 30% at 50% 70%, rgba(233, 69, 96, 0.04), transparent 60%);
   }
-
-  .head__row,
-  .detail__head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .head__actions {
-    align-items: center;
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-
-  .hero__actions {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-top: 22px;
-  }
-
-  .hero__action {
-    align-items: center;
-    background: var(--bg-2);
-    border: 1px solid var(--border-2);
-    border-radius: 6px;
-    color: var(--fg-1);
-    cursor: pointer;
-    display: inline-flex;
-    font: 12px var(--font-mono);
-    justify-content: center;
-    letter-spacing: 0.08em;
-    min-height: 38px;
-    padding: 0 14px;
-    text-decoration: none;
-    text-transform: uppercase;
-  }
-
-  .hero__action:hover {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.28);
-  }
-
-  .hero__action--primary {
-    background: var(--ember-600);
-    border-color: var(--ember-600);
-    color: var(--bg-0);
-  }
-
-  .hero__action--primary:hover {
-    background: var(--ember-500);
-  }
-
-  .copy-status {
-    color: var(--fg-3);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    min-height: 18px;
-    margin: 8px 0 0;
-  }
-
-  .lead {
-    color: var(--fg-2);
-    font-size: clamp(16px, 2vw, 19px);
-    line-height: 1.55;
-    margin: 14px 0 0;
-    max-width: 760px;
-  }
-
-  .refresh,
-  .inline-action {
-    background: transparent;
-    border: 1px solid var(--border-2);
-    border-radius: 6px;
-    color: var(--fg-1);
-    cursor: pointer;
-    font: 11px var(--font-mono);
-    letter-spacing: 0.1em;
-    min-height: 32px;
-    padding: 0 10px;
-    text-transform: uppercase;
-  }
-
-  .refresh:hover,
-  .inline-action:hover {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: rgba(255, 255, 255, 0.22);
-  }
-
-  .refresh:disabled {
-    color: var(--fg-4);
-    cursor: wait;
-  }
-
   h1 {
     font-family: var(--font-display);
-    font-size: clamp(44px, 7vw, 72px);
-    font-weight: 400;
-    letter-spacing: -0.035em;
-    line-height: 0.95;
-    margin: 14px 0 18px;
-    max-width: 11ch;
+    font-variation-settings: "opsz" 144, "SOFT" 60;
+    font-size: clamp(36px, 5.8vw, 60px);
+    font-weight: 400; letter-spacing: -0.025em; line-height: 0.98;
+    margin: 14px 0 22px; max-width: 22ch; text-wrap: balance;
   }
-
   h2 {
     font-family: var(--font-display);
-    font-size: clamp(22px, 3vw, 30px);
-    font-weight: 500;
-    letter-spacing: -0.02em;
-    margin: 10px 0 12px;
+    font-variation-settings: "opsz" 144, "SOFT" 60;
+    font-size: clamp(22px, 3vw, 32px);
+    font-weight: 400; letter-spacing: -0.02em; line-height: 1.05;
+    margin: 10px 0 12px; text-wrap: balance;
   }
+  .lede {
+    color: var(--fg-1);
+    font-size: 17px;
+    line-height: 1.7;
+    margin: 0 0 22px;
+    max-width: 62ch;
+  }
+  .lede em { color: var(--ember-300); font-style: italic; }
+  code { background: rgba(255,255,255,0.05); border: 1px solid var(--border-1); border-radius: 3px; color: var(--violet-200); font-family: var(--font-mono); font-size: 0.85em; padding: 1px 5px; }
 
-  .error {
+  .toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: end;
+    margin-bottom: 14px;
+  }
+  @media (max-width: 720px) { .toolbar { grid-template-columns: 1fr; } }
+  .search { display: grid; gap: 6px; min-width: 0; }
+  .search__label {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .search input {
+    background: var(--bg-inset); border: 1px solid var(--border-1); border-radius: 8px;
+    color: var(--fg-1);
+    font: 14px var(--font-sans);
+    min-height: 44px;
+    outline: none; padding: 0 14px; width: 100%;
+  }
+  .search input:focus { border-color: rgba(138, 99, 206, 0.55); box-shadow: 0 0 0 3px rgba(138, 99, 206, 0.12); }
+  .refresh {
+    background: transparent; border: 1px solid var(--border-2); border-radius: 8px;
+    color: var(--fg-1); cursor: pointer;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em;
+    min-height: 44px; padding: 0 14px; text-transform: uppercase;
+    transition: border-color var(--dur-fast) var(--ease-standard);
+  }
+  .refresh:hover:not(:disabled) { border-color: var(--violet-400); color: var(--violet-200); }
+  .refresh:disabled { opacity: 0.55; cursor: wait; }
+
+  .hero__error {
     color: var(--signal-error);
     font-family: var(--font-mono);
     font-size: 12px;
-    line-height: 1.55;
-    margin: 0 0 16px;
-    max-width: 80ch;
+    margin: 0 0 14px;
   }
 
-  .error code {
-    color: var(--signal-error);
+  .lenses {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border-1);
+    border-radius: 999px;
+    padding: 6px;
+    width: fit-content;
+    max-width: 100%;
   }
+  .lenses button {
+    background: transparent; border: 1px solid transparent; border-radius: 999px;
+    color: var(--fg-2); cursor: pointer;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em;
+    padding: 6px 11px; text-transform: lowercase;
+  }
+  .lenses button.active { background: rgba(138, 99, 206, 0.14); color: var(--violet-200); border-color: rgba(138, 99, 206, 0.32); }
+  .lenses button:hover:not(.active) { color: var(--fg-1); }
 
+  /* ── Cockpit ──────────────────────────────────────────────────────── */
+  .ch--commons { border-top: 1px solid var(--border-1); background: var(--bg-1); }
   .cockpit {
-    border-top: 1px solid var(--border-1);
-    padding: 28px 0 64px;
-  }
-
-  .cockpit__grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
     gap: 18px;
     align-items: start;
   }
+  @media (max-width: 980px) { .cockpit { grid-template-columns: 1fr; } }
 
-  @media (max-width: 980px) {
-    .cockpit__grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .surface,
-  .detail {
+  .list {
     background: var(--bg-2);
     border: 1px solid var(--border-1);
-    border-radius: 8px;
-  }
-
-  .surface {
+    border-radius: 10px;
     overflow: hidden;
   }
-
-  .detail {
-    padding: 18px;
-    position: sticky;
-    top: 88px;
-  }
-
-  @media (max-width: 980px) {
-    .detail {
-      position: static;
-    }
-  }
-
-  .toolbar {
-    display: grid;
-    grid-template-columns: minmax(220px, 1fr) auto 150px;
-    gap: 12px;
-    padding: 14px;
-    border-bottom: 1px solid var(--border-1);
-    align-items: end;
-  }
-
-  @media (max-width: 900px) {
-    .toolbar {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  label span,
-  .results__head span {
-    color: var(--fg-3);
-    display: block;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    margin-bottom: 6px;
-    text-transform: uppercase;
-  }
-
-  input,
-  select {
-    background: var(--bg-inset);
-    border: 1px solid var(--border-1);
-    border-radius: 6px;
-    color: var(--fg-1);
-    font: 13px var(--font-sans);
-    min-height: 38px;
-    outline: none;
-    padding: 0 12px;
-    width: 100%;
-  }
-
-  input:focus,
-  select:focus {
-    border-color: rgba(233, 69, 96, 0.55);
-    box-shadow: 0 0 0 3px rgba(233, 69, 96, 0.12);
-  }
-
-  .segments {
-    align-items: center;
-    background: var(--bg-inset);
-    border: 1px solid var(--border-1);
-    border-radius: 8px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 4px;
-  }
-
-  .segments button {
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    color: var(--fg-2);
-    cursor: pointer;
-    font: 11px var(--font-mono);
-    letter-spacing: 0.08em;
-    min-height: 30px;
-    padding: 0 10px;
-    text-transform: uppercase;
-  }
-
-  .segments button.active,
-  .segments button:hover {
-    background: rgba(233, 69, 96, 0.12);
-    border-color: rgba(233, 69, 96, 0.24);
-    color: var(--fg-1);
-  }
-
-  .pulse,
-  .graphlens {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(240px, 360px);
-    gap: 16px;
-    padding: 18px;
-    border-bottom: 1px solid var(--border-1);
-  }
-
-  @media (max-width: 800px) {
-    .pulse,
-    .graphlens {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .pulse p,
-  .graphlens p,
-  .detail p,
-  .muted {
-    color: var(--fg-2);
-    font-size: 13px;
-    line-height: 1.6;
-    margin: 0 0 12px;
-  }
-
-  .pulse__facts,
-  .connected {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-
-  .pulse__fact,
-  .connected button,
-  .related__list button {
-    background: var(--bg-inset);
-    border: 1px solid var(--border-1);
-    border-radius: 6px;
-    color: var(--fg-1);
-    cursor: pointer;
-    padding: 10px 12px;
-    text-align: left;
-    width: 100%;
-  }
-
-  .pulse__fact:hover,
-  .connected button:hover,
-  .related__list button:hover {
-    border-color: var(--border-2);
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .pulse__fact span,
-  .pulse__fact strong,
-  .pulse__fact small {
-    display: block;
-  }
-
-  .pulse__fact span,
-  .connected small,
-  .related__list span {
-    color: var(--fg-3);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .pulse__fact strong,
-  .connected strong,
-  .related__list strong {
-    color: var(--fg-1);
-    display: block;
-    font-size: 13px;
-    line-height: 1.35;
-    margin-top: 3px;
-  }
-
-  .pulse__fact small {
-    color: var(--fg-2);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    margin-top: 4px;
-  }
-
-  .connected button {
-    align-items: center;
-    display: grid;
-    grid-template-columns: 42px 1fr;
-    gap: 10px;
-  }
-
-  .connected__rank {
-    color: var(--ember-600);
-    font-family: var(--font-display);
-    font-size: 28px;
-    line-height: 1;
-    text-align: center;
-  }
-
-  .results__head {
-    align-items: center;
-    border-bottom: 1px solid var(--border-1);
-    display: flex;
-    justify-content: space-between;
+  .list__head {
+    display: flex; justify-content: space-between; align-items: center;
     padding: 12px 14px;
+    border-bottom: 1px solid var(--border-1);
   }
-
-  .results__head span {
+  .list ul { list-style: none; margin: 0; padding: 0; max-height: 800px; overflow: auto; }
+  .list__more, .list__empty {
+    color: var(--fg-3);
+    font-size: 13px;
+    line-height: 1.55;
     margin: 0;
-    text-transform: none;
+    padding: 14px 16px;
+    border-top: 1px solid var(--border-1);
   }
-
-  .results {
-    list-style: none;
-    margin: 0;
-    max-height: 760px;
-    overflow: auto;
-    padding: 0;
-  }
-
+  .list__more { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.03em; }
+  .list__empty strong { color: var(--fg-1); }
+  .list__empty em { color: var(--ember-300); font-style: normal; }
   .item {
     align-items: start;
     background: transparent;
     border: 0;
     border-bottom: 1px solid var(--border-1);
-    color: inherit;
-    cursor: pointer;
-    display: grid;
-    gap: 12px;
-    grid-template-columns: 82px minmax(0, 1fr) 42px;
+    color: inherit; cursor: pointer;
+    display: grid; gap: 12px;
+    grid-template-columns: 82px minmax(0, 1fr) auto;
     padding: 13px 14px;
     text-align: left;
     width: 100%;
   }
-
-  @media (max-width: 620px) {
-    .item {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .item:hover,
-  .item.selected {
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .item.selected {
-    box-shadow: inset 3px 0 0 var(--ember-600);
-  }
-
+  @media (max-width: 540px) { .item { grid-template-columns: 1fr; } .item__conn { display: none; } }
+  .item:hover, .item.selected { background: rgba(255, 255, 255, 0.035); }
+  .item.selected { box-shadow: inset 3px 0 0 var(--violet-400); }
   .item__type {
     font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.14em;
-    margin-top: 3px;
-    text-transform: uppercase;
+    font-size: 10px; letter-spacing: 0.14em;
+    margin-top: 3px; text-transform: uppercase;
   }
-
-  .item__main {
-    min-width: 0;
-  }
-
+  .item__main { min-width: 0; }
   .item strong {
-    color: var(--fg-1);
-    display: block;
-    font-size: 14px;
-    line-height: 1.35;
+    color: var(--fg-1); display: block;
+    font-size: 14px; line-height: 1.35;
     overflow-wrap: anywhere;
   }
-
   .item small {
-    color: var(--fg-3);
-    display: block;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1.45;
-    margin-top: 4px;
+    color: var(--fg-3); display: block;
+    font-family: var(--font-mono); font-size: 10px;
+    line-height: 1.45; margin-top: 4px;
     overflow-wrap: anywhere;
   }
-
-  .item__edges {
-    align-self: start;
-    background: var(--bg-inset);
-    border: 1px solid var(--border-1);
-    border-radius: 999px;
-    color: var(--fg-2);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    padding: 3px 8px;
-    text-align: center;
-  }
-
-  .tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-top: 8px;
-  }
-
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
   .tags span {
     background: rgba(255, 255, 255, 0.05);
-    border: 1px solid var(--border-1);
-    border-radius: 4px;
+    border: 1px solid var(--border-1); border-radius: 4px;
     color: var(--fg-2);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1;
+    font-family: var(--font-mono); font-size: 10px; line-height: 1;
     padding: 4px 6px;
   }
+  .tags--detail { margin-bottom: 16px; }
 
-  .tags--detail {
-    margin-bottom: 16px;
+  .detail {
+    padding: 18px 20px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: 10px;
+    position: sticky;
+    top: 88px;
   }
-
-  .readout,
-  .related,
-  .trace {
-    border-top: 1px solid var(--border-1);
-    margin-top: 16px;
-    padding-top: 16px;
-  }
-
-  .body,
-  .trace pre {
+  @media (max-width: 980px) { .detail { position: static; } }
+  .detail__sub { color: var(--fg-3); font-size: 12.5px; font-family: var(--font-mono); margin: 0 0 12px; overflow-wrap: anywhere; }
+  .muted { color: var(--fg-3); font-size: 13px; line-height: 1.6; margin: 12px 0 0; }
+  .muted code { font-size: 12px; }
+  .error { color: var(--signal-error); font-family: var(--font-mono); font-size: 12px; margin: 10px 0 4px; }
+  .body {
     background: var(--bg-inset);
     border: 1px solid var(--border-1);
     border-radius: 6px;
     margin: 10px 0 0;
-    max-height: 380px;
+    max-height: 440px;
     overflow: auto;
-    padding: 12px;
+    padding: 14px;
   }
-
-  .body code,
-  .trace code {
-    background: transparent;
-    border: 0;
+  .body code {
+    background: transparent; border: 0; padding: 0;
     color: var(--fg-2);
-    font-size: 11px;
-    line-height: 1.55;
-    padding: 0;
+    font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
     white-space: pre-wrap;
   }
 
-  .trace summary {
-    align-items: center;
-    color: var(--fg-1);
-    cursor: pointer;
+  /* ── Closer ───────────────────────────────────────────────────────── */
+  .closer { padding: 56px 24px 96px; border-top: 1px solid var(--border-1); }
+  .closer__inner { max-width: 760px; margin: 0 auto; }
+  .closer h2 { font-family: var(--font-display); font-size: clamp(26px, 4vw, 38px); font-weight: 500; letter-spacing: -0.02em; line-height: 1.05; margin: 8px 0 14px; }
+  .closer p { color: var(--fg-2); font-size: 15px; line-height: 1.65; max-width: 60ch; margin: 0 0 24px; }
+  .closer__cta { display: grid; gap: 10px; }
+  .cta {
+    display: grid; gap: 4px; padding: 14px 16px;
+    background: var(--bg-2); border: 1px solid var(--border-1); border-radius: 8px;
+    color: inherit; text-decoration: none;
+    transition: border-color var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-standard);
+  }
+  .cta:hover { border-color: var(--border-2); transform: translateY(-1px); }
+  .cta--primary { border-color: rgba(138, 99, 206, 0.45); background: rgba(138, 99, 206, 0.05); }
+  .cta strong { color: var(--fg-1); font-family: var(--font-display); font-size: 18px; font-weight: 500; }
+  .cta span { color: var(--fg-2); font-size: 13px; line-height: 1.45; }
+
+  /* ── Lineage ──────────────────────────────────────────────────────── */
+  .ch--lineage { border-top: 1px solid var(--border-1); }
+  .lineage {
+    list-style: none;
+    margin: 18px 0 24px;
+    padding: 0;
+    display: grid;
+    gap: 12px;
+  }
+  .lineage li {
+    padding: 16px 18px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-left: 2px solid var(--violet-400);
+    border-radius: 6px;
+    display: grid;
+    gap: 8px;
+  }
+  .lineage header {
     display: flex;
     justify-content: space-between;
-    gap: 12px;
-    list-style: none;
-    min-height: 38px;
-    padding-block: 4px;
-    touch-action: manipulation;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
   }
-
-  .trace summary::-webkit-details-marker {
-    display: none;
+  .lineage strong {
+    color: var(--fg-1);
+    font-family: var(--font-display);
+    font-size: 18px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
   }
-
-  .trace summary span {
-    color: var(--violet-200);
+  .lineage a {
+    color: var(--signal-live);
     font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-decoration: none;
     text-transform: uppercase;
   }
-
-  .trace summary strong {
-    font-size: 13px;
-    font-weight: 600;
+  .lineage a:hover { color: var(--fg-1); text-decoration: underline; }
+  .lineage p {
+    color: var(--fg-2);
+    font-size: 14px;
+    line-height: 1.6;
+    margin: 0;
   }
+  .lineage p em { color: var(--ember-300); font-style: italic; }
+  .lineage p code { background: rgba(255,255,255,0.05); border: 1px solid var(--border-1); border-radius: 3px; color: var(--violet-200); font-family: var(--font-mono); font-size: 0.85em; padding: 1px 4px; }
 
-  .related__list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: 10px;
-  }
 
-  .error--panel {
-    margin-top: 10px;
-  }
+  .wiki-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+  .wiki-action { background: transparent; border: 1px solid rgba(138,99,206,0.45); border-radius: 999px; color: var(--violet-200); cursor: pointer; font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.06em; padding: 8px 16px; text-decoration: none; transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard); }
+  .wiki-action:hover { border-color: rgba(138,99,206,0.85); background: rgba(138,99,206,0.08); }
+  .wiki-actions__hint { color: var(--fg-3); font-size: 12px; }
+  .list__head .sort { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .list__head .sort select { background: var(--bg-inset); border: 1px solid var(--border-1); border-radius: 6px; color: var(--fg-1); font-family: var(--font-mono); font-size: 11px; padding: 3px 6px; }
+  .item__conn { align-self: center; flex: none; color: var(--violet-200); font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--border-1); border-radius: 999px; padding: 2px 9px; }
 </style>

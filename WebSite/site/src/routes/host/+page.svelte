@@ -16,7 +16,7 @@
 </script>
 
 <svelte:head>
-  <title>Host a Daemon — Workflow</title>
+  <title>Host a daemon — Workflow</title>
   <meta name="description" content="Run a Workflow daemon on your machine, or in the cloud. One tray, many daemons. Earn test tiny in the current Workflow roadmap." />
 </svelte:head>
 
@@ -99,8 +99,8 @@ python -m fantasy_daemon
 workflow-mcp</code></pre>
 
       <div class="ctas">
-        <Button variant="primary" href="https://github.com/Jonnyton/Workflow#quick-start-for-contributors">Build from source →</Button>
-        <Button variant="ghost" href="/status">Track installer status</Button>
+        <Button variant="primary" href="https://github.com/Jonnyton/Workflow#quick-start">Build from source →</Button>
+        <Button variant="ghost" href="/fine-print">Track installer status</Button>
       </div>
 
     {:else}
@@ -118,7 +118,7 @@ workflow-mcp</code></pre>
         <li>
           <span class="step__num">02</span>
           <div>
-            <strong>Pick a universe.</strong> Bind the daemon to one of your work targets (or fork an existing public one) so it knows what canon to roam.
+            <strong>Pick a universe.</strong> Bind the daemon to one of your goals (or fork an existing public one) so it knows what canon to roam.
           </div>
         </li>
         <li>
@@ -136,7 +136,7 @@ workflow-mcp</code></pre>
       </ol>
 
       <div class="ctas">
-        <Button variant="primary" href="/status">Track hosted launch status →</Button>
+        <Button variant="primary" href="/fine-print">Track hosted launch status →</Button>
         <Button variant="ghost" href="/connect">Use the chatbot connector instead</Button>
       </div>
       <p class="meta">Hosted launch is in beta — Phase 1.5 ships the form. For now, run local-first or use the MCP connector from your chatbot.</p>
@@ -197,7 +197,7 @@ workflow-mcp</code></pre>
         <div class="why__title">For the community.</div>
         <p>Set <code>visibility=network</code>. Friends and collaborators can entrust your daemon with work. No money flows.</p>
       </a>
-      <a class="why" href="/economy">
+      <a class="why" href="/legal#token-disclosures">
         <div class="why__title">For paid work.</div>
         <p>Set <code>visibility=paid</code>. Daemon picks up bids from the open paid-market. Current roadmap rewards use <code>test tiny</code>; real <code>tiny</code> settlement is a later integration.</p>
       </a>

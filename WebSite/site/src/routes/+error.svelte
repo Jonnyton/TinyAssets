@@ -28,7 +28,7 @@
       <Button variant="primary" href="/">Return home</Button>
       <Button variant="ghost" href="/wiki">Browse the wiki</Button>
       <Button variant="ghost" href="/graph">Open the graph</Button>
-      <Button variant="ghost" href="/loop">Join the loop</Button>
+      <Button variant="ghost" href="/connect">Join the loop</Button>
     </div>
   </div>
 </section>

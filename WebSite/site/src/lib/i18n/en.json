@@ -1,29 +1,29 @@
 {
   "landing": {
-    "hero_title": "AI workflows that actually run.",
-    "hero_subtitle": "Design custom multi-step AI workflows from a live community wiki. Real execution, not simulation.",
+    "hero_title": "Summon the daemon.",
+    "hero_subtitle": "Design custom multi-step AI workflows. Real execution, not simulation.",
     "hero_tagline": "Your chatbot becomes a workshop. Your daemon does the work.",
     "cta_connect": "Try in Claude.ai (zero-install)",
     "cta_host": "Host a daemon (one-click)",
     "cta_contribute": "Join the project loop",
     "how_it_works_title": "How it works",
     "how_it_works_steps": [
-      "Chat with your AI (Claude.ai, etc.). Describe a multi-step workflow — a research pipeline, a scene drafter, an invoice processor.",
+      "Chat with your AI (Claude.ai, etc.). Describe a multi-step workflow \u2014 a research pipeline, a scene drafter, an invoice processor.",
       "Your chatbot designs it with you, pulling from a public library of workflow nodes built by other users. It reuses, remixes, or creates.",
-      "When you're ready, a daemon runs it. The workflow produces real output — drafts, extractions, analyses — not a chatbot's guess at what the output might look like."
+      "When you're ready, a daemon runs it. The workflow produces real output \u2014 drafts, extractions, analyses \u2014 not a chatbot's guess at what the output might look like."
     ],
     "why_section_title": "Why Workflow?",
     "why_points": [
       "Real execution. The daemon actually runs your workflow; it doesn't pretend.",
-      "Community wiki. Every public workflow is CC0 — use it, remix it, build on it without permission.",
+      "Open commons. Every public workflow is CC0 \u2014 use it, remix it, build on it without permission.",
       "Your data stays yours. Concept-layer public; instance-layer private; never training data.",
       "Pay for what you need. Free to use. Optional: pay daemons to run workflows faster (1% fee; crypto settlement lands in v1.1)."
     ]
   },
   "goals": {
-    "title": "Workflow Wiki",
-    "subtitle": "Browse public wiki records, work targets, related branches, and live context.",
-    "empty_state": "No public work records yet — check back after launch.",
+    "title": "Workflow Goals",
+    "subtitle": "Browse public goals, related branches, and live commons context.",
+    "empty_state": "No goals yet \u2014 check back after launch.",
     "filter_domain": "Domain",
     "filter_quality": "Quality",
     "filter_recency": "Recently updated",
@@ -42,13 +42,13 @@
     "step_by_step_title": "How to connect",
     "step_by_step": [
       "Open Claude.ai in your browser.",
-      "Click your profile icon → Settings → Connectors → Add custom connector.",
+      "Click your profile icon \u2192 Settings \u2192 Connectors \u2192 Add custom connector.",
       "Paste the URL above into the \"Server URL\" field.",
       "Claude.ai prompts you to approve. Click Approve.",
-      "Start a new chat and say: \"design me a workflow for [what you want to build].\""
+      "Start a new chat and say: \"summon me a daemon for [what you want to build].\""
     ],
     "what_happens_next_title": "What happens next",
-    "what_happens_next": "Claude gets a new set of tools — nodes you can call, workflows you can design, daemons you can delegate to. Try starting simple: ask for a workflow that summarizes a document, or one that generates research hypotheses on a topic. Your chatbot takes it from there.",
+    "what_happens_next": "Claude gets a new set of tools \u2014 nodes you can call, workflows you can design, daemons you can delegate to. Try starting simple: ask for a workflow that summarizes a document, or one that generates research hypotheses on a topic. Your chatbot takes it from there.",
     "examples_title": "What you can do",
     "examples_intro": "Real things real people get done through their chatbot:",
     "examples": [
@@ -60,11 +60,11 @@
       {
         "category": "Research",
         "invocation": "Workflow: read these 5 papers and generate falsifiable hypotheses for my next experiment.",
-        "outcome": "Prior-work synthesis + gap identification + 3–5 hypotheses ranked by testability × novelty."
+        "outcome": "Prior-work synthesis + gap identification + 3\u20135 hypotheses ranked by testability \u00d7 novelty."
       },
       {
         "category": "Writing",
-        "invocation": "Workflow: refine this scene — tighten pacing, keep my voice, don't add new beats.",
+        "invocation": "Workflow: refine this scene \u2014 tighten pacing, keep my voice, don't add new beats.",
         "outcome": "Transformer run that cuts slack without generating substance; voice preservation score returned so you can reject drift."
       },
       {
@@ -109,7 +109,7 @@
       },
       {
         "q": "What happens to my data?",
-        "a": "The workflow design (how the steps work, what they call) is public by default — that's the community wiki commons. Your actual data (the documents you process, values you fill in) stays on your own machine or in owner-only storage. Never training data."
+        "a": "The workflow design (how the steps work, what they call) is public by default \u2014 that's the commons. Your actual data (the documents you process, values you fill in) stays on your own machine or in owner-only storage. Never training data."
       },
       {
         "q": "What if a workflow does the wrong thing?",
@@ -150,15 +150,15 @@
       "Configure anytime from the tray: add capabilities, change visibility, see earnings."
     ],
     "what_happens_next_title": "What your daemon does",
-    "what_happens_next": "By default, your daemon runs an active cascade: it handles your own requests first, then picks up paid work it's qualified for, then helps with public requests. Idle is a failure state — it tries to stay useful. You can also flip a capability to \"self only\" so it never takes outside work.",
+    "what_happens_next": "By default, your daemon runs an active cascade: it handles your own requests first, then picks up paid work it's qualified for, then helps with public requests. Idle is a failure state \u2014 it tries to stay useful. You can also flip a capability to \"self only\" so it never takes outside work.",
     "earnings_preview_title": "Earnings preview",
     "earnings_preview": "Paid work pays you in test tiny on Base Sepolia today. Platform will take 1%; you'll keep 99% (takes effect at v1.1 real-chain cutover). Settlements batch under $1 equivalent and go on-chain above that. You can request payout anytime.",
     "visibility_modes_title": "Visibility modes (per capability)",
-    "visibility_modes_intro": "Each capability your daemon offers has a visibility setting. You can mix — one capability 'self only' and another 'paid' — whatever fits.",
+    "visibility_modes_intro": "Each capability your daemon offers has a visibility setting. You can mix \u2014 one capability 'self only' and another 'paid' \u2014 whatever fits.",
     "visibility_modes": [
       {
         "mode": "Self only",
-        "plain_language": "Your daemon runs workflows ONLY for requests that come from your own account. No one else sees it. Good for when you want private use without participating in the community wiki. Default on first install."
+        "plain_language": "Your daemon runs workflows ONLY for requests that come from your own account. No one else sees it. Good for when you want private use without participating in the commons. Default on first install."
       },
       {
         "mode": "Network",
@@ -166,7 +166,7 @@
       },
       {
         "mode": "Paid",
-        "plain_language": "Your daemon accepts paid bids from anyone. You set a price floor. Platform takes 1%; you keep 99%. Opt-in per capability — you might host 'research-hypothesis-generator' paid while keeping 'invoice-ocr' self-only because it touches your instance data."
+        "plain_language": "Your daemon accepts paid bids from anyone. You set a price floor. Platform takes 1%; you keep 99%. Opt-in per capability \u2014 you might host 'research-hypothesis-generator' paid while keeping 'invoice-ocr' self-only because it touches your instance data."
       }
     ],
     "faq_title": "Common questions",
@@ -177,7 +177,7 @@
       },
       {
         "q": "Will my electric bill skyrocket?",
-        "a": "No more than normal chat use. The daemon is bursty — active during execution, idle between. You set visibility; \"self only\" means it only runs when you ask."
+        "a": "No more than normal chat use. The daemon is bursty \u2014 active during execution, idle between. You set visibility; \"self only\" means it only runs when you ask."
       },
       {
         "q": "Do I have to take paid work?",
@@ -193,7 +193,7 @@
       },
       {
         "q": "Who sees the work my daemon runs?",
-        "a": "Only you (for self + your own work) or the requester (for network/paid work). The community wiki sees the concept layer of any workflow that gets published — not the specific data your daemon processed."
+        "a": "Only you (for self + your own work) or the requester (for network/paid work). The commons sees the concept layer of any workflow that gets published \u2014 not the specific data your daemon processed."
       },
       {
         "q": "What if someone tries to use my daemon for something I don't want?",
@@ -201,46 +201,46 @@
       },
       {
         "q": "Can I leave my daemon running while I sleep?",
-        "a": "Yes — that's the design. Active-mode cascade runs continuously, handling your queue first, then paid work, then public contributions. Quit the tray anytime; in-flight work fails gracefully."
+        "a": "Yes \u2014 that's the design. Active-mode cascade runs continuously, handling your queue first, then paid work, then public contributions. Quit the tray anytime; in-flight work fails gracefully."
       }
     ],
     "trust_signals": [
-      "Your host, your keys. Daemon talks outbound-only — no inbound ports.",
+      "Your host, your keys. Daemon talks outbound-only \u2014 no inbound ports.",
       "Single tray instance per machine. Double-clicking the icon never spawns duplicates.",
-      "Uninstall anytime — your data stays on your machine."
+      "Uninstall anytime \u2014 your data stays on your machine."
     ]
   },
   "contribute": {
     "title": "Contribute",
-    "tagline": "The platform itself is open source. So is the public community wiki. Two paths for two kinds of contribution.",
+    "tagline": "The platform itself is open source. So are the public goals. Two paths for two kinds of contribution.",
     "instructions": "Clone the repo, read CONTRIBUTING.md, submit a PR.",
     "clone_cmd": "git clone https://github.com/Workflow/Workflow.git",
     "platform_code_title": "Platform code (the engine)",
-    "platform_code_description": "The daemon engine, MCP gateway, web app, tray — all in the main Workflow repo. Standard fork-and-PR flow. MIT-licensed.",
-    "goals_content_title": "Community wiki (the content)",
-    "goals_content_description": "Public wiki pages, nodes, work targets, and branches. Lives at Workflow-catalog/ repo. Edits auto-export to Postgres on merge; you can also edit directly from a chatbot (wiki-open model for content). CC0-licensed.",
+    "platform_code_description": "The daemon engine, MCP gateway, web app, tray \u2014 all in the main Workflow repo. Standard fork-and-PR flow. MIT-licensed.",
+    "goals_content_title": "Public goals (the content)",
+    "goals_content_description": "Public nodes, goals, branches. Lives at Workflow-catalog/ repo. Edits auto-export to Postgres on merge; you can also edit directly from a chatbot (wiki-open model for content). CC0-licensed.",
     "step_by_step_title": "How to contribute",
     "step_by_step": [
       "Pick which repo matches your change: Workflow/ for engine, Workflow-catalog/ for workflows.",
       "Fork it on GitHub.",
-      "Read CONTRIBUTING.md in the repo you forked — each has its own rules.",
+      "Read CONTRIBUTING.md in the repo you forked \u2014 each has its own rules.",
       "Make your change, commit with `--signoff` (DCO required), push to your fork.",
       "Open a PR against `main`. CI + a human reviewer will take it from there."
     ],
     "what_happens_next_title": "After you contribute",
     "what_happens_next": "Merged engine PRs ship in the next release (weekly). Merged goal-content PRs land in the repo immediately; Postgres round-trip (so chatbot users see them) lands at v1.1. Your attribution is preserved on the provenance chain.",
     "dco_title": "DCO, not CLA",
-    "dco_plain_language": "Every commit must include `Signed-off-by: Your Name <[email protected]>`. Use `git commit -s` to add it automatically. The Developer Certificate of Origin affirms you have the right to submit the contribution — no lawyer-style Contributor License Agreement. If that last sentence was gibberish: you're asserting 'I wrote this and I have the right to contribute it.' That's it.",
+    "dco_plain_language": "Every commit must include `Signed-off-by: Your Name <[email protected]>`. Use `git commit -s` to add it automatically. The Developer Certificate of Origin affirms you have the right to submit the contribution \u2014 no lawyer-style Contributor License Agreement. If that last sentence was gibberish: you're asserting 'I wrote this and I have the right to contribute it.' That's it.",
     "what_to_work_on_title": "What to work on",
     "what_to_work_on_intro": "Four ways to find work:",
     "what_to_work_on": [
       {
         "path": "Open issues",
-        "where": "github.com/Workflow/Workflow/issues (platform) + github.com/Workflow/Workflow-catalog/issues (content). Labels to watch: good-first-issue, help-wanted, track-X (where X ∈ A-K)."
+        "where": "github.com/Workflow/Workflow/issues (platform) + github.com/Workflow/Workflow-catalog/issues (content). Labels to watch: good-first-issue, help-wanted, track-X (where X \u2208 A-K)."
       },
       {
         "path": "Track work",
-        "where": "The platform has uptime tracks A-K (gateway, schema, web app, tray, paid-market, etc.) documented in docs/specs/. Each has OPEN flags — things that need resolution. Claim one, propose a PR."
+        "where": "The platform has uptime tracks A-K (gateway, schema, web app, tray, paid-market, etc.) documented in docs/specs/. Each has OPEN flags \u2014 things that need resolution. Claim one, propose a PR."
       },
       {
         "path": "Design notes",
@@ -248,7 +248,7 @@
       },
       {
         "path": "Your itch",
-        "where": "Something annoying or missing when you use the platform? File an issue describing it. Contributors often work on what scratches their own itch — and that's the most durable contribution."
+        "where": "Something annoying or missing when you use the platform? File an issue describing it. Contributors often work on what scratches their own itch \u2014 and that's the most durable contribution."
       }
     ],
     "community_title": "Community",
@@ -267,7 +267,7 @@
       },
       {
         "channel": "security@tinyassets.io",
-        "purpose": "Security vulnerabilities — private disclosure. First response within 72 hours."
+        "purpose": "Security vulnerabilities \u2014 private disclosure. First response within 72 hours."
       },
       {
         "channel": "ops@tinyassets.io",
@@ -286,11 +286,11 @@
       },
       {
         "q": "Who reviews PRs?",
-        "a": "Tier-3 contributors (anyone with ≥3 merged PRs by default). The host + admin-pool members merge. No single-person gatekeepers per our host-independent-succession policy."
+        "a": "Tier-3 contributors (anyone with \u22653 merged PRs by default). The host + admin-pool members merge. No single-person gatekeepers per our host-independent-succession policy."
       },
       {
         "q": "Can I contribute without writing code?",
-        "a": "Yes — workflow content contributions (goal edits) happen via chatbot directly. No git required for that side. Git is for platform-code contributions."
+        "a": "Yes \u2014 workflow content contributions (goal edits) happen via chatbot directly. No git required for that side. Git is for platform-code contributions."
       },
       {
         "q": "How fast do PRs merge?",
@@ -298,11 +298,11 @@
       },
       {
         "q": "How do I become a tier-3 reviewer with merge rights?",
-        "a": "≥3 merged PRs is the default threshold. Acceptance of CONTRIBUTING.md + moderation_rubric.md + basic participation in reviews. Per SUCCESSION.md admin-pool expansion is 2-admin-approval."
+        "a": "\u22653 merged PRs is the default threshold. Acceptance of CONTRIBUTING.md + moderation_rubric.md + basic participation in reviews. Per SUCCESSION.md admin-pool expansion is 2-admin-approval."
       },
       {
         "q": "What's the roadmap?",
-        "a": "The uptime tracks A-K (in docs/specs/) are the north star. Additional work happens on community-proposed features — we don't have a committed roadmap beyond the forever-rule uptime surfaces."
+        "a": "The uptime tracks A-K (in docs/specs/) are the north star. Additional work happens on community-proposed features \u2014 we don't have a committed roadmap beyond the forever-rule uptime surfaces."
       },
       {
         "q": "Is the project accepting funding / sponsorship?",
@@ -311,22 +311,22 @@
     ],
     "trust_signals": [
       "Every decision is in public issue threads or PRs.",
-      "Bus-factor ≥ 2 on all admin operations.",
+      "Bus-factor \u2265 2 on all admin operations.",
       "If the host disappears, the community keeps running per SUCCESSION.md."
     ]
   },
   "status": {
     "title": "System Status",
-    "subtitle": "Live platform health. Degrades gracefully — never shows blank.",
+    "subtitle": "Live platform health. Degrades gracefully \u2014 never shows blank.",
     "widgets": {
       "hosts_online": "Hosts online",
       "inbox_depth": "Pending requests",
-      "goals_freshness": "Work targets last synced",
+      "goals_freshness": "Goals last synced",
       "recent_activity": "Recent activity"
     },
-    "realtime_paused": "Live updates paused — check back in a moment.",
+    "realtime_paused": "Live updates paused \u2014 check back in a moment.",
     "all_green": "All systems operational.",
-    "degraded": "Partial degradation — workflows still run, some features may be slow."
+    "degraded": "Partial degradation \u2014 workflows still run, some features may be slow."
   },
   "legal": {
     "title": "Legal",
@@ -341,14 +341,14 @@
     "my_exports_title": "My exports",
     "my_exports_empty": "You haven't published any public workflows yet. They'll appear here after you publish.",
     "delete_title": "Delete account",
-    "delete_warning": "This deletes your private data + anonymizes your public contributions. Public CC0 wiki content remains (you can't unilaterally delete from the commons). You have 30 days to reverse. Sure?",
+    "delete_warning": "This deletes your private data + anonymizes your public contributions. Public CC0 content remains (you can't unilaterally delete from the commons). You have 30 days to reverse. Sure?",
     "delete_confirm": "Type your GitHub handle to confirm deletion.",
     "export_data_title": "Export my data",
-    "export_data_description": "We'll email you a ZIP with everything you've submitted — private + public. Takes ~10 minutes."
+    "export_data_description": "We'll email you a ZIP with everything you've submitted \u2014 private + public. Takes ~10 minutes."
   },
   "common": {
     "copied": "Copied!",
-    "loading": "Loading…",
+    "loading": "Loading\u2026",
     "error_generic": "Something went wrong. Try again in a moment."
   }
 }

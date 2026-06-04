@@ -1,21 +1,38 @@
+# tinyassets.io — the public site is open to search and AI-grounding crawlers.
+
 User-agent: *
 Allow: /
-# MCP is the intended bot surface for live project reads; robots covers the human website.
-Allow: /connect
-Allow: /contribute
-Allow: /economy
-Allow: /graph
-Allow: /host
-Allow: /legal
-Allow: /loop
-Allow: /proof
-Allow: /status
-Allow: /wiki
-Allow: /alliance
+
+# Named AI-search + grounding crawlers (Allow: / above already covers them;
+# listed explicitly so intent is unambiguous as engines change behavior).
+User-agent: Googlebot
+Allow: /
+User-agent: Google-Extended
+Allow: /
+User-agent: Bingbot
+Allow: /
+User-agent: OAI-SearchBot
+Allow: /
+User-agent: ChatGPT-User
+Allow: /
+User-agent: GPTBot
+Allow: /
+User-agent: ClaudeBot
+Allow: /
+User-agent: Claude-Web
+Allow: /
+User-agent: anthropic-ai
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Perplexity-User
+Allow: /
+
+# Private surfaces stay out of every index.
+User-agent: *
+Disallow: /account
 Disallow: /auth/
 Disallow: /editor/
 Disallow: /admin/
-Disallow: /earnings
-Disallow: /account
 
 Sitemap: https://tinyassets.io/sitemap.xml

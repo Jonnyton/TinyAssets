@@ -63,7 +63,7 @@
     </button>
   </div>
   <div class="source-stamps">
-    <span>MCP {relativeStamp(pulse.mcp.fetched_at)} · {compactNumber(pulse.knowledgeCount)} wiki records · {compactNumber(pulse.mcp.goals.length)} work targets</span>
+    <span>MCP {relativeStamp(pulse.mcp.fetched_at)} · {compactNumber(pulse.knowledgeCount)} commons · {compactNumber(pulse.mcp.goals.length)} goals</span>
     <span>GitHub {relativeStamp(pulse.repo.fetched_at)} · {compactNumber(pulse.branchCount)} branches · head {shortHash(pulse.repo.repo.head)}</span>
     {#if busy}
       <span>{busy === 'mcp' ? 'Refreshing MCP feed' : 'Refreshing GitHub feed'}</span>

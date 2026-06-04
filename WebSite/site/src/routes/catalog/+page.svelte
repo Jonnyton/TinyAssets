@@ -2,20 +2,20 @@
   import { onMount } from 'svelte';
 
   onMount(() => {
-    window.location.replace('/wiki');
+    window.location.replace('/goals');
   });
 </script>
 
 <svelte:head>
-  <title>Community wiki - Workflow</title>
-  <meta http-equiv="refresh" content="0; url=/wiki" />
-  <link rel="canonical" href="https://tinyassets.io/wiki" />
+  <title>Goals — Workflow</title>
+  <meta http-equiv="refresh" content="0; url=/goals" />
+  <link rel="canonical" href="https://tinyassets.io/goals" />
 </svelte:head>
 
 <section class="redirect">
   <div>
-    <h1>Catalog moved into the community wiki.</h1>
-    <p>The live public work surface now lives at <a href="/wiki">/wiki</a>.</p>
+    <h1>Goals moved.</h1>
+    <p>The live goal board now lives at <a href="/goals">/goals</a>.</p>
   </div>
 </section>
 

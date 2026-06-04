@@ -9,7 +9,8 @@
   import { fetchLive, liveToSnapshotShape } from '$lib/mcp/live';
   import type { Snapshot, Edge } from '$lib/mcp/types';
   import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
-  import LiveBadge from '$lib/components/LiveBadge.svelte';
+  import MoodPill from '$lib/components/MoodPill.svelte';
+  import ChapterFolio from '$lib/components/ChapterFolio.svelte';
 
   type NodeType =
     | 'repo'
@@ -164,7 +165,6 @@
     if (
       sources.includes('loop') ||
       id === 'area:patch-loop' ||
-      id === 'route:/loop' ||
       id.includes('change_loop') ||
       id.includes('patch_packet') ||
       tags.includes('patch-loop') ||
@@ -454,6 +454,10 @@
     return nodes;
   }
 
+  async function refreshAll() {
+    await Promise.all([refreshMcp(), refreshGithub()]);
+  }
+
   const atlas = $derived.by(() => buildAtlas(snapshot, repoSnapshot));
   const filteredBaseNodes = $derived.by(() => atlas.allNodes.filter((node) => matchesLens(node) && matchesQuery(node)));
   const filteredIdSet = $derived.by(() => new Set(filteredBaseNodes.map((node) => node.id)));
@@ -484,6 +488,20 @@
   });
   const hubCount = $derived(atlas.allNodes.filter((node) => node.type === 'hub').length);
   const searchResults = $derived.by(() => filteredBaseNodes.slice(0, 18));
+
+  // Top highlight nodes for the idle-state "start here" list.
+  const topHighlights = $derived.by(() => {
+    const degree = new Map<string, number>();
+    for (const edge of atlas.allEdges) {
+      degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
+      degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
+    }
+    return atlas.allNodes
+      .filter((n) => n.type !== 'hub' && matchesLens(n))
+      .map((n) => ({ ...n, degree: degree.get(n.id) ?? 0 }))
+      .sort((a, b) => b.degree - a.degree)
+      .slice(0, 6);
+  });
 
   function pin(id: string, ev?: MouseEvent) {
     ev?.stopPropagation();
@@ -548,71 +566,31 @@
 </script>
 
 <svelte:head>
-  <title>Graph - Workflow</title>
-  <meta name="description" content="Whole-project graph of Workflow: MCP community wiki, work targets, live universes, GitHub repo, branches, site pages, and project areas." />
+  <title>Graph — Workflow</title>
+  <meta name="description" content="The brain has a shape — universes, goals, bugs, plans, concepts, notes, and the repo, force-directed and hub-clustered." />
 </svelte:head>
+
+<MoodPill />
 
 <section class="hero">
   <div class="container">
-    <div class="head__row">
-      <RitualLabel color="var(--violet-400)">· Whole-project atlas · deduped by node ID ·</RitualLabel>
-      <LiveBadge fetchedAt={snapshot.fetched_at} source={snapshot.source} loading={mcpLoading} />
-    </div>
-    <h1>Everything, wired up.</h1>
+    <RitualLabel color="var(--violet-400)">· graph ·</RitualLabel>
+    <h1>The brain has a shape, not just contents.</h1>
     <p class="lead">
-      The graph now merges the live MCP community wiki with the real repo surface: GitHub branches, project areas, website pages, workflow branches, work targets, universes, bugs, notes, plans, and the patch loop. Collection and tag layers keep real project objects connected without hiding which edges are explicit evidence.
+      Every page, every edge, force-directed. <strong>{atlas.allNodes.length}</strong>
+      unique nodes, <strong>{atlas.allEdges.length}</strong> edges,
+      <strong>{hubCount}</strong> relation hubs, <strong>{orphanCount}</strong>
+      isolated. The MCP community wiki merged with the live repo surface —
+      GitHub branches, areas, routes, workflow branches, work targets,
+      universes, bugs, notes, plans, drafts, the patch loop itself. Hubs
+      and shared-tag clusters keep things connected without hiding which
+      edges are explicit and which are derived.
     </p>
   </div>
 </section>
 
 <section class="atlas">
   <div class="atlas__shell">
-    <aside class="control-panel" aria-label="Graph controls">
-      <div class="metric-grid">
-        <div><strong>{atlas.allNodes.length}</strong><span>unique nodes</span></div>
-        <div><strong>{atlas.allEdges.length}</strong><span>edges</span></div>
-        <div><strong>{hubCount}</strong><span>relation hubs</span></div>
-        <div><strong>{orphanCount}</strong><span>isolated</span></div>
-      </div>
-
-      <label class="search">
-        <span>Search graph</span>
-        <input bind:value={query} type="search" placeholder="BUG-034, loop, repo, writing..." />
-      </label>
-
-      <div class="lenses" aria-label="Graph lenses">
-        {#each LENSES as item}
-          <button class:selected={lens === item.id} aria-pressed={lens === item.id} onclick={() => (lens = item.id)}>{item.label}</button>
-        {/each}
-      </div>
-
-      <div class="refresh-row">
-        <button onclick={refreshMcp} disabled={mcpLoading} aria-busy={mcpLoading}>Refresh MCP</button>
-        <button onclick={refreshGithub} disabled={githubLoading} aria-busy={githubLoading}>Refresh GitHub</button>
-      </div>
-      {#if mcpError}<p class="inline-error">MCP refresh failed: {mcpError}</p>{/if}
-      {#if githubError}<p class="inline-error">GitHub refresh failed: {githubError}</p>{/if}
-
-      <div class="source-note">
-        <strong>{repoSnapshot.repo.owner}/{repoSnapshot.repo.name}</strong>
-        <span>head {repoSnapshot.repo.head} · {repoSnapshot.branches.length} GitHub branches</span>
-        <details class="source-note__raw">
-          <summary>Raw dev snapshot</summary>
-          <small>{repoSnapshot.repo.current_branch} · {repoSnapshot.repo.dirty_note ?? 'No dirty-worktree note recorded.'}</small>
-        </details>
-      </div>
-
-      <div class="quick-list">
-        <h2>{query ? 'Matches' : 'Visible nodes'}</h2>
-        {#each searchResults as node}
-          <button class:selected={pinned === node.id} onclick={(event) => pin(node.id, event)}>
-            <span class="type-dot" style:background={TYPE_META[node.type].color}></span>
-            <span>{node.title}</span>
-          </button>
-        {/each}
-      </div>
-    </aside>
-
     <div class="graph-stage">
       <div class="graph-stage__top">
         <div>
@@ -677,49 +655,129 @@
       </svg>
     </div>
 
-    <aside class="detail-panel" aria-label="Selected node detail">
-      {#if visibleNode}
-        <RitualLabel color={TYPE_META[visibleNode.type].color}>· {TYPE_META[visibleNode.type].label} ·</RitualLabel>
-        <h2>{visibleNode.title}</h2>
-        <p>{visibleNode.summary}</p>
-        <code>{visibleNode.id}</code>
-        <div class="chips">
-          {#each visibleNode.sources as source}
-            <span>{source}</span>
-          {/each}
-          {#each visibleNode.tags.slice(0, 5) as tag}
-            <span>{tag}</span>
+    <aside class="nav-panel" aria-label="Graph navigation">
+      <!-- Always-on: lens chips + search -->
+      <div class="nav-panel__top">
+        <div class="lenses" role="toolbar" aria-label="Graph lenses">
+          {#each LENSES as item}
+            <button class:selected={lens === item.id} aria-pressed={lens === item.id} onclick={() => (lens = item.id)}>{item.label}</button>
           {/each}
         </div>
-        {#if visibleNode.paths.length}
-          <div class="paths">
-            <h3>Paths</h3>
-            {#each visibleNode.paths.slice(0, 6) as path}
-              <small>{path}</small>
-            {/each}
+        <label class="search">
+          <input bind:value={query} type="search" placeholder="search the graph — bug, loop, plan, tag…" />
+          {#if query}
+            <button type="button" class="search__clear" onclick={() => (query = '')} aria-label="Clear search">×</button>
+          {/if}
+        </label>
+      </div>
+
+      <!-- State machine: selected → search-active → idle -->
+      {#if visibleNode}
+        <div class="state state--detail">
+          <button class="state__back" type="button" onclick={(event) => { event.stopPropagation(); pinned = null; active = null; }}>
+            ← back to overview
+          </button>
+          <RitualLabel color={TYPE_META[visibleNode.type].color}>· {TYPE_META[visibleNode.type].label} ·</RitualLabel>
+          <h2>{visibleNode.title}</h2>
+          <p>{visibleNode.summary}</p>
+          <code class="state__id">{visibleNode.id}</code>
+          {#if visibleNode.tags.length || visibleNode.sources.length}
+            <div class="chips">
+              {#each visibleNode.sources as source}<span class="chip chip--source">{source}</span>{/each}
+              {#each visibleNode.tags.slice(0, 5) as tag}<span class="chip">{tag}</span>{/each}
+            </div>
+          {/if}
+          {#if visibleNode.paths.length}
+            <div class="paths">
+              <h3>paths</h3>
+              {#each visibleNode.paths.slice(0, 6) as path}<small>{path}</small>{/each}
+            </div>
+          {/if}
+          <div class="neighbors">
+            <h3>neighbors ({neighbors.length})</h3>
+            {#if neighbors.length}
+              {#each neighbors as neighbor}
+                <button onclick={(event) => pin(neighbor.id, event)}>
+                  <span class="type-dot" style:background={TYPE_META[neighbor.type].color}></span>
+                  <span>{neighbor.title}</span>
+                </button>
+              {/each}
+            {:else}
+              <p class="muted">No visible relationships. A true orphan, not just waiting for collection context.</p>
+            {/if}
           </div>
-        {/if}
-        <div class="neighbors">
-          <h3>Neighbors</h3>
-          {#if neighbors.length}
-            {#each neighbors as neighbor}
-              <button onclick={(event) => pin(neighbor.id, event)}>
-                <span class="type-dot" style:background={TYPE_META[neighbor.type].color}></span>
-                <span>{neighbor.title}</span>
-              </button>
-            {/each}
+        </div>
+      {:else if query.trim()}
+        <div class="state state--search">
+          <p class="state__caption">{searchResults.length} result{searchResults.length === 1 ? '' : 's'} for <em>"{query}"</em></p>
+          {#if searchResults.length === 0}
+            <p class="muted">Nothing matches. Try a different word or clear the search.</p>
           {:else}
-            <p>No visible relationships. This is a true orphan in the current graph, not just a node waiting for collection or tag context.</p>
+            <div class="result-list">
+              {#each searchResults as node}
+                <button onclick={(event) => pin(node.id, event)}>
+                  <span class="type-dot" style:background={TYPE_META[node.type].color}></span>
+                  <span class="result-list__title">{node.title}</span>
+                  <small class="result-list__type">{TYPE_META[node.type].label}</small>
+                </button>
+              {/each}
+            </div>
           {/if}
         </div>
-        {#if pinned}<button class="unpin" onclick={(event) => { event.stopPropagation(); pinned = null; }}>Unpin</button>{/if}
       {:else}
-        <RitualLabel>· Select a node ·</RitualLabel>
-        <p class="empty">Hover or click any node. The panel shows source layers, paths, tags, and neighboring nodes so you can traverse the project like a knowledge graph.</p>
+        <div class="state state--idle">
+          <p class="state__caption">Click a node to read it, or search above. The biggest hubs are a good place to start.</p>
+          {#if topHighlights.length}
+            <div class="highlights">
+              <h3>start here</h3>
+              {#each topHighlights as node}
+                <button onclick={(event) => pin(node.id, event)}>
+                  <span class="type-dot" style:background={TYPE_META[node.type].color}></span>
+                  <span class="result-list__title">{node.title}</span>
+                  <small class="result-list__type">{node.degree} edges</small>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
       {/if}
+
+      <!-- Admin chrome at the bottom — refresh + source -->
+      <footer class="nav-panel__admin">
+        <button class="refresh" onclick={refreshAll} disabled={mcpLoading || githubLoading} aria-busy={mcpLoading || githubLoading}>
+          {mcpLoading || githubLoading ? 'reading…' : '↻ refresh from live brain'}
+        </button>
+        {#if mcpError}<p class="inline-error">MCP refresh failed: {mcpError}</p>{/if}
+        {#if githubError}<p class="inline-error">GitHub refresh failed: {githubError}</p>{/if}
+        <p class="source-note">
+          <strong>{repoSnapshot.repo.owner}/{repoSnapshot.repo.name}</strong>
+          · head <code>{repoSnapshot.repo.head}</code>
+          · {repoSnapshot.branches.length} branches
+        </p>
+      </footer>
     </aside>
   </div>
 </section>
+
+<section class="closer">
+  <div class="closer__inner">
+    <RitualLabel color="var(--violet-400)">· next ·</RitualLabel>
+    <h2>Last comes the fine print.</h2>
+    <p>Health, money, what we can actually prove is real.</p>
+    <nav class="closer__cta">
+      <a class="cta cta--primary" href="/fine-print">
+        <strong>status →</strong>
+        <span>health, economy, proof.</span>
+      </a>
+      <a class="cta" href="/wiki">
+        <strong>← the wiki</strong>
+        <span>read the brain.</span>
+      </a>
+    </nav>
+  </div>
+</section>
+
+<ChapterFolio title="graph" />
 
 <style>
   .hero { padding: 72px 0 28px; border-bottom: 1px solid var(--border-1); }
@@ -729,51 +787,15 @@
 
   .atlas { padding: 20px clamp(12px, 2.5vw, 28px) 56px; }
   .atlas__shell {
-    max-width: 1480px;
-    margin: 0 auto;
     display: grid;
-    grid-template-columns: 280px minmax(0, 1fr) 310px;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 18px;
+    align-items: start;
     gap: 14px;
     align-items: start;
   }
-  .control-panel,
-  .graph-stage,
-  .detail-panel {
-    border: 1px solid var(--border-1);
-    border-radius: 8px;
-    background: var(--bg-2);
-  }
-  .control-panel,
-  .detail-panel {
-    padding: 14px;
-    position: sticky;
-    top: 84px;
-  }
-  .metric-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    overflow: hidden;
-    border: 1px solid var(--border-1);
-    border-radius: 8px;
-    background: var(--bg-inset);
-  }
-  .metric-grid div { display: grid; gap: 3px; padding: 10px 8px; border-left: 1px solid var(--border-1); }
-  .metric-grid div:nth-child(odd) { border-left: 0; }
-  .metric-grid div:nth-child(n + 3) { border-top: 1px solid var(--border-1); }
-  .metric-grid strong { color: var(--fg-1); font-family: var(--font-display); font-size: 24px; line-height: 1; font-weight: 500; }
-  .metric-grid span { color: var(--fg-3); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; }
 
   .search { display: grid; gap: 7px; margin: 14px 0; }
-  .search span,
-  .quick-list h2,
-  .paths h3,
-  .neighbors h3 {
-    color: var(--fg-3);
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    font-weight: 500;
-    text-transform: uppercase;
-  }
   .search input {
     width: 100%;
     border: 1px solid var(--border-1);
@@ -786,31 +808,11 @@
   .lenses { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
   .lenses button,
   .refresh-row button,
-  .quick-list button,
-  .neighbors button,
-  .unpin {
-    border: 1px solid var(--border-1);
-    border-radius: 7px;
-    background: var(--bg-inset);
-    color: var(--fg-2);
-    cursor: pointer;
-  }
-  .lenses button,
-  .refresh-row button,
   .unpin {
     min-height: 34px;
     font-family: var(--font-mono);
     font-size: 11px;
     text-transform: uppercase;
-  }
-  .lenses button:hover,
-  .lenses button.selected,
-  .quick-list button:hover,
-  .quick-list button.selected,
-  .neighbors button:hover {
-    border-color: rgba(204, 120, 92, 0.65);
-    color: var(--fg-1);
-    background: rgba(204, 120, 92, 0.075);
   }
   .refresh-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
   .refresh-row button:disabled { opacity: 0.55; cursor: wait; }
@@ -827,20 +829,6 @@
   .source-note span,
   .source-note small { color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px; line-height: 1.45; }
   .source-note__raw summary { color: var(--fg-3); cursor: pointer; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; width: fit-content; }
-
-  .quick-list { display: grid; gap: 7px; max-height: 360px; overflow: auto; padding-right: 3px; }
-  .quick-list h2 { margin: 4px 0; }
-  .quick-list button,
-  .neighbors button {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 8px;
-    align-items: center;
-    min-height: 34px;
-    padding: 7px 8px;
-    text-align: left;
-    font-size: 12px;
-  }
   .type-dot { width: 9px; height: 9px; border-radius: 50%; }
 
   .graph-stage { overflow: hidden; }
@@ -957,18 +945,170 @@
     .atlas__shell,
     .graph-stage__top { grid-template-columns: 1fr; }
     .graph-stage { order: -1; }
-    .control-panel { order: 0; }
     .detail-panel { order: 1; }
-    .control-panel { position: static; }
     .legend { justify-content: flex-start; }
     .graph-stage__top { padding: 12px; }
     .legend { max-height: 68px; overflow: hidden; }
   }
   @media (max-width: 560px) {
     .atlas { padding-inline: 10px; }
-    .metric-grid { grid-template-columns: 1fr; }
-    .metric-grid div { border-left: 0; border-top: 1px solid var(--border-1); }
-    .metric-grid div:first-child { border-top: 0; }
     .lenses { grid-template-columns: 1fr; }
+  }
+
+  .closer { padding: 56px 24px 96px; border-top: 1px solid var(--border-1); }
+  .closer__inner { max-width: 760px; margin: 0 auto; }
+  .closer h2 { color: var(--fg-1); font-family: var(--font-display); font-size: clamp(26px, 4vw, 38px); font-weight: 500; letter-spacing: -0.02em; line-height: 1.05; margin: 8px 0 14px; }
+  .closer p { color: var(--fg-2); font-size: 15px; line-height: 1.65; max-width: 60ch; margin: 0 0 24px; }
+  .closer__cta { display: grid; gap: 10px; }
+  .cta { display: grid; gap: 4px; padding: 14px 16px; background: var(--bg-2); border: 1px solid var(--border-1); border-radius: 8px; color: inherit; text-decoration: none; transition: border-color var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-standard); }
+  .cta:hover { border-color: var(--border-2); transform: translateY(-1px); }
+  .cta--primary { border-color: rgba(138, 99, 206, 0.45); background: rgba(138, 99, 206, 0.05); }
+  .cta strong { color: var(--fg-1); font-family: var(--font-display); font-size: 18px; font-weight: 500; }
+  .cta span { color: var(--fg-2); font-size: 13px; line-height: 1.45; }
+
+  /* lead stats — counts in prose */
+  .lead strong { color: var(--ember-300); font-family: var(--font-display); font-style: italic; font-weight: 400; }
+  /* simplified source note */
+  .source-note { color: var(--fg-3); font-family: var(--font-mono); font-size: 11px; line-height: 1.45; margin: 0; }
+  .source-note strong { color: var(--fg-1); font-family: var(--font-mono); font-weight: 500; }
+  .source-note code { background: rgba(255,255,255,0.04); border: 1px solid var(--border-1); border-radius: 3px; color: var(--violet-200); padding: 1px 4px; }
+
+  /* Nav panel (replaces control-panel + detail-panel) */
+  .nav-panel {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 14px;
+    padding: 16px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: 12px;
+    position: sticky;
+    top: 88px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+  }
+  .nav-panel__top { display: grid; gap: 10px; }
+  .nav-panel .lenses { display: flex; flex-wrap: wrap; gap: 4px; }
+  .nav-panel .lenses button {
+    background: var(--bg-inset); border: 1px solid var(--border-1); border-radius: 999px;
+    color: var(--fg-2); cursor: pointer;
+    font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em;
+    padding: 5px 10px; text-transform: lowercase;
+    transition: border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+  }
+  .nav-panel .lenses button:hover { color: var(--fg-1); }
+  .nav-panel .lenses button.selected { background: rgba(138, 99, 206, 0.14); color: var(--violet-200); border-color: rgba(138, 99, 206, 0.5); }
+  .nav-panel .search { position: relative; }
+  .nav-panel .search input {
+    background: var(--bg-inset); border: 1px solid var(--border-1); border-radius: 8px;
+    color: var(--fg-1); font: 13px var(--font-sans);
+    min-height: 38px; outline: none; padding: 0 32px 0 12px; width: 100%;
+  }
+  .nav-panel .search input:focus { border-color: rgba(138, 99, 206, 0.55); box-shadow: 0 0 0 3px rgba(138, 99, 206, 0.12); }
+  .nav-panel .search__clear {
+    position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+    background: transparent; border: 0; color: var(--fg-3); cursor: pointer;
+    font-family: var(--font-display); font-size: 18px; line-height: 1; padding: 4px 8px;
+  }
+  .nav-panel .search__clear:hover { color: var(--fg-1); }
+
+  .state { display: grid; gap: 10px; min-width: 0; }
+  .state__caption { color: var(--fg-2); font-size: 13.5px; line-height: 1.55; margin: 0; }
+  .state__caption em { color: var(--ember-300); font-style: italic; }
+  .state__back {
+    background: transparent; border: 1px solid var(--border-1); border-radius: 5px;
+    color: var(--fg-2); cursor: pointer;
+    font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.1em;
+    padding: 4px 9px; text-transform: lowercase; text-align: left;
+    width: fit-content;
+  }
+  .state__back:hover { border-color: var(--border-2); color: var(--fg-1); }
+  .state h2 {
+    color: var(--fg-1); font-family: var(--font-display);
+    font-size: 22px; font-weight: 500; letter-spacing: -0.015em; line-height: 1.15;
+    margin: 0; overflow-wrap: anywhere;
+  }
+  .state h3 {
+    color: var(--fg-3); font-family: var(--font-mono);
+    font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    margin: 4px 0 6px;
+  }
+  .state p { color: var(--fg-2); font-size: 13.5px; line-height: 1.6; margin: 0; overflow-wrap: anywhere; }
+  .state .muted { color: var(--fg-3); font-style: italic; }
+  .state__id {
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border-1); border-radius: 3px;
+    color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px;
+    padding: 2px 6px; width: fit-content; overflow-wrap: anywhere;
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+  .chip {
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border-1); border-radius: 4px;
+    color: var(--fg-2);
+    font-family: var(--font-mono); font-size: 10px;
+    padding: 3px 6px;
+  }
+  .chip--source { color: var(--signal-live); border-color: rgba(109,211,166,0.32); }
+
+  .paths { display: grid; gap: 4px; padding-top: 6px; border-top: 1px solid var(--border-1); }
+  .paths small {
+    color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px;
+    overflow-wrap: anywhere;
+  }
+
+  .neighbors, .highlights, .result-list {
+    display: grid; gap: 4px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-1);
+    max-height: 380px;
+    overflow-y: auto;
+  }
+  .neighbors button, .highlights button, .result-list button {
+    background: transparent; border: 0; border-radius: 5px;
+    color: inherit; cursor: pointer;
+    display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 9px; align-items: center;
+    padding: 7px 8px; text-align: left; width: 100%;
+    transition: background var(--dur-fast) var(--ease-standard);
+  }
+  .neighbors button:hover, .highlights button:hover, .result-list button:hover { background: rgba(255,255,255,0.04); }
+  .type-dot { width: 9px; height: 9px; border-radius: 50%; }
+  .result-list__title, .neighbors button > span:not(.type-dot), .highlights button > span:not(.type-dot) {
+    color: var(--fg-1); font-size: 13px; line-height: 1.3; overflow-wrap: anywhere;
+  }
+  .result-list__type {
+    color: var(--fg-3); font-family: var(--font-mono); font-size: 10px;
+    text-transform: lowercase;
+  }
+
+  .nav-panel__admin {
+    display: grid; gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-1);
+  }
+  .nav-panel__admin .refresh {
+    background: transparent; border: 1px solid var(--border-2); border-radius: 6px;
+    color: var(--fg-1); cursor: pointer;
+    font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em;
+    min-height: 34px; padding: 0 12px; text-transform: lowercase;
+  }
+  .nav-panel__admin .refresh:hover:not(:disabled) { border-color: var(--violet-400); color: var(--violet-200); }
+  .nav-panel__admin .refresh:disabled { opacity: 0.55; cursor: wait; }
+  .nav-panel__admin .inline-error {
+    color: var(--signal-error); font-family: var(--font-mono); font-size: 11px;
+    margin: 0; overflow-wrap: anywhere;
+  }
+  .nav-panel__admin .source-note {
+    color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px; line-height: 1.45;
+    margin: 0;
+  }
+  .nav-panel__admin .source-note strong { color: var(--fg-2); font-family: var(--font-mono); font-weight: 500; }
+  .nav-panel__admin .source-note code {
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border-1); border-radius: 3px;
+    color: var(--violet-200); padding: 0 4px;
+  }
+
+  @media (max-width: 1000px) {
+    .atlas__shell { grid-template-columns: 1fr; }
+    .nav-panel { position: static; max-height: none; }
   }
 </style>

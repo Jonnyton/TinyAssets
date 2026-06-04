@@ -1,424 +1,88 @@
 {
-  "fetched_at": "2026-05-02T00:45:55.009Z",
+  "fetched_at": "2026-04-30T02:40:01.448Z",
   "source": "local git checkout + GitHub remote",
   "repo": {
     "id": "repo:Workflow",
     "name": "Workflow",
     "owner": "Jonnyton",
     "remote_url": "https://github.com/Jonnyton/Workflow.git",
-    "current_branch": "codex/website-live-lens-proof",
-    "head": "82f1a36",
-    "main": "6eb4ad6",
-    "dirty_note": "Working tree clean when repo snapshot was generated."
+    "current_branch": "cursor/claim-check-session-d",
+    "head": "8980315",
+    "main": "6207949",
+    "dirty_note": "Working tree had 96 changed paths when repo snapshot was generated."
   },
   "branches": [
     {
-      "id": "git:codex/website-live-lens-proof",
-      "name": "codex/website-live-lens-proof",
+      "id": "git:codex/arc-b-phase3",
+      "name": "codex/arc-b-phase3",
       "kind": "local",
-      "commit": "82f1a36",
-      "date": "2026-05-01T17:45:49-07:00",
-      "subject": "site: refresh graph repo snapshot"
+      "commit": "1ae48ef",
+      "date": "2026-04-29T17:57:55-07:00",
+      "subject": "refactor: remove author rename compatibility shims"
+    },
+    {
+      "id": "git:codex/browser-only-scorched-tanks-pwa",
+      "name": "codex/browser-only-scorched-tanks-pwa",
+      "kind": "local",
+      "commit": "1741a6b",
+      "date": "2026-04-29T18:17:41-07:00",
+      "subject": "docs: track local desktop game install blocker"
+    },
+    {
+      "id": "git:codex/bug037-publish-version-topology",
+      "name": "codex/bug037-publish-version-topology",
+      "kind": "local",
+      "commit": "8980315",
+      "date": "2026-04-28T00:15:25-07:00",
+      "subject": "docs: record autonomous backlog guardrails"
+    },
+    {
+      "id": "git:codex/bug037-publish-version-topology-live",
+      "name": "codex/bug037-publish-version-topology-live",
+      "kind": "local",
+      "commit": "b049f0d",
+      "date": "2026-04-29T18:07:14-07:00",
+      "subject": "chore: retire landed Arc B status rows"
+    },
+    {
+      "id": "git:codex/old-session-consolidation",
+      "name": "codex/old-session-consolidation",
+      "kind": "local",
+      "commit": "adb100f",
+      "date": "2026-04-29T17:29:27-07:00",
+      "subject": "Merge remote-tracking branch 'origin/main' into codex/old-session-consolidation"
+    },
+    {
+      "id": "git:codex/revert-loop-idle-canary",
+      "name": "codex/revert-loop-idle-canary",
+      "kind": "local",
+      "commit": "d28a381",
+      "date": "2026-04-29T19:34:59-07:00",
+      "subject": "docs: plan live community reiteration loop"
+    },
+    {
+      "id": "git:cursor/claim-check-session-d",
+      "name": "cursor/claim-check-session-d",
+      "kind": "local",
+      "commit": "8980315",
+      "date": "2026-04-28T00:15:25-07:00",
+      "subject": "docs: record autonomous backlog guardrails"
     },
     {
       "id": "git:main",
       "name": "main",
       "kind": "local",
-      "commit": "6eb4ad6",
-      "date": "2026-05-01T17:40:49-07:00",
-      "subject": "Merge PR #137: record directory submission boundaries"
+      "commit": "6207949",
+      "date": "2026-04-27T23:40:04-07:00",
+      "subject": "docs: add backlog execution artifacts"
     },
     {
-      "id": "git:origin/auto-change/issue-130-codex-25236021664",
-      "name": "origin/auto-change/issue-130-codex-25236021664",
-      "kind": "remote",
-      "commit": "2e6d2a5",
-      "date": "2026-05-01T22:38:47Z",
-      "subject": "[auto-change] BUG-045: Branch authoring surface cannot create invoke_branch nodes even though compiler supports invoke_branch_spec"
-    },
-    {
-      "id": "git:origin/auto-change/issue-24-codex-25201829693",
-      "name": "origin/auto-change/issue-24-codex-25201829693",
-      "kind": "remote",
-      "commit": "10a73e7",
-      "date": "2026-05-01T04:18:13Z",
-      "subject": "[auto-change] BUG-003: build_branch and patch_branch do not expose conditional_edges, blocking in-graph routing and iteration loops"
-    },
-    {
-      "id": "git:origin/auto-change/issue-31-codex-25201705115",
-      "name": "origin/auto-change/issue-31-codex-25201705115",
-      "kind": "remote",
-      "commit": "480d5b8",
-      "date": "2026-05-01T04:10:25Z",
-      "subject": "[auto-change] BUG-005: No way for a node to invoke a sub-branch and receive its output"
-    },
-    {
-      "id": "git:origin/auto-change/issue-33-codex-25201481083",
-      "name": "origin/auto-change/issue-33-codex-25201481083",
-      "kind": "remote",
-      "commit": "8bae58d",
-      "date": "2026-05-01T04:01:33Z",
-      "subject": "[auto-change] BUG-007: input_keys is not enforced as context isolation; prompt_template can read any state field"
-    },
-    {
-      "id": "git:origin/auto-change/issue-35-codex-25201246508",
-      "name": "origin/auto-change/issue-35-codex-25201246508",
-      "kind": "remote",
-      "commit": "a1ef97a",
-      "date": "2026-05-01T03:51:46Z",
-      "subject": "[auto-change] BUG-009: No scheduled or event-triggered branch invocation primitive"
-    },
-    {
-      "id": "git:origin/auto-change/issue-37-codex-25191876610",
-      "name": "origin/auto-change/issue-37-codex-25191876610",
-      "kind": "remote",
-      "commit": "8daf590",
-      "date": "2026-04-30T22:16:48Z",
-      "subject": "[auto-change] BUG-011: Undocumented / missing durable execution across daemon restart"
-    },
-    {
-      "id": "git:origin/auto-change/issue-37-codex-25200656825",
-      "name": "origin/auto-change/issue-37-codex-25200656825",
-      "kind": "remote",
-      "commit": "01d3159",
-      "date": "2026-05-01T03:25:18Z",
-      "subject": "[auto-change] BUG-011: Undocumented / missing durable execution across daemon restart"
-    },
-    {
-      "id": "git:origin/auto-change/issue-38-codex-25190917769",
-      "name": "origin/auto-change/issue-38-codex-25190917769",
-      "kind": "remote",
-      "commit": "6e65ff1",
-      "date": "2026-04-30T21:50:32Z",
-      "subject": "[auto-change] BUG-012: No concurrency budget primitive or observability for parallel fan-out bands"
-    },
-    {
-      "id": "git:origin/auto-change/issue-39-codex-25189747614",
-      "name": "origin/auto-change/issue-39-codex-25189747614",
-      "kind": "remote",
-      "commit": "41c038d",
-      "date": "2026-04-30T21:22:49Z",
-      "subject": "[auto-change] BUG-013: No file_feature_request wiki verb parallel to file_bug"
-    },
-    {
-      "id": "git:origin/auto-change/issue-39-codex-25200955228",
-      "name": "origin/auto-change/issue-39-codex-25200955228",
-      "kind": "remote",
-      "commit": "f8d9902",
-      "date": "2026-05-01T03:39:06Z",
-      "subject": "[auto-change] BUG-013: No file_feature_request wiki verb parallel to file_bug"
-    },
-    {
-      "id": "git:origin/auto-change/issue-40-codex-25188618288",
-      "name": "origin/auto-change/issue-40-codex-25188618288",
-      "kind": "remote",
-      "commit": "be6cebb",
-      "date": "2026-04-30T20:54:46Z",
-      "subject": "[auto-change] BUG-014: Compiler rejects double-brace literal escapes in prompt_template; missing-key error fires at run time not build time"
-    },
-    {
-      "id": "git:origin/auto-change/issue-41-codex-25187129948",
-      "name": "origin/auto-change/issue-41-codex-25187129948",
-      "kind": "remote",
-      "commit": "60c7ae1",
-      "date": "2026-04-30T20:18:06Z",
-      "subject": "[auto-change] BUG-015: Multi-output_keys node silently drops all but first key into state"
-    },
-    {
-      "id": "git:origin/auto-change/issue-42-codex-25185941621",
-      "name": "origin/auto-change/issue-42-codex-25185941621",
-      "kind": "remote",
-      "commit": "5cb84a9",
-      "date": "2026-04-30T19:50:32Z",
-      "subject": "[auto-change] BUG-016: Typed (non-str) output_keys from prompt-template nodes are not actually written to state"
-    },
-    {
-      "id": "git:origin/auto-change/issue-42-codex-25200006349",
-      "name": "origin/auto-change/issue-42-codex-25200006349",
-      "kind": "remote",
-      "commit": "522a076",
-      "date": "2026-05-01T02:56:53Z",
-      "subject": "[auto-change] BUG-016: Typed (non-str) output_keys from prompt-template nodes are not actually written to state"
-    },
-    {
-      "id": "git:origin/auto-change/issue-43-codex-25183860559",
-      "name": "origin/auto-change/issue-43-codex-25183860559",
-      "kind": "remote",
-      "commit": "e1402e0",
-      "date": "2026-04-30T19:04:50Z",
-      "subject": "[auto-change] BUG-017: Daemon sandbox (bubblewrap) lacks user-namespace permissions; dev/checker cannot execute anything"
-    },
-    {
-      "id": "git:origin/auto-change/issue-43-codex-25199876405",
-      "name": "origin/auto-change/issue-43-codex-25199876405",
-      "kind": "remote",
-      "commit": "21b5759",
-      "date": "2026-05-01T02:53:09Z",
-      "subject": "[auto-change] BUG-017: Daemon sandbox (bubblewrap) lacks user-namespace permissions; dev/checker cannot execute anything"
-    },
-    {
-      "id": "git:origin/auto-change/issue-44-codex-25181300266",
-      "name": "origin/auto-change/issue-44-codex-25181300266",
-      "kind": "remote",
-      "commit": "3dfe7c2",
-      "date": "2026-04-30T18:09:12Z",
-      "subject": "[auto-change] BUG-018: No maintainer_notes field on nodes; builder-to-builder notes have no daemon-invisible home"
-    },
-    {
-      "id": "git:origin/auto-change/issue-44-codex-25199845637",
-      "name": "origin/auto-change/issue-44-codex-25199845637",
-      "kind": "remote",
-      "commit": "f97e94a",
-      "date": "2026-05-01T02:52:01Z",
-      "subject": "[auto-change] BUG-018: No maintainer_notes field on nodes; builder-to-builder notes have no daemon-invisible home"
-    },
-    {
-      "id": "git:origin/auto-change/issue-46-codex-25180206163",
-      "name": "origin/auto-change/issue-46-codex-25180206163",
-      "kind": "remote",
-      "commit": "6c6082d",
-      "date": "2026-04-30T17:42:38Z",
-      "subject": "[auto-change] BUG-019: conditional_edges routing to END throws KeyError: '__end__' at runtime"
-    },
-    {
-      "id": "git:origin/auto-change/issue-46-codex-25199756114",
-      "name": "origin/auto-change/issue-46-codex-25199756114",
-      "kind": "remote",
-      "commit": "5c25987",
-      "date": "2026-05-01T02:46:59Z",
-      "subject": "[auto-change] BUG-019: conditional_edges routing to END throws KeyError: '__end__' at runtime"
-    },
-    {
-      "id": "git:origin/auto-change/issue-47-codex-25178169173",
-      "name": "origin/auto-change/issue-47-codex-25178169173",
-      "kind": "remote",
-      "commit": "b9aadd3",
-      "date": "2026-04-30T16:57:38Z",
-      "subject": "[auto-change] BUG-020: No long-poll / synchronous-wait mode; chatbot tool-budget exhausted by iterative polling"
-    },
-    {
-      "id": "git:origin/auto-change/issue-47-codex-25199686073",
-      "name": "origin/auto-change/issue-47-codex-25199686073",
-      "kind": "remote",
-      "commit": "15f0991",
-      "date": "2026-05-01T02:43:53Z",
-      "subject": "[auto-change] BUG-020: No long-poll / synchronous-wait mode; chatbot tool-budget exhausted by iterative polling"
-    },
-    {
-      "id": "git:origin/auto-change/issue-48-codex-25199605191",
-      "name": "origin/auto-change/issue-48-codex-25199605191",
-      "kind": "remote",
-      "commit": "980b115",
-      "date": "2026-05-01T02:39:35Z",
-      "subject": "[auto-change] BUG-021: LangGraph recursion_limit of 25 too tight for iterative loops; not exposed via run_branch"
-    },
-    {
-      "id": "git:origin/auto-change/issue-49-codex-25173767417",
-      "name": "origin/auto-change/issue-49-codex-25173767417",
-      "kind": "remote",
-      "commit": "2887d40",
-      "date": "2026-04-30T15:23:53Z",
-      "subject": "[auto-change] BUG-022: conditional_edges to terminal no-op node dont fire; router falls through to looping target"
-    },
-    {
-      "id": "git:origin/auto-change/issue-49-codex-25199573473",
-      "name": "origin/auto-change/issue-49-codex-25199573473",
-      "kind": "remote",
-      "commit": "c80be45",
-      "date": "2026-05-01T02:39:38Z",
-      "subject": "[auto-change] BUG-022: conditional_edges to terminal no-op node dont fire; router falls through to looping target"
-    },
-    {
-      "id": "git:origin/auto-change/issue-55-codex-25166813405",
-      "name": "origin/auto-change/issue-55-codex-25166813405",
-      "kind": "remote",
-      "commit": "da08385",
-      "date": "2026-04-30T13:05:44Z",
-      "subject": "[auto-change] BUG-025: claude-code provider listed first in writer chain but never available in container image"
-    },
-    {
-      "id": "git:origin/auto-change/issue-55-codex-25199466703",
-      "name": "origin/auto-change/issue-55-codex-25199466703",
-      "kind": "remote",
-      "commit": "96a46ea",
-      "date": "2026-05-01T02:35:43Z",
-      "subject": "[auto-change] BUG-025: claude-code provider listed first in writer chain but never available in container image"
-    },
-    {
-      "id": "git:origin/auto-change/issue-57-codex-25162442212",
-      "name": "origin/auto-change/issue-57-codex-25162442212",
-      "kind": "remote",
-      "commit": "20c7a54",
-      "date": "2026-04-30T11:22:05Z",
-      "subject": "[auto-change] BUG-027: No startup file-probe for required data files — missing artifacts degrade silently instead of failing loud"
-    },
-    {
-      "id": "git:origin/auto-change/issue-57-codex-25199336855",
-      "name": "origin/auto-change/issue-57-codex-25199336855",
-      "kind": "remote",
-      "commit": "0c3e2a3",
-      "date": "2026-05-01T02:30:30Z",
-      "subject": "[auto-change] BUG-027: No startup file-probe for required data files — missing artifacts degrade silently instead of failing loud"
-    },
-    {
-      "id": "git:origin/auto-change/issue-57-codex-25200607048",
-      "name": "origin/auto-change/issue-57-codex-25200607048",
-      "kind": "remote",
-      "commit": "a946463",
-      "date": "2026-05-01T03:21:59Z",
-      "subject": "[auto-change] BUG-027: No startup file-probe for required data files — missing artifacts degrade silently instead of failing loud"
-    },
-    {
-      "id": "git:origin/auto-change/issue-57-codex-25200839043",
-      "name": "origin/auto-change/issue-57-codex-25200839043",
-      "kind": "remote",
-      "commit": "9372ba0",
-      "date": "2026-05-01T03:32:39Z",
-      "subject": "[auto-change] BUG-027: No startup file-probe for required data files — missing artifacts degrade silently instead of failing loud"
-    },
-    {
-      "id": "git:origin/auto-change/issue-58-codex-25160448876",
-      "name": "origin/auto-change/issue-58-codex-25160448876",
-      "kind": "remote",
-      "commit": "32dffda",
-      "date": "2026-04-30T10:31:45Z",
-      "subject": "[auto-change] BUG-028: wiki action=write cannot update file_bug-created pages due to slug-case mismatch; stale duplicates accumulate"
-    },
-    {
-      "id": "git:origin/auto-change/issue-64-codex-25158154745",
-      "name": "origin/auto-change/issue-64-codex-25158154745",
-      "kind": "remote",
-      "commit": "ce6adf6",
-      "date": "2026-04-30T09:35:14Z",
-      "subject": "[auto-change] BUG-029: Failed workflow run error says empty LLM response but gives no clear next action"
-    },
-    {
-      "id": "git:origin/auto-change/issue-64-codex-25198856127",
-      "name": "origin/auto-change/issue-64-codex-25198856127",
-      "kind": "remote",
-      "commit": "9e8bf1a",
-      "date": "2026-05-01T02:09:33Z",
-      "subject": "[auto-change] BUG-029: Failed workflow run error says empty LLM response but gives no clear next action"
-    },
-    {
-      "id": "git:origin/auto-change/issue-66-codex-25198583063",
-      "name": "origin/auto-change/issue-66-codex-25198583063",
-      "kind": "remote",
-      "commit": "86fb650",
-      "date": "2026-05-01T01:59:47Z",
-      "subject": "[auto-change] BUG-031: describe_branch marks source-code branches valid without warning that unapproved nodes cannot run"
-    },
-    {
-      "id": "git:origin/auto-change/issue-68-codex-25155782274",
-      "name": "origin/auto-change/issue-68-codex-25155782274",
-      "kind": "remote",
-      "commit": "a797874",
-      "date": "2026-04-30T08:40:26Z",
-      "subject": "[auto-change] BUG-033: goals search misses obvious multi-token match across title, tags, and description"
-    },
-    {
-      "id": "git:origin/auto-change/issue-68-codex-25197746663",
-      "name": "origin/auto-change/issue-68-codex-25197746663",
-      "kind": "remote",
-      "commit": "7cca345",
-      "date": "2026-05-01T01:26:26Z",
-      "subject": "[auto-change] BUG-033: goals search misses obvious multi-token match across title, tags, and description"
-    },
-    {
-      "id": "git:origin/auto-change/issue-70-codex-25155111844",
-      "name": "origin/auto-change/issue-70-codex-25155111844",
-      "kind": "remote",
-      "commit": "26ae859",
-      "date": "2026-04-30T08:26:16Z",
-      "subject": "[auto-change] BUG-034: All extensions actions return 'No approval received' while goals/wiki/universe/get_status work normally"
-    },
-    {
-      "id": "git:origin/auto-change/issue-70-codex-25197174092",
-      "name": "origin/auto-change/issue-70-codex-25197174092",
-      "kind": "remote",
-      "commit": "e114bc4",
-      "date": "2026-05-01T01:06:14Z",
-      "subject": "[auto-change] BUG-034: All extensions actions return 'No approval received' while goals/wiki/universe/get_status work normally"
-    },
-    {
-      "id": "git:origin/auto-change/issue-81-codex-25195857769",
-      "name": "origin/auto-change/issue-81-codex-25195857769",
-      "kind": "remote",
-      "commit": "69a11b3",
-      "date": "2026-05-01T00:20:49Z",
-      "subject": "[auto-change] BUG-036: Echoes public-source intake smoke run fails on empty LLM response"
-    },
-    {
-      "id": "git:origin/auto-change/issue-83-codex-25195515699",
-      "name": "origin/auto-change/issue-83-codex-25195515699",
-      "kind": "remote",
-      "commit": "9fa9b52",
-      "date": "2026-05-01T00:10:50Z",
-      "subject": "[auto-change] BUG-038: Live branch run fails provider_exhausted before install-planning nodes"
-    },
-    {
-      "id": "git:origin/auto-change/issue-85-codex-25194858310",
-      "name": "origin/auto-change/issue-85-codex-25194858310",
-      "kind": "remote",
-      "commit": "e25f8e4",
-      "date": "2026-04-30T23:45:59Z",
-      "subject": "[auto-change] BUG-040: Wiki file_bug MCP schema rejects backend-supported tags field"
-    },
-    {
-      "id": "git:origin/auto-change/issue-86-codex-25194821605",
-      "name": "origin/auto-change/issue-86-codex-25194821605",
-      "kind": "remote",
-      "commit": "0542aae",
-      "date": "2026-04-30T23:46:48Z",
-      "subject": "[auto-change] BUG-041: Failed branch run snapshot can leave failed node displayed as running"
-    },
-    {
-      "id": "git:origin/auto-change/issue-88-codex-25194240114",
-      "name": "origin/auto-change/issue-88-codex-25194240114",
-      "kind": "remote",
-      "commit": "5ea5b72",
-      "date": "2026-04-30T23:29:15Z",
-      "subject": "[auto-change] BUG-043: Classic-game MCP branch cannot complete local desktop install"
-    },
-    {
-      "id": "git:origin/auto-change/issue-88-codex-25194943629",
-      "name": "origin/auto-change/issue-88-codex-25194943629",
-      "kind": "remote",
-      "commit": "bc9138e",
-      "date": "2026-04-30T23:50:30Z",
-      "subject": "[auto-change] BUG-043: Classic-game MCP branch cannot complete local desktop install"
-    },
-    {
-      "id": "git:origin/auto-change/issue-89-codex-25194192870",
-      "name": "origin/auto-change/issue-89-codex-25194192870",
-      "kind": "remote",
-      "commit": "320f0ba",
-      "date": "2026-04-30T23:26:45Z",
-      "subject": "[auto-change] BUG-044: change_loop_v1 compile fails because node id collides with state key"
-    },
-    {
-      "id": "git:origin/auto-change/issue-89-codex-25194444920",
-      "name": "origin/auto-change/issue-89-codex-25194444920",
-      "kind": "remote",
-      "commit": "c660ac7",
-      "date": "2026-04-30T23:33:41Z",
-      "subject": "[auto-change] BUG-044: change_loop_v1 compile fails because node id collides with state key"
-    },
-    {
-      "id": "git:origin/auto-change/issue-89-codex-25194608296",
-      "name": "origin/auto-change/issue-89-codex-25194608296",
-      "kind": "remote",
-      "commit": "40404d5",
-      "date": "2026-04-30T23:37:13Z",
-      "subject": "[auto-change] BUG-044: change_loop_v1 compile fails because node id collides with state key"
-    },
-    {
-      "id": "git:origin/codex/agent-teams-burndown-retire",
-      "name": "origin/codex/agent-teams-burndown-retire",
-      "kind": "remote",
-      "commit": "1f2ec6d",
-      "date": "2026-05-01T15:17:57-07:00",
-      "subject": "docs: retire stale agent teams burn-down row"
+      "id": "git:worktree-agent-a54683e4",
+      "name": "worktree-agent-a54683e4",
+      "kind": "local",
+      "commit": "e473f47",
+      "date": "2026-04-13T08:30:37-07:00",
+      "subject": "Phase 7.3 H2: goals cluster cutover"
     },
     {
       "id": "git:origin/codex/arc-b-phase3",
@@ -429,276 +93,12 @@
       "subject": "refactor: remove author rename compatibility shims"
     },
     {
-      "id": "git:origin/codex/catalog-discover-reframe",
-      "name": "origin/codex/catalog-discover-reframe",
-      "kind": "remote",
-      "commit": "fd982f7",
-      "date": "2026-05-01T14:59:26-07:00",
-      "subject": "merge main directory rollout updates"
-    },
-    {
-      "id": "git:origin/codex/connect-primary-action",
-      "name": "origin/codex/connect-primary-action",
-      "kind": "remote",
-      "commit": "132b2fc",
-      "date": "2026-05-01T15:32:18-07:00",
-      "subject": "refactor(site): simplify connect page proof story"
-    },
-    {
-      "id": "git:origin/codex/daemon-memory-governor",
-      "name": "origin/codex/daemon-memory-governor",
-      "kind": "remote",
-      "commit": "fc39281",
-      "date": "2026-05-01T17:32:19-07:00",
-      "subject": "docs: pin community loop souls to fixed llms"
-    },
-    {
-      "id": "git:origin/codex/daemon-soul-summon-live-main",
-      "name": "origin/codex/daemon-soul-summon-live-main",
-      "kind": "remote",
-      "commit": "2969478",
-      "date": "2026-04-30T21:05:25-07:00",
-      "subject": "Merge remote-tracking branch 'origin/main' into codex/daemon-soul-summon-live-main"
-    },
-    {
-      "id": "git:origin/codex/directory-live-proof",
-      "name": "origin/codex/directory-live-proof",
-      "kind": "remote",
-      "commit": "4063813",
-      "date": "2026-05-01T14:14:37-07:00",
-      "subject": "docs: record live directory endpoint proof"
-    },
-    {
-      "id": "git:origin/codex/directory-rollout-queue",
-      "name": "origin/codex/directory-rollout-queue",
-      "kind": "remote",
-      "commit": "54cb5a1",
-      "date": "2026-05-01T14:42:26-07:00",
-      "subject": "Document MCP directory rollout queue"
-    },
-    {
-      "id": "git:origin/codex/directory-submission-boundaries",
-      "name": "origin/codex/directory-submission-boundaries",
-      "kind": "remote",
-      "commit": "a9ce4c7",
-      "date": "2026-05-01T17:39:06-07:00",
-      "subject": "Merge remote-tracking branch 'origin/main' into codex/directory-submission-boundaries"
-    },
-    {
-      "id": "git:origin/codex/ecosystem-directory-rollout",
-      "name": "origin/codex/ecosystem-directory-rollout",
-      "kind": "remote",
-      "commit": "f70bb66",
-      "date": "2026-05-01T14:00:32-07:00",
-      "subject": "fix: let worker PR checks run without deploy secrets"
-    },
-    {
-      "id": "git:origin/codex/f2-spec-retire",
-      "name": "origin/codex/f2-spec-retire",
-      "kind": "remote",
-      "commit": "dff5af7",
-      "date": "2026-05-01T15:06:23-07:00",
-      "subject": "docs: retire stale f2 recency primitive plan"
-    },
-    {
-      "id": "git:origin/codex/graph-true-connection-layers",
-      "name": "origin/codex/graph-true-connection-layers",
-      "kind": "remote",
-      "commit": "2dca5e3",
-      "date": "2026-05-01T00:07:47-07:00",
-      "subject": "feat(site): add graph relationship layers"
-    },
-    {
-      "id": "git:origin/codex/host-customer-matrix",
-      "name": "origin/codex/host-customer-matrix",
-      "kind": "remote",
-      "commit": "60c6950",
-      "date": "2026-05-01T14:45:11-07:00",
-      "subject": "Add MCP host customer matrix"
-    },
-    {
-      "id": "git:origin/codex/host-discoverability-live",
-      "name": "origin/codex/host-discoverability-live",
-      "kind": "remote",
-      "commit": "d26f3b1",
-      "date": "2026-05-01T13:21:20-07:00",
-      "subject": "docs: prepare host discoverability rollout"
-    },
-    {
-      "id": "git:origin/codex/hostless-byok-control-api",
-      "name": "origin/codex/hostless-byok-control-api",
-      "kind": "remote",
-      "commit": "de430f9",
-      "date": "2026-05-01T15:20:28-07:00",
-      "subject": "Add Open WebUI no-login setup pack"
-    },
-    {
-      "id": "git:origin/codex/librechat-no-login-pack",
-      "name": "origin/codex/librechat-no-login-pack",
-      "kind": "remote",
-      "commit": "7e6676c",
-      "date": "2026-05-01T16:11:03-07:00",
-      "subject": "Document LibreChat MCP directory proof"
-    },
-    {
-      "id": "git:origin/codex/librechat-no-login-pack-v2",
-      "name": "origin/codex/librechat-no-login-pack-v2",
-      "kind": "remote",
-      "commit": "607858c",
-      "date": "2026-05-01T16:13:25-07:00",
-      "subject": "Document LibreChat MCP directory proof"
-    },
-    {
-      "id": "git:origin/codex/live-website-loop-pass",
-      "name": "origin/codex/live-website-loop-pass",
-      "kind": "remote",
-      "commit": "88cf47f",
-      "date": "2026-04-29T22:17:30-07:00",
-      "subject": "Update live project website lenses"
-    },
-    {
-      "id": "git:origin/codex/live-website-loop-pass-2",
-      "name": "origin/codex/live-website-loop-pass-2",
-      "kind": "remote",
-      "commit": "dece5f9",
-      "date": "2026-04-29T22:19:27-07:00",
-      "subject": "Merge remote-tracking branch 'origin/main' into codex/live-website-loop-pass-2"
-    },
-    {
       "id": "git:origin/codex/local-desktop-game-installer",
       "name": "origin/codex/local-desktop-game-installer",
       "kind": "remote",
       "commit": "1741a6b",
       "date": "2026-04-29T18:17:41-07:00",
       "subject": "docs: track local desktop game install blocker"
-    },
-    {
-      "id": "git:origin/codex/loop-live-feed-readability",
-      "name": "origin/codex/loop-live-feed-readability",
-      "kind": "remote",
-      "commit": "9e3f870",
-      "date": "2026-04-30T20:36:47-07:00",
-      "subject": "fix(site): render loop MCP failures readably"
-    },
-    {
-      "id": "git:origin/codex/loop-live-freshness",
-      "name": "origin/codex/loop-live-freshness",
-      "kind": "remote",
-      "commit": "f1802bc",
-      "date": "2026-04-30T22:06:57-07:00",
-      "subject": "fix(site): filter recent MCP runs by current time"
-    },
-    {
-      "id": "git:origin/codex/loop-mcp-refresh",
-      "name": "origin/codex/loop-mcp-refresh",
-      "kind": "remote",
-      "commit": "235042d",
-      "date": "2026-04-30T20:17:01-07:00",
-      "subject": "Merge remote-tracking branch 'origin/main' into codex/loop-mcp-refresh"
-    },
-    {
-      "id": "git:origin/codex/loop-rail-compact-refresh",
-      "name": "origin/codex/loop-rail-compact-refresh",
-      "kind": "remote",
-      "commit": "c79fe9b",
-      "date": "2026-04-30T21:44:59-07:00",
-      "subject": "fix(site): keep loop rail compact and retry MCP"
-    },
-    {
-      "id": "git:origin/codex/loop-stage-button-event-summary",
-      "name": "origin/codex/loop-stage-button-event-summary",
-      "kind": "remote",
-      "commit": "48c2ad1",
-      "date": "2026-04-30T23:19:03-07:00",
-      "subject": "feat(site): add latest event summary to loop rail"
-    },
-    {
-      "id": "git:origin/codex/loop-stage-button-event-summary-current",
-      "name": "origin/codex/loop-stage-button-event-summary-current",
-      "kind": "remote",
-      "commit": "886fbd2",
-      "date": "2026-04-30T23:19:19-07:00",
-      "subject": "feat(site): add latest event summary to loop rail"
-    },
-    {
-      "id": "git:origin/codex/loop-stage-button-recency",
-      "name": "origin/codex/loop-stage-button-recency",
-      "kind": "remote",
-      "commit": "344de77",
-      "date": "2026-04-30T23:08:13-07:00",
-      "subject": "fix(site): show loop stage recency in rail"
-    },
-    {
-      "id": "git:origin/codex/loop-stage-clicks",
-      "name": "origin/codex/loop-stage-clicks",
-      "kind": "remote",
-      "commit": "262e9a8",
-      "date": "2026-04-30T22:15:52-07:00",
-      "subject": "fix(site): make loop stage clicks visible"
-    },
-    {
-      "id": "git:origin/codex/loop-stage-detail-overflow",
-      "name": "origin/codex/loop-stage-detail-overflow",
-      "kind": "remote",
-      "commit": "6478e14",
-      "date": "2026-05-01T12:32:01-07:00",
-      "subject": "fix(site): contain loop stage detail overflow"
-    },
-    {
-      "id": "git:origin/codex/loop-stage-detail-panel",
-      "name": "origin/codex/loop-stage-detail-panel",
-      "kind": "remote",
-      "commit": "fedb56d",
-      "date": "2026-04-30T22:33:10-07:00",
-      "subject": "feat(site): expand loop stage detail panel"
-    },
-    {
-      "id": "git:origin/codex/loop-stage-event-readable",
-      "name": "origin/codex/loop-stage-event-readable",
-      "kind": "remote",
-      "commit": "43b3998",
-      "date": "2026-04-30T23:35:23-07:00",
-      "subject": "fix(site): make loop rail event text readable"
-    },
-    {
-      "id": "git:origin/codex/loop-stage-signal-summary",
-      "name": "origin/codex/loop-stage-signal-summary",
-      "kind": "remote",
-      "commit": "524a165",
-      "date": "2026-05-01T17:25:05-07:00",
-      "subject": "feat: validate existing child run receipts"
-    },
-    {
-      "id": "git:origin/codex/loop-subscription-binding",
-      "name": "origin/codex/loop-subscription-binding",
-      "kind": "remote",
-      "commit": "f2e9d38",
-      "date": "2026-04-30T23:18:04-07:00",
-      "subject": "Merge remote-tracking branch 'origin/main' into codex/loop-subscription-binding"
-    },
-    {
-      "id": "git:origin/codex/loop-writer-family-policy",
-      "name": "origin/codex/loop-writer-family-policy",
-      "kind": "remote",
-      "commit": "0aaaea5",
-      "date": "2026-04-29T22:35:39-07:00",
-      "subject": "retry no-auth loop requests after writer auth"
-    },
-    {
-      "id": "git:origin/codex/mcp-host-coverage-live",
-      "name": "origin/codex/mcp-host-coverage-live",
-      "kind": "remote",
-      "commit": "75499b6",
-      "date": "2026-04-30T23:46:13-07:00",
-      "subject": "docs(site): show MCP host coverage on connect"
-    },
-    {
-      "id": "git:origin/codex/mcp-rollout-acceptance",
-      "name": "origin/codex/mcp-rollout-acceptance",
-      "kind": "remote",
-      "commit": "1577900",
-      "date": "2026-05-01T17:17:36-07:00",
-      "subject": "docs: publish MCP registry rollout proof"
     },
     {
       "id": "git:origin/codex/old-session-consolidation",
@@ -709,124 +109,28 @@
       "subject": "Merge remote-tracking branch 'origin/main' into codex/old-session-consolidation"
     },
     {
-      "id": "git:origin/codex/open-webui-no-login-pack",
-      "name": "origin/codex/open-webui-no-login-pack",
-      "kind": "remote",
-      "commit": "39dd783",
-      "date": "2026-05-01T15:19:50-07:00",
-      "subject": "Add Open WebUI no-login setup pack"
-    },
-    {
-      "id": "git:origin/codex/open-webui-runtime-proof",
-      "name": "origin/codex/open-webui-runtime-proof",
-      "kind": "remote",
-      "commit": "ff1acf4",
-      "date": "2026-05-01T15:45:06-07:00",
-      "subject": "docs: record open webui mcp proof"
-    },
-    {
-      "id": "git:origin/codex/p1a-child-run-receipts",
-      "name": "origin/codex/p1a-child-run-receipts",
-      "kind": "remote",
-      "commit": "20d42df",
-      "date": "2026-05-01T17:29:47-07:00",
-      "subject": "feat: validate existing child run receipts"
-    },
-    {
-      "id": "git:origin/codex/pipeline-burndown-cleanup",
-      "name": "origin/codex/pipeline-burndown-cleanup",
-      "kind": "remote",
-      "commit": "4d64350",
-      "date": "2026-05-01T15:09:20-07:00",
-      "subject": "docs: trim stale pipeline burn-down rows"
-    },
-    {
       "id": "git:origin/codex/revert-loop-idle-canary",
       "name": "origin/codex/revert-loop-idle-canary",
       "kind": "remote",
-      "commit": "df35b4b",
-      "date": "2026-04-29T21:37:48-07:00",
-      "subject": "docs: record loop watch live state"
-    },
-    {
-      "id": "git:origin/codex/science-domain-catalog",
-      "name": "origin/codex/science-domain-catalog",
-      "kind": "remote",
-      "commit": "683b229",
-      "date": "2026-05-01T15:16:19-07:00",
-      "subject": "docs: seed scientific computing domain catalog"
-    },
-    {
-      "id": "git:origin/codex/scorched-tanks-browser-pwa-live",
-      "name": "origin/codex/scorched-tanks-browser-pwa-live",
-      "kind": "remote",
-      "commit": "9e27f82",
-      "date": "2026-04-30T17:32:04-07:00",
-      "subject": "fix: make Scorched Tanks launcher rights-aware"
-    },
-    {
-      "id": "git:origin/codex/scorched-tanks-browser-pwa-live-main",
-      "name": "origin/codex/scorched-tanks-browser-pwa-live-main",
-      "kind": "remote",
-      "commit": "417d2b3",
-      "date": "2026-04-30T22:04:37-07:00",
-      "subject": "skills: carry AROS proof rules in branch"
-    },
-    {
-      "id": "git:origin/codex/site-cert-flip",
-      "name": "origin/codex/site-cert-flip",
-      "kind": "remote",
-      "commit": "84fd308",
-      "date": "2026-05-01T15:19:59-07:00",
-      "subject": "docs: stamp site cert flip blocker"
-    },
-    {
-      "id": "git:origin/codex/website-logo-loop-live-20260430",
-      "name": "origin/codex/website-logo-loop-live-20260430",
-      "kind": "remote",
-      "commit": "1f7c7f1",
-      "date": "2026-04-30T00:35:27-07:00",
-      "subject": "feat(site): ship approved Workflow logo"
-    },
-    {
-      "id": "git:origin/codex/website-loop-feed-no404-20260430",
-      "name": "origin/codex/website-loop-feed-no404-20260430",
-      "kind": "remote",
-      "commit": "df6bd20",
-      "date": "2026-04-30T00:41:13-07:00",
-      "subject": "fix(site): avoid missing loop feed probes"
-    },
-    {
-      "id": "git:origin/codex/worker-account-id-fallback",
-      "name": "origin/codex/worker-account-id-fallback",
-      "kind": "remote",
-      "commit": "a887392",
-      "date": "2026-05-01T14:07:13-07:00",
-      "subject": "fix: derive Cloudflare account id in worker deploy"
-    },
-    {
-      "id": "git:origin/codex/worker-node22-account-env",
-      "name": "origin/codex/worker-node22-account-env",
-      "kind": "remote",
-      "commit": "8a60662",
-      "date": "2026-05-01T14:11:24-07:00",
-      "subject": "fix: run worker deploy with Node 22"
+      "commit": "d28a381",
+      "date": "2026-04-29T19:34:59-07:00",
+      "subject": "docs: plan live community reiteration loop"
     },
     {
       "id": "git:origin/cursor/claim-check-session-d",
       "name": "origin/cursor/claim-check-session-d",
       "kind": "remote",
-      "commit": "79baa96",
-      "date": "2026-05-01T16:32:00-07:00",
-      "subject": "docs: add game prototyping skill"
+      "commit": "528eeba",
+      "date": "2026-04-27T23:41:35-07:00",
+      "subject": "docs: add navigator reality sweep update"
     },
     {
       "id": "git:origin/main",
       "name": "origin/main",
       "kind": "remote",
-      "commit": "6eb4ad6",
-      "date": "2026-05-01T17:40:49-07:00",
-      "subject": "Merge PR #137: record directory submission boundaries"
+      "commit": "d28a381",
+      "date": "2026-04-29T19:34:59-07:00",
+      "subject": "docs: plan live community reiteration loop"
     },
     {
       "id": "git:origin/website/fix-live-crashes",
@@ -837,20 +141,12 @@
       "subject": "remove(site): pull all phone references; reframe alliance as async-only"
     },
     {
-      "id": "git:origin/website/live-observation-deck-final",
-      "name": "origin/website/live-observation-deck-final",
-      "kind": "remote",
-      "commit": "aa739b3",
-      "date": "2026-04-29T19:53:12-07:00",
-      "subject": "feat: ship live project website refresh"
-    },
-    {
       "id": "git:origin/website/ship-prototype",
       "name": "origin/website/ship-prototype",
       "kind": "remote",
       "commit": "b54227e",
       "date": "2026-04-29T08:08:18Z",
-      "subject": "feat(site): pre-ship hardening — fresh snapshot, error page, deploy guide"
+      "subject": "feat(site): pre-ship hardening \u2014 fresh snapshot, error page, deploy guide"
     }
   ],
   "areas": [
@@ -1003,13 +299,7 @@
       "id": "route:/wiki",
       "path": "/wiki",
       "label": "Wiki cockpit",
-      "summary": "Canonical community wiki and public-work lens through MCP."
-    },
-    {
-      "id": "route:/loop",
-      "path": "/loop",
-      "label": "Patch-loop playground",
-      "summary": "Interactive loop showcase backed by real bugs and goals."
+      "summary": "Live MCP commons browser."
     },
     {
       "id": "route:/graph",
@@ -1030,28 +320,22 @@
       "summary": "Daemon host entry point."
     },
     {
-      "id": "route:/status",
-      "path": "/status",
-      "label": "Status",
-      "summary": "Operations room for public health, current work, and deployment evidence."
+      "id": "route:/goals",
+      "path": "/goals",
+      "label": "Goals",
+      "summary": "Public goal lens backed by MCP goals, commons records, and branch signals."
     },
     {
-      "id": "route:/economy",
-      "path": "/economy",
-      "label": "Economy",
-      "summary": "Settlement boundary and test tiny disclosure surface."
+      "id": "route:/fine-print",
+      "path": "/fine-print",
+      "label": "Status",
+      "summary": "Operations room for public health, current work, and deployment evidence."
     },
     {
       "id": "route:/alliance",
       "path": "/alliance",
       "label": "Alliance",
       "summary": "Async-first community intake and collaboration path."
-    },
-    {
-      "id": "route:/proof",
-      "path": "/proof",
-      "label": "Proof packet",
-      "summary": "Five-minute evidence page for developers and serious evaluators."
     },
     {
       "id": "route:/legal",
@@ -1138,11 +422,6 @@
     },
     {
       "from": "area:website",
-      "to": "route:/loop",
-      "kind": "route"
-    },
-    {
-      "from": "area:website",
       "to": "route:/graph",
       "kind": "route"
     },
@@ -1158,22 +437,17 @@
     },
     {
       "from": "area:website",
-      "to": "route:/status",
+      "to": "route:/goals",
       "kind": "route"
     },
     {
       "from": "area:website",
-      "to": "route:/economy",
+      "to": "route:/fine-print",
       "kind": "route"
     },
     {
       "from": "area:website",
       "to": "route:/alliance",
-      "kind": "route"
-    },
-    {
-      "from": "area:website",
-      "to": "route:/proof",
       "kind": "route"
     },
     {
@@ -1287,11 +561,6 @@
       "kind": "scope-case"
     },
     {
-      "from": "route:/loop",
-      "to": "area:patch-loop",
-      "kind": "showcases"
-    },
-    {
       "from": "route:/wiki",
       "to": "area:mcp-api",
       "kind": "showcases"
@@ -1302,19 +571,14 @@
       "kind": "showcases"
     },
     {
-      "from": "route:/proof",
-      "to": "repo:Workflow",
-      "kind": "evidence"
+      "from": "route:/goals",
+      "to": "area:mcp-api",
+      "kind": "showcases"
     },
     {
-      "from": "route:/status",
+      "from": "route:/fine-print",
       "to": "area:packaging-ops",
       "kind": "observes"
-    },
-    {
-      "from": "route:/economy",
-      "to": "area:docs-plans",
-      "kind": "discloses"
     },
     {
       "from": "route:/alliance",

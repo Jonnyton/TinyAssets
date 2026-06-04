@@ -14,7 +14,6 @@ import type { Snapshot } from '$lib/mcp/types';
 const MCP_PATH = import.meta.env.DEV ? '/mcp-live' : '/mcp';
 
 let initialized = false;
-let initPromise: Promise<void> | null = null;
 let sessionId: string | null = null;
 let nextId = 1;
 
@@ -81,17 +80,6 @@ async function rpc(method: string, params: any = {}): Promise<any> {
 
 async function ensureInit(): Promise<void> {
   if (initialized) return;
-  if (initPromise) return initPromise;
-
-  initPromise = initializeSession();
-  try {
-    await initPromise;
-  } finally {
-    initPromise = null;
-  }
-}
-
-async function initializeSession(): Promise<void> {
   await rpc('initialize', {
     protocolVersion: '2025-06-18',
     clientInfo: { name: 'tinyassets-site-live', version: '0.1.0' },
@@ -99,7 +87,7 @@ async function initializeSession(): Promise<void> {
   });
   // Some servers require a notifications/initialized after — best effort.
   try {
-    const res = await fetch(MCP_PATH, {
+    await fetch(MCP_PATH, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -108,7 +96,6 @@ async function initializeSession(): Promise<void> {
       },
       body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
     });
-    await res.text();
   } catch {}
   initialized = true;
 }
@@ -116,7 +103,14 @@ async function initializeSession(): Promise<void> {
 async function callTool(name: string, args: Record<string, any>): Promise<any> {
   await ensureInit();
   const result = await rpc('tools/call', { name, arguments: args });
-  // result.content is [{ type: 'text', text: '<json>' }, ...]
+  // The server moved canonical tool output into `structuredContent` (MCP
+  // structured output). `content[].text` is now often just a human summary
+  // (e.g. wiki list -> "promoted=1173, drafts=221") or a pointer
+  // ("Tool result available in structuredContent"), so prefer the structured
+  // payload when present and only fall back to parsing the text blob.
+  if (result?.structuredContent && typeof result.structuredContent === 'object') {
+    return result.structuredContent;
+  }
   const t = result?.content?.find((c: any) => c?.type === 'text');
   if (!t?.text) return null;
   try {
@@ -155,6 +149,12 @@ export async function fetchLive(): Promise<LiveResult> {
     },
     fetchedAt: new Date().toISOString()
   };
+}
+
+/** Fetch the live community-change (patch) loop queue: open requests, auto-fix
+ *  runs, open PRs, and the review standard. Backs the /patch-loop page. */
+export async function fetchChangeContext(limit = 8): Promise<any> {
+  return await callTool('community_change_context', { limit });
 }
 
 /** Fetch a single page's body (for ref-extraction). */
@@ -258,63 +258,6 @@ function firstDetailString(...values: unknown[]): string {
     if (!isSparseText(text)) return text;
   }
   return '';
-}
-
-function compactDetailText(value: string, maxLength = 260): string {
-  const text = value.replace(/\s+/g, ' ').trim();
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength - 1).trimEnd()}...`;
-}
-
-function parseJsonObject(value: string): Record<string, any> | null {
-  const text = value.trim();
-  if (!text.startsWith('{') || !text.endsWith('}')) return null;
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function humanizeKey(value: string): string {
-  return value.replace(/[_-]+/g, ' ');
-}
-
-function summarizeJsonDetail(detail: string): string | null {
-  const parsed = parseJsonObject(detail);
-  if (!parsed) return null;
-
-  const responseText = firstDetailString(parsed.response, parsed.result, parsed.output, parsed.message);
-  const responseObject = responseText ? parseJsonObject(responseText) : null;
-  const keys = responseObject
-    ? Object.keys(responseObject).filter((key) => !isSparseText(stringify(responseObject[key])))
-    : [];
-
-  const parts: string[] = [];
-  const role = firstString(parsed.role, parsed.provider, parsed.provider_served);
-  if (role && role !== 'unknown') parts.push(`served by ${role}`);
-  if (keys.length) parts.push(`returned ${keys.slice(0, 3).map(humanizeKey).join(', ')}`);
-
-  const requestId = responseText.match(/request[_ -]?id[:= ]+([A-Za-z0-9_.:-]+)/i)?.[1]
-    ?? firstString(parsed.request_id, parsed.id);
-  if (requestId) parts.push(`request ${requestId}`);
-
-  const promptPreview = firstDetailString(parsed.prompt_preview, parsed.prompt);
-  if (!parts.length && promptPreview) parts.push(`prompt: ${compactDetailText(promptPreview, 180)}`);
-  if (!parts.length && responseText) parts.push(compactDetailText(responseText));
-  if (!parts.length) {
-    const visibleKeys = Object.keys(parsed).filter((key) => !isSparseText(stringify(parsed[key])));
-    if (visibleKeys.length) parts.push(`structured event with ${visibleKeys.slice(0, 4).map(humanizeKey).join(', ')}`);
-  }
-
-  return parts.length ? compactDetailText(parts.join(' - '), 320) : null;
-}
-
-function readableEventDetail(detail: string): string {
-  const summarized = summarizeJsonDetail(detail);
-  if (summarized) return summarized;
-  return compactDetailText(detail, 420);
 }
 
 function normalizeTimestamp(value: unknown): string | null {
@@ -433,7 +376,7 @@ function normalizeEvent(raw: any, index: number, run?: LoopPatchRun): LoopPatchE
     stage: inferLoopStage(raw?.stage, nodeId, title, detail, status, run?.error),
     status,
     title,
-    detail: readableEventDetail(detail || fallbackDetail),
+    detail: detail || fallbackDetail,
     at: normalizeTimestamp(raw?.created_at ?? raw?.timestamp ?? raw?.at ?? raw?.started_at ?? run?.started_at),
     node_id: nodeId || undefined,
     source: firstString(raw?.source, 'MCP run event')
@@ -1108,6 +1051,10 @@ export function liveToSnapshotShape(live: LiveResult, baked: Snapshot): Snapshot
   wiki.plans = dedupBy(wiki.plans, (pl: any) => pl.slug);
   wiki.drafts = dedupBy(wiki.drafts, (d: any) => d.slug);
 
+  // Newest first: bug ids encode order (BUG-123 is newer than BUG-001).
+  const bugNum = (id: unknown) => parseInt(String(id ?? '').replace(/\D/g, ''), 10) || 0;
+  wiki.bugs.sort((a: any, b: any) => bugNum(b.id) - bugNum(a.id));
+
   const promoted = wiki.bugs.length + wiki.concepts.length + wiki.notes.length + wiki.plans.length + wiki.other.length;
 
   return {
@@ -1120,7 +1067,9 @@ export function liveToSnapshotShape(live: LiveResult, baked: Snapshot): Snapshot
       universes: live.universes.length,
       edges: baked.edges?.length ?? 0
     },
-    goals: live.goals.map((g) => ({
+    goals: [...live.goals]
+      .sort((a, b) => (Date.parse(b.updated_at ?? b.created_at ?? '') || 0) - (Date.parse(a.updated_at ?? a.created_at ?? '') || 0))
+      .map((g) => ({
       id: g.goal_id ?? g.id,
       name: g.name ?? '',
       summary: g.description ?? '',
@@ -1128,7 +1077,9 @@ export function liveToSnapshotShape(live: LiveResult, baked: Snapshot): Snapshot
       author: g.author ?? 'anonymous',
       visibility: g.visibility ?? 'public'
     })),
-    universes: live.universes.map((u) => ({
+    universes: [...live.universes]
+      .sort((a, b) => (Date.parse(b.last_activity_at ?? '') || 0) - (Date.parse(a.last_activity_at ?? '') || 0))
+      .map((u) => ({
       id: u.id,
       phase: u.phase_human ?? u.phase ?? 'unknown',
       word_count: u.word_count ?? 0,

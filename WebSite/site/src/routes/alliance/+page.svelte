@@ -2,6 +2,7 @@
 <script lang="ts">
   import LiveSourceBar from '$lib/components/LiveSourceBar.svelte';
   import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
+  import Button from '$lib/components/Primitives/Button.svelte';
   import legal from '$lib/content/legal-info.json';
   import { compactNumber, createPulse } from '$lib/live/project';
 
@@ -32,12 +33,12 @@
     <h1>Join the Tiny Alliance.</h1>
     <p class="lead">The Alliance is the community of people who care about the Workflow protocol — contributors, daemon hosts, evaluators, holders, and anyone who wants real-world-effect work to actually ship. Share what you're passionate about. We'll find a place for you.</p>
     <p class="lead lead--soft">We do this asynchronously. No calls — talk to us in writing or through your chatbot. We read everything.</p>
-    <LiveSourceBar label="Community intake" detail={`${compactNumber(pulse.mcp.wiki.bugs.length)} public wiki bugs, ${compactNumber(pulse.mcp.goals.length)} work targets, and ${compactNumber(pulse.branchCount)} branches can receive written work.`} tone="ember" />
+    <LiveSourceBar label="Community intake" detail={`${compactNumber(pulse.mcp.wiki.bugs.length)} public bugs, ${compactNumber(pulse.mcp.goals.length)} goals, and ${compactNumber(pulse.branchCount)} branches can receive written work.`} tone="ember" />
     <div class="entry-paths" aria-label="Alliance entry paths">
       <a href="/connect">
         <span>Chatbot path</span>
         <strong>Connect your MCP</strong>
-        <p>Ask your chatbot to browse the community wiki, file, or route work.</p>
+        <p>Ask your chatbot to browse, file, or route work.</p>
       </a>
       <a href="https://github.com/Jonnyton/Workflow/issues/new" target="_blank" rel="noreferrer">
         <span>Public path</span>
@@ -62,7 +63,7 @@
       <label class="full">What community mission are you most passionate about?
         <textarea name="mission" rows="6" required bind:value={mission} placeholder="A real-world goal you'd want a daemon to help pursue — your own, or someone else's."></textarea>
       </label>
-      <button class="submit" type="submit">Send via email →</button>
+      <Button variant="primary">Send via email →</Button>
       <p class="meta">Opens your email client with the message pre-filled. Or write directly: <a href="mailto:{legal.contact.general}">{legal.contact.general}</a></p>
     </form>
 
@@ -74,7 +75,7 @@
       <ul class="channels__list">
         <li>
           <span class="channel__name">Talk to the project itself</span>
-          <p class="channel__desc">Wire up the MCP connector and ask your chatbot. It can browse the community wiki, inspect work targets, file feature requests, and draft patches on your behalf.</p>
+          <p class="channel__desc">Wire up the MCP connector and ask your chatbot. It can browse goals, file feature requests, and draft patches on your behalf.</p>
           <a href="/connect" class="channel__cta">Connect a chatbot →</a>
         </li>
         <li>
@@ -84,7 +85,7 @@
         </li>
         <li>
           <span class="channel__name">File a thread</span>
-          <p class="channel__desc">Found a bug, want a feature, or have a pattern to add to the community wiki? File it — your chatbot can do this for you, or you can open a GitHub issue directly.</p>
+          <p class="channel__desc">Found a bug, want a feature, or have a pattern to add to the canon? File it — your chatbot can do this for you, or you can open a GitHub issue directly.</p>
           <a href="https://github.com/Jonnyton/Workflow/issues/new" target="_blank" rel="noreferrer" class="channel__cta">Open an issue ↗</a>
         </li>
         <li>
@@ -120,8 +121,6 @@
   .form label { display: flex; flex-direction: column; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.14em; }
   .form input, .form textarea { background: var(--bg-inset); border: 1px solid var(--border-1); color: var(--fg-1); padding: 10px 12px; border-radius: 6px; font-family: var(--font-sans); font-size: 14px; text-transform: none; letter-spacing: 0; }
   .form input:focus, .form textarea:focus { border-color: var(--ember-600); outline: none; box-shadow: var(--glow-ember); }
-  .submit { align-self: flex-start; background: var(--ember-600); border: 1px solid transparent; border-radius: 8px; color: var(--fg-on-ember); cursor: pointer; font-family: var(--font-sans); font-size: 14px; font-weight: 600; line-height: 1; padding: 11px 18px; transition: all var(--dur-base) var(--ease-summon); }
-  .submit:hover { background: var(--ember-500); box-shadow: var(--glow-ember); }
   .meta { font-size: 12px; color: var(--fg-3); font-style: italic; margin: 4px 0 0; }
   .meta a { color: var(--ember-600); text-decoration: none; }
 
