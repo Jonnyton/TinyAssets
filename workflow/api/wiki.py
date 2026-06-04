@@ -1731,7 +1731,14 @@ def _render_bug_markdown(
 
 
 _VALID_BUG_KINDS = frozenset({"bug", "feature", "design", "patch_request"})
-_UNSUPPORTED_FILE_BUG_BODY_KWARGS = frozenset({"body", "content"})
+_UNSUPPORTED_FILE_BUG_BODY_KWARGS = frozenset({
+    "body",
+    "body_format",
+    "body_style",
+    "content",
+    "content_format",
+    "content_type",
+})
 _BUG_DEDUP_THRESHOLD = 0.5
 _BUG_DEDUP_CONTAINMENT_THRESHOLD = 0.8
 _BUG_DEDUP_MIN_SHARED_TOKENS = 6
@@ -1953,12 +1960,13 @@ def _wiki_file_bug(
         return json.dumps({
             "error": (
                 "Unsupported file_bug field(s): "
-                f"{fields}. file_bug only accepts title plus structured body fields "
-                "(repro, observed, expected, workaround); content/body are not supported here."
+                f"{fields}. file_bug only supports the title-only shell plus "
+                "structured body fields (repro, observed, expected, workaround); "
+                "body/content-style kwargs must be omitted here."
             ),
             "hint": (
-                "Use wiki(action=\"file_bug\", title=..., component=..., severity=...) "
-                "and optionally repro/observed/expected/workaround."
+                "Keep title/component/severity and either omit those kwargs or map "
+                "their content into repro/observed/expected/workaround."
             ),
         })
     dropped_kwargs = sorted(
