@@ -45,16 +45,19 @@ from workflow.api.helpers import (
 # canonical list in `wiki-mcp/server.js` — keep the two in lockstep. The
 # original four come first for back-compat with existing index headers.
 _WIKI_CATEGORIES = (
-    "projects",    # Tracked project pages (auto-discovered or hand-written)
-    "concepts",    # Ideas, mental models, definitions
-    "people",      # Bios, contacts, collaborators
-    "research",    # LLM-generated research pages, literature, paper drafts
-    "recipes",     # Food recipes and cooking notes
-    "workflows",   # User-built workflows, how-tos, repeatable processes
-    "notes",       # Personal notes, journal entries, scratch thinking
-    "references",  # External references, citations, cheat sheets
-    "plans",       # Plans, proposals, roadmaps
-    "bugs",        # Auto-filed server defects (one file per BUG-NNN, never drafts-gated)
+    "projects",          # Tracked project pages (auto-discovered or hand-written)
+    "concepts",          # Ideas, mental models, definitions
+    "people",            # Bios, contacts, collaborators
+    "research",          # LLM-generated research pages, literature, paper drafts
+    "recipes",           # Food recipes and cooking notes
+    "workflows",         # User-built workflows, how-tos, repeatable processes
+    "notes",             # Personal notes, journal entries, scratch thinking
+    "references",        # External references, citations, cheat sheets
+    "plans",             # Plans, proposals, roadmaps
+    "bugs",              # Auto-filed server defects (one file per BUG-NNN, never drafts-gated)
+    "feature-requests",  # Auto-filed product requests (one file per FEAT-NNN)
+    "design-proposals",  # Auto-filed design proposals (one file per DESIGN-NNN)
+    "patch-requests",    # Auto-filed external patch requests (one file per PR-NNN)
 )
 
 _STOP_WORDS = frozenset(
@@ -473,24 +476,12 @@ def _wiki_write_slug(category: str, filename: str) -> tuple[str, str | None]:
     return slug, None
 
 
-def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
-    """Find the canonical bugs/<slug>.md path, preferring uppercase + trailing-hyphen variants.
+def _resolve_filing_canonical(parent: Path, slug: str, prefix: str) -> Path | None:
+    """Find the canonical filing path for a slug across all file_bug categories.
 
-    Three corner cases this resolves:
-
-    1. **Direct case-sensitive hit on the slug.** If `<slug>.md` exists, it's
-       canonical only when there's no uppercase sibling that lowercases to it
-       (BUG-003 fix: lowercase duplicate must NOT win when an uppercase BUG
-       canonical exists).
-    2. **Wrong-case canonical** (BUG-028). e.g. slug=`bug-007-foo`, canonical
-       on disk is `BUG-007-foo.md` — match the canonical.
-    3. **Trailing-hyphen canonical** (BUG-018). The slug sanitizer strips
-       trailing hyphens; if the canonical filename actually has one, match
-       `<slug>-.md` (case-insensitive).
-
-    Returns the resolved canonical Path, or None if no match.
-    Preference order when multiple candidates match:
-      uppercase BUG-prefix > exact-case > anything else
+    Resolves case-insensitive matches and trailing-hyphen variants, preferring
+    the canonical uppercase filing-id prefix (for example `BUG-`, `FEAT-`,
+    `DESIGN-`, `PR-`) over lowercase duplicates.
     """
     direct = parent / (slug + ".md")
     direct_dash = parent / (slug + "-.md")
@@ -504,13 +495,13 @@ def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
     if not candidates:
         return None
 
+    canonical_prefix = f"{prefix.upper()}-"
+
     def _rank(p: Path) -> tuple[int, int, str]:
         name = p.name
-        # Lower number wins. Prefer uppercase BUG-prefix (canonical convention)
-        # then prefer exact slug-name match over trailing-hyphen variant.
-        is_upper_bug = 0 if name.startswith("BUG-") else 1
+        is_upper_prefix = 0 if name.startswith(canonical_prefix) else 1
         is_exact = 0 if p == direct else (1 if p == direct_dash else 2)
-        return (is_upper_bug, is_exact, name)
+        return (is_upper_prefix, is_exact, name)
 
     candidates.sort(key=_rank)
     return candidates[0]
@@ -782,39 +773,35 @@ def _wiki_write(
         return json.dumps({"error": slug_error})
     promoted_path = _wiki_pages_dir() / category / (slug + ".md")
 
-    # Alias-resolution for the bugs category. Runs BEFORE the .exists() check
-    # so a pre-existing lowercase-duplicate (BUG-003) or trailing-hyphen
-    # canonical (BUG-018) cannot bypass canonical-preferring resolution.
-    #
-    # BUG-003: lowercase duplicate already exists alongside an uppercase
-    # canonical → we must prefer the uppercase canonical.
-    # BUG-028: file_bug filename is lowercase but a wrong-case canonical
-    # already exists → resolve to canonical.
-    # BUG-018: canonical filename has a trailing hyphen the slug sanitizer
-    # strips → match a "<slug>-.md" sibling as the canonical.
-    if category == _BUGS_CATEGORY:
+    # Resolve canonical promoted filing pages before the .exists() check so a
+    # lowercase/path-normalized write updates the existing promoted filing in
+    # place instead of drafting a duplicate.
+    filing_prefix = _filing_category_prefix(category)
+    if filing_prefix is not None:
         parent = _wiki_pages_dir() / category
         if parent.is_dir():
-            canonical = _resolve_bugs_canonical(parent, slug)
-            if canonical is not None and canonical != promoted_path:
-                _logger_wiki.warning(
-                    "wiki write alias: '%s' resolved to canonical '%s'. "
-                    "Rename '%s' → '%s' (or remove duplicate) to eliminate.",
-                    slug + ".md",
-                    canonical.name,
-                    canonical.name if canonical.name != (slug + ".md") else slug,
-                    slug + ".md",
-                )
+            canonical = _resolve_filing_canonical(parent, slug, filing_prefix)
+            if canonical is not None:
+                if canonical != promoted_path:
+                    _logger_wiki.warning(
+                        "wiki write alias: '%s' resolved to canonical '%s'. "
+                        "Rename '%s' → '%s' (or remove duplicate) to eliminate.",
+                        slug + ".md",
+                        canonical.name,
+                        canonical.name if canonical.name != (slug + ".md") else slug,
+                        slug + ".md",
+                    )
                 promoted_path = canonical
 
     if promoted_path.exists():
+        promoted_rel_path = _page_rel_path(promoted_path)
         try:
             promoted_path.write_text(content, encoding="utf-8")
             _append_wiki_log(
-                f"update | pages/{category}/{slug} | {log_entry or 'in-place update'}"
+                f"update | {promoted_rel_path.removesuffix('.md')} | {log_entry or 'in-place update'}"
             )
             return json.dumps({
-                "path": f"pages/{category}/{slug}.md",
+                "path": promoted_rel_path,
                 "status": "updated",
                 "note": "Updated existing promoted page in-place.",
             })
@@ -1613,6 +1600,13 @@ _KIND_ROUTING: dict[str, tuple[str, str]] = {
     "design":        (_KIND_DESIGNS_DIR,        "DESIGN"),
     "patch_request": (_KIND_PATCH_REQUESTS_DIR, "PR"),
 }
+
+
+def _filing_category_prefix(category: str) -> str | None:
+    for routed_category, prefix in _KIND_ROUTING.values():
+        if routed_category == category:
+            return prefix
+    return None
 
 
 def _next_id(pages_dir: Path, drafts_dir: Path, prefix: str) -> str:

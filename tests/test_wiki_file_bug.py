@@ -616,3 +616,71 @@ class TestFileBugKindRouting:
         )
         assert cos["status"] == "cosigned"
         assert cos["path"].startswith("pages/bugs/")
+
+
+class TestFilingWriteCanonicalResolution:
+    def test_write_updates_existing_patch_request_canonical_page(self, wiki_dir):
+        filed = json.loads(wiki(
+            action="file_bug",
+            component="wiki",
+            severity="minor",
+            title="Normalize inbound patch request handling",
+            kind="patch_request",
+            observed="Promoted PR pages can be missed by write",
+            expected="write updates the promoted filing in place",
+        ))
+        assert filed["status"] == "filed"
+
+        original_path = wiki_dir / filed["path"]
+        canonical_path = original_path.with_name(
+            original_path.name.replace("pr-", "PR-", 1)
+        )
+        original_path.rename(canonical_path)
+
+        updated_content = "---\nid: PR-001\ntitle: Updated patch request\n---\n# Updated\n"
+        write_result = json.loads(wiki(
+            action="write",
+            category="patch-requests",
+            filename=f"pages/patch-requests/{original_path.name}",
+            content=updated_content,
+            log_entry="regression coverage",
+        ))
+
+        assert write_result["status"] == "updated"
+        assert write_result["path"] == f"pages/patch-requests/{canonical_path.name}"
+        assert canonical_path.read_text(encoding="utf-8") == updated_content
+        assert not original_path.exists()
+        assert not (wiki_dir / "drafts" / "patch-requests" / original_path.name).exists()
+
+    def test_write_updates_existing_feature_request_canonical_page(self, wiki_dir):
+        filed = json.loads(wiki(
+            action="file_bug",
+            component="wiki",
+            severity="minor",
+            title="Normalize feature request write targets",
+            kind="feature",
+            observed="Promoted FEAT pages can be missed by write",
+            expected="write updates the promoted filing in place",
+        ))
+        assert filed["status"] == "filed"
+
+        original_path = wiki_dir / filed["path"]
+        canonical_path = original_path.with_name(
+            original_path.name.replace("feat-", "FEAT-", 1)
+        )
+        original_path.rename(canonical_path)
+
+        updated_content = "---\nid: FEAT-001\ntitle: Updated feature request\n---\n# Updated\n"
+        write_result = json.loads(wiki(
+            action="write",
+            category="feature-requests",
+            filename=f"feature-requests/{original_path.name}",
+            content=updated_content,
+            log_entry="shared filing resolver regression",
+        ))
+
+        assert write_result["status"] == "updated"
+        assert write_result["path"] == f"pages/feature-requests/{canonical_path.name}"
+        assert canonical_path.read_text(encoding="utf-8") == updated_content
+        assert not original_path.exists()
+        assert not (wiki_dir / "drafts" / "feature-requests" / original_path.name).exists()
