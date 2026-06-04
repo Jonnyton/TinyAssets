@@ -121,6 +121,10 @@ framing.
     capability request, and `kind=design` for an architecture or policy
     proposal. Do not coerce these into bug wording just to enter the
     community loop.
+    For `file_bug`, put filing details in `repro`, `observed`,
+    `expected`, and `workaround`. Do not pass `content`/`body` text to
+    `file_bug`; `content` is only valid for wiki write/patch flows and
+    unsupported truthy extras are rejected.
     Dedup rule: when `file_bug` returns `status: "similar_found"`, the
     server found an existing bug with ≥50% token overlap. Default to
     `wiki action=cosign_bug bug_id=<top similar bug_id>

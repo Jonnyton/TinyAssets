@@ -182,6 +182,7 @@ class TestFileBugWrites:
         )
         assert out["status"] == "filed"
         assert out["bug_id"] == "BUG-001"
+        assert "warning" not in out
         path = wiki_dir / out["path"]
         assert path.exists()
         body = path.read_text(encoding="utf-8")
@@ -230,6 +231,65 @@ class TestFileBugCollisionRetry:
             )
         assert out["status"] == "filed"
         assert out["bug_id"] == "BUG-003"
+
+
+class TestFileBugExtraKwargs:
+    def test_truthy_unsupported_kwargs_rejected_before_write(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="x",
+                severity="minor",
+                title="unsupported extras",
+                content="body goes here",
+                body="duplicate body",
+            )
+        )
+        assert "error" in out
+        assert out["unsupported_fields"] == ["body", "content"]
+        assert "repro, observed, expected, and workaround" in out["hint"]
+        assert "content field is only valid for wiki write/patch actions" in out["hint"]
+        assert not list((wiki_dir / "pages" / "bugs").glob("*.md"))
+
+    def test_falsey_and_legacy_noop_kwargs_still_file(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="x",
+                severity="minor",
+                title="legacy extras",
+                content="",
+                body="",
+                dry_run=True,
+                similarity_threshold=0.25,
+                max_results=10,
+                offset=0,
+                max_chars=128_000,
+            )
+        )
+        assert out["status"] == "filed"
+        assert out["bug_id"] == "BUG-001"
+        assert "warning" not in out
+
+    def test_valid_call_response_shape_stays_compact(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="x",
+                severity="minor",
+                title="shape parity",
+                observed="saw something",
+                expected="wanted something else",
+            )
+        )
+        assert out["status"] == "filed"
+        assert out["kind"] == "bug"
+        assert out["severity"] == "minor"
+        assert out["component"] == "x"
+        assert "warning" not in out
+        assert "unsupported_fields" not in out
+        assert "path" in out
+        assert "bug_id" in out
+        assert "investigation" in out
+        assert "effort_classification" in out
+        assert "effort_dispatch_route" in out
 
 
 class TestFileBugViaWikiDispatch:
