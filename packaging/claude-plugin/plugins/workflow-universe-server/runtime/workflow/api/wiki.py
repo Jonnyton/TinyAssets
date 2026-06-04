@@ -473,27 +473,28 @@ def _wiki_write_slug(category: str, filename: str) -> tuple[str, str | None]:
     return slug, None
 
 
-def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
-    """Find the canonical bugs/<slug>.md path, preferring uppercase + trailing-hyphen variants.
+def _filing_id_prefix_for_category(category: str) -> str | None:
+    """Return the filing id prefix for a filing category, if any."""
+    for _dir, _prefix in _KIND_ROUTING.values():
+        if _dir == category:
+            return _prefix
+    return None
 
-    Three corner cases this resolves:
 
-    1. **Direct case-sensitive hit on the slug.** If `<slug>.md` exists, it's
-       canonical only when there's no uppercase sibling that lowercases to it
-       (BUG-003 fix: lowercase duplicate must NOT win when an uppercase BUG
-       canonical exists).
-    2. **Wrong-case canonical** (BUG-028). e.g. slug=`bug-007-foo`, canonical
-       on disk is `BUG-007-foo.md` — match the canonical.
-    3. **Trailing-hyphen canonical** (BUG-018). The slug sanitizer strips
-       trailing hyphens; if the canonical filename actually has one, match
-       `<slug>-.md` (case-insensitive).
+def _resolve_filing_page_canonical(
+    parent: Path,
+    slug: str,
+    id_prefix: str,
+) -> Path | None:
+    """Resolve a filing page to the canonical on-disk filename.
 
-    Returns the resolved canonical Path, or None if no match.
-    Preference order when multiple candidates match:
-      uppercase BUG-prefix > exact-case > anything else
+    Matches both `<id-prefix>-<slug>.md` and the existing trailing-hyphen
+    `<id-prefix>-<slug>-.md` variant case-insensitively, then prefers the
+    canonical uppercase-ID filename when multiple aliases exist.
     """
     direct = parent / (slug + ".md")
     direct_dash = parent / (slug + "-.md")
+    canonical_prefix = id_prefix.upper() + "-"
 
     candidates: list[Path] = []
     for candidate in parent.glob("*.md"):
@@ -506,11 +507,11 @@ def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
 
     def _rank(p: Path) -> tuple[int, int, str]:
         name = p.name
-        # Lower number wins. Prefer uppercase BUG-prefix (canonical convention)
-        # then prefer exact slug-name match over trailing-hyphen variant.
-        is_upper_bug = 0 if name.startswith("BUG-") else 1
+        # Lower number wins. Prefer canonical uppercase filing prefixes, then
+        # exact slug-name matches over trailing-hyphen variants.
+        has_canonical_prefix = 0 if name.startswith(canonical_prefix) else 1
         is_exact = 0 if p == direct else (1 if p == direct_dash else 2)
-        return (is_upper_bug, is_exact, name)
+        return (has_canonical_prefix, is_exact, name)
 
     candidates.sort(key=_rank)
     return candidates[0]
@@ -782,20 +783,14 @@ def _wiki_write(
         return json.dumps({"error": slug_error})
     promoted_path = _wiki_pages_dir() / category / (slug + ".md")
 
-    # Alias-resolution for the bugs category. Runs BEFORE the .exists() check
-    # so a pre-existing lowercase-duplicate (BUG-003) or trailing-hyphen
-    # canonical (BUG-018) cannot bypass canonical-preferring resolution.
-    #
-    # BUG-003: lowercase duplicate already exists alongside an uppercase
-    # canonical → we must prefer the uppercase canonical.
-    # BUG-028: file_bug filename is lowercase but a wrong-case canonical
-    # already exists → resolve to canonical.
-    # BUG-018: canonical filename has a trailing hyphen the slug sanitizer
-    # strips → match a "<slug>-.md" sibling as the canonical.
-    if category == _BUGS_CATEGORY:
+    # Filing-page alias resolution runs BEFORE the .exists() check so writes
+    # follow an existing promoted canonical filename instead of drafting a
+    # lowercase duplicate when the requested path casing differs.
+    filing_id_prefix = _filing_id_prefix_for_category(category)
+    if filing_id_prefix is not None:
         parent = _wiki_pages_dir() / category
         if parent.is_dir():
-            canonical = _resolve_bugs_canonical(parent, slug)
+            canonical = _resolve_filing_page_canonical(parent, slug, filing_id_prefix)
             if canonical is not None and canonical != promoted_path:
                 _logger_wiki.warning(
                     "wiki write alias: '%s' resolved to canonical '%s'. "
@@ -808,13 +803,15 @@ def _wiki_write(
                 promoted_path = canonical
 
     if promoted_path.exists():
+        actual_filename = promoted_path.name
+        actual_slug = promoted_path.stem
         try:
             promoted_path.write_text(content, encoding="utf-8")
             _append_wiki_log(
-                f"update | pages/{category}/{slug} | {log_entry or 'in-place update'}"
+                f"update | pages/{category}/{actual_slug} | {log_entry or 'in-place update'}"
             )
             return json.dumps({
-                "path": f"pages/{category}/{slug}.md",
+                "path": f"pages/{category}/{actual_filename}",
                 "status": "updated",
                 "note": "Updated existing promoted page in-place.",
             })

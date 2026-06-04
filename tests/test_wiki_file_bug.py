@@ -48,7 +48,7 @@ def wiki_dir(tmp_path, monkeypatch):
     """Temporary wiki tree with a `bugs` category pre-created."""
     wiki_root = tmp_path / "Wiki"
     wiki_root.mkdir()
-    for sub in ["projects", "concepts", "bugs"]:
+    for sub in ["projects", "concepts", "bugs", "patch-requests"]:
         (wiki_root / "pages" / sub).mkdir(parents=True)
         (wiki_root / "drafts" / sub).mkdir(parents=True)
     (wiki_root / "raw").mkdir()
@@ -423,6 +423,44 @@ class TestBug028SlugCaseRoundtrip:
         bugs_dir = wiki_dir / "pages" / "bugs"
         (bugs_dir / "BUG-007-legacy.md").write_text("x", encoding="utf-8")
         assert _next_bug_id(bugs_dir) == "BUG-008"
+
+
+class TestWikiWriteFilingCanonicalResolution:
+    def test_write_updates_uppercase_patch_request_page_in_place(self, wiki_dir):
+        promoted = wiki_dir / "pages" / "patch-requests" / "PR-001-foo.md"
+        promoted.write_text("original", encoding="utf-8")
+
+        out = json.loads(
+            wiki(
+                action="write",
+                category="patch-requests",
+                filename="pages/patch-requests/pr-001-foo.md",
+                content="updated patch request",
+            )
+        )
+
+        assert out["status"] == "updated"
+        assert out["path"] == "pages/patch-requests/PR-001-foo.md"
+        assert promoted.read_text(encoding="utf-8") == "updated patch request"
+        assert not (wiki_dir / "drafts" / "patch-requests" / "pr-001-foo.md").exists()
+
+    def test_write_updates_uppercase_bug_page_in_place(self, wiki_dir):
+        promoted = wiki_dir / "pages" / "bugs" / "BUG-001-foo.md"
+        promoted.write_text("original", encoding="utf-8")
+
+        out = json.loads(
+            wiki(
+                action="write",
+                category="bugs",
+                filename="pages/bugs/bug-001-foo.md",
+                content="updated bug",
+            )
+        )
+
+        assert out["status"] == "updated"
+        assert out["path"] == "pages/bugs/BUG-001-foo.md"
+        assert promoted.read_text(encoding="utf-8") == "updated bug"
+        assert not (wiki_dir / "drafts" / "bugs" / "bug-001-foo.md").exists()
 
 
 class TestFileBugKindRouting:
