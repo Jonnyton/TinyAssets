@@ -2032,7 +2032,7 @@ def _wiki_file_bug(
 
     for attempt in (1, 2):
         bug_id = _next_id(pages_dir, drafts_dir, id_prefix)
-        filename = f"{bug_id.lower()}-{slug}.md"
+        filename = f"{bug_id}-{slug}.md"
         target = pages_dir / filename
         body = _render_bug_markdown(
             bug_id=bug_id,

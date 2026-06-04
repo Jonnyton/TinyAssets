@@ -357,13 +357,14 @@ def test_render_bug_markdown_kind_and_extra_tags():
 
 
 # ── BUG-028: slug-case roundtrip ─────────────────────────────────────────────
-# file_bug must create lowercase filenames so that wiki action=write can
-# resolve the same slug without a case mismatch (BUG-001-... vs bug-001-...).
+# file_bug must preserve canonical BUG-NNN / FEAT-NNN / DESIGN-NNN / PR-NNN
+# casing in filenames so later wiki action=write calls hit the promoted page
+# instead of creating a case-only duplicate draft/page.
 
 
 class TestBug028SlugCaseRoundtrip:
-    def test_file_bug_creates_lowercase_filename(self, wiki_dir):
-        """file_bug must produce an all-lowercase filename (no BUG-NNN prefix)."""
+    def test_file_bug_preserves_canonical_filename_case(self, wiki_dir):
+        """file_bug must keep the canonical BUG-NNN prefix casing in filenames."""
         result = json.loads(wiki(
             action="file_bug",
             title="Slug Case Test",
@@ -373,14 +374,14 @@ class TestBug028SlugCaseRoundtrip:
         assert result.get("status") == "filed"
         path_str = result["path"]
         filename = path_str.split("/")[-1]
-        assert filename == filename.lower(), (
-            f"file_bug produced a non-lowercase filename: {filename!r}. "
-            "BUG-028: write action uses _sanitize_slug which lowercases; "
-            "filenames must match."
+        assert filename.startswith("BUG-001-"), (
+            f"file_bug produced a non-canonical filename: {filename!r}. "
+            "BUG-028: the filing path should preserve the generated BUG id casing."
         )
+        assert (wiki_dir / path_str).exists()
 
-    def test_file_bug_then_write_roundtrips(self, wiki_dir):
-        """file_bug followed by wiki write to the same slug updates, not duplicates."""
+    def test_file_bug_then_write_updates_promoted_page_without_duplicate(self, wiki_dir):
+        """file_bug followed by wiki write updates the promoted page in place."""
         filed = json.loads(wiki(
             action="file_bug",
             title="Roundtrip Test Bug",
@@ -390,36 +391,39 @@ class TestBug028SlugCaseRoundtrip:
             expected="works",
         ))
         assert filed.get("status") == "filed"
-        path_str = filed["path"]
-        filename = path_str.split("/")[-1]  # e.g. bug-001-roundtrip-test-bug.md
+        filed_path = filed["path"]
 
-        # Write an update to the same file using the same filename.
         updated_content = "---\nid: BUG-001\ntitle: Updated\n---\n# Updated\n"
         write_result = json.loads(wiki(
             action="write",
             category="bugs",
-            filename=filename,
+            filename=filed_path,
             content=updated_content,
         ))
-        assert write_result.get("status") in ("updated", "drafted", "draft-update"), (
-            f"Expected an update, got: {write_result}"
+        assert write_result.get("status") == "updated", (
+            f"Expected an in-place update, got: {write_result}"
         )
-        # Verify only one file exists for this bug (no duplicate).
+
+        canonical_path = wiki_dir / filed_path
+        assert canonical_path.exists()
+        assert canonical_path.read_text(encoding="utf-8") == updated_content
+
         bugs_dir = wiki_dir / "pages" / "bugs"
         bug_files = list(bugs_dir.glob("*.md"))
         assert len(bug_files) == 1, (
             f"Expected exactly 1 bug file, got {[f.name for f in bug_files]}. "
             "BUG-028: write must update in-place, not create a duplicate."
         )
+        assert bug_files[0].name == Path(filed_path).name
 
     def test_next_bug_id_finds_lowercase_files(self, wiki_dir):
-        """_next_bug_id must find lowercase bug-NNN-... files written by file_bug."""
+        """_next_bug_id must find lowercase bug-NNN-... files written by old file_bug code."""
         bugs_dir = wiki_dir / "pages" / "bugs"
         (bugs_dir / "bug-003-some-title.md").write_text("x", encoding="utf-8")
         assert _next_bug_id(bugs_dir) == "BUG-004"
 
     def test_next_bug_id_finds_uppercase_files_too(self, wiki_dir):
-        """_next_bug_id must also find legacy uppercase BUG-NNN-... files."""
+        """_next_bug_id must also find canonical uppercase BUG-NNN-... files."""
         bugs_dir = wiki_dir / "pages" / "bugs"
         (bugs_dir / "BUG-007-legacy.md").write_text("x", encoding="utf-8")
         assert _next_bug_id(bugs_dir) == "BUG-008"
@@ -443,7 +447,7 @@ class TestFileBugKindRouting:
         assert out["path"].startswith("pages/feature-requests/")
         feat_dir = wiki_dir / "pages" / "feature-requests"
         assert feat_dir.is_dir()
-        assert any(p.stem.startswith("feat-") for p in feat_dir.glob("*.md"))
+        assert any(p.stem.startswith("FEAT-") for p in feat_dir.glob("*.md"))
 
     def test_kind_design_lands_in_design_proposals_dir(self, wiki_dir):
         out = json.loads(
@@ -458,7 +462,7 @@ class TestFileBugKindRouting:
         assert out["path"].startswith("pages/design-proposals/")
         design_dir = wiki_dir / "pages" / "design-proposals"
         assert design_dir.is_dir()
-        assert any(p.stem.startswith("design-") for p in design_dir.glob("*.md"))
+        assert any(p.stem.startswith("DESIGN-") for p in design_dir.glob("*.md"))
 
     def test_kind_bug_still_lands_in_bugs_dir(self, wiki_dir):
         out = json.loads(
@@ -487,7 +491,7 @@ class TestFileBugKindRouting:
         assert out["path"].startswith("pages/patch-requests/")
         pr_dir = wiki_dir / "pages" / "patch-requests"
         assert pr_dir.is_dir()
-        patch_files = [p for p in pr_dir.glob("*.md") if p.stem.startswith("pr-")]
+        patch_files = [p for p in pr_dir.glob("*.md") if p.stem.startswith("PR-")]
         assert len(patch_files) == 1
         body = patch_files[0].read_text(encoding="utf-8")
         assert "type: patch_request" in body
@@ -585,7 +589,7 @@ class TestFileBugKindRouting:
         assert cos["path"].startswith("pages/feature-requests/")
         # Verify the file actually has a Cosigns section
         feat_dir = wiki_dir / "pages" / "feature-requests"
-        bug_files = list(feat_dir.glob(f"{feat_id.lower()}-*.md"))
+        bug_files = list(feat_dir.glob(f"{feat_id}-*.md"))
         assert len(bug_files) == 1
         body = bug_files[0].read_text(encoding="utf-8")
         assert "## Cosigns" in body
