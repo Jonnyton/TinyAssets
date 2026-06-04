@@ -390,6 +390,21 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "printf '%s' 'on' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_SOUL_LOOP_DISPATCH"
+          # Identity activation (2026-06-04): set optional OAuth auth mode so the
+          # daemon RESOLVES an authenticated Bearer subject into the request
+          # identity (_current_actor) when one is present, while anonymous tier-1
+          # traffic still passes unchanged (resolve-not-gate). Activates PR-165
+          # (request-scoped _current_actor, #1248) + PR-167 (OptionalOAuthProvider,
+          # #1252) end-to-end. SAFE: OptionalOAuthProvider.is_auth_required() is
+          # False, so no anonymous request is 401'd — the zero-install Forever-Rule
+          # contract is preserved. ORDERING INVARIANT: only flip once #1248 AND
+          # #1252 are merged AND deployed (release-state sha includes both).
+          # Founder/owner ENFORCEMENT is a separate follow-on (#1168 / PR-147) and
+          # is intentionally NOT enabled here. Idempotent set; reverting returns
+          # auth to dev/anonymous next deploy.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "printf '%s' 'optional' | sudo bash /tmp/install-workflow-env.sh set UNIVERSE_SERVER_AUTH"
           if [ "${HAS_CODEX_AUTH_BUNDLE}" = "true" ]; then
             echo "Deploy-visible WORKFLOW_CODEX_AUTH_JSON_B64 found; syncing subscription auth bundle."
             printf '%s' "${WORKFLOW_CODEX_AUTH_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
