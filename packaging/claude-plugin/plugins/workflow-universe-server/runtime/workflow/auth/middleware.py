@@ -60,16 +60,15 @@ def auth_middleware(token: str | None) -> Identity:
     """
     provider = _get_provider()
 
-    if not provider.is_auth_required():
-        identity = ANONYMOUS
-    elif token:
+    identity = ANONYMOUS
+    if token:
         identity = provider.resolve_token(token)
         if identity is None:
-            # Invalid token — return None to signal 401
-            _current_identity.set(None)
-            return ANONYMOUS  # Caller should check
-    else:
-        identity = ANONYMOUS
+            if provider.is_auth_required():
+                # Invalid token in gated mode — return None to signal 401
+                _current_identity.set(None)
+                return ANONYMOUS  # Caller should check
+            identity = ANONYMOUS
 
     _current_identity.set(identity)
     return identity

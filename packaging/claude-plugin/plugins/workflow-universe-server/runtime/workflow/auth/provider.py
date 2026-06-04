@@ -945,6 +945,13 @@ class OAuthProvider(AuthProvider):
         return False
 
 
+class OptionalOAuthProvider(OAuthProvider):
+    """OAuth-backed provider that resolves identities without requiring auth."""
+
+    def is_auth_required(self) -> bool:
+        return False
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Factory
 # ═══════════════════════════════════════════════════════════════════════════
@@ -952,10 +959,12 @@ class OAuthProvider(AuthProvider):
 
 def create_provider() -> AuthProvider:
     """Create the appropriate auth provider based on configuration."""
-    auth_mode = os.environ.get("UNIVERSE_SERVER_AUTH", "false").lower()
+    auth_mode = os.environ.get("UNIVERSE_SERVER_AUTH", "false").strip().lower()
     if auth_mode in ("true", "1", "yes", "oauth"):
         logger.info("OAuth auth provider enabled")
         return OAuthProvider()
-    else:
-        logger.info("Dev auth provider (no auth)")
-        return DevAuthProvider()
+    if auth_mode in ("optional", "resolve"):
+        logger.info("Optional OAuth auth provider enabled")
+        return OptionalOAuthProvider()
+    logger.info("Dev auth provider (no auth)")
+    return DevAuthProvider()
