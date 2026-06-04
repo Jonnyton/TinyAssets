@@ -36,6 +36,23 @@ Format for future entries:
 
 ---
 
+## 2026-06-04 00:00 - create wiki-bug-sync-structured-first
+
+- Provider: codex-gpt5
+- Branch: patch-loop/wiki-bug-sync-structured-first
+- Lane state: Active lane
+- Worktree: /app
+- STATUS/Issue/PR: request to update `scripts/wiki_bug_sync.py` structuredContent parsing
+- PLAN refs: community loop intake sync; MCP structured payload parsing
+- Purpose: reuse `_extract_structured_tool_payload` precedence for wiki list/read responses and add regression coverage.
+- _PURPOSE.md: missing - retrofit before pickup
+- Memory refs: none
+- Related implications: `scripts/wiki_bug_sync.py`; `tests/test_wiki_bug_sync.py`
+- Idea feed refs: none
+- Ship/abandon: draft PR to Jonnyton/Workflow pending review
+
+---
+
 ## 2026-05-27 12:00 - create pr139-universe-state
 
 - Provider: codex-gpt5-desktop

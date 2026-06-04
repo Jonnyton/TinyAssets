@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from wiki_bug_sync import (  # noqa: E402
     SyncError,
     _bug_number,
+    _parse_json_result,
     create_gh_change_issue,
     create_gh_issue,
     fetch_bug_detail,
@@ -139,6 +140,29 @@ class CapturingPost:
     def __call__(self, url, sid, payload, timeout):
         self.calls.append(payload)
         return self._responses.pop(0)
+
+
+# ---------------------------------------------------------------------------
+# _parse_json_result
+# ---------------------------------------------------------------------------
+
+
+def test_parse_json_result_prefers_structured_content_for_list_preview():
+    parsed = _parse_json_result(
+        _wiki_list_structured_resp([{"path": "bugs/BUG-006-new"}])["result"]
+    )
+
+    assert parsed["promoted"] == [
+        {"path": "bugs/BUG-006-new", "title": "bugs/BUG-006-new", "type": "bug"}
+    ]
+
+
+def test_parse_json_result_prefers_structured_content_for_read_preview():
+    parsed = _parse_json_result(
+        _wiki_read_structured_resp({"title": "Bug"}, "# Body")["result"]
+    )
+
+    assert parsed["content"].startswith("---\ntitle: Bug\n---\n")
 
 
 # ---------------------------------------------------------------------------

@@ -479,16 +479,11 @@ def fetch_wiki_page_detail(
     result = _mcp_call_tool(
         url, sid, "wiki", {"action": "read", "page": page}, timeout, post_fn
     )
-    structured = _extract_structured_tool_payload(result)
-    if structured is not None:
-        content = structured.get("content", "")
-    else:
-        text = _parse_text_result(result)
-        try:
-            data = json.loads(text)
-            content = data.get("content", "")
-        except (json.JSONDecodeError, AttributeError):
-            content = text
+    try:
+        data = _parse_json_result(result)
+        content = str(data.get("content", ""))
+    except SyncError:
+        content = _parse_text_result(result)
 
     meta, body = _split_frontmatter(content)
     return {"meta": meta, "body": body, "content": content}
