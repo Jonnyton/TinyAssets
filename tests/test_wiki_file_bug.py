@@ -167,6 +167,57 @@ class TestFileBugValidation:
         assert "error" in out
 
 
+class TestFileBugUnsupportedBodyFields:
+    def test_truthy_body_kwarg_is_rejected_without_creating_page(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="extensions.patch_branch",
+                severity="major",
+                title="Body rejected",
+                **{"body": "this should be rejected"},
+            )
+        )
+        assert out["error"] == "Unsupported file_bug body field(s)."
+        assert out["rejected_fields"] == ["body"]
+        assert "repro, observed, expected, and workaround" in out["hint"]
+        assert list((wiki_dir / "pages" / "bugs").glob("*.md")) == []
+
+    def test_truthy_content_kwarg_is_rejected_without_creating_page(self, wiki_dir):
+        out = json.loads(
+            wiki(
+                action="file_bug",
+                component="extensions.patch_branch",
+                severity="major",
+                title="Content rejected",
+                content="this should not become a filing body",
+            )
+        )
+        assert out["error"] == "Unsupported file_bug body field(s)."
+        assert out["rejected_fields"] == ["content"]
+        assert "repro, observed, expected, and workaround" in out["hint"]
+        assert list((wiki_dir / "pages" / "bugs").glob("*.md")) == []
+
+    def test_runtime_mirror_kwargs_do_not_warn(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="extensions.patch_branch",
+                severity="major",
+                title="Mirrored kwargs stay quiet",
+                observed="Y",
+                **{
+                    "dry_run": True,
+                    "similarity_threshold": 0.9,
+                    "max_results": 25,
+                    "offset": 3,
+                    "max_chars": 4096,
+                },
+            )
+        )
+        assert out["status"] == "filed"
+        assert "warning" not in out
+        assert (wiki_dir / out["path"]).exists()
+
+
 class TestFileBugWrites:
     def test_happy_path_creates_page(self, wiki_dir):
         out = json.loads(

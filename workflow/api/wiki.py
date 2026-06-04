@@ -1732,6 +1732,21 @@ _BUG_DEDUP_THRESHOLD = 0.5
 _BUG_DEDUP_CONTAINMENT_THRESHOLD = 0.8
 _BUG_DEDUP_MIN_SHARED_TOKENS = 6
 _BUG_DEDUP_SECTION_CHAR_LIMIT = 4000
+_FILE_BUG_RUNTIME_MIRROR_KWARGS = frozenset({
+    "dry_run",
+    "similarity_threshold",
+    "max_results",
+    "offset",
+    "max_chars",
+})
+_FILE_BUG_BODY_FIELD_HINT = (
+    "Use repro, observed, expected, and workaround for filing body text."
+)
+
+
+def _is_file_bug_body_field(name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "", name.lower())
+    return "body" in normalized or "content" in normalized
 
 
 def _bug_token_set(text: str) -> set[str]:
@@ -1940,17 +1955,22 @@ def _wiki_file_bug(
     When omitted, a token-overlap similarity score ≥ 0.5 against an existing
     bug's title+body returns {status: "similar_found"} instead of filing.
     """
-    dropped_kwargs = sorted(
-        key for key, value in _kwargs.items()
-        if value not in ("", None, False)
-        and not (
-            (key == "dry_run" and value is True)
-            or (key == "similarity_threshold" and value == 0.25)
-            or (key == "max_results" and value == 10)
-            or (key == "offset" and value == 0)
-            or (key == "max_chars" and value == _WIKI_READ_DEFAULT_MAX_CHARS)
-        )
+    truthy_unsupported_kwargs = {
+        key: value for key, value in _kwargs.items()
+        if key not in _FILE_BUG_RUNTIME_MIRROR_KWARGS
+        and value not in ("", None, False)
+    }
+    rejected_body_kwargs = sorted(
+        key for key in truthy_unsupported_kwargs
+        if _is_file_bug_body_field(key)
     )
+    if rejected_body_kwargs:
+        return json.dumps({
+            "error": "Unsupported file_bug body field(s).",
+            "rejected_fields": rejected_body_kwargs,
+            "hint": _FILE_BUG_BODY_FIELD_HINT,
+        })
+    dropped_kwargs = sorted(truthy_unsupported_kwargs)
     if not title or not component or not severity:
         return json.dumps({
             "error": "title, component, and severity are required.",
@@ -2217,8 +2237,8 @@ def _wiki_file_bug(
         response_body["warning"] = (
             "Dropped unsupported file_bug field(s): "
             + ", ".join(dropped_kwargs)
-            + ". Use repro, observed, expected, and workaround for the filing body; "
-              "content is only for wiki write/patch actions."
+            + ". "
+            + _FILE_BUG_BODY_FIELD_HINT
         )
     if trigger_block is not None:
         # FEAT-004: surface the structured trigger receipt so callers (canaries
