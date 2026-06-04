@@ -166,6 +166,37 @@ class TestFileBugValidation:
         )
         assert "error" in out
 
+    @pytest.mark.parametrize("field_name", ["body", "content"])
+    def test_truthy_unsupported_fields_rejected_with_hint(self, wiki_dir, field_name):
+        out = json.loads(
+            _wiki_file_bug(
+                component="x",
+                severity="major",
+                title="t",
+                **{field_name: "non-empty"},
+            )
+        )
+        assert out["error"] == f"Unsupported file_bug field(s): {field_name}"
+        assert "Supported file_bug fields:" in out["hint"]
+        assert "title, component, observed, expected, repro, severity, kind" in out["hint"]
+        assert "dry_run, similarity_threshold, max_results, offset, max_chars" in out["hint"]
+
+    def test_supported_runtime_mirror_kwargs_still_succeed(self, wiki_dir):
+        out = json.loads(
+            _wiki_file_bug(
+                component="extensions.patch_branch",
+                severity="major",
+                title="runtime mirror parity",
+                dry_run=True,
+                similarity_threshold=0.25,
+                max_results=10,
+                offset=0,
+                max_chars=128_000,
+            )
+        )
+        assert out["status"] == "filed"
+        assert out["bug_id"] == "BUG-001"
+
 
 class TestFileBugWrites:
     def test_happy_path_creates_page(self, wiki_dir):
