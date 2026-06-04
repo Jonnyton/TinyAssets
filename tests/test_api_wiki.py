@@ -17,6 +17,7 @@ from workflow.api.wiki import (
     _BUG_DEDUP_THRESHOLD,
     _BUGS_CATEGORY,
     _KIND_ROUTING,
+    _UNSUPPORTED_FILE_BUG_BODY_KWARGS,
     _VALID_BUG_KINDS,
     _VALID_SEVERITIES,
     _WIKI_CATEGORIES,
@@ -675,6 +676,21 @@ def test_wiki_file_bug_files_clean_when_no_dups(wiki_env):
     assert res["bug_id"].startswith("BUG-")
 
 
+def test_wiki_file_bug_title_only_path_still_succeeds(wiki_env):
+    res = json.loads(
+        wiki(
+            action="file_bug",
+            component="api.wiki",
+            severity="minor",
+            title="Title only filing still works",
+            force_new=True,
+        )
+    )
+
+    assert res["status"] == "filed"
+    assert res["bug_id"].startswith("BUG-")
+
+
 def test_wiki_file_bug_rejects_unsupported_body_field(wiki_env):
     res = json.loads(
         wiki(
@@ -688,6 +704,8 @@ def test_wiki_file_bug_rejects_unsupported_body_field(wiki_env):
 
     assert "error" in res
     assert "content" in res["error"]
+    assert "repro, observed, expected, workaround" in res["error"]
+    assert "title=..., component=..., severity=..." in res["hint"]
     assert not list((wiki_env / "pages" / "bugs").glob("bug-*.md"))
 
 
@@ -703,6 +721,8 @@ def test_wiki_file_bug_rejects_unknown_direct_kwarg(wiki_env):
 
     assert "error" in res
     assert "body" in res["error"]
+    assert "content/body are not supported here" in res["error"]
+    assert set(_UNSUPPORTED_FILE_BUG_BODY_KWARGS) == {"body", "content"}
     assert not list((wiki_env / "pages" / "bugs").glob("bug-*.md"))
 
 
