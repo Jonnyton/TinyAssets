@@ -528,6 +528,8 @@ Strong agents run on explicit typed state and external artifacts, not hidden cha
 
 **Single source of detail:** `docs/design-notes/2026-04-18-full-platform-architecture.md` (~3000 LOC) carries the full reasoning, tradeoff analysis, scale-audit numbers, and host-decision lineage. PLAN.md modules are the principle-level reference; the design note is the integrated detail. Citation chain: PLAN.md module principle → design-note section → host-decision lineage. No layer skipped.
 
+**Durable coordination proposal:** `docs/design-proposals/design-001-durable-coordination-architecture-where-workflow-s-structura.md` explains how Workflow's structural graph vocabulary supports resumable, multi-actor coordination over time.
+
 **Phased rollout — explicitly rejected.** The earlier "Phase 1 thin relay → Phase 2 state migration → Phase 3 paid failover" plan was rejected 2026-04-18 because (a) authoring must work with zero daemons running, which Phase 1 ships 0% of, and (b) building the final shape in one push avoids three throwaway migrations that each require re-teaching users + re-cutting Claude.ai connectors. The single-build target ("weeks not months") is canonical sequencing. Historical phased plan retained as superseded context only.
 
 ---
