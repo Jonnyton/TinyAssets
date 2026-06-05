@@ -29,6 +29,8 @@ from pathlib import Path
 import pytest
 
 from workflow.api.branches import _coerce_node_keys
+from workflow.api.runtime_ops import _apply_patch_ops
+from workflow.branches import BranchDefinition
 
 
 @pytest.fixture
@@ -89,6 +91,38 @@ def _node(branch: dict, nid: str) -> dict:
         if n["node_id"] == nid:
             return n
     raise AssertionError(f"node '{nid}' not on branch")
+
+
+def test_patch_branch_normalizes_string_key_fields_in_persisted_and_preview_paths(
+    ext_env,
+):
+    us, base = ext_env
+    bid = _build(us)
+    source_branch = BranchDefinition.from_dict(_load(us, base, bid))
+    ops = [
+        {"op": "add_state_field", "field_name": "goal", "field_type": "str"},
+        {"op": "add_state_field", "field_name": "summary", "field_type": "str"},
+        {
+            "op": "update_node",
+            "node_id": "capture",
+            "input_keys": "goal",
+            "output_keys": '["summary"]',
+        },
+    ]
+
+    res = _patch(us, bid, ops)
+    assert res.get("status") != "rejected", res
+    node = _node(_load(us, base, bid), "capture")
+    assert node["input_keys"] == ["goal"]
+    assert node["output_keys"] == ["summary"]
+
+    preview, err = _apply_patch_ops(source_branch, json.dumps(ops))
+
+    assert err is None
+    assert preview is not None
+    preview_node = _node(preview.to_dict(), "capture")
+    assert preview_node["input_keys"] == ["goal"]
+    assert preview_node["output_keys"] == ["summary"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

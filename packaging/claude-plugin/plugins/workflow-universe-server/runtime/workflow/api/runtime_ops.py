@@ -203,48 +203,20 @@ def _apply_patch_ops(
     if not isinstance(ops, list):
         return None, "changes_json must be a JSON array of ops."
 
+    from workflow.api.branches import _apply_patch_op
     from workflow.branches import BranchDefinition as _BD
 
-    branch_dict = branch.to_dict()
+    staged = _BD.from_dict(branch.to_dict())
     for i, op in enumerate(ops):
         if not isinstance(op, dict):
             return None, f"Op #{i} is not an object."
-        op_name = op.get("op", "")
-        if op_name == "add_node":
-            from workflow.branches import NodeDefinition as _ND
-            try:
-                nd = _ND.from_dict(op)
-                branch_dict.setdefault("node_defs", []).append(nd.to_dict())
-            except Exception as exc:  # noqa: BLE001
-                return None, f"Op #{i} add_node failed: {exc}"
-        elif op_name == "remove_node":
-            nid = op.get("node_id", "")
-            branch_dict["node_defs"] = [
-                n for n in branch_dict.get("node_defs", [])
-                if n.get("node_id") != nid
-            ]
-        elif op_name == "update_node":
-            nid = op.get("node_id", "")
-            for nd in branch_dict.get("node_defs", []):
-                if nd.get("node_id") == nid:
-                    nd.update({k: v for k, v in op.items() if k not in ("op",)})
-        elif op_name == "add_state_field":
-            branch_dict.setdefault("state_schema", []).append({
-                "name": op.get("field_name", ""),
-                "type": op.get("field_type", "str"),
-                "reducer": op.get("reducer", ""),
-                "default": op.get("field_default", ""),
-            })
-        elif op_name == "remove_state_field":
-            fn = op.get("field_name", "")
-            branch_dict["state_schema"] = [
-                f for f in branch_dict.get("state_schema", [])
-                if f.get("name") != fn
-            ]
-        # Other ops (edges, metadata) are no-ops for structural inspection
+        err = _apply_patch_op(staged, op)
+        if err:
+            op_name = str(op.get("op") or "?")
+            return None, f"Op #{i} {op_name} failed: {err}"
 
     try:
-        return _BD.from_dict(branch_dict), None
+        return _BD.from_dict(staged.to_dict()), None
     except Exception as exc:  # noqa: BLE001
         return None, f"Patched branch could not be reconstructed: {exc}"
 
