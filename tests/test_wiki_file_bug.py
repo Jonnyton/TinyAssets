@@ -98,6 +98,16 @@ class TestSlugifyTitle:
         long = "a" * 100
         assert len(_slugify_title(long, max_len=60)) == 60
 
+    def test_truncates_at_word_boundary(self):
+        title = "Wiki slug generation truncates mid word instead of at word boundary"
+        assert _slugify_title(title, max_len=55) == (
+            "wiki-slug-generation-truncates-mid-word-instead-of"
+        )
+
+    def test_long_first_token_falls_back_to_hard_cut(self):
+        title = "supercalifragilisticexpialidocious trailing words"
+        assert _slugify_title(title, max_len=12) == "supercalifra"
+
     def test_empty_returns_untitled(self):
         assert _slugify_title("") == "untitled"
         assert _slugify_title("!!!") == "untitled"
