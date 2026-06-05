@@ -27,6 +27,77 @@ from workflow.resolution.contracts import ResolverDecision
 logger = logging.getLogger("universe_server.auth")
 
 
+_GITHUB_SECRET_CAPABILITY_ENVS: dict[str, tuple[str, ...]] = {
+    "read": ("WORKFLOW_GITHUB_READ_CAPABILITIES",),
+    "push": (
+        "WORKFLOW_GITHUB_PUSH_CAPABILITIES",
+        "WORKFLOW_GITHUB_PR_CAPABILITIES",
+    ),
+}
+
+
+def _load_destination_secret_map(env_var: str) -> dict[str, str]:
+    """Load a destination-keyed secret map from one JSON env var."""
+    raw = os.environ.get(env_var, "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "%s is set but not valid JSON: %s. Destination-scoped GitHub secrets from this env are unavailable.",
+            env_var,
+            exc,
+        )
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "%s must decode to a JSON object (mapping destination -> token); got %s.",
+            env_var,
+            type(parsed).__name__,
+        )
+        return {}
+    cleaned: dict[str, str] = {}
+    for key, value in parsed.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        destination = key.strip()
+        token = value.strip()
+        if not destination or not token:
+            continue
+        cleaned[destination] = token
+    return cleaned
+
+
+def vend_github_destination_secret(
+    *, destination: str, capability: str = "read",
+) -> dict[str, Any]:
+    """Return a destination-scoped GitHub credential payload.
+
+    The returned dict includes only routing metadata plus the token and
+    is safe to pass within the daemon, but callers must not echo the
+    token into run state or external evidence.
+    """
+    destination_key = destination.strip()
+    capability_key = capability.strip().lower() or "read"
+    env_vars = _GITHUB_SECRET_CAPABILITY_ENVS.get(capability_key, ())
+    vendored: dict[str, Any] = {
+        "destination": destination_key,
+        "capability": capability_key,
+        "token": "",
+        "source_env_var": env_vars[0] if env_vars else "",
+    }
+    if not destination_key or not env_vars:
+        return vendored
+    for env_var in env_vars:
+        token = _load_destination_secret_map(env_var).get(destination_key, "")
+        if token:
+            vendored["token"] = token
+            vendored["source_env_var"] = env_var
+            break
+    return vendored
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Identity
 # ═══════════════════════════════════════════════════════════════════════════

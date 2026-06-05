@@ -30,14 +30,12 @@ Authority model (Phase 2)
 
 A real write fires only when ALL THREE gates are open:
 
-1. **Capability token (env-sourced, daemon-side).** The host sets
-   ``WORKFLOW_GITHUB_PR_CAPABILITIES`` to a JSON map of
-   ``{"<owner>/<repo>": "<token>"}`` (round-2 fix for Codex P1.2 —
-   the round-1 ``WORKFLOW_GITHUB_PR_CAPABILITY_REPO_<OWNER>_<REPO>``
-   suffix encoding collapsed ``my.repo`` / ``my_repo`` / ``my-repo``
-   to the same env key and therefore the same token). The token is
-   read at invocation time and is never echoed into branch-visible
-   state.
+1. **Capability token (secrets-vended, daemon-side).** The shared
+   auth provider resolves a destination-scoped GitHub ``push``
+   credential from ``WORKFLOW_GITHUB_PUSH_CAPABILITIES`` (with
+   ``WORKFLOW_GITHUB_PR_CAPABILITIES`` accepted as a legacy fallback)
+   and returns the token to this effector at invocation time. The
+   token is never echoed into branch-visible state.
 
 2. **Per-destination consent grant.** A row in the per-universe
    ``effector_consents`` table with ``(sink, destination, revoked_at
@@ -86,6 +84,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from workflow.auth.provider import vend_github_destination_secret
 from workflow.effectors.authority import (
     DENIED as SOUL_AUTHORITY_DENIED,
 )
@@ -110,13 +109,13 @@ _ENABLE_ENV = "WORKFLOW_EXTERNAL_WRITE_ENABLED"
 # :func:`run_github_pr_effector` checks it before any gate, including
 # Phase-1 backward-compat packets.
 _DRY_RUN_ENV = "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"
-# Round-2 P1.2 fix: capability tokens come from a single JSON-map env
-# var keyed by the literal ``owner/repo`` destination string. The
-# round-1 ``WORKFLOW_GITHUB_PR_CAPABILITY_REPO_<...>`` suffix encoding
-# collapsed distinct destinations (e.g. ``octo/my.repo`` and
-# ``octo/my_repo``) into the same env-var name; the JSON map keys by
-# the raw destination so two distinct destinations cannot collide.
-_CAPABILITIES_ENV = "WORKFLOW_GITHUB_PR_CAPABILITIES"
+# GitHub write credentials now come through the shared auth/secrets
+# provider as a destination-keyed ``push`` capability. The new canonical
+# env map is ``WORKFLOW_GITHUB_PUSH_CAPABILITIES``; we still accept the
+# older PR-specific map as a fallback so existing hosts keep working
+# while they migrate.
+_PUSH_CAPABILITIES_ENV = "WORKFLOW_GITHUB_PUSH_CAPABILITIES"
+_LEGACY_CAPABILITIES_ENV = "WORKFLOW_GITHUB_PR_CAPABILITIES"
 _GH_PR_TIMEOUT_S = 60.0
 _GITHUB_API = "https://api.github.com"
 
@@ -159,64 +158,24 @@ def _parse_packet(value: Any) -> dict[str, Any] | None:
     return packet
 
 
-def _load_capability_map() -> dict[str, str]:
-    """Parse ``WORKFLOW_GITHUB_PR_CAPABILITIES`` as a JSON object.
-
-    Returns an empty dict when the env is unset, empty, or malformed.
-    Malformed JSON is logged loudly so the host can spot a typo, but
-    the function never raises — a parse failure means "no capability
-    configured" which collapses to the dry-run path.
-
-    The map's keys are matched against the packet's ``destination``
-    field exactly (case-sensitive, whitespace-stripped). Two distinct
-    destinations therefore cannot share a token unless the host wires
-    both keys to the same value in the JSON map — explicit, audited
-    behavior, never silent collision.
-    """
-    raw = os.environ.get(_CAPABILITIES_ENV, "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError) as exc:
-        logger.warning(
-            "%s is set but not valid JSON: %s. No capability tokens "
-            "will be available; all destination lookups will return "
-            "missing_capability. Fix the env var to enable real writes.",
-            _CAPABILITIES_ENV, exc,
-        )
-        return {}
-    if not isinstance(parsed, dict):
-        logger.warning(
-            "%s must decode to a JSON object (mapping destination -> "
-            "token); got %s. No capability tokens available.",
-            _CAPABILITIES_ENV, type(parsed).__name__,
-        )
-        return {}
-    # Strip values; drop empties so a host with placeholder keys does
-    # not accidentally grant capability for a destination they meant
-    # to leave inert.
-    cleaned: dict[str, str] = {}
-    for key, value in parsed.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            continue
-        token = value.strip()
-        if not token:
-            continue
-        cleaned[key.strip()] = token
-    return cleaned
-
-
 def _read_capability(destination: str) -> str:
-    """Return the capability token for ``destination`` (empty string if missing).
+    """Return the vendored GitHub push token for ``destination``.
 
-    Looked up by exact match against the JSON-map keys. Never echoed
-    into branch-visible state. Callers must NOT include this value in
-    returned evidence.
+    The shared auth provider resolves the destination-scoped credential
+    and may fall back to the legacy PR-capability map during migration.
+    The token is never echoed into branch-visible state or returned
+    evidence.
     """
     if not destination:
         return ""
-    return _load_capability_map().get(destination, "")
+    vendored = vend_github_destination_secret(
+        destination=destination,
+        capability="push",
+    )
+    token = vendored.get("token")
+    if not isinstance(token, str):
+        return ""
+    return token.strip()
 
 
 def _resolve_universe_dir(base_path: str | Path | None) -> Path | None:
@@ -1281,12 +1240,14 @@ def run_github_pr_effector(
             "phase": "phase_2",
             "reason": "missing_capability",
             "destination": destination,
-            "capability_env_var": _CAPABILITIES_ENV,
+            "capability_env_var": _PUSH_CAPABILITIES_ENV,
+            "legacy_capability_env_var": _LEGACY_CAPABILITIES_ENV,
             "capability_lookup_failed_for": destination,
             "hint": (
-                f"Add an entry to the {_CAPABILITIES_ENV} JSON map "
-                f'keyed by "{destination}". Example: '
-                f'{_CAPABILITIES_ENV}={{"{destination}":"<token>"}}'
+                f"Add an entry to the {_PUSH_CAPABILITIES_ENV} JSON map "
+                f'keyed by "{destination}" for a GitHub push-capable token. '
+                f"Legacy hosts may continue using {_LEGACY_CAPABILITIES_ENV} "
+                "during migration."
             ),
             "intent": packet,
             "matched_output_key": matched_key,
