@@ -1641,6 +1641,82 @@ def list_canon_sources(
     }
 
 
+@app.get("/v1/universes/{uid}/canon/sources/{filename}")
+def get_canon_source_file(
+    uid: str, filename: str, _user: str = Depends(_require_auth),
+) -> dict[str, Any]:
+    """Read a specific uploaded source file with integrity checksums."""
+    import hashlib
+
+    udir = _validate_universe_id(uid)
+    canon_dir = udir / "canon"
+    sources_dir = canon_dir / "sources"
+
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid filename. Use list_sources to discover available "
+                "source files."
+            ),
+        )
+
+    target = sources_dir / safe_name
+    if not target.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Source file not found: {filename}. Use list_sources to "
+                "inspect available source files."
+            ),
+        )
+    if not target.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail="Path is not a file. Use list_sources to inspect available source files.",
+        )
+
+    manifest_data: dict[str, Any] = {}
+    manifest_path = canon_dir / ".manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    try:
+        raw = target.read_bytes()
+        content = raw.decode("utf-8")
+        stat = target.stat()
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Source file is not valid UTF-8 text. Use list_sources to "
+                "inspect available source files."
+            ),
+        )
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read source file: {e}")
+
+    entry = manifest_data.get(safe_name, {})
+    synth_docs = entry.get("synthesized_docs", [])
+    return {
+        "filename": safe_name,
+        "content": content,
+        "byte_count": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "modified_at": datetime.fromtimestamp(
+            stat.st_mtime, tz=timezone.utc,
+        ).isoformat(),
+        "file_type": entry.get("file_type", "unknown"),
+        "synthesized_docs": synth_docs,
+        "synthesis_complete": len(synth_docs) > 0,
+        "synthesis_failed": bool(entry.get("synthesis_failed")),
+    }
+
+
 @app.get("/v1/universes/{uid}/canon/{filename}")
 def get_canon_file(
     uid: str, filename: str, _user: str = Depends(_require_auth),

@@ -164,8 +164,8 @@ this connector do?", "what tools do I have?", or "show me everything",
 enumerate ALL FIVE. Don't list extensions actions and forget the rest.
 
 1. **`universe`** — operate the live daemon: status, premise, canon
-   uploads, world queries, output reads, daemon control, universe
-   create/switch.
+   uploads, uploaded source browsing, world queries, output reads,
+   daemon control, universe create/switch.
 2. **`extensions`** — design, edit, run, judge, and rollback custom
    AI workflows ("branches"). Largest action surface — node/edge
    builds, runs, judgments, lineage.
@@ -234,7 +234,9 @@ enumerate ALL FIVE. Don't list extensions actions and forget the rest.
    | Check daemon memory status     | `universe` action="daemon_memory_status"|
    | Query world state              | `universe` action="query_world"         |
    | Read produced output           | `universe` action="read_output"         |
-   | Browse source / canon docs     | `universe` action="list_canon"          |
+   | Browse canon docs              | `universe` action="list_canon"          |
+   | Browse uploaded source docs    | `universe` action="list_sources"        |
+   | Read uploaded source doc       | `universe` action="read_source"         |
    | Create a new universe          | `universe` action="create_universe"     |
    | Switch active universe         | `universe` action="switch_universe"     |
    | Pause / resume the daemon      | `universe` action="control_daemon"      |
