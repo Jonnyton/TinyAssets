@@ -35,8 +35,9 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 # -------------------------------------------------------------------
 # Constants
@@ -571,7 +572,8 @@ def universe_id_from_path(universe_path: str | Path) -> str:
 # -------------------------------------------------------------------
 
 
-def _connect(base_path: str | Path) -> sqlite3.Connection:
+@contextmanager
+def _connect(base_path: str | Path) -> Iterator[sqlite3.Connection]:
     path = db_path(base_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30.0)
@@ -579,7 +581,11 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 __all__ = [
