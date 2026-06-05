@@ -17,6 +17,24 @@ Given PR #176 just landed (in-process trigger), in this order:
 
 **Chatbot's correction from earlier:** after PR #176, the next fastest path is NOT only BUG-011. It is **trigger observability + BUG-011 together**. Without trigger receipts, we can think the bridge works while silently dropping runs. Without lease/reclaim, we can start runs but lose them. Both are needed before BUG-045 gives us reliable autonomy.
 
+## Intake note — Next-Level Primitives / Strategic Roadmap from 22 Filed Bugs
+
+A follow-up patch request referenced `Next-Level Primitives` / `Strategic Roadmap from 22 Filed Bugs`, but every diagnostic field was empty: `title`, `component`, `observed`, `expected`, `repro`, and `request_text`.
+
+Because there is no concrete bug report to localize, this roadmap entry is the only safe actionable update at this time. No product-code change should be made from that request alone.
+
+### Action on re-entry
+
+When the missing details are provided, attach them here or in the successor planning artifact before any implementation work starts:
+
+- affected component or workflow surface
+- observed behavior
+- expected behavior
+- reproduction steps or failing evidence
+- request text tying the issue to a specific roadmap item or bug ID
+
+Until that intake is complete, treat the request as documentation-only and keep the execution sequence below unchanged.
+
 ---
 
 ## Step 1 — Verify `file_bug` surfaces `run_id` (5 min check)
