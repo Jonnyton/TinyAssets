@@ -52,9 +52,12 @@ _WIKI_CATEGORIES = (
     "recipes",     # Food recipes and cooking notes
     "workflows",   # User-built workflows, how-tos, repeatable processes
     "notes",       # Personal notes, journal entries, scratch thinking
-    "references",  # External references, citations, cheat sheets
-    "plans",       # Plans, proposals, roadmaps
-    "bugs",        # Auto-filed server defects (one file per BUG-NNN, never drafts-gated)
+    "references",        # External references, citations, cheat sheets
+    "plans",             # Plans, proposals, roadmaps
+    "bugs",              # Auto-filed server defects (one file per BUG-NNN, never drafts-gated)
+    "feature-requests",  # Auto-filed feature requests (FEAT-NNN)
+    "design-proposals",  # Auto-filed design proposals (DESIGN-NNN)
+    "patch-requests",    # Auto-filed patch requests (PR-NNN)
 )
 
 _STOP_WORDS = frozenset(
@@ -473,27 +476,26 @@ def _wiki_write_slug(category: str, filename: str) -> tuple[str, str | None]:
     return slug, None
 
 
-def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
-    """Find the canonical bugs/<slug>.md path, preferring uppercase + trailing-hyphen variants.
+def _resolve_filed_page_canonical(parent: Path, slug: str, *, category: str) -> Path | None:
+    """Find the canonical file_bug-backed page path for a write slug.
 
-    Three corner cases this resolves:
+    This handles the same corner cases as the historical bugs-only helper, but
+    across every filed-page category in `_KIND_ROUTING`:
 
-    1. **Direct case-sensitive hit on the slug.** If `<slug>.md` exists, it's
-       canonical only when there's no uppercase sibling that lowercases to it
-       (BUG-003 fix: lowercase duplicate must NOT win when an uppercase BUG
-       canonical exists).
-    2. **Wrong-case canonical** (BUG-028). e.g. slug=`bug-007-foo`, canonical
-       on disk is `BUG-007-foo.md` — match the canonical.
-    3. **Trailing-hyphen canonical** (BUG-018). The slug sanitizer strips
-       trailing hyphens; if the canonical filename actually has one, match
-       `<slug>-.md` (case-insensitive).
+    1. Wrong-case canonical filenames such as `PR-007-foo.md` vs a normalized
+       write slug of `pr-007-foo`.
+    2. Trailing-hyphen canonical filenames such as `<slug>-.md`, which the
+       slug sanitizer strips from write input.
+    3. Existing filed-page variants that preserve the ID prefix / filename
+       casing must win over synthesized lowercase duplicates.
 
     Returns the resolved canonical Path, or None if no match.
     Preference order when multiple candidates match:
-      uppercase BUG-prefix > exact-case > anything else
+      filed-page prefix casing > any case-preserving variant > exact lowercase path
     """
     direct = parent / (slug + ".md")
     direct_dash = parent / (slug + "-.md")
+    prefixes = _FILE_BUG_CATEGORY_PREFIXES.get(category, ())
 
     candidates: list[Path] = []
     for candidate in parent.glob("*.md"):
@@ -504,13 +506,13 @@ def _resolve_bugs_canonical(parent: Path, slug: str) -> Path | None:
     if not candidates:
         return None
 
-    def _rank(p: Path) -> tuple[int, int, str]:
+    def _rank(p: Path) -> tuple[int, int, int, str]:
+        stem = p.stem
         name = p.name
-        # Lower number wins. Prefer uppercase BUG-prefix (canonical convention)
-        # then prefer exact slug-name match over trailing-hyphen variant.
-        is_upper_bug = 0 if name.startswith("BUG-") else 1
+        has_filed_prefix = 0 if any(stem.startswith(f"{prefix}-") for prefix in prefixes) else 1
+        preserves_case = 0 if stem != stem.lower() else 1
         is_exact = 0 if p == direct else (1 if p == direct_dash else 2)
-        return (is_upper_bug, is_exact, name)
+        return (has_filed_prefix, preserves_case, is_exact, name)
 
     candidates.sort(key=_rank)
     return candidates[0]
@@ -783,25 +785,19 @@ def _wiki_write(
     promoted_path = _wiki_pages_dir() / category / (slug + ".md")
     promoted_rel_path = f"pages/{category}/{slug}.md"
 
-    # Alias-resolution for the bugs category. Runs BEFORE the .exists() check
-    # so a pre-existing lowercase-duplicate (BUG-003) or trailing-hyphen
-    # canonical (BUG-018) cannot bypass canonical-preferring resolution.
-    #
-    # BUG-003: lowercase duplicate already exists alongside an uppercase
-    # canonical → we must prefer the uppercase canonical.
-    # BUG-028: file_bug filename is lowercase but a wrong-case canonical
-    # already exists → resolve to canonical.
-    # BUG-018: canonical filename has a trailing hyphen the slug sanitizer
-    # strips → match a "<slug>-.md" sibling as the canonical.
-    if category == _BUGS_CATEGORY:
+    # Resolve canonical filed-page aliases BEFORE the .exists() check so a
+    # previously filed page with preserved ID-prefix casing or a trailing-hyphen
+    # canonical name wins over the synthesized lowercase write path.
+    if category in _FILE_BUG_CATEGORY_PREFIXES:
         parent = _wiki_pages_dir() / category
         if parent.is_dir():
-            canonical = _resolve_bugs_canonical(parent, slug)
+            canonical = _resolve_filed_page_canonical(parent, slug, category=category)
             if canonical is not None:
                 if canonical != promoted_path:
                     _logger_wiki.warning(
-                        "wiki write alias: '%s' resolved to canonical '%s'. "
+                        "wiki write alias in %s: '%s' resolved to canonical '%s'. "
                         "Rename '%s' → '%s' (or remove duplicate) to eliminate.",
+                        category,
                         slug + ".md",
                         canonical.name,
                         canonical.name if canonical.name != (slug + ".md") else slug,
@@ -1615,6 +1611,15 @@ _KIND_ROUTING: dict[str, tuple[str, str]] = {
     "feature":       (_KIND_FEATURES_DIR,       "FEAT"),
     "design":        (_KIND_DESIGNS_DIR,        "DESIGN"),
     "patch_request": (_KIND_PATCH_REQUESTS_DIR, "PR"),
+}
+
+_FILE_BUG_CATEGORY_PREFIXES: dict[str, tuple[str, ...]] = {
+    category_dir: tuple(
+        prefix
+        for mapped_category_dir, prefix in _KIND_ROUTING.values()
+        if mapped_category_dir == category_dir
+    )
+    for category_dir, _prefix in _KIND_ROUTING.values()
 }
 
 
