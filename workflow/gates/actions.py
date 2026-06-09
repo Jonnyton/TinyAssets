@@ -203,6 +203,7 @@ def release_bonus(
                   "fail" or "skip" → refund to staker.
 
     Returns a result dict describing the disbursement.
+    Retracted claims are rejected before any payout or refund path runs.
     """
     ensure_bonus_columns(conn)
 
@@ -214,6 +215,7 @@ def release_bonus(
 
     claim = GateBonusClaim.from_row(row)
 
+    # A retracted claim invalidates the attached bonus stake entirely.
     if claim.is_retracted:
         return {
             "status": "rejected",
