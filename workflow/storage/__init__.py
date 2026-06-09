@@ -31,6 +31,7 @@ intermediate file.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -571,15 +572,20 @@ def universe_id_from_path(universe_path: str | Path) -> str:
 # -------------------------------------------------------------------
 
 
-def _connect(base_path: str | Path) -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect(base_path: str | Path):
     path = db_path(base_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 30000")
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 __all__ = [

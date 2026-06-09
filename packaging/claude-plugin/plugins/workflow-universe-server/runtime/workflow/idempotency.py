@@ -22,6 +22,7 @@ wrapped function again.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import logging
@@ -46,12 +47,17 @@ class IdempotencyStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _connect(self):
         conn = sqlite3.connect(str(self._path), timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 30000")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA busy_timeout = 30000")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
