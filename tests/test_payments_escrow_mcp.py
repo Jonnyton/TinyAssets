@@ -384,11 +384,18 @@ class TestEscrowRoundTrip:
 
 class TestPaymentsActionsUnit:
     def _conn(self, tmp_path):
+        # storage._connect is a context manager (closes on exit); these unit
+        # tests need a connection that stays open across multiple action calls,
+        # so open a raw connection to the same DB path with matching pragmas.
+        import sqlite3
+
         from workflow.daemon_server import initialize_author_server
         from workflow.payments.escrow import migrate_escrow_schema
-        from workflow.storage import _connect
+        from workflow.storage import db_path
         initialize_author_server(tmp_path)
-        conn = _connect(tmp_path)
+        conn = sqlite3.connect(db_path(tmp_path), timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
         migrate_escrow_schema(conn)
         return conn
 
