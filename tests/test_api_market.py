@@ -110,11 +110,9 @@ def test_attribution_actions_keys():
 # ── _GOAL_ACTIONS dispatch table ────────────────────────────────────────────
 
 
-def test_goal_actions_table_has_12_handlers():
-    # 9 base actions + archive_consultation (pre-existing on main) +
-    # run_canonical (PR-127 M6 cutover Step 4) +
-    # set_selector (DESIGN-008 user-buildable selector primitive) = 12.
-    assert len(_GOAL_ACTIONS) == 12
+def test_goal_actions_table_has_14_handlers():
+    # 12 prior actions + define_protocol + get_protocol (goal-bound protocols).
+    assert len(_GOAL_ACTIONS) == 14
 
 
 def test_goal_actions_keys():
@@ -126,6 +124,8 @@ def test_goal_actions_keys():
         "run_canonical",
         # DESIGN-008 — user-buildable selector primitive.
         "set_selector",
+        # goal-bound branch protocols.
+        "define_protocol", "get_protocol",
     }
     assert set(_GOAL_ACTIONS.keys()) == expected
 
@@ -189,8 +189,8 @@ def test_goals_unknown_action_lists_directory_aliases():
 # ── _GATES_ACTIONS dispatch table ───────────────────────────────────────────
 
 
-def test_gates_actions_table_has_11_handlers():
-    assert len(_GATES_ACTIONS) == 11
+def test_gates_actions_table_has_14_handlers():
+    assert len(_GATES_ACTIONS) == 14
 
 
 def test_gates_actions_keys():
@@ -200,6 +200,9 @@ def test_gates_actions_keys():
         "stake_bonus", "unstake_bonus", "release_bonus",
         # PR-126 M5 — claim from completed run's recommended_rung_claim.
         "claim_from_branch_run",
+        # conformance packs.
+        "record_conformance_pack", "get_conformance_pack",
+        "list_conformance_packs",
     }
     assert set(_GATES_ACTIONS.keys()) == expected
 
