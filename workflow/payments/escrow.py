@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS escrow_locks (
     lock_id         TEXT PRIMARY KEY,
     gate_claim_id   TEXT NOT NULL,
     staker_id       TEXT NOT NULL,
+    currency        TEXT NOT NULL DEFAULT 'MicroToken',
     amount          INTEGER NOT NULL CHECK (amount >= 0),
     status          TEXT NOT NULL DEFAULT 'locked'
                         CHECK (status IN ('locked', 'released', 'refunded')),
@@ -87,6 +88,7 @@ class EscrowLock:
     lock_id: str
     gate_claim_id: str
     staker_id: str
+    currency: str
     amount: int
     status: EscrowStatus
     locked_at: str
@@ -112,6 +114,7 @@ class EscrowLock:
             lock_id=d["lock_id"],
             gate_claim_id=d["gate_claim_id"],
             staker_id=d["staker_id"],
+            currency=d.get("currency") or "MicroToken",
             amount=int(d["amount"]),
             status=d["status"],
             locked_at=d["locked_at"],
@@ -123,8 +126,19 @@ class EscrowLock:
 # ── Migration ─────────────────────────────────────────────────────────────────
 
 def migrate_escrow_schema(conn: sqlite3.Connection) -> None:
-    """Create escrow_locks table if absent. Idempotent."""
+    """Create escrow_locks table if absent and backfill the currency column.
+
+    Idempotent — safe to call on legacy DBs created before the currency column.
+    """
     conn.executescript(ESCROW_SCHEMA)
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(escrow_locks)").fetchall()
+    }
+    if "currency" not in columns:
+        conn.execute(
+            "ALTER TABLE escrow_locks "
+            "ADD COLUMN currency TEXT NOT NULL DEFAULT 'MicroToken'"
+        )
 
 
 # ── Primitives ────────────────────────────────────────────────────────────────
@@ -137,6 +151,7 @@ def lock_bonus(
     staker_id: str,
     amount: int,
     locked_at: str,
+    currency: str = "MicroToken",
 ) -> EscrowLock:
     """Lock ``amount`` from staker's budget for a gate bonus claim.
 
@@ -149,10 +164,10 @@ def lock_bonus(
         conn.execute(
             """
             INSERT INTO escrow_locks
-                (lock_id, gate_claim_id, staker_id, amount, status, locked_at)
-            VALUES (?, ?, ?, ?, 'locked', ?)
+                (lock_id, gate_claim_id, staker_id, currency, amount, status, locked_at)
+            VALUES (?, ?, ?, ?, ?, 'locked', ?)
             """,
-            (lock_id, gate_claim_id, staker_id, amount, locked_at),
+            (lock_id, gate_claim_id, staker_id, currency, amount, locked_at),
         )
     except sqlite3.IntegrityError as exc:
         raise DuplicateLockError(

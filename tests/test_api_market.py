@@ -76,12 +76,15 @@ def test_module_exposes_expected_public_names():
 # ── _ESCROW_ACTIONS dispatch table ──────────────────────────────────────────
 
 
-def test_escrow_actions_table_has_4_handlers():
-    assert len(_ESCROW_ACTIONS) == 4
+def test_escrow_actions_table_has_6_handlers():
+    assert len(_ESCROW_ACTIONS) == 6
 
 
 def test_escrow_actions_keys():
-    expected = {"escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect"}
+    expected = {
+        "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
+        "escrow_fund", "escrow_balance",
+    }
     assert set(_ESCROW_ACTIONS.keys()) == expected
 
 

@@ -507,11 +507,64 @@ def _action_escrow_inspect(kwargs: dict[str, Any]) -> str:
     return json.dumps(result)
 
 
+def _action_escrow_fund(kwargs: dict[str, Any]) -> str:
+    """Credit a staker's escrow budget (off-chain / testnet faucet).
+
+    Requires WORKFLOW_PAID_MARKET=on. Defaults to funding the calling user's
+    own budget; pass staker_id to fund another.
+    """
+    from workflow.payments.actions import action_escrow_fund
+    from workflow.producers.node_bid import paid_market_enabled
+    from workflow.storage import _connect
+
+    if not paid_market_enabled():
+        return json.dumps({
+            "status": "not_available",
+            "error": "Escrow actions require WORKFLOW_PAID_MARKET=on.",
+        })
+
+    staker_id = (
+        kwargs.get("staker_id") or os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    ).strip()
+    currency = (kwargs.get("currency") or "MicroToken").strip()
+    raw_amount = kwargs.get("amount", 0)
+    try:
+        amount = int(raw_amount)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "status": "rejected",
+            "error": f"amount must be an integer, got {raw_amount!r}.",
+        })
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_fund(
+            conn, staker_id=staker_id, amount=amount, currency=currency
+        )
+    return json.dumps(result)
+
+
+def _action_escrow_balance(kwargs: dict[str, Any]) -> str:
+    """Read-only — a staker's escrow budget (total / reserved / spendable)."""
+    from workflow.payments.actions import action_escrow_balance
+    from workflow.storage import _connect
+
+    staker_id = (
+        kwargs.get("staker_id") or os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    ).strip()
+    currency = (kwargs.get("currency") or "MicroToken").strip()
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_balance(conn, staker_id=staker_id, currency=currency)
+    return json.dumps(result)
+
+
 _ESCROW_ACTIONS: dict[str, Any] = {
     "escrow_lock": _action_escrow_lock,
     "escrow_release": _action_escrow_release,
     "escrow_refund": _action_escrow_refund,
     "escrow_inspect": _action_escrow_inspect,
+    "escrow_fund": _action_escrow_fund,
+    "escrow_balance": _action_escrow_balance,
 }
 
 # ── Outcome event MCP actions ─────────────────────────────────────────────
