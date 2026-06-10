@@ -29,6 +29,7 @@ universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| Codex review gate: Brain v2 research + primitive basis audit — verdict approve/adapt unblocks context-engine build + vocabulary lock (spec landed: docs/specs/2026-06-10-tiny-first-principles-spec.md, host-approved PR #1303) | docs/audits/ (new review artifacts); read docs/specs/2026-06-10-{brain-v2-research-implications,primitive-basis-audit}.md | - | pending |
 | **#906 host merge key** — Open-brain v2 slice C cost-ledger READ surface; Claude checker APPROVED 2026-05-19 | workflow/daemon_brain.py, workflow/api/status.py + plugin mirrors | - | host-action |
 | **#907 host merge key** — Bounded autonomous spend CI writer-prompt guardrail; Claude checker APPROVED 2026-05-19 | .github/workflows/auto-fix-bug.yml, docs/ops/auto-fix-runbook.md | - | host-action |
 | **Codex verdict ADAPT** — in-node enqueue #1214 stays dark; before flag flip add current-universe context, queue/lineage cap, branch target validation | workflow/graph_compiler.py, workflow/branch_tasks.py, fantasy_daemon/__main__.py, tests/test_node_enqueue_*.py | verdict filed in `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
