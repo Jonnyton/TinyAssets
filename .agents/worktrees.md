@@ -654,3 +654,15 @@ Notes:
 - Ship condition: focused tests pass, branch pushed, PR opened, GitHub
   `wiki-bug-sync.yml` dispatch succeeds, community loop watch recovers or
   residual non-intake blockers are documented.
+
+## Codex Tiny Spec Review - 2026-06-10
+
+- 2026-06-10 create `../wf-codex-tiny-review` on `codex/tiny-spec-review` by
+  codex-gpt5-desktop.
+- Source: PR #1303 landed the host-ratified Tiny first-principles spec plus
+  Brain v2 and primitive-basis companions; STATUS.md has a pending Codex
+  review gate for those companions.
+- Purpose: write the Codex approve/adapt review artifact that unblocks or
+  scopes context-engine build and vocabulary lock.
+- Ship condition: artifact under `docs/audits/`, STATUS row retired/updated,
+  branch pushed, PR opened.
