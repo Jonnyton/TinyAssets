@@ -193,7 +193,7 @@ def test_call_with_policy_filters_policy_attempt_order_by_allowlist(
         ],
     }
 
-    text, provider = _run(router.call_with_policy("writer", "p", "s", policy))
+    text, provider, _meta = _run(router.call_with_policy("writer", "p", "s", policy))
 
     assert text == "content"
     assert provider == "ollama-local"
