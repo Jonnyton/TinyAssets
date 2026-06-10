@@ -39,18 +39,26 @@ indexes are rebuildable from canon, and run state is resumable. Retention is
 applied **per tier prefix** by `scripts/backup_prune.py`; unrecognized
 filenames at the destination are never pruned.
 
-### Current droplet reality (verified 2026-06-10)
+### Current droplet reality (verified 2026-06-10, updated same day)
 
-Despite the Hetzner narrative elsewhere in this runbook, the production
-droplet has **`BACKUP_DEST=/var/backups/workflow` — a local directory on the
-same disk as the data it backs up**. No rclone remote was ever configured.
-The **GitHub release assets in `Jonnyton/workflow-backups` are the only true
-offsite copy.** Until a real remote is provisioned (host action: DO Spaces or
-Hetzner Storage Box credentials + `rclone config` on the droplet), treat the
-GH tier as primary offsite, keep `GH_TOKEN` valid in `/etc/workflow/env`, and
-keep local retention tight (`BACKUP_RETAIN_DAILY=3 / WEEKLY=2 / MONTHLY=2`
-set 2026-06-10) so the local mirror cannot fill the 50 GB root disk at
-~1.5 GB/night.
+Until 2026-06-10 the droplet had `BACKUP_DEST=/var/backups/workflow` — a
+local directory on the same disk as the data — and GitHub releases were the
+only true offsite copy. **Fixed 2026-06-10:** DO Spaces provisioned from the
+droplet's own `DO_API_TOKEN` (no human in the loop):
+
+- `BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/workflow-backups`
+- Spaces key `workflow-backup-shipper-v3` (account-wide `fullaccess` grant —
+  keys created with `grants: []` or per-nonexistent-bucket grants get 403;
+  use `[{"permission": "fullaccess"}]` with no bucket field).
+- rclone config at `/app/.config/rclone/rclone.conf` (the systemd unit runs
+  with `HOME=/app` from `/etc/workflow/env`).
+- Verified end-to-end: `Result=success`, both tiers listed in the bucket.
+
+Offsite is now: **DO Spaces (primary) + GitHub releases (secondary)**.
+Teardown/rollback: delete the Spaces key via DO API, repoint `BACKUP_DEST`,
+remove the bucket. Cost: Spaces subscription ~$5/mo on the existing DO
+account. Local retention stays tight (`BACKUP_RETAIN_DAILY=3 / WEEKLY=2 /
+MONTHLY=2`) although the local dir is no longer the dest.
 
 **Retention schedule:**
 

@@ -47,7 +47,7 @@ universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | host | host-decision |
 | Host decision: BUG-018 canonical filename trailing-hyphen — rename canonical to drop, or `wiki action=promote` draft to overwrite? | wiki | - | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
-| Host-action: provision real offsite BACKUP_DEST (DO Spaces or Hetzner Storage Box creds + rclone config on droplet) — current dest is droplet-local; GH releases are the only true offsite (runbook "Current droplet reality") | /etc/workflow/env on droplet | - | host-action |
+| **Loop telemetry slice** (PR-172 + spec §15 D1-2): model/provider stamps on run receipts, worker liveness heartbeat, periodic stuck-claim recovery — so loop dormancy is detected, not discovered | fantasy_daemon/__main__.py, workflow/branch_tasks.py, workflow/providers/router.py, workflow/api/status.py + plugin mirrors, tests/ | - | claimed:claude-fable ACTIVE 2026-06-10 |
 | Host-action: re-register `Workflow DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 | Memory-scope Stage 2c flag | - | 30d clean | monitoring |
 | Remove provider+DO keys from persistent uptime surfaces | `deploy/*` | host Qs answered | host->e2e |
