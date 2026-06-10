@@ -189,6 +189,19 @@ services:
     depends_on:
       daemon:
         condition: service_healthy
+    # Liveness watchdog (docs/specs/daemon-liveness-watchdog.md §1): the
+    # supervisor writes <universe>/.worker_supervisor.json beats; this
+    # check fails when beats go stale or pickable work sits unclaimed
+    # (the 2026-06 dormancy class: container "healthy" 37h while no
+    # claims happened). NOTE: compose does NOT restart unhealthy
+    # containers by itself — deploy/workflow-autoheal.timer on the host
+    # restarts any workflow container that reports unhealthy.
+    healthcheck:
+      test: ["CMD", "python", "-m", "workflow.cloud_worker_healthcheck"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
     labels:
       org.workflow.component: worker
       org.workflow.role: node-executor

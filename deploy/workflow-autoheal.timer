@@ -1,0 +1,17 @@
+# Workflow autoheal timer — pairs with workflow-autoheal.service.
+#
+# Every 2 minutes: with the worker healthcheck at interval 60s /
+# retries 3, a wedged worker is marked unhealthy within ~4 minutes and
+# restarted within ~6 — versus the 7 DAYS the 2026-06 dormancy lasted.
+
+[Unit]
+Description=Timer for workflow autoheal (restart unhealthy containers)
+Requires=workflow-autoheal.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=workflow-autoheal.service
+
+[Install]
+WantedBy=timers.target
