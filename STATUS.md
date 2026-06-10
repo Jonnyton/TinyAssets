@@ -11,6 +11,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-04-24] Task #9 host Qs: GROQ/GEMINI/XAI GH Actions secrets present + rotation e2e validated after deploy step ships.
 - **[P1 filed:2026-04-30]** Castles II live run `28479d8ddfb44488` failed `provider_exhausted` at `candidate_discovery` (see BUG-038); blocks branch-run proof. Companion: BUG-039 (Echoes intake same root cause).
 - [filed:2026-04-30 reframed:2026-05-19] Classic-game v0 desktop shortcut concern: now PR-131 in dispatcher queue (`bc6ed9df-e764-495a-b466-c5c86d7e0e2e`); user-canary packet `tiberian_sun_host_local_effect_packet_v1` built with correct idempotency_key + asset policy. First consumer of #914 external-write design.
+- [filed:2026-06-10] Droplet `/opt/workflow` checkout is stale (c1380fa) + dirty (compose.yml, vector-entrypoint.sh local edits); systemd units run scripts from it. Needs deliberate sync strategy — NOT `git pull` (would drag local edits live).
 - [filed:2026-05-19] Wiki has shifted toward multi-agent shared scratch space — 81% of post-2026-05-01 notes (495 of 614) are Codex/Cowork/Claude agent-coordination. Volume risks drowning out chatbot discovery/remix. Worth a host conversation on whether to split coordination off the knowledge wiki.
 
 ## Approved Specs
@@ -29,6 +30,7 @@ universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **#1307 host merge key** — backup two-tier fix (consistent brain archive + live-tolerant full tar + pruner foreign-file fix); rolled out on droplet + e2e-proven 2026-06-10; offsite starvation since 05-28 closed | deploy/backup.sh, deploy/workflow-backup.timer, scripts/backup_prune.py, docs/ops/backup-restore-runbook.md, tests/test_backup_script.py | - | host-action |
 | **#906 host merge key** — Open-brain v2 slice C cost-ledger READ surface; Claude checker APPROVED 2026-05-19 | workflow/daemon_brain.py, workflow/api/status.py + plugin mirrors | - | host-action |
 | **#907 host merge key** — Bounded autonomous spend CI writer-prompt guardrail; Claude checker APPROVED 2026-05-19 | .github/workflows/auto-fix-bug.yml, docs/ops/auto-fix-runbook.md | - | host-action |
 | **Codex verdict ADAPT** — in-node enqueue #1214 stays dark; before flag flip add current-universe context, queue/lineage cap, branch target validation | workflow/graph_compiler.py, workflow/branch_tasks.py, fantasy_daemon/__main__.py, tests/test_node_enqueue_*.py | verdict filed in `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
