@@ -19,14 +19,23 @@ import argparse
 import re
 import sys
 
+# Tier prefixes managed by this pruner. Names not matching one of these
+# patterns are NEVER deleted — the destination may hold files we don't
+# own. (Before 2026-06-10 the delete set was computed as all-names minus
+# kept, which would have deleted any unrecognized file at the dest.)
+TIER_PATTERNS = (
+    r"^workflow-data-\d.*\.tar\.gz$",
+    r"^workflow-brain-\d.*\.tar\.gz$",
+)
 
-def _apply_retention(
+
+def _apply_retention_one_tier(
     names: list[str],
     keep_daily: int,
     keep_weekly: int,
     keep_monthly: int,
 ) -> list[str]:
-    """Return names that should be deleted (oldest first)."""
+    """Return names within one tier that should be deleted (oldest first)."""
     keep: set[str] = set()
     week_seen: dict[str, bool] = {}
     month_seen: dict[str, bool] = {}
@@ -35,8 +44,6 @@ def _apply_retention(
     monthly_count = 0
 
     for name in sorted(names, reverse=True):
-        if not re.match(r"^workflow-data-\d.*\.tar\.gz$", name):
-            continue
         daily_count += 1
         if daily_count <= keep_daily:
             keep.add(name)
@@ -61,8 +68,28 @@ def _apply_retention(
                 keep.add(name)
                 continue
 
-    to_delete = sorted(set(names) - keep)
-    return to_delete
+    return sorted(set(names) - keep)
+
+
+def _apply_retention(
+    names: list[str],
+    keep_daily: int,
+    keep_weekly: int,
+    keep_monthly: int,
+) -> list[str]:
+    """Return names that should be deleted (oldest first).
+
+    Retention is applied independently per tier prefix so brain archives
+    never crowd out full-volume archives (or vice versa). Unrecognized
+    names are never returned.
+    """
+    to_delete: list[str] = []
+    for pattern in TIER_PATTERNS:
+        tier_names = [n for n in names if re.match(pattern, n)]
+        to_delete.extend(
+            _apply_retention_one_tier(tier_names, keep_daily, keep_weekly, keep_monthly)
+        )
+    return sorted(to_delete)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -4,8 +4,9 @@
 # docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
 #
 # Triggered by workflow-backup.timer nightly at 03:00 UTC. Invokes
-# deploy/backup.sh to tar the workflow-data named volume + rclone-
-# upload to Hetzner Storage Box. Retention pruned in the same run.
+# deploy/backup.sh: brain-tier + full-tier archives of the workflow-data
+# named volume, rclone-uploaded to BACKUP_DEST and shipped to GitHub
+# release assets when GH_TOKEN is set. Retention pruned in the same run.
 #
 # Runs as root because:
 #   1. /var/lib/docker/volumes/ is only root-readable by default.
@@ -18,7 +19,7 @@
 # reads STORAGEBOX_* from the process env.
 
 [Unit]
-Description=Workflow daemon state backup (nightly snapshot to Hetzner Storage Box)
+Description=Workflow daemon state backup (nightly two-tier snapshot to BACKUP_DEST + GH releases)
 Documentation=https://github.com/Jonnyton/Workflow/blob/main/deploy/HETZNER-DEPLOY.md
 After=docker.service network-online.target
 Wants=network-online.target

@@ -11,7 +11,7 @@ Requires=workflow-backup.service
 # 03:00 UTC nightly. Low-traffic window for most regions; 3h before
 # the 07:17 UTC tier-3 OSS clone nightly (so backup completes before
 # CI hits the box).
-OnCalendar=02:00 UTC
+OnCalendar=03:00 UTC
 AccuracySec=5min
 # Persistent=true so a missed backup (box was off at 02:00) runs on
 # next boot. State backup is a scheduled batch job, unlike the

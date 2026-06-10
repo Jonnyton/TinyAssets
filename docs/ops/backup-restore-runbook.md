@@ -13,12 +13,44 @@ State backup for the DO Droplet's `/data` volume. Row J per
 
 ## Architecture
 
-- **Script:** `deploy/backup.sh` — tars the `workflow-data` Docker volume and uploads to any
+- **Script:** `deploy/backup.sh` — two archives per run (see "Two-tier design"), uploaded to any
   rclone-compatible remote.
 - **Restore:** `deploy/backup-restore.sh` — pulls a snapshot and restores it in-place.
-- **Schedule:** `deploy/backup.timer` (systemd) — fires nightly at **02:00 UTC**.
+- **Schedule:** `deploy/workflow-backup.timer` (systemd) — fires nightly at **03:00 UTC**.
 - **Offsite options:** DO Spaces (`s3://`), Hetzner Storage Box (`sftp://`), AWS S3, etc. — any
   rclone remote works. `BACKUP_DEST` is the single config variable.
+
+### Two-tier design (2026-06-10)
+
+A live volume cannot be tarred consistently: the daemon writes during the
+~7-minute archive, GNU tar exits 1 ("file changed as we read it"), and the
+pre-2026-06-10 script treated that as fatal — every nightly run from
+2026-05-28 to 2026-06-10 failed this way, silently starving offsite history
+(the only successes were nights quiet enough to win the race). The redesign:
+
+| Tier | Archive | Contents | Consistency | Failure policy |
+|------|---------|----------|-------------|----------------|
+| **Brain** | `workflow-brain-<ts>.tar.gz` (MBs) | `wiki/`, `daemon_wikis/`, top-level `*.json` ledgers, top-level `*.db` | Strict — staged to a temp dir; SQLite copied via python3 `sqlite3.backup()` API | Any failure is fatal (exit 2/3) |
+| **Full** | `workflow-data-<ts>.tar.gz` (GBs) | whole volume incl. rebuildable per-universe `lancedb/` indexes + universe canon/output | Best-effort — tarred live; tar rc=1 tolerated, rc≥2 fatal | Upload failure fatal (exit 3) |
+
+The brain tier is the irreplaceable knowledge state and must always land.
+The full tier may contain torn copies of files that were mid-write; LanceDB
+indexes are rebuildable from canon, and run state is resumable. Retention is
+applied **per tier prefix** by `scripts/backup_prune.py`; unrecognized
+filenames at the destination are never pruned.
+
+### Current droplet reality (verified 2026-06-10)
+
+Despite the Hetzner narrative elsewhere in this runbook, the production
+droplet has **`BACKUP_DEST=/var/backups/workflow` — a local directory on the
+same disk as the data it backs up**. No rclone remote was ever configured.
+The **GitHub release assets in `Jonnyton/workflow-backups` are the only true
+offsite copy.** Until a real remote is provisioned (host action: DO Spaces or
+Hetzner Storage Box credentials + `rclone config` on the droplet), treat the
+GH tier as primary offsite, keep `GH_TOKEN` valid in `/etc/workflow/env`, and
+keep local retention tight (`BACKUP_RETAIN_DAILY=3 / WEEKLY=2 / MONTHLY=2`
+set 2026-06-10) so the local mirror cannot fill the 50 GB root disk at
+~1.5 GB/night.
 
 **Retention schedule:**
 
@@ -126,6 +158,20 @@ Example output:
   workflow-data-2026-04-21T02-00-00Z.tar.gz
   workflow-data-2026-04-20T02-00-00Z.tar.gz
   workflow-data-2026-04-19T02-00-00Z.tar.gz
+```
+
+---
+
+## Restore the brain tier only
+
+The brain archive's contents are relative to the volume root (`./wiki`,
+`./daemon_wikis`, `./ledger.json`, `./*.db`). To restore just the knowledge
+state over an existing volume:
+
+```bash
+systemctl stop workflow-daemon   # or: docker compose -f /opt/workflow/deploy/compose.yml stop daemon
+tar -xzf /tmp/workflow-brain-<ts>.tar.gz -C /var/lib/docker/volumes/workflow-data/_data
+systemctl start workflow-daemon
 ```
 
 ---

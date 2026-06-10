@@ -347,6 +347,49 @@ def test_retention_monthly_anchor_kept():
     assert march_kept, f"At least one March archive should be kept; all deleted: {to_delete}"
 
 
+def test_retention_never_deletes_unrecognized_names():
+    """Foreign files at the destination must never be emitted for deletion.
+
+    Regression: before 2026-06-10 the delete set was computed as
+    all-names-minus-kept, so any file not matching the workflow-data
+    pattern was deleted on every successful prune.
+    """
+    foreign = ["README.txt", "manual-snapshot.tar.gz", "somebody-elses-file.bin"]
+    dates = [f"2026-04-{d:02d}" for d in range(1, 15)]
+    names = _make_archives(dates) + foreign
+    to_delete = _retention_set(names, keep_daily=1, keep_weekly=1, keep_monthly=1)
+    assert set(foreign).isdisjoint(to_delete), (
+        f"Foreign names must never be pruned: {to_delete & set(foreign)}"
+    )
+
+
+def test_retention_per_tier_independent():
+    """Brain and data archives get independent retention windows."""
+    dates = [f"2026-04-{d:02d}" for d in range(1, 11)]
+    data_names = _make_archives(dates)
+    brain_names = [f"workflow-brain-{d}T03-00-00Z.tar.gz" for d in dates]
+    to_delete = _retention_set(
+        data_names + brain_names, keep_daily=7, keep_weekly=4, keep_monthly=6
+    )
+    # Same policy as test_prune_script_subprocess_emits_deletions, applied
+    # per tier: only the Apr 01 archive of EACH tier is pruned.
+    assert to_delete == {
+        "workflow-data-2026-04-01T02-00-00Z.tar.gz",
+        "workflow-brain-2026-04-01T03-00-00Z.tar.gz",
+    }, f"Expected per-tier Apr 01 pruning; got: {to_delete}"
+
+
+def test_backup_sh_has_brain_tier_and_tolerates_live_tar():
+    """Structural anchors for the 2026-06-10 two-tier redesign."""
+    text = BACKUP_SH.read_text(encoding="utf-8")
+    assert "workflow-brain-" in text, "brain-tier archive missing from backup.sh"
+    assert "--warning=no-file-changed" in text, "live-tar warning suppression missing"
+    assert 'tar_rc' in text and '-ge 2' in text, (
+        "full-tier tar must tolerate rc=1 and fail only on rc>=2"
+    )
+    assert "src.backup(dst)" in text, "consistent sqlite copy (sqlite3 backup API) missing"
+
+
 def test_prune_script_subprocess_emits_deletions():
     """backup_prune.py via subprocess: 10 archives, daily=7 → correct prune set.
 

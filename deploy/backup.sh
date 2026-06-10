@@ -4,12 +4,25 @@
 # Self-host migration Row J per
 # docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
 #
-# Tars the Docker named volume's backing directory + uploads to any
-# rclone-compatible remote. Retention: 7 daily + 4 weekly + 6 monthly,
-# pruned at the end of each run.
+# Two tiers per run (2026-06-10 redesign — see
+# docs/ops/backup-restore-runbook.md "Two-tier design"):
 #
-# Triggered by backup.service (systemd oneshot) from
-# backup.timer (nightly 02:00 UTC).
+#   1. BRAIN tier (strict): wiki/, daemon_wikis/, top-level ledgers and
+#      SQLite DBs, staged to a quiesced temp dir with SQLite files copied
+#      through python3's sqlite3 backup API for transactional consistency.
+#      Small (MBs). This archive MUST succeed — it carries the
+#      irreplaceable knowledge state.
+#   2. FULL tier (best-effort): whole-volume tar including multi-GB
+#      rebuildable LanceDB indexes, taken live. GNU tar exit 1 ("file
+#      changed as we read it") is EXPECTED on a hot volume and tolerated;
+#      exit >= 2 is fatal. Before 2026-06-10 this exit-1 case failed the
+#      whole unit nightly and silently starved the offsite history.
+#
+# Retention: 7 daily + 4 weekly + 6 monthly per tier, pruned at the end
+# of each run (scripts/backup_prune.py).
+#
+# Triggered by workflow-backup.service (systemd oneshot) from
+# workflow-backup.timer (nightly 03:00 UTC).
 #
 # Required env (from /etc/workflow/env, sourced by the systemd unit):
 #   BACKUP_DEST   rclone destination URL, e.g.:
@@ -26,16 +39,18 @@
 #   DRY_RUN                set to "1" — print plan, no tar/upload/prune
 #   BACKUP_LOG             append log to this file (default: /var/log/workflow-backup.log)
 #   GH_TOKEN               GitHub token for offsite upload to BACKUP_GH_REPO.
-#                          When set, tarball is also shipped as a GH release asset.
+#                          When set, both tarballs are also shipped as GH
+#                          release assets.
 #   BACKUP_GH_REPO         GitHub repo for offsite releases (default: Jonnyton/workflow-backups).
 #   BACKUP_GH_RETAIN       GH releases to keep (default: 30).
 #
 # Exit codes:
 #   0  upload + prune succeeded (or DRY_RUN=1 — no mutations).
 #   1  BACKUP_DEST not set.
-#   2  tar failed (source volume missing or unreadable).
-#   3  rclone upload failed.
-#   4  retention prune failed (non-fatal; upload itself succeeded).
+#   2  tar/staging failed (source volume missing, brain stage failed, or
+#      full tar exited >= 2).
+#   3  rclone upload failed (either tier).
+#   4  retention prune failed (non-fatal; uploads themselves succeeded).
 
 set -euo pipefail
 
@@ -87,61 +102,125 @@ fi
 log "source: ${VOLUME_DIR}"
 log "dest:   ${BACKUP_DEST}"
 
-# ----- 3. tar the volume ------------------------------------------------
-
 TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+
+# ----- 3. brain tier — consistent archive of the irreplaceable subset ---
+
+BRAIN_NAME="workflow-brain-${TS}.tar.gz"
+BRAIN_PATH="/tmp/${BRAIN_NAME}"
+BRAIN_STAGE="$(mktemp -d /tmp/workflow-brain-stage.XXXXXX)"
+trap 'rm -rf "${BRAIN_STAGE}"' EXIT
+
+log "staging brain tier (wiki, daemon_wikis, ledgers, SQLite DBs)..."
+for d in wiki daemon_wikis; do
+    if [[ -d "${VOLUME_DIR}/${d}" ]]; then
+        if ! cp -a "${VOLUME_DIR}/${d}" "${BRAIN_STAGE}/"; then
+            log "ERROR: brain stage copy failed: ${d}"
+            exit 2
+        fi
+    fi
+done
+for f in "${VOLUME_DIR}"/*.json; do
+    [[ -f "${f}" ]] && cp -a "${f}" "${BRAIN_STAGE}/"
+done
+for db in "${VOLUME_DIR}"/*.db; do
+    [[ -f "${db}" ]] || continue
+    if ! python3 - "${db}" "${BRAIN_STAGE}/$(basename "${db}")" <<'PY'
+import sqlite3
+import sys
+
+src = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+dst = sqlite3.connect(sys.argv[2])
+src.backup(dst)
+dst.close()
+src.close()
+PY
+    then
+        log "ERROR: consistent sqlite copy failed: $(basename "${db}")"
+        exit 2
+    fi
+done
+
+log "creating brain archive ${BRAIN_PATH}..."
+if ! tar -czf "${BRAIN_PATH}" -C "${BRAIN_STAGE}" .; then
+    log "ERROR: brain tar failed"
+    rm -f "${BRAIN_PATH}"
+    exit 2
+fi
+log "  brain archive size: $(stat -c %s "${BRAIN_PATH}" 2>/dev/null || echo '?') bytes"
+
+log "uploading brain tier to ${BACKUP_DEST}/${BRAIN_NAME}..."
+if ! rclone copyto --contimeout 60s --timeout 900s \
+        "${BRAIN_PATH}" "${BACKUP_DEST}/${BRAIN_NAME}"; then
+    log "ERROR: brain rclone upload failed"
+    rm -f "${BRAIN_PATH}"
+    exit 3
+fi
+log "  brain upload OK"
+
+# ----- 4. full tier — whole volume, live (tar exit 1 tolerated) ---------
+
 TAR_NAME="workflow-data-${TS}.tar.gz"
 TAR_PATH="/tmp/${TAR_NAME}"
 
 log "creating archive ${TAR_PATH}..."
-if ! tar -czf "${TAR_PATH}" -C "$(dirname "${VOLUME_DIR}")" "$(basename "${VOLUME_DIR}")"; then
-    log "ERROR: tar failed"
-    rm -f "${TAR_PATH}"
+set +e
+tar -czf "${TAR_PATH}" --warning=no-file-changed \
+    -C "$(dirname "${VOLUME_DIR}")" "$(basename "${VOLUME_DIR}")"
+tar_rc=$?
+set -e
+if [[ "${tar_rc}" -ge 2 ]]; then
+    log "ERROR: tar failed (rc=${tar_rc})"
+    rm -f "${TAR_PATH}" "${BRAIN_PATH}"
     exit 2
+elif [[ "${tar_rc}" -eq 1 ]]; then
+    log "  tar rc=1 (files changed during live read) — expected on a hot volume; archive kept (brain tier carries the strict-consistency guarantee)"
 fi
 TAR_SIZE="$(stat -c %s "${TAR_PATH}" 2>/dev/null || echo '?')"
 log "  archive size: ${TAR_SIZE} bytes"
-
-# ----- 4. upload --------------------------------------------------------
 
 log "uploading to ${BACKUP_DEST}/${TAR_NAME}..."
 if ! rclone copyto --contimeout 60s --timeout 900s \
         "${TAR_PATH}" "${BACKUP_DEST}/${TAR_NAME}"; then
     log "ERROR: rclone upload failed"
-    rm -f "${TAR_PATH}"
+    rm -f "${TAR_PATH}" "${BRAIN_PATH}"
     exit 3
 fi
 log "  upload OK"
 
 # ----- 5. offsite upload (GH release assets) ----------------------------
 # Best-effort; failure is non-fatal so local backup still counts as done.
-# Activated only when GH_TOKEN is set.
+# Activated only when GH_TOKEN is set. Ships both tiers.
 
 SHIP_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_ship_gh.py"
 if [[ -n "${GH_TOKEN:-}" ]]; then
-    log "shipping to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/workflow-backups})..."
-    set +e
-    python3 "${SHIP_SCRIPT}" "${TAR_PATH}" 2>&1 | while IFS= read -r line; do
-        log "  gh-ship: ${line}"
+    for ship_path in "${TAR_PATH}" "${BRAIN_PATH}"; do
+        log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/workflow-backups})..."
+        set +e
+        python3 "${SHIP_SCRIPT}" "${ship_path}" 2>&1 | while IFS= read -r line; do
+            log "  gh-ship: ${line}"
+        done
+        ship_status=$?
+        set -e
+        if [[ "${ship_status}" -ne 0 ]]; then
+            log "WARN: GH offsite ship exited ${ship_status} for $(basename "${ship_path}") (local backup succeeded)"
+        fi
     done
-    ship_status=$?
-    set -e
-    if [[ "${ship_status}" -ne 0 ]]; then
-        log "WARN: GH offsite ship exited ${ship_status} (local backup succeeded)"
-    fi
 else
     log "GH_TOKEN not set — skipping offsite GH release upload"
 fi
 
-rm -f "${TAR_PATH}"
+rm -f "${TAR_PATH}" "${BRAIN_PATH}"
 
 # ----- 6. retention prune ----------------------------------------------
 
-# Keep:
+# Keep, per tier prefix (workflow-data-, workflow-brain-):
 #   - last BACKUP_RETAIN_DAILY daily archives (most recent N)
 #   - first archive of each week for last BACKUP_RETAIN_WEEKLY weeks
 #   - first archive of each month for last BACKUP_RETAIN_MONTHLY months
-# Prune is best-effort; failure is non-fatal.
+# Prune is best-effort; failure is non-fatal. backup_prune.py only ever
+# emits names matching the tier prefixes — unknown files at the
+# destination are never deleted.
 #
 # Python replaces awk here: mawk (Debian default) lacks the 3-arg match()
 # and gensub() extensions used by GNU awk. Python 3 is guaranteed present
