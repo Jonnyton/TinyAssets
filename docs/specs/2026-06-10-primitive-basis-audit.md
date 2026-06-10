@@ -1,0 +1,39 @@
+# Primitive basis audit — 2026-06-10
+
+initial_provider: claude (Fable session). required_reviewer: codex — **review gate before any vocabulary lock or build.** Method: 6 research sweeps (minimal cores of computation; van der Aalst workflow patterns; durable execution engines; concurrency calculi; control-of-state theory; 2026 framework convergence) + adversarial verdict agent. Tests the locked vocabulary (Node/Edge/State/Scope/Run/Trigger + 5 handles) against theory and industry. Spec: `docs/specs/2026-06-10-tiny-first-principles-spec.md` §0 law 5. Canonical copy in brain wiki (`plans/primitive-basis-audit-2026-06`); this is the durable repo mirror.
+
+## VERDICT: confirm six nouns, add none, amend all six with contracts
+
+The ops layer (vigils, stewards, senses, staffing, spawn) stays LIBRARY compositions — Forth's discipline: what is buildable from the kernel stays out of the kernel. But composition only works if the kernel gains specific contracts it lacks today.
+
+### Per-primitive verdicts
+
+- **Node** — irreducible in every formal family (λ abstraction+application, Petri transition, activity/step everywhere). The ONLY nondeterminism boundary (effects-as-data; handlers swappable per Scope). GAINS: declared failure contract (retry policy, timeout taxonomy, non-retryable errors, error-routed edges — present in every production engine, absent in ours), idempotency identity on results, completion token (any staffing party can complete an await).
+- **Edge** — theoretically derivable (code-first camp has no edges; pydantic_graph derives from return types) but BOTH public collapses of explicit control flow (AutoGen 0.2 conversations, OpenAI Swarm handoffs) were abandoned for typed graphs. Kept because a static inspectable diffable graph IS the commons. Böhm–Jacopini licenses the three edge modes. GAINS: join modes {ALL | ANY-k(block|cancel-rest) | OR-local(split-paired)} + error-labeled edges.
+- **State** — necessary GIVEN our snapshot-checkpoint durability strategy (a cycle-held value dies with its Run; a checkpointed channel survives suspension — the theoretical derivation breaks on durability). GAINS: schema'd channels; reducer set extended {overwrite, append, merge, **CLAIM**} + **SEAL** op; laws L1–L12 below.
+- **Scope** — zero expressiveness contribution (no surveyed basis has a scope peer primitive) but necessary-as-POLICY: the multi-tenant enforcement boundary no single-tenant framework needed, exponential succinctness, and recast as capability-set-on-handles + per-scope effect-handler binding (algebraic-effects move → dry-run/mocking/capability-tiering fall out free).
+- **Run** — no derivation exists anywhere; the durability contract (crash-anywhere resume, zero-cost weeks-long suspension) is not constructible from the others; unanimous industrial vindication (LangGraph 1.0/Temporal/PydanticAI/Mastra). GAINS: first-class suspendable continuations (THE thing that lets vigils compose — cheapest way to keep the basis at six), structured **cancellation** with parent-close policy, identity dedup (idempotent start), guaranteed level-triggered terminal events (Erlang monitor guarantee — stewards are UNSOUND without it), history rollover (continue-as-new analog for eternal stewards).
+- **Trigger** — slimmed to run-CREATING/RESUMING only (cron, subscription, filing; each declared persistent|transient with correlation predicates). Intra-run awaits fold into Node; spawn is application, not Trigger. Kept because cold-start 24/7 autonomy is the completeness claim — deriving start-conditions needs an already-running steward (Rule-110 weak universality, which contradicts the Forever Rule). Temporal's Cron→Schedule migration = the industry's costliest lesson that start-conditions need independent identity.
+
+### Hard-pattern coverage (van der Aalst benchmark)
+
+Multi-instance: partial → fixed by join modes + SEAL + cancellation. **Cancellation: the one true gap** — provably a Petri extension (reset arcs); enters as a Run operation + spawn policy, not a noun. General OR-join: **formal NON-GOAL** (provably non-local; would drag branch soundness from decidable to undecidable) — bless only the split-paired local form. Deferred choice: composes once CLAIM + cancellation exist (first-event-wins = vigil-race; canonical select encoding must be published). Milestone: composes iff vigil/await guards are LEVEL-TRIGGERED standing conditions over durable State (then we exceed BPMN, which can't express it). Delegation/escalation/staffing: composes via completion token + claim reducer + heartbeat-expiry — the 43 resource patterns ship as a blessed library schema, never a primitive.
+
+### The state laws (L1–L12, condensed)
+
+L1 reducers pure/deterministic/total · L2 batching invariance · L3 superstep barrier visibility; parallel writers need commutative reducers or declared order · **L4 cross-run merges must be CRDT-lawful — VERIFIED LIVE VIOLATION: graph_compiler.py `_dict_merge` (~lines 252-256) is shallow right-biased dict.update, order-sensitive, non-convergent — fix to per-key lattice join or restrict merge to single-writer** · L5 single-writer ownership for overwrite channels · L6 total effect journaling (every nondeterministic result + cross-run read journaled; replay reads the journal; exactly-once state transitions over at-least-once effects) · L7 monotonicity tagging (CALM dividend: design the global commons to be purely monotone → needs no coordination, ever) · L8 atomic CLAIM is linearizable and the ONLY competing-consumer mechanism · L9 named read semantics (snapshot reads; quote/eval capture time pinned per binding) · L10 trigger/sense persistence declared; vigil guards level-triggered (kills the lost-wakeup class) · L11 per-branch soundness gate (decidable for the core fragment; non-local ops flagged weakly-verifiable) · L12 pause points are node boundaries; awaits are their own nodes; effector nodes idempotent (LangGraph interrupt() re-executes from node top).
+
+### Completeness, proven two ways (the forever-tests)
+
+1. **The McCarthy artifact**: a meta-circular branch — built ONLY from the six + handles — that reads any branch definition via read.graph and executes it. If it can always be written, the basis is complete; the day a construct can't be interpreted, the missing piece is named precisely. Runs forever as a canary.
+2. **The pattern scorecard**: published per-pattern verdicts (direct / encoded / none) against the hard patterns with an ENCODING-OVERHEAD BUDGET K (minimality without overhead bounds is a Turing tarpit — the SKI/iota lesson).
+
+Completeness is declared **asynchronous** (synchronous rendezvous provably non-encodable — Palamidessi — documented non-goal) and **cold-start** (from an empty universe — this is what justifies Trigger's seat).
+
+### Open questions (for codex review + future Fable)
+
+First-class branch values + staging rule (quote vs run; Cloudflare Dynamic Workflows precedent); the K budget per pattern; keyed serialized entities (DF Entities / Restate Virtual Objects / Temporal-per-key all grew one independently — is claim+single-writer-Scope enough?); live-edit versioning for branches held by weeks-long vigils (pin / upgrade-on-rollover / migrate); message delivery laws (per-sender FIFO? causal for op-based merges?); seal authority + late spawns; soundness gate placement (platform gate vs lint); DSPy-style tunable-parameter separation (Node templates as signatures-as-data so autoresearch can rewrite them — much cheaper before the lock); write.graph one-call whole-document emission (token economics of chatbot composition).
+
+### Build-boundary consequence (spec law #4)
+
+The amendments are all CAPABILITY GAPS (uncomposable): claim reducer, cancellation, failure contracts, terminal-event guarantees, seal, suspended continuations, identity dedup → [substrate]. Everything the ops layer needs then composes as branches → [composable]. Exactly the division the host mandated.
