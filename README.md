@@ -1,6 +1,8 @@
 # Workflow
 
-**A goal-agnostic engine that runs real multi-step work and patches itself.** Bind it to any domain — a novel, a research program, an invoice queue, a legal filing — and a daemon runs the actual work, notices where it fell short, files that gap back as a patch request, and ships its own fix through evidence gates. Humanity declares shared Goals; a legion of diverse AI-augmented workflows pursues each one in parallel, branches evolve and cross-pollinate, and outputs are ranked by how far they climb each Goal's real-world outcome-gate ladder. `fantasy_daemon/` is the first benchmark branch; the engine is built for everything people collectively care about next. Live at **[tinyassets.io](https://tinyassets.io)** · MCP endpoint **[tinyassets.io/mcp](https://tinyassets.io/mcp)**.
+**A global goals engine. Fully self-hostable, open-source (MIT platform / CC0 catalog), runs on your own infrastructure.** Humanity declares shared Goals — research breakthroughs, great novels, successful prosecutions, cures, open datasets, whatever people actually want done — and a legion of diverse AI-augmented workflows pursues each Goal in parallel. Branches evolve, cross-pollinate, and get ranked by how far their outputs advance up each Goal's real-world outcome-gate ladder. The system is built for whatever people collectively care about next.
+
+This repo contains substantial architecture and implementation work. The starter surfaces below help you navigate, extend, and connect — including via Obsidian if you use it.
 
 **Built by Jonathan Farnsworth** (jonathan.m.farnsworth@gmail.com, GitHub [@Jonnyton](https://github.com/Jonnyton)) — sole human author; the only co-authors are the project's own AI agents.
 
@@ -44,7 +46,7 @@ git clone https://github.com/Jonnyton/Workflow.git
 cd Workflow
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .[dev]
-pytest -q                 # 7,800+ tests, offline — no API keys (providers mocked)
+pytest -q                 # full suite — no API keys needed (tests mock providers)
 ruff check                # lints clean on a fresh clone
 ```
 
@@ -55,12 +57,12 @@ Cross-platform notes:
 - Python 3.11+ required (see `pyproject.toml`).
 - The tray (`workflow/workflow_tray.py`) is Windows-first; macOS/Linux support is work-in-progress. Platform code is cross-platform.
 
-## Start Here (deeper)
+## Start Here
 
 1. Read [STATUS.md](STATUS.md) for live state.
-2. Read [PLAN.md](PLAN.md) for architecture and design intent (reads staff-level).
+2. Read [PLAN.md](PLAN.md) for architecture and design intent.
 3. Read [AGENTS.md](AGENTS.md) for process rules.
-4. Use [INDEX.md](INDEX.md) as the repo map.
+4. Read [docs/project-lineage.md](docs/project-lineage.md) for how Workflow grew out of the earlier Hex, Echoes, Fantasy Writer, and Fantasy Author work.
 5. Use `python scripts/docview.py` for large Markdown, text, and JSON files
    before any raw whole-file read.
 6. Capture loose user ideas in [ideas/INBOX.md](ideas/INBOX.md) or with
@@ -68,11 +70,10 @@ Cross-platform notes:
 
 ## Core Hubs
 
-- [INDEX.md](INDEX.md): top-level repo map and graph hub.
-- [VAULT_GUIDE.md](VAULT_GUIDE.md): Obsidian-friendly orientation note.
 - [AGENTS.md](AGENTS.md): process truth.
 - [PLAN.md](PLAN.md): design truth.
 - [STATUS.md](STATUS.md): live-state truth.
+- [docs/portfolio/README.md](docs/portfolio/README.md): public project graph, lineage, and auto-maintenance standard.
 - [ideas/INDEX.md](ideas/INDEX.md): idea capture, triage, and shipped ledger.
 - [knowledge/INDEX.md](knowledge/INDEX.md): human-readable knowledge map.
 
