@@ -6,14 +6,17 @@
 
 ## Proof of life
 
-Not a slide deck — the system runs on its own infrastructure and patches itself in public:
+<!-- proof:start -->
+The engine runs on its own infrastructure and patches itself in public. The volatile facts below are *linked to live state* rather than copied here, so this section can't go stale:
 
-- **It ships its own fixes.** The patch loop turns filed gaps into machine-authored PRs through a cross-family writer/checker gate. Self-patches merged to `main` the week of 2026-06-10 (e.g. #1306–#1308). Implemented in [`.github/workflows/auto-fix-bug.yml`](.github/workflows/auto-fix-bug.yml) (~1,900 lines) + [`workflow/bug_investigation.py`](workflow/bug_investigation.py).
-- **Canary-gated deploys with receipts.** Live deploy SHA `7d80057` (image `ghcr.io/jonnyton/workflow-daemon:7d80057`), canary bundle **passed**, deployed 2026-06-10 — verifiable in the [deploy run](https://github.com/Jonnyton/Workflow/actions/runs/27296624961) and live via the `get_status` MCP tool.
-- **Real throughput.** The supervisor queue has carried 1,500+ tasks to completion (lifetime) across the live universe.
-- **~7,800 tests, all offline.** 7,800+ tests across 400+ files run with providers mocked (`_FORCE_MOCK=True`) — no API keys needed (`pip install -e .[dev] && pytest -q`).
+- **It ships its own fixes.** The patch loop turns filed capability gaps into machine-authored PRs through a cross-family writer/checker gate — see [`.github/workflows/auto-fix-bug.yml`](.github/workflows/auto-fix-bug.yml) and [`workflow/bug_investigation.py`](workflow/bug_investigation.py). Recent self-patches: the [commit and Actions history](https://github.com/Jonnyton/Workflow/actions).
+- **Canary-gated deploys, live receipts.** The current deploy SHA, canary status, queue throughput, and the provider list are returned live by the `get_status` MCP tool and rendered at [tinyassets.io/fine-print](https://tinyassets.io/fine-print) — read the numbers there rather than trusting a copy here.
+- **7,856 tests across 406 files, all offline.** Providers are mocked (`_FORCE_MOCK=True`); no API keys: `pip install -e .[dev] && pytest -q`.
 
 Honest caveat (the site says this too): the *user-facing* outcome loop hasn't shipped a real external artifact yet — draft mode is on, OAuth is unwired, `run_count` is 0. What's proven today is the engine, the architecture, and the self-patching loop; the first shipped real-world outcome is the next milestone.
+
+<sub>Repo facts refreshed 2026-06-14 by `scripts/gen_discoverability.py` (bounded — rewrites only between the markers).</sub>
+<!-- proof:end -->
 
 ## The flagship: the patch loop
 

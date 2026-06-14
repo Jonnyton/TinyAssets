@@ -53,7 +53,14 @@ jobs:
       # Optional snapshot refresh — only runs when manually dispatched with the toggle.
       # Requires MCP_BEARER secret if the MCP endpoint is auth-gated.
       - name: Refresh MCP snapshot
-        if: github.event.inputs.refresh_snapshot == 'true'
+        # Runs on the 6h cron AND on manual dispatch so live commons counts stay
+        # fresh automatically (was: manual-only, which let the baked snapshot go
+        # stale). Fail-soft + continue-on-error: if MCP_BEARER is unset or the
+        # endpoint is unreachable, snapshot-mcp.mjs keeps the committed snapshot
+        # and the deploy proceeds. Set the MCP_BEARER secret (+ a read-capable
+        # Cloudflare Access service token) to make freshness fully automatic.
+        if: github.event_name == 'schedule' || github.event.inputs.refresh_snapshot == 'true'
+        continue-on-error: true
         env:
           MCP_BEARER: ${{ secrets.MCP_BEARER }}
         run: npm run snapshot

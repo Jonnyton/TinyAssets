@@ -48,7 +48,11 @@ from workflow.api.prompts import _CONTROL_STATION_PROMPT
 from workflow.api.status import get_status as _get_status_impl
 from workflow.api.universe import _universe_impl
 from workflow.api.wiki import wiki as _wiki_impl
-from workflow.connector_catalog import DIRECTORY_MCP_PATH, VERSIONED_DIRECTORY_MCP_PATH
+from workflow.connector_catalog import (
+    DIRECTORY_MCP_PATH,
+    DIRECTORY_TOOL_CATALOG_VERSION,
+    VERSIONED_DIRECTORY_MCP_PATH,
+)
 from workflow.directory_server import directory_mcp
 
 logger = logging.getLogger("universe_server")
@@ -1305,9 +1309,9 @@ _MCP_DISCOVERY_JSON = {
 # Real tool/resource catalog returned to plain (non-transport) JSON GETs on
 # /mcp-directory, so a technical evaluator can see what the server exposes
 # WITHOUT connecting an MCP client. Distinct from the /mcp descriptor above.
-# Mirrors the tools/prompts registered on the directory MCP surface; bump
-# alongside DIRECTORY_TOOL_CATALOG_VERSION when the chatbot-visible catalog
-# changes.
+# Source of truth for the tool list: workflow/directory_server.py (the
+# directory_mcp surface). Bump DIRECTORY_TOOL_CATALOG_VERSION there when the
+# chatbot-visible catalog changes; this stays in sync via that constant.
 _MCP_DIRECTORY_JSON = {
     "name": "workflow",
     "type": "mcp_tool_catalog",
@@ -1322,20 +1326,21 @@ _MCP_DIRECTORY_JSON = {
         "mcp_endpoint": "https://tinyassets.io/mcp",
         "catalog_path": VERSIONED_DIRECTORY_MCP_PATH,
     },
+    "catalog_version": DIRECTORY_TOOL_CATALOG_VERSION,
     "tools": [
-        {"name": "universe", "summary": "Inspect and steer a workflow's universe (its self-contained workspace): reads (inspect, read_output, get_activity, get_ledger...), writes (submit_request, give_direction, set_premise, add_canon...), queue control, goal subscriptions, daemon roster/memory, and economy reads."},
-        {"name": "extensions", "summary": "The workflow-builder surface: register custom graph nodes and assemble them into branches — multi-step workflows with typed state, evaluation hooks, and iteration loops; build/patch/fork/validate/run branches."},
-        {"name": "goals", "summary": "Browse and define Goals and their real-world outcome-gate ladders; subscribe to a Goal, post to its pool, and see which branch leads."},
-        {"name": "gates", "summary": "Evidence gates — the rungs a workflow must clear (each backed by an evidence URL) to claim a real-world outcome, so progress is checkable rather than asserted."},
-        {"name": "wiki", "summary": "The searchable shared commons — bugs, plans, concepts, notes, and drafts; file patch requests here. The durable cross-session coordination surface."},
-        {"name": "get_status", "summary": "A factual snapshot of the daemon: identity, routing policy, queue depth/throughput, provider list, sandbox status, and the live deploy receipt (SHA, canary status)."},
-        {"name": "community_change_context", "summary": "Community-review context for a proposed change — proposer, gate state, and the consensus position records."},
+        {"name": "read.graph", "summary": "Read Workflow graph state without changing it — nodes, edges, typed state, scopes, runs, and triggers."},
+        {"name": "write.graph", "summary": "Create or queue Workflow graph state — the write half of the graph primitive (nodes, edges, branches)."},
+        {"name": "run.graph", "summary": "Run a Workflow graph branch — execute a multi-step workflow and stream its results."},
+        {"name": "read.page", "summary": "Read or search the Workflow wiki/commons — bugs, plans, concepts, notes, and drafts."},
+        {"name": "write.page", "summary": "Write or patch a Workflow wiki/commons page, including filing patch requests into the loop."},
     ],
-    "prompts": [
-        {"name": "control_station", "summary": "The canonical operating guide: routing rules, universe isolation, the collaboration model, and the full tool catalog."},
-        {"name": "extension_guide", "summary": "How to extend the platform with custom graph nodes and branches."},
-        {"name": "branch_design_guide", "summary": "How to design a branch (a graph of typed steps plus evaluation)."},
-    ],
+    "note": (
+        "These five primitives (read/write over graph + page, plus run) are the "
+        "reviewed public directory surface, sourced from "
+        "workflow/directory_server.py. The legacy /mcp endpoint exposes a richer "
+        "action-tool surface (universe, extensions, goals, gates, wiki, "
+        "get_status) for custom MCP clients."
+    ),
     "related": {
         "landing_page": "https://tinyassets.io/",
         "source": "https://github.com/Jonnyton/Workflow",
