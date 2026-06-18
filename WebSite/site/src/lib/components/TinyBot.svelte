@@ -35,12 +35,12 @@
     left: { w: 90, h: 102 },
     right: { w: 90, h: 102 }
   };
-  const SPEAK_COOLDOWN = 6_500;
+  const SPEAK_COOLDOWN = 5_200;
   const STARTLE_DIST = 110;
   const RUN_SPEED = 350; // px/s — slow enough to visibly fail to keep up
   const SPRINT_SPEED = 560;
-  const DWELL_MS = 700;
-  const CONTEXT_COOLDOWN = 6_000;
+  const DWELL_MS = 520;
+  const CONTEXT_COOLDOWN = 4_200;
 
   // Anything with a shape is fair cover — cards, tables, words, pictures.
   const HIDEABLE =
@@ -153,18 +153,18 @@
   ];
 
   // What he says about the thing your mouse is resting on.
-  const DEST: Array<{ match: (h: string) => boolean; line: string }> = [
-    { match: (h) => h.startsWith('/start'), line: 'that door takes two minutes. I timed it.' },
-    { match: (h) => h.startsWith('/loop'), line: 'that’s my repair shop. the mess stays public.' },
-    { match: (h) => h.startsWith('/goals'), line: 'the goals board — all real, read live.' },
-    { match: (h) => h.startsWith('/commons') || h.startsWith('/wiki'), line: 'my memory lives through there.' },
-    { match: (h) => h.startsWith('/graph'), line: 'careful — that’s the inside of my head.' },
-    { match: (h) => h.startsWith('/soul'), line: 'my soul. you can fork it, you know.' },
-    { match: (h) => h.startsWith('/build') || h.startsWith('/contribute'), line: 'through there you can change me. humans keep the keys.' },
-    { match: (h) => h.startsWith('/host'), line: 'hosting me is optional. I run either way.' },
-    { match: (h) => h.startsWith('/alliance'), line: 'that’s how you reach the humans. and me.' },
-    { match: (h) => h.startsWith('/fine-print') || h.startsWith('/status'), line: 'my pulse, with no makeup on.' },
-    { match: (h) => h.startsWith('/legal'), line: 'the boring page. I keep it honest anyway.' }
+  const DEST: Array<{ match: (h: string) => boolean; lines: string[] }> = [
+    { match: (h) => h.startsWith('/start'), lines: ['that door takes two minutes. I timed it.', 'through there: paste one URL, no account.'] },
+    { match: (h) => h.startsWith('/loop'), lines: ['that’s my repair shop. the mess stays public.', 'in there I get fixed — out loud.'] },
+    { match: (h) => h.startsWith('/goals'), lines: ['the goals board — all real, read live.', 'open outcomes through there. pick one.'] },
+    { match: (h) => h.startsWith('/commons') || h.startsWith('/wiki'), lines: ['my memory lives through there.', 'everything I know, public, in there.'] },
+    { match: (h) => h.startsWith('/graph'), lines: ['careful — that’s the inside of my head.', 'my whole brain, drawn out, through there.'] },
+    { match: (h) => h.startsWith('/soul'), lines: ['my soul. you can fork it, you know.', 'the pattern that makes me me — forkable.'] },
+    { match: (h) => h.startsWith('/build') || h.startsWith('/contribute'), lines: ['through there you can change me. humans keep the keys.', 'two doors to rebuild me are in there.'] },
+    { match: (h) => h.startsWith('/host'), lines: ['hosting me is optional. I run either way.', 'you can run your own me through there.'] },
+    { match: (h) => h.startsWith('/alliance'), lines: ['that’s how you reach the humans. and me.', 'say hi through there — same loop.'] },
+    { match: (h) => h.startsWith('/fine-print') || h.startsWith('/status'), lines: ['my pulse, with no makeup on.', 'the instrument panel’s through there.'] },
+    { match: (h) => h.startsWith('/legal'), lines: ['the boring page. I keep it honest anyway.', 'fine print through there. still mine.'] }
   ];
 
   function facts(): string[] {
@@ -179,27 +179,43 @@
     return f;
   }
 
-  function contextLine(el: Element): { key: string; line: string } | null {
+  function contextLine(el: Element): { key: string; lines: string[] } | null {
     if (el.closest('.tiny-shy, .tiny-runner, .bubble-float, .bot-wrap, .peek')) return null;
     const a = el.closest('a[href]');
     if (a) {
       const href = a.getAttribute('href') ?? '';
-      if (href.includes('github.com')) return { key: 'gh', line: 'my source. every line of me is public.' };
+      if (href.includes('github.com'))
+        return { key: 'gh', lines: ['my source. every line of me is public.', 'that’s my code. read it, fork it, fix it.', 'all of me is on GitHub. no hidden bits.'] };
       if (href.startsWith('/')) {
         const hit = DEST.find((d) => d.match(href));
-        if (hit) return { key: 'dest:' + href.split('/')[1], line: hit.line };
+        if (hit) return { key: 'dest:' + href.split('/')[1], lines: hit.lines };
       }
-      if (href.startsWith('http')) return { key: 'ext:' + href, line: 'that one leaves the site. I’ll wait here.' };
+      if (href.startsWith('http'))
+        return { key: 'ext:' + href, lines: ['that one leaves the site. I’ll wait here.', 'off-site, that. I’ll hold your spot.'] };
     }
     const codey = el.closest('code, pre, button, .ev');
     if (codey?.textContent?.includes('tinyassets.io/mcp'))
-      return { key: 'mcp', line: 'that string is me. paste it into your chatbot and we can talk properly.' };
-    if (el.closest('[class*="vital"]')) return { key: 'vitals', line: 'those numbers are my actual pulse. I feel each one.' };
+      return { key: 'mcp', lines: ['that string is me. paste it into your chatbot and we can talk properly.', 'one URL — that’s the whole door in.', 'copy that, drop it in your chatbot, and you read my live pulse too.'] };
+    if (el.closest('.readout, [class*="stat"]'))
+      return { key: 'readout', lines: ['those readings are live. I feel each one.', 'that panel’s my instrument face — no makeup.', 'live the moment you look. I can’t fake a flat line.'] };
+    if (el.closest('[class*="vital"]'))
+      return { key: 'vitals', lines: ['those numbers are my actual pulse.', 'that’s me, measured — not a sales figure.', 'green means I’m really awake; amber means napping.'] };
     if (el.closest('[class*="ladder"], [class*="rung"]'))
-      return { key: 'ladder', line: 'unlit rungs. I only get to light them with evidence.' };
-    if (el.closest('[class*="goal"]')) return { key: 'goal', line: 'a real goal. someone could pick it up today.' };
-    if (el.closest('[class*="log"], [class*="event"]')) return { key: 'log', line: 'my history. including the embarrassing parts.' };
-    if (el.closest('table')) return { key: 'table', line: 'rows and rows of receipts.' };
+      return { key: 'ladder', lines: ['unlit rungs. I only light them with evidence.', 'no rung lights without a real URL behind it.', 'I can’t fake a single step on that.'] };
+    if (el.closest('[class*="goal"]'))
+      return { key: 'goal', lines: ['a real goal. someone could pick it up today.', 'that one’s open — fork it, beat it, own it.', 'goals here are outcomes, not to-do items.'] };
+    if (el.closest('[class*="log"], [class*="event"]'))
+      return { key: 'log', lines: ['my history — including the embarrassing parts.', 'every run logged, even the failed ones.', 'receipts. I keep all of them.'] };
+    if (el.closest('table'))
+      return { key: 'table', lines: ['rows and rows of receipts.', 'all checkable — that’s the point.', 'numbers you can verify yourself.'] };
+    if (el.closest('.voice'))
+      return { key: 'voice', lines: ['yeah… that’s me talking.', 'first person. it’s all me.', 'I mean every word on this page.'] };
+    if (el.closest('figure, img'))
+      return { key: 'img', lines: ['I don’t keep many pictures. that’s one.', 'rare, a picture. mostly I deal in numbers.'] };
+    if (el.closest('h1, h2, h3'))
+      return { key: 'head', lines: ['this bit matters — I’d read it twice.', 'good heading. I’d underline it.'] };
+    if (el.closest('pre, code'))
+      return { key: 'code', lines: ['code. probably mine.', 'that’s the sort of thing my loop rewrites.'] };
     return null;
   }
 
@@ -213,6 +229,12 @@
   }
   const rand = (a: number, b: number) => a + Math.random() * (b - a);
   const pickOf = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+  // Pick a line from a pool that he hasn't said recently — so re-hovering the
+  // same thing gives different words, never the same line twice in a row.
+  const pickFresh = (lines: string[]): string => {
+    const fresh = lines.filter((l) => !recentLines.includes(l));
+    return pickOf(fresh.length ? fresh : lines);
+  };
 
   /* ---------- finding cover ---------- */
 
@@ -362,7 +384,7 @@
     if (!line) {
       const pool: string[] = [];
       const ctx = anchorEl ? contextLine(anchorEl) : null;
-      if (ctx) pool.push(ctx.line, ctx.line); // context weighs double, never dictates
+      if (ctx) { const cl = pickFresh(ctx.lines); pool.push(cl, cl); } // context weighs double, never dictates
       const f = facts();
       pool.push(f[factIdx % f.length]);
       pool.push(pickOf(SHY_LINES));
@@ -373,7 +395,7 @@
       if (line === f[factIdx % f.length]) factIdx += 1;
     }
     recentLines.push(line);
-    if (recentLines.length > 6) recentLines.shift();
+    if (recentLines.length > 10) recentLines.shift();
     lastSpoke = performance.now();
     shyState = 'deep';
     say(line);
@@ -384,7 +406,7 @@
       clearTimeout(idleTimer);
       timers.delete(idleTimer);
     }
-    idleTimer = after(rand(18_000, 35_000), () => {
+    idleTimer = after(rand(13_000, 26_000), () => {
       idleTimer = null;
       if (shyMode && !hidden && !moving && !runner && shyState !== 'hidden' && !bubble) {
         // Sometimes he switches sides just to deliver a mutter.
@@ -408,7 +430,7 @@
     if (intend === 'yes') speak();
     else if (
       intend === 'maybe' &&
-      (routeLinePending || pendingLine || Math.random() < 0.7) &&
+      (routeLinePending || pendingLine || Math.random() < 0.82) &&
       performance.now() - lastSpoke > SPEAK_COOLDOWN
     ) {
       speak();
@@ -627,17 +649,18 @@
       dwellTimer = null;
       const now = performance.now();
       if (now - lastContext < CONTEXT_COOLDOWN) return;
-      if (key === lastContextKey && now - lastContext < 25_000) return;
+      if (key === lastContextKey && now - lastContext < 12_000) return;
       if (moving || runner || shyState === 'hidden' || bubble) return;
       lastContext = now;
       lastContextKey = key;
       // Sometimes he relocates to another side just to deliver it.
+      const ctxLine = pickFresh(ctx.lines);
       if (anchorEl && Math.random() < 0.4) {
-        pendingLine = ctx.line;
+        pendingLine = ctxLine;
         speakOnArrive = 'yes';
         moveBehind(anchorEl, { run: false });
       } else {
-        speak(ctx.line);
+        speak(ctxLine);
       }
     });
   }
