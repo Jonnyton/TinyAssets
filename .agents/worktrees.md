@@ -666,3 +666,15 @@ Notes:
   scopes context-engine build and vocabulary lock.
 - Ship condition: artifact under `docs/audits/`, STATUS row retired/updated,
   branch pushed, PR opened.
+
+## Prod Codex Auth Data Volume - 2026-06-17
+
+- 2026-06-17 create `../wf-prod-codex-auth-data-volume` on
+  `codex/prod-codex-auth-data-volume` by codex-gpt5-desktop.
+- Source: host-directed production outage fix; Codex OAuth auth was tied to
+  ephemeral container home and went stale after idle windows.
+- Purpose: persist subscription-backed Codex auth at shared `/data/.codex`,
+  make `get_status` honor `CODEX_HOME`, and add weekly SSH keepalive.
+- Ship condition: focused tests pass, PR merged to main, deploy-prod green,
+  live `get_status` sees Codex auth, trivial LLM node succeeds, keepalive
+  dispatch green.
