@@ -441,6 +441,23 @@ class ProviderRouter:
     # Policy-aware routing (per-node llm_policy override)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _call_meta(resp, attempts: int) -> dict:
+        """Telemetry for one routed call: model identity, latency, attempts.
+
+        Persisted onto run receipts (runs.provider_used/model columns and the
+        per-run ``provider_calls`` event) so receipts can answer "which model
+        produced this, how long did it take, after how many tries" — spec
+        §11.3 model-stamp requirement.
+        """
+        return {
+            "model": getattr(resp, "model", "") or "",
+            "family": getattr(resp, "family", "") or "",
+            "latency_ms": getattr(resp, "latency_ms", None),
+            "degraded": bool(getattr(resp, "degraded", False)),
+            "attempts": attempts,
+        }
+
     async def call_with_policy(
         self,
         role: str,
@@ -449,10 +466,11 @@ class ProviderRouter:
         policy: dict | None,
         config: ModelConfig | None = None,
         difficulty: str = "",
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, dict]:
         """Route a call honouring an explicit llm_policy dict.
 
-        Returns ``(response_text, provider_name_used)``.
+        Returns ``(response_text, provider_name_used, call_meta)`` where
+        ``call_meta`` is :meth:`_call_meta` telemetry for the winning call.
 
         Policy resolution order:
         1. ``preferred`` provider — try first.
@@ -467,14 +485,14 @@ class ProviderRouter:
            through to the standard role-based ``call()`` method.
 
         When ``call()`` is reached it returns a ``ProviderResponse``; this
-        method extracts ``.text`` and returns (text, provider_name). For
+        method extracts ``.text`` and returns (text, provider_name, meta). For
         the policy path we track the name explicitly.
         """
         cfg = config or _default_config()
 
         if not policy:
             resp = await self.call(role, prompt, system, cfg)
-            return resp.text, resp.provider
+            return resp.text, resp.provider, self._call_meta(resp, attempts=1)
 
         # Build ordered attempt list from policy
         attempt_order: list[str] = []
@@ -532,6 +550,7 @@ class ProviderRouter:
         attempt_order = auth_filtered_order
 
         # Try policy-derived providers
+        tried = 0
         for provider_name in attempt_order:
             provider = self._providers.get(provider_name)
             if provider is None:
@@ -546,10 +565,11 @@ class ProviderRouter:
             logger.info(
                 "Trying policy provider %s for role=%s", provider_name, role,
             )
+            tried += 1
             try:
                 resp = await provider.complete(prompt, system, cfg)
                 self._quota.record_success(provider_name)
-                return resp.text, provider_name
+                return resp.text, provider_name, self._call_meta(resp, attempts=tried)
             except ProviderUnavailableError:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
@@ -578,7 +598,7 @@ class ProviderRouter:
             role,
         )
         resp = await self.call(role, prompt, system, cfg)
-        return resp.text, resp.provider
+        return resp.text, resp.provider, self._call_meta(resp, attempts=tried + 1)
 
     def call_with_policy_sync(
         self,
@@ -588,12 +608,12 @@ class ProviderRouter:
         policy: dict | None,
         config: ModelConfig | None = None,
         difficulty: str = "",
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, dict]:
         """Synchronous wrapper for :meth:`call_with_policy`."""
         cfg = config or _default_config()
         sync_timeout = cfg.timeout + 30
 
-        def _run() -> tuple[str, str]:
+        def _run() -> tuple[str, str, dict]:
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(

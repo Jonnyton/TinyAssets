@@ -369,7 +369,7 @@ def _try_dispatcher_pick(
     tolerated by LangGraph's initial_state.
     """
     try:
-        from workflow.branch_tasks import claim_task
+        from workflow.branch_tasks import claim_task, reclaim_expired_leases
         from workflow.dispatcher import (
             dispatcher_enabled,
             load_dispatcher_config,
@@ -386,6 +386,16 @@ def _try_dispatcher_pick(
             or _soul_loop_dispatch_enabled()
         ):
             return None, {}
+        # BUG-011 Phase C: sweep expired leases before every pick so a
+        # wedged worker's claim is reaped at the next dispatch attempt
+        # instead of the next daemon restart. Live claims refresh their
+        # leases and are never touched.
+        reclaimed = reclaim_expired_leases(universe_path)
+        if reclaimed:
+            logger.info(
+                "dispatcher_pick: reclaimed %d expired-lease task(s)",
+                reclaimed,
+            )
         cfg = load_dispatcher_config(universe_path)
         picked = select_next_task(universe_path, config=cfg)
         if picked is None:

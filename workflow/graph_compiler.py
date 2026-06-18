@@ -220,7 +220,7 @@ def _call_policy_router_with_retry(
     prompt: str,
     system: str,
     policy: dict[str, Any],
-) -> tuple[str, str]:
+) -> tuple[str, str, dict]:
     """Retry policy-aware provider dispatch on transient chain exhaustion."""
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
     for attempt_index in range(attempts):
@@ -1053,6 +1053,7 @@ def _build_prompt_template_node(
             concurrency_tracker.acquire()
         try:
             provider_served: str = "unknown"
+            provider_meta: dict[str, Any] = {}
             if provider_call is None:
                 response = f"[Mock response for {node.node_id}]"
                 provider_served = "mock"
@@ -1067,7 +1068,7 @@ def _build_prompt_template_node(
                         router_providers is None or bool(router_providers)
                     )
                     if _policy_router is not None and router_has_providers:
-                        def _policy_call() -> tuple[str, str]:
+                        def _policy_call() -> tuple[str, str, dict]:
                             return _call_policy_router_with_retry(
                                 _policy_router,
                                 role=role,
@@ -1080,7 +1081,7 @@ def _build_prompt_template_node(
                             timeout_s=timeout_s,
                             node_id=node.node_id,
                         )
-                        response, provider_served = text_and_name
+                        response, provider_served, provider_meta = text_and_name
                     else:
                         # Router unavailable or empty — fall through to the
                         # run_branch-injected provider bridge.
@@ -1136,11 +1137,20 @@ def _build_prompt_template_node(
 
         if event_sink is not None:
             try:
+                _meta_detail = {}
+                if provider_meta:
+                    _meta_detail = {
+                        "provider_model": provider_meta.get("model", ""),
+                        "provider_latency_ms": provider_meta.get("latency_ms"),
+                        "provider_attempts": provider_meta.get("attempts"),
+                        "provider_degraded": provider_meta.get("degraded", False),
+                    }
                 event_sink(
                     node_id=node.node_id,
                     phase="ran",
                     prompt=prompt, response=response, role=role,
                     provider_served=provider_served,
+                    **_meta_detail,
                 )
             except Exception as exc:
                 if _is_cancel_exception(exc):

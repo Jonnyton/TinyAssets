@@ -543,8 +543,11 @@ def _compute_supervisor_liveness(
     if out["stale_running_tasks"]:
         out["warnings"].append(
             f"{len(out['stale_running_tasks'])} stale running task(s) "
-            "(heartbeat past threshold or lease expired). BUG-011 "
-            "Phase C reclaim would reclaim these once shipped."
+            "(heartbeat past threshold or lease expired). "
+            "branch_tasks.reclaim_expired_leases sweeps these at every "
+            "dispatcher pick (BUG-011 Phase C, shipped 2026-06-10); a "
+            "persistent entry here means no picks are happening — check "
+            "worker_liveness in universe inspect."
         )
 
     return out

@@ -526,6 +526,72 @@ def recover_claimed_tasks(universe_path: Path) -> int:
     return count
 
 
+def reclaim_expired_leases(
+    universe_path: Path,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Lease-aware reclaim: reset ``running`` rows whose lease expired.
+
+    BUG-011 Phase C / daemon-liveness-watchdog spec: ``claim_task``
+    stamps a lease window and the runner refreshes it via
+    ``refresh_task_heartbeat`` while alive — so a ``running`` row with
+    an expired lease means its worker wedged or died mid-task. Unlike
+    :func:`recover_claimed_tasks` (startup-only blanket reset), this is
+    safe to call while OTHER workers are healthy: live claims keep
+    their leases fresh and are never touched. Intended call site is the
+    dispatcher claim path, so every claim attempt sweeps first and a
+    wedged claim is reaped on the next pick instead of the next daemon
+    restart. Returns the count reclaimed.
+    """
+    current = now or datetime.now(timezone.utc)
+    qp = queue_path(universe_path)
+    if not qp.exists():
+        return 0
+    count = 0
+    with _file_lock(universe_path):
+        raw = _read_raw(qp)
+        for row in raw:
+            if not isinstance(row, dict) or row.get("status") != "running":
+                continue
+            lease_raw = str(row.get("lease_expires_at") or "")
+            if not lease_raw:
+                # Pre-lease-era claim: no lease to judge by; leave it
+                # for startup recovery rather than guessing.
+                continue
+            lease_at = _parse_iso_utc(lease_raw)
+            if lease_at is None or lease_at > current:
+                continue
+            logger.warning(
+                "branch_tasks reclaim: lease expired %s ago on %s "
+                "(claimed_by=%s heartbeat_at=%s) — resetting to pending",
+                current - lease_at,
+                row.get("branch_task_id"),
+                row.get("claimed_by"),
+                row.get("heartbeat_at"),
+            )
+            row["status"] = "pending"
+            row["claimed_by"] = ""
+            row["worker_owner_id"] = ""
+            row["lease_expires_at"] = ""
+            row["heartbeat_at"] = ""
+            count += 1
+        if count:
+            _write_raw(qp, raw)
+    return count
+
+
+def _parse_iso_utc(value: str) -> datetime | None:
+    """Parse an ISO timestamp; assume UTC when naive. None on failure."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def garbage_collect(
     universe_path: Path,
     *,

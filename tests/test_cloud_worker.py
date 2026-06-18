@@ -451,7 +451,13 @@ def test_supervisor_restarts_idle_subprocess_for_still_pending_task_after_grace(
             trigger_source="owner_queued",
         ),
     )
-    times = iter([100.0, 131.0])
+    # Supervisor consumes monotonic() for the producer clock, the
+    # heartbeat clock, and per-tick beat checks; only the producer-poll
+    # comparison needs to see the 31s jump, so feed 100.0 until the
+    # producer check and 131.0 from there on.
+    import itertools
+
+    times = itertools.chain([100.0, 100.0, 100.0], itertools.repeat(131.0))
     monkeypatch.setattr(cw.time, "monotonic", lambda: next(times))
     _sleep_calls, sleep_fn = _make_sleep_recorder()
     spawned: list[FakeProc] = []

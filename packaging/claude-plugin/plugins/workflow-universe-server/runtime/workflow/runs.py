@@ -2057,7 +2057,11 @@ def _invoke_graph(
     """
     thread_id = run_id
     execution_cursor = {"step": 0}
-    provider_tracker: dict[str, str | None] = {"last": None}
+    # Telemetry accumulator: "last" feeds runs.provider_used (legacy
+    # last-wins), "model" feeds the runs.model column, "calls" becomes a
+    # per-run ``provider_calls`` system event (one entry per provider-served
+    # node: provider, model, latency, attempts).
+    provider_tracker: dict[str, Any] = {"last": None, "model": None, "calls": []}
 
     def _emit_node_status(node_id: str, status: str) -> None:
         if on_node_status is None:
@@ -2128,6 +2132,18 @@ def _invoke_graph(
         served = detail.get("provider_served")
         if served:
             provider_tracker["last"] = str(served)
+            model = detail.get("provider_model")
+            if model:
+                provider_tracker["model"] = str(model)
+            provider_tracker["calls"].append({
+                "node_id": node_id,
+                "provider": str(served),
+                "model": str(model or ""),
+                "latency_ms": detail.get("provider_latency_ms"),
+                "attempts": detail.get("provider_attempts"),
+                "degraded": bool(detail.get("provider_degraded", False)),
+                "at": _now(),
+            })
         record_event(base_path, RunStepEvent(
             run_id=run_id,
             step_index=step + _PENDING_OFFSET,
@@ -2453,6 +2469,21 @@ def _invoke_graph(
             detail=stats,
         ))
 
+    # Model-stamp telemetry (spec §11.3 / PR-172): one system event with the
+    # full per-call list so receipts can answer "which model, how long, how
+    # many tries" per provider-served node.
+    if provider_tracker["calls"]:
+        step = execution_cursor["step"]
+        execution_cursor["step"] += 1
+        record_event(base_path, RunStepEvent(
+            run_id=run_id,
+            step_index=step + _PENDING_OFFSET,
+            node_id="__system__",
+            status="provider_calls",
+            started_at=_now(),
+            detail={"calls": provider_tracker["calls"]},
+        ))
+
     # PR-122 Phase 1 — external-write effectors.
     # After a successful run, walk node_defs that declared an ``effects``
     # list and route their outputs to the matching effector (today only
@@ -2481,6 +2512,7 @@ def _invoke_graph(
         output=output,
         finished_at=_now(),
         provider_used=provider_tracker["last"],
+        model=provider_tracker["model"],
     )
     return RunOutcome(
         run_id=run_id, status=RUN_STATUS_COMPLETED,
@@ -3213,7 +3245,7 @@ def _invoke_graph_resume(
 ) -> RunOutcome:
     """Compile branch + invoke with None inputs to resume from checkpoint."""
     execution_cursor = {"step": 1000}  # offset so resume events don't collide
-    provider_tracker: dict[str, str | None] = {"last": None}
+    provider_tracker: dict[str, Any] = {"last": None, "model": None, "calls": []}
 
     def _on_node(node_id: str, **detail: Any) -> None:
         phase = detail.pop("phase", "ran")
@@ -3223,6 +3255,18 @@ def _invoke_graph_resume(
             served = detail.get("provider_served")
             if served:
                 provider_tracker["last"] = served
+                model = detail.get("provider_model")
+                if model:
+                    provider_tracker["model"] = str(model)
+                provider_tracker["calls"].append({
+                    "node_id": node_id,
+                    "provider": str(served),
+                    "model": str(model or ""),
+                    "latency_ms": detail.get("provider_latency_ms"),
+                    "attempts": detail.get("provider_attempts"),
+                    "degraded": bool(detail.get("provider_degraded", False)),
+                    "at": _now(),
+                })
 
         if phase == "starting":
             record_event(base_path, RunStepEvent(
@@ -3347,6 +3391,7 @@ def _invoke_graph_resume(
         output=output,
         finished_at=_now(),
         provider_used=provider_tracker["last"],
+        model=provider_tracker["model"],
     )
     return RunOutcome(
         run_id=run_id, status=RUN_STATUS_COMPLETED,

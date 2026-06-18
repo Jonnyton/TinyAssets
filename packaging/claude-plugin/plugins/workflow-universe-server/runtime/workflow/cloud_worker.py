@@ -63,6 +63,7 @@ Stdlib only.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import signal
@@ -70,6 +71,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -301,9 +303,13 @@ class SupervisorState:
         self.total_spawns = 0
         self.total_clean_exits = 0
         self.total_crashes = 0
+        self.started_at = _utcnow_iso()
+        self.last_spawn_at = ""
+        self.last_exit_rc: int | None = None
 
     def record_exit(self, returncode: int) -> None:
         self.total_spawns += 1
+        self.last_exit_rc = returncode
         if returncode == 0:
             self.crash_count = 0
             self.clean_exit_count += 1
@@ -320,6 +326,58 @@ class SupervisorState:
             f"crashes={self.total_crashes} "
             f"consec={self.crash_count}"
         )
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Heartbeat file the supervisor writes into the universe dir. Liveness
+# consumers (workflow.api.universe worker_liveness, the activity canary,
+# workflow.cloud_worker_healthcheck) read it to distinguish "worker wedged"
+# from "idle, nothing queued" — the gap behind the 2026-06 dormancy
+# (docs/specs/daemon-liveness-watchdog.md). Deliberately NOT activity.log:
+# that file's mtime is the daemon last-activity source, and supervisor
+# ticks freshening it would mask a wedged subprocess.
+SUPERVISOR_HEARTBEAT_FILENAME = ".worker_supervisor.json"
+
+
+def write_supervisor_heartbeat(
+    universe: Path,
+    state: SupervisorState,
+    *,
+    iteration: int,
+    phase: str,
+    subprocess_pid: int | None = None,
+    subprocess_alive: bool = False,
+    planned_sleep_s: float = 0.0,
+) -> None:
+    """Atomically write the supervisor liveness beat. Best-effort.
+
+    A probe write must never take down the supervisor (the loop IS the
+    uptime surface), so failures log loudly and return.
+    """
+    beat = {
+        "ts": _utcnow_iso(),
+        "phase": phase,
+        "iteration": iteration,
+        "supervisor_started_at": state.started_at,
+        "last_spawn_at": state.last_spawn_at,
+        "last_exit_rc": state.last_exit_rc,
+        "total_spawns": state.total_spawns,
+        "total_crashes": state.total_crashes,
+        "consec_crashes": state.crash_count,
+        "subprocess_pid": subprocess_pid,
+        "subprocess_alive": subprocess_alive,
+        "planned_sleep_s": planned_sleep_s,
+    }
+    target = universe / SUPERVISOR_HEARTBEAT_FILENAME
+    tmp = universe / (SUPERVISOR_HEARTBEAT_FILENAME + ".tmp")
+    try:
+        tmp.write_text(json.dumps(beat), encoding="utf-8")
+        tmp.replace(target)
+    except OSError:
+        logger.exception("cloud_worker: heartbeat write failed at %s", target)
 
 
 def run_supervisor(
@@ -399,8 +457,17 @@ def run_supervisor(
             )
             logger.info("cloud_worker: backoff %.1fs after spawn failure (consec=%d)",
                         delay, state.crash_count)
+            write_supervisor_heartbeat(
+                universe, state, iteration=iteration, phase="spawn_failed",
+                planned_sleep_s=delay,
+            )
             sleep_fn(delay)
             continue
+        state.last_spawn_at = _utcnow_iso()
+        write_supervisor_heartbeat(
+            universe, state, iteration=iteration, phase="spawned",
+            subprocess_pid=getattr(proc, "pid", None), subprocess_alive=True,
+        )
 
         # Poll until subprocess exits, while respecting stop signal.
         returncode: int | None = None
@@ -411,7 +478,15 @@ def run_supervisor(
         # loop. Start the producer clock now and only restart if the task is
         # still pickable after one poll interval.
         last_producer_poll = time.monotonic()
+        last_beat = time.monotonic()
         while True:
+            if time.monotonic() - last_beat >= 15.0:
+                last_beat = time.monotonic()
+                write_supervisor_heartbeat(
+                    universe, state, iteration=iteration, phase="polling",
+                    subprocess_pid=getattr(proc, "pid", None),
+                    subprocess_alive=True,
+                )
             if stopping["flag"]:
                 logger.info("cloud_worker: terminating subprocess on stop signal")
                 try:
@@ -498,8 +573,15 @@ def run_supervisor(
                 base=crash_backoff, mult=backoff_mult, ceiling=max_backoff,
             )
         logger.info("cloud_worker: sleeping %.1fs before next spawn", delay)
+        write_supervisor_heartbeat(
+            universe, state, iteration=iteration, phase="backoff",
+            planned_sleep_s=delay,
+        )
         sleep_fn(delay)
 
+    write_supervisor_heartbeat(
+        universe, state, iteration=iteration, phase="stopped",
+    )
     return state
 
 

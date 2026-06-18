@@ -270,6 +270,33 @@ def run_canary(
             f"(freshness gate suspended while {reason})"
         )
 
+    # Worker-liveness preference (daemon-liveness-watchdog spec): the
+    # supervisor heartbeat distinguishes the two states content-activity
+    # mtimes conflate. A dead/stale beat is a wedge — page with that as
+    # the reason instead of the vaguer "activity stale". A live beat
+    # with no queued work is healthy idleness — don't page just because
+    # nothing has needed doing lately. A live beat with work present
+    # falls through to the freshness gate (the daemon should be making
+    # progress, and last_activity measures exactly that).
+    liveness = daemon.get("worker_liveness")
+    if isinstance(liveness, dict) and liveness.get("present"):
+        alive = liveness.get("alive")
+        if alive is False:
+            return 2, (
+                "STALE (worker_wedged): supervisor heartbeat is "
+                f"{liveness.get('beat_age_s')}s old "
+                f"(phase={liveness.get('phase')!r}, "
+                f"consec_crashes={liveness.get('consec_crashes')}); "
+                "worker is wedged or dead — restart the worker container"
+            )
+        if alive is True and not daemon.get("has_work", False):
+            return 0, (
+                "FRESH (worker alive, no active work): supervisor beat "
+                f"{liveness.get('beat_age_s')}s old; "
+                f"last_activity_at={daemon.get('last_activity_at')!r} "
+                "staleness reflects idleness, not a wedge"
+            )
+
     last_activity_iso = daemon.get("last_activity_at")
     return classify_freshness(last_activity_iso, current_now, threshold_min)
 

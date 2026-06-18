@@ -939,10 +939,47 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
         "has_work": has_work,
         "last_activity_at": last_activity,
         "staleness": staleness,
+        "worker_liveness": _worker_liveness(udir),
         "word_count": word_count,
         "word_count_sample": word_count_sample,
         "accept_rate": accept_rate,
         "accept_rate_sample": accept_sample,
+    }
+
+
+def _worker_liveness(udir: Path) -> dict[str, Any]:
+    """Supervisor-heartbeat liveness, distinct from content activity.
+
+    ``last_activity_at`` answers "when did the daemon last DO something"
+    (activity.log / .runtime_status.json mtimes) — it goes stale both
+    when the worker is wedged AND when there is simply nothing to do.
+    This field answers "is the worker process alive right now" from the
+    ``.worker_supervisor.json`` beat the cloud_worker supervisor writes
+    (docs/specs/daemon-liveness-watchdog.md). Consumers (the activity
+    canary) use it to page on wedge and stay quiet on idle.
+    """
+    beat_path = udir / ".worker_supervisor.json"
+    if not beat_path.exists():
+        return {"present": False}
+    try:
+        beat = json.loads(beat_path.read_text(encoding="utf-8"))
+        ts = datetime.strptime(
+            str(beat.get("ts", "")), "%Y-%m-%dT%H:%M:%SZ",
+        ).replace(tzinfo=timezone.utc)
+    except (OSError, ValueError, TypeError):  # noqa: BLE001 — probe, not gate
+        return {"present": True, "parse_error": True}
+    age_s = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+    planned_sleep = float(beat.get("planned_sleep_s") or 0.0)
+    allowed = max(300.0, planned_sleep + 120.0)
+    return {
+        "present": True,
+        "alive": age_s <= allowed,
+        "beat_age_s": round(age_s, 1),
+        "phase": beat.get("phase", ""),
+        "subprocess_alive": bool(beat.get("subprocess_alive", False)),
+        "consec_crashes": beat.get("consec_crashes", 0),
+        "total_spawns": beat.get("total_spawns", 0),
+        "last_exit_rc": beat.get("last_exit_rc"),
     }
 
 

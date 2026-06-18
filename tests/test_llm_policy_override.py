@@ -128,7 +128,7 @@ def _mock_router_for_policy(
             raise raises_on_preferred
     else:
         def _side_effect(role, prompt, system, policy, config=None, difficulty=""):
-            return preferred_response, preferred_provider
+            return preferred_response, preferred_provider, {}
 
     mock_router.call_with_policy_sync.side_effect = _side_effect
     return mock_router
@@ -248,7 +248,7 @@ def test_node_policy_overrides_branch_default():
     calls: list[dict] = []
     def _mock_policy_call(role, prompt, system, policy, config=None, difficulty=""):
         calls.append({"policy": policy})
-        return "node-policy-response", "codex"
+        return "node-policy-response", "codex", {}
 
     mock_router = MagicMock()
     mock_router.call_with_policy_sync.side_effect = _mock_policy_call
@@ -317,7 +317,7 @@ def test_policy_dispatch_retries_transient_provider_exhaustion(monkeypatch):
         AllProvidersExhaustedError(
             "All providers exhausted for role=writer. Daemon should retry with backoff."
         ),
-        ("success after retry", "groq-free"),
+        ("success after retry", "groq-free", {}),
     ]
 
     monkeypatch.setattr(
@@ -354,7 +354,7 @@ def test_difficulty_override_passed_through():
     calls: list[dict] = []
     def _mock_call(role, prompt, system, policy, config=None, difficulty=""):
         calls.append({"difficulty": difficulty})
-        return "hard-response", "claude-code"
+        return "hard-response", "claude-code", {}
 
     mock_router = MagicMock()
     mock_router.call_with_policy_sync.side_effect = _mock_call
