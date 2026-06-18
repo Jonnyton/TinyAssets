@@ -7,3 +7,6 @@ dist
 !.env.example
 .DS_Store
 *.log
+
+# keep the SvelteKit /build ROUTE (root .gitignore "build/" would otherwise drop it)
+!/src/routes/build/
