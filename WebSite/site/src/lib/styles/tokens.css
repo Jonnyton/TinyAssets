@@ -1,83 +1,130 @@
 /* =========================================================
-   Workflow — Design Tokens
-   A live project protocol loom and execution loop.
-   Vibe: nerdy / self-aware. Serious utility, visible protocol,
-   deep indigo night, coral ember, live green, and violet graph edges.
+   Tiny — Design Tokens · "Field Notes"
+   The website is Tiny's body: a naturalist's logbook crossed
+   with a scientific instrument. Paper-light ground, ink text,
+   one life-signal green reserved for genuinely live evidence,
+   ember for action, violet as the soul/lineage trace.
+
+   Claim vs evidence is a typographic distinction:
+     prose (claims, narrative)  → serif (voice) / sans (chrome)
+     evidence (live data, ids)  → mono, always
+
+   Legacy variable names from the previous (dark) system are
+   kept below, remapped to light equivalents, so pages not yet
+   rebuilt keep rendering while the redesign sweeps through.
    ========================================================= */
 
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap");
 
 :root {
   /* ---------- CORE PALETTE ---------- */
-  /* Brand palette for the protocol-loom mark and live protocol surfaces. */
-  --ink-900: #0e0e1a;          /* deepest ritual night, behind-the-ring */
-  --ink-800: #1a1a2e;          /* default page background */
-  --ink-700: #16213e;          /* elevated surface, card base */
-  --ink-600: #1f2447;          /* row hover / sidebar */
-  --ink-500: #2a2d55;          /* border on dark */
-  --ink-400: #3c3f6e;          /* muted dark stroke */
+  /* Paper ground — warm, slightly fibrous, never sterile white. */
+  --paper-50:  #faf8f2;
+  --paper-100: #f4f1e7;
+  --paper-200: #ece7d8;
+  --paper-300: #ded7c2;
+  --paper-400: #c9c0a6;
+  /* The desk itself — deeper than every paper object that sits on it.
+     This is the body ground; cards (--bg-1 and up) stay lighter. */
+  --ground-0:  #efe7d4;
 
-  --violet-900: #2b1a4a;
-  --violet-700: #3f2470;
-  --violet-600: #533483;       /* graph branch violet */
-  --violet-500: #6b44a8;
-  --violet-400: #8a63ce;       /* violet glow on dark */
-  --violet-200: #d9cbee;       /* violet on light */
+  /* Ink — warm near-black, never pure #000. */
+  --ink-text-900: #1c1a14;
+  --ink-text-700: #45412f;
+  --ink-text-500: #736d54;
+  --ink-text-300: #a39b7e;
 
+  /* Brand ember — action only. Inherited from the sigil. */
   --ember-900: #8a1a33;
-  --ember-700: #c22948;
-  --ember-600: #e94560;        /* brand coral/ember — primary accent */
-  --ember-500: #f06480;
-  --ember-300: #f8b2c0;
-  --ember-100: #fde6eb;
+  --ember-700: #b62744;
+  --ember-600: #e94560;
+  --ember-500: #d4385a;   /* hover on light needs more pigment, not less */
+  --ember-300: #e98aa0;
+  --ember-100: #fbe3e8;
 
-  --bone-50:  #f7f5ef;         /* warm paper for light surfaces */
-  --bone-100: #efece3;
-  --bone-200: #e2ddcd;
-  --bone-300: #c8c2af;
+  /* Life-signal green — RESERVED for live evidence + liveness. */
+  --live-700: #1d6e4b;
+  --live-600: #1f8a5c;
+  --live-100: #ddf0e4;
+
+  /* Soul violet — lineage, forks, souls. Trace accent only. */
+  --violet-900: #2b1a4a;
+  --violet-700: #533483;
+  --violet-600: #6b44a8;
+  --violet-500: #6b44a8;
+  --violet-400: #7d56bd;
+  --violet-200: #4a2f76;  /* legacy name was "violet on light" — keep readable on paper */
+  --violet-100: #ece4f7;
+
+  /* Bone (legacy warm paper family) — now the actual ground. */
+  --bone-50:  #faf8f2;
+  --bone-100: #f4f1e7;
+  --bone-200: #ece7d8;
+  --bone-300: #ded7c2;
   --bone-500: #87826f;
   --bone-700: #4a4738;
 
-  /* Semantic status (kept muted — this is a serious utility tool) */
-  --signal-live: #6dd3a6;      /* daemon online / cascade active */
-  --signal-idle: #d9a84a;      /* idle — a soft failure state */
-  --signal-warn: #e88a3c;
-  --signal-error: #e94560;     /* same as ember — failure is a brand moment */
+  /* Legacy ink family (was dark grounds; remap to paper-light equivalents
+     so old `background: var(--ink-800)` reads as a quiet panel, not night). */
+  --ink-900: #1c1a14;     /* legacy: deepest bg → now usable as ink text */
+  --ink-800: #f4f1e7;
+  --ink-700: #ece7d8;
+  --ink-600: #e4decb;
+  --ink-500: #d6cfb8;
+  --ink-400: #c9c0a6;
 
-  /* ---------- SEMANTIC TOKENS (DARK — default) ---------- */
-  --bg-0: var(--ink-900);
-  --bg-1: var(--ink-800);
-  --bg-2: var(--ink-700);
-  --bg-3: var(--ink-600);
-  --bg-inset: #0b0b14;
+  /* Status — muted, honest. Idle/asleep is a first-class state. */
+  --signal-live: #1f8a5c;
+  --signal-idle: #b08a2e;
+  --signal-warn: #c96f24;
+  --signal-error: #b62744;
 
-  --fg-1: #f2eee6;             /* primary text on dark */
-  --fg-2: #b9b4a6;             /* secondary text */
-  --fg-3: #7a7668;             /* tertiary / metadata */
-  --fg-4: #4c4a42;             /* disabled / very quiet */
+  /* ---------- SEMANTIC ---------- */
+  --bg-0: var(--ground-0);
+  --bg-1: var(--paper-50);
+  --bg-2: var(--paper-100);
+  --bg-3: var(--paper-200);
+  --bg-inset: var(--paper-200);
+
+  --fg-1: var(--ink-text-900);
+  --fg-2: var(--ink-text-700);
+  --fg-3: var(--ink-text-500);
+  --fg-4: var(--ink-text-300);
   --fg-on-ember: #fff8f2;
   --fg-on-violet: #f5f1ff;
 
-  --border-1: rgba(255, 255, 255, 0.08);
-  --border-2: rgba(255, 255, 255, 0.14);
-  --border-strong: rgba(233, 69, 96, 0.45);
+  --border-1: rgba(28, 26, 20, 0.12);
+  --border-2: rgba(28, 26, 20, 0.22);
+  --border-strong: rgba(182, 39, 68, 0.5);
 
   --accent: var(--ember-600);
-  --accent-hover: var(--ember-500);
-  --accent-press: var(--ember-700);
-  --accent-quiet: rgba(233, 69, 96, 0.12);
+  --accent-hover: var(--ember-700);
+  --accent-press: var(--ember-900);
+  --accent-quiet: rgba(233, 69, 96, 0.08);
 
   --graph-violet: var(--violet-600);
-  --graph-violet-glow: rgba(138, 99, 206, 0.45);
+  --graph-violet-glow: rgba(107, 68, 168, 0.28);
+
+  /* ---------- READOUT (dark instrument panel — where Tiny SHOWS) ---------- */
+  --panel: #16150f;
+  --panel-raised: #211f17;
+  --panel-line: #36331f;
+  --on-panel: #f4f1e7;
+  --on-panel-soft: #b9b2a0;
+  --live-bright: #46b483;
+  --violet-bright: #a98fe0;
 
   /* ---------- TYPE ---------- */
-  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Voice — Tiny's first-person prose + display headlines. */
+  --font-voice: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-display: "Newsreader", Georgia, serif;
+  /* UI chrome — quiet grotesque. */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Evidence — every live number, id, timestamp. No exceptions. */
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --font-display: "Fraunces", "IBM Plex Sans", Georgia, serif;
 
-  /* Display uses Fraunces with soft variable settings — gives the slightly-
-     mythic, old-grimoire edge without tipping into costume. */
-  --fraunces-soft: "opsz" 144, "SOFT" 50, "WONK" 0;
+  /* Legacy alias (Fraunces axes; unknown axes are ignored by Newsreader). */
+  --fraunces-soft: "opsz" 72;
 
   --fs-xs: 11px;
   --fs-sm: 12px;
@@ -98,7 +145,7 @@
 
   --ls-tight: -0.02em;
   --ls-normal: 0;
-  --ls-caps: 0.14em;           /* used for small-caps / ritual labels */
+  --ls-caps: 0.14em;
 
   /* ---------- SHAPE ---------- */
   --radius-xs: 3px;
@@ -107,7 +154,7 @@
   --radius-lg: 14px;
   --radius-xl: 22px;
   --radius-pill: 999px;
-  --radius-card: 12px;
+  --radius-card: 10px;
 
   /* ---------- SPACE (4px base) ---------- */
   --s-0: 0;
@@ -125,42 +172,21 @@
   --s-24: 96px;
 
   /* ---------- ELEVATION ----------
-     On dark surfaces we lean on inner rings + faint violet glow rather
-     than heavy drop-shadow. This keeps the "summoning ring" metaphor
-     without overdesign. */
-  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 6px 22px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 18px 50px rgba(0, 0, 0, 0.6);
-  --glow-graph: 0 0 0 1px rgba(138, 99, 206, 0.3), 0 0 30px rgba(83, 52, 131, 0.35);
-  --glow-ember: 0 0 0 1px rgba(233, 69, 96, 0.4), 0 0 24px rgba(233, 69, 96, 0.25);
+     Graphite-soft shadows on paper. Never glow. */
+  --shadow-sm: 0 1px 2px rgba(28, 26, 20, 0.06), 0 2px 6px rgba(28, 26, 20, 0.04);
+  --shadow-md: 0 2px 4px rgba(28, 26, 20, 0.06), 0 10px 26px rgba(28, 26, 20, 0.08);
+  --shadow-lg: 0 4px 10px rgba(28, 26, 20, 0.08), 0 22px 48px rgba(28, 26, 20, 0.1);
+  --glow-graph: 0 0 0 1px rgba(107, 68, 168, 0.25);
+  --glow-ember: 0 0 0 1px rgba(233, 69, 96, 0.3);
 
   /* ---------- MOTION ----------
-     Daemons don't bounce. Movement is deliberate, slightly slow,
-     ease-out — a spell landing, not a spring. */
+     Calm and deliberate. Instruments don't bounce. */
   --ease-summon: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
   --dur-fast: 120ms;
   --dur-base: 200ms;
   --dur-slow: 360ms;
-  --dur-ritual: 700ms;         /* for summoning-style transitions */
-}
-
-/* ---------- LIGHT MODE (docs / legal / secondary surfaces) ---------- */
-[data-theme="light"] {
-  --bg-0: var(--bone-50);
-  --bg-1: #ffffff;
-  --bg-2: var(--bone-100);
-  --bg-3: var(--bone-200);
-  --bg-inset: #faf8f2;
-
-  --fg-1: #161524;
-  --fg-2: #4b4864;
-  --fg-3: #7a7688;
-  --fg-4: #b0adbd;
-
-  --border-1: rgba(22, 21, 36, 0.08);
-  --border-2: rgba(22, 21, 36, 0.16);
-  --border-strong: rgba(233, 69, 96, 0.6);
+  --dur-ritual: 700ms;
 }
 
 /* ---------- BASE RESET + SEMANTIC ELEMENT STYLES ---------- */
@@ -169,17 +195,29 @@
 html, body {
   margin: 0;
   font-family: var(--font-sans);
-  font-size: var(--fs-base);
+  font-size: var(--fs-md);
   line-height: var(--lh-normal);
   color: var(--fg-1);
-  background: var(--bg-1);
+  background: var(--bg-0);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
+/* ---------- ATMOSPHERE ----------
+   The page ground is a field-notes desk, not a void: a warm tan desk
+   under graph-paper dots, with real color washes (ember top-left,
+   violet right, green at the foot) and a paper-grain tile. Cards and
+   panels (--bg-1) are lighter sheets sitting on top. */
+body {
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.32  0 0 0 0 0.30  0 0 0 0 0.24  0 0 0 0.045 0'/></filter><rect width='180' height='180' filter='url(%23n)'/></svg>"),
+    var(--bg-0);
+  background-size: 180px 180px, auto;
+  background-attachment: scroll, scroll;
+}
+
 h1, h2, h3 {
   font-family: var(--font-display);
-  font-variation-settings: var(--fraunces-soft);
   font-weight: 500;
   letter-spacing: var(--ls-tight);
   line-height: var(--lh-tight);
@@ -188,9 +226,9 @@ h1, h2, h3 {
   text-wrap: balance;
 }
 
-h1 { font-size: var(--fs-5xl); font-weight: 500; }
-h2 { font-size: var(--fs-3xl); font-weight: 500; }
-h3 { font-size: var(--fs-2xl); font-weight: 500; letter-spacing: -0.01em; }
+h1 { font-size: var(--fs-5xl); font-variation-settings: "opsz" 72; }
+h2 { font-size: var(--fs-3xl); }
+h3 { font-size: var(--fs-2xl); letter-spacing: -0.01em; }
 
 h4, h5, h6 {
   font-family: var(--font-sans);
@@ -214,28 +252,28 @@ p {
   color: var(--fg-2);
   line-height: var(--lh-loose);
   text-wrap: pretty;
-  max-width: 62ch;
+  max-width: 64ch;
 }
 
 a {
-  color: var(--ember-600);
+  color: var(--ember-700);
   text-decoration: none;
   text-underline-offset: 3px;
   text-decoration-thickness: 1px;
   transition: color var(--dur-fast) var(--ease-standard);
 }
-a:hover { color: var(--ember-500); text-decoration: underline; }
+a:hover { color: var(--ember-900); text-decoration: underline; }
 
 code, pre, kbd, samp {
   font-family: var(--font-mono);
   font-size: 0.92em;
 }
 code {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--paper-200);
   border: 1px solid var(--border-1);
   padding: 1px 6px;
   border-radius: var(--radius-xs);
-  color: var(--violet-200);
+  color: var(--ink-text-700);
 }
 pre {
   background: var(--bg-inset);
@@ -253,11 +291,33 @@ hr {
   margin: var(--s-8) 0;
 }
 
-::selection { background: var(--accent); color: var(--fg-on-ember); }
+::selection { background: rgba(233, 69, 96, 0.16); color: var(--fg-1); }
 
-/* ---------- UTILITY: RITUAL LABEL ----------
-   small-caps-style label used for metadata, section kickers, and
-   anywhere a node needs to read "inscribed" rather than "printed". */
+/* ---------- SITE-WIDE VOCABULARY ---------- */
+
+/* Tiny's first-person voice — used wherever he narrates. */
+.voice {
+  font-family: var(--font-voice);
+  font-size: clamp(17px, 1.9vw, 20px);
+  line-height: 1.62;
+  color: var(--fg-1);
+  text-wrap: pretty;
+  max-width: 62ch;
+}
+.voice em { font-style: italic; color: var(--ember-700); }
+
+/* Evidence — live values, ids, timestamps. Always mono. */
+.ev {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  letter-spacing: 0.01em;
+  color: var(--fg-2);
+  font-style: normal;
+  font-feature-settings: "tnum";
+}
+
+/* Field-note section label (replaces the old "ritual label"). */
+.eyebrow,
 .ritual-label {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -267,11 +327,21 @@ hr {
   font-weight: 500;
 }
 
-/* ---------- UTILITY: DISPLAY PULL ----------
-   used for "Summon the daemon." and equivalent hero lines. */
+/* Liveness dot — green ONLY when genuinely live; amber when asleep. */
+.dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--fg-4);
+  flex: none;
+}
+.dot.live { background: var(--signal-live); box-shadow: 0 0 0 3px var(--live-100); }
+.dot.idle { background: var(--signal-idle); box-shadow: 0 0 0 3px rgba(176, 138, 46, 0.15); }
+.dot.error { background: var(--signal-error); box-shadow: 0 0 0 3px var(--ember-100); }
+
+/* Legacy display pull (kept for un-rebuilt pages). */
 .display-pull {
   font-family: var(--font-display);
-  font-variation-settings: var(--fraunces-soft);
   font-weight: 400;
   font-size: var(--fs-6xl);
   line-height: 0.95;
@@ -280,6 +350,62 @@ hr {
 }
 .display-pull em {
   font-style: italic;
-  font-variation-settings: "opsz" 144, "SOFT" 100, "WONK" 1;
   color: var(--ember-600);
+}
+
+/* Legacy light-mode hook — now a no-op (light is the default). */
+[data-theme="light"] {
+  --bg-0: var(--ground-0);
+  --bg-1: var(--paper-50);
+  --bg-2: var(--paper-100);
+  --bg-3: var(--paper-200);
+}
+
+/* ---------- READOUT SURFACE ----------
+   The dark instrument panel: anything Tiny SHOWS (live stats, the graph, run
+   logs, addresses). Mono, ink-black ground, faint graph-paper grid, the
+   live-green heartbeat. Claim-vs-evidence made spatial. */
+.readout {
+  background-color: var(--panel);
+  background-image:
+    linear-gradient(var(--panel-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--panel-line) 1px, transparent 1px);
+  background-size: 28px 28px;
+  color: var(--on-panel);
+  border-radius: var(--radius-sm);
+  padding: var(--s-6);
+  border: 1px solid #2c2a1d;
+}
+.readout h1, .readout h2, .readout h3 { color: var(--on-panel); }
+.readout p { color: var(--on-panel-soft); }
+.readout .eyebrow, .readout .ritual-label { color: var(--on-panel-soft); }
+.readout .ev { color: var(--on-panel-soft); }
+.readout a { color: var(--ember-300); }
+.readout a:hover { color: #ffd7df; }
+.readout .voice em { color: var(--live-bright); }
+.readout .dot.live { background: var(--live-bright); box-shadow: 0 0 0 3px rgba(70, 180, 131, 0.22); }
+
+/* A single live reading. */
+.stat { display: grid; gap: 4px; }
+.stat__num {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: var(--fs-3xl);
+  line-height: 1.05;
+  color: var(--on-panel);
+  font-feature-settings: "tnum";
+  letter-spacing: -0.01em;
+}
+.stat__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+  color: var(--on-panel-soft);
+}
+/* A raised cell inside a readout (depth from lightness, not shadow). */
+.readout-cell {
+  background: var(--panel-raised);
+  border-radius: var(--radius-xs);
+  padding: var(--s-3) var(--s-4);
 }

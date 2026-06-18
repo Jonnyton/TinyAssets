@@ -8,8 +8,8 @@
 -->
 <script lang="ts">
   import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
-  import TokenDisclaimer from '$lib/components/TokenDisclaimer.svelte';
   import legal from '$lib/content/legal-info.json';
+  import tokenInfo from '$lib/content/token-info.json';
 </script>
 
 <svelte:head>
@@ -21,7 +21,8 @@
   <div class="wrap">
     <RitualLabel>· Legal · {legal.version} · effective {legal.effective_date} ·</RitualLabel>
     <h1>Legal.</h1>
-    <p class="status">{legal.review_status}.</p>
+    <p class="status">{legal.review_status}</p>
+    <p class="reviewed">Effective 2026-04-29 · last copy review 2026-06-10 · still Draft v0 — a real legal pass is pending and this page says so honestly.</p>
     <p class="lead">
       Workflow is open-source software under MIT. Public goal content is CC0-1.0. Current Workflow settlement testing uses <code>test tiny</code> on Base Sepolia. The real currency reference is <code>{legal.token.display_name}</code>, and real-token integration is deferred.
     </p>
@@ -42,7 +43,7 @@
     <ul>
       <li><strong>Platform code</strong> (engine, MCP gateway, tray, connectors): <a href="https://github.com/Jonnyton/Workflow/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT</a>. Fork it, run it, sell services on it. Attribution required.</li>
       <li><strong>Public goal content</strong> (goals, branches, nodes, prompt templates, gates, wiki pages): <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noreferrer">CC0-1.0</a>. Public domain. Use without permission.</li>
-      <li><strong>This site</strong>: same MIT for site code, CC0 for site content where original; fonts retain their respective licenses (IBM Plex Sans/Mono, Fraunces — all OFL).</li>
+      <li><strong>This site</strong>: same MIT for site code, CC0 for site content where original; fonts retain their respective licenses (Newsreader, Inter, IBM Plex Mono — served via Google Fonts, all SIL Open Font License).</li>
     </ul>
 
     <h2 id="privacy">Privacy</h2>
@@ -50,7 +51,7 @@
     <p>Per-piece visibility is judged by your chatbot per request, not by us. <strong>The chatbot proposes; you confirm. No cached consent.</strong></p>
     <p>You may export or delete your data at any time. The <code>/account</code> page (Phase 2) provides a 30-day grace-window deletion flow per CCPA / GDPR Article 17.</p>
     <p><strong>Cookies / analytics:</strong> we plan to use Plausible (privacy-friendly, no PII, no third-party trackers). No advertising cookies, no cross-site tracking pixels.</p>
-    <p><strong>Minimum age.</strong> Workflow is not directed at children. You must be at least <strong>18 years old</strong> to use the service or hold a wallet connection. We self-declare age at wallet-connect; misrepresentation is grounds for termination. We do not knowingly collect data from minors; if you believe we have, contact <a href="mailto:{legal.contact.legal}">{legal.contact.legal}</a>.</p>
+    <p><strong>Minimum age.</strong> Workflow is not directed at children. You must be at least <strong>18 years old</strong> to use the service or hold a wallet connection. Wallet features are not live today; the age self-declaration described here pre-positions the obligation for if and when wallet-connect opens. You self-declare your age at wallet-connect; misrepresentation is grounds for termination. We do not knowingly collect data from minors; if you believe we have, contact <a href="mailto:{legal.contact.legal}">{legal.contact.legal}</a>.</p>
 
     <h2 id="terms">Terms of use</h2>
     <p>By using Workflow (the website, the MCP gateway at <code>tinyassets.io/mcp</code>, or the daemon tray), you agree to these terms. If you do not agree, do not use the service.</p>
@@ -62,7 +63,7 @@
       <li>You will not use Workflow to violate sanctions law (OFAC / equivalent).</li>
     </ul>
     <h3>Geographic restrictions</h3>
-    <p>The service is not available in jurisdictions comprehensively sanctioned by OFAC (currently: Cuba, Iran, North Korea, Russia/Crimea, Syria) or where local law prohibits transacting in utility tokens (currently: People's Republic of China). We screen wallet connections via {legal.geo_restrictions.enforcement_layer}. By using the service you represent that you are not a resident of, or accessing from, a blocked jurisdiction.</p>
+    <p>The service is not available in jurisdictions comprehensively sanctioned by OFAC (currently: Cuba, Iran, North Korea, Russia/Crimea, Syria) or where local law prohibits transacting in utility tokens (currently: People's Republic of China). Wallet features are not live today; the screening described here pre-positions the obligation for if and when wallet-connect opens. We screen wallet connections via {legal.geo_restrictions.enforcement_layer}. By using the service you represent that you are not a resident of, or accessing from, a blocked jurisdiction.</p>
     <h3>Your content</h3>
     <p>You retain all rights to data you process through Workflow. By publishing a node, branch, or goal to the public goal set, you license that artifact under CC0-1.0, irrevocably. Private workflows stay private — see Privacy above.</p>
     <h3>Our service</h3>
@@ -71,7 +72,6 @@
     <p>We may suspend or terminate accounts that violate these terms. You may stop using the service at any time and delete your account.</p>
 
     <h2 id="token-disclosures">Token disclosures</h2>
-    <TokenDisclaimer />
     <h3>Classification framework</h3>
     <p>This section separates token identity from current Workflow integration. The real currency reference is <strong><code>{legal.token.display_name}</code></strong>; the current Workflow rail is <strong><code>{legal.token.workflow_test_currency}</code></strong>.</p>
     <p>Under the SEC's April 2026 interpretive release on crypto-asset categorization (the "Project Crypto" framework), digital assets are classified into five categories: digital commodities, digital collectibles, digital tools, payment stablecoins, and digital securities. If real Workflow settlement opens, <strong><code>{legal.token.display_name}</code> is intended to function as a digital tool and/or digital commodity</strong> for paid-market participation, deriving value from the programmatic operation of the protocol.</p>
@@ -88,6 +88,23 @@
       <li>No mainnet <code>{legal.token.symbol}</code> payouts, staking, DAO votes, or treasury flows in current Workflow surfaces.</li>
       <li>Real contract addresses are shown as reference-only so the live naming stays consistent before cutover.</li>
     </ul>
+
+    <h3 id="reference-contracts">Reference contracts</h3>
+    <p>The real <code>{tokenInfo.display_name}</code> token exists on the chains below. They are shown <strong>reference-only</strong>: Workflow takes no action on them today and settles solely on the Base Sepolia <code>{tokenInfo.workflow_test_currency.name}</code> rail. Verify any address yourself on its block explorer before trusting a copy of it.</p>
+    <div class="chains" aria-label="Reference token contracts">
+      {#each tokenInfo.deploys as d (d.address_main)}
+        <article class="chain" class:chain--primary={d.primary} class:chain--legacy={d.legacy}>
+          <header>
+            <strong>{d.label}</strong>
+            <span class="badge">{d.legacy ? '1:1 migration reference' : 'reference only'}</span>
+          </header>
+          <code class="chain__addr">{d.address_main}</code>
+          <p class="chain__note">{d.legacy ? 'legacy address; no Workflow action' : 'no Workflow action — test tiny rail only'}</p>
+          <a href={d.explorer} target="_blank" rel="noreferrer">Explorer ↗</a>
+        </article>
+      {/each}
+    </div>
+    <p class="chain__foot">Canonical surfaces only: the site is <code>tinyassets.io</code>, the MCP URL is <code>tinyassets.io/mcp</code>, the repo is <code>github.com/Jonnyton/Workflow</code>. Anything else is not us.</p>
     <h3>What tiny is not</h3>
     <ul>
       <li>Not a security, not an investment contract, not equity, not a debt instrument.</li>
@@ -98,7 +115,7 @@
     <h3>No offer to sell</h3>
     <p>This site does not constitute an offer or solicitation to sell securities. Existing <code>{legal.token.symbol}</code> contracts are reference-only for Workflow today; no new offering is being made through this site. Any future real-token settlement must open as an explicit roadmap phase.</p>
     <h3>KYC / AML</h3>
-    <p>Tier-1 chatbot users (browse, run free-tier daemons) do not require KYC. Tier-2 daemon hosts are subject to identity verification at a cumulative lifetime paid-market threshold of <strong>USD 1,000</strong> via a third-party KYC provider (Sumsub, Persona, or Onfido). Treasury operations involve full KYC. Wallet connections are screened against the OFAC sanctions list in real time.</p>
+    <p>Tier-1 chatbot users (browse, run free-tier daemons) do not require KYC. Tier-2 daemon hosts are subject to identity verification at a cumulative lifetime paid-market threshold of <strong>USD 1,000</strong> via a third-party KYC provider (Sumsub, Persona, or Onfido). Treasury operations involve full KYC. Wallet features are not live today; the screening described here pre-positions the obligation for if and when wallet-connect opens. Wallet connections are screened against the OFAC sanctions list in real time.</p>
     <h3>Tax</h3>
     <p>Real-token payouts are disabled at v0. If real <code>{legal.token.display_name}</code> payouts later open, you are responsible for the tax treatment of any token received, spent, or disposed of in your jurisdiction. We are not a tax advisor. Consult a qualified tax professional.</p>
 
@@ -181,6 +198,13 @@
     color: var(--signal-idle);
     text-transform: uppercase;
     letter-spacing: 0.14em;
+    margin: 0 0 6px;
+  }
+  .reviewed {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-3);
+    line-height: 1.5;
     margin: 0 0 16px;
   }
   .lead {
@@ -189,7 +213,7 @@
     margin: 0 0 16px;
   }
   .lead code {
-    background: rgba(255,255,255,0.06);
+    background: var(--paper-200);
     padding: 1px 5px;
     border-radius: 3px;
     font-family: var(--font-mono);
@@ -238,7 +262,7 @@
     font-size: 14.5px;
   }
   code {
-    background: rgba(255,255,255,0.06);
+    background: var(--paper-200);
     border: 1px solid var(--border-1);
     padding: 1px 5px;
     border-radius: 3px;
@@ -261,4 +285,75 @@
     border-radius: 0 6px 6px 0;
   }
   .footer-note strong { color: var(--fg-2); }
+
+  /* reference token contracts */
+  .chains {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 12px;
+    margin: 14px 0 18px;
+  }
+  .chain {
+    border: 1px solid var(--border-1);
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: var(--bg-2);
+    display: grid;
+    gap: 7px;
+    align-content: start;
+  }
+  .chain--primary { border-color: rgba(233, 69, 96, 0.32); }
+  .chain--legacy { opacity: 0.82; }
+  .chain header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .chain strong {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg-1);
+  }
+  .chain .badge {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--fg-3);
+    white-space: nowrap;
+  }
+  .chain__addr {
+    display: block;
+    overflow-wrap: anywhere;
+    background: var(--paper-200);
+    border: 1px solid var(--border-1);
+    padding: 4px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--fg-2);
+  }
+  .chain__note {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-3);
+    margin: 0;
+    line-height: 1.4;
+  }
+  .chain a {
+    justify-self: start;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--ember-600);
+    text-decoration: none;
+    letter-spacing: 0.04em;
+  }
+  .chain a:hover { text-decoration: underline; }
+  .chain__foot {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-3);
+    line-height: 1.55;
+  }
 </style>

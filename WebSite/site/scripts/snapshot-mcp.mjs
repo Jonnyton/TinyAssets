@@ -4,8 +4,9 @@
  *
  * Calls wiki/goals/universe on tinyassets.io/mcp via the official
  * @modelcontextprotocol/sdk client (StreamableHTTPClientTransport). Crawls
- * each promoted page to extract [[wiki-links]] and YAML-frontmatter sources
- * + tags so /graph can render real cross-page connections.
+ * every promoted page to extract [[wiki-links]], YAML-frontmatter sources,
+ * prose mentions of other pages' titles, and tags, so /graph can render real
+ * cross-page connections.
  *
  * Fail-soft: connection failures keep the existing snapshot. Atomic write
  * (temp + rename) avoids FUSE chunked-write truncation.
@@ -23,7 +24,17 @@ const ROOT = resolve(SCRIPT_DIR, '..');
 const SNAPSHOT_PATH = resolve(ROOT, 'src', 'lib', 'content', 'mcp-snapshot.json');
 const MCP_URL = process.env.MCP_URL ?? 'https://tinyassets.io/mcp';
 const BEARER = process.env.MCP_BEARER ?? '';
-const PAGE_FETCH_CONCURRENCY = 4;
+const PAGE_FETCH_CONCURRENCY = Number(process.env.SNAPSHOT_CONCURRENCY ?? 8);
+// Crawl EVERY promoted page body for edge extraction by default. The old
+// tail-200 cap silently orphaned ~1,000 pages (their [[links]] were never
+// read), which is the #1 reason /graph looked unconnected. Set
+// SNAPSHOT_MAX_PAGES to a number only if you must trade completeness for a
+// faster CI crawl; default Infinity = all pages.
+const MAX_CRAWL_PAGES = Number(process.env.SNAPSHOT_MAX_PAGES ?? Infinity);
+// Incremental: when a prior snapshot exists, only re-crawl pages changed since
+// its fetched_at (plus any never-crawled) and merge. Keeps the 6h cron cheap.
+// Force a clean full rebuild with SNAPSHOT_FULL=1.
+const FORCE_FULL = process.env.SNAPSHOT_FULL === '1';
 
 function log(msg) { console.log(`[snapshot] ${msg}`); }
 function warn(msg) { console.warn(`[snapshot] WARN: ${msg}`); }
@@ -40,6 +51,11 @@ async function loadSdk() {
 }
 
 function parseToolResponse(result) {
+  // Server moved canonical tool output into `structuredContent` (MCP
+  // structured output); `content[].text` is often just a human summary.
+  if (result?.structuredContent && typeof result.structuredContent === 'object') {
+    return result.structuredContent;
+  }
   const textContent = result?.content?.find((c) => c?.type === 'text');
   if (!textContent?.text) return null;
   try {
@@ -74,7 +90,7 @@ function pathToNodeId(path) {
   if (!path) return null;
   const cat = classifyPath(path);
   if (cat === 'bugs') return `bug:${buildBugId(path)}`;
-  if (cat === 'drafts') return `draft:${path}`;
+  if (cat === 'drafts') return `draft:${path.split('/').pop()?.replace(/\.md$/, '') ?? path}`;
   if (cat === 'concepts') return `concept:${path.split('/').pop()?.replace(/\.md$/, '') ?? path}`;
   if (cat === 'notes') return `note:${path.split('/').pop()?.replace(/\.md$/, '') ?? path}`;
   if (cat === 'plans') return `plan:${path.split('/').pop()?.replace(/\.md$/, '') ?? path}`;
@@ -83,7 +99,8 @@ function pathToNodeId(path) {
 
 // Resolve a [[reference]] token — could be BUG-NNN, a slug, or an external page.
 function resolveRef(ref, knownIds) {
-  const r = String(ref).trim();
+  // Wiki tokens can carry an alias/heading/prefix: [[slug|alias]], [[slug#sec]], wiki:slug.
+  const r = String(ref).trim().split('|')[0].split('#')[0].replace(/^wiki:/i, '').trim();
   // BUG-NNN
   const bugMatch = r.match(/^BUG-?(\d+)$/i);
   if (bugMatch) {
@@ -101,6 +118,9 @@ function resolveRef(ref, knownIds) {
     const id = `${t}:${norm}`;
     if (knownIds.has(id)) return id;
   }
+  // Path-style ref, e.g. [[pages/notes/foo]] or pages/bugs/BUG-001.
+  const viaPath = pathToNodeId(r);
+  if (viaPath && knownIds.has(viaPath)) return viaPath;
   return null;
 }
 
@@ -147,7 +167,12 @@ function extractRefs(content) {
     ...parseFrontmatterList(fm, 'blocks'),
     ...parseFrontmatterList(fm, 'blocked_by'),
     ...parseFrontmatterList(fm, 'fixes'),
-    ...parseFrontmatterList(fm, 'see_also')
+    ...parseFrontmatterList(fm, 'see_also'),
+    ...parseFrontmatterList(fm, 'amends'),
+    ...parseFrontmatterList(fm, 'related_canonical'),
+    ...parseFrontmatterList(fm, 'related_concepts'),
+    ...parseFrontmatterList(fm, 'parent'),
+    ...parseFrontmatterList(fm, 'children')
   ];
 
   // Body bare tokens are weaker signal; only count them when appearing outside frontmatter
@@ -261,38 +286,115 @@ async function main() {
     for (const c of wiki.concepts) knownIds.add(`concept:${c.slug.split('/').pop()?.replace(/\.md$/, '') ?? c.slug}`);
     for (const n of wiki.notes) knownIds.add(`note:${n.slug.split('/').pop()?.replace(/\.md$/, '') ?? n.slug}`);
     for (const pl of wiki.plans) knownIds.add(`plan:${pl.slug.split('/').pop()?.replace(/\.md$/, '') ?? pl.slug}`);
-    for (const d of wiki.drafts) knownIds.add(`draft:${d.slug}`);
+    for (const d of wiki.drafts) knownIds.add(`draft:${d.slug.split('/').pop()?.replace(/\.md$/, '') ?? d.slug}`);
     for (const g of goals) knownIds.add(`goal:${g.id}`);
     for (const u of universes) knownIds.add(`universe:${u.id}`);
 
+    // Title index for prose-mention edges: if a page names another page's
+    // (specific) title in its body, treat it as a real reference to that page.
+    // Ids mirror knownIds exactly so title edges behave like [[link]] edges.
+    // Bounded to specific titles (>= MIN len) and env-toggleable to limit noise.
+    const TITLE_EDGES = process.env.SNAPSHOT_TITLE_EDGES !== '0';
+    const MIN_TITLE_LEN = Number(process.env.SNAPSHOT_MIN_TITLE_LEN ?? 24);
+    const titleIndex = []; // { id, lc }
+    const idxTitle = (id, title) => {
+      const lc = String(title ?? '').trim().toLowerCase();
+      if (lc.length >= MIN_TITLE_LEN) titleIndex.push({ id, lc });
+    };
+    if (TITLE_EDGES) {
+      for (const b of wiki.bugs) idxTitle(`bug:${b.id}`, b.title);
+      for (const c of wiki.concepts) idxTitle(`concept:${c.slug.split('/').pop()?.replace(/\.md$/, '') ?? c.slug}`, c.title);
+      for (const n of wiki.notes) idxTitle(`note:${n.slug.split('/').pop()?.replace(/\.md$/, '') ?? n.slug}`, n.title);
+      for (const pl of wiki.plans) idxTitle(`plan:${pl.slug.split('/').pop()?.replace(/\.md$/, '') ?? pl.slug}`, pl.title);
+      for (const d of wiki.drafts) idxTitle(`draft:${d.slug.split('/').pop()?.replace(/\.md$/, '') ?? d.slug}`, d.title);
+      log(`title index: ${titleIndex.length} pages with titles >= ${MIN_TITLE_LEN} chars`);
+    }
+
     // Crawl page bodies for references + tags. Concurrency-limited.
-    log(`crawling ${(wikiList?.promoted ?? []).length} page bodies (concurrency=${PAGE_FETCH_CONCURRENCY}) ...`);
+    // Crawl promoted pages AND drafts (drafts carry [[links]]/tags too).
+    const allPages = [...(wikiList?.promoted ?? []), ...(wikiList?.drafts ?? [])];
+    const currentPaths = new Set(allPages.map((p) => p.path).filter(Boolean));
+    let prior = null;
+    if (!FORCE_FULL && existsSync(SNAPSHOT_PATH)) {
+      try { prior = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf-8')); } catch { prior = null; }
+    }
+    let priorCrawled = new Set();
+    let crawlSet;
+    if (prior && prior.fetched_at) {
+      const since = await tool('wiki', { action: 'since', changed_since: prior.fetched_at });
+      const changed = new Set(
+        [...(since?.results ?? []), ...(since?.promoted ?? []), ...(since?.drafts ?? []), ...(since?.pages ?? []), ...(since?.items ?? [])]
+          .map((x) => x?.path)
+          .filter(Boolean)
+      );
+      // What was crawled before: prior.crawled if present; else (transition from an
+      // older bake) assume all PROMOTED pages were crawled and drafts were not.
+      priorCrawled = new Set(
+        (prior.crawled ?? [
+          ...(prior.wiki?.bugs ?? []),
+          ...(prior.wiki?.concepts ?? []),
+          ...(prior.wiki?.notes ?? []),
+          ...(prior.wiki?.plans ?? [])
+        ].map((x) => x.slug)).filter(Boolean)
+      );
+      crawlSet = allPages.filter((pg) => changed.has(pg.path) || !priorCrawled.has(pg.path));
+      log(`incremental: ${changed.size} changed since ${prior.fetched_at}; (re)crawling ${crawlSet.length} of ${allPages.length} pages (concurrency=${PAGE_FETCH_CONCURRENCY})`);
+    } else {
+      crawlSet = Number.isFinite(MAX_CRAWL_PAGES) ? allPages.slice(-MAX_CRAWL_PAGES) : allPages;
+      log(`full crawl: ${crawlSet.length} of ${allPages.length} page bodies (promoted + drafts, cap ${MAX_CRAWL_PAGES}, concurrency=${PAGE_FETCH_CONCURRENCY})`);
+    }
     const pageMeta = {}; // path → { refs: [], tags: [], sources: [] }
-    const queue = [...(wikiList?.promoted ?? [])];
-    let inFlight = 0, done = 0;
-    await new Promise((doneResolve) => {
-      function pump() {
-        if (queue.length === 0 && inFlight === 0) { doneResolve(); return; }
-        while (inFlight < PAGE_FETCH_CONCURRENCY && queue.length > 0) {
-          const page = queue.shift();
-          inFlight++;
-          tool('wiki', { action: 'read', page: page.path.replace(/\.md$/, '') })
-            .then((body) => {
-              if (body?.content) {
-                pageMeta[page.path] = extractRefs(body.content);
-              }
-            })
-            .catch(() => {})
-            .finally(() => {
-              inFlight--;
-              done++;
-              if (done % 10 === 0) log(`  ${done} pages crawled`);
-              pump();
-            });
+    // Connection POOL: concurrent callTool on one MCP session stalls, so each
+    // worker gets its own client+transport for true parallelism. Turns a
+    // tens-of-minutes serial crawl into minutes.
+    const queue = [...crawlSet];
+    let done = 0;
+    function extractFor(page, body) {
+      if (!body?.content) return;
+      const meta = extractRefs(body.content);
+      if (TITLE_EDGES && titleIndex.length) {
+        const lc = body.content.toLowerCase();
+        const fromId = pathToNodeId(page.path);
+        const hits = [];
+        for (const ti of titleIndex) {
+          if (ti.id === fromId) continue;
+          if (lc.includes(ti.lc)) hits.push(ti.id);
         }
+        meta.titleRefs = hits;
       }
-      pump();
-    });
+      pageMeta[page.path] = meta;
+    }
+    async function crawlWorker() {
+      const tr = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL), {
+        requestInit: BEARER ? { headers: { Authorization: `Bearer ${BEARER}` } } : {}
+      });
+      const cl = new sdk.Client({ name: 'workflow-site-snapshot-worker', version: '0.2.0' }, { capabilities: {} });
+      try {
+        await Promise.race([
+          cl.connect(tr),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('connect timeout')), 15000))
+        ]);
+      } catch {
+        return;
+      }
+      while (queue.length > 0) {
+        const page = queue.shift();
+        if (!page) break;
+        try {
+          const r = await Promise.race([
+            cl.callTool({ name: 'wiki', arguments: { action: 'read', page: page.path.replace(/\.md$/, '') } }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('read timeout')), 20000))
+          ]);
+          extractFor(page, parseToolResponse(r));
+        } catch {
+          /* skip a page that failed to read */
+        }
+        done += 1;
+        if (done % 25 === 0) log(`  ${done}/${crawlSet.length} pages crawled`);
+      }
+      try { await cl.close(); } catch {}
+    }
+    await Promise.all(Array.from({ length: Math.max(1, PAGE_FETCH_CONCURRENCY) }, () => crawlWorker()));
     log(`crawled ${done} pages. Resolving references ...`);
 
     // Build the edge list. Each edge: { from: nodeId, to: nodeId, kind: 'ref' | 'source' }.
@@ -304,6 +406,16 @@ async function main() {
       if (seenEdges.has(key)) return;
       seenEdges.add(key);
       edges.push({ from, to, kind });
+    }
+    // Incremental merge: keep prior edges from pages we did NOT re-crawl
+    // (endpoints must still exist so deleted/renamed pages drop out).
+    const crawledIds = new Set(crawlSet.map((pg) => pathToNodeId(pg.path)).filter(Boolean));
+    if (prior && !FORCE_FULL) {
+      for (const e of prior.edges ?? []) {
+        if (crawledIds.has(e.from)) continue;
+        if (!knownIds.has(e.from) || !knownIds.has(e.to)) continue;
+        addEdge(e.from, e.to, e.kind);
+      }
     }
     for (const [path, meta] of Object.entries(pageMeta)) {
       const fromId = pathToNodeId(path);
@@ -318,10 +430,19 @@ async function main() {
         const toId = pathToNodeId(s) ?? resolveRef(s, knownIds);
         if (toId) addEdge(fromId, toId, 'source');
       }
+      for (const t of meta.titleRefs ?? []) {
+        addEdge(fromId, t, 'title');
+      }
     }
 
     // Tags per node — surfaces clustering.
     const tags = {};
+    if (prior && !FORCE_FULL) {
+      for (const [id, tl] of Object.entries(prior.tags ?? {})) {
+        if (crawledIds.has(id) || !knownIds.has(id)) continue;
+        tags[id] = tl;
+      }
+    }
     for (const [path, meta] of Object.entries(pageMeta)) {
       const id = pathToNodeId(path);
       if (id && meta.tags?.length) tags[id] = meta.tags;
@@ -335,6 +456,7 @@ async function main() {
       throw new Error('all responses empty — aborting to avoid clobbering existing snapshot');
     }
 
+    const crawledPaths = [...new Set([...priorCrawled, ...crawlSet.map((pg) => pg.path)])].filter((x) => currentPaths.has(x));
     const snapshot = {
       fetched_at: new Date().toISOString(),
       source: 'tinyassets.io/mcp',
@@ -349,7 +471,8 @@ async function main() {
       universes,
       wiki: { bugs: wiki.bugs, concepts: wiki.concepts, notes: wiki.notes, plans: wiki.plans, drafts: wiki.drafts },
       edges,
-      tags
+      tags,
+      crawled: crawledPaths
     };
 
     // Atomic write: temp file + rename, immune to FUSE chunked-write truncation.

@@ -17,7 +17,7 @@ const config = {
       handleHttpError: ({ path, referrer, message }) => {
         throw new Error(`prerender error at ${path} (from ${referrer}): ${message}`);
       },
-      entries: ['/', '/connect', '/wiki', '/graph', '/patch-loop', '/soul', '/fine-print', '/goals', '/host', '/alliance', '/legal', '/account', '/status', '/catalog', '/contribute', '/patterns', '/loop', '/proof', '/economy', '/notebook']
+      entries: ['/', '/start', '/commons', '/build', '/connect', '/wiki', '/graph', '/patch-loop', '/soul', '/fine-print', '/goals', '/host', '/alliance', '/legal', '/account', '/status', '/catalog', '/contribute', '/patterns', '/loop', '/proof', '/economy', '/notebook']
     }
   }
 };

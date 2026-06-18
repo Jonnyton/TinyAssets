@@ -1,47 +1,30 @@
-<!-- /contribute is a compatibility entry. The contributor path now lives in /connect. -->
-<script lang="ts">
-  import Button from '$lib/components/Primitives/Button.svelte';
-  import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
-</script>
-
+<!--
+  /contribute — retired route, now /build. Soft-landing alias.
+  The link is the primary affordance; the 2s meta refresh is a convenience.
+-->
 <svelte:head>
-  <title>Contribute moved to the loop - Workflow</title>
-  <meta name="description" content="Workflow contribution now happens through the live loop page." />
-  <meta http-equiv="refresh" content="0; url=/connect" />
-  <link rel="canonical" href="/connect" />
+  <title>Build — Tiny</title>
+  <link rel="canonical" href="https://tinyassets.io/build" />
+  <meta http-equiv="refresh" content="2;url=/build" />
+  <meta name="description" content="The contributor path is now Build — clone the engine, run it locally, and the real ways to contribute to Workflow." />
 </svelte:head>
 
-<section class="alias">
-  <div class="container">
-    <RitualLabel color="var(--signal-live)">· Route merged ·</RitualLabel>
-    <h1>Contribute is now part of the loop.</h1>
-    <p>The live loop page is the canonical place to watch real project friction move through intake, investigation, gates, branches, release, and observation.</p>
-    <Button variant="primary" href="/connect">Open the loop</Button>
-  </div>
+<section class="moved">
+  <p class="eyebrow">this page moved</p>
+  <p class="moved__line">
+    Contributing is now <em>Build</em> — clone the open engine, run it
+    locally, and every real way to help shape Workflow.
+  </p>
+  <a class="moved__cta" href="/build">Go to Build →</a>
+  <p class="moved__sub ev">/contribute → /build · taking you there in a moment</p>
 </section>
 
 <style>
-  .alias {
-    min-height: 58vh;
-    display: grid;
-    align-items: center;
-    padding-block: 80px;
-  }
-  h1 {
-    max-width: 14ch;
-    margin: 14px 0 16px;
-    color: var(--fg-1);
-    font-family: var(--font-display);
-    font-size: clamp(42px, 7vw, 72px);
-    font-weight: 400;
-    letter-spacing: 0;
-    line-height: 0.98;
-  }
-  p {
-    max-width: 58ch;
-    margin: 0 0 24px;
-    color: var(--fg-2);
-    font-size: 16px;
-    line-height: 1.65;
-  }
+  .moved { max-width: 540px; margin: 0 auto; display: grid; gap: 16px; padding: clamp(72px, 14vw, 140px) clamp(18px, 4vw, 32px); }
+  .eyebrow { display: block; }
+  .moved__line { font-family: var(--font-voice); font-size: clamp(20px, 3vw, 26px); line-height: 1.42; color: var(--fg-1); margin: 0; max-width: 32ch; }
+  .moved__line em { font-style: italic; color: var(--ember-700); }
+  .moved__cta { justify-self: start; margin-top: 6px; font-family: var(--font-sans); font-size: 14px; font-weight: 600; color: var(--fg-on-ember); background: var(--accent); padding: 11px 20px; border-radius: var(--radius-pill); text-decoration: none; transition: background var(--dur-fast) var(--ease-standard); }
+  .moved__cta:hover { background: var(--accent-hover); text-decoration: none; }
+  .moved__sub { color: var(--fg-3); margin: 4px 0 0; }
 </style>

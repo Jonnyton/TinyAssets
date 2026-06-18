@@ -8,10 +8,9 @@ main {
   min-height: 100vh;
 }
 
-/* Smooth scrolling for in-page anchors */
-html {
-  scroll-behavior: smooth;
-}
+/* NOTE: no global `scroll-behavior: smooth` — it breaks SvelteKit's instant
+   scroll reset on client-side navigation (you land mid-page on the new
+   route). In-page anchor jumps that want smoothness do it in JS. */
 
 /* Better word-break for long URLs / addresses */
 .address {

@@ -2,7 +2,7 @@
   "name": "tinyassets-workflow-site",
   "version": "0.1.0",
   "private": true,
-  "description": "tinyassets.io \u2014 Workflow product landing site (Track B Phase 1)",
+  "description": "tinyassets.io — Workflow product landing site (Track B Phase 1)",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -20,6 +20,7 @@
     "@sveltejs/adapter-static": "^3.0.6",
     "@sveltejs/kit": "^2.8.0",
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@types/d3-force": "^3.0.10",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
@@ -33,6 +34,7 @@
     "vite": "^5.4.10"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4"
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "d3-force": "^3.0.0"
   }
 }

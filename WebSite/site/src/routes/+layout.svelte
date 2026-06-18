@@ -2,11 +2,11 @@
   import '../app.css';
   import TopNav from '$lib/components/TopNav.svelte';
   import Footer from '$lib/components/Footer.svelte';
+  import TinyBot from '$lib/components/TinyBot.svelte';
 
   let { children } = $props();
 
-  // Structured data (schema.org). Not required for AI search per Google's
-  // guidance, but recommended for rich results + general machine understanding.
+  // Structured data (schema.org) for machine understanding + AI search.
   const jsonLd = {
     '@context': 'https://schema.org',
     '@graph': [
@@ -23,9 +23,10 @@
         '@type': 'WebSite',
         '@id': 'https://tinyassets.io/#site',
         url: 'https://tinyassets.io/',
-        name: 'Workflow',
-        alternateName: 'Tiny',
-        description: 'A goal-agnostic engine you connect to your chatbot over MCP. Bind it to any domain — a novel, a paper, an invoice queue — and it runs the real work, then patches itself to run it better.',
+        name: 'Tiny',
+        alternateName: 'Workflow',
+        description:
+          'Tiny is the public face of Workflow — an open-source engine you connect to your chatbot over MCP. Name a goal and it runs real multi-step work, with evidence-gated outcomes and a loop that patches the engine itself.',
         publisher: { '@id': 'https://tinyassets.io/#org' }
       },
       {
@@ -35,24 +36,24 @@
         applicationCategory: 'DeveloperApplication',
         operatingSystem: 'Web, Windows, macOS, Linux',
         url: 'https://tinyassets.io/',
-        description: 'Connect your chatbot over MCP and give your platform a soul: its own memory, its own purpose, and a patch loop that keeps it aligned to you as it grows.',
+        description:
+          'Connect your chatbot over MCP at https://tinyassets.io/mcp. Design multi-step workflows toward real goals, run them on a persistent engine, and verify outcomes against evidence-gated ladders.',
         offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' }
       }
     ]
   };
-
 </script>
 
 <svelte:head>
-  <meta property="og:site_name" content="Workflow" />
+  <meta property="og:site_name" content="Tiny" />
   <meta property="og:type" content="website" />
-  <meta property="og:title" content="Tiny — a goal-agnostic engine that runs real work and patches itself" />
-  <meta property="og:description" content="Connect your chatbot over MCP and bind me to any domain — a novel, a paper, an invoice queue. I run the work, then patch myself to run it better. Give your platform a soul." />
+  <meta property="og:title" content="Tiny — a small living engine that turns chat into finished work" />
+  <meta property="og:description" content="Connect your chatbot to one URL. Name a goal. Tiny runs the real, multi-step work — and shows you live, verifiable evidence instead of marketing claims." />
   <meta property="og:image" content="https://tinyassets.io/og-image.png" />
   <meta property="og:url" content="https://tinyassets.io/" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Tiny — the goal-agnostic engine, speaking for itself" />
-  <meta name="twitter:description" content="Connect your chatbot, watch it run real work, and give your platform a soul." />
+  <meta name="twitter:title" content="Tiny — the engine that shows its work" />
+  <meta name="twitter:description" content="Live, verifiable state on every page: the same MCP endpoint you paste into your chatbot renders this site's numbers." />
   <meta name="twitter:image" content="https://tinyassets.io/og-image.png" />
   {@html `<script type="application/ld+json">${JSON.stringify(jsonLd)}<\/script>`}
 </svelte:head>
@@ -64,3 +65,5 @@
 </main>
 
 <Footer />
+
+<TinyBot />

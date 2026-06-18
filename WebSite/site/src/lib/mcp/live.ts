@@ -100,7 +100,7 @@ async function ensureInit(): Promise<void> {
   initialized = true;
 }
 
-async function callTool(name: string, args: Record<string, any>): Promise<any> {
+export async function callTool(name: string, args: Record<string, any>): Promise<any> {
   await ensureInit();
   const result = await rpc('tools/call', { name, arguments: args });
   // The server moved canonical tool output into `structuredContent` (MCP
@@ -1002,6 +1002,111 @@ export async function fetchPatchLoopFeed(limit = 12, source: PatchLoopFeedSource
   }
 
   return fetchMcpPatchLoopFeed(limit, warnings);
+}
+
+// ============ Vital signs (server vs loop, honestly distinguished) ============
+
+export type Vitals = {
+  reachable: boolean;
+  fetchedAt: string;
+  deployedAt?: string | null;
+  gitSha?: string | null;
+  queue?: { pending: number; running: number; succeeded: number; failed: number; depth: number } | null;
+  lastMovedAt?: string | null;
+  universeCount?: number;
+  goalCount?: number | null;
+  loopAwake?: boolean;
+  activeRun?: boolean;
+  lastSignalSource?: 'run' | 'universe-activity' | null;
+  error?: string;
+};
+
+const VITALS_SIGNAL_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * One read, three truths reconciled into one word.
+ *
+ * The SERVER being reachable (green) and the LOOP actually moving
+ * (awake/asleep) are different facts; the site never collapses them into one
+ * dot. But "moving" itself had two instruments that disagreed: universe
+ * `last_activity_at` (what this strip used) and extensions `list_runs` (what
+ * /loop used). They measured different things, so the home pulse could say
+ * "asleep" while /loop said "awake". We now read BOTH here and derive one
+ * honest answer: awake if a run is actually executing, or any signal moved
+ * within the last hour. lastMovedAt is the newest of the two signals.
+ */
+export async function fetchVitals(): Promise<Vitals> {
+  try {
+    const [status, universes, goalsList, runsList] = await Promise.all([
+      callTool('get_status', {}),
+      callTool('universe', { action: 'list' }),
+      callTool('goals', { action: 'list' }).catch(() => null),
+      callTool('extensions', { action: 'list_runs', limit: 8 }).catch(() => null)
+    ]);
+    const q = status?.supervisor_liveness?.queue_state ?? null;
+    const rel = status?.release_state ?? null;
+    const us = Array.isArray(universes?.universes) ? universes.universes : [];
+
+    // Signal 1: newest universe activity timestamp.
+    let universeMovedMs: number | null = null;
+    for (const u of us) {
+      const ms = timestampMs(u?.last_activity_at);
+      if (ms !== null && (universeMovedMs === null || ms > universeMovedMs)) universeMovedMs = ms;
+    }
+
+    // Signal 2: live branch runs. activeRun = any non-terminal run; newest
+    // run timestamp normalizes across epoch-seconds / epoch-ms / ISO.
+    const runs: LoopPatchRun[] = Array.isArray(runsList?.runs) ? runsList.runs.map(normalizeRun) : [];
+    const runIsActive = runs.some((run) => !isTerminalRunStatus(run.status));
+    let newestRunMs: number | null = null;
+    for (const run of runs) {
+      const ms = runTimestampMs(run);
+      if (ms !== null && (newestRunMs === null || ms > newestRunMs)) newestRunMs = ms;
+    }
+
+    const running = Number(q?.running ?? 0);
+
+    // Reconcile: the newest signal across both instruments, and which one it
+    // was, so the UI can say "a run is moving" vs "last signal <rel>".
+    let lastMovedMs: number | null = null;
+    let lastSignalSource: 'run' | 'universe-activity' | null = null;
+    if (newestRunMs !== null && (lastMovedMs === null || newestRunMs >= lastMovedMs)) {
+      lastMovedMs = newestRunMs;
+      lastSignalSource = 'run';
+    }
+    if (universeMovedMs !== null && (lastMovedMs === null || universeMovedMs > lastMovedMs)) {
+      lastMovedMs = universeMovedMs;
+      lastSignalSource = 'universe-activity';
+    }
+
+    const recentSignal =
+      lastMovedMs !== null && Date.now() - lastMovedMs < VITALS_SIGNAL_WINDOW_MS;
+    const loopAwake = runIsActive || running > 0 || recentSignal;
+
+    return {
+      reachable: true,
+      fetchedAt: new Date().toISOString(),
+      deployedAt: rel?.deployed_at ?? null,
+      gitSha: typeof rel?.git_sha === 'string' ? rel.git_sha.slice(0, 8) : null,
+      queue: q
+        ? {
+            pending: Number(q.pending ?? 0),
+            running,
+            succeeded: Number(q.succeeded ?? 0),
+            failed: Number(q.failed ?? 0),
+            depth: Number(q.depth ?? 0)
+          }
+        : null,
+      lastMovedAt: lastMovedMs !== null ? new Date(lastMovedMs).toISOString() : null,
+      universeCount: us.length,
+      goalCount: Array.isArray(goalsList?.goals) ? goalsList.goals.length : null,
+      loopAwake,
+      activeRun: runIsActive,
+      lastSignalSource
+    };
+  } catch (err: any) {
+    return { reachable: false, fetchedAt: new Date().toISOString(), error: err?.message ?? String(err) };
+  }
 }
 
 /** Shape the live raw response into the same structure /wiki + /graph use from the snapshot. */

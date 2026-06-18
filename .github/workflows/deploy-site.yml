@@ -12,14 +12,14 @@ on:
   workflow_dispatch:
     inputs:
       refresh_snapshot:
-        description: 'Refresh MCP snapshot before build (requires MCP_BEARER secret)'
+        description: 'Force re-bake the MCP snapshot before build (also runs automatically on the 6h cron)'
         required: false
         default: 'false'
         type: choice
         options: ['false', 'true']
   schedule:
-    # Every 6h. Re-deploys with whatever mcp-snapshot.json is currently committed.
-    # Auto MCP refresh requires MCP_BEARER repo secret + refresh_snapshot toggle (see snapshot job below).
+    # Every 6h: re-bake the MCP snapshot (reads are public, no secret needed),
+    # then redeploy — so /graph and /commons auto-refresh with zero intervention.
     - cron: '0 */6 * * *'
 
 permissions:
@@ -50,19 +50,16 @@ jobs:
       - name: Install
         run: npm ci
 
-      # Optional snapshot refresh — only runs when manually dispatched with the toggle.
-      # Requires MCP_BEARER secret if the MCP endpoint is auth-gated.
-      - name: Refresh MCP snapshot
-        # Runs on the 6h cron AND on manual dispatch so live commons counts stay
-        # fresh automatically (was: manual-only, which let the baked snapshot go
-        # stale). Fail-soft + continue-on-error: if MCP_BEARER is unset or the
-        # endpoint is unreachable, snapshot-mcp.mjs keeps the committed snapshot
-        # and the deploy proceeds. Set the MCP_BEARER secret (+ a read-capable
-        # Cloudflare Access service token) to make freshness fully automatic.
+      # Re-bake the snapshot on the 6h cron AND on manual dispatch with the toggle.
+      # CI always does a COMPLETE (full) bake — SNAPSHOT_FULL=1 — so the live snapshot
+      # is always complete and never accumulates incremental-merge drift. (~20-30 min,
+      # fine for CI; reads are public so it needs no secret.) Local `npm run snapshot`
+      # defaults to FAST incremental for dev iteration.
+      - name: Refresh MCP snapshot (full)
         if: github.event_name == 'schedule' || github.event.inputs.refresh_snapshot == 'true'
-        continue-on-error: true
         env:
           MCP_BEARER: ${{ secrets.MCP_BEARER }}
+          SNAPSHOT_FULL: '1'
         run: npm run snapshot
 
       - name: Build

@@ -1,136 +1,273 @@
-<!-- /alliance — async-first community channels. No phone, no fake form, no booked calls. -->
+<!--
+  /alliance — "Work with us": intake. "Field Notes" rebuild, 2026-06-09.
+
+  A calm routing page, not a dashboard. No stats hero, no live reads — intent
+  enters through the same public doors as every other kind of work, so this
+  page's whole job is to point at the four real doors and explain, honestly,
+  what happens after you knock.
+
+  Honesty rails honored: no baked number presented as live (this page reads
+  nothing live, by design); every clickable goes somewhere real — a route, a
+  GitHub surface, or a mailto to a real address from legal-info.json; first
+  use of terms of art gets <Term>; the canonical glossary lives at /commons.
+  Contacts are read from src/lib/content/legal-info.json, not hardcoded.
+-->
 <script lang="ts">
-  import LiveSourceBar from '$lib/components/LiveSourceBar.svelte';
-  import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
-  import Button from '$lib/components/Primitives/Button.svelte';
+  import Term from '$lib/components/Term.svelte';
   import legal from '$lib/content/legal-info.json';
-  import { compactNumber, createPulse } from '$lib/live/project';
 
-  const pulse = createPulse();
-  let name = $state('');
-  let email = $state('');
-  let mission = $state('');
+  const GENERAL = legal.contact.general;
+  const SECURITY = legal.contact.security;
+  const GH_REPO = 'https://github.com/Jonnyton/Workflow';
+  const GH_ISSUES = 'https://github.com/Jonnyton/Workflow/issues';
 
-  function handleSubmit(e: Event) {
-    e.preventDefault();
-    const subject = encodeURIComponent('Tiny Alliance — ' + (name || 'new member'));
-    const body = encodeURIComponent(
-      `Name: ${name}\nEmail: ${email}\n\nMission:\n${mission}\n\n— sent from tinyassets.io/alliance`
-    );
-    // Opens user's mail client — works in every browser, no backend, no broken promises.
-    window.location.href = `mailto:${legal.contact.general}?subject=${subject}&body=${body}`;
-  }
+  // Four real channels. Each card carries one real action — a route, a GitHub
+  // surface, or a mailto to a real address. No fake form, no booked call, no
+  // dead-end "watch this space" card.
+  type Channel = {
+    eyebrow: string;
+    title: string;
+    body: string;
+    href: string;
+    cta: string;
+    external?: boolean;
+    note?: string;
+  };
+  const CHANNELS: Channel[] = [
+    {
+      eyebrow: 'door one · use it',
+      title: 'Use it, and tell me what broke.',
+      body:
+        'The most useful thing you can send is friction. Connect your chatbot, run real work, and when something is rough or wrong, say "file a patch request" — your chatbot files it for you, into the public record.',
+      href: '/start',
+      cta: 'how to connect →'
+    },
+    {
+      eyebrow: 'door two · build with us',
+      title: 'Build with the community.',
+      body:
+        'Want to discuss a design, propose a feature, or contribute code? GitHub is the open forum today. Issues and discussion threads start there, in front of everyone.',
+      href: GH_ISSUES,
+      cta: 'open an issue ↗',
+      external: true,
+      note: 'The whole engine is public — clone it, read the loop, send a pull request.'
+    },
+    {
+      eyebrow: 'door three · talk business',
+      title: 'Partnership, press, or business.',
+      body:
+        'Anything that does not fit a public thread — a partnership, a press question, evaluator or host coordination — goes to the general contact in writing. Async, like everything else here.',
+      href: `mailto:${GENERAL}`,
+      cta: GENERAL
+    },
+    {
+      eyebrow: 'door four · report security',
+      title: 'Report a security issue.',
+      body:
+        'Found a vulnerability? Mail the security contact directly. Please do not file security issues in the public GitHub tracker — send them here first so they can be handled responsibly.',
+      href: `mailto:${SECURITY}`,
+      cta: SECURITY
+    }
+  ];
 </script>
 
 <svelte:head>
-  <title>Tiny Alliance — Workflow</title>
-  <meta name="description" content="Join the Tiny Alliance. Contributors, daemon hosts, evaluators, and anyone who wants real-world-effect work to actually ship." />
+  <title>Work with us — Tiny</title>
+  <meta
+    name="description"
+    content="Four real ways to bring intent to Tiny: use it and report friction, build with the community on GitHub, reach out about partnership or press, or report a security issue. Every door is public and async."
+  />
 </svelte:head>
 
-<section class="hero">
+<!-- 1 · Hero — Tiny's voice, no stats ──────────────────────────────────── -->
+<section class="cover" aria-labelledby="cover-title">
+  <div class="container ch__inner">
+    <p class="eyebrow">field notes · working with me</p>
+    <h1 id="cover-title" class="cover__title">Work with me.</h1>
+    <p class="voice cover__lede">
+      Intent enters through the same doors as everything else. There's no
+      special inbox, no sales funnel, no booked call — a partnership request and
+      a bug report walk in the same way the work does: in writing, in the open,
+      where the next person can see it. Pick the door that matches what you have
+      to say.
+    </p>
+    <p class="cover__naming">
+      A quick orientation: <strong>Tiny</strong> is the being you're writing to;
+      <strong>Workflow</strong> is the open-source engine he runs on. One body,
+      two names — the footer carries the longer version.
+    </p>
+  </div>
+</section>
+
+<!-- 2 · Four real channels ─────────────────────────────────────────────── -->
+<section class="ch ch--channels" aria-labelledby="channels-title">
   <div class="container">
-    <RitualLabel color="var(--ember-500)">· Tiny Alliance · community ·</RitualLabel>
-    <h1>Join the Tiny Alliance.</h1>
-    <p class="lead">The Alliance is the community of people who care about the Workflow protocol — contributors, daemon hosts, evaluators, holders, and anyone who wants real-world-effect work to actually ship. Share what you're passionate about. We'll find a place for you.</p>
-    <p class="lead lead--soft">We do this asynchronously. No calls — talk to us in writing or through your chatbot. We read everything.</p>
-    <LiveSourceBar label="Community intake" detail={`${compactNumber(pulse.mcp.wiki.bugs.length)} public bugs, ${compactNumber(pulse.mcp.goals.length)} goals, and ${compactNumber(pulse.branchCount)} branches can receive written work.`} tone="ember" />
-    <div class="entry-paths" aria-label="Alliance entry paths">
-      <a href="/connect">
-        <span>Chatbot path</span>
-        <strong>Connect your MCP</strong>
-        <p>Ask your chatbot to browse, file, or route work.</p>
-      </a>
-      <a href="https://github.com/Jonnyton/Workflow/issues/new" target="_blank" rel="noreferrer">
-        <span>Public path</span>
-        <strong>Start on GitHub</strong>
-        <p>Bring an idea, bug, RFC, or contribution thread.</p>
-      </a>
-      <a href="#alliance-form">
-        <span>Direct path</span>
-        <strong>Write the Alliance</strong>
-        <p>Use email for partnerships or private coordination.</p>
-      </a>
+    <p class="eyebrow">entry two · four doors</p>
+    <h2 id="channels-title">Four ways in. Every one of them real.</h2>
+    <ul class="channels">
+      {#each CHANNELS as c (c.title)}
+        <li class="channel">
+          <p class="channel__eyebrow eyebrow">{c.eyebrow}</p>
+          <h3 class="channel__title">{c.title}</h3>
+          <p class="channel__body">{c.body}</p>
+          {#if c.note}
+            <p class="channel__note">{c.note}</p>
+          {/if}
+          {#if c.external}
+            <a class="channel__cta" href={c.href} target="_blank" rel="noreferrer">{c.cta}</a>
+          {:else}
+            <a class="channel__cta" href={c.href}>{c.cta}</a>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  </div>
+</section>
+
+<!-- 3 · How intake is processed ────────────────────────────────────────── -->
+<section class="ch ch--how" aria-labelledby="how-title">
+  <div class="container ch__inner">
+    <p class="eyebrow">entry three · what happens after you knock</p>
+    <h2 id="how-title">Where what you send actually goes.</h2>
+    <p class="voice">
+      A filed item doesn't vanish into a queue you can't see. It lands in the
+      <Term def="The public record: goals, workflows, run evidence, and notes — readable by anyone, forkable by anyone. The canonical glossary lives at /commons.">public commons</Term>,
+      where my self-patching <Term def="The loop: friction becomes a patch request, runs through investigation and evidence gates, becomes a real GitHub pull request, ships only with a human key.">loop</Term>
+      can investigate it the same way it investigates everything else.
+      Nothing ships on a whim — a human still holds every merge key. You can
+      watch the whole trail, including the parts that didn't work.
+    </p>
+    <a class="btn btn--ghost" href="/loop">watch the loop →</a>
+
+    <div class="keeper">
+      <p class="keeper__eyebrow eyebrow">who runs this</p>
+      <p class="keeper__body">
+        Tiny's keeper is Jonathan
+        (<a href="https://github.com/Jonnyton" target="_blank" rel="noreferrer">@Jonnyton</a>),
+        a single operator; AI agents do much of the building by running through
+        the loop. The merge keys are human-held — no agent ships a change on its
+        own.
+      </p>
     </div>
   </div>
 </section>
 
-<section class="form-block">
-  <div class="container">
-    <form id="alliance-form" class="form" onsubmit={handleSubmit}>
-      <RitualLabel>Send a message</RitualLabel>
-      <label>Name <input type="text" name="name" required bind:value={name} /></label>
-      <label>Email <input type="email" name="email" required bind:value={email} /></label>
-      <label class="full">What community mission are you most passionate about?
-        <textarea name="mission" rows="6" required bind:value={mission} placeholder="A real-world goal you'd want a daemon to help pursue — your own, or someone else's."></textarea>
-      </label>
-      <Button variant="primary">Send via email →</Button>
-      <p class="meta">Opens your email client with the message pre-filled. Or write directly: <a href="mailto:{legal.contact.general}">{legal.contact.general}</a></p>
-    </form>
-
-    <aside class="channels">
-      <RitualLabel color="var(--violet-400)">Other ways to plug in</RitualLabel>
-      <h3>Async, written, public-by-default.</h3>
-      <p class="channels__lead">The project runs the way the protocol runs — asynchronously, in writing, in front of everyone. Pick the surface that matches what you have to say.</p>
-
-      <ul class="channels__list">
-        <li>
-          <span class="channel__name">Talk to the project itself</span>
-          <p class="channel__desc">Wire up the MCP connector and ask your chatbot. It can browse goals, file feature requests, and draft patches on your behalf.</p>
-          <a href="/connect" class="channel__cta">Connect a chatbot →</a>
-        </li>
-        <li>
-          <span class="channel__name">Discuss in the open</span>
-          <p class="channel__desc">GitHub Issues is the public forum today. Questions, RFCs, "I want to ship X" threads, and "what about Y" threads start there while Discussions stays unavailable.</p>
-          <a href="https://github.com/Jonnyton/Workflow/issues" target="_blank" rel="noreferrer" class="channel__cta">github.com/Jonnyton/Workflow/issues ↗</a>
-        </li>
-        <li>
-          <span class="channel__name">File a thread</span>
-          <p class="channel__desc">Found a bug, want a feature, or have a pattern to add to the canon? File it — your chatbot can do this for you, or you can open a GitHub issue directly.</p>
-          <a href="https://github.com/Jonnyton/Workflow/issues/new" target="_blank" rel="noreferrer" class="channel__cta">Open an issue ↗</a>
-        </li>
-        <li>
-          <span class="channel__name">Write us</span>
-          <p class="channel__desc">For anything that doesn't fit a public thread — partnerships, evaluator inquiries, host coordination.</p>
-          <a href="mailto:{legal.contact.general}" class="channel__cta">{legal.contact.general}</a>
-        </li>
-      </ul>
-
-      <p class="channels__footnote">No phone. No "book a call." Show your work in writing — the project will return the favor.</p>
-    </aside>
+<!-- 4 · Close → /commons ───────────────────────────────────────────────── -->
+<section class="ch ch--close" aria-labelledby="close-title">
+  <div class="container ch__inner">
+    <h2 id="close-title" class="sr-only">See the commons</h2>
+    <a class="close__cta" href="/commons">
+      <span class="close__k eyebrow">the public commons</span>
+      <strong>See where everything filed ends up.</strong>
+      <span class="close__sub">the public brain — goals, workflows, run evidence, and the glossary for every term on this page</span>
+    </a>
   </div>
 </section>
 
 <style>
-  .hero, .form-block { padding-block: 56px; border-top: 1px solid var(--border-1); }
-  .hero { padding-top: 80px; border-top: none; }
-  h1 { font-family: var(--font-display); font-size: clamp(48px, 8vw, 72px); font-weight: 400; letter-spacing: -0.035em; line-height: 0.95; margin: 14px 0 18px; }
-  h3 { font-family: var(--font-display); font-size: 20px; font-weight: 500; margin: 8px 0 10px; color: var(--fg-1); letter-spacing: -0.01em; }
-  .lead { font-size: 16px; color: var(--fg-2); line-height: 1.6; max-width: 64ch; margin: 0 0 14px; }
-  .lead--soft { font-size: 14px; color: var(--fg-3); font-style: italic; margin-top: 0; }
-  .entry-paths { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }
-  .entry-paths a { background: var(--bg-2); border: 1px solid var(--border-1); border-radius: 8px; color: inherit; display: grid; gap: 7px; min-width: 0; padding: 18px; text-decoration: none; transition: border-color var(--dur-base) var(--ease-summon), background var(--dur-base) var(--ease-summon), transform var(--dur-base) var(--ease-summon); }
-  .entry-paths a:hover { border-color: rgba(109, 211, 166, 0.42); background: rgba(109, 211, 166, 0.045); transform: translateY(-1px); }
-  .entry-paths span { color: var(--fg-3); font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
-  .entry-paths strong { color: var(--fg-1); font-family: var(--font-display); font-size: 24px; font-weight: 500; line-height: 1.08; }
-  .entry-paths p { color: var(--fg-2); font-size: 13.5px; line-height: 1.5; margin: 0; }
-  @media (max-width: 760px) { .entry-paths { grid-template-columns: 1fr; } }
-  .form-block .container { display: grid; grid-template-columns: 1.1fr 1fr; gap: 32px; align-items: start; }
-  @media (max-width: 800px) { .form-block .container { grid-template-columns: 1fr; } }
+  .container { max-width: 1160px; margin: 0 auto; padding-inline: clamp(18px, 4vw, 32px); }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
 
-  .form { box-sizing: border-box; min-width: 0; width: 100%; background: var(--bg-2); border: 1px solid var(--border-1); border-radius: 14px; padding: 24px 26px; display: flex; flex-direction: column; gap: 12px; }
-  .form label { display: flex; flex-direction: column; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.14em; }
-  .form input, .form textarea { background: var(--bg-inset); border: 1px solid var(--border-1); color: var(--fg-1); padding: 10px 12px; border-radius: 6px; font-family: var(--font-sans); font-size: 14px; text-transform: none; letter-spacing: 0; }
-  .form input:focus, .form textarea:focus { border-color: var(--ember-600); outline: none; box-shadow: var(--glow-ember); }
-  .meta { font-size: 12px; color: var(--fg-3); font-style: italic; margin: 4px 0 0; }
-  .meta a { color: var(--ember-600); text-decoration: none; }
+  .btn {
+    display: inline-block;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    padding: 11px 22px;
+    border-radius: var(--radius-pill);
+    text-decoration: none;
+    transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
+  }
+  .btn--ghost { border: 1px solid var(--border-2); color: var(--fg-1); background: transparent; }
+  .btn--ghost:hover { border-color: var(--ink-text-900); text-decoration: none; }
 
-  .channels { box-sizing: border-box; min-width: 0; width: 100%; background: var(--bg-2); border: 1px solid var(--border-1); border-radius: 14px; padding: 24px 26px; }
-  .channels__lead { font-size: 13.5px; color: var(--fg-2); line-height: 1.6; margin: 0 0 16px; }
-  .channels__list { list-style: none; padding: 0; margin: 0 0 16px; display: flex; flex-direction: column; gap: 14px; }
-  .channels__list li { padding: 14px 16px; background: var(--bg-inset); border-radius: 8px; border: 1px solid transparent; }
-  .channel__name { display: block; font-family: var(--font-display); font-size: 14px; font-weight: 600; color: var(--fg-1); letter-spacing: -0.005em; margin-bottom: 4px; }
-  .channel__desc { font-size: 13px; color: var(--fg-2); line-height: 1.55; margin: 0 0 8px; }
-  .channel__cta { display: inline-block; font-family: var(--font-mono); font-size: 11px; color: var(--ember-600); text-decoration: none; letter-spacing: 0.06em; }
-  .channel__cta:hover { text-decoration: underline; }
-  .channels__footnote { font-size: 12px; color: var(--fg-3); font-style: italic; margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--border-1); }
+  /* ── Cover ── */
+  .cover { padding: clamp(48px, 8vw, 96px) 0 clamp(36px, 5vw, 60px); border-bottom: 1px solid var(--border-1); }
+  .cover__title {
+    font-size: clamp(48px, 8vw, 96px);
+    font-weight: 400;
+    line-height: 0.98;
+    letter-spacing: -0.035em;
+    margin: 14px 0 18px;
+  }
+  .cover__lede { margin: 0 0 18px; }
+  .cover__naming { font-size: 13.5px; color: var(--fg-3); margin: 0; max-width: 64ch; }
+  .cover__naming strong { color: var(--fg-2); font-weight: 600; }
+
+  /* ── Shared section chrome ── */
+  .ch { padding: clamp(48px, 7vw, 84px) 0; border-bottom: 1px solid var(--border-1); }
+  .ch__inner { max-width: 760px; }
+  .ch h2 {
+    font-size: clamp(28px, 4.4vw, 46px);
+    font-weight: 500;
+    line-height: 1.06;
+    letter-spacing: -0.02em;
+    margin: 12px 0 22px;
+  }
+  .ch .eyebrow { display: block; }
+
+  /* ── Four channels ── */
+  .channels {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;
+    list-style: none; margin: 30px 0 0; padding: 0;
+  }
+  @media (max-width: 900px) { .channels { grid-template-columns: 1fr; } }
+  .channel {
+    display: grid; align-content: start; gap: 9px;
+    padding: 24px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-lg);
+    transition: border-color var(--dur-base) var(--ease-summon), box-shadow var(--dur-base) var(--ease-summon);
+  }
+  .channel:hover { border-color: var(--border-2); box-shadow: var(--shadow-sm); }
+  .channel__eyebrow { color: var(--ember-700); }
+  .channel__title {
+    font-family: var(--font-display); font-size: 23px; font-weight: 500;
+    letter-spacing: -0.015em; line-height: 1.12; margin: 0; color: var(--fg-1);
+  }
+  .channel__body { font-size: 14px; line-height: 1.6; color: var(--fg-2); margin: 0; }
+  .channel__note {
+    font-size: 12.5px; line-height: 1.55; color: var(--fg-3); font-style: italic;
+    margin: 0; max-width: none;
+  }
+  .channel__cta {
+    font-family: var(--font-sans); font-size: 13.5px; font-weight: 600;
+    color: var(--ember-700); width: fit-content; margin-top: 2px;
+    overflow-wrap: anywhere;
+  }
+
+  /* ── How intake is processed ── */
+  .ch--how .voice { margin: 0 0 20px; }
+
+  /* ── Who runs this ── */
+  .keeper {
+    margin-top: 28px;
+    padding: 18px 22px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-left: 2px solid var(--ember-700);
+    border-radius: var(--radius-md);
+  }
+  .keeper__eyebrow { display: block; color: var(--ember-700); margin: 0 0 6px; }
+  .keeper__body { font-size: 14px; line-height: 1.6; color: var(--fg-2); margin: 0; max-width: 64ch; }
+  .keeper__body a { color: var(--ember-700); font-weight: 600; }
+
+  /* ── Close ── */
+  .ch--close { border-bottom: none; padding-bottom: clamp(72px, 10vw, 120px); }
+  .close__cta {
+    display: grid; gap: 6px;
+    padding: 26px 28px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius-lg);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard);
+  }
+  .close__cta:hover { border-color: var(--ink-text-900); box-shadow: var(--shadow-md); text-decoration: none; }
+  .close__k { display: block; }
+  .close__cta strong { font-family: var(--font-display); font-size: clamp(22px, 3vw, 32px); font-weight: 500; letter-spacing: -0.015em; line-height: 1.12; color: var(--fg-1); }
+  .close__sub { font-size: 13.5px; color: var(--fg-2); }
 </style>

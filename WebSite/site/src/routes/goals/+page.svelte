@@ -1,1194 +1,594 @@
-<!-- /goals — canonical live goal board. -->
+<!--
+  /goals — the living board of what's being worked on. "Field Notes"
+  rebuild, 2026-06-09.
+
+  Crawl fixes applied: jargon wall removed (goal / workflow / ladder each
+  get a first-use <Term>; "commons records", "branch signals", "canon-gate",
+  "Goal lens" all dropped). No repo-internals readouts — the old
+  "GitHub source: local git checkout" leak is gone entirely. The board is
+  not empty without JS: it paints from the baked snapshot immediately,
+  visibly stamped with its fetched date, then upgrades to a live read on
+  mount. Every live value carries a read-stamp; baked is labelled baked.
+  Public-commons only: private / SUPERSEDED / RETRACTED / smoke filtered out.
+-->
 <script lang="ts">
-  import RitualLabel from '$lib/components/Primitives/RitualLabel.svelte';
-  import {
-    compactNumber,
-    initialMcpSnapshot,
-    initialRepoSnapshot,
-    refreshMcpSnapshot,
-    refreshRepoSnapshot,
-    relativeStamp,
-    shortHash,
-    type RepoBranch
-  } from '$lib/live/project';
-  import type { Snapshot } from '$lib/mcp/types';
+  import { onMount } from 'svelte';
+  import { callTool } from '$lib/mcp/live';
+  import bakedMcp from '$lib/content/mcp-snapshot.json';
+  import { fmtDate, fmtRel } from '$lib/fmt';
+  import Ladder from '$lib/components/Ladder.svelte';
+  import Term from '$lib/components/Term.svelte';
+  import Tick from '$lib/components/Tick.svelte';
 
-  type Goal = Snapshot['goals'][number];
-  type WikiKind = 'bug' | 'concept' | 'note' | 'plan' | 'draft';
-  type WikiEvidence = {
-    key: string;
-    nodeId: string;
-    kind: WikiKind;
-    title: string;
-    subtitle: string;
-    tags: string[];
-    score: number;
-    relation: string;
-    href: string;
-  };
-  type BranchEvidence = {
-    key: string;
+  // ── A board goal, normalized from either the baked snapshot or a live read.
+  type Rung = { key?: string; name: string; description?: string; lit?: boolean; evidence_url?: string };
+  type BoardGoal = {
+    id: string;
     name: string;
-    kind: string;
-    summary: string;
-    meta: string;
-    href: string;
-    external: boolean;
-    score: number;
+    description: string;
+    tags: string[];
+    visibility: string;
+    rungs: Rung[];
+    updatedMs: number | null;
   };
-  type FocusKind = 'goals' | 'goal' | 'commons' | 'branch';
 
-  const STOP_WORDS = new Set([
-    'and',
-    'the',
-    'that',
-    'this',
-    'with',
-    'from',
-    'into',
-    'through',
-    'under',
-    'public',
-    'workflow',
-    'mcp',
-    'chatbot',
-    'chatbots',
-    'goal',
-    'goals',
-    'bug',
-    'bugs',
-    'branch',
-    'branches',
-    'live',
-    'state',
-    'states',
-    'route',
-    'routes',
-    'user',
-    'users'
-  ]);
+  // Public-commons rail: nothing private, nothing retired, no smoke tests.
+  function isPublicGoal(name: string, visibility: string): boolean {
+    if ((visibility ?? 'public').toLowerCase() === 'private') return false;
+    return !/SUPERSEDED|RETRACTED|smoke/i.test(name ?? '');
+  }
 
-  let mcp = $state(initialMcpSnapshot);
-  let repo = $state(initialRepoSnapshot);
-  let selectedGoalId = $state(initialMcpSnapshot.goals[0]?.id ?? '');
-  let selectedEvidenceKey = $state('');
-  let selectedBranchKey = $state('');
-  let focusKind = $state<FocusKind>('goals');
-  let activeTag = $state('all');
-  let query = $state('');
-  let mcpLoading = $state(false);
-  let githubLoading = $state(false);
-  let mcpError = $state('');
-  let githubError = $state('');
-  let copiedPrompt = $state(false);
+  function toTags(raw: unknown): string[] {
+    if (Array.isArray(raw)) return raw.map((t) => String(t).trim()).filter(Boolean);
+    if (typeof raw === 'string') return raw.split(',').map((t) => t.trim()).filter(Boolean);
+    return [];
+  }
 
-  const goals = $derived(mcp.goals ?? []);
-  const selectedGoal = $derived(goals.find((goal) => goal.id === selectedGoalId) ?? goals[0] ?? null);
-  const repoUrl = $derived(repo.repo.remote_url?.replace(/\.git$/, '') || 'https://github.com/Jonnyton/Workflow');
-  const allTags = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const goal of goals) {
-      for (const tag of goal.tags ?? []) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  // Live goals carry a gate_ladder of {name, rung_key, description}. No rung
+  // arrives with evidence attached today, so every rung renders unlit — that
+  // is the honest state, and the section copy owns it.
+  function toRungs(raw: unknown): Rung[] {
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((r: any) => ({
+        key: r?.rung_key ?? r?.key ?? r?.name,
+        name: String(r?.name ?? r?.rung_key ?? '').trim(),
+        description: r?.description ? String(r.description) : undefined,
+        // A rung only lights with a real evidence URL; absent one, unlit.
+        lit: Boolean(r?.lit && r?.evidence_url),
+        evidence_url: r?.evidence_url ?? undefined
+      }))
+      .filter((r) => r.name);
+  }
+
+  // Live timestamps are Unix epoch SECONDS (floats); baked goals carry none.
+  function toMs(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value * 1000;
+    if (typeof value === 'string') {
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) return n * 1000;
+      const p = Date.parse(value);
+      if (!Number.isNaN(p)) return p;
     }
-    return [...counts.entries()]
-      .toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 14);
-  });
-  const filteredGoals = $derived.by(() => {
-    const needle = query.trim().toLowerCase();
-    return goals.filter((goal) => {
-      const tagMatch = activeTag === 'all' || goal.tags?.includes(activeTag);
-      const queryMatch =
-        !needle ||
-        [goal.name, goal.summary, goal.id, ...(goal.tags ?? [])].join(' ').toLowerCase().includes(needle);
-      return tagMatch && queryMatch;
-    });
-  });
-  const wikiEvidence = $derived.by(() => (selectedGoal ? relatedWikiEvidence(selectedGoal, mcp) : []));
-  const branchEvidence = $derived.by(() => (selectedGoal ? relatedBranchEvidence(selectedGoal, repo) : []));
-  const selectedEvidence = $derived.by(
-    () => wikiEvidence.find((item) => item.key === selectedEvidenceKey) ?? wikiEvidence[0] ?? null
-  );
-  const selectedBranch = $derived.by(
-    () => branchEvidence.find((branch) => branch.key === selectedBranchKey) ?? branchEvidence[0] ?? null
-  );
-  const explicitGoalEdges = $derived.by(() => {
-    if (!selectedGoal) return [];
-    const goalNode = `goal:${selectedGoal.id}`;
-    return (mcp.edges ?? []).filter((edge) => edge.from === goalNode || edge.to === goalNode);
-  });
+    return null;
+  }
+
+  function normalizeBaked(raw: any): BoardGoal[] {
+    return (raw?.goals ?? [])
+      .filter((g: any) => isPublicGoal(g.name, g.visibility))
+      .map((g: any) => ({
+        id: String(g.id ?? g.goal_id ?? ''),
+        name: String(g.name ?? ''),
+        // Baked snapshot calls the body "summary"; live calls it "description".
+        description: String(g.summary ?? g.description ?? ''),
+        tags: toTags(g.tags),
+        visibility: String(g.visibility ?? 'public'),
+        rungs: toRungs(g.gate_ladder),
+        updatedMs: toMs(g.updated_at ?? g.created_at)
+      }));
+  }
+
+  function normalizeLive(raw: any): BoardGoal[] {
+    return (raw?.goals ?? [])
+      .filter((g: any) => isPublicGoal(g.name, g.visibility))
+      .map((g: any) => ({
+        id: String(g.goal_id ?? g.id ?? ''),
+        name: String(g.name ?? ''),
+        description: String(g.description ?? g.summary ?? ''),
+        tags: toTags(g.tags),
+        visibility: String(g.visibility ?? 'public'),
+        rungs: toRungs(g.gate_ladder),
+        updatedMs: toMs(g.updated_at ?? g.created_at)
+      }))
+      // Newest-updated first; goals with no timestamp sink to the bottom.
+      .sort((a: BoardGoal, b: BoardGoal) => (b.updatedMs ?? 0) - (a.updatedMs ?? 0));
+  }
+
+  // First paint: baked, stamped with the snapshot's own fetched date. The
+  // page is never blank-without-JS — these render server-side. The stamp goes
+  // through $lib/fmt so it reads in the visitor's own local time.
+  const bakedStampDate = fmtDate((bakedMcp as any).fetched_at);
+  let goals = $state<BoardGoal[]>(normalizeBaked(bakedMcp));
+
+  // 'baked' until a live read lands; then 'live' with a read-stamp.
+  let phase = $state<'baked' | 'reading' | 'live' | 'error'>('baked');
+  let readAt = $state<string | null>(null);
+  let errMsg = $state<string | null>(null);
 
   async function refreshMcp() {
-    mcpLoading = true;
-    mcpError = '';
+    phase = 'reading';
+    errMsg = null;
     try {
-      const next = await refreshMcpSnapshot(mcp);
-      mcp = next;
-      if (!next.goals.some((goal) => goal.id === selectedGoalId)) {
-        selectedGoalId = next.goals[0]?.id ?? '';
-        selectedEvidenceKey = '';
-        selectedBranchKey = '';
-        focusKind = 'goals';
-      }
-    } catch (error) {
-      mcpError = error instanceof Error ? error.message : String(error);
-    } finally {
-      mcpLoading = false;
+      const res = await callTool('goals', { action: 'list' });
+      const next = normalizeLive(res);
+      goals = next;
+      readAt = new Date().toISOString();
+      phase = 'live';
+    } catch (e: any) {
+      errMsg = e?.message ?? String(e);
+      phase = 'error';
     }
   }
 
-  async function refreshGithub() {
-    githubLoading = true;
-    githubError = '';
+  onMount(() => {
+    void refreshMcp();
+  });
+
+  // ── Curation: keep the board honest without lying. Obvious internal test
+  // debris (smoke/probe/post-redaction fixtures) is split into a labelled,
+  // collapsed section rather than scrubbed silently — visitors can still see
+  // it exists. Everything else is a real public goal.
+  const TEST_DEBRIS = /smoke|probe|post-redaction/i;
+  function isTestDebris(g: BoardGoal): boolean {
+    return TEST_DEBRIS.test(g.name);
+  }
+  const realGoals = $derived(goals.filter((g) => !isTestDebris(g)));
+  const debrisGoals = $derived(goals.filter(isTestDebris));
+
+  // ── Domain filter. Each chip maps to a set of tag substrings; a goal matches
+  // a domain if any of its tags contains any of the domain's terms. "All" is
+  // the unfiltered view. Matching is client-side over the already-public set.
+  type Domain = 'all' | 'research' | 'commerce' | 'games' | 'writing' | 'meta';
+  const DOMAINS: { id: Domain; label: string; terms: string[] }[] = [
+    { id: 'all', label: 'All', terms: [] },
+    { id: 'research', label: 'research', terms: ['research', 'science', 'simulation', 'evidence', 'paper', 'archaeolog', 'biolog', 'physics', 'study'] },
+    { id: 'commerce', label: 'commerce', terms: ['commerce', 'shop', 'retail', 'market', 'business', 'invoice', 'order', 'product', 'sales'] },
+    { id: 'games', label: 'games & retro', terms: ['game', 'retro', 'arcade', 'rpg', 'classic-game', 'unreal', 'gameplay', 'level'] },
+    { id: 'writing', label: 'writing', terms: ['writing', 'fiction', 'novel', 'story', 'screenplay', 'narrative', 'manuscript', 'prose', 'fantasy'] },
+    { id: 'meta', label: 'meta/platform', terms: ['platform', 'workflow-substrate', 'primitive', 'meta', 'substrate', 'reusable-branch', 'convention', 'self'] }
+  ];
+  let activeDomain = $state<Domain>('all');
+  function matchesDomain(g: BoardGoal, domain: Domain): boolean {
+    if (domain === 'all') return true;
+    const terms = DOMAINS.find((d) => d.id === domain)?.terms ?? [];
+    if (!terms.length) return true;
+    const hay = g.tags.join(' ').toLowerCase();
+    return terms.some((t) => hay.includes(t));
+  }
+  const visibleGoals = $derived(realGoals.filter((g) => matchesDomain(g, activeDomain)));
+
+  // The neutral prompt a visitor pastes into their own chatbot to add a goal.
+  const ADD_PROMPT = "Propose a goal called <name> about <outcome>.";
+  let copied = $state(false);
+  let copyTimer: number | null = null;
+  async function copyAddPrompt() {
     try {
-      repo = await refreshRepoSnapshot(repo);
-    } catch (error) {
-      githubError = error instanceof Error ? error.message : String(error);
-    } finally {
-      githubLoading = false;
-    }
+      await navigator.clipboard.writeText(ADD_PROMPT);
+      copied = true;
+      if (copyTimer) clearTimeout(copyTimer);
+      copyTimer = window.setTimeout(() => (copied = false), 1800);
+    } catch { /* clipboard unavailable; the text is visible anyway */ }
   }
 
-  function selectGoal(goalId: string) {
-    selectedGoalId = goalId;
-    selectedEvidenceKey = '';
-    selectedBranchKey = '';
-    focusKind = 'goal';
-  }
-
-  function selectEvidence(key: string) {
-    selectedEvidenceKey = key;
-    focusKind = 'commons';
-  }
-
-  function selectBranch(key: string) {
-    selectedBranchKey = key;
-    focusKind = 'branch';
-  }
-
-  function returnToEvidence() {
-    selectedEvidenceKey = '';
-    selectedBranchKey = '';
-    focusKind = 'goal';
-  }
-
-  function returnToGoals() {
-    selectedEvidenceKey = '';
-    selectedBranchKey = '';
-    focusKind = 'goals';
-  }
-
-  function toggleTag(tag: string) {
-    activeTag = activeTag === tag ? 'all' : tag;
-  }
-
-  async function copyGoalPrompt() {
-    if (!selectedGoal) return;
-    try {
-      await navigator.clipboard.writeText(promptFor(selectedGoal));
-      copiedPrompt = true;
-      window.setTimeout(() => (copiedPrompt = false), 1400);
-    } catch {
-      copiedPrompt = false;
-    }
-  }
-
-  function promptFor(goal: Goal): string {
-    return `Using Workflow, browse the live goal "${goal.name}" (${goal.id}), show related commons context and the safest next action I can take through MCP.`;
-  }
-
-  function slugId(path: string): string {
-    return path.split('/').pop()?.replace(/\.md$/, '') ?? path;
-  }
-
-  function uniq(values: string[]): string[] {
-    return [...new Set(values.filter(Boolean))];
-  }
-
-  function words(value: string | undefined): string[] {
-    return uniq(
-      (value ?? '')
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter((word) => word.length > 2 && !STOP_WORDS.has(word))
-    );
-  }
-
-  function goalNeedles(goal: Goal): string[] {
-    const tagParts = (goal.tags ?? []).flatMap((tag) => [tag.toLowerCase(), ...words(tag)]);
-    const summaryTerms = words(goal.summary).filter((word) => word.length > 6).slice(0, 10);
-    return uniq([...tagParts, ...words(goal.name), ...summaryTerms]);
-  }
-
-  function scoreAgainst(needles: string[], values: Array<string | undefined>): number {
-    const haystack = values.filter(Boolean).join(' ').toLowerCase();
-    return needles.reduce((score, needle) => {
-      if (!needle || !haystack.includes(needle)) return score;
-      return score + (needle.includes('-') ? 4 : 1);
-    }, 0);
-  }
-
-  function tagLine(tags: string[] | undefined): string {
-    const clean = (tags ?? []).filter(Boolean);
-    return clean.length ? clean.slice(0, 8).join(', ') : 'none in current snapshot';
-  }
-
-  function branchSource(branch: BranchEvidence): string {
-    return branch.external ? 'GitHub branch' : 'Workflow branch definition';
-  }
-
-  function wikiItems(snapshot: Snapshot): Omit<WikiEvidence, 'score' | 'relation'>[] {
-    const tags = snapshot.tags ?? {};
-    const items: Omit<WikiEvidence, 'score' | 'relation'>[] = [];
-    for (const bug of snapshot.wiki?.bugs ?? []) {
-      const nodeId = `bug:${bug.id}`;
-      items.push({
-        key: nodeId,
-        nodeId,
-        kind: 'bug',
-        title: `${bug.id} — ${bug.title}`,
-        subtitle: bug.slug ?? bug.id,
-        tags: tags[nodeId] ?? ['bug'],
-        href: '/wiki'
-      });
-    }
-    for (const plan of snapshot.wiki?.plans ?? []) {
-      const nodeId = `plan:${slugId(plan.slug)}`;
-      items.push({
-        key: nodeId,
-        nodeId,
-        kind: 'plan',
-        title: plan.title,
-        subtitle: plan.slug,
-        tags: tags[nodeId] ?? ['plan'],
-        href: '/wiki'
-      });
-    }
-    for (const concept of snapshot.wiki?.concepts ?? []) {
-      const nodeId = `concept:${slugId(concept.slug)}`;
-      items.push({
-        key: nodeId,
-        nodeId,
-        kind: 'concept',
-        title: concept.title,
-        subtitle: concept.slug,
-        tags: tags[nodeId] ?? ['concept'],
-        href: '/wiki'
-      });
-    }
-    for (const note of snapshot.wiki?.notes ?? []) {
-      const nodeId = `note:${slugId(note.slug)}`;
-      items.push({
-        key: nodeId,
-        nodeId,
-        kind: 'note',
-        title: note.title,
-        subtitle: note.slug,
-        tags: tags[nodeId] ?? ['note'],
-        href: '/wiki'
-      });
-    }
-    for (const draft of snapshot.wiki?.drafts ?? []) {
-      const nodeId = `draft:${draft.slug}`;
-      items.push({
-        key: nodeId,
-        nodeId,
-        kind: 'draft',
-        title: draft.title,
-        subtitle: draft.slug,
-        tags: tags[nodeId] ?? ['draft'],
-        href: '/wiki'
-      });
-    }
-    return items;
-  }
-
-  function relatedWikiEvidence(goal: Goal, snapshot: Snapshot): WikiEvidence[] {
-    const goalNode = `goal:${goal.id}`;
-    const edgeMap = new Set<string>();
-    for (const edge of snapshot.edges ?? []) {
-      if (edge.from === goalNode) edgeMap.add(edge.to);
-      if (edge.to === goalNode) edgeMap.add(edge.from);
-    }
-    const needles = goalNeedles(goal);
-    return wikiItems(snapshot)
-      .map((item) => {
-        const explicit = edgeMap.has(item.nodeId);
-        const score =
-          scoreAgainst(needles, [item.title, item.subtitle, ...item.tags]) +
-          (explicit ? 20 : 0) +
-          (item.kind === 'bug' && needles.some((needle) => ['patch', 'patch-loop'].includes(needle)) ? 3 : 0);
-        return {
-          ...item,
-          score,
-          relation: explicit ? 'explicit MCP edge' : 'matched by live tags/title'
-        };
-      })
-      .filter((item) => item.score >= 2)
-      .toSorted((a, b) => b.score - a.score || a.title.localeCompare(b.title))
-      .slice(0, 6);
-  }
-
-  function relatedBranchEvidence(goal: Goal, snapshot: typeof initialRepoSnapshot): BranchEvidence[] {
-    const needles = goalNeedles(goal);
-    const workflowBranches: BranchEvidence[] = (snapshot.workflow_branches ?? []).map((branch: Record<string, any>) => {
-      const score = scoreAgainst(needles, [branch.name, branch.summary, branch.area, branch.state]);
-      return {
-        key: String(branch.id ?? branch.name),
-        name: String(branch.name ?? branch.id),
-        kind: String(branch.area ?? 'workflow branch'),
-        summary: String(branch.summary ?? 'Workflow branch from the repo snapshot.'),
-        meta: String(branch.state ?? 'snapshot'),
-        href: '/graph',
-        external: false,
-        score
-      };
-    });
-    const gitBranches: BranchEvidence[] = (snapshot.branches ?? []).map((branch: RepoBranch) => {
-      const score = scoreAgainst(needles, [branch.name, branch.subject, branch.kind]);
-      return {
-        key: branch.id,
-        name: branch.name,
-        kind: branch.kind,
-        summary: branch.subject ?? 'GitHub branch from the repo snapshot.',
-        meta: `${shortHash(branch.commit)}${branch.date ? ` · ${relativeStamp(branch.date)}` : ''}`,
-        href: `${repoUrl}/tree/${encodeURIComponent(branch.name)}`,
-        external: true,
-        score
-      };
-    });
-    return [...workflowBranches, ...gitBranches]
-      .filter((branch) => branch.score >= 2)
-      .toSorted((a, b) => b.score - a.score || a.name.localeCompare(b.name))
-      .slice(0, 5);
-  }
+  const litCount = $derived(visibleGoals.reduce((n, g) => n + g.rungs.filter((r) => r.lit).length, 0));
+  const ladderGoals = $derived(visibleGoals.filter((g) => g.rungs.length > 0).length);
 </script>
 
 <svelte:head>
-  <title>Goals — Workflow</title>
+  <title>Goals — the board of what Tiny is working on</title>
   <meta
     name="description"
-    content="Browse live Workflow goals, related MCP commons records, and branch signals from the same data a chatbot can read."
+    content="The living board of public goals on Tiny. A goal is an outcome; workflows compete to serve it; evidence-gated ladders make the outcome checkable. Read live from the same MCP endpoint your chatbot uses."
   />
   <link rel="canonical" href="https://tinyassets.io/goals" />
 </svelte:head>
 
-<section class="goals">
-  <div class="wrap">
-    <header class="section-head">
+<!-- 1 · Hero — Tiny's voice ─────────────────────────────────────────────── -->
+<section class="cover" aria-labelledby="cover-title">
+  <div class="container">
+    <p class="eyebrow">field notes · the board</p>
+    <h1 id="cover-title" class="cover__title">These are the goals people gave me.</h1>
+    <p class="voice cover__lede">
+      A <Term def="A goal is the outcome someone is after — 'publish the paper', 'run the shop', 'ship the game'. It's shared: many workflows can compete to serve the same one.">goal</Term>
+      is an outcome, not a method. Around each one,
+      <Term def="A workflow is a graph of steps with typed state and checks, designed in plain language through your chatbot. Several can compete to reach the same goal; the best-performing one becomes canonical.">workflows</Term>
+      compete to reach it — and a goal's
+      <Term def="A ladder is a sequence of real-world rungs toward the outcome ('preprint posted', 'peer-reviewed', 'first order fulfilled'). A rung only lights with an evidence URL attached, so the outcome stays checkable instead of merely claimed.">ladder</Term>
+      keeps the whole thing honest: each rung is a checkable event, and a rung
+      only lights once there's evidence behind it. The board below reads from
+      the same endpoint your chatbot would.
+    </p>
+  </div>
+</section>
+
+<!-- 2 · The board ───────────────────────────────────────────────────────── -->
+<section class="ch ch--board" aria-labelledby="board-title">
+  <div class="container">
+    <header class="board__head">
       <div>
-        <RitualLabel color="var(--signal-live)">· Goal lens · live MCP goals ·</RitualLabel>
-        <h1>Start from goals. Let branches compete underneath.</h1>
+        <p class="eyebrow">entry · the public board</p>
+        <h2 id="board-title">What's on me right now.</h2>
       </div>
-      <div class="intro">
-        <p>
-          Your chatbot can browse these goals directly through the MCP connector. Pick a goal to see the live commons records and branch signals currently attached to it.
-        </p>
-        <div class="refresh-box" aria-label="Live data controls">
-          <button type="button" onclick={refreshMcp} disabled={mcpLoading} aria-busy={mcpLoading}>
-            Refresh MCP
-          </button>
-          <button type="button" onclick={refreshGithub} disabled={githubLoading} aria-busy={githubLoading}>
-            Refresh GitHub
-          </button>
-          <span>MCP {relativeStamp(mcp.fetched_at)}</span>
-          <span>GitHub {relativeStamp(repo.fetched_at)}</span>
-        </div>
+      <div class="board__meta" aria-live="polite">
+        {#if phase === 'live'}
+          <span class="board__stamp ev"><span class="dot live" aria-hidden="true"></span>{realGoals.length} public goals · read live {fmtRel(readAt)}</span>
+        {:else if phase === 'reading'}
+          <span class="board__stamp ev"><span class="dot" aria-hidden="true"></span>reading the live board… (showing snapshot {bakedStampDate})</span>
+        {:else if phase === 'error'}
+          <span class="board__stamp ev"><span class="dot error" aria-hidden="true"></span>live read failed — showing snapshot {bakedStampDate}</span>
+        {:else}
+          <span class="board__stamp ev"><span class="dot" aria-hidden="true"></span>{realGoals.length} public goals · snapshot {bakedStampDate}</span>
+        {/if}
+        <button class="board__refresh" onclick={refreshMcp} disabled={phase === 'reading'}>
+          {phase === 'reading' ? 'reading…' : 'Refresh MCP'}
+        </button>
       </div>
     </header>
 
-    {#if mcpError || githubError}
-      <div class="errors" role="status">
-        {#if mcpError}<p>MCP refresh failed: <code>{mcpError}</code></p>{/if}
-        {#if githubError}<p>GitHub refresh failed: <code>{githubError}</code></p>{/if}
-      </div>
+    {#if phase === 'error' && errMsg}
+      <p class="board__err ev">The live read errored ({errMsg}). The cards below are the last good snapshot from {bakedStampDate}, not a live reading. Try Refresh MCP.</p>
     {/if}
 
-    <div class="source-strip" aria-label="Goal source">
-      <article>
-        <span>MCP source</span>
-        <strong>{mcp.source}</strong>
-        <small>{compactNumber(goals.length)} public goals · {relativeStamp(mcp.fetched_at)}</small>
-      </article>
-      <article>
-        <span>Selected goal</span>
-        <strong>{selectedGoal?.id ?? 'none'}</strong>
-        <small>{compactNumber(wikiEvidence.length)} commons records · {compactNumber(branchEvidence.length)} branch signals</small>
-      </article>
-      <article>
-        <span>GitHub source</span>
-        <strong>{repo.source}</strong>
-        <small>head {shortHash(repo.repo.head)} · {relativeStamp(repo.fetched_at)}</small>
-      </article>
+    <!-- Domain filter chips. Match on tags, client-side, over the public set. -->
+    <div class="board__filter" role="group" aria-label="Filter goals by domain">
+      {#each DOMAINS as d}
+        <button
+          type="button"
+          class="chip"
+          class:chip--on={activeDomain === d.id}
+          aria-pressed={activeDomain === d.id}
+          onclick={() => (activeDomain = d.id)}
+        >{d.label}</button>
+      {/each}
     </div>
 
-    <section class="toolbar" aria-label="Goal filters">
-      <label>
-        <span>Search goals</span>
-        <input bind:value={query} placeholder="patch, games, research..." />
-      </label>
-      <div class="tag-cloud" aria-label="Goal tag filters">
-        <button type="button" class:active={activeTag === 'all'} aria-pressed={activeTag === 'all'} onclick={() => (activeTag = 'all')}>
-          All
-        </button>
-        {#each allTags as [tag, count] (tag)}
-          <button type="button" class:active={activeTag === tag} aria-pressed={activeTag === tag} onclick={() => toggleTag(tag)}>
-            {tag}<small>{count}</small>
-          </button>
-        {/each}
-      </div>
-    </section>
-
-    {#if focusKind === 'goals'}
-      <div class="goal-board" aria-label="Live goals">
-        {#each filteredGoals as goal, index (goal.id)}
-          <button
-            type="button"
-            class="goal-card"
-            class:active={selectedGoal?.id === goal.id}
-            aria-pressed={selectedGoal?.id === goal.id}
-            onclick={() => selectGoal(goal.id)}
-          >
-            <span class="goal-card__rank">G{index + 1}</span>
-            <span class="goal-card__title">{goal.name}</span>
-            <span class="goal-card__summary">{goal.summary}</span>
-            <span class="goal-card__tags">
-              {#if goal.tags.length}
-                {#each goal.tags.slice(0, 4) as tag}
-                  <span>{tag}</span>
-                {/each}
-              {:else}
-                <span>untagged</span>
-              {/if}
-            </span>
-            <span class="goal-card__foot">
-              <span>{goal.visibility}</span>
-              <span>{goal.id}</span>
-            </span>
-          </button>
+    {#if visibleGoals.length === 0}
+      <p class="board__empty ev">
+        {#if realGoals.length === 0}
+          Quiet right now — no public goals visible at this read. The board retries on its own; you can also press Refresh MCP.
         {:else}
-          <div class="empty">
-            <strong>No matching live goals.</strong>
-            <p>Clear the search or tag filter to return to the current MCP goal set.</p>
-          </div>
-        {/each}
-      </div>
-    {:else if selectedGoal}
-      <section class="goal-detail" aria-labelledby="selected-goal-title">
-        <div class="goal-detail__nav">
-          <button type="button" class="back-button" onclick={returnToGoals}>Back to all goals</button>
-        </div>
-
-        <div class="detail-head">
-          <div>
-            <RitualLabel color="var(--ember-500)">· Selected goal · {selectedGoal.id} ·</RitualLabel>
-            <h2 id="selected-goal-title">{selectedGoal.name}</h2>
-            <p>{selectedGoal.summary}</p>
-          </div>
-          <div class="detail-actions">
-            <button type="button" onclick={copyGoalPrompt}>{copiedPrompt ? 'Copied prompt' : 'Copy prompt'}</button>
-            <a href="/connect">Use through MCP</a>
-            <a href="/graph">Open in graph</a>
-            <a href="/connect">Route into loop</a>
-          </div>
-        </div>
-
-        <div class="detail-stats" aria-label="Selected goal live evidence">
-          <article>
-            <span>Commons</span>
-            <strong>{compactNumber(wikiEvidence.length)} related</strong>
-            <small>from live tags, titles, and explicit edges</small>
-          </article>
-          <article>
-            <span>Branches</span>
-            <strong>{compactNumber(branchEvidence.length)} signals</strong>
-            <small>workflow branches and GitHub refs</small>
-          </article>
-          <article>
-            <span>Graph</span>
-            <strong>{compactNumber(explicitGoalEdges.length)} explicit edges</strong>
-            <small>open graph to inspect the whole project map</small>
-          </article>
-        </div>
-
-        {#if focusKind === 'goal'}
-          <div class="evidence-grid">
-            <section class="evidence-card" aria-labelledby="commons-title">
-              <div class="evidence-card__head">
-                <h3 id="commons-title">Related commons</h3>
-                <small>{wikiEvidence.length ? 'live match reasons' : 'empty state is explicit'}</small>
-              </div>
-              <div class="evidence-list">
-                {#each wikiEvidence as item (item.key)}
-                  <button
-                    type="button"
-                    class="evidence-item"
-                    aria-pressed={false}
-                    onclick={() => selectEvidence(item.key)}
-                  >
-                    <span>{item.kind}</span>
-                    <strong>{item.title}</strong>
-                    <small>{item.relation}</small>
-                  </button>
-                {:else}
-                  <p class="empty-copy">No related wiki records were found from current tags, titles, or explicit goal edges.</p>
-                {/each}
-              </div>
-            </section>
-
-            <section class="evidence-card" aria-labelledby="branches-title">
-              <div class="evidence-card__head">
-                <h3 id="branches-title">Branch signals</h3>
-                <small>{branchEvidence.length ? 'workflow + GitHub matches' : 'no branch match yet'}</small>
-              </div>
-              <div class="evidence-list">
-                {#each branchEvidence as branch (branch.key)}
-                  <button
-                    type="button"
-                    class="evidence-item"
-                    aria-pressed={false}
-                    onclick={() => selectBranch(branch.key)}
-                  >
-                    <span>{branch.kind}</span>
-                    <strong>{branch.name}</strong>
-                    <small>{branch.summary} · {branch.meta}</small>
-                  </button>
-                {:else}
-                  <p class="empty-copy">No repo or workflow branch currently matches this goal. That is a real gap, not a hidden leaderboard.</p>
-                {/each}
-              </div>
-            </section>
-          </div>
-        {:else}
-          <section class="click-detail click-detail--{focusKind}" aria-live="polite" aria-label="Clicked item detail">
-            <div class="click-detail__nav">
-              <button type="button" class="back-button" onclick={returnToEvidence}>Back to related items</button>
-            </div>
-
-            {#if focusKind === 'commons' && selectedEvidence}
-            <div>
-              <RitualLabel>· Evidence detail · {selectedEvidence.kind} ·</RitualLabel>
-              <h3>{selectedEvidence.title}</h3>
-              <p>{selectedEvidence.subtitle}</p>
-              <div class="detail-grid" aria-label="Selected commons fields">
-                <article>
-                  <span>Node ID</span>
-                  <strong>{selectedEvidence.nodeId}</strong>
-                </article>
-                <article>
-                  <span>Why shown</span>
-                  <strong>{selectedEvidence.relation}</strong>
-                </article>
-                <article>
-                  <span>Source</span>
-                  <strong>MCP wiki snapshot</strong>
-                </article>
-                <article>
-                  <span>Tags</span>
-                  <strong>{tagLine(selectedEvidence.tags)}</strong>
-                </article>
-              </div>
-              <div class="evidence-tags">
-                {#each selectedEvidence.tags.slice(0, 6) as tag}
-                  <span>{tag}</span>
-                {/each}
-              </div>
-            </div>
-            <div class="detail-side">
-              <a href={selectedEvidence.href}>Open live wiki</a>
-              <a href="/graph">Show relationship graph</a>
-            </div>
-          {:else if focusKind === 'branch' && selectedBranch}
-            <div>
-              <RitualLabel>· Branch detail · {selectedBranch.kind} ·</RitualLabel>
-              <h3>{selectedBranch.name}</h3>
-              <p>{selectedBranch.summary}</p>
-              <div class="detail-grid" aria-label="Selected branch fields">
-                <article>
-                  <span>Source</span>
-                  <strong>{branchSource(selectedBranch)}</strong>
-                </article>
-                <article>
-                  <span>State</span>
-                  <strong>{selectedBranch.meta}</strong>
-                </article>
-                <article>
-                  <span>Match</span>
-                  <strong>goal text and tag overlap</strong>
-                </article>
-                <article>
-                  <span>Route</span>
-                  <strong>{selectedBranch.external ? 'GitHub source' : 'project graph'}</strong>
-                </article>
-              </div>
-            </div>
-            <div class="detail-side">
-              <a href={selectedBranch.href} target={selectedBranch.external ? '_blank' : undefined} rel={selectedBranch.external ? 'noreferrer' : undefined}>
-                {selectedBranch.external ? 'Open branch' : 'Open in graph'}
-              </a>
-              <a href="/connect">Route into loop</a>
-            </div>
-          {:else}
-            <div>
-              <RitualLabel>· Click detail ·</RitualLabel>
-              <h3>No related item selected.</h3>
-              <p>Click a goal, commons record, or branch signal to inspect the live detail behind it.</p>
-            </div>
-            <div class="detail-side">
-              <a href="/wiki">Open live wiki</a>
-            </div>
-          {/if}
-          </section>
+          No public goals match <strong>{DOMAINS.find((d) => d.id === activeDomain)?.label}</strong> in this read. Try <button class="linkish" onclick={() => (activeDomain = 'all')}>All</button>.
         {/if}
-      </section>
+      </p>
+    {:else}
+      <ul class="board">
+        {#each visibleGoals as g (g.id || g.name)}
+          <li class="goal" class:goal--baked={phase !== 'live'}>
+            <div class="goal__top">
+              <h3 class="goal__name">
+                <a class="goal__link" href="/goals/{g.id}">{g.name}</a>
+              </h3>
+              {#if g.description}
+                <p class="goal__desc">{g.description}</p>
+              {/if}
+            </div>
+
+            {#if g.tags.length}
+              <ul class="goal__tags ev" aria-label="tags">
+                {#each g.tags.slice(0, 5) as tag}
+                  <li>{tag}</li>
+                {/each}
+                {#if g.tags.length > 5}
+                  <li class="goal__tags-more">+{g.tags.length - 5}</li>
+                {/if}
+              </ul>
+            {/if}
+
+            {#if g.rungs.length}
+              <div class="goal__ladder">
+                <p class="goal__ladder-label eyebrow">outcome ladder · {g.rungs.length} rungs</p>
+                <Ladder rungs={g.rungs} start="now" compact={true} />
+              </div>
+            {/if}
+
+            <footer class="goal__foot">
+              <Tick href="/goals/{g.id}" label={`goal ${g.id || 'unknown'}`} />
+            </footer>
+          </li>
+        {/each}
+      </ul>
+
+      <p class="board__foot ev">
+        {#if phase === 'live'}
+          {visibleGoals.length} public goal{visibleGoals.length === 1 ? '' : 's'} shown{activeDomain === 'all' ? '' : ` · ${DOMAINS.find((d) => d.id === activeDomain)?.label} filter`} ·
+          {ladderGoals} carry an outcome ladder · {litCount} rung{litCount === 1 ? '' : 's'} lit — the honest count · read {fmtRel(readAt)}
+        {:else}
+          showing the {bakedStampDate} snapshot · ladders and exact counts upgrade once the live read lands
+        {/if}
+      </p>
+      <p class="board__honest ev">
+        {visibleGoals.length} public goal{visibleGoals.length === 1 ? '' : 's'} shown · private goals exist but never render here — they live on a host's own machine and never publish to the public commons.
+      </p>
+    {/if}
+
+    {#if debrisGoals.length}
+      <details class="board__debris">
+        <summary>internal test goals ({debrisGoals.length})</summary>
+        <p class="board__debris-note ev">
+          These are smoke / probe / fixture goals left by automated tests, not real public work. They're kept visible for honesty, just folded away.
+        </p>
+        <ul class="board__debris-list">
+          {#each debrisGoals as g (g.id || g.name)}
+            <li>
+              <a href="/goals/{g.id}">{g.name}</a>
+              <Tick href="/goals/{g.id}" label={`goal ${g.id || 'unknown'}`} />
+            </li>
+          {/each}
+        </ul>
+      </details>
     {/if}
   </div>
 </section>
 
+<!-- 3 · Put a goal on me ─────────────────────────────────────────────────── -->
+<section class="ch ch--add" aria-labelledby="add-title">
+  <div class="container ch__inner">
+    <p class="eyebrow">entry · add to the board</p>
+    <h2 id="add-title">Put a goal on me.</h2>
+    <p class="add__lede">
+      You don't fill out a form. You tell your own chatbot, and it proposes
+      the goal through the connector. Two steps:
+    </p>
+    <ol class="add__steps">
+      <li>
+        <span class="add__n">1</span>
+        <div>
+          <strong>Connect your chatbot.</strong>
+          <p>Paste one URL into Claude, ChatGPT, or any MCP-capable assistant — no account, no install.</p>
+          <a class="add__cta" href="/start">how to connect →</a>
+        </div>
+      </li>
+      <li>
+        <span class="add__n">2</span>
+        <div>
+          <strong>Say what you want.</strong>
+          <p>With the connector enabled, send your chatbot a sentence like this — swap the bracketed bits for your own:</p>
+          <button type="button" class="add__prompt" onclick={copyAddPrompt} aria-label={`Copy prompt: ${ADD_PROMPT}`}>
+            <code>{ADD_PROMPT}</code>
+            <span class="add__copy">{copied ? 'copied ✓' : 'copy'}</span>
+          </button>
+          <p class="add__note">
+            Your chatbot proposes it; you and it design a workflow toward it
+            from there. The new goal shows up on this board on its next read.
+          </p>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- 4 · Close ───────────────────────────────────────────────────────────── -->
+<section class="ch ch--close" aria-labelledby="close-title">
+  <div class="container ch__inner">
+    <h2 id="close-title">Where this connects.</h2>
+    <nav class="close__cards">
+      <a class="close__card" href="/loop">
+        <span class="close__k eyebrow">the patch loop</span>
+        <strong>Watch a goal turn into shipped work →</strong>
+        <span class="close__sub">friction becomes a patch request, an investigation, a real pull request, a release.</span>
+      </a>
+      <a class="close__card" href="/commons">
+        <span class="close__k eyebrow">the public commons</span>
+        <strong>Read the brain behind the board →</strong>
+        <span class="close__sub">the glossary for every term here, plus the searchable record of goals, runs, and notes.</span>
+      </a>
+    </nav>
+  </div>
+</section>
+
 <style>
-  .goals {
-    padding-block: 72px 48px;
-  }
+  .container { max-width: 1160px; margin: 0 auto; padding-inline: clamp(18px, 4vw, 32px); }
 
-  .wrap {
-    color: var(--fg-2);
-    margin: 0 auto;
-    max-width: 1120px;
-    padding-inline: clamp(16px, 4vw, 32px);
-  }
-
-  .section-head {
-    align-items: end;
-    display: grid;
-    gap: 30px;
-    grid-template-columns: minmax(0, 1fr) minmax(280px, 0.56fr);
-    margin-bottom: 18px;
-  }
-
-  h1,
-  h2,
-  h3,
-  p {
-    margin: 0;
-  }
-
-  h1 {
-    color: var(--fg-1);
-    font-family: var(--font-display);
-    font-size: clamp(42px, 7vw, 68px);
+  /* ── Cover ── */
+  .cover { padding: clamp(48px, 8vw, 92px) 0 clamp(28px, 4vw, 44px); border-bottom: 1px solid var(--border-1); }
+  .cover__title {
+    font-size: clamp(40px, 7vw, 76px);
     font-weight: 400;
-    letter-spacing: 0;
-    line-height: 0.98;
-    margin-top: 12px;
-    text-wrap: balance;
+    line-height: 1.0;
+    letter-spacing: -0.03em;
+    margin: 14px 0 20px;
+    max-width: 18ch;
   }
+  .cover__lede { margin: 0; max-width: 64ch; }
 
-  .intro p {
-    font-size: 15px;
-    line-height: 1.7;
-    margin-bottom: 14px;
-  }
-
-  .refresh-box {
-    background: var(--bg-inset);
-    border: 1px solid var(--border-1);
-    border-radius: 8px;
-    display: grid;
-    gap: 8px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    padding: 12px;
-  }
-
-  .refresh-box button,
-  .detail-actions button,
-  .detail-actions a,
-  .tag-cloud button,
-  .click-detail a,
-  .back-button {
-    align-items: center;
-    border-radius: 6px;
-    display: inline-flex;
-    justify-content: center;
-    min-height: 36px;
-    text-decoration: none;
-  }
-
-  .refresh-box button,
-  .detail-actions button,
-  .detail-actions a,
-  .click-detail a,
-  .back-button {
-    background: rgba(109, 211, 166, 0.1);
-    border: 1px solid rgba(109, 211, 166, 0.28);
-    color: var(--fg-1);
-    cursor: pointer;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    padding: 8px 10px;
-    text-transform: uppercase;
-  }
-
-  .refresh-box button:hover,
-  .detail-actions button:hover,
-  .detail-actions a:hover,
-  .click-detail a:hover,
-  .back-button:hover {
-    background: rgba(109, 211, 166, 0.16);
-    border-color: rgba(109, 211, 166, 0.5);
-  }
-
-  .refresh-box button:disabled {
-    cursor: wait;
-    opacity: 0.65;
-  }
-
-  .refresh-box span {
-    color: var(--fg-3);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
-  .errors {
-    background: rgba(233, 93, 123, 0.1);
-    border: 1px solid rgba(233, 93, 123, 0.36);
-    border-radius: 8px;
-    margin-bottom: 16px;
-    padding: 12px 14px;
-  }
-
-  .errors p {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-  }
-
-  .source-strip {
-    display: grid;
-    gap: 10px;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    margin-bottom: 14px;
-  }
-
-  .source-strip article,
-  .detail-stats article {
-    background: var(--bg-inset);
-    border: 1px solid var(--border-1);
-    border-radius: 8px;
-    min-width: 0;
-    padding: 14px;
-  }
-
-  .source-strip span,
-  .detail-stats span,
-  .evidence-item span {
-    color: var(--fg-3);
-    display: block;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-
-  .source-strip strong,
-  .detail-stats strong {
-    color: var(--fg-1);
-    display: block;
-    font-family: var(--font-display);
-    font-size: 22px;
+  /* ── Shared section chrome ── */
+  .ch { padding: clamp(44px, 7vw, 80px) 0; border-bottom: 1px solid var(--border-1); }
+  .ch__inner { max-width: 760px; }
+  .ch h2 {
+    font-size: clamp(28px, 4.4vw, 46px);
     font-weight: 500;
-    line-height: 1.08;
-    margin-top: 8px;
-    overflow-wrap: anywhere;
+    line-height: 1.06;
+    letter-spacing: -0.02em;
+    margin: 12px 0 18px;
+  }
+  .ch .eyebrow { display: block; }
+
+  /* ── Board header ── */
+  .board__head {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 18px; flex-wrap: wrap; margin-bottom: 22px;
+  }
+  .board__head h2 { margin: 6px 0 0; }
+  .board__meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .board__stamp { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--fg-3); }
+  .board__refresh {
+    background: transparent; border: 1px solid var(--border-2); border-radius: var(--radius-pill);
+    color: var(--live-700); cursor: pointer;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 4px 12px;
+    transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+  }
+  .board__refresh:hover:not(:disabled) { border-color: var(--live-600); background: var(--live-100); }
+  .board__refresh:disabled { opacity: 0.6; cursor: default; }
+
+  .board__err {
+    margin: 0 0 18px; padding: 12px 14px;
+    background: var(--ember-100); border: 1px solid rgba(182, 39, 68, 0.32);
+    border-radius: var(--radius-md);
+    font-size: 12px; line-height: 1.55; color: var(--ember-900); overflow-wrap: anywhere;
+  }
+  .board__empty {
+    margin: 0; padding: 18px;
+    background: var(--bg-inset); border: 1px dashed var(--border-2); border-radius: var(--radius-md);
+    font-size: 13px; line-height: 1.6; color: var(--fg-2);
   }
 
-  .source-strip small,
-  .detail-stats small,
-  .evidence-item small,
-  .goal-card__foot {
-    color: var(--fg-3);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    line-height: 1.45;
-    overflow-wrap: anywhere;
+  /* ── Domain filter ── */
+  .board__filter { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+  .chip {
+    background: transparent; border: 1px solid var(--border-2); border-radius: var(--radius-pill);
+    color: var(--fg-3); cursor: pointer;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em;
+    padding: 5px 13px;
+    transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+  }
+  .chip:hover { border-color: var(--live-600); color: var(--live-700); }
+  .chip--on {
+    border-color: var(--ink-text-900); background: var(--ink-text-900); color: var(--paper-50);
+  }
+  .chip--on:hover { border-color: var(--ink-text-900); color: var(--paper-50); }
+
+  .linkish {
+    background: none; border: none; padding: 0; cursor: pointer;
+    color: var(--live-700); font: inherit; text-decoration: underline;
   }
 
-  .toolbar {
-    align-items: start;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid var(--border-1);
-    border-radius: 8px;
-    display: grid;
-    gap: 12px;
-    grid-template-columns: 260px minmax(0, 1fr);
-    margin-bottom: 12px;
-    padding: 14px;
+  /* ── Board grid ── */
+  .board {
+    list-style: none; margin: 0; padding: 0;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
   }
-
-  .toolbar label span {
-    color: var(--fg-3);
-    display: block;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    margin-bottom: 8px;
-    text-transform: uppercase;
-  }
-
-  .toolbar input {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--border-1);
-    border-radius: 6px;
-    color: var(--fg-1);
-    font: inherit;
-    min-height: 40px;
-    padding: 8px 10px;
-    width: 100%;
-  }
-
-  .tag-cloud,
-  .goal-card__tags,
-  .evidence-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 7px;
-  }
-
-  .tag-cloud button,
-  .goal-card__tags span,
-  .evidence-tags span {
-    background: transparent;
-    border: 1px solid var(--border-1);
-    border-radius: 5px;
-    color: var(--fg-2);
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    gap: 6px;
-    letter-spacing: 0.02em;
-    padding: 6px 8px;
-  }
-
-  .tag-cloud button {
-    cursor: pointer;
-  }
-
-  .tag-cloud button:hover,
-  .tag-cloud button.active {
-    background: rgba(246, 193, 119, 0.1);
-    border-color: rgba(246, 193, 119, 0.46);
-    color: var(--fg-1);
-  }
-
-  .tag-cloud small {
-    color: var(--fg-3);
-  }
-
-  .goal-board {
-    display: grid;
-    gap: 10px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .goal-card {
+  @media (max-width: 900px) { .board { grid-template-columns: 1fr; } }
+  .goal {
+    display: grid; align-content: start; gap: 14px;
+    padding: 22px;
     background: var(--bg-2);
     border: 1px solid var(--border-1);
-    border-radius: 8px;
-    color: inherit;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard), opacity var(--dur-base) var(--ease-standard);
+  }
+  .goal:hover { border-color: var(--border-2); box-shadow: var(--shadow-md); }
+  /* While still on baked data, dim very slightly so live feels like an upgrade. */
+  .goal--baked { opacity: 0.92; }
+
+  .goal__top { display: grid; gap: 8px; }
+  .goal__name {
+    font-family: var(--font-display);
+    font-size: 21px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.16;
+    margin: 0; color: var(--fg-1);
+  }
+  .goal__link {
+    color: inherit; text-decoration: none;
+    transition: color var(--dur-fast) var(--ease-standard);
+  }
+  .goal__link:hover { color: var(--live-700); text-decoration: underline; text-underline-offset: 3px; }
+  .goal__link:focus-visible { outline: 2px solid var(--live-600); outline-offset: 3px; border-radius: 2px; }
+  .goal__desc {
+    margin: 0; font-size: 14px; line-height: 1.55; color: var(--fg-2);
+    /* clamp to ~3 lines */
+    display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden; max-width: none;
+  }
+
+  .goal__tags {
+    list-style: none; margin: 0; padding: 0;
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .goal__tags li {
+    border: 1px solid var(--border-1); border-radius: var(--radius-sm);
+    color: var(--fg-3); font-size: 10.5px; letter-spacing: 0.01em;
+    padding: 3px 8px; background: var(--bg-1);
+  }
+  .goal__tags-more { color: var(--fg-4); border-style: dashed; }
+
+  .goal__ladder {
+    padding: 12px 0 2px;
+    border-top: 1px solid var(--border-1);
+  }
+  .goal__ladder-label { display: block; margin-bottom: 8px; }
+
+  .goal__foot { padding-top: 2px; }
+
+  .board__foot {
+    display: block; margin: 22px 0 0; font-size: 11.5px; color: var(--fg-3);
+    line-height: 1.55; max-width: none;
+  }
+  .board__honest {
+    display: block; margin: 6px 0 0; font-size: 11.5px; color: var(--fg-4);
+    line-height: 1.55; max-width: 78ch;
+  }
+
+  /* ── Internal test goals (curated, not scrubbed) ── */
+  .board__debris {
+    margin: 22px 0 0; padding: 14px 16px;
+    background: var(--bg-inset); border: 1px dashed var(--border-2); border-radius: var(--radius-md);
+  }
+  .board__debris summary {
+    cursor: pointer; font-family: var(--font-mono); font-size: 11px;
+    letter-spacing: 0.04em; color: var(--fg-3);
+  }
+  .board__debris summary:hover { color: var(--live-700); }
+  .board__debris-note { margin: 10px 0 8px; font-size: 12px; line-height: 1.55; color: var(--fg-3); max-width: 70ch; }
+  .board__debris-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .board__debris-list li {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    font-size: 13px;
+  }
+  .board__debris-list a { color: var(--fg-2); text-decoration: none; }
+  .board__debris-list a:hover { color: var(--live-700); text-decoration: underline; }
+
+  /* ── Add a goal ── */
+  .add__lede { font-size: 15px; line-height: 1.62; color: var(--fg-2); margin: 0 0 22px; max-width: 60ch; }
+  .add__steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 20px; }
+  .add__steps > li { display: grid; grid-template-columns: 30px 1fr; gap: 14px; align-items: start; }
+  .add__steps strong { display: block; font-family: var(--font-sans); font-size: 16px; font-weight: 600; color: var(--fg-1); margin-bottom: 4px; }
+  .add__steps p { font-size: 14px; line-height: 1.55; color: var(--fg-2); margin: 0 0 10px; max-width: 60ch; }
+  .add__n {
+    font-family: var(--font-mono); font-size: 13px; color: var(--ember-700); font-weight: 500;
+    width: 30px; height: 30px; border-radius: var(--radius-pill);
+    border: 1px solid var(--border-2);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .add__cta { font-family: var(--font-sans); font-size: 13.5px; font-weight: 600; color: var(--ember-700); width: fit-content; display: inline-block; }
+  .add__prompt {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+    width: 100%; text-align: left; margin: 2px 0 12px;
+    padding: 13px 15px;
+    background: var(--bg-inset); border: 1px solid var(--border-1); border-radius: var(--radius-md);
     cursor: pointer;
-    display: flex;
-    flex-direction: column;
-    min-height: 292px;
-    min-width: 0;
-    padding: 20px;
-    text-align: left;
-    transition:
-      background var(--dur-base) var(--ease-summon),
-      border-color var(--dur-base) var(--ease-summon),
-      transform var(--dur-base) var(--ease-summon);
+    transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
   }
+  .add__prompt:hover { border-color: var(--live-600); background: var(--live-100); }
+  .add__prompt code { background: none; border: none; padding: 0; color: var(--fg-1); font-size: 13px; line-height: 1.5; white-space: normal; }
+  .add__copy { flex: none; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--live-700); padding-top: 2px; }
+  .add__note { font-size: 12.5px; color: var(--fg-3); margin: 0; max-width: 60ch; }
 
-  .goal-card:hover,
-  .goal-card.active {
-    background: rgba(109, 211, 166, 0.055);
-    border-color: rgba(109, 211, 166, 0.5);
-    transform: translateY(-1px);
-  }
-
-  .goal-card__rank {
-    color: var(--ember-600);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.14em;
-    margin-bottom: 10px;
-    text-transform: uppercase;
-  }
-
-  .goal-card__title {
-    color: var(--fg-1);
-    display: block;
-    font-family: var(--font-display);
-    font-size: 24px;
-    font-weight: 500;
-    letter-spacing: 0;
-    line-height: 1.12;
-    margin-bottom: 10px;
-  }
-
-  .goal-card__summary {
-    color: var(--fg-2);
-    display: block;
-    font-size: 13.5px;
-    line-height: 1.6;
-    margin-bottom: 14px;
-  }
-
-  .goal-card__tags {
-    margin-top: auto;
-    padding-top: 4px;
-  }
-
-  .goal-card__foot {
-    display: flex;
-    gap: 10px;
-    justify-content: space-between;
-    margin-top: 14px;
-  }
-
-  .empty,
-  .empty-copy {
-    background: var(--bg-inset);
-    border: 1px dashed var(--border-2);
-    border-radius: 8px;
-    color: var(--fg-2);
-    font-size: 14px;
-    line-height: 1.6;
-    margin: 0;
-    padding: 16px;
-  }
-
-  .goal-detail {
-    margin-top: 0;
-    padding-top: 0;
-  }
-
-  .goal-detail__nav {
-    margin-bottom: 14px;
-  }
-
-  .detail-head {
-    align-items: start;
-    display: grid;
-    gap: 18px;
-    grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
-  }
-
-  .detail-head h2 {
-    color: var(--fg-1);
-    font-family: var(--font-display);
-    font-size: clamp(32px, 5vw, 54px);
-    font-weight: 400;
-    letter-spacing: 0;
-    line-height: 1;
-    margin-top: 10px;
-    text-wrap: balance;
-  }
-
-  .detail-head p {
-    font-size: 15px;
-    line-height: 1.7;
-    margin-top: 14px;
-    max-width: 760px;
-  }
-
-  .detail-actions {
-    display: grid;
-    gap: 8px;
-  }
-
-  .detail-stats {
-    display: grid;
-    gap: 10px;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    margin-top: 18px;
-  }
-
-  .evidence-grid {
-    display: grid;
-    gap: 12px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin-top: 14px;
-  }
-
-  .evidence-card {
+  /* ── Close ── */
+  .ch--close { border-bottom: none; padding-bottom: clamp(64px, 9vw, 110px); }
+  .close__cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-top: 22px; }
+  @media (max-width: 760px) { .close__cards { grid-template-columns: 1fr; } }
+  .close__card {
+    display: grid; gap: 6px;
+    padding: 24px 26px;
     background: var(--bg-2);
-    border: 1px solid var(--border-1);
-    border-radius: 8px;
-    min-width: 0;
-    padding: 16px;
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius-lg);
+    text-decoration: none; color: inherit;
+    transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard);
   }
-
-  .evidence-card__head {
-    align-items: baseline;
-    display: flex;
-    gap: 12px;
-    justify-content: space-between;
-    margin-bottom: 10px;
-  }
-
-  .evidence-card h3,
-  .click-detail h3 {
-    color: var(--fg-1);
-    font-family: var(--font-display);
-    font-size: 24px;
-    font-weight: 500;
-    letter-spacing: 0;
-    line-height: 1.12;
-  }
-
-  .evidence-card__head small {
-    color: var(--fg-3);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-align: right;
-  }
-
-  .evidence-list {
-    display: grid;
-    gap: 8px;
-    max-height: 410px;
-    overflow: auto;
-    padding-right: 3px;
-  }
-
-  .evidence-item {
-    background: var(--bg-inset);
-    border: 1px solid var(--border-1);
-    border-radius: 8px;
-    color: inherit;
-    cursor: pointer;
-    display: block;
-    font: inherit;
-    min-width: 0;
-    padding: 12px;
-    text-align: left;
-    text-decoration: none;
-    width: 100%;
-  }
-
-  .evidence-item:hover,
-  .evidence-item.active {
-    border-color: rgba(115, 167, 255, 0.5);
-  }
-
-  .evidence-item strong {
-    color: var(--fg-1);
-    display: block;
-    font-size: 13px;
-    line-height: 1.35;
-    margin: 6px 0;
-    overflow-wrap: anywhere;
-  }
-
-  .click-detail {
-    align-items: start;
-    background: var(--bg-inset);
-    border: 1px solid var(--border-1);
-    border-radius: 8px;
-    display: grid;
-    gap: 14px;
-    grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
-    margin-top: 14px;
-    padding: 16px;
-  }
-
-  .click-detail__nav {
-    grid-column: 1 / -1;
-  }
-
-  .back-button {
-    width: fit-content;
-  }
-
-  .click-detail p {
-    font-size: 13px;
-    line-height: 1.6;
-    margin-top: 8px;
-    overflow-wrap: anywhere;
-  }
-
-  .detail-grid {
-    display: grid;
-    gap: 8px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin-top: 14px;
-  }
-
-  .detail-grid article {
-    background: rgba(255, 255, 255, 0.035);
-    border: 1px solid var(--border-1);
-    border-radius: 6px;
-    min-width: 0;
-    padding: 10px;
-  }
-
-  .detail-grid span {
-    color: var(--fg-3);
-    display: block;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-
-  .detail-grid strong {
-    color: var(--fg-1);
-    display: block;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    line-height: 1.45;
-    margin-top: 6px;
-    overflow-wrap: anywhere;
-  }
-
-  .detail-side {
-    display: grid;
-    gap: 8px;
-  }
-
-  .evidence-tags {
-    margin-top: 12px;
-  }
-
-  @media (max-width: 900px) {
-    .section-head,
-    .toolbar,
-    .detail-head,
-    .evidence-grid,
-    .click-detail {
-      grid-template-columns: 1fr;
-    }
-
-    .source-strip,
-    .detail-stats {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-
-  @media (max-width: 700px) {
-    .goals {
-      padding-block: 44px 30px;
-    }
-
-    .source-strip,
-    .detail-stats,
-    .goal-board,
-    .refresh-box {
-      grid-template-columns: 1fr;
-    }
-
-    .goal-card {
-      min-height: 0;
-    }
-  }
+  .close__card:hover { border-color: var(--ink-text-900); box-shadow: var(--shadow-md); text-decoration: none; }
+  .close__k { display: block; }
+  .close__card strong { font-family: var(--font-display); font-size: clamp(20px, 2.6vw, 26px); font-weight: 500; letter-spacing: -0.015em; line-height: 1.14; color: var(--fg-1); }
+  .close__sub { font-size: 13.5px; color: var(--fg-2); }
 </style>

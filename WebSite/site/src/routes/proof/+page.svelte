@@ -1,13 +1,30 @@
-<!-- /proof — legacy URL. Content now at /fine-print. Redirect so old links don't 404. -->
-<script lang="ts">
-  import { onMount } from 'svelte';
-  onMount(() => { window.location.replace('/fine-print'); });
-</script>
+<!--
+  /proof — retired route, now /fine-print. Soft-landing alias.
+  The link is the primary affordance; the 2s meta refresh is a convenience.
+-->
 <svelte:head>
-  <title>The evidence moved — Workflow</title>
-  <meta http-equiv="refresh" content="0; url=/fine-print" />
-  <link rel="canonical" href="/fine-print" />
+  <title>Fine print — Tiny</title>
+  <link rel="canonical" href="https://tinyassets.io/fine-print" />
+  <meta http-equiv="refresh" content="2;url=/fine-print" />
+  <meta name="description" content="The evidence — deploy receipts, run records, and the legal links — now lives in the Fine print, Tiny's ops room." />
 </svelte:head>
-<section style="padding-top:120px;text-align:center;">
-  <p style="font-family:var(--font-mono);font-size:14px;color:var(--fg-3);">Moved to <a href="/fine-print" style="color:var(--ember-600);">/fine-print</a>…</p>
+
+<section class="moved">
+  <p class="eyebrow">this page moved</p>
+  <p class="moved__line">
+    The evidence now lives in the <em>Fine print</em> — deploy receipts, run
+    records, and the legal links, all in Tiny's ops room.
+  </p>
+  <a class="moved__cta" href="/fine-print">Open the Fine print →</a>
+  <p class="moved__sub ev">/proof → /fine-print · taking you there in a moment</p>
 </section>
+
+<style>
+  .moved { max-width: 540px; margin: 0 auto; display: grid; gap: 16px; padding: clamp(72px, 14vw, 140px) clamp(18px, 4vw, 32px); }
+  .eyebrow { display: block; }
+  .moved__line { font-family: var(--font-voice); font-size: clamp(20px, 3vw, 26px); line-height: 1.42; color: var(--fg-1); margin: 0; max-width: 32ch; }
+  .moved__line em { font-style: italic; color: var(--ember-700); }
+  .moved__cta { justify-self: start; margin-top: 6px; font-family: var(--font-sans); font-size: 14px; font-weight: 600; color: var(--fg-on-ember); background: var(--accent); padding: 11px 20px; border-radius: var(--radius-pill); text-decoration: none; transition: background var(--dur-fast) var(--ease-standard); }
+  .moved__cta:hover { background: var(--accent-hover); text-decoration: none; }
+  .moved__sub { color: var(--fg-3); margin: 4px 0 0; }
+</style>
