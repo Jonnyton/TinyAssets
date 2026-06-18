@@ -244,7 +244,7 @@ def _get_endpoint_hint(
     for key in (
         "OLLAMA_HOST", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY",
         "XAI_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
-        "WORKFLOW_ALLOW_API_KEY_PROVIDERS",
+        "WORKFLOW_ALLOW_API_KEY_PROVIDERS", "CODEX_HOME",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, val in env.items():
@@ -319,6 +319,23 @@ def test_llm_endpoint_bound_codex_subscription_auth(monkeypatch, tmp_path) -> No
         which_map={"codex": "/usr/local/bin/codex"},
         home=tmp_path,
     )
+    assert hint == "codex"
+
+
+def test_llm_endpoint_bound_codex_honors_codex_home(monkeypatch, tmp_path) -> None:
+    codex_home = tmp_path / "persistent-codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    empty_home = tmp_path / "empty-home"
+    empty_home.mkdir()
+
+    hint = _get_endpoint_hint(
+        monkeypatch,
+        env={"CODEX_HOME": str(codex_home)},
+        which_map={"codex": "/usr/local/bin/codex"},
+        home=empty_home,
+    )
+
     assert hint == "codex"
 
 

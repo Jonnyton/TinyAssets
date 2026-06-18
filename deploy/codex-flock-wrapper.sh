@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Codex CLI cross-container serialization wrapper.
 #
-# PR #965 binds /var/lib/workflow-codex -> /app/.codex into both the
+# deploy/compose.yml sets CODEX_HOME=/data/.codex in both the
 # workflow-daemon and workflow-worker containers so Codex's in-place
-# refresh chain survives container restarts. Codex's official CI/CD
+# refresh chain survives container restarts on the shared workflow-data
+# volume. Codex's official CI/CD
 # auth guide warns that one auth.json must NOT be shared across
 # concurrent runners — concurrent refresh attempts race the rotation
 # and trigger the exact `refresh_token_reused` class we are fixing
@@ -17,15 +18,15 @@
 # refresh + write happen inside one `codex exec` process, so the
 # serialization window matches the rotation window exactly.
 #
-# When /app/.codex is not present (local dev, Docker run without the
-# compose bind mount), the wrapper falls back to a per-process lock in
-# /tmp. Single-container correctness is not at risk because there's no
-# second container competing for the auth file.
+# When CODEX_HOME is not present (local dev, Docker run without the
+# compose env/volume), the wrapper falls back to HOME/.codex and then a
+# per-process lock in /tmp. Single-container correctness is not at risk
+# because there's no second container competing for the auth file.
 
 set -euo pipefail
 
 CODEX_BIN="/opt/codex-install/node_modules/.bin/codex"
-CODEX_LOCK_DIR="${HOME:-/app}/.codex"
+CODEX_LOCK_DIR="${CODEX_HOME:-${HOME:-/app}/.codex}"
 CODEX_LOCK_FALLBACK_DIR="/tmp"
 
 if [[ -d "${CODEX_LOCK_DIR}" ]]; then

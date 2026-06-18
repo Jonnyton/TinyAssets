@@ -43,11 +43,12 @@ services:
     ports:
       - "127.0.0.1:8001:8001"
     environment:
-      # Keep Codex CLI + get_status provider binding aligned with the
-      # persistent bind mount below. If HOME drifts, ~/.codex points away
-      # from /app/.codex and the mounted subscription auth becomes invisible.
       HOME: /app
       WORKFLOW_DATA_DIR: /data
+      # Persist Codex subscription auth on the shared workflow-data volume.
+      # daemon + worker intentionally share one auth.json lineage; do not
+      # split CODEX_HOME per service or duplicate the single-use refresh token.
+      CODEX_HOME: /data/.codex
       WORKFLOW_REPO_ROOT: /data/community-pool
       WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
       WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
@@ -58,20 +59,6 @@ services:
       - /etc/workflow/env
     volumes:
       - workflow-data:/data
-      # Persist codex OAuth state across container restarts. Codex CLI
-      # rotates single-use refresh tokens in-place; without persistence,
-      # every restart throws away the rotated token and the next refresh
-      # hits `refresh_token_reused`. Shared bind so `daemon` + `worker`
-      # see the same auth.json (the daemon's in-process executor pool
-      # calls `codex exec` synchronously for `run_branch` MCP calls; the
-      # worker's `fantasy_daemon` subprocess does the same for queued
-      # BranchTasks). Cross-container refresh races are serialized by
-      # /usr/local/bin/codex (-> deploy/codex-flock-wrapper.sh), which
-      # takes an exclusive flock on /app/.codex/.lock before every
-      # invocation. The persistent volume is auto-provisioned by the
-      # `Prepare codex auth persistent volume` step in
-      # .github/workflows/deploy-prod.yml — no host action required.
-      - /var/lib/workflow-codex:/app/.codex
     healthcheck:
       # Use the same canary shape as Layer-1 / tier-3 / docker-build
       # CI. Python already in the image.
@@ -164,9 +151,10 @@ services:
       - apparmor=unconfined
     command: ["python", "-m", "workflow.cloud_worker"]
     environment:
-      # Same HOME/auth alignment as `daemon`; worker also invokes codex exec.
       HOME: /app
       WORKFLOW_DATA_DIR: /data
+      # Same shared Codex auth home as `daemon`; worker also invokes codex exec.
+      CODEX_HOME: /data/.codex
       WORKFLOW_REPO_ROOT: /data/community-pool
       WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
       WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
@@ -179,13 +167,6 @@ services:
       - /etc/workflow/env
     volumes:
       - workflow-data:/data
-      # Same shared codex auth bind as `daemon`. The worker's
-      # `fantasy_daemon` subprocess invokes `codex exec` for queued
-      # BranchTask execution; refresh races against the daemon's
-      # in-process executor are serialized by the codex-flock-wrapper
-      # via /app/.codex/.lock. See the `daemon` service block above
-      # for the full rationale.
-      - /var/lib/workflow-codex:/app/.codex
     depends_on:
       daemon:
         condition: service_healthy

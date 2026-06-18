@@ -60,13 +60,15 @@ def _run_entrypoint(
     *,
     create_existing_auth: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
-    """Run the entrypoint with a temp HOME + stubbed data file.
+    """Run the entrypoint with temp HOME/CODEX_HOME + stubbed data file.
 
     Returns (process result, auth_file_path).
     """
-    # Synthesize a HOME with optional pre-existing auth.json.
+    # Synthesize HOME plus a persistent CODEX_HOME with optional
+    # pre-existing auth.json.
     home = tmp_path / "home"
-    codex_dir = home / ".codex"
+    home.mkdir(parents=True)
+    codex_dir = tmp_path / "codex-home"
     codex_dir.mkdir(parents=True)
     auth_file = codex_dir / "auth.json"
     if create_existing_auth is not None:
@@ -93,6 +95,7 @@ def _run_entrypoint(
         # Keep API-key stripping silent (truthy).
         "WORKFLOW_ALLOW_API_KEY_PROVIDERS": "0",
         "HOME": _bash_path(home),
+        "CODEX_HOME": _bash_path(codex_dir),
         "WORKFLOW_PACKAGE_ROOT": _bash_path(pkg_root),
     }
     env.update(env_extra)

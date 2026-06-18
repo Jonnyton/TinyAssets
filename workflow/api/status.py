@@ -584,7 +584,8 @@ def get_status(universe_id: str = "") -> str:
     api_key_vars_present = [
         name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
     ]
-    codex_auth_file = Path.home() / ".codex" / "auth.json"
+    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    codex_auth_file = codex_home / "auth.json"
     # Priority chain mirrors the provider-router's preference order:
     # local/subscription endpoints beat API-key-only providers. Ollama is
     # always-local; codex+claude are subprocess-bound CLIs the daemon can drive;
@@ -727,7 +728,7 @@ def get_status(universe_id: str = "") -> str:
         actionable_next_steps.append(
             "Bind a default LLM provider: set OLLAMA_HOST (local Ollama), "
             "install Claude CLI subscription auth, or install Codex CLI with "
-            "subscription auth at ~/.codex/auth.json. API-key providers require "
+            "subscription auth at CODEX_HOME/auth.json. API-key providers require "
             "explicit WORKFLOW_ALLOW_API_KEY_PROVIDERS=1 opt-in."
         )
     if last_completed_llm == "unknown" and activity_tail:

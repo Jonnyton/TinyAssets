@@ -90,10 +90,14 @@ WORKFLOW_GOAL_POOL=on
 # user can write it and both services see the same durable posts.
 WORKFLOW_REPO_ROOT=/data/community-pool
 
-# Optional base64-encoded ~/.codex/auth.json produced by a subscription
-# login. This is subscription auth material, not an OpenAI API key. The
-# entrypoint writes it to the runtime user's Codex config and unsets the
-# env var before starting the daemon.
+# Optional base64-encoded auth.json produced by a subscription login:
+#   codex login
+#   base64 -w0 ~/.codex/auth.json
+# This is subscription auth material, not an OpenAI API key. The entrypoint
+# seeds it into /data/.codex/auth.json only when that file is missing, then
+# unsets the env var before starting the daemon. Codex refreshes auth.json in
+# place on the shared workflow-data volume; leave OPENAI_API_KEY blank for
+# normal subscription-billed operation.
 WORKFLOW_CODEX_AUTH_JSON_B64=
 
 # Deprecated legacy placeholder. Daemon startup strips this var unless

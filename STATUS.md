@@ -50,7 +50,6 @@ universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11
 | **Loop telemetry slice** (PR-172 + spec §15 D1-2): model/provider stamps on run receipts, worker liveness heartbeat, periodic stuck-claim recovery — so loop dormancy is detected, not discovered | fantasy_daemon/__main__.py, workflow/branch_tasks.py, workflow/providers/router.py, workflow/api/status.py + plugin mirrors, tests/ | - | claimed:claude-fable ACTIVE 2026-06-10 |
 | Host-action: re-register `Workflow DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 | Memory-scope Stage 2c flag | - | 30d clean | monitoring |
-| Prod Codex auth persistence outage — move subscription auth to shared `/data/.codex`, add keepalive, verify deploy | deploy/docker-entrypoint.sh, deploy/compose.yml, deploy/workflow-env.template, deploy/codex-flock-wrapper.sh, deploy/DEPLOY.md, workflow/api/status.py, packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/api/status.py, .github/workflows/codex-auth-keepalive.yml, .github/workflows/deploy-prod.yml, tests/test_docker_entrypoint.py, tests/test_dockerfile_shape.py, tests/test_get_status_primitive.py, tests/test_runtime_status_bridge.py, tests/test_deploy_prod_workflow.py | host-directed uptime; overlaps Loop telemetry status/tests row | claimed:codex-gpt5-desktop ACTIVE 2026-06-17 |
 
 ## Live brain notes (informational; not work rows)
 

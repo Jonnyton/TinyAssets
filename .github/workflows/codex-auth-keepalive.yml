@@ -1,0 +1,49 @@
+name: codex-auth-keepalive
+
+# Keep the ChatGPT-subscription Codex session fresh on the Droplet.
+# A normal `codex exec` refreshes auth.json in place. The daemon can sit
+# idle long enough for the session to become stale, so run one trivial
+# call weekly against the persistent /data/.codex auth home.
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch: {}
+
+concurrency:
+  group: codex-auth-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST || vars.DO_DROPLET_HOST }}
+      DO_SSH_USER: ${{ secrets.DO_SSH_USER || vars.DO_SSH_USER }}
+      DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+    steps:
+      - name: Verify SSH settings
+        run: |
+          missing=()
+          [ -z "${DO_DROPLET_HOST:-}" ] && missing+=("DO_DROPLET_HOST")
+          [ -z "${DO_SSH_USER:-}" ] && missing+=("DO_SSH_USER")
+          [ -z "${DO_SSH_KEY:-}" ] && missing+=("DO_SSH_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets/vars: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "$DO_SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Exercise Codex subscription auth
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            'sudo docker exec -e CODEX_HOME=/data/.codex workflow-daemon codex exec --full-auto --skip-git-repo-check "Reply with the single word OK." >/dev/null'
+          echo "Codex keepalive OK; subscription session exercised."

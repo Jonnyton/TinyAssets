@@ -438,7 +438,7 @@ def _codex_volume_step(wf: dict) -> dict:
     )
     assert step is not None, (
         "deploy must include a 'Prepare codex auth persistent volume' "
-        "step that provisions /var/lib/workflow-codex on every deploy "
+        "step that provisions workflow-data/.codex on every deploy "
         "(Forever Rule — no host-action required)"
     )
     return step
@@ -455,8 +455,8 @@ def test_codex_volume_step_runs_before_deploy():
     )
     assert volume_idx < deploy_idx, (
         "Codex auth volume must be provisioned BEFORE the daemon "
-        "container restarts; otherwise the first restart would not "
-        "see the persistent bind mount populated."
+        "container restarts; otherwise the first restart may miss "
+        "the persistent CODEX_HOME auth directory."
     )
 
 
@@ -491,19 +491,19 @@ def test_codex_volume_step_chown_is_unconditional():
 
     chown_line_idx = next(
         (i for i, line in enumerate(body)
-         if line.strip().startswith('chown "$WORKFLOW_UID:$WORKFLOW_GID" "$VOLUME_DIR"')),
+         if line.strip().startswith('chown "$WORKFLOW_UID:$WORKFLOW_GID" "$CODEX_DIR"')),
         None,
     )
     chmod_line_idx = next(
         (i for i, line in enumerate(body)
-         if line.strip().startswith('chmod 700 "$VOLUME_DIR"')),
+         if line.strip().startswith('chmod 700 "$CODEX_DIR"')),
         None,
     )
-    assert chown_line_idx is not None, "chown on $VOLUME_DIR must be present"
-    assert chmod_line_idx is not None, "chmod 700 on $VOLUME_DIR must be present"
+    assert chown_line_idx is not None, "chown on $CODEX_DIR must be present"
+    assert chmod_line_idx is not None, "chmod 700 on $CODEX_DIR must be present"
 
     # Walk backwards from each line; the most recent unmatched `if [` must
-    # NOT be the `[ ! -d "$VOLUME_DIR" ]` branch. Track indent depth via
+    # NOT be the `[ ! -d "$CODEX_DIR" ]` branch. Track indent depth via
     # leading whitespace as a coarse signal — both unconditional lines
     # should sit at the heredoc's base indent.
     def _indent(line: str) -> int:
@@ -530,18 +530,26 @@ def test_codex_volume_step_creates_dir_idempotently():
     wf = _load()
     step = _codex_volume_step(wf)
     run_script = step.get("run", "") or ""
-    assert 'mkdir -p "$VOLUME_DIR"' in run_script, (
+    assert 'docker volume create "$VOLUME_NAME"' in run_script, (
+        "workflow-data named volume must be created idempotently before "
+        "resolving its mountpoint"
+    )
+    assert 'docker volume inspect "$VOLUME_NAME"' in run_script, (
+        "deploy must resolve the local volume mountpoint before preparing .codex"
+    )
+    assert 'CODEX_DIR="$VOLUME_DIR/.codex"' in run_script
+    assert 'mkdir -p "$CODEX_DIR"' in run_script, (
         "directory creation must use `mkdir -p` so re-running the step "
         "is a no-op when the dir already exists"
     )
-    assert 'if [ ! -d "$VOLUME_DIR" ]' in run_script, (
+    assert 'if [ ! -d "$CODEX_DIR" ]' in run_script, (
         "dir-create branch must be guarded by an existence check so the "
         "create-log line is skipped when the dir already exists"
     )
 
 
 def test_codex_volume_step_migrates_from_running_container_once():
-    """First deploy after PR #965 onto a live droplet must copy the
+    """First deploy after CODEX_HOME migration onto a live droplet must copy the
     rotated auth.json out of the running workflow-worker into the
     persistent volume. Subsequent deploys skip (auth.json already
     present). No-op when no live source container exists.
@@ -549,18 +557,22 @@ def test_codex_volume_step_migrates_from_running_container_once():
     wf = _load()
     step = _codex_volume_step(wf)
     run_script = step.get("run", "") or ""
-    assert 'if [ ! -f "$VOLUME_DIR/auth.json" ]' in run_script, (
+    assert 'if [ ! -f "$CODEX_DIR/auth.json" ]' in run_script, (
         "migration branch must be guarded so it fires exactly once"
     )
     assert "docker inspect workflow-worker" in run_script, (
         "migration must check workflow-worker presence before docker cp"
     )
-    assert 'docker exec workflow-worker test -f /app/.codex/auth.json' in run_script, (
-        "migration must confirm the live container has an auth.json before copying"
+    assert 'docker exec workflow-worker test -f /data/.codex/auth.json' in run_script, (
+        "migration must check the new CODEX_HOME path before copying"
     )
+    assert 'docker exec workflow-worker test -f /app/.codex/auth.json' in run_script, (
+        "migration must also support one-time legacy /app/.codex pickup"
+    )
+    assert "docker cp workflow-worker:/data/.codex/auth.json" in run_script
     assert "docker cp workflow-worker:/app/.codex/auth.json" in run_script
-    assert 'chown "$WORKFLOW_UID:$WORKFLOW_GID" "$VOLUME_DIR/auth.json"' in run_script
-    assert 'chmod 600 "$VOLUME_DIR/auth.json"' in run_script
+    assert 'chown "$WORKFLOW_UID:$WORKFLOW_GID" "$CODEX_DIR/auth.json"' in run_script
+    assert 'chmod 600 "$CODEX_DIR/auth.json"' in run_script
 
 
 # ---------------------------------------------------------------------------

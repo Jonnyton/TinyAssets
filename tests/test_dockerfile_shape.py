@@ -22,6 +22,7 @@ DOCKERIGNORE = REPO_ROOT / ".dockerignore"
 COMPOSE = REPO_ROOT / "deploy" / "compose.yml"
 ENV_TEMPLATE = REPO_ROOT / "deploy" / "workflow-env.template"
 ENTRYPOINT = REPO_ROOT / "deploy" / "docker-entrypoint.sh"
+CODEX_KEEPALIVE = REPO_ROOT / ".github" / "workflows" / "codex-auth-keepalive.yml"
 CODEX_PROVIDER = REPO_ROOT / "workflow" / "providers" / "codex_provider.py"
 
 
@@ -93,10 +94,10 @@ def test_dockerfile_codex_version_smoke():
 def test_dockerfile_installs_codex_flock_wrapper():
     """Final stage must install deploy/codex-flock-wrapper.sh as /usr/local/bin/codex.
 
-    PR #965 binds /var/lib/workflow-codex -> /app/.codex across daemon
-    + worker. Codex's official CI/CD auth guide forbids sharing one
+    compose sets CODEX_HOME=/data/.codex across daemon + worker.
+    Codex's official CI/CD auth guide forbids sharing one
     auth.json across concurrent runners; the wrapper serializes
-    invocations via an exclusive flock on /app/.codex/.lock.
+    invocations via an exclusive flock on CODEX_HOME/.lock.
 
     Round-1 of PR #965 used a bare symlink (`ln -s ... /usr/local/bin/codex`),
     which is the exact pattern Codex Issue #10332 calls out as broken
@@ -110,7 +111,7 @@ def test_dockerfile_installs_codex_flock_wrapper():
     # The legacy bare symlink must be gone. Regression guard.
     assert "ln -s /opt/codex-install/node_modules/.bin/codex /usr/local/bin/codex" not in text, (
         "Dockerfile must not install codex via bare symlink; concurrent "
-        "containers sharing /app/.codex would race the OAuth refresh "
+        "containers sharing CODEX_HOME would race the OAuth refresh "
         "(Codex Issue #10332). Use the flock wrapper instead."
     )
 
@@ -137,9 +138,9 @@ def test_codex_flock_wrapper_script_present():
         "wrapper must declare #!/usr/bin/env bash shebang"
     )
     assert "set -euo pipefail" in text, "wrapper must use strict bash"
-    # Lock target must live next to auth.json so the shared bind-mount
+    # Lock target must live next to auth.json so the shared CODEX_HOME
     # makes the lock visible across containers.
-    assert ".codex" in text and ".lock" in text, (
+    assert "CODEX_HOME" in text and ".lock" in text, (
         "wrapper must lock a sentinel inside the codex auth directory"
     )
     assert "flock -x" in text, (
@@ -241,8 +242,8 @@ def test_compose_env_file_covers_daemon_service():
     )
 
 
-def test_compose_codex_auth_mount_matches_home_for_cli_binding():
-    """Services that invoke codex must keep HOME aligned with /app/.codex."""
+def test_compose_codex_auth_home_is_shared_data_volume():
+    """Services that invoke codex must share one persistent CODEX_HOME."""
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
@@ -250,14 +251,14 @@ def test_compose_codex_auth_mount_matches_home_for_cli_binding():
         service = data["services"][service_name]
         environment = service.get("environment") or {}
         volumes = service.get("volumes") or []
-        assert environment.get("HOME") == "/app", (
-            f"{service_name} must set HOME=/app so Codex CLI and get_status "
-            "look for subscription auth at /app/.codex/auth.json"
+        assert environment.get("CODEX_HOME") == "/data/.codex", (
+            f"{service_name} must use /data/.codex so Codex CLI and "
+            "get_status look at the persistent workflow-data volume"
         )
-        assert "/var/lib/workflow-codex:/app/.codex" in volumes, (
-            f"{service_name} must mount the persistent Codex auth volume at "
-            "/app/.codex to match HOME=/app"
+        assert "workflow-data:/data" in volumes, (
+            f"{service_name} must mount workflow-data at /data"
         )
+        assert "/var/lib/workflow-codex:/app/.codex" not in volumes
 
 
 # ---------------------------------------------------------------------------
@@ -299,9 +300,17 @@ def test_entrypoint_script_exists():
 def test_entrypoint_installs_codex_auth_bundle():
     text = ENTRYPOINT.read_text(encoding="utf-8")
     assert "WORKFLOW_CODEX_AUTH_JSON_B64" in text
+    assert 'CODEX_HOME="${CODEX_HOME:-/data/.codex}"' in text
     assert "base64 -d" in text
     assert "auth.json" in text, (
         "docker-entrypoint.sh must install the subscription-backed Codex auth bundle"
+    )
+
+
+def test_entrypoint_pins_codex_file_credentials_store():
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    assert 'cli_auth_credentials_store = "file"' in text, (
+        "container auth must use file-backed Codex credentials under CODEX_HOME"
     )
 
 
@@ -333,6 +342,14 @@ def test_entrypoint_replaces_auth_bundle_atomically():
     assert "failed to decode WORKFLOW_CODEX_AUTH_JSON_B64" in text, (
         "entrypoint must atomically replace Codex auth when a bundle is provided"
     )
+
+
+def test_codex_auth_keepalive_exercises_shared_codex_home():
+    text = CODEX_KEEPALIVE.read_text(encoding="utf-8")
+    assert "workflow_dispatch" in text
+    assert "schedule:" in text
+    assert "DO_SSH_KEY" in text
+    assert "docker exec -e CODEX_HOME=/data/.codex workflow-daemon codex exec" in text
 
 
 def test_entrypoint_execs_cmd():

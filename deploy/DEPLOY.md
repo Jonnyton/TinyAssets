@@ -114,29 +114,30 @@ ls -la /etc/workflow/env
 If ownership/mode differs, re-run the bootstrap — it resets to
 `root:workflow 640`.
 
-## Step 3b — Codex auth persistent volume (no host action needed)
+## Step 3b — Codex auth persistent volume
 
 Codex CLI uses single-use OAuth refresh tokens that rotate in-place
 during normal operation. The compose stack persists Codex's auth state
-across container restarts via a bind mount at
-`/var/lib/workflow-codex` → `/app/.codex` (see `deploy/compose.yml`).
+across container restarts at `CODEX_HOME=/data/.codex` on the shared
+`workflow-data` Docker volume (see `deploy/compose.yml`).
 Without this, every restart throws away rotated tokens and the next
 refresh attempt fails with `refresh_token_reused`. Design source:
 <https://developers.openai.com/codex/auth/ci-cd-auth>.
 
-**The deploy workflow handles the volume + migration automatically.**
+**The deploy workflow prepares the auth directory + migration automatically.**
 `.github/workflows/deploy-prod.yml` has a `Prepare codex auth
 persistent volume` step that runs on every deploy. It is idempotent:
 
-- Creates `/var/lib/workflow-codex` when missing (`mkdir -p`); repairs
-  ownership (`uid 1001:1001`) and mode (`700`) unconditionally every
-  deploy so a root-owned dir left by a docker-bind auto-create or a
-  failed earlier attempt gets healed back to a state uid 1001 can
-  write.
+- Creates `workflow-data` when missing, resolves its local mountpoint,
+  and creates `.codex` inside it; repairs ownership (`uid 1001:1001`)
+  and mode (`700`) unconditionally every deploy so a failed earlier
+  attempt gets healed back to a state uid 1001 can write.
 - On the very first deploy onto a pre-existing live droplet, copies
   the rotated `auth.json` out of the running `workflow-worker`
-  container into the new volume so the post-restart container
-  preserves the live refresh chain.
+  container into `/data/.codex` so the post-restart container preserves
+  the live refresh chain. It checks the new `/data/.codex/auth.json`
+  path first and then the legacy `/app/.codex/auth.json` path for the
+  one-time migration.
 - After that, every subsequent deploy is a complete no-op for this
   section — the volume + `auth.json` are already in place and the
   entrypoint preserves the file on restart.
@@ -148,21 +149,22 @@ in-process executor handles `run_branch` MCP calls; the worker's
 refresh attempts are serialized by `/usr/local/bin/codex` (which is
 `deploy/codex-flock-wrapper.sh`, installed by the Dockerfile in place
 of the bare codex symlink) — it takes an exclusive `flock -x` on
-`/app/.codex/.lock` before every invocation. This mitigates the
+`$CODEX_HOME/.lock` before every invocation. This mitigates the
 `refresh_token_reused` race that Codex's official CI/CD auth guide
 warns about for shared-auth scenarios (Codex Issue #10332).
 
 **Host action is only needed in two rare cases:**
 
 1. **Brand-new droplet, no live container to migrate from.** The
-   workflow step creates the empty volume; the new container then
+   workflow step creates the empty `/data/.codex`; the new container then
    seeds `auth.json` from `WORKFLOW_CODEX_AUTH_JSON_B64` (GitHub
-   Actions secret) on first boot. Host action: keep
-   `WORKFLOW_CODEX_AUTH_JSON_B64` rotated in GitHub secrets so a
-   fresh-droplet bootstrap has a known-good seed available.
+   Actions secret or `/etc/workflow/env`) on first boot. Host action:
+   keep `WORKFLOW_CODEX_AUTH_JSON_B64` rotated so a fresh-droplet
+   bootstrap has a known-good seed available.
 2. **Persistent volume wiped (disaster recovery).** Same as case 1:
    the entrypoint reseeds from the env-var on the next boot. Host
-   action: same — keep the GitHub Actions secret fresh.
+   action: same — keep the GitHub Actions secret or `/etc/workflow/env`
+   value fresh.
 
 In normal steady-state operation (volume intact, container restarts
 for image bumps), Codex's in-place refresh chain survives indefinitely

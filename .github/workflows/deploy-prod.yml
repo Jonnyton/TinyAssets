@@ -265,21 +265,22 @@ jobs:
           SH
 
       # Codex CLI rotates single-use OAuth refresh tokens in-place inside
-      # the container. PR #965 binds /var/lib/workflow-codex -> /app/.codex
-      # so the rotated chain survives container restart. This step makes
-      # that volume self-provisioning on every deploy — idempotent, no
-      # host hands required, per the Forever Rule (24/7 uptime, zero
-      # hosts online).
+      # the container. compose.yml sets CODEX_HOME=/data/.codex for daemon
+      # + worker, backed by the shared workflow-data volume, so the rotated
+      # chain survives container restart. This step makes that directory
+      # self-provisioning on every deploy — idempotent, no host hands
+      # required, per the Forever Rule (24/7 uptime, zero hosts online).
       #
       # Three idempotent branches:
-      #   - dir already present  -> skip creation
-      #   - auth.json already in volume -> skip migration (entrypoint preserves it)
-      #   - no running container with /app/.codex/auth.json -> skip migration
+      #   - workflow-data/.codex already present -> skip creation
+      #   - /data/.codex/auth.json already in volume -> skip migration
+      #   - no running container with /data/.codex/auth.json or legacy
+      #     /app/.codex/auth.json -> skip migration
       #     (new container will seed from WORKFLOW_CODEX_AUTH_JSON_B64 on first boot)
       #
-      # The migration branch only fires once: the first deploy after
-      # PR #965 merges onto a live droplet where workflow-worker has a
-      # rotated auth.json that pre-dates the persistent volume.
+      # The migration branch only fires once: the first deploy after this
+      # CODEX_HOME move onto a live droplet where workflow-worker has a
+      # rotated auth.json at either the new or legacy location.
       - name: Prepare codex auth persistent volume
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -287,43 +288,53 @@ jobs:
               'sudo bash -s' <<'SH'
           set -euo pipefail
 
-          VOLUME_DIR="/var/lib/workflow-codex"
+          VOLUME_NAME="workflow-data"
           WORKFLOW_UID=1001
           WORKFLOW_GID=1001
 
+          docker volume create "$VOLUME_NAME" >/dev/null
+          VOLUME_DIR="$(docker volume inspect "$VOLUME_NAME" --format '{{ .Mountpoint }}')"
+          CODEX_DIR="$VOLUME_DIR/.codex"
+
           # Create the directory if missing. mkdir -p is itself a no-op
           # when the path already exists.
-          if [ ! -d "$VOLUME_DIR" ]; then
-            echo "creating codex auth persistent volume at $VOLUME_DIR"
-            mkdir -p "$VOLUME_DIR"
+          if [ ! -d "$CODEX_DIR" ]; then
+            echo "creating codex auth persistent directory at $CODEX_DIR"
+            mkdir -p "$CODEX_DIR"
           fi
 
           # Ownership + mode are repaired UNCONDITIONALLY every deploy.
-          # If a prior attempt left the dir root-owned (e.g. docker bind
-          # auto-create races the create-with-chown branch), this heals
-          # the posture so uid 1001 can write. Both chown and chmod are
+          # If a prior attempt left the dir root-owned, this heals the
+          # posture so uid 1001 can write. Both chown and chmod are
           # themselves idempotent — no-op when state already matches.
-          chown "$WORKFLOW_UID:$WORKFLOW_GID" "$VOLUME_DIR"
-          chmod 700 "$VOLUME_DIR"
+          chown "$WORKFLOW_UID:$WORKFLOW_GID" "$CODEX_DIR"
+          chmod 700 "$CODEX_DIR"
 
           # Migration: if the volume is empty but a workflow-worker container is
-          # currently running with a /app/.codex/auth.json inside it (= we're rolling
-          # out PR #965 onto an existing live system), copy the live refresh chain
-          # into the volume so the new container preserves it instead of falling
-          # back to the stale env-var secret.
-          if [ ! -f "$VOLUME_DIR/auth.json" ]; then
+          # currently running with a Codex auth.json inside it, copy the live
+          # refresh chain into /data/.codex so the new container preserves it
+          # instead of falling back to the stale env-var secret.
+          if [ ! -f "$CODEX_DIR/auth.json" ]; then
+            tmp_dir="$(mktemp -d)"
+            trap 'rm -rf "$tmp_dir"' EXIT
             if docker inspect workflow-worker >/dev/null 2>&1; then
-              if docker exec workflow-worker test -f /app/.codex/auth.json 2>/dev/null; then
-                echo "migrating live codex auth.json from workflow-worker into persistent volume"
-                docker cp workflow-worker:/app/.codex/auth.json "$VOLUME_DIR/auth.json"
-                chown "$WORKFLOW_UID:$WORKFLOW_GID" "$VOLUME_DIR/auth.json"
-                chmod 600 "$VOLUME_DIR/auth.json"
+              if docker exec workflow-worker test -f /data/.codex/auth.json 2>/dev/null; then
+                echo "migrating live codex auth.json from workflow-worker:/data/.codex"
+                docker cp workflow-worker:/data/.codex/auth.json "$tmp_dir/auth.json"
+              elif docker exec workflow-worker test -f /app/.codex/auth.json 2>/dev/null; then
+                echo "migrating legacy codex auth.json from workflow-worker:/app/.codex"
+                docker cp workflow-worker:/app/.codex/auth.json "$tmp_dir/auth.json"
               fi
+            fi
+            if [ -s "$tmp_dir/auth.json" ]; then
+              cp "$tmp_dir/auth.json" "$CODEX_DIR/auth.json"
+              chown "$WORKFLOW_UID:$WORKFLOW_GID" "$CODEX_DIR/auth.json"
+              chmod 600 "$CODEX_DIR/auth.json"
             fi
           fi
 
           # Confirm final state for the log.
-          ls -la "$VOLUME_DIR" || true
+          ls -la "$CODEX_DIR" || true
           SH
 
       - name: Deploy new image

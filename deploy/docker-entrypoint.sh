@@ -6,9 +6,12 @@
 #    an SSH shell. Navigator 2026-04-22 section b layer-3.
 # 2. By default, strip API-key provider environment variables before
 #    the daemon starts. API-key providers require an explicit host opt-in.
-# 3. Optionally install a subscription-backed Codex auth bundle from
-#    WORKFLOW_CODEX_AUTH_JSON_B64. Legacy `codex login --with-api-key`
-#    from OPENAI_API_KEY is intentionally not run.
+# 3. Keep subscription-backed Codex auth under CODEX_HOME, defaulting to
+#    /data/.codex so the shared workflow-data volume preserves rotated
+#    OAuth tokens across redeploys. Optionally seed auth.json from
+#    WORKFLOW_CODEX_AUTH_JSON_B64 only when missing. Legacy
+#    `codex login --with-api-key` from OPENAI_API_KEY is intentionally
+#    not run.
 # 4. Fail loud if required static data files are missing from the image.
 # 5. exec the passed CMD (preserves tini PID-1 signal forwarding).
 #
@@ -75,7 +78,10 @@ else
     echo "[entrypoint] API-key providers explicitly enabled by WORKFLOW_ALLOW_API_KEY_PROVIDERS=1" >&2
 fi
 
-# Codex stores auth in ~/.codex/auth.json relative to the running user.
+# Codex stores auth in CODEX_HOME/auth.json. In production CODEX_HOME
+# defaults to /data/.codex so daemon + worker share one durable auth
+# lineage on the workflow-data volume. Local/dev containers that do not
+# set CODEX_HOME still get the same durable default when /data is mounted.
 #
 # Codex CLI uses OAuth single-use refresh tokens — it rotates them
 # in-container during normal operation, writing the new token back to
@@ -86,19 +92,29 @@ fi
 # Fix per OpenAI's official Codex CI/CD auth guide
 # (https://developers.openai.com/codex/auth/ci-cd-auth): seed auth.json
 # only when missing, and persist it across container restarts via a
-# volume mount on the parent directory (deploy/compose.yml binds
-# /app/.codex to a host path so the in-place refresh chain survives).
+# volume mount on the parent directory. deploy/compose.yml sets
+# CODEX_HOME=/data/.codex for both daemon and worker, so the in-place
+# refresh chain survives image redeploys and restarts.
 #
 # Three branches:
 #   1. env set, file missing  -> seed (first boot / volume recovery)
 #   2. env set, file present  -> preserve (in-place refresh chain alive)
 #   3. env unset, file present -> preserve (volume-only operation)
-CODEX_AUTH_FILE="${HOME:-/app}/.codex/auth.json"
+export CODEX_HOME="${CODEX_HOME:-/data/.codex}"
+CODEX_AUTH_FILE="${CODEX_HOME}/auth.json"
+CODEX_CONFIG_FILE="${CODEX_HOME}/config.toml"
+mkdir -p "${CODEX_HOME}"
+chmod 700 "${CODEX_HOME}"
+
+# Containers do not have an OS keyring. Force Codex to use file-backed
+# credential storage so auth.json on CODEX_HOME is authoritative.
+if ! grep -qs '^cli_auth_credentials_store' "${CODEX_CONFIG_FILE}" 2>/dev/null; then
+    printf '%s\n' 'cli_auth_credentials_store = "file"' >> "${CODEX_CONFIG_FILE}"
+fi
 
 if [[ -n "${WORKFLOW_CODEX_AUTH_JSON_B64:-}" && ! -f "${CODEX_AUTH_FILE}" ]]; then
-    echo "[entrypoint] seeding codex auth.json (first boot / volume recovery)"
+    echo "[entrypoint] seeding codex auth.json at ${CODEX_AUTH_FILE} (first boot / volume recovery)"
     CODEX_AUTH_DIR="$(dirname "${CODEX_AUTH_FILE}")"
-    mkdir -p "${CODEX_AUTH_DIR}"
     CODEX_AUTH_TMP="$(mktemp "${CODEX_AUTH_DIR}/auth.json.XXXXXX")"
     if printf '%s' "${WORKFLOW_CODEX_AUTH_JSON_B64}" | base64 -d > "${CODEX_AUTH_TMP}"; then
         chmod 600 "${CODEX_AUTH_TMP}"
@@ -109,7 +125,7 @@ if [[ -n "${WORKFLOW_CODEX_AUTH_JSON_B64:-}" && ! -f "${CODEX_AUTH_FILE}" ]]; th
         exit 1
     fi
 elif [[ -f "${CODEX_AUTH_FILE}" ]]; then
-    echo "[entrypoint] preserving existing codex auth.json (in-place refresh chain)"
+    echo "[entrypoint] preserving existing codex auth.json at ${CODEX_AUTH_FILE} (in-place refresh chain)"
 fi
 unset WORKFLOW_CODEX_AUTH_JSON_B64
 
