@@ -266,20 +266,20 @@ export function createSimulation(graph: ForceGraph): Simulation<FNode, undefined
 
   const link = forceLink<FNode, FLink & { index?: number }>(graph.links as (FLink & { index?: number })[])
     .id((d) => d.id)
-    .distance((l) => (l.kind === 'ref' ? 46 : 30))
-    .strength((l) => (l.kind === 'ref' ? 0.4 : 0.06));
+    .distance((l) => (l.kind === 'ref' ? 60 : 34))
+    .strength((l) => (l.kind === 'ref' ? 0.26 : 0.05));
 
   return forceSimulation<FNode>(graph.nodes)
     .force('link', link as ForceLink<FNode, FLink>)
     .force(
       'charge',
       forceManyBody<FNode>()
-        .strength((d) => (d.kind === 'tag' ? -240 : d.kind === 'page' ? -9 : -30))
-        .distanceMax(480)
+        .strength((d) => (d.kind === 'tag' ? -320 : d.kind === 'page' ? -22 : -46))
+        .distanceMax(720)
         .theta(0.9)
     )
-    .force('x', forceX<FNode>(0).strength(0.045))
-    .force('y', forceY<FNode>(0).strength(0.05))
+    .force('x', forceX<FNode>(0).strength(0.026))
+    .force('y', forceY<FNode>(0).strength(0.03))
     .force(
       'collide',
       forceCollide<FNode>()

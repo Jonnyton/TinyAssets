@@ -292,17 +292,25 @@
     grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
     gap: 12px;
     margin: 14px 0 18px;
+    background-color: #16150f;
+    background-image:
+      linear-gradient(rgba(54, 51, 31, 0.5) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(54, 51, 31, 0.5) 1px, transparent 1px);
+    background-size: 26px 26px;
+    border: 1px solid #2c2a1d;
+    border-radius: var(--radius-sm);
+    padding: 16px;
   }
   .chain {
-    border: 1px solid var(--border-1);
-    border-radius: 10px;
+    border: 1px solid #2c2a1d;
+    border-radius: 6px;
     padding: 14px 16px;
-    background: var(--bg-2);
+    background: #211f17;
     display: grid;
     gap: 7px;
     align-content: start;
   }
-  .chain--primary { border-color: rgba(233, 69, 96, 0.32); }
+  .chain--primary { border-color: rgba(233, 69, 96, 0.5); }
   .chain--legacy { opacity: 0.82; }
   .chain header {
     display: flex;
@@ -314,30 +322,30 @@
     font-family: var(--font-sans);
     font-size: 14px;
     font-weight: 600;
-    color: var(--fg-1);
+    color: var(--on-panel);
   }
   .chain .badge {
     font-family: var(--font-mono);
     font-size: 9.5px;
     text-transform: uppercase;
     letter-spacing: 0.1em;
-    color: var(--fg-3);
+    color: var(--on-panel-soft);
     white-space: nowrap;
   }
   .chain__addr {
     display: block;
     overflow-wrap: anywhere;
-    background: var(--paper-200);
-    border: 1px solid var(--border-1);
+    background: #16150f;
+    border: 1px solid #2c2a1d;
     padding: 4px 7px;
     border-radius: 4px;
     font-size: 11px;
-    color: var(--fg-2);
+    color: var(--on-panel-soft);
   }
   .chain__note {
     font-family: var(--font-mono);
     font-size: 11px;
-    color: var(--fg-3);
+    color: var(--on-panel-soft);
     margin: 0;
     line-height: 1.4;
   }
@@ -345,7 +353,7 @@
     justify-self: start;
     font-family: var(--font-mono);
     font-size: 11.5px;
-    color: var(--ember-600);
+    color: var(--ember-300);
     text-decoration: none;
     letter-spacing: 0.04em;
   }

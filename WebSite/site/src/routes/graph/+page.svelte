@@ -126,17 +126,17 @@
 
   // Field Notes ink on paper — green stays reserved for liveness.
   const FILL: Record<FCluster, string> = {
-    patch: '#b62744',
-    plans: '#1c1a14',
-    notes: '#736d54',
-    concepts: '#6b44a8',
+    patch: '#e0667d',
+    plans: '#d8cfb4',
+    notes: '#b9a982',
+    concepts: '#a98fe0',
     drafts: '#b3a988',
     goals: '#e94560',
-    universes: '#6b44a8',
-    tags: '#8b6db0'
+    universes: '#a98fe0',
+    tags: '#917bb5'
   };
-  const PAPER = '#f4f1e7';
-  const INK = '#1c1a14';
+  const PAPER = '#16150f';
+  const INK = '#f4f1e7';
 
   function setupGraph() {
     sim?.stop();
@@ -222,11 +222,11 @@
         if ((pass === 1) !== isRef) continue;
         const inFocus = hovered && (s === hovered || t === hovered);
         if (focus && !inFocus) {
-          ctx.strokeStyle = isRef ? 'rgba(28,26,20,0.045)' : 'rgba(28,26,20,0.018)';
+          ctx.strokeStyle = isRef ? 'rgba(244,241,231,0.06)' : 'rgba(244,241,231,0.03)';
         } else if (inFocus) {
-          ctx.strokeStyle = isRef ? 'rgba(182,39,68,0.62)' : 'rgba(28,26,20,0.26)';
+          ctx.strokeStyle = isRef ? 'rgba(233,69,96,0.72)' : 'rgba(244,241,231,0.32)';
         } else {
-          ctx.strokeStyle = isRef ? 'rgba(28,26,20,0.17)' : 'rgba(28,26,20,0.05)';
+          ctx.strokeStyle = isRef ? 'rgba(244,241,231,0.2)' : 'rgba(244,241,231,0.06)';
         }
         ctx.lineWidth = (isRef ? (inFocus ? 1.5 : 0.9) : 0.55) / Math.sqrt(tf.k);
         ctx.beginPath();
@@ -261,7 +261,7 @@
       if (n === hovered) {
         ctx.beginPath();
         ctx.arc(n.x!, n.y!, n.r + 3.5 / tf.k, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(182,39,68,0.85)';
+        ctx.strokeStyle = 'rgba(233,69,96,0.9)';
         ctx.lineWidth = 1.6 / tf.k;
         ctx.stroke();
       }
@@ -309,7 +309,7 @@
           n.x!,
           n.y! + n.r + 14 / tf.k,
           10.5,
-          '#45412f',
+          '#cfc6ad',
           "'IBM Plex Mono', monospace",
           'center'
         );
@@ -319,7 +319,7 @@
           n.x! + n.r + 4 / tf.k,
           n.y! + 3 / tf.k,
           9,
-          '#6a4f97',
+          '#a98fe0',
           "'IBM Plex Mono', monospace",
           'left',
           n !== hovered
@@ -330,13 +330,13 @@
           n.x! + n.r + 5 / tf.k,
           n.y! + 3 / tf.k,
           n.kind === 'goal' ? 10 : 9,
-          n.kind === 'goal' ? '#8a1a33' : '#4a2f76',
+          n.kind === 'goal' ? '#f0a6b4' : '#a98fe0',
           n.kind === 'goal' ? "'Inter', sans-serif" : "'IBM Plex Mono', monospace",
           'left',
           n !== hovered
         );
       } else if (n.kind === 'page' && n !== hovered && tf.k >= 2.3) {
-        label(truncate(n.label, 34), n.x! + n.r + 4 / tf.k, n.y! + 2.5 / tf.k, 8.5, '#736d54', "'Inter', sans-serif", 'left', true);
+        label(truncate(n.label, 34), n.x! + n.r + 4 / tf.k, n.y! + 2.5 / tf.k, 8.5, '#b9a982', "'Inter', sans-serif", 'left', true);
       }
     }
 
@@ -733,13 +733,15 @@
 
   .map {
     margin: 0;
-    background:
-      radial-gradient(circle at 50% 46%, rgba(28, 26, 20, 0.04), rgba(28, 26, 20, 0) 60%),
-      var(--paper-100);
-    border: 1px solid var(--border-1);
+    background-color: #16150f;
+    background-image:
+      linear-gradient(rgba(54, 51, 31, 0.55) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(54, 51, 31, 0.55) 1px, transparent 1px);
+    background-size: 28px 28px;
+    border: 1px solid #2c2a1d;
     border-radius: var(--radius-lg);
     overflow: hidden;
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-md);
   }
   .map__wrap {
     position: relative;
@@ -758,9 +760,9 @@
     bottom: 10px;
     margin: 0;
     font-size: 10px;
-    color: var(--fg-4);
+    color: var(--on-panel-soft);
     pointer-events: none;
-    background: color-mix(in srgb, var(--paper-100) 78%, transparent);
+    background: color-mix(in srgb, #16150f 82%, transparent);
     border-radius: var(--radius-pill);
     padding: 3px 10px;
   }
