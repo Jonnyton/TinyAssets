@@ -593,6 +593,43 @@ def test_receipt_store_non_lock_error_also_short_circuits(
 
 
 # ---------------------------------------------------------------------------
+# BUG-111: real writes materialize changes_json before gh pr create
+# ---------------------------------------------------------------------------
+
+
+def test_effector_materializes_packet_changes_before_creating_pr(gates_open):
+    universe = gates_open
+    changes_json = {"README_PROBE.md": "probe\n"}
+    packet = _make_packet(idempotency_hint="hint-materialize")
+    packet["payload"]["changes_json"] = changes_json
+    succeed = SimpleNamespace(
+        returncode=0,
+        stdout="https://github.com/Jonnyton/Workflow/pull/77\n",
+        stderr="",
+    )
+
+    with patch(
+        "workflow.effectors.github_pr._materialize_branch",
+        return_value={"materialized": True},
+    ) as mock_materialize, patch(
+        "workflow.effectors.github_pr.subprocess.run",
+        return_value=succeed,
+    ) as mock_run:
+        result = run_github_pr_effector(
+            node_id="emit",
+            output_keys=["pr_packet"],
+            run_state={"pr_packet": packet},
+            base_path=universe,
+            run_id="run-materialize",
+        )
+
+    assert result["pr_number"] == 77
+    mock_materialize.assert_called_once()
+    assert mock_materialize.call_args.kwargs["changes_json"] == changes_json
+    mock_run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # gh failure releases the reservation; subsequent retry can re-reserve
 # ---------------------------------------------------------------------------
 
@@ -609,6 +646,9 @@ def test_failure_releases_reservation_and_retry_can_proceed(gates_open):
         stderr="",
     )
     with patch(
+        "workflow.effectors.github_pr._materialize_branch",
+        return_value={"materialized": True},
+    ), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fail,
     ):
@@ -632,6 +672,9 @@ def test_failure_releases_reservation_and_retry_can_proceed(gates_open):
 
     # Retry under the same hint succeeds.
     with patch(
+        "workflow.effectors.github_pr._materialize_branch",
+        return_value={"materialized": True},
+    ), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=succeed,
     ):
