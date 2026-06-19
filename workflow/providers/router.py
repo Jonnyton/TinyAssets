@@ -78,6 +78,11 @@ _API_KEY_PROVIDERS: frozenset[str] = frozenset(
 # provider (when chain-drained) before raising AllProvidersExhaustedError.
 _CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
 
+# Sync graph nodes call async provider routing through this bounded pool.
+# Keep it above 1 so an unrelated slow provider call does not serialize all
+# other sync callers behind one shared worker.
+_SYNC_CALL_MAX_WORKERS: int = 8
+
 
 class ProviderRouter:
     """Routes LLM calls across providers with fallback and quota tracking.
@@ -640,7 +645,10 @@ class ProviderRouter:
     # Synchronous wrapper (for use from sync graph nodes)
     # ------------------------------------------------------------------
 
-    _thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    _thread_pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_SYNC_CALL_MAX_WORKERS,
+        thread_name_prefix="workflow-provider-sync",
+    )
 
     def call_sync(
         self,
@@ -664,7 +672,7 @@ class ProviderRouter:
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(
-                    self.call(role, prompt, system, config)
+                    self.call(role, prompt, system, cfg)
                 )
             finally:
                 loop.close()

@@ -7,8 +7,11 @@ binaries or network access.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import sys
+import threading
 import time
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -62,6 +65,40 @@ class FakeProvider(BaseProvider):
             raise self._fail_with
         return ProviderResponse(
             text=self._response_text,
+            provider=self.name,
+            model="fake",
+            family=self.family,
+            latency_ms=1.0,
+        )
+
+
+class SlowCountingProvider(BaseProvider):
+    """Tracks whether router sync wrappers let calls overlap."""
+
+    name = "claude-code"
+    family = "anthropic"
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+
+    async def complete(
+        self,
+        prompt: str,
+        system: str,
+        config: ModelConfig,
+    ) -> ProviderResponse:
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.05)
+        finally:
+            with self.lock:
+                self.active -= 1
+        return ProviderResponse(
+            text="ok",
             provider=self.name,
             model="fake",
             family=self.family,
@@ -244,6 +281,23 @@ class TestProviderRouterCall:
         resp = await router.call("writer", "prompt", "system")
         assert resp.provider == "codex"
         assert quota.available("claude-code") is False
+
+    def test_call_sync_does_not_serialize_on_single_shared_worker(self):
+        provider = SlowCountingProvider()
+        router = ProviderRouter(providers={provider.name: provider})
+        start = threading.Barrier(3)
+
+        def _call() -> ProviderResponse:
+            start.wait(timeout=2)
+            return router.call_sync("writer", "prompt", "system")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(_call), pool.submit(_call)]
+            start.wait(timeout=2)
+            results = [future.result(timeout=2) for future in futures]
+
+        assert [result.provider for result in results] == ["claude-code", "claude-code"]
+        assert provider.max_active == 2
 
 
 # =====================================================================
@@ -827,6 +881,69 @@ class TestOllamaProvider:
             provider = OllamaProvider()
             with pytest.raises(ProviderUnavailableError):
                 await provider.complete("prompt", "system", ModelConfig())
+
+
+# =====================================================================
+# GeminiProvider (google-genai SDK mock)
+# =====================================================================
+
+
+class TestGeminiProvider:
+    @pytest.mark.asyncio
+    async def test_sync_sdk_call_yields_event_loop(self):
+        release = threading.Event()
+        started = threading.Event()
+
+        class _FakeModels:
+            def generate_content(self, **kwargs):
+                started.set()
+                release.wait(timeout=0.2)
+                return types.SimpleNamespace(text="gemini output")
+
+        class _FakeClient:
+            def __init__(self, api_key: str) -> None:
+                self.api_key = api_key
+                self.models = _FakeModels()
+
+        fake_genai = types.ModuleType("google.genai")
+        fake_genai.Client = _FakeClient
+        fake_types = types.ModuleType("google.genai.types")
+        fake_types.GenerateContentConfig = MagicMock
+        fake_genai.types = fake_types
+        fake_google = types.ModuleType("google")
+        fake_google.genai = fake_genai
+
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "GEMINI_API_KEY": "test-key",
+                    "WORKFLOW_ALLOW_API_KEY_PROVIDERS": "1",
+                },
+            ),
+            patch.dict(
+                sys.modules,
+                {
+                    "google": fake_google,
+                    "google.genai": fake_genai,
+                    "google.genai.types": fake_types,
+                },
+            ),
+        ):
+            from workflow.providers.gemini_provider import GeminiProvider
+
+            provider = GeminiProvider()
+            task = asyncio.create_task(
+                provider.complete("prompt", "system", ModelConfig())
+            )
+            await asyncio.sleep(0.02)
+            assert started.is_set()
+            assert not task.done()
+            release.set()
+            resp = await task
+
+        assert resp.text == "gemini output"
+        assert resp.provider == "gemini-free"
 
 
 # =====================================================================
