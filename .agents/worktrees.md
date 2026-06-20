@@ -678,3 +678,14 @@ Notes:
 - Ship condition: focused tests pass, PR merged to main, deploy-prod green,
   live `get_status` sees Codex auth, trivial LLM node succeeds, keepalive
   dispatch green.
+
+## 4 Runtimes Up Deploy Config - 2026-06-20
+
+- 2026-06-20 create `../wf-four-runtimes-up` on `codex/four-runtimes-up` by
+  codex-gpt5-desktop.
+- Source: host-directed split from PR-177; fleet runtime activation ships before
+  goal_pool/marketplace economy work.
+- Purpose: run 2 Codex + 2 Claude pinned workers from the two subscription auth
+  homes already approved by #1330, with Codex auth refresh serialized.
+- Ship condition: focused tests pass, branch pushed, PR opened, then deploy
+  brings runtime_count to 4 while goal_pool remains a follow-on.

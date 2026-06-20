@@ -28,6 +28,7 @@ Stdlib only; read-only against the universe dir.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,13 +54,27 @@ def _parse_ts(value: str) -> datetime | None:
         return None
 
 
-def check(universe: Path, *, now: datetime | None = None) -> tuple[bool, str]:
+def check(
+    universe: Path,
+    *,
+    now: datetime | None = None,
+    worker_id: str | None = None,
+) -> tuple[bool, str]:
     """Return (healthy, reason). Pure logic — testable without a container."""
-    from workflow.cloud_worker import SUPERVISOR_HEARTBEAT_FILENAME
+    from workflow.cloud_worker import (
+        SUPERVISOR_HEARTBEAT_FILENAME,
+        supervisor_heartbeat_filename,
+    )
 
     now = now or datetime.now(timezone.utc)
-    beat_path = universe / SUPERVISOR_HEARTBEAT_FILENAME
+    beat_path = universe / supervisor_heartbeat_filename(worker_id)
     if not beat_path.exists():
+        if worker_id:
+            legacy = universe / SUPERVISOR_HEARTBEAT_FILENAME
+            return False, (
+                f"no supervisor heartbeat at {beat_path} "
+                f"(legacy={legacy.exists()})"
+            )
         return False, f"no supervisor heartbeat at {beat_path}"
     try:
         beat = json.loads(beat_path.read_text(encoding="utf-8"))
@@ -101,7 +116,10 @@ def main(argv: list[str] | None = None) -> int:
     from workflow.cloud_worker import _resolve_universe_path
 
     universe = _resolve_universe_path()
-    healthy, reason = check(universe)
+    healthy, reason = check(
+        universe,
+        worker_id=os.environ.get("WORKFLOW_WORKER_ID", "").strip() or None,
+    )
     if healthy:
         print(reason)
         return 0

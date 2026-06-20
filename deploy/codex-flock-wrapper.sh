@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Codex CLI cross-container serialization wrapper.
 #
-# deploy/compose.yml sets CODEX_HOME=/data/.codex in both the
-# workflow-daemon and workflow-worker containers so Codex's in-place
+# deploy/compose.yml sets CODEX_HOME=/data/.codex in the
+# workflow-daemon and Codex worker-fleet containers so Codex's in-place
 # refresh chain survives container restarts on the shared workflow-data
 # volume. Codex's official CI/CD
 # auth guide warns that one auth.json must NOT be shared across
