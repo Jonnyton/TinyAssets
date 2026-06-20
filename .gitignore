@@ -39,6 +39,7 @@ deploy/cloudflare-worker/.wrangler/
 # Local MCP client config is machine-specific. Keep the tracked example instead.
 .mcp.json
 .env
+*git-credentials*
 *.key
 *.pem
 *.seed

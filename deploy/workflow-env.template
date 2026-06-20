@@ -80,11 +80,10 @@ WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY=1
 # Community patch loop pickup
 # ---------------------------------------------------------------------
 
-# Enable goal-pool producer registration for the public community
-# patch loop. The dispatcher tier still needs per-universe
-# accept_goal_pool=true (via the Workflow set_tier_config action), but
-# the producer itself is a restart-time registration gate.
-WORKFLOW_GOAL_POOL=on
+# Runtime fleet activation is separate from PR-177's goal-pool /
+# marketplace economy layer. Keep the producer dark until that follow-on
+# explicitly ships and flips the per-universe dispatcher tier.
+WORKFLOW_GOAL_POOL=off
 
 # Shared pool root used for daemon/worker goal-pool handoff. This path
 # intentionally lives under WORKFLOW_DATA_DIR so the non-root container

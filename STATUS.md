@@ -48,7 +48,6 @@ universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11
 | Host decision: BUG-018 canonical filename trailing-hyphen — rename canonical to drop, or `wiki action=promote` draft to overwrite? | wiki | - | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
 | **Loop telemetry slice** (PR-172 + spec §15 D1-2): model/provider stamps on run receipts, worker liveness heartbeat, periodic stuck-claim recovery — so loop dormancy is detected, not discovered | fantasy_daemon/__main__.py, workflow/branch_tasks.py, workflow/providers/router.py, workflow/api/status.py + plugin mirrors, tests/ | - | claimed:claude-fable ACTIVE 2026-06-10 |
-| **BUG-126 daemon control** — connector `daemon_get`/`daemon_summon`/`daemon_restart` accept top-level `daemon_id` for runtime recovery | workflow/api/universe.py, packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/api/universe.py, tests/test_api_universe.py | PR #1330 merged; live wiki BUG-126; host allowed parallel despite Loop telemetry broad `tests/` claim | claimed:codex-gpt5-desktop |
 | Host-action: re-register `Workflow DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 | Memory-scope Stage 2c flag | - | 30d clean | monitoring |
 
