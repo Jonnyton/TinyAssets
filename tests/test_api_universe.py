@@ -520,3 +520,64 @@ def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch) -> None:
     ))
     assert banish_out["effect"] == "applied"
     assert banish_out["runtime"]["status"] == "retired"
+
+
+def test_daemon_control_actions_accept_top_level_daemon_id(
+    tmp_path, monkeypatch
+) -> None:
+    """BUG-126: connector-level daemon_id must target daemon control actions."""
+    universe_dir = tmp_path / "u1"
+    universe_dir.mkdir()
+    monkeypatch.setattr(univ_mod, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(univ_mod, "_default_universe", lambda: "u1")
+    monkeypatch.setattr(univ_mod, "_universe_dir", lambda uid: tmp_path / uid)
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host-test")
+
+    create_out = json.loads(univ_mod._universe_impl(
+        action="daemon_create",
+        universe_id="u1",
+        inputs_json=json.dumps({
+            "display_name": "Loop Runner",
+            "soul_text": "Keep the patch loop moving.",
+        }),
+    ))
+    daemon_id = create_out["daemon"]["daemon_id"]
+
+    get_out = json.loads(univ_mod._universe_impl(
+        action="daemon_get",
+        universe_id="u1",
+        daemon_id=daemon_id,
+    ))
+    assert get_out["daemon"]["daemon_id"] == daemon_id
+
+    summon_out = json.loads(univ_mod._universe_impl(
+        action="daemon_summon",
+        universe_id="u1",
+        daemon_id=daemon_id,
+        inputs_json=json.dumps({
+            "provider_name": "codex",
+            "model_name": "gpt-5.4",
+        }),
+    ))
+    runtime = summon_out["runtime"]
+    assert runtime["daemon_id"] == daemon_id
+    assert runtime["status"] == "provisioned"
+
+    restart_out = json.loads(univ_mod._universe_impl(
+        action="daemon_restart",
+        universe_id="u1",
+        daemon_id=daemon_id,
+    ))
+    assert restart_out["effect"] == "queued"
+    assert restart_out["daemon_id"] == daemon_id
+    assert restart_out["runtime_instance_id"] == runtime["runtime_instance_id"]
+    assert restart_out["runtime"]["status"] == "restart_requested"
+
+    control_status = json.loads(univ_mod._universe_impl(
+        action="daemon_control_status",
+        universe_id="u1",
+        daemon_id=daemon_id,
+    ))
+    assert control_status["daemon_count"] == 1
+    assert control_status["runtime_count"] == 1
+    assert control_status["runtimes"][0]["daemon_id"] == daemon_id

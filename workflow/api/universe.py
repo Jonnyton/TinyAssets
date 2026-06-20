@@ -1576,9 +1576,45 @@ def _action_daemon_list(
     }, default=str)
 
 
+def _target_daemon_id(
+    data: dict[str, Any],
+    *,
+    daemon_id: str = "",
+    node_def_id: str = "",
+) -> str:
+    return str(data.get("daemon_id") or daemon_id or node_def_id or "").strip()
+
+
+def _latest_runtime_id_for_daemon(
+    daemon_id: str,
+    *,
+    universe_id: str | None = None,
+) -> str:
+    from workflow.daemon_registry import get_daemon, list_runtime_instances
+
+    get_daemon(_base_path(), daemon_id=daemon_id)
+    runtimes = [
+        runtime
+        for runtime in list_runtime_instances(_base_path(), universe_id=universe_id)
+        if runtime.get("daemon_id") == daemon_id
+    ]
+    active = [runtime for runtime in runtimes if runtime.get("status") != "retired"]
+    candidates = active or runtimes
+    if not candidates:
+        return ""
+    candidates.sort(
+        key=lambda runtime: str(
+            runtime.get("updated_at") or runtime.get("created_at") or ""
+        ),
+        reverse=True,
+    )
+    return str(candidates[0].get("runtime_instance_id") or "").strip()
+
+
 def _action_daemon_get(
     inputs_json: str = "",
     node_def_id: str = "",
+    daemon_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.daemon_registry import get_daemon
@@ -1586,17 +1622,19 @@ def _action_daemon_get(
     data, err = _parse_inputs_object(inputs_json)
     if err:
         return json.dumps({"error": err})
-    daemon_id = str(data.get("daemon_id") or node_def_id or "").strip()
-    if not daemon_id:
+    resolved_daemon_id = _target_daemon_id(
+        data, daemon_id=daemon_id, node_def_id=node_def_id
+    )
+    if not resolved_daemon_id:
         return json.dumps({"error": "daemon_id is required."})
     try:
         daemon = get_daemon(
             _base_path(),
-            daemon_id=daemon_id,
+            daemon_id=resolved_daemon_id,
             include_soul=bool(data.get("include_soul", False)),
         )
     except KeyError:
-        return json.dumps({"error": f"Daemon '{daemon_id}' not found."})
+        return json.dumps({"error": f"Daemon '{resolved_daemon_id}' not found."})
     return json.dumps({"daemon": daemon}, default=str)
 
 
@@ -1640,6 +1678,8 @@ def _action_daemon_summon(
     universe_id: str = "",
     inputs_json: str = "",
     branch_id: str = "",
+    daemon_id: str = "",
+    node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.api.engine_helpers import _current_actor
@@ -1648,18 +1688,20 @@ def _action_daemon_summon(
     data, err = _parse_inputs_object(inputs_json)
     if err:
         return json.dumps({"error": err})
-    daemon_id = str(data.get("daemon_id") or "").strip()
+    resolved_daemon_id = _target_daemon_id(
+        data, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     provider_name = str(data.get("provider_name") or "").strip()
     model_name = str(data.get("model_name") or provider_name).strip()
     uid = universe_id or str(data.get("universe_id") or "").strip() or _default_universe()
-    if not daemon_id:
+    if not resolved_daemon_id:
         return json.dumps({"error": "daemon_id is required."})
     if not provider_name:
         return json.dumps({"error": "provider_name is required."})
     try:
         runtime = summon_daemon(
             _base_path(),
-            daemon_id=daemon_id,
+            daemon_id=resolved_daemon_id,
             universe_id=uid,
             provider_name=provider_name,
             model_name=model_name,
@@ -1668,7 +1710,7 @@ def _action_daemon_summon(
             metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
         )
     except KeyError:
-        return json.dumps({"error": f"Daemon '{daemon_id}' not found."})
+        return json.dumps({"error": f"Daemon '{resolved_daemon_id}' not found."})
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
     return json.dumps({"universe_id": uid, "runtime": runtime}, default=str)
@@ -1708,6 +1750,8 @@ def _action_daemon_runtime_control(
     universe_id: str = "",
     inputs_json: str = "",
     branch_task_id: str = "",
+    daemon_id: str = "",
+    node_def_id: str = "",
 ) -> str:
     from workflow.api.engine_helpers import _current_actor
     from workflow.daemon_registry import control_runtime_instance
@@ -1716,6 +1760,22 @@ def _action_daemon_runtime_control(
     if err:
         return json.dumps({"error": err})
     runtime_id = str(data.get("runtime_instance_id") or branch_task_id or "").strip()
+    resolved_daemon_id = _target_daemon_id(
+        data, daemon_id=daemon_id, node_def_id=node_def_id
+    )
+    if not runtime_id and resolved_daemon_id:
+        uid = universe_id or str(data.get("universe_id") or "").strip() or None
+        try:
+            runtime_id = _latest_runtime_id_for_daemon(
+                resolved_daemon_id,
+                universe_id=uid,
+            )
+        except KeyError:
+            return json.dumps({"error": f"Daemon '{resolved_daemon_id}' not found."})
+        if not runtime_id:
+            return json.dumps({
+                "error": f"Runtime for daemon '{resolved_daemon_id}' not found."
+            })
     if not runtime_id:
         return json.dumps({"error": "runtime_instance_id is required."})
     try:
@@ -1735,6 +1795,8 @@ def _action_daemon_pause(
     universe_id: str = "",
     inputs_json: str = "",
     branch_task_id: str = "",
+    daemon_id: str = "",
+    node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     return _action_daemon_runtime_control(
@@ -1742,6 +1804,8 @@ def _action_daemon_pause(
         universe_id=universe_id,
         inputs_json=inputs_json,
         branch_task_id=branch_task_id,
+        daemon_id=daemon_id,
+        node_def_id=node_def_id,
     )
 
 
@@ -1749,6 +1813,8 @@ def _action_daemon_resume(
     universe_id: str = "",
     inputs_json: str = "",
     branch_task_id: str = "",
+    daemon_id: str = "",
+    node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     return _action_daemon_runtime_control(
@@ -1756,6 +1822,8 @@ def _action_daemon_resume(
         universe_id=universe_id,
         inputs_json=inputs_json,
         branch_task_id=branch_task_id,
+        daemon_id=daemon_id,
+        node_def_id=node_def_id,
     )
 
 
@@ -1763,6 +1831,8 @@ def _action_daemon_restart(
     universe_id: str = "",
     inputs_json: str = "",
     branch_task_id: str = "",
+    daemon_id: str = "",
+    node_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
     return _action_daemon_runtime_control(
@@ -1770,6 +1840,8 @@ def _action_daemon_restart(
         universe_id=universe_id,
         inputs_json=inputs_json,
         branch_task_id=branch_task_id,
+        daemon_id=daemon_id,
+        node_def_id=node_def_id,
     )
 
 
@@ -1813,6 +1885,7 @@ def _action_daemon_control_status(
     inputs_json: str = "",
     node_def_id: str = "",
     branch_task_id: str = "",
+    daemon_id: str = "",
     **_kwargs: Any,
 ) -> str:
     from workflow.api.engine_helpers import _current_actor
@@ -1821,10 +1894,13 @@ def _action_daemon_control_status(
     data, err = _parse_inputs_object(inputs_json)
     if err:
         return json.dumps({"error": err})
+    resolved_daemon_id = _target_daemon_id(
+        data, daemon_id=daemon_id, node_def_id=node_def_id
+    )
     result = daemon_control_status(
         _base_path(),
         actor_id=_current_actor(),
-        daemon_id=str(data.get("daemon_id") or node_def_id or "").strip() or None,
+        daemon_id=resolved_daemon_id or None,
         runtime_instance_id=(
             str(data.get("runtime_instance_id") or branch_task_id or "").strip()
             or None
