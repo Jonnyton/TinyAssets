@@ -1,0 +1,18 @@
+[Unit]
+Description=Refresh Workflow GitHub App installation token
+Documentation=https://github.com/Jonnyton/Workflow/blob/main/docs/ops/bot-identity-setup.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/workflow/github-app-token-refresher.env
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/workflow
+EnvironmentFile=/etc/workflow/github-app-token-refresher.env
+ExecStart=/usr/bin/python3 /opt/workflow/scripts/github-app-token-refresher.py
+TimeoutStartSec=60s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=github-app-token-refresher

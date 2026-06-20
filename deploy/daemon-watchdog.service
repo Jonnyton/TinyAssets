@@ -1,0 +1,16 @@
+[Unit]
+Description=Workflow daemon container and heartbeat watchdog
+Documentation=https://github.com/Jonnyton/Workflow/blob/main/pages/plans/daemon-uptime-auto-recovery-2026-06-19.md
+Requires=docker.service
+After=docker.service workflow-daemon.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/workflow
+ExecStart=/opt/workflow/deploy/daemon-watchdog.sh
+TimeoutStartSec=90s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=daemon-watchdog

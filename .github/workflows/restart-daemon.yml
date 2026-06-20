@@ -1,0 +1,92 @@
+name: Restart daemon
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for the manual restart'
+        required: false
+        type: string
+      install_watchdog:
+        description: 'Install or refresh daemon-watchdog before restart'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restart-daemon
+  cancel-in-progress: false
+
+env:
+  DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+  DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+  CANARY_URL: https://tinyassets.io/mcp
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify secrets present
+        run: |
+          missing=()
+          [ -z "$DO_DROPLET_HOST" ] && missing+=("DO_DROPLET_HOST")
+          [ -z "$DO_SSH_USER" ] && missing+=("DO_SSH_USER")
+          [ -z "${{ secrets.DO_SSH_KEY }}" ] && missing+=("DO_SSH_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Install daemon watchdog
+        if: inputs.install_watchdog == true
+        run: |
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/daemon-watchdog.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/daemon-watchdog.sh"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/daemon-watchdog.service \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/daemon-watchdog.service"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/daemon-watchdog.timer \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/daemon-watchdog.timer"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "set -e; \
+               sudo mkdir -p /opt/workflow/deploy; \
+               sudo install -m 0755 -o root -g root /tmp/daemon-watchdog.sh /opt/workflow/deploy/daemon-watchdog.sh; \
+               sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.service /etc/systemd/system/daemon-watchdog.service; \
+               sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.timer /etc/systemd/system/daemon-watchdog.timer; \
+               sudo systemctl daemon-reload; \
+               sudo systemctl enable --now daemon-watchdog.timer"
+
+      - name: Restart workflow daemon
+        run: |
+          echo "Restart reason: ${{ inputs.reason }}"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "set -e; sudo systemctl reset-failed workflow-daemon.service || true; sudo systemctl restart workflow-daemon.service"
+
+      - name: Wait for public canary
+        run: |
+          for i in $(seq 1 24); do
+            if python scripts/mcp_public_canary.py --url "$CANARY_URL" --timeout 10 >/dev/null 2>&1; then
+              echo "canary green after ${i} poll(s)"
+              exit 0
+            fi
+            sleep 5
+          done
+          python scripts/mcp_public_canary.py --url "$CANARY_URL" --timeout 10 --verbose

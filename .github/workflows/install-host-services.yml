@@ -1,0 +1,77 @@
+name: Install host services
+
+on:
+  workflow_run:
+    workflows: ["Deploy prod"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-host-services
+  cancel-in-progress: false
+
+env:
+  DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+  DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+
+jobs:
+  install:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify secrets present
+        run: |
+          missing=()
+          [ -z "$DO_DROPLET_HOST" ] && missing+=("DO_DROPLET_HOST")
+          [ -z "$DO_SSH_USER" ] && missing+=("DO_SSH_USER")
+          [ -z "${{ secrets.DO_SSH_KEY }}" ] && missing+=("DO_SSH_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload host service files
+        run: |
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/daemon-watchdog.sh \
+              deploy/daemon-watchdog.service \
+              deploy/daemon-watchdog.timer \
+              deploy/github-app-token-refresher.service \
+              deploy/github-app-token-refresher.timer \
+              scripts/github-app-token-refresher.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
+
+      - name: Install and enable host services
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" <<'SH'
+          set -euo pipefail
+          sudo mkdir -p /opt/workflow/deploy /opt/workflow/scripts
+          sudo install -m 0755 -o root -g root /tmp/daemon-watchdog.sh /opt/workflow/deploy/daemon-watchdog.sh
+          sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.service /etc/systemd/system/daemon-watchdog.service
+          sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.timer /etc/systemd/system/daemon-watchdog.timer
+          sudo install -m 0755 -o root -g root /tmp/github-app-token-refresher.py /opt/workflow/scripts/github-app-token-refresher.py
+          sudo install -m 0644 -o root -g root /tmp/github-app-token-refresher.service /etc/systemd/system/github-app-token-refresher.service
+          sudo install -m 0644 -o root -g root /tmp/github-app-token-refresher.timer /etc/systemd/system/github-app-token-refresher.timer
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now daemon-watchdog.timer
+          sudo systemctl enable --now github-app-token-refresher.timer
+          sudo systemctl list-timers --no-pager daemon-watchdog.timer github-app-token-refresher.timer || true
+          SH

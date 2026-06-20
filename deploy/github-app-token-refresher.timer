@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh Workflow GitHub App installation token before expiry
+Requires=github-app-token-refresher.service
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=45min
+AccuracySec=1min
+RandomizedDelaySec=2min
+Persistent=false
+Unit=github-app-token-refresher.service
+
+[Install]
+WantedBy=timers.target
