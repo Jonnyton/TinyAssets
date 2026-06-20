@@ -679,6 +679,18 @@ Notes:
   live `get_status` sees Codex auth, trivial LLM node succeeds, keepalive
   dispatch green.
 
+## BUG-126 Daemon Control - 2026-06-20
+
+- 2026-06-20 create `../wf-bug126-daemon-control` on
+  `codex/bug126-daemon-control` by codex-gpt5-desktop.
+- Source: live wiki BUG-126; host handoff says existing branch was only the
+  old watchdog commit and the actual daemon control fix was not written.
+- Purpose: let connector `daemon_get`, `daemon_summon`, and `daemon_restart`
+  accept top-level `daemon_id`, so a specific daemon can be inspected,
+  revived, or restarted without host shell access.
+- Ship condition: focused universe API tests pass, plugin mirror parity passes,
+  branch pushed, PR opened for checker review.
+
 ## 4 Runtimes Up Deploy Config - 2026-06-20
 
 - 2026-06-20 create `../wf-four-runtimes-up` on `codex/four-runtimes-up` by
