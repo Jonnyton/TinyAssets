@@ -20,6 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
+GITIGNORE = REPO_ROOT / ".gitignore"
 COMPOSE = REPO_ROOT / "deploy" / "compose.yml"
 ENV_TEMPLATE = REPO_ROOT / "deploy" / "workflow-env.template"
 ENTRYPOINT = REPO_ROOT / "deploy" / "docker-entrypoint.sh"
@@ -238,6 +239,20 @@ def test_dockerignore_allows_plan_md_into_context():
     assert "!PLAN.md" in text, (
         ".dockerignore must unignore PLAN.md; otherwise Docker COPY PLAN.md "
         "works locally but fails in CI build context"
+    )
+
+
+def test_local_git_credentials_stay_out_of_git_and_docker_context():
+    """Local Git credential helpers must not be stageable or sent to Docker."""
+    gitignore = GITIGNORE.read_text(encoding="utf-8")
+    dockerignore = DOCKERIGNORE.read_text(encoding="utf-8")
+
+    assert "*git-credentials*" in gitignore, (
+        ".gitignore must catch local Git credential helper files before staging"
+    )
+    assert "*credentials*" in dockerignore, (
+        ".dockerignore must catch credential files even when the basename has "
+        "a host/tool prefix"
     )
 
 
