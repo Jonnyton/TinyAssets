@@ -44,7 +44,6 @@ universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11
 | Windows full-suite backup.sh path fix | tests/test_backup_script.py | #18,#23 | dev-ready |
 | Clean-clone MCP config test mismatch | tests/test_mcp_server.py, .mcp.example.json | #18,#23 | dev-ready |
 | Card-matcher cleanup vs legacy-connector fallback contract | scripts/claude_chat.py, tests/test_claude_chat_inline_dismiss.py | - | dev-ready |
-| **4 runtimes up deploy/config** — split from PR-177: 2 Codex + 2 Claude pinned workers; shared auth; goal_pool/marketplace deferred | deploy/compose.yml, deploy/workflow-env.template, deploy/codex-flock-wrapper.sh, .github/workflows/deploy-prod.yml, workflow/{cloud_worker,cloud_worker_healthcheck,daemon_registry}.py + plugin mirror, tests/{cloud_worker,daemon_registry,dockerfile_shape,deploy_prod_workflow,loop_telemetry}.py, PLAN.md | #1330 merged; host priority overrides broad Loop telemetry `tests/` claim | claimed:codex-gpt5-desktop ACTIVE 2026-06-20 |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | host | host-decision |
 | Host decision: BUG-018 canonical filename trailing-hyphen — rename canonical to drop, or `wiki action=promote` draft to overwrite? | wiki | - | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
