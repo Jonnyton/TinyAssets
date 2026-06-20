@@ -336,9 +336,15 @@ def test_deploy_verifies_cloud_worker_running():
         (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
         None,
     )
-    assert worker_step is not None, "deploy must verify workflow-worker is running"
+    assert worker_step is not None, "deploy must verify cloud workers are running"
     run_script = worker_step.get("run", "") or ""
-    assert "workflow-worker" in run_script
+    for name in (
+        "workflow-worker",
+        "workflow-worker-codex-2",
+        "workflow-worker-claude-1",
+        "workflow-worker-claude-2",
+    ):
+        assert name in run_script
     assert "docker inspect" in run_script
     assert "State.Running" in run_script
     assert "for i in $(seq 1 30)" in run_script

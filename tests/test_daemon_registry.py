@@ -124,6 +124,78 @@ def test_summon_and_banish_daemon_wrap_runtime_instance(tmp_path):
     assert retired["status"] == "retired"
 
 
+def test_ensure_daemon_runtime_reuses_worker_slot(tmp_path):
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Fleet Runner",
+        created_by="host",
+        soul_text="Run the host patch loop.",
+    )
+
+    first = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-droplet-codex-1",
+        worker_id="codex-1",
+    )
+    second = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-droplet-codex-1",
+        worker_id="codex-1",
+    )
+
+    assert second["runtime_instance_id"] == first["runtime_instance_id"]
+    assert second["status"] == "provisioned"
+    assert second["metadata"]["worker_id"] == "codex-1"
+    assert second["metadata"]["runtime_registration"] == "cloud_worker"
+    runtimes = daemon_registry.list_runtime_instances(
+        tmp_path, universe_id="patch-loop-live",
+    )
+    assert [r["runtime_instance_id"] for r in runtimes] == [
+        first["runtime_instance_id"],
+    ]
+
+
+def test_ensure_daemon_runtime_adopts_unassigned_matching_slot(tmp_path):
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Existing Fleet Runner",
+        created_by="host",
+        soul_text="Run existing loop capacity.",
+    )
+    existing = daemon_registry.summon_daemon(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="anonymous",
+    )
+
+    ensured = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-droplet-codex-1",
+        worker_id="codex-1",
+    )
+
+    assert ensured["runtime_instance_id"] == existing["runtime_instance_id"]
+    assert ensured["metadata"]["worker_id"] == "codex-1"
+    assert len(daemon_registry.list_runtime_instances(
+        tmp_path, universe_id="patch-loop-live",
+    )) == 1
+
+
 def test_summon_rejects_model_mismatch_for_bound_daemon(tmp_path):
     daemon = daemon_registry.create_daemon(
         tmp_path,

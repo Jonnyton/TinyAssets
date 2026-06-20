@@ -66,6 +66,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -89,6 +90,10 @@ DEFAULT_PRODUCER_POLL_INTERVAL_S = 30.0  # Goal-pool pickup latency cap.
 # so activity-log entries are distinguishable from the laptop's "host"
 # identity.
 DEFAULT_HOST_USER = "cloud-droplet"
+DEFAULT_WORKER_MODELS = {
+    "codex": "gpt-5",
+    "claude-code": "claude",
+}
 
 
 def _resolve_universe_path() -> Path:
@@ -141,6 +146,23 @@ def _cloud_host_user() -> str:
     return override or DEFAULT_HOST_USER
 
 
+def _worker_id() -> str:
+    override = os.environ.get("WORKFLOW_WORKER_ID", "").strip()
+    return override or _cloud_host_user()
+
+
+def _safe_worker_id(worker_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", worker_id.strip())
+    return safe.strip(".-") or "default"
+
+
+def supervisor_heartbeat_filename(worker_id: str | None = None) -> str:
+    clean = _safe_worker_id(worker_id or "")
+    if not worker_id or clean == "default":
+        return SUPERVISOR_HEARTBEAT_FILENAME
+    return f".worker_supervisor.{clean}.json"
+
+
 def _build_subprocess_env(universe: Path | None = None) -> dict[str, str]:
     """Construct the env dict the fantasy_daemon subprocess inherits.
 
@@ -159,6 +181,92 @@ def _build_subprocess_env(universe: Path | None = None) -> dict[str, str]:
     # cloud worker behavior is deterministic regardless of env file.
     env.setdefault("WORKFLOW_UNIFIED_EXECUTION", "1")
     return env
+
+
+def _provider_from_daemon_args(extra_args: list[str] | None) -> str:
+    args = list(extra_args or [])
+    for idx, value in enumerate(args):
+        if value == "--provider" and idx + 1 < len(args):
+            return str(args[idx + 1]).strip()
+        if value.startswith("--provider="):
+            return value.split("=", 1)[1].strip()
+    return ""
+
+
+def _worker_model_for_provider(provider_name: str) -> str:
+    explicit = os.environ.get("WORKFLOW_WORKER_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if provider_name == "codex":
+        return os.environ.get("WORKFLOW_CODEX_MODEL", "").strip() or DEFAULT_WORKER_MODELS["codex"]
+    if provider_name == "claude-code":
+        return os.environ.get("WORKFLOW_CLAUDE_MODEL", "").strip() or DEFAULT_WORKER_MODELS["claude-code"]
+    return provider_name
+
+
+def _subscription_auth_available(provider_name: str) -> bool:
+    if provider_name == "codex":
+        codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+        return (codex_home / "auth.json").is_file()
+    if provider_name == "claude-code":
+        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
+            return True
+        config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+        try:
+            return config_dir.is_dir() and any(config_dir.iterdir())
+        except OSError:
+            return False
+    return True
+
+
+def _register_worker_runtime(universe: Path, provider_name: str) -> None:
+    """Best-effort runtime registry visibility for a supervised worker."""
+    if not provider_name:
+        return
+    if not _subscription_auth_available(provider_name):
+        logger.warning(
+            "cloud_worker: %s subscription auth not available; "
+            "runtime registration will retry on next spawn",
+            provider_name,
+        )
+        return
+    try:
+        from workflow.daemon_registry import (
+            ensure_daemon_runtime,
+            select_project_loop_daemon,
+        )
+        from workflow.storage import data_dir
+
+        base = data_dir()
+        daemon = select_project_loop_daemon(base)
+        if daemon is None:
+            logger.warning(
+                "cloud_worker: no project loop daemon registered; "
+                "skipping runtime registration",
+            )
+            return
+        runtime = ensure_daemon_runtime(
+            base,
+            daemon_id=daemon["daemon_id"],
+            universe_id=universe.name or "default-universe",
+            provider_name=provider_name,
+            model_name=_worker_model_for_provider(provider_name),
+            created_by=_cloud_host_user(),
+            worker_id=_worker_id(),
+            metadata={
+                "container_host": socket.gethostname(),
+                "worker_provider": provider_name,
+            },
+        )
+        logger.info(
+            "cloud_worker: runtime registered worker_id=%s provider=%s runtime=%s",
+            _worker_id(), provider_name, runtime["runtime_instance_id"],
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "cloud_worker: runtime registration failed for provider=%s",
+            provider_name,
+        )
 
 
 def _truthy_env(name: str) -> bool:
@@ -266,6 +374,7 @@ def _spawn_fantasy_daemon(
     ]
     if extra_args:
         args.extend(extra_args)
+    _register_worker_runtime(universe, _provider_from_daemon_args(extra_args))
     env = _build_subprocess_env(universe)
     logger.info(
         "spawning fantasy_daemon: universe=%s host_user=%s",
@@ -372,14 +481,19 @@ def write_supervisor_heartbeat(
         "subprocess_pid": subprocess_pid,
         "subprocess_alive": subprocess_alive,
         "planned_sleep_s": planned_sleep_s,
+        "worker_id": _worker_id(),
     }
-    target = universe / SUPERVISOR_HEARTBEAT_FILENAME
-    tmp = universe / (SUPERVISOR_HEARTBEAT_FILENAME + ".tmp")
-    try:
-        tmp.write_text(json.dumps(beat), encoding="utf-8")
-        tmp.replace(target)
-    except OSError:
-        logger.exception("cloud_worker: heartbeat write failed at %s", target)
+    filenames = [supervisor_heartbeat_filename(_worker_id())]
+    if filenames[0] != SUPERVISOR_HEARTBEAT_FILENAME:
+        filenames.append(SUPERVISOR_HEARTBEAT_FILENAME)
+    for filename in filenames:
+        target = universe / filename
+        tmp = universe / (filename + ".tmp")
+        try:
+            tmp.write_text(json.dumps(beat), encoding="utf-8")
+            tmp.replace(target)
+        except OSError:
+            logger.exception("cloud_worker: heartbeat write failed at %s", target)
 
 
 def run_supervisor(
@@ -392,6 +506,7 @@ def run_supervisor(
     poll_interval: float = DEFAULT_POLL_INTERVAL_S,
     producer_poll_interval: float = DEFAULT_PRODUCER_POLL_INTERVAL_S,
     max_iterations: int | None = None,
+    daemon_args: list[str] | None = None,
     spawn_fn=None,
     sleep_fn=None,
 ) -> SupervisorState:
@@ -413,7 +528,11 @@ def run_supervisor(
     monkeypatch the module attribute freely.
     """
     if spawn_fn is None:
-        spawn_fn = _spawn_fantasy_daemon
+        if daemon_args:
+            def spawn_fn(universe: Path) -> subprocess.Popen:
+                return _spawn_fantasy_daemon(universe, extra_args=daemon_args)
+        else:
+            spawn_fn = _spawn_fantasy_daemon
     if sleep_fn is None:
         sleep_fn = time.sleep
 
@@ -642,6 +761,11 @@ def main(argv: list[str] | None = None) -> int:
              f"subprocess is running (default: {DEFAULT_PRODUCER_POLL_INTERVAL_S}).",
     )
     parser.add_argument(
+        "--provider",
+        default="",
+        help="Pin the supervised fantasy_daemon writer provider.",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true",
         help="DEBUG-level logging.",
     )
@@ -666,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
         max_backoff=args.max_backoff,
         producer_poll_interval=args.producer_poll_interval,
         max_iterations=args.max_iterations,
+        daemon_args=["--provider", args.provider] if args.provider else None,
     )
     logger.info("cloud_worker: supervisor exited; %s", state.summary())
     return 0

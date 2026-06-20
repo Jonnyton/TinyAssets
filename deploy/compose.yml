@@ -53,7 +53,9 @@ services:
       WORKFLOW_REPO_ROOT: /data/community-pool
       WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
       WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
-      WORKFLOW_GOAL_POOL: "on"
+      # Fleet activation only. Goal-pool/marketplace economy stays dark
+      # until the PR-177 follow-on intentionally unstubs it.
+      WORKFLOW_GOAL_POOL: "off"
       # Pass through anything in the env file.
       WORKFLOW_MCP_CANARY_URL: ${WORKFLOW_MCP_CANARY_URL:-https://tinyassets.io/mcp}
     env_file:
@@ -128,44 +130,40 @@ services:
       org.workflow.component: logs
       org.workflow.role: log-forwarder
 
-  # Task #14 — cloud-side node-executor worker. Closes the uptime gap
-  # where MCP surface + canary + paging + DR all work 24/7 but node
-  # execution depended on the host's laptop. Supervisor process spawns
-  # `python -m fantasy_daemon --universe ... --no-tray` and restarts
-  # on exit with exponential backoff on crashes.
+  # Cloud-side node-executor fleet. This is the small "4 runtimes up"
+  # slice: two Codex workers and two Claude workers, all serving the
+  # host's main universe first. Goal-pool/marketplace spare-capacity
+  # routing remains a PR-177 follow-on.
   #
-  # Identity: sets UNIVERSE_SERVER_HOST_USER=cloud-droplet so activity
-  # log entries distinguish cloud-executed work from host/laptop work.
-  # Concurrency safety: branch_tasks.claim_task is file-locked — two
-  # fantasy_daemon processes on different hosts claiming tasks in the
-  # same universe file race for the lock; loser sees status != pending
-  # and returns None. No double-claim possible.
+  # Auth: all Codex workers share CODEX_HOME=/data/.codex, protected by
+  # the image's /usr/local/bin/codex flock wrapper; all Claude workers
+  # share CLAUDE_CONFIG_DIR=/data/.claude. Do not split auth homes per
+  # daemon unless the provider subscription model changes.
   #
-  # Shares the workflow-data volume + /etc/workflow/env with `daemon`
-  # so state persists across deploys and secrets are centralized.
-  worker:
+  # Concurrency safety: branch_tasks.claim_task is file-locked. Multiple
+  # workers claiming tasks in the same universe file race for the lock;
+  # loser sees status != pending and returns None. No double-claim possible.
+  worker: &cloud_worker_base
     image: ${WORKFLOW_IMAGE:?Set WORKFLOW_IMAGE to an immutable ghcr.io/jonnyton/workflow-daemon@sha256:<digest> ref}
     container_name: workflow-worker
     restart: unless-stopped
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
-    command: ["python", "-m", "workflow.cloud_worker"]
-    environment:
+    command: ["python", "-m", "workflow.cloud_worker", "--provider", "codex"]
+    environment: &cloud_worker_env
       HOME: /app
       WORKFLOW_DATA_DIR: /data
-      # Same shared Codex auth home as `daemon`; worker also invokes codex exec.
       CODEX_HOME: /data/.codex
-      # Same shared Claude auth config as `daemon`; worker also invokes claude -p.
       CLAUDE_CONFIG_DIR: /data/.claude
       WORKFLOW_REPO_ROOT: /data/community-pool
       WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
       WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
-      WORKFLOW_GOAL_POOL: "on"
-      # Cloud-side identity — distinguishes activity-log entries from
-      # the host's `host` identity so multi-tenant ops can tell who
-      # did what.
-      UNIVERSE_SERVER_HOST_USER: cloud-droplet
+      WORKFLOW_GOAL_POOL: "off"
+      WORKFLOW_PAID_MARKET: "off"
+      WORKFLOW_WORKER_ID: codex-1
+      WORKFLOW_WORKER_MODEL: gpt-5
+      UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-1
     env_file:
       - /etc/workflow/env
     volumes:
@@ -174,8 +172,8 @@ services:
       daemon:
         condition: service_healthy
     # Liveness watchdog (docs/specs/daemon-liveness-watchdog.md §1): the
-    # supervisor writes <universe>/.worker_supervisor.json beats; this
-    # check fails when beats go stale or pickable work sits unclaimed
+    # supervisor writes worker-specific beats; this check fails when
+    # this container's beat goes stale or pickable work sits unclaimed
     # (the 2026-06 dormancy class: container "healthy" 37h while no
     # claims happened). NOTE: compose does NOT restart unhealthy
     # containers by itself — deploy/workflow-autoheal.timer on the host
@@ -189,6 +187,35 @@ services:
     labels:
       org.workflow.component: worker
       org.workflow.role: node-executor
+
+  worker-codex-2:
+    <<: *cloud_worker_base
+    container_name: workflow-worker-codex-2
+    environment:
+      <<: *cloud_worker_env
+      WORKFLOW_WORKER_ID: codex-2
+      WORKFLOW_WORKER_MODEL: gpt-5
+      UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-2
+
+  worker-claude-1:
+    <<: *cloud_worker_base
+    container_name: workflow-worker-claude-1
+    command: ["python", "-m", "workflow.cloud_worker", "--provider", "claude-code"]
+    environment:
+      <<: *cloud_worker_env
+      WORKFLOW_WORKER_ID: claude-1
+      WORKFLOW_WORKER_MODEL: claude
+      UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-1
+
+  worker-claude-2:
+    <<: *cloud_worker_base
+    container_name: workflow-worker-claude-2
+    command: ["python", "-m", "workflow.cloud_worker", "--provider", "claude-code"]
+    environment:
+      <<: *cloud_worker_env
+      WORKFLOW_WORKER_ID: claude-2
+      WORKFLOW_WORKER_MODEL: claude
+      UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-2
 
 volumes:
   workflow-data:

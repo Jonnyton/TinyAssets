@@ -47,7 +47,7 @@ output/
 *.secret
 *secrets*
 .ssh/
-credentials*
+*credentials*
 id_rsa*
 id_ed25519*
 id_ecdsa*

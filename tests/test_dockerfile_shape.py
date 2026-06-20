@@ -20,6 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
+GITIGNORE = REPO_ROOT / ".gitignore"
 COMPOSE = REPO_ROOT / "deploy" / "compose.yml"
 ENV_TEMPLATE = REPO_ROOT / "deploy" / "workflow-env.template"
 ENTRYPOINT = REPO_ROOT / "deploy" / "docker-entrypoint.sh"
@@ -241,6 +242,20 @@ def test_dockerignore_allows_plan_md_into_context():
     )
 
 
+def test_local_git_credentials_stay_out_of_git_and_docker_context():
+    """Local Git credential helpers must not be stageable or sent to Docker."""
+    gitignore = GITIGNORE.read_text(encoding="utf-8")
+    dockerignore = DOCKERIGNORE.read_text(encoding="utf-8")
+
+    assert "*git-credentials*" in gitignore, (
+        ".gitignore must catch local Git credential helper files before staging"
+    )
+    assert "*credentials*" in dockerignore, (
+        ".dockerignore must catch credential files even when the basename has "
+        "a host/tool prefix"
+    )
+
+
 # ---------------------------------------------------------------------------
 # workflow-env.template — subscription auth + deprecated API-key placeholder
 # ---------------------------------------------------------------------------
@@ -298,7 +313,13 @@ def test_compose_requires_explicit_workflow_image_without_latest_default():
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in ("daemon", "worker"):
+    for service_name in (
+        "daemon",
+        "worker",
+        "worker-codex-2",
+        "worker-claude-1",
+        "worker-claude-2",
+    ):
         image = data["services"][service_name].get("image", "")
         assert "${WORKFLOW_IMAGE:?" in image, (
             f"{service_name} image must require WORKFLOW_IMAGE instead of "
@@ -337,7 +358,13 @@ def test_compose_codex_auth_home_is_shared_data_volume():
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in ("daemon", "worker"):
+    for service_name in (
+        "daemon",
+        "worker",
+        "worker-codex-2",
+        "worker-claude-1",
+        "worker-claude-2",
+    ):
         service = data["services"][service_name]
         environment = service.get("environment") or {}
         volumes = service.get("volumes") or []
@@ -356,12 +383,48 @@ def test_compose_claude_config_dir_is_shared_data_volume():
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in ("daemon", "worker"):
+    for service_name in (
+        "daemon",
+        "worker",
+        "worker-codex-2",
+        "worker-claude-1",
+        "worker-claude-2",
+    ):
         service = data["services"][service_name]
         environment = service.get("environment") or {}
         volumes = service.get("volumes") or []
         assert environment.get("CLAUDE_CONFIG_DIR") == "/data/.claude"
         assert "workflow-data:/data" in volumes
+
+
+def test_compose_declares_four_pinned_cloud_workers_with_goal_pool_off():
+    yaml = __import__("yaml")
+    data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    services = data["services"]
+    expected = {
+        "worker": ("workflow-worker", "codex", "codex-1", "cloud-droplet-codex-1"),
+        "worker-codex-2": (
+            "workflow-worker-codex-2", "codex", "codex-2", "cloud-droplet-codex-2",
+        ),
+        "worker-claude-1": (
+            "workflow-worker-claude-1", "claude-code", "claude-1",
+            "cloud-droplet-claude-1",
+        ),
+        "worker-claude-2": (
+            "workflow-worker-claude-2", "claude-code", "claude-2",
+            "cloud-droplet-claude-2",
+        ),
+    }
+
+    for service_name, (container, provider, worker_id, host_user) in expected.items():
+        service = services[service_name]
+        environment = service.get("environment") or {}
+        command = service.get("command") or []
+        assert service["container_name"] == container
+        assert command[-2:] == ["--provider", provider]
+        assert environment.get("WORKFLOW_WORKER_ID") == worker_id
+        assert environment.get("UNIVERSE_SERVER_HOST_USER") == host_user
+        assert environment.get("WORKFLOW_GOAL_POOL") == "off"
 
 
 # ---------------------------------------------------------------------------

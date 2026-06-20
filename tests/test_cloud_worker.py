@@ -659,6 +659,32 @@ def test_spawn_argv_uses_fantasy_daemon_module(tmp_path, monkeypatch):
     assert captured["args"][idx + 1] == "fantasy_daemon"
 
 
+def test_main_passes_provider_pin_to_supervised_daemon(tmp_path, monkeypatch):
+    universe = tmp_path / "test-universe"
+    universe.mkdir()
+    (universe / "PROGRAM.md").write_text("x", encoding="utf-8")
+    captured = {}
+
+    def fake_spawn(u, *, extra_args=None):
+        captured["universe"] = u
+        captured["extra_args"] = list(extra_args or [])
+        return FakeProc(returncode=0, steps_until_exit=0)
+
+    monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    rc = cw.main([
+        "--universe", str(universe),
+        "--provider", "codex",
+        "--max-iterations", "1",
+        "--idle-backoff", "0",
+    ])
+
+    assert rc == 0
+    assert captured["universe"] == universe
+    assert captured["extra_args"] == ["--provider", "codex"]
+
+
 # ---- main() smoke -------------------------------------------------------
 
 

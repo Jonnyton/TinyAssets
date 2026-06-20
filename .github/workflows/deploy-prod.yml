@@ -566,33 +566,36 @@ jobs:
 
       - name: Verify cloud worker is running
         run: |
-          running=""
-          for i in $(seq 1 30); do
-            running=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo docker inspect -f '{{.State.Running}}' workflow-worker 2>/dev/null || true")
-            if [ "${running}" = "true" ]; then
-              echo "workflow-worker running after ${i} poll(s)"
-              break
+          worker_containers="workflow-worker workflow-worker-codex-2 workflow-worker-claude-1 workflow-worker-claude-2"
+          for container in ${worker_containers}; do
+            running=""
+            for i in $(seq 1 30); do
+              running=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "sudo docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null || true")
+              if [ "${running}" = "true" ]; then
+                echo "${container} running after ${i} poll(s)"
+                break
+              fi
+              sleep 2
+            done
+            if [ "${running}" != "true" ]; then
+              echo "::error::${container} is not running after deploy; node execution fleet is not 24/7."
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "sudo docker compose -f /opt/workflow/compose.yml ps; sudo docker logs --tail 120 ${container} 2>&1 || true"
+              exit 1
             fi
-            sleep 2
-          done
-          if [ "${running}" != "true" ]; then
-            echo "::error::workflow-worker is not running after deploy; node execution is not 24/7."
+            if ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo docker exec ${container} env | grep -q '^WORKFLOW_UNIVERSE='"; then
+              echo "::error::${container} inherited WORKFLOW_UNIVERSE from /etc/workflow/env. That stdio-only override can bind a worker to a different universe than the public MCP default."
+              exit 1
+            fi
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo docker compose -f /opt/workflow/compose.yml ps; sudo docker logs --tail 120 workflow-worker 2>&1 || true"
-            exit 1
-          fi
-          if ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker exec workflow-worker env | grep -q '^WORKFLOW_UNIVERSE='"; then
-            echo "::error::workflow-worker inherited WORKFLOW_UNIVERSE from /etc/workflow/env. That stdio-only override can bind the worker to a different universe than the public MCP default."
-            exit 1
-          fi
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker logs --tail 160 workflow-worker 2>&1 | grep -E 'cloud_worker:|Registered|Graph execution failed|subprocess exited|spawn failed|No module named|Traceback' || true"
+                "sudo docker logs --tail 160 ${container} 2>&1 | grep -E 'cloud_worker:|Registered|Graph execution failed|subprocess exited|spawn failed|No module named|Traceback' || true"
+          done
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               'sudo docker exec -i workflow-worker python -' <<'PY'
