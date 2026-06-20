@@ -170,6 +170,17 @@ In normal steady-state operation (volume intact, container restarts
 for image bumps), Codex's in-place refresh chain survives indefinitely
 with no host intervention.
 
+Claude Code subscription auth mirrors this persistence pattern directly.
+`deploy/compose.yml` sets `CLAUDE_CONFIG_DIR=/data/.claude`, and the
+entrypoint creates that directory on the shared `workflow-data` volume.
+The matching keepalive workflow runs a trivial `claude -p` call with the
+same `CLAUDE_CONFIG_DIR` so the subscription session is exercised after
+deploys and during idle weeks. Host login command for a fresh volume:
+
+```bash
+sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude workflow-daemon claude auth login --claudeai
+```
+
 ## Step 4 — Start the daemon (~30 sec)
 
 ```bash

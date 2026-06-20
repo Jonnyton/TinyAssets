@@ -283,11 +283,12 @@ jobs:
           SH
 
       # Codex CLI rotates single-use OAuth refresh tokens in-place inside
-      # the container. compose.yml sets CODEX_HOME=/data/.codex for daemon
-      # + worker, backed by the shared workflow-data volume, so the rotated
-      # chain survives container restart. This step makes that directory
-      # self-provisioning on every deploy — idempotent, no host hands
-      # required, per the Forever Rule (24/7 uptime, zero hosts online).
+      # the container. compose.yml sets CODEX_HOME=/data/.codex and
+      # CLAUDE_CONFIG_DIR=/data/.claude for daemon + worker, backed by the
+      # shared workflow-data volume, so rotated subscription auth survives
+      # container restart. This step makes those directories self-provisioning
+      # on every deploy — idempotent, no host hands required, per the Forever
+      # Rule (24/7 uptime, zero hosts online).
       #
       # Three idempotent branches:
       #   - workflow-data/.codex already present -> skip creation
@@ -295,6 +296,8 @@ jobs:
       #   - no running container with /data/.codex/auth.json or legacy
       #     /app/.codex/auth.json -> skip migration
       #     (new container will seed from WORKFLOW_CODEX_AUTH_JSON_B64 on first boot)
+      #   - /data/.claude already present -> preserve; otherwise migrate from
+      #     a running container's /data/.claude or legacy /app/.claude.
       #
       # The migration branch only fires once: the first deploy after this
       # CODEX_HOME move onto a live droplet where workflow-worker has a
@@ -313,6 +316,7 @@ jobs:
           docker volume create "$VOLUME_NAME" >/dev/null
           VOLUME_DIR="$(docker volume inspect "$VOLUME_NAME" --format '{{ .Mountpoint }}')"
           CODEX_DIR="$VOLUME_DIR/.codex"
+          CLAUDE_DIR="$VOLUME_DIR/.claude"
 
           # Create the directory if missing. mkdir -p is itself a no-op
           # when the path already exists.
@@ -353,6 +357,35 @@ jobs:
 
           # Confirm final state for the log.
           ls -la "$CODEX_DIR" || true
+
+          if [ ! -d "$CLAUDE_DIR" ]; then
+            echo "creating Claude auth persistent directory at $CLAUDE_DIR"
+            mkdir -p "$CLAUDE_DIR"
+          fi
+          chown -R "$WORKFLOW_UID:$WORKFLOW_GID" "$CLAUDE_DIR"
+          chmod 700 "$CLAUDE_DIR"
+
+          if ! find "$CLAUDE_DIR" -mindepth 1 -maxdepth 1 | grep -q .; then
+            tmp_claude="$(mktemp -d)"
+            if docker inspect workflow-worker >/dev/null 2>&1; then
+              if docker exec workflow-worker test -d /data/.claude 2>/dev/null; then
+                echo "migrating live Claude config from workflow-worker:/data/.claude"
+                docker cp workflow-worker:/data/.claude/. "$tmp_claude/" || true
+              elif docker exec workflow-worker test -d /app/.claude 2>/dev/null; then
+                echo "migrating legacy Claude config from workflow-worker:/app/.claude"
+                docker cp workflow-worker:/app/.claude/. "$tmp_claude/" || true
+              fi
+            fi
+            if find "$tmp_claude" -mindepth 1 -maxdepth 1 | grep -q .; then
+              cp -a "$tmp_claude"/. "$CLAUDE_DIR"/
+              chown -R "$WORKFLOW_UID:$WORKFLOW_GID" "$CLAUDE_DIR"
+              find "$CLAUDE_DIR" -type d -exec chmod 700 {} +
+              find "$CLAUDE_DIR" -type f -exec chmod 600 {} +
+            fi
+            rm -rf "$tmp_claude"
+          fi
+
+          ls -la "$CLAUDE_DIR" || true
           SH
 
       - name: Deploy new image

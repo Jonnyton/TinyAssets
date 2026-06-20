@@ -33,6 +33,7 @@ from unittest.mock import patch
 import pytest
 
 from workflow.branches import NodeDefinition
+from workflow.credential_vault import write_credential_vault
 from workflow.effectors import EXTERNAL_WRITE_SINK_GITHUB_PR
 from workflow.effectors.github_pr import (
     _CAPABILITIES_ENV,
@@ -164,6 +165,35 @@ def test_read_capability_unset_env_returns_empty():
     """No env set -> empty token -> missing_capability dry-run."""
     # _clean_capability_env autouse already cleared the env.
     assert _read_capability("Jonnyton/Workflow") == ""
+
+
+def test_read_capability_uses_universe_vault_before_env(universe_dir, monkeypatch):
+    monkeypatch.setenv(
+        _CAPABILITIES_ENV, json.dumps({_DESTINATION: "env-token"}),
+    )
+    write_credential_vault(
+        universe_dir,
+        [
+            {
+                "credential_type": "vcs",
+                "service": "github",
+                "destination": _DESTINATION,
+                "purpose": "write",
+                "token": "vault-token",
+            }
+        ],
+    )
+
+    assert _read_capability(_DESTINATION, universe_dir) == "vault-token"
+
+
+def test_read_capability_empty_universe_vault_blocks_env(universe_dir, monkeypatch):
+    monkeypatch.setenv(
+        _CAPABILITIES_ENV, json.dumps({_DESTINATION: "env-token"}),
+    )
+    write_credential_vault(universe_dir, [])
+
+    assert _read_capability(_DESTINATION, universe_dir) == ""
 
 
 def test_read_capability_malformed_json_logs_and_returns_empty(monkeypatch):

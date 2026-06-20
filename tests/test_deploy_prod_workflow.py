@@ -595,6 +595,20 @@ def test_codex_volume_step_migrates_from_running_container_once():
     assert 'chmod 600 "$CODEX_DIR/auth.json"' in run_script
 
 
+def test_subscription_volume_step_prepares_claude_config_dir():
+    wf = _load()
+    step = _codex_volume_step(wf)
+    run_script = step.get("run", "") or ""
+    assert 'CLAUDE_DIR="$VOLUME_DIR/.claude"' in run_script
+    assert 'mkdir -p "$CLAUDE_DIR"' in run_script
+    assert 'chown -R "$WORKFLOW_UID:$WORKFLOW_GID" "$CLAUDE_DIR"' in run_script
+    assert 'chmod 700 "$CLAUDE_DIR"' in run_script
+    assert 'docker exec workflow-worker test -d /data/.claude' in run_script
+    assert 'docker exec workflow-worker test -d /app/.claude' in run_script
+    assert "docker cp workflow-worker:/data/.claude/." in run_script
+    assert "docker cp workflow-worker:/app/.claude/." in run_script
+
+
 # ---------------------------------------------------------------------------
 # PR-128 — Phase 2 capability map sync into /etc/workflow/env
 # ---------------------------------------------------------------------------

@@ -141,7 +141,7 @@ def _cloud_host_user() -> str:
     return override or DEFAULT_HOST_USER
 
 
-def _build_subprocess_env() -> dict[str, str]:
+def _build_subprocess_env(universe: Path | None = None) -> dict[str, str]:
     """Construct the env dict the fantasy_daemon subprocess inherits.
 
     Starts from the parent env, overlays the cloud-specific host-user
@@ -152,6 +152,8 @@ def _build_subprocess_env() -> dict[str, str]:
 
     env = subprocess_env_without_api_keys() or dict(os.environ)
     env["UNIVERSE_SERVER_HOST_USER"] = _cloud_host_user()
+    if universe is not None:
+        env["WORKFLOW_UNIVERSE"] = str(universe)
     # Make sure unified execution is on — dispatcher pick is gated on
     # this flag. It defaults on in production but we force it here so
     # cloud worker behavior is deterministic regardless of env file.
@@ -264,7 +266,7 @@ def _spawn_fantasy_daemon(
     ]
     if extra_args:
         args.extend(extra_args)
-    env = _build_subprocess_env()
+    env = _build_subprocess_env(universe)
     logger.info(
         "spawning fantasy_daemon: universe=%s host_user=%s",
         universe, env.get("UNIVERSE_SERVER_HOST_USER"),

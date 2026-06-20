@@ -6,6 +6,7 @@ from pathlib import Path
 
 from workflow.auto_ship_ledger import ShipAttempt, find_attempt, record_attempt
 from workflow.auto_ship_pr import PR_CREATE_FLAG, open_auto_ship_pr
+from workflow.credential_vault import write_credential_vault
 
 
 def _attempt(
@@ -95,6 +96,65 @@ def test_enabled_requires_token(tmp_path):
     row = find_attempt(tmp_path, attempt_id)
     assert row is not None
     assert row.ship_status == "failed"
+
+
+def test_enabled_uses_vault_token_and_ignores_env(tmp_path, monkeypatch):
+    attempt_id = _record(tmp_path)
+    monkeypatch.setenv("GH_TOKEN", "env-token")
+    write_credential_vault(
+        tmp_path,
+        [
+            {
+                "credential_type": "vcs",
+                "service": "github",
+                "destination": "Jonnyton/Workflow",
+                "purpose": "write",
+                "token": "vault-token",
+            }
+        ],
+    )
+    calls = []
+
+    def fake_get(url, token):
+        calls.append(("get", token))
+        return 200, {"status": "ahead", "behind_by": 0}
+
+    def fake_post(url, token, payload):
+        calls.append(("post", token))
+        return 201, {
+            "html_url": "https://github.com/Jonnyton/Workflow/pull/999",
+            "number": 999,
+            "head": {"sha": "abc123"},
+        }
+
+    result = open_auto_ship_pr(
+        universe_path=tmp_path,
+        ship_attempt_id=attempt_id,
+        head_branch="auto-change/issue-999-codex-123",
+        title="[auto-change] BUG-999",
+        create_enabled=True,
+        get_json=fake_get,
+        post_json=fake_post,
+    )
+
+    assert result["ship_status"] == "opened"
+    assert calls == [("get", "vault-token"), ("post", "vault-token")]
+
+
+def test_enabled_ignores_env_when_vault_missing(tmp_path, monkeypatch):
+    attempt_id = _record(tmp_path)
+    monkeypatch.setenv("GH_TOKEN", "env-token")
+
+    result = open_auto_ship_pr(
+        universe_path=tmp_path,
+        ship_attempt_id=attempt_id,
+        head_branch="auto-change/issue-999-codex-123",
+        title="[auto-change] BUG-999",
+        create_enabled=True,
+    )
+
+    assert result["ship_status"] == "failed"
+    assert result["error_class"] == "pr_create_missing_token"
 
 
 def test_enabled_creates_pr_and_updates_ledger(tmp_path):

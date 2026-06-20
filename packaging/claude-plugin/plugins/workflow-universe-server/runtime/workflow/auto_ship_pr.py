@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from workflow.auto_ship_ledger import find_attempt, update_attempt
+from workflow.credential_vault import resolve_github_token
 
 PR_CREATE_FLAG = "WORKFLOW_AUTO_SHIP_PR_CREATE_ENABLED"
 REPO_ENV = "WORKFLOW_AUTO_SHIP_REPO"
@@ -38,9 +39,17 @@ def pr_create_enabled(value: str | None = None) -> bool:
     return value.strip().lower() in _TRUE_VALUES
 
 
-def _github_token(explicit: str | None = None) -> str:
+def _github_token(
+    explicit: str | None = None,
+    *,
+    universe_path: Path | None = None,
+    destination: str = "",
+    purpose: str = "write",
+) -> str:
     if explicit is not None:
         return explicit.strip()
+    if universe_path is not None and destination:
+        return resolve_github_token(universe_path, destination, purpose=purpose)
     for name in TOKEN_ENV_VARS:
         token = os.environ.get(name, "").strip()
         if token:
@@ -314,9 +323,17 @@ def open_auto_ship_pr(
             ledger_error=ledger_error,
         )
 
-    gh_token = _github_token(token)
+    gh_token = _github_token(
+        token,
+        universe_path=universe_path,
+        destination=repo_slug,
+        purpose="write",
+    )
     if not gh_token:
-        msg = "GH_TOKEN or GITHUB_TOKEN is required when PR creation is enabled"
+        msg = (
+            "A per-universe vcs/github/write credential is required when PR "
+            "creation is enabled"
+        )
         ledger_error = _mark_attempt(
             universe_path,
             attempt_id,

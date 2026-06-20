@@ -347,6 +347,11 @@ def test_subprocess_env_preserves_operator_unified_execution_setting(monkeypatch
     assert env["WORKFLOW_UNIFIED_EXECUTION"] == "0"
 
 
+def test_subprocess_env_sets_workflow_universe(tmp_path):
+    env = cw._build_subprocess_env(tmp_path)
+    assert env["WORKFLOW_UNIVERSE"] == str(tmp_path)
+
+
 def test_subprocess_env_strips_openai_api_key_by_default(monkeypatch):
     """Cloud worker is subscription-only unless API-key providers opt in."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake-test-key-xyz")
@@ -636,6 +641,7 @@ def test_spawn_argv_includes_no_tray_and_universe(tmp_path, monkeypatch):
     assert "--universe" in captured["args"]
     idx = captured["args"].index("--universe")
     assert captured["args"][idx + 1] == str(tmp_path / "my-uni")
+    assert captured["env"]["WORKFLOW_UNIVERSE"] == str(tmp_path / "my-uni")
 
 
 def test_spawn_argv_uses_fantasy_daemon_module(tmp_path, monkeypatch):

@@ -26,7 +26,7 @@ from workflow.providers.base import (
     ProviderResponse,
     check_bwrap_failure,
     get_sandbox_status,
-    subprocess_env_without_api_keys,
+    subprocess_env_for_provider,
 )
 
 
@@ -102,7 +102,7 @@ class CodexProvider(BaseProvider):
             "--skip-git-repo-check",
             "--ephemeral",
         ]
-        proc_env = subprocess_env_without_api_keys()
+        proc_env = subprocess_env_for_provider(self.name)
 
         win_kw = _no_window_kwargs()
         cmd_with_cwd = [*cmd, "-C", _codex_workdir()]

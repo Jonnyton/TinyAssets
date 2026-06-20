@@ -48,6 +48,8 @@ services:
       # daemon + worker intentionally share one auth.json lineage; do not
       # split CODEX_HOME per service or duplicate the single-use refresh token.
       CODEX_HOME: /data/.codex
+      # Persist Claude subscription auth on the shared workflow-data volume.
+      CLAUDE_CONFIG_DIR: /data/.claude
       WORKFLOW_REPO_ROOT: /data/community-pool
       WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
       WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
@@ -154,6 +156,8 @@ services:
       WORKFLOW_DATA_DIR: /data
       # Same shared Codex auth home as `daemon`; worker also invokes codex exec.
       CODEX_HOME: /data/.codex
+      # Same shared Claude auth config as `daemon`; worker also invokes claude -p.
+      CLAUDE_CONFIG_DIR: /data/.claude
       WORKFLOW_REPO_ROOT: /data/community-pool
       WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
       WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"

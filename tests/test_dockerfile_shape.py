@@ -24,6 +24,7 @@ COMPOSE = REPO_ROOT / "deploy" / "compose.yml"
 ENV_TEMPLATE = REPO_ROOT / "deploy" / "workflow-env.template"
 ENTRYPOINT = REPO_ROOT / "deploy" / "docker-entrypoint.sh"
 CODEX_KEEPALIVE = REPO_ROOT / ".github" / "workflows" / "codex-auth-keepalive.yml"
+CLAUDE_KEEPALIVE = REPO_ROOT / ".github" / "workflows" / "claude-auth-keepalive.yml"
 CODEX_PROVIDER = REPO_ROOT / "workflow" / "providers" / "codex_provider.py"
 
 
@@ -40,6 +41,17 @@ def test_dockerfile_installs_codex_npm():
     )
     assert "CODEX_CLI_VERSION=0." in text, (
         "Dockerfile must pin the Codex CLI package version for reproducible builds"
+    )
+
+
+def test_dockerfile_installs_claude_code_npm():
+    """Builder stage must install Claude Code CLI via npm."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "@anthropic-ai/claude-code" in text, (
+        "Dockerfile must install Claude Code CLI for claude_provider.py"
+    )
+    assert "CLAUDE_CODE_CLI_VERSION=2." in text, (
+        "Dockerfile must pin Claude Code CLI package version"
     )
 
 
@@ -111,11 +123,26 @@ def test_dockerfile_copies_codex_binary():
     )
 
 
+def test_dockerfile_copies_claude_binary():
+    """Final stage must COPY Claude Code install tree from builder."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "COPY --from=builder /opt/claude-code-install /opt/claude-code-install" in text
+    assert "ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude" in text
+
+
 def test_dockerfile_codex_version_smoke():
     """Builder stage must run 'codex --version' to verify install."""
     text = DOCKERFILE.read_text(encoding="utf-8")
     assert "codex --version" in text, (
         "Dockerfile must run 'codex --version' after install to catch broken installs"
+    )
+
+
+def test_dockerfile_claude_version_smoke():
+    """Builder/final stage must run 'claude --version' to verify install."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "claude --version" in text, (
+        "Dockerfile must run 'claude --version' after install to catch broken installs"
     )
 
 
@@ -227,6 +254,11 @@ def test_env_template_has_codex_subscription_auth_bundle():
     )
 
 
+def test_env_template_has_claude_subscription_config_dir():
+    text = ENV_TEMPLATE.read_text(encoding="utf-8")
+    assert "CLAUDE_CONFIG_DIR=/data/.claude" in text
+
+
 def test_env_template_has_openai_api_key():
     """workflow-env.template keeps OPENAI_API_KEY as a deprecated placeholder."""
     text = ENV_TEMPLATE.read_text(encoding="utf-8")
@@ -319,6 +351,19 @@ def test_compose_codex_auth_home_is_shared_data_volume():
         assert "/var/lib/workflow-codex:/app/.codex" not in volumes
 
 
+def test_compose_claude_config_dir_is_shared_data_volume():
+    """Services that invoke claude must share one persistent CLAUDE_CONFIG_DIR."""
+    yaml = __import__("yaml")
+    data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+    for service_name in ("daemon", "worker"):
+        service = data["services"][service_name]
+        environment = service.get("environment") or {}
+        volumes = service.get("volumes") or []
+        assert environment.get("CLAUDE_CONFIG_DIR") == "/data/.claude"
+        assert "workflow-data:/data" in volumes
+
+
 # ---------------------------------------------------------------------------
 # codex_provider.py — --skip-git-repo-check flag (BUG-004 fix A)
 # ---------------------------------------------------------------------------
@@ -365,6 +410,13 @@ def test_entrypoint_installs_codex_auth_bundle():
     )
 
 
+def test_entrypoint_creates_claude_config_dir():
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    assert 'CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/data/.claude}"' in text
+    assert 'mkdir -p "${CLAUDE_CONFIG_DIR}"' in text
+    assert 'chmod 700 "${CLAUDE_CONFIG_DIR}"' in text
+
+
 def test_entrypoint_pins_codex_file_credentials_store():
     text = ENTRYPOINT.read_text(encoding="utf-8")
     assert 'cli_auth_credentials_store = "file"' in text, (
@@ -408,6 +460,14 @@ def test_codex_auth_keepalive_exercises_shared_codex_home():
     assert "schedule:" in text
     assert "DO_SSH_KEY" in text
     assert "docker exec -e CODEX_HOME=/data/.codex workflow-daemon codex exec" in text
+
+
+def test_claude_auth_keepalive_exercises_shared_config_dir():
+    text = CLAUDE_KEEPALIVE.read_text(encoding="utf-8")
+    assert "workflow_dispatch" in text
+    assert "schedule:" in text
+    assert "DO_SSH_KEY" in text
+    assert "docker exec -e CLAUDE_CONFIG_DIR=/data/.claude workflow-daemon claude -p" in text
 
 
 def test_entrypoint_execs_cmd():

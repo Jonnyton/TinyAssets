@@ -101,6 +101,11 @@ WORKFLOW_REPO_ROOT=/data/community-pool
 # normal subscription-billed operation.
 WORKFLOW_CODEX_AUTH_JSON_B64=
 
+# Claude Code subscription auth is stored under this durable config
+# directory on the workflow-data volume. Login once with:
+#   sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude workflow-daemon claude auth login --claudeai
+CLAUDE_CONFIG_DIR=/data/.claude
+
 # Deprecated legacy placeholder. Daemon startup strips this var unless
 # WORKFLOW_ALLOW_API_KEY_PROVIDERS=1; do not fill it for normal Workflow
 # daemons.

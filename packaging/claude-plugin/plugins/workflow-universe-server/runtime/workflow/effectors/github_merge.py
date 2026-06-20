@@ -20,6 +20,7 @@ from workflow.effectors.github_pr import (
     _GITHUB_API,
     _env_truthy,
     _read_capability,
+    _resolve_universe_dir,
 )
 
 EXTERNAL_WRITE_SINK_GITHUB_MERGE = "github_merge"
@@ -147,7 +148,8 @@ def run_github_merge_effector(
     SHA before attempting the merge, and GitHub enforces founder review/status
     checks on the merge endpoint. Missing or stale authorization fails closed.
     """
-    del base_path, run_id, dry_run
+    del run_id, dry_run
+    universe_dir = _resolve_universe_dir(base_path)
 
     matched_key: str | None = None
     packet: dict[str, Any] | None = None
@@ -240,7 +242,7 @@ def run_github_merge_effector(
             matched_output_key=matched_key,
         )
 
-    capability = _read_capability(destination)
+    capability = _read_capability(destination, universe_dir)
     if not capability:
         return {
             "dry_run": True,
@@ -249,8 +251,8 @@ def run_github_merge_effector(
             "destination": destination,
             "matched_output_key": matched_key,
             "hint": (
-                "Add the bot installation token to WORKFLOW_GITHUB_PR_CAPABILITIES "
-                f'under the exact key "{destination}".'
+                "Add a vcs/github/write credential to this universe's "
+                f'per-universe credential vault under destination "{destination}".'
             ),
             "intent": packet,
         }

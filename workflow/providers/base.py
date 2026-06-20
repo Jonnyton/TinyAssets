@@ -89,6 +89,23 @@ def subprocess_env_without_api_keys() -> dict[str, str] | None:
     return env
 
 
+def subprocess_env_for_provider(provider_name: str) -> dict[str, str]:
+    """Return subprocess env with API-key policy and vault auth applied."""
+    env = subprocess_env_without_api_keys() or os.environ.copy()
+    try:
+        from workflow.credential_vault import apply_provider_auth_env
+
+        apply_provider_auth_env(env, provider_name)
+    except ValueError:
+        raise
+    except Exception:
+        # Provider calls should not crash merely because no universe/vault
+        # helper is available in a local import context. Malformed vaults still
+        # raise ValueError above and fail loudly.
+        pass
+    return env
+
+
 # bwrap failure signature emitted to stderr on Linux hosts that lack
 # unprivileged user namespaces. When this appears the CLI silently wrote
 # the error to state and returned exit=0 — hard-rule #8 demands we detect

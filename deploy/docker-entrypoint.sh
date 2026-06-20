@@ -12,8 +12,10 @@
 #    WORKFLOW_CODEX_AUTH_JSON_B64 only when missing. Legacy
 #    `codex login --with-api-key` from OPENAI_API_KEY is intentionally
 #    not run.
-# 4. Fail loud if required static data files are missing from the image.
-# 5. exec the passed CMD (preserves tini PID-1 signal forwarding).
+# 4. Keep Claude subscription auth under CLAUDE_CONFIG_DIR, defaulting
+#    to /data/.claude on the same durable workflow-data volume.
+# 5. Fail loud if required static data files are missing from the image.
+# 6. exec the passed CMD (preserves tini PID-1 signal forwarding).
 #
 # Placed before CMD so operators can override CMD freely.
 
@@ -128,6 +130,16 @@ elif [[ -f "${CODEX_AUTH_FILE}" ]]; then
     echo "[entrypoint] preserving existing codex auth.json at ${CODEX_AUTH_FILE} (in-place refresh chain)"
 fi
 unset WORKFLOW_CODEX_AUTH_JSON_B64
+
+# Claude Code honors CLAUDE_CONFIG_DIR directly. Production defaults to the
+# shared /data volume so daemon + worker preserve one subscription login state
+# across image redeploys, matching the Codex /data/.codex pattern.
+export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/data/.claude}"
+mkdir -p "${CLAUDE_CONFIG_DIR}"
+chmod 700 "${CLAUDE_CONFIG_DIR}" 2>/dev/null || true
+if [[ -d "${CLAUDE_CONFIG_DIR}" ]]; then
+    echo "[entrypoint] preserving Claude subscription auth config at ${CLAUDE_CONFIG_DIR}"
+fi
 
 _workflow_bash_path() {
     local _path="${1:-}"

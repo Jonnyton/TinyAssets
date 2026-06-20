@@ -31,6 +31,7 @@ FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e3
 ARG TARGETARCH
 ARG NODEJS_VERSION=20.20.2-1nodesource1
 ARG CODEX_CLI_VERSION=0.135.0
+ARG CLAUDE_CODE_CLI_VERSION=2.1.183
 ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
 ARG RUSTUP_VERSION=1.28.2
 ARG RUSTUP_SHA256_AMD64=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
@@ -96,6 +97,12 @@ RUN set -e; \
 RUN mkdir -p /opt/codex-install && \
     npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" && \
     /opt/codex-install/node_modules/.bin/codex --version
+
+# Install Claude Code CLI next to Codex so the daemon can register the
+# subscription-backed claude-code provider when CLAUDE_CONFIG_DIR is present.
+RUN mkdir -p /opt/claude-code-install && \
+    npm install --prefix /opt/claude-code-install "@anthropic-ai/claude-code@${CLAUDE_CODE_CLI_VERSION}" && \
+    /opt/claude-code-install/node_modules/.bin/claude --version
 
 WORKDIR /build
 
@@ -174,9 +181,12 @@ RUN apt-get update && \
 # without serialization (concurrent refresh attempts race rotation
 # and trigger `refresh_token_reused`). See deploy/codex-flock-wrapper.sh.
 COPY --from=builder /opt/codex-install /opt/codex-install
+COPY --from=builder /opt/claude-code-install /opt/claude-code-install
 COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex
 RUN chmod 0755 /usr/local/bin/codex && \
-    /usr/local/bin/codex --version
+    ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude && \
+    /usr/local/bin/codex --version && \
+    /usr/local/bin/claude --version
 
 WORKDIR /app
 

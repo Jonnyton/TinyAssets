@@ -207,7 +207,7 @@ def _load_capability_map() -> dict[str, str]:
     return cleaned
 
 
-def _read_capability(destination: str) -> str:
+def _read_capability(destination: str, universe_dir: Path | None = None) -> str:
     """Return the capability token for ``destination`` (empty string if missing).
 
     Looked up by exact match against the JSON-map keys. Never echoed
@@ -216,6 +216,12 @@ def _read_capability(destination: str) -> str:
     """
     if not destination:
         return ""
+    if universe_dir is not None:
+        from workflow.credential_vault import resolve_github_token, vault_exists
+
+        token = resolve_github_token(universe_dir, destination, purpose="write")
+        if token or vault_exists(universe_dir):
+            return token
     return _load_capability_map().get(destination, "")
 
 
@@ -1274,7 +1280,7 @@ def run_github_pr_effector(
     # JSON map. The dry-run evidence names the destination the host
     # needs to add to the JSON map (the literal key) — never the
     # collision-prone uppercased suffix.
-    capability = _read_capability(destination)
+    capability = _read_capability(destination, universe_dir)
     if not capability:
         return {
             "dry_run": True,
@@ -1282,11 +1288,13 @@ def run_github_pr_effector(
             "reason": "missing_capability",
             "destination": destination,
             "capability_env_var": _CAPABILITIES_ENV,
+            "capability_vault": "per-universe credential vault",
+            "legacy_capability_env_var": _CAPABILITIES_ENV,
             "capability_lookup_failed_for": destination,
             "hint": (
-                f"Add an entry to the {_CAPABILITIES_ENV} JSON map "
-                f'keyed by "{destination}". Example: '
-                f'{_CAPABILITIES_ENV}={{"{destination}":"<token>"}}'
+                "Add a vcs/github/write credential to this universe's "
+                f"per-universe credential vault keyed by destination "
+                f'"{destination}".'
             ),
             "intent": packet,
             "matched_output_key": matched_key,

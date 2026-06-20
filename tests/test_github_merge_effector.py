@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 from workflow import effectors
+from workflow.credential_vault import write_credential_vault
 from workflow.effectors import github_merge
 
 _DEST = "Jonnyton/Workflow"
@@ -29,11 +30,12 @@ def _packet(**payload):
     return {"merge_packet": data}
 
 
-def _run(run_state=None):
+def _run(run_state=None, base_path=None):
     return github_merge.run_github_merge_effector(
         node_id="merge",
         output_keys=["merge_packet"],
         run_state=_packet() if run_state is None else run_state,
+        base_path=base_path,
     )
 
 
@@ -128,6 +130,39 @@ def test_missing_capability_returns_dry_run(monkeypatch):
     assert result["dry_run"] is True
     assert result["reason"] == "missing_capability"
     assert fake.calls == []
+
+
+def test_vault_capability_overrides_env_when_base_path_is_bound(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "WORKFLOW_GITHUB_PR_CAPABILITIES",
+        json.dumps({_DEST: "env-token"}),
+    )
+    write_credential_vault(
+        tmp_path,
+        [
+            {
+                "credential_type": "vcs",
+                "service": "github",
+                "destination": _DEST,
+                "purpose": "write",
+                "token": "vault-token",
+            }
+        ],
+    )
+    fake = _scripted_api([
+        (lambda m, p: m == "GET" and p.endswith("/pulls/1325"), (_open_pr(), None)),
+        (
+            lambda m, p: m == "PUT" and p.endswith("/pulls/1325/merge"),
+            ({"merged": True, "sha": "mergecommit"}, None),
+        ),
+    ])
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+
+    result = _run(base_path=tmp_path)
+
+    assert result["merged"] is True
+    assert fake.calls[0][2] == "vault-token"
+    assert fake.calls[1][2] == "vault-token"
 
 
 def test_operator_kill_switch_returns_dry_run(monkeypatch):

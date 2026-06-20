@@ -25,7 +25,7 @@ from workflow.providers.base import (
     ModelConfig,
     ProviderResponse,
     check_bwrap_failure,
-    subprocess_env_without_api_keys,
+    subprocess_env_for_provider,
 )
 
 
@@ -68,7 +68,7 @@ class ClaudeProvider(BaseProvider):
         cmd = [*base_cmd, "-p"]
         if system:
             cmd.extend(["--system-prompt", system])
-        proc_env = subprocess_env_without_api_keys()
+        proc_env = subprocess_env_for_provider(self.name)
 
         win_kw = _no_window_kwargs()
         if use_shell:
@@ -153,7 +153,7 @@ class ClaudeProvider(BaseProvider):
         cmd = [*base_cmd, "-p", "--output-format", "json"]
         if system:
             cmd.extend(["--system-prompt", system])
-        proc_env = subprocess_env_without_api_keys()
+        proc_env = subprocess_env_for_provider(self.name)
 
         win_kw = _no_window_kwargs()
         if use_shell:
