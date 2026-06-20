@@ -1725,6 +1725,206 @@ def _coerce_llm_policy_update(
     return policy, ""
 
 
+_NODE_UPDATE_PATCH_META_FIELDS = frozenset({"op", "node_id"})
+_NODE_UPDATE_FIELDS = frozenset({
+    "display_name",
+    "description",
+    "phase",
+    "prompt_template",
+    "source_code",
+    "model_hint",
+    "llm_policy",
+    "input_keys",
+    "output_keys",
+    "tools_allowed",
+    "timeout_seconds",
+    "retry_policy",
+    "enabled",
+    "invoke_branch_spec",
+    "invoke_branch_version_spec",
+    "await_run_spec",
+})
+_NODE_UPDATE_SPEC_FIELDS = (
+    "invoke_branch_spec",
+    "invoke_branch_version_spec",
+    "await_run_spec",
+)
+
+
+def _coerce_node_update_bool(raw: Any, field: str) -> tuple[bool | None, str]:
+    if isinstance(raw, bool):
+        return raw, ""
+    value = str(raw).strip().lower()
+    if value in {"true", "1", "yes", "on"}:
+        return True, ""
+    if value in {"false", "0", "no", "off"}:
+        return False, ""
+    return None, f"{field} must be a boolean."
+
+
+def _coerce_timeout_seconds_update(raw: Any, field: str) -> tuple[float, str]:
+    try:
+        return float(raw), ""
+    except (TypeError, ValueError):
+        return 0.0, f"{field} must be a number."
+
+
+def _coerce_retry_policy_update(raw: Any, field: str) -> tuple[dict[str, Any], str]:
+    if isinstance(raw, dict):
+        return dict(raw), ""
+    if isinstance(raw, str):
+        value = raw.strip()
+        if not value:
+            return {}, f"{field} must be a JSON object."
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            return {}, f"{field} is not valid JSON: {exc}"
+        if isinstance(decoded, dict):
+            return dict(decoded), ""
+    return {}, f"{field} must be a JSON object."
+
+
+def _coerce_node_spec_update(
+    raw: Any, field: str,
+) -> tuple[dict[str, Any] | None, str]:
+    if raw in (None, ""):
+        return None, ""
+    if isinstance(raw, dict):
+        return raw, ""
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return None, f"{field} is not valid JSON: {exc}"
+        if isinstance(decoded, dict):
+            return decoded, ""
+    return None, f"{field} must be a JSON object or null."
+
+
+def _apply_node_updates(
+    node: Any,
+    updates: dict[str, Any],
+    *,
+    ignored_fields: frozenset[str] = frozenset(),
+) -> str:
+    """Apply validated node update fields shared by both update surfaces."""
+    from workflow.api.extensions import VALID_PHASES
+
+    editable_updates = {
+        key: value
+        for key, value in updates.items()
+        if key not in ignored_fields
+    }
+    unknown = sorted(set(editable_updates) - _NODE_UPDATE_FIELDS)
+    if unknown:
+        return (
+            "update_node unsupported field(s): "
+            f"{', '.join(unknown)}. Supported: "
+            f"{', '.join(sorted(_NODE_UPDATE_FIELDS))}"
+        )
+    if not editable_updates:
+        return "update_node requires at least one field to update"
+
+    incoming_template = editable_updates.get("prompt_template", "")
+    incoming_source = editable_updates.get("source_code", "")
+    if incoming_template and incoming_source:
+        return "Pass prompt_template OR source_code, not both."
+
+    if "display_name" in editable_updates:
+        node.display_name = editable_updates["display_name"]
+    if "description" in editable_updates:
+        node.description = editable_updates["description"]
+    if "phase" in editable_updates:
+        new_phase = editable_updates["phase"] or "custom"
+        if new_phase not in VALID_PHASES:
+            return (
+                f"Invalid phase '{new_phase}'. Must be one of: "
+                f"{', '.join(sorted(VALID_PHASES))}"
+            )
+        node.phase = new_phase
+    if "prompt_template" in editable_updates:
+        node.prompt_template = editable_updates["prompt_template"]
+        if node.prompt_template:
+            node.source_code = ""
+            _clear_source_code_approval(node)
+    if "source_code" in editable_updates:
+        next_source = editable_updates["source_code"]
+        if next_source != node.source_code:
+            _clear_source_code_approval(node)
+        node.source_code = next_source
+        if node.source_code:
+            node.prompt_template = ""
+    if "model_hint" in editable_updates:
+        model_hint, err = _coerce_model_hint_update(
+            editable_updates["model_hint"], "model_hint",
+        )
+        if err:
+            return err
+        node.model_hint = model_hint
+    if "llm_policy" in editable_updates:
+        llm_policy, err = _coerce_llm_policy_update(
+            editable_updates["llm_policy"],
+            f"node '{node.node_id}' llm_policy",
+        )
+        if err:
+            return err
+        node.llm_policy = llm_policy
+    if "input_keys" in editable_updates:
+        keys, err = _coerce_node_keys(
+            editable_updates["input_keys"], "input_keys",
+        )
+        if err:
+            return err
+        node.input_keys = keys
+    if "output_keys" in editable_updates:
+        keys, err = _coerce_node_keys(
+            editable_updates["output_keys"], "output_keys",
+        )
+        if err:
+            return err
+        node.output_keys = keys
+    if "tools_allowed" in editable_updates:
+        tools_allowed, err = _coerce_node_keys(
+            editable_updates["tools_allowed"], "tools_allowed",
+        )
+        if err:
+            return err
+        node.tools_allowed = tools_allowed
+    if "timeout_seconds" in editable_updates:
+        timeout_seconds, err = _coerce_timeout_seconds_update(
+            editable_updates["timeout_seconds"],
+            f"node '{node.node_id}' timeout_seconds",
+        )
+        if err:
+            return err
+        node.timeout_seconds = timeout_seconds
+    if "retry_policy" in editable_updates:
+        retry_policy, err = _coerce_retry_policy_update(
+            editable_updates["retry_policy"],
+            f"node '{node.node_id}' retry_policy",
+        )
+        if err:
+            return err
+        node.retry_policy = retry_policy
+    if "enabled" in editable_updates:
+        enabled, err = _coerce_node_update_bool(
+            editable_updates["enabled"], "enabled",
+        )
+        if err:
+            return err
+        node.enabled = bool(enabled)
+    for spec_field in _NODE_UPDATE_SPEC_FIELDS:
+        if spec_field in editable_updates:
+            val, err = _coerce_node_spec_update(
+                editable_updates[spec_field], spec_field,
+            )
+            if err:
+                return err
+            setattr(node, spec_field, val)
+    return ""
+
+
 def _staged_branch_from_spec(
     spec: dict[str, Any],
 ) -> tuple[Any, list[str]]:
@@ -2059,55 +2259,11 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
             return "update_node requires node_id"
         for n in branch.node_defs:
             if n.node_id == nid:
-                if "display_name" in op:
-                    n.display_name = op["display_name"]
-                if "description" in op:
-                    n.description = op["description"]
-                if "prompt_template" in op:
-                    n.prompt_template = op["prompt_template"]
-                    if n.prompt_template:
-                        n.source_code = ""
-                        _clear_source_code_approval(n)
-                if "source_code" in op:
-                    if op["source_code"] != n.source_code:
-                        _clear_source_code_approval(n)
-                    n.source_code = op["source_code"]
-                if "model_hint" in op:
-                    model_hint, err = _coerce_model_hint_update(
-                        op["model_hint"], "model_hint",
-                    )
-                    if err:
-                        return err
-                    n.model_hint = model_hint
-                if "llm_policy" in op:
-                    llm_policy, err = _coerce_llm_policy_update(
-                        op["llm_policy"], f"node '{nid}' llm_policy",
-                    )
-                    if err:
-                        return err
-                    n.llm_policy = llm_policy
-                if "input_keys" in op:
-                    keys, err = _coerce_node_keys(
-                        op["input_keys"], "input_keys",
-                    )
-                    if err:
-                        return err
-                    n.input_keys = keys
-                if "output_keys" in op:
-                    keys, err = _coerce_node_keys(
-                        op["output_keys"], "output_keys",
-                    )
-                    if err:
-                        return err
-                    n.output_keys = keys
-                if "tools_allowed" in op:
-                    tools_allowed, err = _coerce_node_keys(
-                        op["tools_allowed"], "tools_allowed",
-                    )
-                    if err:
-                        return err
-                    n.tools_allowed = tools_allowed
-                return ""
+                return _apply_node_updates(
+                    n,
+                    op,
+                    ignored_fields=_NODE_UPDATE_PATCH_META_FIELDS,
+                )
         return f"update_node: node '{nid}' not found"
     if name == "add_skill":
         from workflow.branches import normalize_branch_skill_snapshot
@@ -2466,7 +2622,6 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
     name; this standalone action bumps BranchDefinition.version (+1)
     so downstream lineage can distinguish pre/post-edit runs.
     """
-    from workflow.api.extensions import VALID_PHASES
     from workflow.branches import BranchDefinition
     from workflow.daemon_server import (
         get_branch_definition,
@@ -2484,9 +2639,8 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
         })
 
     # Accept updates as a JSON blob (changes_json) OR as individual
-    # kwargs (display_name, description, phase, prompt_template,
-    # source_code, input_keys, output_keys). Individual kwargs are
-    # the phone-friendly shape; changes_json is for scripts batching.
+    # kwargs. Individual kwargs are the phone-friendly shape;
+    # changes_json is for scripts batching.
     changes_raw = (kwargs.get("changes_json") or "").strip()
     updates: dict[str, Any] = {}
     if changes_raw:
@@ -2508,15 +2662,13 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
         for field in (
             "display_name", "description", "phase",
             "prompt_template", "source_code", "model_hint",
+            "input_keys", "output_keys", "tools_allowed",
+            "timeout_seconds", "retry_policy", "enabled",
         ):
-            if kwargs.get(field):
+            if field in kwargs and kwargs.get(field) is not None and kwargs.get(field) != "":
                 updates[field] = kwargs[field]
         if "llm_policy" in kwargs and kwargs.get("llm_policy") is not None:
             updates["llm_policy"] = kwargs["llm_policy"]
-        if kwargs.get("input_keys"):
-            updates["input_keys"] = kwargs["input_keys"]
-        if kwargs.get("output_keys"):
-            updates["output_keys"] = kwargs["output_keys"]
         # BUG-045: same plumbing fix as _apply_node_spec for the
         # update_node write path. update_node has its own kwargs-merge
         # logic and writes through save_branch_definition without
@@ -2529,24 +2681,8 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "await_run_spec",
         ):
             raw_val = kwargs.get(field)
-            if not raw_val:
-                continue
-            if isinstance(raw_val, dict):
+            if raw_val is not None and raw_val != "":
                 updates[field] = raw_val
-            elif isinstance(raw_val, str):
-                try:
-                    decoded = json.loads(raw_val)
-                except json.JSONDecodeError as exc:
-                    return json.dumps({
-                        "status": "rejected",
-                        "error": f"{field} is not valid JSON: {exc}",
-                    })
-                if not isinstance(decoded, dict):
-                    return json.dumps({
-                        "status": "rejected",
-                        "error": f"{field} must decode to an object.",
-                    })
-                updates[field] = decoded
 
     if not updates:
         return json.dumps({
@@ -2554,8 +2690,8 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "error": (
                 "No fields to update. Pass one or more of "
                 "display_name / description / phase / prompt_template / "
-                "source_code / model_hint / llm_policy / input_keys / "
-                "output_keys, or a "
+                "source_code / model_hint / llm_policy / retry_policy / "
+                "timeout_seconds / input_keys / output_keys / tools_allowed, or a "
                 "changes_json object."
             ),
         })
@@ -2578,105 +2714,15 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "error": f"Node '{nid}' not found on branch '{bid}'.",
         })
 
-    # Reject ambiguous prompt_template + source_code combos explicitly
-    # so we don't silently end up with both set.
-    incoming_template = updates.get("prompt_template", "")
-    incoming_source = updates.get("source_code", "")
-    if incoming_template and incoming_source:
-        return json.dumps({
-            "status": "rejected",
-            "error": (
-                "Pass prompt_template OR source_code, not both. "
-                "To switch types, clear the other field first."
-            ),
-        })
-
     try:
-        if "display_name" in updates:
-            target_node.display_name = updates["display_name"]
-        if "description" in updates:
-            target_node.description = updates["description"]
-        if "phase" in updates:
-            # NodeDefinition.__post_init__ guards valid phases, so we
-            # validate here too.
-            new_phase = updates["phase"] or "custom"
-            if new_phase not in VALID_PHASES:
-                return json.dumps({
-                    "status": "rejected",
-                    "error": (
-                        f"Invalid phase '{new_phase}'. Must be one of: "
-                        f"{', '.join(sorted(VALID_PHASES))}"
-                    ),
-                })
-            target_node.phase = new_phase
-        if "prompt_template" in updates:
-            target_node.prompt_template = updates["prompt_template"]
-            if target_node.prompt_template:
-                target_node.source_code = ""
-                _clear_source_code_approval(target_node)
-        if "source_code" in updates:
-            next_source = updates["source_code"]
-            if next_source != target_node.source_code:
-                _clear_source_code_approval(target_node)
-            target_node.source_code = next_source
-            if target_node.source_code:
-                target_node.prompt_template = ""
-        if "model_hint" in updates:
-            model_hint, err = _coerce_model_hint_update(
-                updates["model_hint"], "model_hint",
-            )
-            if err:
-                return json.dumps({"status": "rejected", "error": err})
-            target_node.model_hint = model_hint
-        if "llm_policy" in updates:
-            llm_policy, err = _coerce_llm_policy_update(
-                updates["llm_policy"], f"node '{nid}' llm_policy",
-            )
-            if err:
-                return json.dumps({"status": "rejected", "error": err})
-            target_node.llm_policy = llm_policy
-        if "input_keys" in updates:
-            keys, err = _coerce_node_keys(
-                updates["input_keys"], "input_keys",
-            )
-            if err:
-                return json.dumps({"status": "rejected", "error": err})
-            target_node.input_keys = keys
-        if "output_keys" in updates:
-            keys, err = _coerce_node_keys(
-                updates["output_keys"], "output_keys",
-            )
-            if err:
-                return json.dumps({"status": "rejected", "error": err})
-            target_node.output_keys = keys
-        if "tools_allowed" in updates:
-            tools_allowed, err = _coerce_node_keys(
-                updates["tools_allowed"], "tools_allowed",
-            )
-            if err:
-                return json.dumps({"status": "rejected", "error": err})
-            target_node.tools_allowed = tools_allowed
-        # BUG-045: thread the three spec fields onto target_node. Mutual
-        # exclusivity vs prompt_template / source_code is enforced by
-        # BranchDefinition.validate() at compile time; we accept what
-        # the caller asked for and let validate() catch invalid combos.
-        for spec_field in (
-            "invoke_branch_spec",
-            "invoke_branch_version_spec",
-            "await_run_spec",
-        ):
-            if spec_field in updates:
-                val = updates[spec_field]
-                setattr(
-                    target_node,
-                    spec_field,
-                    val if isinstance(val, dict) else None,
-                )
+        update_error = _apply_node_updates(target_node, updates)
     except Exception as exc:
         return json.dumps({
             "status": "rejected",
             "error": f"Failed to apply update: {exc}",
         })
+    if update_error:
+        return json.dumps({"status": "rejected", "error": update_error})
 
     # Snapshot the previous node body BEFORE we mutate further, so the
     # audit row captures rollback-capable state.

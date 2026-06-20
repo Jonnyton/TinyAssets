@@ -706,6 +706,66 @@ def test_patch_branch_text_channel_on_success(comp_env):
     assert "Patched" in result["text"]
 
 
+def test_patch_branch_update_node_persists_node_config(comp_env):
+    us, _ = comp_env
+    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    bid = built["branch_def_id"]
+    policy = {"preferred": {"provider": "codex", "model": "gpt-5"}}
+    retry = {"max_retries": 2, "backoff_seconds": 4.0}
+
+    result = _call(
+        us,
+        "patch_branch",
+        branch_def_id=bid,
+        changes_json=json.dumps([{
+            "op": "update_node",
+            "node_id": "capture",
+            "model_hint": "reviewer",
+            "llm_policy": policy,
+            "retry_policy": retry,
+            "timeout_seconds": 450,
+        }]),
+    )
+
+    assert result["status"] == "patched", result
+    assert result["ops_applied"] == 1
+    got = _call(us, "get_branch", branch_def_id=bid)
+    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
+    assert capture["model_hint"] == "reviewer"
+    assert capture["llm_policy"] == policy
+    assert capture["retry_policy"] == retry
+    assert capture["timeout_seconds"] == 450.0
+
+
+def test_patch_branch_update_node_rejects_unknown_field(comp_env):
+    us, base = comp_env
+    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    bid = built["branch_def_id"]
+
+    from workflow.branch_versions import list_branch_versions
+
+    before_versions = list_branch_versions(base, bid, limit=10)
+    result = _call(
+        us,
+        "patch_branch",
+        branch_def_id=bid,
+        changes_json=json.dumps([{
+            "op": "update_node",
+            "node_id": "capture",
+            "approved": True,
+        }]),
+    )
+
+    assert result["status"] == "rejected"
+    assert "unsupported field" in result["errors"][0]["error"]
+    after_versions = list_branch_versions(base, bid, limit=10)
+    assert [v.branch_version_id for v in after_versions] == [
+        v.branch_version_id for v in before_versions
+    ]
+    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
+    assert not any(e["action"] == "patch_branch" for e in ledger)
+
+
 def test_build_branch_truncates_mermaid_above_12_nodes(comp_env):
     us, _ = comp_env
     # Build a 13-node linear chain.
@@ -921,6 +981,60 @@ def test_update_node_updates_input_output_keys(comp_env):
     capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
     assert capture["input_keys"] == ["a", "b", "c"]
     assert capture["output_keys"] == ["out"]
+
+
+def test_update_node_persists_retry_policy_and_timeout(comp_env):
+    us, _ = comp_env
+    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    bid = built["branch_def_id"]
+    policy = {"preferred": {"provider": "codex", "model": "gpt-5"}}
+    retry = {"max_retries": 2, "backoff_seconds": 4.0}
+
+    upd = _call(
+        us,
+        "update_node",
+        branch_def_id=bid,
+        node_id="capture",
+        changes_json=json.dumps({
+            "model_hint": "reviewer",
+            "llm_policy": policy,
+            "retry_policy": retry,
+            "timeout_seconds": 450,
+        }),
+    )
+
+    assert upd["status"] == "updated", upd
+    assert set(upd["changed_fields"]) >= {
+        "model_hint", "llm_policy", "retry_policy", "timeout_seconds",
+    }
+    got = _call(us, "get_branch", branch_def_id=bid)
+    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
+    assert capture["model_hint"] == "reviewer"
+    assert capture["llm_policy"] == policy
+    assert capture["retry_policy"] == retry
+    assert capture["timeout_seconds"] == 450.0
+
+
+def test_update_node_rejects_unknown_field(comp_env):
+    us, base = comp_env
+    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    bid = built["branch_def_id"]
+
+    before = _call(us, "get_branch", branch_def_id=bid)
+    result = _call(
+        us,
+        "update_node",
+        branch_def_id=bid,
+        node_id="capture",
+        changes_json=json.dumps({"approved": True}),
+    )
+
+    assert result["status"] == "rejected"
+    assert "unsupported field" in result["error"]
+    after = _call(us, "get_branch", branch_def_id=bid)
+    assert after["version"] == before["version"]
+    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
+    assert not any(e["action"] == "update_node" for e in ledger)
 
 
 def test_update_node_writes_ledger(comp_env):
