@@ -16,12 +16,18 @@ Exit codes
     HTTP non-2xx).
 3   Response parsed but MCP-level error returned (``jsonrpc`` error
     field present).
+4   ``--assert-handles`` drift: the live ``tools/list`` does not advertise
+    exactly the five canonical handles (``read.graph`` / ``write.graph`` /
+    ``run.graph`` / ``read.page`` / ``write.page``, plus the optional
+    ``get_status`` read). This is the PR-178 drift guard required by Hard
+    Rule #11 after any DNS/tunnel/Worker/connector change.
 
 Usage
 -----
     python scripts/mcp_public_canary.py
     python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
     python scripts/mcp_public_canary.py --timeout 15
+    python scripts/mcp_public_canary.py --assert-handles   # Hard Rule #11
 
 All output on failure goes to stderr so tray can stream it. stdout
 stays silent unless ``--verbose`` is passed so the canary is cheap to
@@ -51,6 +57,20 @@ _INIT_PAYLOAD = {
         "clientInfo": {"name": "mcp-public-canary", "version": "1.0"},
     },
 }
+
+# PR-178: the live user-facing surface is exactly these five handles. The
+# canary asserts the deployed tools/list advertises them and nothing beyond
+# them (the get_status read MAY remain). Legacy fat tools are dual-registered
+# but hidden from tools/list, so they must NOT appear here.
+CANONICAL_HANDLES = frozenset({
+    "read.graph",
+    "write.graph",
+    "run.graph",
+    "read.page",
+    "write.page",
+})
+# get_status MAY remain as a read affordance; everything else is drift.
+_ALLOWED_ADVERTISED = CANONICAL_HANDLES | {"get_status"}
 
 
 def _die(code: int, msg: str) -> None:
@@ -83,6 +103,93 @@ def _parse_sse_or_json(body: bytes) -> dict[str, Any]:
             if payload:
                 return json.loads(payload)
     raise ValueError("no JSON or SSE data frame in response body")
+
+
+def _post(
+    url: str,
+    payload: dict[str, Any],
+    timeout: float,
+    session_id: str | None = None,
+) -> tuple[int, dict[str, str], bytes]:
+    """POST one JSON-RPC frame. Return (status, headers, body). Raise on I/O.
+
+    Factored out (and module-level) so unit tests can monkeypatch it to drive
+    the handshake offline without a network.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "workflow-mcp-canary/1.0",
+    }
+    if session_id:
+        headers["mcp-session-id"] = session_id
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers=headers,
+    )
+    ctx = ssl.create_default_context()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+    except urllib.error.HTTPError as exc:
+        raise CanaryError(2, f"HTTP {exc.code} from {url}: {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise CanaryError(2, f"unreachable {url}: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise CanaryError(2, f"timeout after {timeout}s: {url}") from exc
+    except ssl.SSLError as exc:
+        raise CanaryError(2, f"TLS error {url}: {exc}") from exc
+    except OSError as exc:
+        raise CanaryError(2, f"socket error {url}: {exc}") from exc
+
+
+def advertised_tool_names(url: str, timeout: float) -> set[str]:
+    """Full MCP handshake → tools/list; return the advertised tool name set."""
+    status, headers, _ = _post(url, _INIT_PAYLOAD, timeout)
+    if status != 200:
+        raise CanaryError(2, f"non-200 status {status} from {url}")
+    session_id = headers.get("mcp-session-id")
+    if session_id:
+        # Streamable-HTTP requires the initialized notification before reads.
+        _post(
+            url,
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            timeout,
+            session_id,
+        )
+    status, _, body = _post(
+        url,
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        timeout,
+        session_id,
+    )
+    if status != 200:
+        raise CanaryError(2, f"non-200 status {status} from {url} (tools/list)")
+    try:
+        payload = _parse_sse_or_json(body)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise CanaryError(1, f"non-MCP tools/list body from {url}: {exc}") from exc
+    if "error" in payload:
+        raise CanaryError(3, f"MCP error on tools/list from {url}: {payload['error']}")
+    tools = (payload.get("result") or {}).get("tools") or []
+    if not isinstance(tools, list):
+        raise CanaryError(1, f"malformed tools/list from {url}: {tools!r}")
+    return {t.get("name") for t in tools if isinstance(t, dict) and t.get("name")}
+
+
+def assert_five_handles(url: str, timeout: float) -> None:
+    """Raise ``CanaryError(4)`` unless tools/list is exactly the five handles."""
+    names = advertised_tool_names(url, timeout)
+    missing = CANONICAL_HANDLES - names
+    extra = names - _ALLOWED_ADVERTISED
+    if missing or extra:
+        raise CanaryError(
+            4,
+            f"handle drift on {url}: missing={sorted(missing)} "
+            f"extra={sorted(extra)} advertised={sorted(names)}",
+        )
 
 
 def probe_result(url: str, timeout: float) -> None:
@@ -155,12 +262,22 @@ def main(argv: list[str]) -> int:
                     help=f"request timeout seconds (default {DEFAULT_TIMEOUT})")
     ap.add_argument("--verbose", action="store_true",
                     help="print success line to stdout")
+    ap.add_argument("--assert-handles", action="store_true",
+                    help="also assert tools/list advertises exactly the five "
+                         "canonical handles (PR-178 drift guard, Hard Rule #11)")
     args = ap.parse_args(argv)
 
     probe(args.url, args.timeout)
 
+    if args.assert_handles:
+        try:
+            assert_five_handles(args.url, args.timeout)
+        except CanaryError as exc:
+            _die(exc.code, exc.msg)
+
     if args.verbose:
-        print(f"[canary] OK {args.url}")
+        suffix = " (5 handles advertised)" if args.assert_handles else ""
+        print(f"[canary] OK {args.url}{suffix}")
     return 0
 
 

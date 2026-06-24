@@ -35,6 +35,7 @@ from typing import Annotated
 
 import uvicorn
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware
 from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.applications import Starlette
@@ -138,8 +139,12 @@ def _structured_return(raw):
     )
 
 
-def _register_structured_tool(fn, *, title, tags, annotations):
-    """Register an MCP adapter without changing the direct Python API."""
+def _register_structured_tool(fn, *, title, tags, annotations, name=None):
+    """Register an MCP adapter without changing the direct Python API.
+
+    ``name`` overrides the advertised tool name when it cannot be a Python
+    identifier (the five canonical handles are dotted, e.g. ``read.graph``).
+    """
 
     @wraps(fn)
     def _tool(*args, **kwargs):
@@ -148,7 +153,7 @@ def _register_structured_tool(fn, *, title, tags, annotations):
     _tool.__name__ = f"_mcp_{fn.__name__}"
     _tool.__signature__ = signature(fn).replace(return_annotation=dict)
     return mcp.tool(
-        name=fn.__name__,
+        name=name or fn.__name__,
         title=title,
         tags=tags,
         annotations=annotations,
@@ -353,6 +358,370 @@ def extension_guide() -> str:
 def branch_design_guide() -> str:
     """Walk through designing a BranchDefinition with the `extensions` tool."""
     return _branch_design_guide_prompt()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CANONICAL USER SURFACE — the five handles (PR-178 / PR-047 fold-map)
+# ═══════════════════════════════════════════════════════════════════════════
+# read.graph / write.graph / run.graph / read.page / write.page are the
+# canonical user-facing tools. Each is a thin shape/target router over the
+# EXISTING workflow.api.* handlers — no behavior change, only surface shape.
+# The legacy fat tools below stay registered + callable for one release but
+# are hidden from tools/list and logged as deprecated by the
+# _DeprecatedToolVisibility middleware (see _DEPRECATED_TOOL_NAMES), so
+# existing connectors can migrate; a follow-up change removes them. This
+# router is forward-ported from workflow/directory_server.py (the
+# /mcp-directory surface) onto the live /mcp surface; read.graph target=status
+# uses the full (unredacted) status the live operator surface already exposed.
+
+
+def _unknown_target(handle: str, target: str, allowed: tuple[str, ...]) -> str:
+    import json as _json
+
+    return _json.dumps({
+        "error": "unknown_target",
+        "handle": handle,
+        "target": target,
+        "allowed_targets": allowed,
+    })
+
+
+def read_graph(
+    target: str = "status",
+    graph_id: str = "",
+    goal_id: str = "",
+    query: str = "",
+    tags: str = "",
+    author: str = "",
+    run_status: str = "",
+    limit: int = 30,
+) -> str:
+    """Read Workflow graph state without changing it.
+
+    Args:
+        target: What to read: status, graphs, graph, goals, goal, or runs.
+        graph_id: Optional graph/universe identifier.
+        goal_id: Optional shared-goal identifier.
+        query: Optional search text.
+        tags: Optional comma-separated goal tag filter.
+        author: Optional goal author filter.
+        run_status: Optional run status filter.
+        limit: Maximum number of records to return.
+    """
+    normalized = (target or "status").strip().lower()
+    if normalized == "status":
+        return _get_status_impl(universe_id=graph_id)
+    if normalized == "graphs":
+        return _universe_impl(action="list", limit=limit)
+    if normalized == "graph":
+        return _universe_impl(action="inspect", universe_id=graph_id)
+    if normalized == "goals":
+        if query:
+            return _goals_impl(action="search", query=query, limit=limit)
+        return _goals_impl(action="list", tags=tags, author=author, limit=limit)
+    if normalized == "goal":
+        return _goals_impl(action="get", goal_id=goal_id)
+    if normalized == "runs":
+        return _extensions_impl(action="list_runs", status=run_status, limit=limit)
+    return _unknown_target(
+        "read.graph",
+        target,
+        ("status", "graphs", "graph", "goals", "goal", "runs"),
+    )
+
+
+_mcp_read_graph = _register_structured_tool(
+    read_graph,
+    name="read.graph",
+    title="Read Graph",
+    tags={"graph", "workflow", "read"},
+    annotations=ToolAnnotations(
+        title="Read Graph",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+
+
+def write_graph(
+    target: str,
+    name: str = "",
+    description: str = "",
+    tags: str = "",
+    visibility: str = "public",
+    text: str = "",
+    graph_id: str = "",
+    request_type: str = "general",
+    branch_id: str = "",
+) -> str:
+    """Create or queue Workflow graph state.
+
+    Args:
+        target: What to write: goal or request.
+        name: Human-readable shared-goal name.
+        description: Optional shared-goal description.
+        tags: Optional comma-separated shared-goal tags.
+        visibility: Shared-goal visibility, usually public.
+        text: Request text to queue.
+        graph_id: Optional target graph/universe identifier.
+        request_type: Workflow request type.
+        branch_id: Optional target branch identifier.
+    """
+    normalized = target.strip().lower()
+    if normalized == "goal":
+        return _goals_impl(
+            action="propose",
+            name=name,
+            description=description,
+            tags=tags,
+            visibility=visibility,
+        )
+    if normalized == "request":
+        return _universe_impl(
+            action="submit_request",
+            universe_id=graph_id,
+            text=text,
+            request_type=request_type,
+            branch_id=branch_id,
+        )
+    return _unknown_target("write.graph", target, ("goal", "request"))
+
+
+_mcp_write_graph = _register_structured_tool(
+    write_graph,
+    name="write.graph",
+    title="Write Graph",
+    tags={"graph", "workflow", "write"},
+    annotations=ToolAnnotations(
+        title="Write Graph",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+
+
+def run_graph(
+    branch_def_id: str,
+    inputs_json: str = "",
+    run_name: str = "",
+    graph_id: str = "",
+    recursion_limit_override: int = 0,
+) -> str:
+    """Run a Workflow graph branch — the only verb that produces a Run.
+
+    Args:
+        branch_def_id: Branch definition identifier to run.
+        inputs_json: Optional JSON object containing run inputs.
+        run_name: Optional display name for the run.
+        graph_id: Optional graph/universe identifier.
+        recursion_limit_override: Optional per-run recursion limit.
+    """
+    return _extensions_impl(
+        action="run_branch",
+        branch_def_id=branch_def_id,
+        inputs_json=inputs_json,
+        run_name=run_name,
+        universe_id=graph_id,
+        recursion_limit_override=recursion_limit_override,
+    )
+
+
+_mcp_run_graph = _register_structured_tool(
+    run_graph,
+    name="run.graph",
+    title="Run Graph",
+    tags={"graph", "workflow", "run"},
+    annotations=ToolAnnotations(
+        title="Run Graph",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+
+
+def read_page(
+    page: str = "",
+    query: str = "",
+    category: str = "",
+    changed_since: str = "",
+    max_results: int = 10,
+    universe_id: str = "",
+) -> str:
+    """Read or search the Workflow wiki/commons.
+
+    Args:
+        page: Optional wiki page slug or path. Empty searches by query.
+        query: Optional search text or ambient relevance terms.
+        category: Optional wiki category filter for searches.
+        changed_since: Optional ISO timestamp for feed freshness filtering.
+            With an empty page/query/category, returns pages changed after
+            this timestamp.
+        max_results: Maximum result count.
+        universe_id: Optional target universe page substrate.
+    """
+    if page:
+        return _wiki_impl(
+            action="read",
+            page=page,
+            query=query,
+            changed_since=changed_since,
+            max_results=max_results,
+            universe_id=universe_id,
+        )
+    if changed_since.strip() and not query.strip() and not category.strip():
+        return _wiki_impl(
+            action="since",
+            changed_since=changed_since,
+            max_results=max_results,
+            universe_id=universe_id,
+        )
+    return _wiki_impl(
+        action="search",
+        query=query,
+        category=category,
+        max_results=max_results,
+        universe_id=universe_id,
+    )
+
+
+_mcp_read_page = _register_structured_tool(
+    read_page,
+    name="read.page",
+    title="Read Page",
+    tags={"page", "wiki", "workflow", "read"},
+    annotations=ToolAnnotations(
+        title="Read Page",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+
+
+def write_page(
+    page: str = "",
+    category: str = "",
+    filename: str = "",
+    content: str = "",
+    log_entry: str = "",
+    old_text: str = "",
+    new_text: str = "",
+    expected_sha256: str = "",
+    title: str = "",
+    kind: str = "",
+    component: str = "",
+    severity: str = "",
+    repro: str = "",
+    observed: str = "",
+    expected: str = "",
+    workaround: str = "",
+    tags: str = "",
+    force_new: bool = False,
+    reporter_context: str = "",
+    dry_run: bool = True,
+    universe_id: str = "",
+) -> str:
+    """Write, patch, or file a Workflow wiki/commons page.
+
+    Args:
+        universe_id: Optional target universe page substrate.
+        page: Wiki page slug or path for page writes.
+        category: Wiki category for full page writes.
+        filename: Wiki filename for full page writes.
+        content: Full page content for a page write.
+        log_entry: Optional wiki log entry for full writes or patches.
+        old_text: Existing text to replace for a targeted page patch.
+        new_text: Replacement text for a targeted page patch.
+        expected_sha256: Optional full-page hash guard for patches.
+        title: Filing title when creating a bug, patch, feature, or design page.
+        kind: Filing kind: bug, patch_request, feature, or design.
+        component: Optional affected component for filed issues.
+        severity: Optional severity for filed issues.
+        repro: Optional reproduction notes for filed issues.
+        observed: Optional observed behavior for filed issues.
+        expected: Optional expected behavior for filed issues.
+        workaround: Optional workaround for filed issues.
+        tags: Optional comma-separated tags.
+        force_new: Bypass duplicate detection for filed issues.
+        reporter_context: Optional reporter context for filed issues.
+        dry_run: Preview consolidation-style wiki writes when supported.
+    """
+    normalized_kind = kind.strip().lower()
+    if normalized_kind:
+        return _wiki_impl(
+            action="file_bug",
+            kind=normalized_kind,
+            title=title,
+            component=component,
+            severity=severity,
+            repro=repro,
+            observed=observed,
+            expected=expected,
+            workaround=workaround,
+            tags=tags,
+            force_new=force_new,
+            reporter_context=reporter_context,
+            universe_id=universe_id,
+        )
+    if old_text or new_text:
+        return _wiki_impl(
+            action="patch",
+            page=page,
+            old_text=old_text,
+            new_text=new_text,
+            expected_sha256=expected_sha256,
+            log_entry=log_entry,
+            dry_run=dry_run,
+            universe_id=universe_id,
+        )
+    write_filename = filename or page
+    return _wiki_impl(
+        action="write",
+        category=category,
+        filename=write_filename,
+        content=content,
+        log_entry=log_entry,
+        dry_run=dry_run,
+        universe_id=universe_id,
+    )
+
+
+_mcp_write_page = _register_structured_tool(
+    write_page,
+    name="write.page",
+    title="Write Page",
+    tags={"page", "wiki", "workflow", "write"},
+    annotations=ToolAnnotations(
+        title="Write Page",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LEGACY FAT SURFACE — deprecated, hidden from tools/list, callable 1 release
+# ═══════════════════════════════════════════════════════════════════════════
+# These names are dropped from tools/list and logged on call by
+# _DeprecatedToolVisibility (PR-178). They remain dispatchable so existing
+# connectors keep working through the migration window.
+_DEPRECATED_TOOL_NAMES = frozenset({
+    "universe",
+    "community_change_context",
+    "extensions",
+    "goals",
+    "gates",
+    "wiki",
+})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1196,6 +1565,37 @@ _mcp_get_status = _register_structured_tool(
         openWorldHint=False,
     ),
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Deprecated-tool visibility (PR-178)
+# ═══════════════════════════════════════════════════════════════════════════
+# Hide the legacy fat tools from tools/list while keeping them callable, and
+# log every deprecated-tool invocation. FastMCP applies on_list_tools to the
+# advertised list only — tools/call resolution is unaffected — so the legacy
+# tools stay dispatchable for one migration release while the advertised
+# surface is exactly the five canonical handles + get_status.
+
+
+class _DeprecatedToolVisibility(Middleware):
+    """Drop deprecated legacy tools from tools/list; keep them callable + log."""
+
+    async def on_list_tools(self, context, call_next):
+        tools = await call_next(context)
+        return [t for t in tools if t.name not in _DEPRECATED_TOOL_NAMES]
+
+    async def on_call_tool(self, context, call_next):
+        name = getattr(context.message, "name", "")
+        if name in _DEPRECATED_TOOL_NAMES:
+            logger.warning(
+                "deprecated-tool-call name=%s — migrate to the five canonical "
+                "handles (read.graph/write.graph/run.graph/read.page/write.page)",
+                name,
+            )
+        return await call_next(context)
+
+
+mcp.add_middleware(_DeprecatedToolVisibility())
 
 
 # ═══════════════════════════════════════════════════════════════════════════

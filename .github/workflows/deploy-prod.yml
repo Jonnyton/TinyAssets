@@ -636,6 +636,14 @@ jobs:
           # correctly returns 403. Only the canonical URL is a valid health signal.
           python scripts/mcp_public_canary.py --url "${CANARY_URL}" --verbose
 
+      - name: Post-deploy 5-handle surface assertion (PR-178)
+        run: |
+          # Drift guard: the live /mcp must advertise exactly the five
+          # canonical handles (read/write/run.graph + read/write.page, plus
+          # optional get_status). Fails the deploy if the user surface
+          # regresses to the legacy fat tools.
+          python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles --verbose
+
       - name: Verify subscription LLM binding after synced Codex auth
         if: env.HAS_CODEX_AUTH_BUNDLE == 'true'
         run: |
