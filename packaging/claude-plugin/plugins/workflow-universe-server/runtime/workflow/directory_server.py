@@ -13,10 +13,11 @@ from __future__ import annotations
 import json
 from functools import wraps
 from inspect import signature
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from workflow.api.extensions import _extensions_impl
 from workflow.api.market import goals as _goals_impl
@@ -344,7 +345,16 @@ def read_page(
     page: str = "",
     query: str = "",
     category: str = "",
-    changed_since: str = "",
+    changed_since: Annotated[
+        str,
+        Field(
+            description=(
+                "Optional ISO timestamp for feed freshness filtering. With an "
+                "empty page/query/category, returns pages changed after this "
+                "timestamp."
+            ),
+        ),
+    ] = "",
     max_results: int = 10,
     universe_id: str = "",
 ) -> str:

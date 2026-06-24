@@ -549,7 +549,16 @@ def read_page(
     page: str = "",
     query: str = "",
     category: str = "",
-    changed_since: str = "",
+    changed_since: Annotated[
+        str,
+        Field(
+            description=(
+                "Optional ISO timestamp for feed freshness filtering. With an "
+                "empty page/query/category, returns pages changed after this "
+                "timestamp."
+            ),
+        ),
+    ] = "",
     max_results: int = 10,
     universe_id: str = "",
 ) -> str:
@@ -1728,11 +1737,31 @@ _MCP_DIRECTORY_JSON = {
     },
     "catalog_version": DIRECTORY_TOOL_CATALOG_VERSION,
     "tools": [
-        {"name": "read.graph", "summary": "Read Workflow graph state without changing it — nodes, edges, typed state, scopes, runs, and triggers."},
-        {"name": "write.graph", "summary": "Create or queue Workflow graph state — the write half of the graph primitive (nodes, edges, branches)."},
-        {"name": "run.graph", "summary": "Run a Workflow graph branch — execute a multi-step workflow and stream its results."},
-        {"name": "read.page", "summary": "Read or search the Workflow wiki/commons — bugs, plans, concepts, notes, and drafts."},
-        {"name": "write.page", "summary": "Write or patch a Workflow wiki/commons page, including filing patch requests into the loop."},
+        {
+            "name": "read.graph",
+            "summary": "Read Workflow graph state without changing it — nodes, "
+            "edges, typed state, scopes, runs, and triggers.",
+        },
+        {
+            "name": "write.graph",
+            "summary": "Create or queue Workflow graph state — the write half "
+            "of the graph primitive (nodes, edges, branches).",
+        },
+        {
+            "name": "run.graph",
+            "summary": "Run a Workflow graph branch — execute a multi-step "
+            "workflow and stream its results.",
+        },
+        {
+            "name": "read.page",
+            "summary": "Read or search the Workflow wiki/commons — bugs, plans, "
+            "concepts, notes, and drafts.",
+        },
+        {
+            "name": "write.page",
+            "summary": "Write or patch a Workflow wiki/commons page, including "
+            "filing patch requests into the loop.",
+        },
     ],
     "note": (
         "These five primitives (read/write over graph + page, plus run) are the "
