@@ -30,7 +30,6 @@ from __future__ import annotations
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
-from inspect import signature
 from typing import Annotated
 
 import uvicorn
@@ -55,6 +54,7 @@ from workflow.connector_catalog import (
     VERSIONED_DIRECTORY_MCP_PATH,
 )
 from workflow.directory_server import directory_mcp
+from workflow.mcp_schema_utils import describe_signature
 
 logger = logging.getLogger("universe_server")
 
@@ -151,7 +151,11 @@ def _register_structured_tool(fn, *, title, tags, annotations, name=None):
         return _structured_return(fn(*args, **kwargs))
 
     _tool.__name__ = f"_mcp_{fn.__name__}"
-    _tool.__signature__ = signature(fn).replace(return_annotation=dict)
+    # Inject docstring-derived parameter descriptions so the advertised
+    # tool contract is labelled identically on every FastMCP version
+    # (3.2.0 ships no docstring extraction; 3.4.x does). See
+    # workflow.mcp_schema_utils.
+    _tool.__signature__, _tool.__annotations__ = describe_signature(fn)
     return mcp.tool(
         name=name or fn.__name__,
         title=title,
@@ -549,7 +553,16 @@ def read_page(
     page: str = "",
     query: str = "",
     category: str = "",
-    changed_since: str = "",
+    changed_since: Annotated[
+        str,
+        Field(
+            description=(
+                "Optional ISO timestamp for feed freshness filtering. With an "
+                "empty page/query/category, returns pages changed after this "
+                "timestamp."
+            ),
+        ),
+    ] = "",
     max_results: int = 10,
     universe_id: str = "",
 ) -> str:
@@ -1728,11 +1741,31 @@ _MCP_DIRECTORY_JSON = {
     },
     "catalog_version": DIRECTORY_TOOL_CATALOG_VERSION,
     "tools": [
-        {"name": "read.graph", "summary": "Read Workflow graph state without changing it — nodes, edges, typed state, scopes, runs, and triggers."},
-        {"name": "write.graph", "summary": "Create or queue Workflow graph state — the write half of the graph primitive (nodes, edges, branches)."},
-        {"name": "run.graph", "summary": "Run a Workflow graph branch — execute a multi-step workflow and stream its results."},
-        {"name": "read.page", "summary": "Read or search the Workflow wiki/commons — bugs, plans, concepts, notes, and drafts."},
-        {"name": "write.page", "summary": "Write or patch a Workflow wiki/commons page, including filing patch requests into the loop."},
+        {
+            "name": "read.graph",
+            "summary": "Read Workflow graph state without changing it — nodes, "
+            "edges, typed state, scopes, runs, and triggers.",
+        },
+        {
+            "name": "write.graph",
+            "summary": "Create or queue Workflow graph state — the write half "
+            "of the graph primitive (nodes, edges, branches).",
+        },
+        {
+            "name": "run.graph",
+            "summary": "Run a Workflow graph branch — execute a multi-step "
+            "workflow and stream its results.",
+        },
+        {
+            "name": "read.page",
+            "summary": "Read or search the Workflow wiki/commons — bugs, plans, "
+            "concepts, notes, and drafts.",
+        },
+        {
+            "name": "write.page",
+            "summary": "Write or patch a Workflow wiki/commons page, including "
+            "filing patch requests into the loop.",
+        },
     ],
     "note": (
         "These five primitives (read/write over graph + page, plus run) are the "
