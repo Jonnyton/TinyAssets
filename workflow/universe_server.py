@@ -30,7 +30,6 @@ from __future__ import annotations
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
-from inspect import signature
 from typing import Annotated
 
 import uvicorn
@@ -55,6 +54,7 @@ from workflow.connector_catalog import (
     VERSIONED_DIRECTORY_MCP_PATH,
 )
 from workflow.directory_server import directory_mcp
+from workflow.mcp_schema_utils import describe_signature
 
 logger = logging.getLogger("universe_server")
 
@@ -151,7 +151,11 @@ def _register_structured_tool(fn, *, title, tags, annotations, name=None):
         return _structured_return(fn(*args, **kwargs))
 
     _tool.__name__ = f"_mcp_{fn.__name__}"
-    _tool.__signature__ = signature(fn).replace(return_annotation=dict)
+    # Inject docstring-derived parameter descriptions so the advertised
+    # tool contract is labelled identically on every FastMCP version
+    # (3.2.0 ships no docstring extraction; 3.4.x does). See
+    # workflow.mcp_schema_utils.
+    _tool.__signature__, _tool.__annotations__ = describe_signature(fn)
     return mcp.tool(
         name=name or fn.__name__,
         title=title,

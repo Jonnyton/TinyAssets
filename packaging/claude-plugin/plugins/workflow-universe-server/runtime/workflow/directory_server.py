@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 from functools import wraps
-from inspect import signature
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -24,6 +23,7 @@ from workflow.api.market import goals as _goals_impl
 from workflow.api.status import get_status as _get_status_impl
 from workflow.api.universe import _universe_impl
 from workflow.api.wiki import wiki as _wiki_impl
+from workflow.mcp_schema_utils import describe_signature
 
 directory_mcp = FastMCP(
     "workflow-directory",
@@ -159,7 +159,10 @@ def _register_structured_tool(
         return _structured_return(fn(*args, **kwargs))
 
     _tool.__name__ = f"_mcp_{fn.__name__}"
-    _tool.__signature__ = signature(fn).replace(return_annotation=dict)
+    # Inject docstring-derived parameter descriptions so the advertised
+    # tool contract is labelled identically on every FastMCP version.
+    # See workflow.mcp_schema_utils.
+    _tool.__signature__, _tool.__annotations__ = describe_signature(fn)
     kwargs = {"name": name or fn.__name__, "output_schema": None}
     if title is not None:
         kwargs["title"] = title
