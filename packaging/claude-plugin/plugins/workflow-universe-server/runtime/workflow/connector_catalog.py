@@ -4,7 +4,7 @@ from __future__ import annotations
 
 # Bump when the chatbot-visible MCP tool catalog changes: tool names,
 # parameters, annotations, descriptions, or structured output contracts.
-DIRECTORY_TOOL_CATALOG_VERSION = "2026-05-07-issue-269"
+DIRECTORY_TOOL_CATALOG_VERSION = "2026-06-24-underscore-handles"
 
 DIRECTORY_MCP_PATH = "/mcp-directory"
 VERSIONED_DIRECTORY_MCP_PATH = (

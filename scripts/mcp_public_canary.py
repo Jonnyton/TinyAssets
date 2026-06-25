@@ -17,8 +17,8 @@ Exit codes
 3   Response parsed but MCP-level error returned (``jsonrpc`` error
     field present).
 4   ``--assert-handles`` drift: the live ``tools/list`` does not advertise
-    exactly the five canonical handles (``read.graph`` / ``write.graph`` /
-    ``run.graph`` / ``read.page`` / ``write.page``, plus the optional
+    exactly the five canonical handles (``read_graph`` / ``write_graph`` /
+    ``run_graph`` / ``read_page`` / ``write_page``, plus the optional
     ``get_status`` read). This is the PR-178 drift guard required by Hard
     Rule #11 after any DNS/tunnel/Worker/connector change.
 
@@ -64,11 +64,11 @@ _INIT_PAYLOAD = {
 # them (the get_status read MAY remain). Legacy fat tools are dual-registered
 # but hidden from tools/list, so they must NOT appear here.
 CANONICAL_HANDLES = frozenset({
-    "read.graph",
-    "write.graph",
-    "run.graph",
-    "read.page",
-    "write.page",
+    "read_graph",
+    "write_graph",
+    "run_graph",
+    "read_page",
+    "write_page",
 })
 # get_status MAY remain as a read affordance; everything else is drift.
 _ALLOWED_ADVERTISED = CANONICAL_HANDLES | {"get_status"}

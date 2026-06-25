@@ -8,7 +8,7 @@
     "category": "PRODUCTIVITY"
   },
   "tools": {
-    "read.graph": {
+    "read_graph": {
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false,
@@ -20,7 +20,7 @@
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
     },
-    "write.graph": {
+    "write_graph": {
       "annotations": {
         "readOnlyHint": false,
         "openWorldHint": true,
@@ -32,7 +32,7 @@
         "destructive_justification": "Creates or queues new records and does not delete, overwrite, revoke access, or perform irreversible actions."
       }
     },
-    "run.graph": {
+    "run_graph": {
       "annotations": {
         "readOnlyHint": false,
         "openWorldHint": false,
@@ -44,7 +44,7 @@
         "destructive_justification": "Starts a run and does not delete, overwrite, revoke access, or perform irreversible actions."
       }
     },
-    "read.page": {
+    "read_page": {
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false,
@@ -56,7 +56,7 @@
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
     },
-    "write.page": {
+    "write_page": {
       "annotations": {
         "readOnlyHint": false,
         "openWorldHint": true,
@@ -74,7 +74,7 @@
       "description": "Check whether Workflow is connected and safe to use.",
       "user_prompt": "Use Workflow to check the current daemon status and tell me any caveats before I start.",
       "file_attachment_urls": null,
-      "tools_triggered": "read.graph",
+      "tools_triggered": "read_graph",
       "expected_output": "Returns a factual daemon status summary with routing evidence and caveats.",
       "expected_output_url": null
     },
@@ -82,7 +82,7 @@
       "description": "Find existing durable goals for a user's work category.",
       "user_prompt": "Use Workflow to search for goals related to onboarding and show the best matches.",
       "file_attachment_urls": null,
-      "tools_triggered": "read.graph",
+      "tools_triggered": "read_graph",
       "expected_output": "Returns matching Workflow goals when present, or clearly reports that no goals matched and suggests a safe next step.",
       "expected_output_url": null
     },
@@ -90,7 +90,7 @@
       "description": "Browse available graphs before choosing where to work.",
       "user_prompt": "Use Workflow to list available graphs, then inspect the active one.",
       "file_attachment_urls": null,
-      "tools_triggered": "read.graph",
+      "tools_triggered": "read_graph",
       "expected_output": "Shows available graphs and summarizes the selected graph's durable state.",
       "expected_output_url": null
     },
@@ -98,7 +98,7 @@
       "description": "Read project knowledge from the Workflow wiki.",
       "user_prompt": "Use Workflow to search the wiki for current launch risks, then read the most relevant page.",
       "file_attachment_urls": null,
-      "tools_triggered": "read.page",
+      "tools_triggered": "read_page",
       "expected_output": "Returns relevant wiki search results and a grounded summary of the chosen page.",
       "expected_output_url": null
     },
@@ -106,7 +106,7 @@
       "description": "Review recent Workflow run history.",
       "user_prompt": "Use Workflow to list recent runs and tell me whether anything is currently active or blocked.",
       "file_attachment_urls": null,
-      "tools_triggered": "read.graph",
+      "tools_triggered": "read_graph",
       "expected_output": "Returns recent Workflow runs or a clear empty-state message without starting, stopping, or editing runs.",
       "expected_output_url": null
     },
@@ -114,7 +114,7 @@
       "description": "Create a new shared goal proposal after user intent is clear.",
       "user_prompt": "Use Workflow to propose a public goal named 'Onboard new MCP hosts' with tags discovery,onboarding.",
       "file_attachment_urls": null,
-      "tools_triggered": "write.graph",
+      "tools_triggered": "write_graph",
       "expected_output": "Confirms that a new Workflow goal proposal was created and reports its identifier or next step.",
       "expected_output_url": null
     },
@@ -122,7 +122,7 @@
       "description": "Queue a bounded request into an existing Workflow graph.",
       "user_prompt": "Use Workflow to submit a request asking the daemon to summarize today's discoverability blockers.",
       "file_attachment_urls": null,
-      "tools_triggered": "write.graph",
+      "tools_triggered": "write_graph",
       "expected_output": "Confirms the request was queued in Workflow and states what will happen next.",
       "expected_output_url": null
     },
@@ -130,7 +130,7 @@
       "description": "Run a graph branch after the user chooses a branch.",
       "user_prompt": "Use Workflow to run branch br_demo with the saved default inputs.",
       "file_attachment_urls": null,
-      "tools_triggered": "run.graph",
+      "tools_triggered": "run_graph",
       "expected_output": "Starts the selected Workflow graph branch run and reports the run identifier or next step.",
       "expected_output_url": null
     },
@@ -138,7 +138,7 @@
       "description": "File a project patch request into the Workflow wiki.",
       "user_prompt": "Use Workflow to file a patch request about simplifying the public connector surface.",
       "file_attachment_urls": null,
-      "tools_triggered": "write.page",
+      "tools_triggered": "write_page",
       "expected_output": "Creates or reports a matching Workflow wiki filing with its identifier or page path.",
       "expected_output_url": null
     }

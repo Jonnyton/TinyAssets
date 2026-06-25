@@ -220,7 +220,7 @@ def read_graph(
     if normalized == "runs":
         return _extensions_impl(action="list_runs", status=run_status, limit=limit)
     return _unknown_target(
-        "read.graph",
+        "read_graph",
         target,
         ("status", "graphs", "graph", "goals", "goal", "runs"),
     )
@@ -229,7 +229,7 @@ def read_graph(
 _mcp_read_graph = _register_structured_tool(
     read_graph,
     server=directory_mcp,
-    name="read.graph",
+    name="read_graph",
     title="Read Graph",
     tags={"graph", "workflow", "read"},
     annotations=ToolAnnotations(
@@ -283,13 +283,13 @@ def write_graph(
             request_type=request_type,
             branch_id=branch_id,
         )
-    return _unknown_target("write.graph", target, ("goal", "request"))
+    return _unknown_target("write_graph", target, ("goal", "request"))
 
 
 _mcp_write_graph = _register_structured_tool(
     write_graph,
     server=directory_mcp,
-    name="write.graph",
+    name="write_graph",
     title="Write Graph",
     tags={"graph", "workflow", "write"},
     annotations=ToolAnnotations(
@@ -331,7 +331,7 @@ def run_graph(
 _mcp_run_graph = _register_structured_tool(
     run_graph,
     server=directory_mcp,
-    name="run.graph",
+    name="run_graph",
     title="Run Graph",
     tags={"graph", "workflow", "run"},
     annotations=ToolAnnotations(
@@ -401,7 +401,7 @@ def read_page(
 _mcp_read_page = _register_structured_tool(
     read_page,
     server=directory_mcp,
-    name="read.page",
+    name="read_page",
     title="Read Page",
     tags={"page", "wiki", "workflow", "read"},
     annotations=ToolAnnotations(
@@ -505,7 +505,7 @@ def write_page(
 _mcp_write_page = _register_structured_tool(
     write_page,
     server=directory_mcp,
-    name="write.page",
+    name="write_page",
     title="Write Page",
     tags={"page", "wiki", "workflow", "write"},
     annotations=ToolAnnotations(

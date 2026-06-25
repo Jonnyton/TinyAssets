@@ -19,22 +19,22 @@ from workflow.universe_server import (
 )
 
 CANONICAL_HANDLES = {
-    "read.graph",
-    "write.graph",
-    "run.graph",
-    "read.page",
-    "write.page",
+    "read_graph",
+    "write_graph",
+    "run_graph",
+    "read_page",
+    "write_page",
 }
 
 # The advertised user surface is the five handles plus the get_status read.
 ADVERTISED = CANONICAL_HANDLES | {"get_status"}
 
 EXPECTED_ANNOTATIONS = {
-    "read.graph": {"readOnlyHint": True, "idempotentHint": True},
-    "write.graph": {"readOnlyHint": False, "openWorldHint": True},
-    "run.graph": {"readOnlyHint": False, "openWorldHint": False},
-    "read.page": {"readOnlyHint": True, "idempotentHint": True},
-    "write.page": {"readOnlyHint": False, "openWorldHint": True},
+    "read_graph": {"readOnlyHint": True, "idempotentHint": True},
+    "write_graph": {"readOnlyHint": False, "openWorldHint": True},
+    "run_graph": {"readOnlyHint": False, "openWorldHint": False},
+    "read_page": {"readOnlyHint": True, "idempotentHint": True},
+    "write_page": {"readOnlyHint": False, "openWorldHint": True},
 }
 
 
@@ -83,11 +83,11 @@ def test_read_graph_status_is_full_not_directory_redacted() -> None:
 def test_unknown_target_is_reported() -> None:
     payload = json.loads(read_graph(target="bogus"))
     assert payload["error"] == "unknown_target"
-    assert payload["handle"] == "read.graph"
+    assert payload["handle"] == "read_graph"
 
 
 def test_goal_write_and_read_round_trip(monkeypatch, tmp_path) -> None:
-    """write.graph(goal) routes to the same handler read.graph(goals) reads."""
+    """write_graph(goal) routes to the same handler read_graph(goals) reads."""
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "five-handle-test")
 

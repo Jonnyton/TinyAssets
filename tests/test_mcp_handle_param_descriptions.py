@@ -55,7 +55,7 @@ def test_every_advertised_param_is_labelled(mcp):
 
 def test_five_canonical_handles_fully_labelled():
     tools = {t.name: t for t in _advertised(universe_server.mcp)}
-    for handle in ("read.graph", "write.graph", "run.graph", "read.page", "write.page"):
+    for handle in ("read_graph", "write_graph", "run_graph", "read_page", "write_page"):
         assert handle in tools, f"canonical handle {handle} not advertised"
         props = (tools[handle].parameters or {}).get("properties", {})
         assert props, f"{handle} advertises no parameters"

@@ -43,7 +43,7 @@ def _scripted_post(tool_names):
 
 
 _FIVE_PLUS_STATUS = [
-    "read.graph", "write.graph", "run.graph", "read.page", "write.page",
+    "read_graph", "write_graph", "run_graph", "read_page", "write_page",
     "get_status",
 ]
 
@@ -64,12 +64,12 @@ def test_assert_handles_fails_on_legacy_leak(monkeypatch):
 
 
 def test_assert_handles_fails_on_missing_handle(monkeypatch):
-    short = [n for n in _FIVE_PLUS_STATUS if n != "run.graph"]
+    short = [n for n in _FIVE_PLUS_STATUS if n != "run_graph"]
     monkeypatch.setattr(canary, "_post", _scripted_post(short))
     with pytest.raises(canary.CanaryError) as exc:
         canary.assert_five_handles("https://example/mcp", 5.0)
     assert exc.value.code == 4
-    assert "run.graph" in exc.value.msg
+    assert "run_graph" in exc.value.msg
 
 
 def test_advertised_tool_names_round_trips(monkeypatch):

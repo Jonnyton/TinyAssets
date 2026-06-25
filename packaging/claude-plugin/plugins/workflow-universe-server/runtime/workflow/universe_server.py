@@ -142,8 +142,10 @@ def _structured_return(raw):
 def _register_structured_tool(fn, *, title, tags, annotations, name=None):
     """Register an MCP adapter without changing the direct Python API.
 
-    ``name`` overrides the advertised tool name when it cannot be a Python
-    identifier (the five canonical handles are dotted, e.g. ``read.graph``).
+    ``name`` pins the advertised wire name explicitly. The five canonical
+    handles use underscores (``read_graph``, ``write_graph``, …): the
+    Anthropic connector API rejects any tool name that does not match
+    ``^[a-zA-Z0-9_-]{1,64}$`` (no dots), which rejects the whole connector.
     """
 
     @wraps(fn)
@@ -367,7 +369,7 @@ def branch_design_guide() -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 # CANONICAL USER SURFACE — the five handles (PR-178 / PR-047 fold-map)
 # ═══════════════════════════════════════════════════════════════════════════
-# read.graph / write.graph / run.graph / read.page / write.page are the
+# read_graph / write_graph / run_graph / read_page / write_page are the
 # canonical user-facing tools. Each is a thin shape/target router over the
 # EXISTING workflow.api.* handlers — no behavior change, only surface shape.
 # The legacy fat tools below stay registered + callable for one release but
@@ -375,7 +377,7 @@ def branch_design_guide() -> str:
 # _DeprecatedToolVisibility middleware (see _DEPRECATED_TOOL_NAMES), so
 # existing connectors can migrate; a follow-up change removes them. This
 # router is forward-ported from workflow/directory_server.py (the
-# /mcp-directory surface) onto the live /mcp surface; read.graph target=status
+# /mcp-directory surface) onto the live /mcp surface; read_graph target=status
 # uses the full (unredacted) status the live operator surface already exposed.
 
 
@@ -428,7 +430,7 @@ def read_graph(
     if normalized == "runs":
         return _extensions_impl(action="list_runs", status=run_status, limit=limit)
     return _unknown_target(
-        "read.graph",
+        "read_graph",
         target,
         ("status", "graphs", "graph", "goals", "goal", "runs"),
     )
@@ -436,7 +438,7 @@ def read_graph(
 
 _mcp_read_graph = _register_structured_tool(
     read_graph,
-    name="read.graph",
+    name="read_graph",
     title="Read Graph",
     tags={"graph", "workflow", "read"},
     annotations=ToolAnnotations(
@@ -490,12 +492,12 @@ def write_graph(
             request_type=request_type,
             branch_id=branch_id,
         )
-    return _unknown_target("write.graph", target, ("goal", "request"))
+    return _unknown_target("write_graph", target, ("goal", "request"))
 
 
 _mcp_write_graph = _register_structured_tool(
     write_graph,
-    name="write.graph",
+    name="write_graph",
     title="Write Graph",
     tags={"graph", "workflow", "write"},
     annotations=ToolAnnotations(
@@ -536,7 +538,7 @@ def run_graph(
 
 _mcp_run_graph = _register_structured_tool(
     run_graph,
-    name="run.graph",
+    name="run_graph",
     title="Run Graph",
     tags={"graph", "workflow", "run"},
     annotations=ToolAnnotations(
@@ -605,7 +607,7 @@ def read_page(
 
 _mcp_read_page = _register_structured_tool(
     read_page,
-    name="read.page",
+    name="read_page",
     title="Read Page",
     tags={"page", "wiki", "workflow", "read"},
     annotations=ToolAnnotations(
@@ -708,7 +710,7 @@ def write_page(
 
 _mcp_write_page = _register_structured_tool(
     write_page,
-    name="write.page",
+    name="write_page",
     title="Write Page",
     tags={"page", "wiki", "workflow", "write"},
     annotations=ToolAnnotations(
@@ -1602,7 +1604,7 @@ class _DeprecatedToolVisibility(Middleware):
         if name in _DEPRECATED_TOOL_NAMES:
             logger.warning(
                 "deprecated-tool-call name=%s — migrate to the five canonical "
-                "handles (read.graph/write.graph/run.graph/read.page/write.page)",
+                "handles (read_graph/write_graph/run_graph/read_page/write_page)",
                 name,
             )
         return await call_next(context)
@@ -1742,27 +1744,27 @@ _MCP_DIRECTORY_JSON = {
     "catalog_version": DIRECTORY_TOOL_CATALOG_VERSION,
     "tools": [
         {
-            "name": "read.graph",
+            "name": "read_graph",
             "summary": "Read Workflow graph state without changing it — nodes, "
             "edges, typed state, scopes, runs, and triggers.",
         },
         {
-            "name": "write.graph",
+            "name": "write_graph",
             "summary": "Create or queue Workflow graph state — the write half "
             "of the graph primitive (nodes, edges, branches).",
         },
         {
-            "name": "run.graph",
+            "name": "run_graph",
             "summary": "Run a Workflow graph branch — execute a multi-step "
             "workflow and stream its results.",
         },
         {
-            "name": "read.page",
+            "name": "read_page",
             "summary": "Read or search the Workflow wiki/commons — bugs, plans, "
             "concepts, notes, and drafts.",
         },
         {
-            "name": "write.page",
+            "name": "write_page",
             "summary": "Write or patch a Workflow wiki/commons page, including "
             "filing patch requests into the loop.",
         },

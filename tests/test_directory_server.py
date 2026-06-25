@@ -14,31 +14,31 @@ from workflow.directory_server import (
 )
 
 EXPECTED_TOOLS = {
-    "read.graph": {
+    "read_graph": {
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
         "openWorldHint": False,
     },
-    "write.graph": {
+    "write_graph": {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
         "openWorldHint": True,
     },
-    "run.graph": {
+    "run_graph": {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
         "openWorldHint": False,
     },
-    "read.page": {
+    "read_page": {
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
         "openWorldHint": False,
     },
-    "write.page": {
+    "write_page": {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
@@ -139,7 +139,7 @@ def test_directory_tool_inputs_avoid_sensitive_credentials() -> None:
 def test_directory_read_page_schema_advertises_changed_since() -> None:
     """PR-088: directory wiki reads must expose the since-feed timestamp."""
 
-    tool = next(tool for tool in _list_tools() if tool.name == "read.page")
+    tool = next(tool for tool in _list_tools() if tool.name == "read_page")
     properties = tool.parameters["properties"]
 
     assert properties["changed_since"]["type"] == "string"
@@ -333,7 +333,7 @@ def test_directory_write_page_rejects_dot_universe(monkeypatch, tmp_path) -> Non
 def test_directory_read_page_changed_since_routes_to_since_feed(
     monkeypatch, tmp_path,
 ) -> None:
-    """Empty read.page + changed_since is the directory-safe since action."""
+    """Empty read_page + changed_since is the directory-safe since action."""
     wiki_root = tmp_path / "wiki"
     monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
 
