@@ -47,18 +47,22 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build site (static export, live MCP endpoint)
+      - name: Build site (static export, same-origin /mcp via Pages Function)
         working-directory: WebSite/site-react
         env:
-          # Hosted preview points at the live MCP so vital signs/goals/graph try
-          # to read real data (degrades gracefully if CORS blocks the pages.dev origin).
-          NEXT_PUBLIC_MCP_PATH: 'https://tinyassets.io/mcp'
+          # CF Pages serves at root (no basePath) and proxies /mcp same-origin
+          # via cf-functions/mcp.js — so the preview gets REAL live data (TinyBot,
+          # vital signs, goals, graph) instead of the cross-origin "unreachable" state.
+          NEXT_PUBLIC_MCP_PATH: '/mcp'
         run: |
           npm ci
           npm run build
           # CF Pages configures custom domains in its dashboard, not via a CNAME
           # file — remove it so there is zero chance of touching tinyassets.io.
           rm -f out/CNAME
+          # Bundle the same-origin /mcp proxy as a Pages Function.
+          mkdir -p out/functions
+          cp cf-functions/mcp.js out/functions/mcp.js
 
       - name: Resolve Cloudflare account id
         env:

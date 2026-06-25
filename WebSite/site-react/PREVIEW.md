@@ -45,7 +45,13 @@ this branch on GitHub Pages (separate public repo `Jonnyton/tiny-site-react-prev
   # preview repo's gh-pages branch. (Or use the auto-updating CF Pages flow below.)
   ```
 
-## 3b. Auto-updating hosted preview (Cloudflare Pages, per-PR)
+## 3b. Auto-updating hosted preview (Cloudflare Pages, per-PR) — with LIVE data
+
+Unlike the GitHub Pages snapshot (which can't reach `/mcp` cross-origin, so
+TinyBot shows his "unreachable" ×-eyes face), the Cloudflare Pages preview serves
+at root and proxies `/mcp` **same-origin** via `cf-functions/mcp.js` (a Pages
+Function) → real live data, so TinyBot/vital signs/goals/graph show their true
+state. Built and ready; it deploys once the token has the Pages:Edit scope below.
 
 Open or push to a **pull request** that touches `WebSite/site-react/**` (or run
 the `preview-site-react.yml` workflow manually). It builds the site and deploys to
