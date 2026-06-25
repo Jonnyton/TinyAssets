@@ -69,3 +69,19 @@ python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-han
 ```
 
 This runbook intentionally does not run the live canary from the development worktree.
+
+## Follow-up: `write_page` (conditional on B-run result)
+
+This A/B deliberately flips only `write_graph.openWorldHint` to isolate the
+variable. As of this branch, `write_page` is the **only canonical write handle
+still advertising `openWorldHint=true`** (`workflow/universe_server.py:722`).
+If the hypothesis is wrong, the wiki write is arguably genuinely open-world (a
+shared/public discovery commons), so the asymmetry is defensible and nothing
+changes.
+
+But if the B-run **confirms** that flipping `openWorldHint` to `false` is what
+clears the bare "No approval received" gate, then `write_page` is exposed to the
+exact same failure and MUST get the same flip (canonical + plugin mirror +
+`chatgpt-app-submission.json` + `test_universe_server_five_handles.py`),
+followed by the same post-deploy `--assert-handles` canary. Do not close Issue 3
+as fully fixed until `write_page`'s status is resolved one way or the other.
