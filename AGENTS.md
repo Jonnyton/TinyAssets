@@ -170,25 +170,6 @@ scoped reader at `python scripts/docview.py`.
 - When the user points at an outside project, repo, paper, benchmark, article, or codebase and asks what Workflow should learn or integrate, use `external-research-implications`. That process must canonicalize the source, research current context, compare module-by-module against Workflow, write durable implications, and self-update the skill when the process itself improves.
 - Research-derived concepts need opposite-provider review before implementation. If Codex makes the initial finding, Claude researches/reviews it; if Claude makes the initial finding, Codex researches/reviews it. If another provider makes the initial finding, name a different reviewer provider explicitly in `STATUS.md`, preferring the Codex/Claude pair when available. The review must re-check sources and Workflow context, leave a durable artifact, and gate any build, git push, live rollout, or acceptance test based on the finding.
 
-### Where new conventions live
-
-This project is multi-provider: Codex, Cursor, Aider, Claude Code, Cowork,
-and future agents may work from the same repo. Project-level conventions go
-in `AGENTS.md` first so every provider can see the same process truth.
-Provider-specific files such as `CLAUDE.md`, `.claude/agents/*`,
-`.cursor/rules/*`, `.cursorrules`, and `.codex/*` are for harness-specific
-notes or pointers back to `AGENTS.md`.
-
-Before saving a rule, ask whether a teammate in another provider would need
-it. If yes, put it in `AGENTS.md`; if it is only about one harness, tag the
-section as `[harness-specific]`, `[Claude Code only]`, `[Cursor only]`,
-`[Codex only]`, `[Cowork only]`, or `[Aider only]`.
-
-Run `python scripts/check_cross_provider_drift.py` after editing
-provider-specific files. Claude Code also wires
-`.claude/hooks/cross_provider_drift_guard.py` as a PostToolUse hook for
-`Write`, `Edit`, and `MultiEdit` on the developer teammate.
-
 ### Skill methodology [all providers]
 
 The project skills bake in a complete, self-enforcing development methodology

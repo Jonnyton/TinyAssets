@@ -61,25 +61,9 @@ Reject any "ready to ship" claim that lacks both-client verification:
 If both probes can't be run (e.g., Codex driver is the only one available), STOP and SendMessage the lead — do not declare cross-client readiness from a single-family probe.
 
 
-## Codex Claude.ai in-app preflight
+## Preflight (route-specific)
 
-When Codex runs `ui-test`, check these before the first prompt and log the result:
-
-- The visible in-app browser tab is `https://claude.ai/` or an existing `claude.ai/chat/...` conversation.
-- The conversation can use the Workflow connector at `https://tinyassets.io/mcp`.
-- The host-visible tab is the same one Codex is reading and typing into.
-
-If login, connector installation, or the in-app browser itself is unavailable, stop the mission and name that exact harness blocker. Do not report `claude_chat.py status` or CDP failure as a blocker for the Codex route.
-
-## ChatGPT live preflight
-
-When using the Anthropic / Cowork ChatGPT route, check these before the first prompt and log the result:
-
-- The visible tab is `https://chatgpt.com/` or an existing `chatgpt.com/c/...` conversation.
-- Developer mode is enabled for the conversation.
-- The composer shows the `Workflow` connector/tool as available.
-
-If any item is missing, stop the mission and ask the host to fix that exact item. Do not test through a fresh profile or a direct MCP call.
+Before the first prompt, run your route's preflight checklist and log the result — full checklists in `references/preflight-and-setup.md` (Codex Claude.ai in-app · ChatGPT live · Claude Code CDP). **If a preflight item is unavailable, stop the mission and name the exact blocker** (Codex route: the harness/connector blocker — not `claude_chat.py`/CDP; ChatGPT route: ask the host to fix the exact item). Never test through a fresh profile or a direct MCP call.
 
 After `ui-test` passes, also look for post-fix clean-use evidence from actual users when the affected feature is public or high-risk. Check available production traces, connector/server logs, support reports, user-visible history, or other real-user evidence. Record the timestamp, environment, and evidence source. If no real-user use is visible yet, say so plainly and leave a short watch item in `STATUS.md` rather than implying the feature has been proven clean for users.
 
@@ -92,21 +76,9 @@ Codex is mechanically good at browser operation, but must not massage the chatbo
 - Do not coach the bot around a UX failure; log the failure.
 - Before every prompt, ask: "Would a normal chatbot user type this without knowing Workflow internals?" If no, rewrite it.
 
-## Claude Code CDP setup the host does once (not you)
+## Claude Code CDP setup
 
-For the Claude Code route, the host launches Chrome with:
-
-```
-powershell -Command "Start-Process 'C:\\Users\\Jonathan\\AppData\\Local\\ms-playwright\\chromium-1208\\chrome-win64\\chrome.exe' -ArgumentList '--user-data-dir=C:\\Users\\Jonathan\\.claude-ai-profile','--remote-debugging-port=9222','--no-first-run','--disable-blink-features=AutomationControlled','https://claude.ai/new'"
-```
-
-logs into claude.ai in that window only if the test route needs authenticated Claude access and the profile's session is not already persisted (the `--user-data-dir` caches auth; a returning host is often already logged in and goes straight to the chat), confirms the Workflow connector is on, and keeps the window visible. Before you act, verify with:
-
-```bash
-python scripts/claude_chat.py status
-```
-
-If it returns non-zero on the Claude Code route, the CDP-backed browser is not up — **SendMessage the lead** and wait. Do not proceed on that route. This does not apply to the Codex in-app browser route.
+Host one-time setup (Chrome launched with `--remote-debugging-port=9222` + the Workflow connector) — full command in `references/preflight-and-setup.md`. **Operational rule (Claude Code route): if `python scripts/claude_chat.py status` returns non-zero, the CDP-backed browser is down — SendMessage the lead and wait; do not proceed.** Not applicable to the Codex in-app browser route.
 
 ## CRITICAL — TAB HYGIENE (forever rule, every step)
 

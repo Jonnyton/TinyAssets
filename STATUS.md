@@ -24,7 +24,7 @@ Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never
 
 ## Work
 
-universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11 modules (#915, 41569b5) — Brain Module + skills tie-in + plan_module_audit script LANDED 2026-05-19. External-write authority design locked + on main (#914, e2c20f4).
+universe_server.py: 14012 → 1927 LOC live in main. PLAN.md restructured 30→11 modules (#915, 41569b5) — Brain Module + skills tie-in + plan_module_audit script LANDED 2026-05-19. External-write authority design locked + on main (#914, e2c20f4).
 
 **Multi-provider note:** any provider runs `python scripts/claim_check.py --provider <yourname>` to discover what's safe to claim. AGENTS.md §"Parallel Dispatch" has the full ritual.
 
@@ -35,7 +35,7 @@ universe_server.py: 14012 → 972 LOC live in main. PLAN.md restructured 30→11
 | **Codex verdict ADAPT** — in-node enqueue #1214 stays dark; before flag flip add current-universe context, queue/lineage cap, branch target validation | workflow/graph_compiler.py, workflow/branch_tasks.py, fantasy_daemon/__main__.py, tests/test_node_enqueue_*.py | verdict filed in `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | **L4 reducer law** — `_dict_merge` (graph_compiler.py ~351 + plugin mirror) is shallow right-biased, non-convergent; fix to per-key lattice join or restrict to single-writer; both-provider confirmed 2026-06-10 (basis audit L4 + codex review adaptation #5) | workflow/graph_compiler.py, packaging/claude-plugin mirror, tests/ | coordinate with in-node enqueue row (shared file) | dev-ready |
 | External directory acceptance — PRs landed, public canaries green 2026-05-02T12:34-07:00; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |
-| OpenAI app submission hardening — docs/code never landed; chatgpt-app-submission.json absent on disk | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT approval/mobile proof | dev-ready |
+| OpenAI app submission hardening — chatgpt-app-submission.json present on disk (180 lines); submission docs/proof still pending | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT approval/mobile proof | dev-ready |
 | **#23 Arc B phase 2** — `codex/old-session-consolidation` at c967272; focused gates green | tests/, workflow/api/runs.py, fantasy_daemon/api.py | - | host-review |
 | **#25 Arc B phase 3** — `codex/arc-b-phase3` at 1ae48ef; stacked on #23 | workflow/_rename_compat.py, fantasy_author/, domains/fantasy_author/ | #23 | host-review |
 | **#24 Arc C** — env-var deprecation aliases (UNIVERSE_SERVER_BASE, WIKI_PATH) | workflow/storage/__init__.py | #25 | dev-ready |
