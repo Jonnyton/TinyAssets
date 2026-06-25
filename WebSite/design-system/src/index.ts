@@ -6,3 +6,6 @@ import "./styles/base.css";
 export * from "./components/Button";
 export * from "./components/StatusPill";
 export * from "./components/RitualLabel";
+export * from "./components/Tick";
+export * from "./components/Term";
+export * from "./components/Ladder";
