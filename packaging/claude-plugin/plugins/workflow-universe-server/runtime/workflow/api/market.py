@@ -3478,11 +3478,15 @@ def _action_gates_stake_bonus(kwargs: dict[str, Any]) -> str:
                     f"actor '{actor}' is not authorized."
                 ),
             })
+        # The bonus belongs to the claim owner-of-record, recorded immutably as
+        # bonus_staker_id; even when the host initiates the stake, ownership
+        # stays with the claimer so a later re-claim cannot transfer it.
         result = stake_bonus(
             conn,
             claim_id=claim_id,
             bonus_stake=stake,
             node_id=node_id,
+            staker_id=recorded_claimer,
             attachment_scope=attachment_scope,
         )
     return json.dumps(result, default=str)

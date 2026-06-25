@@ -185,6 +185,7 @@ class TestBonusColumns:
         assert "bonus_refund_after" in col_names
         assert "attachment_scope" in col_names
         assert "node_id" in col_names
+        assert "bonus_staker_id" in col_names
 
     def test_bonus_stake_has_default_zero(self):
         ddl = dict(BONUS_COLUMNS)["bonus_stake"]
@@ -235,7 +236,8 @@ class TestMigrateGateBonusColumns:
         for _ in range(10):
             migrate_gate_bonus_columns(conn)
         cols = self._column_names(conn)
-        assert len([c for c in cols if c.startswith("bonus")]) == 2
+        # bonus_stake, bonus_refund_after, bonus_staker_id
+        assert len([c for c in cols if c.startswith("bonus")]) == 3
 
     def test_existing_rows_get_default_values(self):
         conn = _fresh_db()

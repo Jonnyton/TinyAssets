@@ -1,6 +1,6 @@
 import sqlite3
 
-from workflow.gates.actions import compute_bonus_payout, release_bonus
+from workflow.gates.actions import compute_bonus_payout, release_bonus, unstake_bonus
 
 
 def _make_conn() -> sqlite3.Connection:
@@ -22,7 +22,8 @@ def _make_conn() -> sqlite3.Connection:
             bonus_stake INTEGER NOT NULL DEFAULT 0,
             bonus_refund_after TEXT,
             attachment_scope TEXT NOT NULL DEFAULT 'node',
-            node_id TEXT
+            node_id TEXT,
+            bonus_staker_id TEXT
         )
         """
     )
@@ -38,6 +39,7 @@ def _insert_claim(
     bonus_refund_after: str | None = None,
     retracted_at: str | None = None,
     retracted_reason: str = "",
+    bonus_staker_id: str | None = None,
 ) -> None:
     conn.execute(
         """
@@ -55,8 +57,9 @@ def _insert_claim(
             bonus_stake,
             bonus_refund_after,
             attachment_scope,
-            node_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'node', ?)
+            node_id,
+            bonus_staker_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'node', ?, ?)
         """,
         (
             claim_id,
@@ -72,6 +75,7 @@ def _insert_claim(
             bonus_stake,
             bonus_refund_after,
             "node-1",
+            bonus_staker_id,
         ),
     )
 
@@ -260,3 +264,86 @@ def test_release_bonus_refuses_double_settle_on_concurrent_release(monkeypatch):
     # No settlement recorded — we bailed before the ledger write.
     assert "settlement_id" not in result
     assert result.get("ledger_recorded") is not True
+
+
+def test_release_refund_follows_immutable_staker_after_reclaim():
+    """A gate re-claim that rewrites claimed_by must NOT redirect the bonus
+    refund: a 'fail'/'skip' refund returns to the immutable bonus_staker_id,
+    never the (now-attacker) claimed_by (slice1a review CRITICAL — round 5/6)."""
+    conn = _make_conn()
+    _insert_claim(
+        conn,
+        claim_id="claim-reclaim",
+        claimed_by="alice",
+        bonus_stake=600,
+        bonus_staker_id="alice",
+        bonus_refund_after="2026-06-29T00:00:00+00:00",
+    )
+    # Attacker re-claims the same (branch, rung): claim_gate overwrites
+    # claimed_by but leaves bonus_stake + bonus_staker_id intact.
+    conn.execute(
+        "UPDATE gate_claims SET claimed_by = ? WHERE claim_id = ?",
+        ("mallory", "claim-reclaim"),
+    )
+
+    result = release_bonus(
+        conn,
+        claim_id="claim-reclaim",
+        eval_verdict="fail",
+        node_last_claimer="node-x",
+    )
+    assert result["status"] == "ok"
+    assert result["disposition"] == "refunded"
+    assert result["recipient"] == "alice"  # NOT mallory
+
+
+def test_release_rejects_reclaimer_staker_assertion():
+    """A re-claimer cannot assert themselves as the staker to redirect the
+    refund — the assertion is checked against the immutable bonus_staker_id."""
+    conn = _make_conn()
+    _insert_claim(
+        conn,
+        claim_id="claim-reclaim2",
+        claimed_by="mallory",      # already re-claimed
+        bonus_stake=600,
+        bonus_staker_id="alice",   # immutable original staker
+        bonus_refund_after="2026-06-29T00:00:00+00:00",
+    )
+    result = release_bonus(
+        conn,
+        claim_id="claim-reclaim2",
+        eval_verdict="fail",
+        node_last_claimer="node-x",
+        staker="mallory",
+    )
+    assert result["status"] == "rejected"
+    assert "recorded staker" in result["error"].lower()
+    # Stake untouched.
+    row = conn.execute(
+        "SELECT bonus_stake FROM gate_claims WHERE claim_id = ?",
+        ("claim-reclaim2",),
+    ).fetchone()
+    assert dict(row)["bonus_stake"] == 600
+
+
+def test_unstake_authority_follows_immutable_staker_after_reclaim():
+    """After a re-claim, only the immutable original staker may unstake — the
+    re-claimer (the new claimed_by) is rejected (slice1a review CRITICAL —
+    round 5/6)."""
+    conn = _make_conn()
+    _insert_claim(
+        conn,
+        claim_id="claim-unstake",
+        claimed_by="mallory",      # re-claimed
+        bonus_stake=600,
+        bonus_staker_id="alice",   # immutable original staker
+        bonus_refund_after="2026-06-29T00:00:00+00:00",
+    )
+    denied = unstake_bonus(conn, claim_id="claim-unstake", actor="mallory")
+    assert denied["status"] == "rejected"
+    assert "original staker" in denied["error"].lower()
+
+    ok = unstake_bonus(conn, claim_id="claim-unstake", actor="alice")
+    assert ok["status"] == "ok"
+    assert ok["refunded"] == 600
+    assert ok["refunded_to"] == "alice"

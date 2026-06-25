@@ -62,10 +62,17 @@ def stake_bonus(
     claim_id: str,
     bonus_stake: int,
     node_id: str,
+    staker_id: str,
     attachment_scope: str = "node",
     refund_days: int = DEFAULT_REFUND_DAYS,
 ) -> dict[str, Any]:
     """Lock a bonus stake on an existing gate claim.
+
+    ``staker_id`` is the immutable owner-of-record for the bonus (the gate
+    claimer at stake time). It is recorded in ``bonus_staker_id`` and is the
+    sole authority for later unstake/refund — never the mutable ``claimed_by``,
+    which a gate re-claim can overwrite (basing ownership on it would let a
+    re-claimer steal the staked bonus).
 
     Returns a result dict; caller serializes.
     Rejects if claim is already retracted or already has a bonus staked.
@@ -109,17 +116,36 @@ def stake_bonus(
         }
 
     refund_after = _refund_after_iso(refund_days)
-    conn.execute(
+    # Atomic, owner-predicated write (slice1a review CRITICAL — round 5/6): the
+    # stake only lands while the claim is STILL owned by ``staker_id``,
+    # unretracted, and unstaked. This closes the check→write TOCTOU and records
+    # the IMMUTABLE bonus_staker_id, so a later gate re-claim that rewrites
+    # claimed_by can neither transfer nor steal the staked bonus.
+    cur = conn.execute(
         """
         UPDATE gate_claims
            SET bonus_stake = ?,
                bonus_refund_after = ?,
                attachment_scope = ?,
-               node_id = ?
+               node_id = ?,
+               bonus_staker_id = ?
          WHERE claim_id = ?
+           AND claimed_by = ?
+           AND retracted_at IS NULL
+           AND bonus_stake = 0
         """,
-        (bonus_stake, refund_after, attachment_scope, node_id, claim_id),
+        (bonus_stake, refund_after, attachment_scope, node_id, staker_id,
+         claim_id, staker_id),
     )
+    if cur.rowcount != 1:
+        return {
+            "status": "rejected",
+            "error": (
+                f"Claim {claim_id!r} changed concurrently (owner, retraction, "
+                "or an existing stake) before the bonus could be staked; no "
+                "stake was recorded."
+            ),
+        }
     return {
         "status": "ok",
         "claim_id": claim_id,
@@ -127,6 +153,7 @@ def stake_bonus(
         "attachment_scope": attachment_scope,
         "node_id": node_id,
         "bonus_refund_after": refund_after,
+        "bonus_staker_id": staker_id,
     }
 
 
@@ -136,10 +163,13 @@ def unstake_bonus(
     claim_id: str,
     actor: str,
 ) -> dict[str, Any]:
-    """Remove a bonus stake, refunding to the original staker.
+    """Remove a bonus stake, refunding to the immutable original staker.
 
-    Only the original claimer (staker) can unstake, and only while the
-    claim is not retracted.
+    Only the recorded ``bonus_staker_id`` (the actor who staked it) can
+    unstake, and only while the claim is not retracted. Authority is the
+    IMMUTABLE staker-of-record, NOT the mutable ``claimed_by`` — a gate
+    re-claim can overwrite ``claimed_by``, so a re-claimer must not be able to
+    unstake (and pocket) another actor's bonus.
     """
     ensure_bonus_columns(conn)
 
@@ -161,31 +191,47 @@ def unstake_bonus(
             "status": "rejected",
             "error": "No bonus staked on this claim.",
         }
-    if actor != claim.claimed_by:
+    # Pre-migration rows have no bonus_staker_id; fall back to claimed_by so
+    # legacy stakes remain unstakeable by their original claimer.
+    effective_staker = (claim.bonus_staker_id or claim.claimed_by or "").strip()
+    if actor != effective_staker:
         return {
             "status": "rejected",
             "error": (
-                f"Only the original staker ('{claim.claimed_by}') can unstake. "
+                f"Only the original staker ('{effective_staker}') can unstake. "
                 f"Actor '{actor}' is not authorized."
             ),
         }
 
     refunded = claim.bonus_stake
-    conn.execute(
+    # Compare-and-swap on the stake value read: a concurrent unstake/release
+    # that already zeroed the stake makes this a no-op, so the refund is
+    # reported at most once.
+    cur = conn.execute(
         """
         UPDATE gate_claims
            SET bonus_stake = 0,
                bonus_refund_after = NULL,
-               node_id = NULL
+               node_id = NULL,
+               bonus_staker_id = NULL
          WHERE claim_id = ?
+           AND bonus_stake = ?
         """,
-        (claim_id,),
+        (claim_id, refunded),
     )
+    if cur.rowcount != 1:
+        return {
+            "status": "rejected",
+            "error": (
+                f"Bonus on claim {claim_id!r} was already resolved by a "
+                "concurrent unstake/release; no double refund."
+            ),
+        }
     return {
         "status": "ok",
         "claim_id": claim_id,
         "refunded": refunded,
-        "refunded_to": actor,
+        "refunded_to": effective_staker,
     }
 
 
@@ -202,11 +248,12 @@ def release_bonus(
     eval_verdict: "pass" → release to node_last_claimer.
                   "fail" or "skip" → refund to the ORIGINAL staker.
 
-    Financial-integrity rule (slice1a review CRITICAL — round 3): a refund must
-    return the stake to the actor who actually staked it, which is recorded on
-    the claim (``claimed_by``), NOT a caller-supplied ``staker`` identity. A
-    write-scoped caller must never be able to redirect another actor's refund to
-    themselves by passing their own id. ``staker`` is now only an OPTIONAL
+    Financial-integrity rule (slice1a review CRITICAL — rounds 3 + 5/6): a
+    refund must return the stake to the actor who actually staked it, recorded
+    IMMUTABLY on the claim (``bonus_staker_id``), NOT a caller-supplied
+    ``staker`` and NOT the mutable ``claimed_by`` (a gate re-claim can rewrite
+    claimed_by, which would otherwise let a re-claimer steal the refund).
+    Pre-migration rows fall back to claimed_by. ``staker`` is only an OPTIONAL
     assertion: when provided it must match the recorded staker, otherwise the
     release is rejected — it never overrides the recorded staker.
 
@@ -249,9 +296,13 @@ def release_bonus(
             ),
         }
 
-    # The refund recipient is the recorded staker, never caller-supplied. A
-    # supplied ``staker`` is honored only as an assertion that must match.
-    recorded_staker = (claim.claimed_by or "").strip()
+    # The refund recipient is the IMMUTABLE recorded staker (bonus_staker_id),
+    # never caller-supplied and never the mutable ``claimed_by`` (a gate
+    # re-claim can overwrite claimed_by — see claim_gate — which would let a
+    # re-claimer redirect another actor's refund to themselves). Pre-migration
+    # rows fall back to claimed_by. A supplied ``staker`` is honored only as an
+    # assertion that must match.
+    recorded_staker = (claim.bonus_staker_id or claim.claimed_by or "").strip()
     if staker is not None and (staker or "").strip() != recorded_staker:
         return {
             "status": "rejected",

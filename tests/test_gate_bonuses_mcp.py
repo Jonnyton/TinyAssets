@@ -203,6 +203,8 @@ class TestStakeBonus:
                         node_id="n1")
         assert result["status"] == "ok"
         assert result["bonus_stake"] == 1000
+        # Immutable owner-of-record is recorded at stake time.
+        assert result["bonus_staker_id"] == "alice"
 
     def test_stake_bonus_host_may_stake_for_any_claim(self, tmp_path, monkeypatch):
         """The configured host identity may stake on any claim."""
