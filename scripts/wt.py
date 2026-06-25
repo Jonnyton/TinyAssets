@@ -137,6 +137,19 @@ def _branch_of(path: Path) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
+def _branch_delete_flag(merged: bool, force: bool) -> str:
+    """Choose ``git branch -d`` vs ``-D``.
+
+    ``-d`` is ancestor-based and refuses squash-merged branches (the repo's
+    default merge style) with "not fully merged" — which would leave the local
+    branch behind after teardown. Once ``is_merged_into`` has *proven* the
+    branch merged (squash-aware), or the caller passed ``--force``, force-delete
+    with ``-D``. Plain ``-d`` only applies when neither holds, but ``cmd_done``
+    bails out before teardown in that case, so it is effectively unreachable.
+    """
+    return "-D" if (merged or force) else "-d"
+
+
 def cmd_done(args: argparse.Namespace) -> int:
     root = repo_root()
     if args.target:
@@ -169,7 +182,7 @@ def cmd_done(args: argparse.Namespace) -> int:
     )
     if rm.returncode != 0:
         raise SystemExit(f"git worktree remove failed: {rm.stderr.strip()}")
-    flag = "-D" if args.force else "-d"
+    flag = _branch_delete_flag(merged, args.force)
     delb = _run(["git", "branch", flag, branch], cwd=root)
     log_event(
         root,
