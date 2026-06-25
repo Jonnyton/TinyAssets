@@ -213,10 +213,13 @@ def write_universe_soul(
     effect_authority: tuple[str, ...] = (),
 ) -> UniverseSoul:
     universe_dir.mkdir(parents=True, exist_ok=True)
+    # Collapse the persona name to a single line: a multiline name would inject
+    # spurious meta lines / corrupt soul.md (Codex review 2026-06-25).
+    name = " ".join(name.split())
     existing = read_universe_soul(universe_dir)
     if existing is None:
         soul = UniverseSoul(
-            name=name.strip(),
+            name=name,
             purpose=purpose.strip(),
             why=why.strip(),
             hard_lines=tuple(item.strip() for item in hard_lines if item.strip()),
@@ -237,7 +240,7 @@ def write_universe_soul(
     else:
         soul = replace(
             existing,
-            name=name.strip() or existing.name,
+            name=name or existing.name,
             purpose=purpose.strip() if purpose.strip() else existing.purpose,
             why=why.strip() if why.strip() else existing.why,
             hard_lines=(

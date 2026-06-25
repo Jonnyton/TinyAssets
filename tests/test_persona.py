@@ -24,7 +24,11 @@ from pathlib import Path
 import pytest
 
 from workflow.persona import Persona, resolve_persona
-from workflow.universe_soul import read_universe_soul, write_universe_soul
+from workflow.universe_soul import (
+    DEFAULT_DOMAIN_SHAPE,
+    read_universe_soul,
+    write_universe_soul,
+)
 
 # ─────────────────────────────────────────────────────────────────────
 # Soul `name` round-trip
@@ -60,6 +64,17 @@ def test_soul_name_defaults_empty(tmp_path: Path) -> None:
     soul = read_universe_soul(tmp_path)
     assert soul is not None
     assert soul.name == ""
+
+
+def test_soul_name_multiline_cannot_inject_meta(tmp_path: Path) -> None:
+    """A multiline persona name is collapsed to one line so it cannot inject a
+    spurious meta line / corrupt soul.md (Codex review 2026-06-25)."""
+    write_universe_soul(tmp_path, name="Tiny\n- Domain shape: hacked", purpose="x")
+    soul = read_universe_soul(tmp_path)
+    assert soul is not None
+    assert "\n" not in soul.name
+    # the injected "- Domain shape: hacked" line did NOT take effect
+    assert soul.domain_shape == DEFAULT_DOMAIN_SHAPE
 
 
 def test_soul_name_merge_preserves_existing(tmp_path: Path) -> None:
@@ -110,12 +125,14 @@ def test_resolve_persona_from_none_is_unnamed() -> None:
 def test_persona_summary_shape() -> None:
     persona = Persona("Tiny", ("maximal honesty",), "run the platform")
     summary = persona.summary()
+    # voice_hard_lines is intentionally NOT surfaced (caller-visible without the
+    # tier floor — Codex 2026-06-25); only name/purpose/embodied.
     assert summary == {
         "name": "Tiny",
-        "voice_hard_lines": ["maximal honesty"],
         "purpose": "run the platform",
         "embodied": True,
     }
+    assert "voice_hard_lines" not in summary
 
 
 def test_persona_is_frozen() -> None:
@@ -151,11 +168,14 @@ def test_get_status_surfaces_persona_block(
 
     payload = json.loads(get_status(universe_id=uid))
     assert "persona" in payload
+    # persona is first so text-only clients (truncating payload) keep it.
+    assert next(iter(payload)) == "persona"
     persona = payload["persona"]
-    for key in ("name", "voice_hard_lines", "purpose", "embodied"):
+    for key in ("name", "purpose", "embodied"):
         assert key in persona, f"missing persona key: {key}"
+    # voice hard-lines are NOT exposed on the public status surface (Codex 2026-06-25).
+    assert "voice_hard_lines" not in persona
     assert persona["name"] == "Tiny"
-    assert persona["voice_hard_lines"] == ["maximal honesty"]
     assert persona["purpose"] == "run the platform"
     assert persona["embodied"] is True
 

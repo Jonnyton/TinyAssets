@@ -1025,6 +1025,8 @@ def get_status(universe_id: str = "") -> str:
     from workflow.universe_soul import read_universe_soul
 
     persona = resolve_persona(read_universe_soul(udir))
-    response["persona"] = persona.summary()
+    # persona first so text-only MCP clients (whose text payload truncates at
+    # _MCP_TEXT_CONTENT_MAX_CHARS) still see it (Codex review 2026-06-25).
+    response = {"persona": persona.summary(), **response}
 
     return json.dumps(response)

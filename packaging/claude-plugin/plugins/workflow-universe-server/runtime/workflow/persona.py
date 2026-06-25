@@ -34,9 +34,12 @@ class Persona:
         return bool(self.name)
 
     def summary(self) -> dict[str, object]:
+        # voice_hard_lines is intentionally NOT surfaced: get_status uses this
+        # and is caller-visible without the tier floor (out of scope for Slice
+        # 1). name + purpose are already exposed via `universe inspect`
+        # (soul.summary()); voice surfacing waits for authorization-before-voice.
         return {
             "name": self.name,
-            "voice_hard_lines": list(self.voice_hard_lines),
             "purpose": self.purpose,
             "embodied": True,
         }
