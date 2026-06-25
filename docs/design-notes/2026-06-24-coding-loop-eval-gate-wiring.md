@@ -67,3 +67,50 @@ Independent opposite-provider review dispatched via `mcp__codex__codex` (read-on
 3. **S3 can't reuse the scene evaluator** — define a coding-specific trajectory schema + thresholds before gating.
 
 Gate status: build remains blocked pending navigator design that incorporates these three adaptations.
+
+## S2 — warn-only mode landed (2026-06-25)
+
+The safe half of S2 is on main: the coding-packet rubric is wired into
+`validate_ship_request` (`workflow/auto_ship.py`) behind
+`WORKFLOW_AUTO_SHIP_RUBRIC_MODE` (default **`warn`**). Warn mode computes the
+rubric and attaches `rubric_warnings` to the decision dict but **never changes
+pass/block behavior**, and the call is **fail-open** (a rubric exception yields
+no warnings and never breaks the envelope gate). The enforce set is scoped to
+the two genuinely-new, non-overlapping checks: `release_evidence_bundle_incomplete`
++ `child_run_not_completed_for_keep`. Tested warn/off/enforce (75 passed) +
+Codex-reviewed **SHIP** — the FIX-NEEDED double-reporting of
+`child_output_evidence_missing` / `contradictory_child_claim` was resolved by
+narrowing the enforce set (those two need de-overlap logic before rejoining).
+Plugin mirror rebuilt. **Zero production block-behavior change.**
+
+### Turnkey enforce-flip (host-gated watched rollout)
+1. **Producers first** (so valid packets don't flip to blocked under enforce) —
+   and set each field **only where it is truthfully determinable**, never blindly
+   (code-read 2026-06-25):
+   - `child_run_status="completed"` IS truthful at the child-attachment producer
+     `attach_existing_child_run` (`workflow/runs.py:~1330`, which already sets
+     `selected_child_status="attached_completed"`). Add it there (+ receipt/return
+     mirrors + plugin mirror), and verify it actually flows into the assembled
+     ship packet the gate sees.
+   - `release_evidence_bundle_complete` is a **release-assembly** claim (the
+     bundle = diff + rollback + gate result + attached child evidence), NOT a
+     child-attachment fact. It must be set by the ship-packet builder — the
+     out-of-repo loop-content `release_safety_gate` prompt — and only once the
+     full bundle is assembled. **Do NOT hardcode it `True` at child-attachment**:
+     that asserts completeness before the bundle exists, the exact "fluent-but-
+     wrong" claim the rubric guards against. Coordinate via the loop-content lane.
+   This is why the producer migration is **navigator + loop-content design, not a
+   mechanical field-add** — and why warn-only (already landed) is the safe state
+   until that design lands.
+2. **Tests**: once producers populate the fields, update `_valid_packet` in
+   `tests/test_auto_ship.py` to carry them so enforce-mode tests reflect the
+   new floor.
+3. **Watched warn period**: leave the flag unset (`warn`); query the auto-ship
+   ledger for decisions carrying `rubric_warnings` to measure the real failure
+   rate (reuse `WORKFLOW_AUTO_SHIP_OBSERVATION_WINDOW_SECONDS`).
+4. **Host flip**: once the warn rate is acceptable and opposite-provider review
+   re-confirms, set `WORKFLOW_AUTO_SHIP_RUBRIC_MODE=enforce`. `off` is the
+   instant kill-switch.
+5. **Widen later**: re-add `child_output_evidence_missing` (the
+   `child_candidate_patch_packet` half only) + `contradictory_child_claim`
+   with envelope-overlap suppression.
