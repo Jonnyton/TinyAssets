@@ -159,7 +159,9 @@ def test_ready_to_remove_sweep_commands_remove_worktree_and_local_branch() -> No
 
     assert commands == [
         "git worktree remove /tmp/wf-landed",
-        "git branch -d codex/landed-fix",
+        # -D (not -d): READY_TO_REMOVE is proven-merged, but -d is ancestor-based
+        # and would refuse a squash-merged branch.
+        "git branch -D codex/landed-fix",
     ]
 
 
@@ -197,6 +199,51 @@ def test_build_status_marks_fully_merged_branch_ready_to_remove(tmp_path: Path) 
     _git(repo, "checkout", "-q", "main")
     _git(repo, "merge", "-q", "--no-ff", "codex/topic", "-m", "merge topic")
     _git(repo, "worktree", "add", "-q", str(topic_path), "codex/topic")
+
+    status = worktree_status.build_status(
+        worktree_status.WorktreeEntry(
+            path=str(topic_path),
+            head=topic_head,
+            branch_ref="refs/heads/codex/topic",
+        ),
+        repo=repo,
+    )
+
+    assert status.state == "READY_TO_REMOVE"
+
+
+def test_build_status_marks_squash_merged_branch_ready_to_remove(tmp_path: Path) -> None:
+    # Squash merge: the branch head is NOT an ancestor of main, so the old
+    # --is-ancestor check would mislabel a clean, fully-landed lane. The
+    # squash-aware _is_fully_merged must still mark it READY_TO_REMOVE.
+    repo = tmp_path / "repo"
+    topic_path = tmp_path / "wf-topic"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "checkout", "-q", "-b", "codex/topic")
+    (repo / "topic.txt").write_text("topic\n", encoding="utf-8")
+    _git(repo, "add", "topic.txt")
+    _git(repo, "commit", "-q", "-m", "topic")
+    topic_head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "merge", "-q", "--squash", "codex/topic")
+    _git(repo, "commit", "-q", "-m", "squashed topic (#1)")
+    _git(repo, "worktree", "add", "-q", str(topic_path), "codex/topic")
+
+    # Sanity: the old ancestor-only check would say "not merged".
+    assert (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", topic_head, "main"],
+            cwd=repo,
+        ).returncode
+        != 0
+    )
 
     status = worktree_status.build_status(
         worktree_status.WorktreeEntry(
