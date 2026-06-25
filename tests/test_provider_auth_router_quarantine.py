@@ -72,19 +72,28 @@ def _auth_probe(dead: set[str]):
 
 @pytest.fixture
 def isolated_universe_config():
-    """Snapshot + restore runtime config and WORKFLOW_PIN_WRITER per test."""
-    saved = runtime.universe_config
-    saved_pin = os.environ.get("WORKFLOW_PIN_WRITER")
+    """Snapshot + restore runtime config and routing-relevant env per test.
+
+    Clears ``WORKFLOW_PIN_WRITER`` and ``WORKFLOW_ALLOW_API_KEY_PROVIDERS`` so
+    tests are hermetic regardless of the host env: with api-key providers
+    enabled, ``test_all_subscription_dead_falls_to_local`` would correctly pick
+    ``gemini-free`` before ``ollama-local`` and break the assertion.
+    """
+    _NEUTRALIZE = ("WORKFLOW_PIN_WRITER", "WORKFLOW_ALLOW_API_KEY_PROVIDERS")
+    saved_config = runtime.universe_config
+    saved_env = {k: os.environ.get(k) for k in _NEUTRALIZE}
     runtime.universe_config = UniverseConfig()
-    os.environ.pop("WORKFLOW_PIN_WRITER", None)
+    for k in _NEUTRALIZE:
+        os.environ.pop(k, None)
     try:
         yield
     finally:
-        runtime.universe_config = saved
-        if saved_pin is not None:
-            os.environ["WORKFLOW_PIN_WRITER"] = saved_pin
-        else:
-            os.environ.pop("WORKFLOW_PIN_WRITER", None)
+        runtime.universe_config = saved_config
+        for k, v in saved_env.items():
+            if v is not None:
+                os.environ[k] = v
+            else:
+                os.environ.pop(k, None)
 
 
 def _router(dead: set[str]) -> tuple[ProviderRouter, dict[str, _FakeProvider]]:
