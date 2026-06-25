@@ -166,9 +166,11 @@ class UniverseState(DomainNeutralUniverseState):
     Contains the target universe directory name; the daemon uses this
     to switch contexts before running worldbuild."""
 
+    enrichment_signals: list
+    """Signals from the commit node consumed by the enrichment/worldbuild node."""
+
     worldbuild_signals: list
-    """Creative signals from the commit node: new elements, contradictions,
-    expansions discovered during writing.  Consumed by the worldbuild node."""
+    """Deprecated alias for enrichment_signals during the phase rename window."""
 
     universal_style_rules: Annotated[list, operator.add]
     """Style rules promoted to universe-wide applicability."""

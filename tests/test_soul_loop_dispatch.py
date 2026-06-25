@@ -15,6 +15,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import fantasy_daemon.__main__ as dm
+import workflow.cloud_worker as cw
 
 LEGACY = "fantasy_author:universe_cycle_wrapper"
 
@@ -164,3 +165,146 @@ def test_declared_loop_not_found_refuses_no_fantasy_fallback(
     # through to the fantasy cycle, and must not execute anything.
     assert handled is True
     assert captured == []
+
+
+# Production worker routing stays flag-gated.
+
+def test_cloud_worker_defaults_to_fantasy_spawn_when_flag_off(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.delenv("WORKFLOW_SOUL_LOOP_DISPATCH", raising=False)
+    calls: list[dict[str, object]] = []
+
+    def fake_spawn(universe, *, module="fantasy_daemon", extra_args=None):
+        calls.append({
+            "universe": universe,
+            "module": module,
+            "extra_args": list(extra_args or []),
+        })
+        return SimpleNamespace(poll=lambda: 0, returncode=0)
+
+    monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
+
+    cw._spawn_daemon_for_universe(tmp_path, extra_args=["--provider", "codex"])
+
+    assert calls == [{
+        "universe": tmp_path,
+        "module": "fantasy_daemon",
+        "extra_args": ["--provider", "codex"],
+    }]
+
+
+def test_cloud_worker_routes_declared_soul_loop_to_workflow_module(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv("WORKFLOW_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.setattr(
+        "workflow.api.universe._universe_loop_dispatch",
+        lambda udir: ("branch-123", {"has_soul": True}),
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_spawn(universe, *, module="fantasy_daemon", extra_args=None):
+        calls.append({
+            "universe": universe,
+            "module": module,
+            "extra_args": list(extra_args or []),
+        })
+        return SimpleNamespace(poll=lambda: 0, returncode=0)
+
+    monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
+
+    cw._spawn_daemon_for_universe(tmp_path, extra_args=["--provider", "codex"])
+
+    assert calls == [{
+        "universe": tmp_path,
+        "module": "workflow",
+        "extra_args": ["--provider", "codex"],
+    }]
+
+
+def test_cloud_worker_keeps_legacy_module_for_soulless_or_legacy_loop(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv("WORKFLOW_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.setattr(
+        "workflow.api.universe._universe_loop_dispatch",
+        lambda udir: (LEGACY, {"has_soul": False}),
+    )
+
+    assert cw._daemon_module_for_universe(tmp_path) == "fantasy_daemon"
+
+
+def test_workflow_cli_allows_non_fantasy_domain_for_declared_soul_loop(
+    monkeypatch, tmp_path,
+):
+    import sys
+
+    import workflow.__main__ as workflow_main
+
+    created: list[dict[str, object]] = []
+
+    class FakeController:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+        # Mirror the REAL DaemonController interface: it exposes start()
+        # (blocking daemon loop, returns None), NOT run(). A fake with run()
+        # masked a production AttributeError — keep this matched to reality.
+        def start(self):
+            return None
+
+    monkeypatch.setenv("WORKFLOW_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.setattr(
+        "workflow.api.universe._universe_loop_dispatch",
+        lambda udir: ("branch-123", {"has_soul": True}),
+    )
+    monkeypatch.setattr("workflow.discovery.auto_register", lambda registry: None)
+    monkeypatch.setattr(
+        "workflow.registry.default_registry.get",
+        lambda domain: SimpleNamespace(name=domain),
+    )
+    monkeypatch.setattr(
+        "workflow.registry.default_registry.list_domains",
+        lambda: ["research_daemon"],
+    )
+    monkeypatch.setattr(
+        "fantasy_daemon.__main__.DaemonController",
+        FakeController,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "python -m workflow",
+            "--domain",
+            "research_daemon",
+            "--universe",
+            str(tmp_path),
+            "--no-tray",
+            "--provider",
+            "codex",
+        ],
+    )
+
+    assert workflow_main.main() == 0
+    assert created == [{
+        "universe_path": str(tmp_path),
+        "db_path": None,
+        "no_tray": True,
+        "pinned_provider": "codex",
+    }]
+
+
+def test_workflow_main_invokes_a_real_daemon_controller_method():
+    """Guard: __main__ must call a method the real DaemonController exposes.
+
+    A fake controller can satisfy main() with any method name, so the
+    monkeypatched test above cannot catch the activated path calling a method
+    the production class lacks. This asserts the real interface directly: the
+    soul-loop entrypoint blocks on start(); there is no run().
+    """
+    from fantasy_daemon.__main__ import DaemonController
+
+    assert hasattr(DaemonController, "start")
+    assert not hasattr(DaemonController, "run")

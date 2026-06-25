@@ -111,7 +111,7 @@ These principles apply to every module. They do not own a module each; they cons
 
 **Context is a managed working set.** Prompts are lossy projections over durable state. The goal is not "pack more context" but "give the model the smallest high-signal working set for the current step."
 
-**Workflow state transitions are the core abstraction.** Orient, plan, draft, commit, learn, reflect, worldbuild, task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
+**Workflow state transitions are the core abstraction.** Orient, plan, draft, commit, learn, reflect, enrich, task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
 
 **Every scaffold is a falsifiable hypothesis.** Counters, thresholds, phase gates, routing rules all encode a claim about model weakness. Prove the simpler approach fails before adding; prove removing hurts before defending. When a stronger model lands, re-test the harness. Trend toward less prescriptive control.
 
@@ -223,7 +223,7 @@ Every module section below follows the same shape so PLAN.md reads as reference:
 **Principles:**
 - *Extract infrastructure first, prove topology second.* A second domain pressures the engine to prove it's actually domain-agnostic — fantasy is the benchmark, not the trunk.
 - *Engine = `workflow/`. Domains = `domains/<name>/`.* The engine-vs-domain seam is named. Once the separation lands, every action lives in exactly one of: shared engine API (`workflow/api/`) or a domain API (`domains/<name>/api/`). No third location.
-- *State transitions are the core abstraction.* Orient → plan → draft → commit → learn → reflect → worldbuild → task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
+- *State transitions are the core abstraction.* Orient → plan → draft → commit → learn → reflect → enrich → task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
 - *Scene Loop is a state-transition pattern, not a fiction-specific concept.* Orient → plan → draft → commit is useful only if each step adds value; flatten the loop when a stronger model + better tools can do equivalent work in fewer steps.
 
 **Substrate:** `workflow/` (engine package), `domains/fantasy_daemon/` (only live domain today), `workflow/domain_registry.py`, `workflow/registry.py`, `workflow/protocols.py`. Pending engine/domain API separation: `docs/design-notes/2026-04-17-engine-domain-api-separation.md`. Fantasy domain keeps scene/chapter/book/universe names in its own graph; shared `workflow/` infrastructure uses domain-agnostic names.

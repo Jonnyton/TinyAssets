@@ -2029,7 +2029,7 @@ class TestCommitWorldbuildSignals:
         signals = [{"type": "new_element", "topic": "char", "detail": "test"}]
         _persist_worldbuild_signals({"_universe_path": str(universe_dir)}, signals)
 
-        signals_file = universe_dir / "worldbuild_signals.json"
+        signals_file = universe_dir / "enrichment_signals.json"
         assert signals_file.exists()
         data = json.loads(signals_file.read_text(encoding="utf-8"))
         assert len(data) == 1
@@ -2041,8 +2041,8 @@ class TestCommitWorldbuildSignals:
 
         universe_dir = tmp_path / "universe"
         universe_dir.mkdir()
-        signals_file = universe_dir / "worldbuild_signals.json"
-        signals_file.write_text(
+        legacy_file = universe_dir / "worldbuild_signals.json"
+        legacy_file.write_text(
             json.dumps([{"type": "expansion", "topic": "x", "detail": "old"}]),
             encoding="utf-8",
         )
@@ -2050,6 +2050,7 @@ class TestCommitWorldbuildSignals:
         new = [{"type": "new_element", "topic": "y", "detail": "new"}]
         _persist_worldbuild_signals({"_universe_path": str(universe_dir)}, new)
 
+        signals_file = universe_dir / "enrichment_signals.json"
         data = json.loads(signals_file.read_text(encoding="utf-8"))
         assert len(data) == 2
 
@@ -2081,7 +2082,7 @@ class TestSelectTaskSignals:
         result = select_task(state)
         assert result["task_queue"][0] == "worldbuild"
         trace = result["quality_trace"][0]
-        assert trace["reason"] == "worldbuild_signals"
+        assert trace["reason"] == "enrichment_signals"
 
     def test_worldbuild_signals_on_disk_trigger_worldbuild(self, tmp_path):
         """Signals in file should route to worldbuild."""
@@ -2100,7 +2101,7 @@ class TestSelectTaskSignals:
         }
         result = select_task(state)
         assert result["task_queue"][0] == "worldbuild"
-        assert result["quality_trace"][0]["reason"] == "worldbuild_signals"
+        assert result["quality_trace"][0]["reason"] == "enrichment_signals"
 
     def test_empty_signals_file_does_not_trigger(self, tmp_path):
         """Empty signals file should not trigger worldbuild."""
@@ -2403,7 +2404,10 @@ class TestWorldbuildSignalDriven:
             "_universe_path": str(universe_dir),
         }
         worldbuild(state)
-        signals_file = universe_dir / "worldbuild_signals.json"
+        # Signals migrate forward: the daemon reads the legacy file via the
+        # deprecation fallback, then writes the cleared queue to the canonical
+        # enrichment_signals.json (what the next cycle will read).
+        signals_file = universe_dir / "enrichment_signals.json"
         data = json.loads(signals_file.read_text(encoding="utf-8"))
         assert data == []
 

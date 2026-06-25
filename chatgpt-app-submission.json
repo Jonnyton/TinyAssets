@@ -23,12 +23,12 @@
     "write_graph": {
       "annotations": {
         "readOnlyHint": false,
-        "openWorldHint": true,
+        "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
         "read_only_justification": "Creates shared Workflow goal proposals or queues bounded Workflow requests, so it changes Workflow state.",
-        "open_world_justification": "A created public goal can be visible in shared Workflow goal discovery.",
+        "open_world_justification": "Writes bounded Workflow graph records inside the Workflow system and does not publish content to an external account or public internet surface.",
         "destructive_justification": "Creates or queues new records and does not delete, overwrite, revoke access, or perform irreversible actions."
       }
     },

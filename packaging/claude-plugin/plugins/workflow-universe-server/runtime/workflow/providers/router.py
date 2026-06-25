@@ -11,6 +11,7 @@ import asyncio
 import concurrent.futures
 import logging
 import os
+from collections.abc import Callable
 
 from workflow.exceptions import (
     AllProvidersExhaustedError,
@@ -98,6 +99,13 @@ class ProviderRouter:
         Consecutive empty-prose responses from a local provider (when all
         API providers are in cooldown) before raising
         AllProvidersExhaustedError.  Default: 2.
+    auth_health : Callable[[str], dict[str, str]] | None
+        Subscription-login probe (``workflow.providers.base.
+        subscription_auth_health``) injected by the daemon. When supplied,
+        a provider whose login is definitively ``not_logged_in`` is dropped
+        from fallback chains (a pinned writer fails loud instead). Default
+        ``None`` disables the gate, so script/test routers that register
+        fake providers are unaffected (2026-06-25 loop-wedge follow-up).
     """
 
     def __init__(
@@ -105,10 +113,12 @@ class ProviderRouter:
         providers: dict[str, BaseProvider] | None = None,
         quota: QuotaTracker | None = None,
         chain_drain_empty_threshold: int = _CHAIN_DRAIN_EMPTY_THRESHOLD,
+        auth_health: Callable[[str], dict[str, str]] | None = None,
     ) -> None:
         self._providers: dict[str, BaseProvider] = providers or {}
         self._quota = quota or QuotaTracker()
         self._chain_drain_empty_threshold = chain_drain_empty_threshold
+        self._auth_health = auth_health
         # {provider_name: consecutive_empty_count} — reset on non-empty response.
         self._consecutive_empty: dict[str, int] = {}
 
@@ -197,6 +207,35 @@ class ProviderRouter:
             return chain
         return [p for p in chain if p not in _API_KEY_PROVIDERS]
 
+    def _apply_auth_health_policy(self, chain: list[str]) -> list[str]:
+        """Drop subscription-backed providers whose login is definitively dead.
+
+        Mirrors the worker-level self-quarantine (2026-06-25 loop-wedge): a
+        provider with missing subscription credentials fails every call, so
+        skipping it routes straight to a healthy provider instead of burning
+        an attempt and a misleading cooldown.
+
+        No-op when no auth-health probe was injected (the default), so
+        script/test routers that register fake providers are unaffected.
+
+        Conservative — only a definitive ``not_logged_in`` drops a provider.
+        ``unknown`` (api-key / local providers the probe cannot assess) and
+        ``ok`` are always kept, and a probe that raises is treated as "keep",
+        so a probe false-negative can never strand a healthy provider.
+        """
+        if self._auth_health is None:
+            return chain
+        alive: list[str] = []
+        for provider_name in chain:
+            try:
+                status = self._auth_health(provider_name).get("status")
+            except Exception:
+                logger.debug("auth-health probe failed for %s; keeping", provider_name)
+                status = None
+            if status != "not_logged_in":
+                alive.append(provider_name)
+        return alive
+
     async def call(
         self,
         role: str,
@@ -284,6 +323,16 @@ class ProviderRouter:
             )
             chain = auth_filtered
 
+        # 2026-06-25 loop-wedge: a pinned writer with dead subscription login
+        # must fail loud (hard rule #8), not silently route to a different
+        # provider. (chain == [pin_writer] here; an empty filter means dead.)
+        if is_pinned_writer and not self._apply_auth_health_policy(chain):
+            raise AllProvidersExhaustedError(
+                f"Pinned writer provider {pin_writer!r} has no subscription "
+                "login (auth probe: not_logged_in). Re-seed its credentials, "
+                "or clear WORKFLOW_PIN_WRITER to use the fallback chain."
+            )
+
         # FEAT-006 / BUG-025: collect per-provider skip/failure diagnostics so
         # the final AllProvidersExhaustedError can carry structured detail.
         # For normal fallback routing, remove unregistered providers before
@@ -300,6 +349,29 @@ class ProviderRouter:
                 )
                 attempts.extend(excluded)
             chain = effective_chain
+
+            # 2026-06-25 loop-wedge: drop registered providers whose
+            # subscription login is definitively dead so fallback routes
+            # straight to a healthy provider. No-op without an injected probe.
+            auth_alive = self._apply_auth_health_policy(chain)
+            dead_auth = [p for p in chain if p not in auth_alive]
+            if dead_auth:
+                logger.warning(
+                    "Skipping providers with dead subscription login for "
+                    "role=%s: %s",
+                    role,
+                    dead_auth,
+                )
+                attempts.extend(
+                    ProviderAttemptDiagnostic(
+                        provider=p,
+                        status="skipped",
+                        skip_class="auth_invalid",
+                        detail="no subscription login (auth probe: not_logged_in)",
+                    )
+                    for p in dead_auth
+                )
+                chain = auth_alive
 
         for provider_name in chain:
             provider = self._providers.get(provider_name)
@@ -554,6 +626,18 @@ class ProviderRouter:
             )
         attempt_order = auth_filtered_order
 
+        # 2026-06-25 loop-wedge: drop dead-login subscription providers; if
+        # that empties the policy order the method falls through to the role
+        # chain below, which re-applies the gate and hard-fails as needed.
+        auth_alive_order = self._apply_auth_health_policy(attempt_order)
+        if attempt_order and not auth_alive_order:
+            logger.warning(
+                "All policy providers have dead subscription login (%s) for "
+                "role=%s; falling through to role chain.",
+                attempt_order, role,
+            )
+        attempt_order = auth_alive_order
+
         # Try policy-derived providers
         tried = 0
         for provider_name in attempt_order:
@@ -727,6 +811,18 @@ class ProviderRouter:
                 ensemble,
             )
         ensemble = auth_ensemble
+
+        # 2026-06-25 loop-wedge: drop judge providers with dead subscription
+        # login (codex is the only subscription judge; the rest probe unknown
+        # and are kept). Empty ensemble returns [] per the contract below.
+        auth_alive_ensemble = self._apply_auth_health_policy(ensemble)
+        if ensemble and not auth_alive_ensemble:
+            logger.warning(
+                "All judge providers have dead subscription login (%s); no "
+                "judges available until credentials are re-seeded.",
+                ensemble,
+            )
+        ensemble = auth_alive_ensemble
 
         # Find all available judge providers
         available: list[tuple[str, BaseProvider]] = []

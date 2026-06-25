@@ -26,6 +26,7 @@ from domains.fantasy_daemon.phases.universe_cycle import universe_cycle
 from domains.fantasy_daemon.phases.worldbuild import worldbuild
 from domains.fantasy_daemon.state.universe_state import UniverseState
 from domains.fantasy_daemon.work_kinds import infer_fantasy_execution_scope
+from workflow.enrichment_signals import load_enrichment_signals
 from workflow.work_targets import get_target
 
 
@@ -271,14 +272,13 @@ def _has_unsynthesized_canon(universe_path: str) -> bool:
 
     udir = Path(universe_path)
     manifest_path = udir / "canon" / ".manifest.json"
-    signals_path = udir / "worldbuild_signals.json"
-    if not manifest_path.exists() or not signals_path.exists():
+    if not manifest_path.exists():
         return False
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        signals = json.loads(signals_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
+    signals = load_enrichment_signals(udir)
     if not isinstance(manifest, dict) or not isinstance(signals, list):
         return False
 

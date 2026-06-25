@@ -176,6 +176,11 @@ def test_give_direction_accepts_line_anchor(universe: str) -> None:
 
 
 def test_submit_request_appends_ledger(universe: str) -> None:
+    (us._base_path() / universe / "PROGRAM.md").write_text(
+        "A legacy fantasy premise.",
+        encoding="utf-8",
+    )
+
     out = _call("submit_request", text="Please add a dragon.", request_type="scene_direction")
     assert out["status"] == "pending"
 
@@ -184,7 +189,9 @@ def test_submit_request_appends_ledger(universe: str) -> None:
     assert entries[0]["action"] == "submit_request"
     assert entries[0]["target"] == out["request_id"]
     assert entries[0]["payload"]["request_type"] == "scene_direction"
-    assert entries[0]["payload"]["loop_dispatch"]["source"] == "legacy_no_soul_compat"
+    assert entries[0]["payload"]["loop_dispatch"]["source"] == (
+        "legacy_program_fantasy_compat"
+    )
 
 
 def test_add_canon_appends_ledger(universe: str) -> None:
@@ -258,7 +265,7 @@ def test_create_universe_surfaces_synthesis_first_run_checklist(
         "premise",
         "canon_source",
         "synthesis_signal",
-        "daemon_worldbuild",
+        "daemon_enrich",
     ]
     assert checklist["steps"][0]["complete"] is True
     assert checklist["steps"][1]["complete"] is False

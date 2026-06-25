@@ -2,7 +2,7 @@
 
 Each universe has a notes.json file. Sources include user (steering),
 editor (editorial reader), structural (deterministic checks), and
-system (worldbuild signals, learning signals).
+system (enrichment signals, learning signals).
 
 Notes flow: created → unread → read (orient consumed) → acted_on/dismissed
 (commit processed). The writer reads notes and decides what to act on.
@@ -250,7 +250,7 @@ def mark_notes_read(universe_path: str | Path, note_ids: list[str]) -> int:
 
 
 def get_active_direction_notes(universe_path: str | Path) -> list[Note]:
-    """Get active direction notes for commit and worldbuild phases.
+    """Get active direction notes for commit and enrich phases.
 
     Returns notes with category="direction" and status in ["unread", "read"].
     These are the user's steering inputs that guide the writer's next moves.

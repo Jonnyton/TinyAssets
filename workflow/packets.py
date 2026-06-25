@@ -125,7 +125,15 @@ class ScenePacket:
     extraction_provider: str = ""
 
     # --- Signals ---
+    enrichment_signals: list[dict[str, Any]] = field(default_factory=list)
+    # Deprecated same-arc alias; remove with worldbuild compatibility.
     worldbuild_signals: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.worldbuild_signals and not self.enrichment_signals:
+            self.enrichment_signals = list(self.worldbuild_signals)
+        elif self.enrichment_signals and not self.worldbuild_signals:
+            self.worldbuild_signals = list(self.enrichment_signals)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict."""

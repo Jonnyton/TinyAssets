@@ -30,7 +30,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from workflow.domain_registry import register_domain_callable
+from workflow.domain_registry import (
+    register_domain_branch_slug,
+    register_domain_callable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -209,3 +212,5 @@ def _restartable_work_exists(universe_path: Path) -> bool:
 register_domain_callable(
     "fantasy_author", "universe_cycle_wrapper", universe_cycle_wrapper,
 )
+register_domain_branch_slug("fantasy_author", "fantasy_author/universe-cycle")
+register_domain_branch_slug("fantasy_author", "fantasy_author:universe_cycle_wrapper")

@@ -26,6 +26,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from git_squash_merge import is_merged_into  # noqa: E402  (sibling-script import)
+
 PROVIDER_PREFIX = {
     "claude-code": "claude",
     "claude": "claude",
@@ -151,9 +154,9 @@ def cmd_done(args: argparse.Namespace) -> int:
     if not branch or branch == "HEAD":
         raise SystemExit(f"could not resolve branch for {wt_path}")
 
-    merged = _run(
-        ["git", "merge-base", "--is-ancestor", branch, args.base_ref], cwd=root
-    ).returncode == 0
+    # Squash-aware: this repo squash-merges PRs, so a plain --is-ancestor check
+    # would report every squash-merged lane as unmerged and refuse teardown.
+    merged = is_merged_into(lambda a: _run(a, cwd=root), branch, args.base_ref)
     if not merged and not args.force:
         raise SystemExit(
             f"branch '{branch}' is NOT merged into {args.base_ref}. "

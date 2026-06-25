@@ -100,12 +100,13 @@ def _build_fallback_router() -> "Optional[ProviderRouter]":
     bridge.
     """
     try:
+        from workflow.providers.base import subscription_auth_health
         from workflow.providers.router import ProviderRouter
     except ImportError:
         logger.info("Real ProviderRouter not available; using mock-only provider")
         return None
 
-    router = ProviderRouter()
+    router = ProviderRouter(auth_health=subscription_auth_health)
 
     try:
         from workflow.providers.claude_provider import ClaudeProvider

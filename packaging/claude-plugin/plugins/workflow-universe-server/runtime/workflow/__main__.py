@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +114,42 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="Disable desktop tray (for headless operation)",
     )
 
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="",
+        help="Pin the supervised writer provider",
+    )
+
     return parser
+
+
+def _truthy_env(name: str) -> bool:
+    value = os.environ.get(name, "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _declared_soul_loop_dispatch_requested(universe: str | None) -> bool:
+    """Return True when the Phase 5 bridge may run a non-fantasy domain."""
+    if not universe or not _truthy_env("WORKFLOW_SOUL_LOOP_DISPATCH"):
+        return False
+    try:
+        from workflow.api.universe import (
+            LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
+            _universe_loop_dispatch,
+        )
+
+        loop_branch_def_id, _info = _universe_loop_dispatch(Path(universe))
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed to resolve soul loop dispatch for universe %s",
+            universe,
+        )
+        return False
+    return bool(
+        loop_branch_def_id
+        and loop_branch_def_id != LEGACY_FANTASY_LOOP_BRANCH_DEF_ID
+    )
 
 
 def main() -> int:
@@ -161,14 +198,22 @@ def main() -> int:
     # the runtime. Once the runtime is extracted, this will build and execute
     # the domain's graph directly.
 
-    if args.domain != "fantasy_author":
+    declared_soul_loop = _declared_soul_loop_dispatch_requested(args.universe)
+    if args.domain != "fantasy_author" and not declared_soul_loop:
         logger.error(
             "Only fantasy_author domain is fully operational in this phase. "
             "Other domains can be registered but cannot yet be executed. "
-            "Use --domain fantasy_author or the domain will be looked up but "
-            "delegation will fail."
+            "Use --domain fantasy_author, or enable WORKFLOW_SOUL_LOOP_DISPATCH "
+            "for a universe with a declared soul loop."
         )
         return 1
+    if args.domain != "fantasy_author":
+        logger.info(
+            "Using Phase 5 bridge for domain %s because %s declares a "
+            "flag-enabled soul loop",
+            args.domain,
+            args.universe,
+        )
 
     try:
         from fantasy_daemon.__main__ import DaemonController
@@ -177,6 +222,7 @@ def main() -> int:
             universe_path=args.universe,
             db_path=args.db,
             no_tray=args.no_tray,
+            pinned_provider=args.provider,
         )
 
         # If --api flag is set, start the API server alongside the daemon
@@ -191,8 +237,11 @@ def main() -> int:
                 "Run 'python -m fantasy_daemon serve' separately."
             )
 
-        # Run the daemon
-        return controller.run()
+        # Run the daemon. DaemonController exposes start() (the blocking
+        # daemon loop); there is no run(). start() returns None on clean
+        # shutdown, so main() returns 0.
+        controller.start()
+        return 0
 
     except Exception as e:
         logger.error("Failed to run daemon: %s", e)
@@ -201,4 +250,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

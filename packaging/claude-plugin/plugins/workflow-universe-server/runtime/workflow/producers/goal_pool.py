@@ -186,7 +186,27 @@ def _accessible_branch_slugs(repo_root: Path, universe_path: Path | None = None)
 
     Per R9: subscriber's accessible Branches = public (in
     ``<repo_root>/branches/*.yaml``) plus subscriber-local.
+
+    Domain branch slugs (e.g. the fantasy loop wrapper) are added only via
+    ``registered_domain_branch_slugs()``, which a domain populates as an
+    import-time side effect. Per the engine-is-infrastructure principle
+    (``workflow/domain_registry.py``) the engine never imports a specific
+    domain, so this set is **process-dependent by design**: a process that has
+    not loaded a domain (the cloud-worker producer pump, the plugin runtime)
+    will not see that domain's slugs, and a goal-pool task targeting one is
+    skipped here **when the subscriber can reach at least one other branch**
+    (the accessibility filter in ``_parse_pool_yaml`` fail-OPENS on a fully
+    empty accessible set — see
+    ``test_goal_pool_fails_open_when_no_accessible_slugs``). That is not a lost
+    task — the domain's own daemon, which imports its registrations, still scans
+    the pool at graph-start. Re-injecting
+    a hardcoded domain slug to "fix" this divergence would re-couple the engine
+    to a domain and is explicitly not wanted. See
+    ``test_goal_pool_skips_fantasy_seed_when_unregistered`` /
+    ``test_goal_pool_accepts_registered_fantasy_seed`` which pin both halves.
     """
+    from workflow.domain_registry import registered_domain_branch_slugs
+
     slugs: set[str] = set()
     branches_dir = repo_root / "branches"
     if branches_dir.is_dir():
@@ -194,10 +214,7 @@ def _accessible_branch_slugs(repo_root: Path, universe_path: Path | None = None)
             slugs.add(p.stem)
     if universe_path is not None:
         slugs.update(_catalog_branch_slugs(universe_path))
-    # Fantasy seed always available — the wrapper is registered
-    # at import time via domain registry.
-    slugs.add("fantasy_author/universe-cycle")
-    slugs.add("fantasy_author:universe_cycle_wrapper")
+    slugs.update(registered_domain_branch_slugs())
     return slugs
 
 
@@ -349,6 +366,12 @@ class GoalPoolProducer:
             return None
 
         # R9 / invariant 6: reject branch slugs the subscriber can't run.
+        # Conditional by design: an empty ``accessible_slugs`` means the
+        # subscriber could not enumerate ANY branch ("can't determine
+        # accessibility"), so the filter fail-OPENS and the task is queued
+        # rather than silently dropped. Not fantasy-specific. Pinned by
+        # ``test_goal_pool_fails_open_when_no_accessible_slugs``; the non-empty
+        # filter half is pinned by the de-fantasy divergence tests.
         if accessible_slugs and branch_def_id not in accessible_slugs:
             logger.info(
                 "goal_pool: branch_def_id=%r not in accessible slugs; "

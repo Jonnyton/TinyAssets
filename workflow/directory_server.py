@@ -297,7 +297,7 @@ _mcp_write_graph = _register_structured_tool(
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=False,
-        openWorldHint=True,
+        openWorldHint=False,
     ),
 )
 

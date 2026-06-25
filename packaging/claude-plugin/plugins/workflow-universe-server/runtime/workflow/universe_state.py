@@ -67,6 +67,7 @@ FANTASY_DEFAULT_UNIVERSE_STATE_FIELDS = frozenset({
     "chapter_number",
     "scene_number",
     "premise_kernel",
+    "enrichment_signals",
     "worldbuild_signals",
     "universal_style_rules",
     "cross_series_facts",

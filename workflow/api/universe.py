@@ -318,8 +318,8 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
             "complete": False,
         },
         {
-            "id": "daemon_worldbuild",
-            "label": "Let the daemon process the synthesize_source signal in a worldbuild cycle.",
+            "id": "daemon_enrich",
+            "label": "Let the daemon process the synthesize_source signal in an enrich cycle.",
             "complete": False,
         },
     ]
@@ -348,13 +348,28 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
 def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
     soul = read_universe_soul(udir)
     if soul is None:
+        if not read_legacy_premise(udir).strip():
+            return NO_LOOP_DECLARED, {
+                "source": "no_soul_no_loop_declared",
+                "has_soul": False,
+                "branch_def_id": "",
+                "error": "universe_loop_not_declared",
+                "note": (
+                    "This universe has no soul.md and no legacy PROGRAM.md; "
+                    "declare a Loop branch in soul.md before queuing work."
+                ),
+            }
         return LEGACY_FANTASY_LOOP_BRANCH_DEF_ID, {
-            "source": "legacy_no_soul_compat",
+            "source": "legacy_program_fantasy_compat",
             "has_soul": False,
             "branch_def_id": LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
             "caveat": (
-                "Legacy universe has no soul.md; keeping the existing fantasy "
-                "loop only until the universe is migrated to a soul-declared loop."
+                "Legacy universe has PROGRAM.md but no soul.md; keeping the "
+                "fantasy loop as an explicit compatibility path only until "
+                "the universe is migrated to a soul-declared loop. Scheduled "
+                "for removal once PROGRAM.md-only universes are migrated; "
+                "tracked under the de-fantasy audit "
+                "docs/audits/2026-06-24-fantasy-architecture-residue-audit.md."
             ),
         }
     branch_def_id = soul.loop_branch_def_id.strip()
@@ -3840,7 +3855,7 @@ def _action_add_canon(
     through :func:`workflow.ingestion.core.ingest_file` so the signal
     fires (the earlier direct-write path bypassed it, breaking MCP
     uploads). Files still land under ``canon/sources/`` on user
-    uploads; the daemon's worldbuild node picks up the signal and
+    uploads; the daemon's enrich phase picks up the signal and
     synthesizes canon from the source.
     """
     from workflow.api.engine_helpers import _current_actor

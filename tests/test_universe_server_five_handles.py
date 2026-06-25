@@ -31,7 +31,7 @@ ADVERTISED = CANONICAL_HANDLES | {"get_status"}
 
 EXPECTED_ANNOTATIONS = {
     "read_graph": {"readOnlyHint": True, "idempotentHint": True},
-    "write_graph": {"readOnlyHint": False, "openWorldHint": True},
+    "write_graph": {"readOnlyHint": False, "openWorldHint": False},
     "run_graph": {"readOnlyHint": False, "openWorldHint": False},
     "read_page": {"readOnlyHint": True, "idempotentHint": True},
     "write_page": {"readOnlyHint": False, "openWorldHint": True},
