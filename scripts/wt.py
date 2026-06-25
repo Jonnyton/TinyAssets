@@ -7,20 +7,28 @@ One command for both halves of the loop so worktrees stop piling up:
 
     python scripts/wt.py new <slug> [--provider claude-code] [--branch name]
     python scripts/wt.py done [<slug-or-path>] [--force]
+    python scripts/wt.py sweep [--apply]
     python scripts/wt.py list
 
-``new``  fetches, creates a worktree off the base ref, scaffolds _PURPOSE.md
-         (with every field worktree_status.py requires), and logs a create
-         event in .agents/worktrees.md.
-``done`` verifies the branch merged into the base ref (refuses otherwise unless
-         --force), removes the worktree, deletes the local branch, and logs a
-         remove event. Remote-branch cleanup is the janitor's job.
-``list`` passes through to worktree_status.py.
+``new``   fetches, creates a worktree off the base ref, scaffolds _PURPOSE.md
+          (with every field worktree_status.py requires), and logs a create
+          event in .agents/worktrees.md.
+``done``  verifies the branch merged into the base ref (refuses otherwise unless
+          --force), removes the worktree, deletes the local branch, and logs a
+          remove event. Remote-branch cleanup is the janitor's job.
+``sweep`` reaps *every* merged+clean worktree in one pass — the local twin of
+          ``branch_janitor --apply --only-merged``. Report-first by default;
+          ``--apply`` actually removes. Only READY_TO_REMOVE (merged+clean) lanes
+          are touched, the current checkout is excluded, and dirty / locked /
+          in-use lanes are refused at the git layer (no --force). So sprawl can
+          be cleared repeatably without risking uncommitted work.
+``list``  passes through to worktree_status.py.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -150,6 +158,34 @@ def _branch_delete_flag(merged: bool, force: bool) -> str:
     return "-D" if (merged or force) else "-d"
 
 
+def _remove_worktree(
+    root: Path, wt_path: Path, branch: str, *, base_ref: str, force: bool
+) -> tuple[bool, str]:
+    """Remove one worktree + its local branch. Returns ``(ok, human detail)``.
+
+    Squash-aware merge gate; never forces unless asked, so a dirty / locked /
+    in-use worktree is refused at the git layer rather than discarded. Shared by
+    ``done`` and ``sweep`` so both inherit identical safety.
+    """
+    merged = is_merged_into(lambda a: _run(a, cwd=root), branch, base_ref)
+    if not merged and not force:
+        return (
+            False,
+            f"branch '{branch}' is NOT merged into {base_ref}. "
+            f"Merge its PR first, or re-run with --force to discard the lane.",
+        )
+    rm = _run(
+        ["git", "worktree", "remove", *(["--force"] if force else []), str(wt_path)],
+        cwd=root,
+    )
+    if rm.returncode != 0:
+        return (False, f"git worktree remove failed: {rm.stderr.strip()}")
+    flag = _branch_delete_flag(merged, force)
+    delb = _run(["git", "branch", flag, branch], cwd=root)
+    log_event(root, f"REMOVE {wt_path.name} branch={branch} merged={merged} forced={force}")
+    return (True, f"branch delete: {'ok' if delb.returncode == 0 else delb.stderr.strip()}")
+
+
 def cmd_done(args: argparse.Namespace) -> int:
     root = repo_root()
     if args.target:
@@ -167,29 +203,77 @@ def cmd_done(args: argparse.Namespace) -> int:
     if not branch or branch == "HEAD":
         raise SystemExit(f"could not resolve branch for {wt_path}")
 
-    # Squash-aware: this repo squash-merges PRs, so a plain --is-ancestor check
-    # would report every squash-merged lane as unmerged and refuse teardown.
-    merged = is_merged_into(lambda a: _run(a, cwd=root), branch, args.base_ref)
-    if not merged and not args.force:
-        raise SystemExit(
-            f"branch '{branch}' is NOT merged into {args.base_ref}. "
-            f"Merge its PR first, or re-run with --force to discard the lane."
-        )
-
-    rm = _run(
-        ["git", "worktree", "remove", *(["--force"] if args.force else []), str(wt_path)],
-        cwd=root,
-    )
-    if rm.returncode != 0:
-        raise SystemExit(f"git worktree remove failed: {rm.stderr.strip()}")
-    flag = _branch_delete_flag(merged, args.force)
-    delb = _run(["git", "branch", flag, branch], cwd=root)
-    log_event(
-        root,
-        f"REMOVE {wt_path.name} branch={branch} merged={merged} forced={args.force}",
-    )
+    ok, detail = _remove_worktree(root, wt_path, branch, base_ref=args.base_ref, force=args.force)
+    if not ok:
+        raise SystemExit(detail)
     print(f"removed worktree {wt_path}")
-    print(f"  branch delete: {'ok' if delb.returncode == 0 else delb.stderr.strip()}")
+    print(f"  {detail}")
+    return 0
+
+
+def _is_sweep_candidate(status: dict) -> bool:
+    """A worktree safe to reap automatically: classified merged+clean.
+
+    Pure check over a ``worktree_status.py --json`` record. Locked / non-empty /
+    in-use lanes are still refused at the git layer by ``_remove_worktree`` (no
+    --force), so this stays conservative even if classification is generous.
+    """
+    return status.get("state") == "READY_TO_REMOVE" and not status.get("dirty", True)
+
+
+def _path_contains(parent: Path, child: Path) -> bool:
+    """True if ``child`` is ``parent`` or lives under it (both already resolved)."""
+    return parent == child or parent in child.parents
+
+
+def _classified_worktrees(root: Path) -> list[dict]:
+    script = root / "scripts" / "worktree_status.py"
+    proc = _run([sys.executable, str(script), "--json"], cwd=root)
+    if proc.returncode != 0:
+        raise SystemExit(f"worktree_status.py failed: {proc.stderr.strip()}")
+    try:
+        return json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"could not parse worktree_status output: {exc}")
+
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    root = repo_root()
+    # worktree_status runs with cwd=root, so its "current" flag points at the
+    # main checkout, not at wherever wt.py was invoked. Exclude the worktree
+    # containing *our* cwd explicitly so sweep never removes itself.
+    here = Path.cwd().resolve()
+    candidates = [
+        s
+        for s in _classified_worktrees(root)
+        if _is_sweep_candidate(s) and not _path_contains(Path(s.get("path", "")).resolve(), here)
+    ]
+    if not candidates:
+        print("no merged+clean (READY_TO_REMOVE) worktrees to sweep")
+        return 0
+
+    verb = "reaping" if args.apply else "would reap"
+    print(f"# {verb} {len(candidates)} merged+clean worktree(s):")
+    reaped = skipped = 0
+    for s in candidates:
+        slug = s.get("slug", "?")
+        branch = s.get("branch", "")
+        if not args.apply:
+            print(f"  REAP {slug}  ({branch})")
+            continue
+        ok, detail = _remove_worktree(
+            root, Path(s.get("path", "")), branch, base_ref=args.base_ref, force=False
+        )
+        if ok:
+            reaped += 1
+            print(f"  REAPED {slug}  ({detail})")
+        else:
+            skipped += 1
+            print(f"  SKIP   {slug}  -> {detail}")
+    if args.apply:
+        print(f"# done: reaped={reaped} skipped={skipped}")
+    else:
+        print("\n(dry-run; re-run with --apply to remove)")
     return 0
 
 
@@ -224,6 +308,13 @@ def main(argv: list[str]) -> int:
     p_done.add_argument("--base-ref", default="origin/main")
     p_done.add_argument("--force", action="store_true", help="discard even if unmerged/dirty")
     p_done.set_defaults(func=cmd_done)
+
+    p_sweep = sub.add_parser(
+        "sweep", help="reap every merged+clean (READY_TO_REMOVE) worktree; dry-run unless --apply"
+    )
+    p_sweep.add_argument("--apply", action="store_true", help="actually remove (default: dry-run)")
+    p_sweep.add_argument("--base-ref", default="origin/main")
+    p_sweep.set_defaults(func=cmd_sweep)
 
     p_list = sub.add_parser("list", help="pass through to worktree_status.py")
     p_list.add_argument("extra", nargs=argparse.REMAINDER)
