@@ -64,7 +64,8 @@ def test_recent_commit_never_deleted(patched):
 
 
 def test_stale_unmerged_flagged_not_deleted(patched):
-    patched([("feature/stale", _age_ts(35))], merged=set())
+    # Between STALE_DAYS (flag) and GRACE_DAYS (delete): flagged, not deleted.
+    patched([("feature/stale", _age_ts(10))], merged=set())
     out = bj.classify("origin", "origin/main", NOW, open_prs=set())
     assert _verdict_for(out, "feature/stale").category == "STALE_FLAG"
 

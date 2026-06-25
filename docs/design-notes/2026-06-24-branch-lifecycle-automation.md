@@ -60,15 +60,16 @@ drift **detected, not discovered** (loop-telemetry philosophy).
 Daily GitHub Action, **host-independent**. Classifies every remote branch:
 - `MERGED` (ancestor of `origin/main`) -> safe to delete immediately; the
   commits are already on main.
-- `STALE_FLAG` (unmerged, no commits in `STALE_DAYS=30`, no open PR) -> flag in
+- `STALE_FLAG` (unmerged, no commits in `STALE_DAYS=7`, no open PR) -> flag in
   a single rolling tracking issue.
-- `STALE_DELETE` (flagged + still untouched past `GRACE_DAYS=45` total) ->
+- `STALE_DELETE` (flagged + still untouched past `GRACE_DAYS=14` total) ->
   delete in `--apply` mode.
 - `PROTECTED` / `ACTIVE` -> never touched.
 
 **Guardrails (hard):** never delete `main`/`master`/`production`/`release/*`;
 never delete a branch with an open PR; never delete a branch with a commit
-younger than `RECENT_DAYS=7`, regardless of total age.
+younger than `RECENT_DAYS=7`, regardless of total age. (Thresholds tightened
+from 30/45 to 7/14 per host directive 2026-06-25 — minimal lingering.)
 
 **Rollout (host directive 2026-06-24):** the report-first wait was waived. The
 scheduled run defaults to `apply-all`, so once the workflow lands on `main` its

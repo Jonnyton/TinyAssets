@@ -42,8 +42,8 @@ from dataclasses import asdict, dataclass
 PROTECTED_EXACT = {"main", "master", "production", "develop", "HEAD"}
 PROTECTED_PREFIXES = ("release/", "hotfix/")
 RECENT_DAYS = 7
-STALE_DAYS = 30
-GRACE_DAYS = 45
+STALE_DAYS = 7
+GRACE_DAYS = 14
 ISSUE_MARKER = "<!-- branch-janitor -->"
 ISSUE_TITLE = "🧹 Branch janitor report"
 
