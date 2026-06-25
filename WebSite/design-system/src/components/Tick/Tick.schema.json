@@ -1,0 +1,15 @@
+{
+  "name": "Tick",
+  "import": "import { Tick } from \"@tiny/design-system\";",
+  "description": "A mono provenance/source link with the ⌁ glyph, short label, optional anchor target, and optional external marker.",
+  "props": {
+    "href": { "type": "string", "required": false, "description": "When set, renders an anchor. When omitted, renders a flat inline provenance tick." },
+    "label": { "type": "string", "default": "source", "description": "Short source label." },
+    "external": { "type": "boolean", "default": false, "description": "Open in a new tab and show the ↗ marker." }
+  },
+  "rules": [
+    "Use only for provenance or source links, not decoration.",
+    "Keep the label short and mono; the glyph is always ⌁.",
+    "Set `external` only for links that leave the current site or app."
+  ]
+}
