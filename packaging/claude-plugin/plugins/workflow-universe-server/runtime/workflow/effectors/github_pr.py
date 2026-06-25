@@ -1606,6 +1606,29 @@ def run_effects_for_branch(
                         "error_kind": "effector_crashed",
                     }
                 per_node[sink] = result
+            elif sink == "twitter_post":
+                try:
+                    from workflow.effectors.twitter_post import (
+                        run_twitter_post_effector,
+                    )
+
+                    result = run_twitter_post_effector(
+                        node_id=node_id,
+                        output_keys=output_keys,
+                        run_state=run_state,
+                        base_path=base_path,
+                        run_id=run_id,
+                    )
+                except Exception as exc:  # defensive — never raise
+                    logger.exception(
+                        "twitter_post effector crashed for node %s",
+                        node_id,
+                    )
+                    result = {
+                        "error": f"effector crashed: {exc}",
+                        "error_kind": "effector_crashed",
+                    }
+                per_node[sink] = result
             else:
                 per_node[sink] = {
                     "error": f"unknown effect sink '{sink}'",
