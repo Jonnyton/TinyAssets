@@ -208,7 +208,8 @@ def render_report(verdicts: list[BranchVerdict], *, now: int) -> str:
     lines += [
         "",
         f"_Guardrails: protects main/release, open-PR branches, and commits < {RECENT_DAYS}d._",
-        "_Report-first mode: nothing is deleted until the scheduled run flips to `--apply`._",
+        "_This run deletes nothing unless invoked with `--apply`; the scheduled "
+        "workflow runs `apply-all`._",
     ]
     return "\n".join(lines)
 

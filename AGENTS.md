@@ -538,8 +538,9 @@ drift is automated, not a manual ritual to remember. Design note:
   PROTECTED / ACTIVE / MERGED / STALE_FLAG / STALE_DELETE. Default mode reports
   only; `--apply` deletes MERGED (already on main) + STALE_DELETE. Hard
   guardrails: never deletes main/release, open-PR branches, or commits < 7d.
-  Driven by `.github/workflows/branch-janitor.yml` (daily report-first; manual
-  `workflow_dispatch` with `report` / `apply-merged` / `apply-all`).
+  Driven by `.github/workflows/branch-janitor.yml` (daily `apply-all`,
+  self-maintaining; manual `workflow_dispatch` with `report` / `apply-merged`
+  / `apply-all`, where `report` is an on-demand dry-run).
 - **Layer 2 — `python scripts/wt.py new|done|list`.** One command for both
   halves of the loop: `new` creates a worktree off `origin/main` + scaffolds
   `_PURPOSE.md`; `done` verifies the branch merged before removing the worktree

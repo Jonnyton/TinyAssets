@@ -3,10 +3,11 @@ name: branch-janitor
 # Layer 1 + 4 of the branch lifecycle automation.
 # See docs/design-notes/2026-06-24-branch-lifecycle-automation.md
 #
-# Report-first: the daily scheduled run only updates the rolling tracking
-# issue (no deletions). To start sweeping, run it manually with a mode, or
-# change the scheduled `mode` below to `apply-merged` / `apply-all` after the
-# ~3-week dry-run period.
+# The daily scheduled run sweeps in `apply-all` mode: it deletes MERGED
+# branches (already on main) and STALE_DELETE branches (unmerged, no open PR,
+# no commit in 45d), and updates the rolling tracking issue. Hard guardrails
+# always protect main/release, open-PR branches, and commits < 7d.
+# For an on-demand dry-run, trigger it manually with mode `report`.
 
 on:
   schedule:
@@ -49,7 +50,8 @@ jobs:
       - name: Run branch janitor
         env:
           GH_TOKEN: ${{ github.token }}
-          JANITOR_MODE: ${{ github.event.inputs.mode || 'report' }}
+          # scheduled runs carry no input -> default to apply-all (self-maintaining sweep)
+          JANITOR_MODE: ${{ github.event.inputs.mode || 'apply-all' }}
         run: |
           set -euo pipefail
           FLAGS=(--issue)

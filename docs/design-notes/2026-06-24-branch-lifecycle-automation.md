@@ -70,11 +70,12 @@ Daily GitHub Action, **host-independent**. Classifies every remote branch:
 never delete a branch with an open PR; never delete a branch with a commit
 younger than `RECENT_DAYS=7`, regardless of total age.
 
-**Rollout:** report-first. The Action runs `--report` (writes the tracking
-issue) for ~3 weeks so the host sees exactly what *would* be deleted, then a
-one-line workflow edit flips the scheduled run to `--apply`. Merged branches
-may be swept earlier via manual `workflow_dispatch` since they are provably on
-main.
+**Rollout (host directive 2026-06-24):** the report-first wait was waived. The
+scheduled run defaults to `apply-all`, so once the workflow lands on `main` its
+first run sweeps the backlog (MERGED + STALE_DELETE) and it self-maintains
+daily thereafter. Hard guardrails still protect main/release, open-PR branches,
+and commits < 7d. `report` remains available as an on-demand dry-run via
+`workflow_dispatch`.
 
 ### Layer 2 — `wt` lifecycle wrapper (`scripts/wt.py`)
 One command for both halves of the loop so teardown stops being optional:
@@ -107,8 +108,6 @@ number the host watches, not a surprise.
 - `.claude/hooks/session_sync_gate_hook.py` (+ settings.json wiring)
 
 ## Open items / host decisions
-- Flip janitor scheduled run from `--report` to `--apply` after ~3 weeks of
-  clean reports (target ~2026-07-15).
 - Optional later: GitHub **merge queue** to keep `main` green under heavy
   parallel agent merges (note the 2026-04-23 merge-queue silent-drop incident —
   enable only with the `merge_group` CI event wired).
