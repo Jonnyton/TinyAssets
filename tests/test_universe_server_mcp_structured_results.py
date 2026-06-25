@@ -20,7 +20,13 @@ def test_direct_wrappers_keep_json_string_contract() -> None:
 
 
 def test_mcp_tool_result_has_structured_content_and_text_content() -> None:
-    """ChatGPT/Apps SDK needs structuredContent without losing text content."""
+    """ChatGPT/Apps SDK needs structuredContent without losing text content.
+
+    The text block must carry the real payload. When the payload fits the
+    budget it is faithful JSON (parseable); when oversized it is real truncated
+    data with a pointer to structuredContent. Either way the payload's data is
+    present in text, never replaced by a placeholder stub.
+    """
     from workflow import universe_server as us
 
     async def _call_status():
@@ -32,13 +38,30 @@ def test_mcp_tool_result_has_structured_content_and_text_content() -> None:
     assert result.structured_content["schema_version"] == 1
     assert result.content
     assert result.content[0].type == "text"
-    assert json.loads(result.content[0].text)["schema_version"] == 1
+    text = result.content[0].text
+    # Real payload data is present in the text channel (not a placeholder).
+    assert "schema_version" in text
+    if "[truncated:" not in text:
+        # Small payloads stay fully faithful and parseable.
+        assert json.loads(text)["schema_version"] == 1
+    else:
+        # Oversized payloads carry real leading data + a pointer to the rest.
+        assert "structuredContent" in text
+        assert len(text) <= us._MCP_TEXT_CONTENT_MAX_CHARS
 
 
-def test_mcp_tool_large_result_keeps_full_structured_content_with_compact_text(
+def test_mcp_tool_large_result_keeps_full_structured_content_with_bounded_text(
     monkeypatch,
 ) -> None:
-    """Large list-style results must not mirror the whole payload in text."""
+    """Large results stay bounded in text but must carry REAL data, not a stub.
+
+    Text-only MCP clients read only the ``content`` text block. The prior
+    contract replaced oversized payloads with a <500-char key-count stub, which
+    made reads silently look empty to those clients. New contract: full payload
+    in ``structuredContent``, and the text block carries real leading data
+    bounded to the text budget with an explicit pointer to ``structuredContent``
+    for the elided remainder.
+    """
     from workflow import universe_server as us
 
     claims = [
@@ -73,6 +96,10 @@ def test_mcp_tool_large_result_keeps_full_structured_content_with_compact_text(
     assert result.structured_content["claims"] == claims
     assert result.structured_content["count"] == 12
     text = result.content[0].text
-    assert "Full payload is in structuredContent" in text
-    assert "x" * 1000 not in text
-    assert len(text) < 500
+    # structuredContent keeps the full payload (above). The text block must
+    # now carry REAL leading data + an explicit pointer to the remainder,
+    # bounded to the budget — not a lossy placeholder.
+    assert "structuredContent" in text  # pointer to the full payload
+    assert "truncated" in text  # explicit elision marker
+    assert "c-0" in text  # real leading data is present, not a stub
+    assert len(text) <= us._MCP_TEXT_CONTENT_MAX_CHARS
