@@ -1,0 +1,18 @@
+{
+  "name": "Button",
+  "import": "import { Button } from \"@tiny/design-system\";",
+  "description": "The one action control. Ember `primary` is reserved for the single most important action on a surface. Renders an anchor when `href` is set.",
+  "props": {
+    "children": { "type": "ReactNode", "required": false, "description": "Label / contents." },
+    "variant": { "type": "enum", "values": ["primary", "secondary", "ghost", "link"], "default": "primary", "description": "primary=ember action, secondary=violet, ghost=quiet outline, link=inline text." },
+    "size": { "type": "enum", "values": ["sm", "md", "lg"], "default": "md" },
+    "href": { "type": "string", "required": false, "description": "When set, renders <a> instead of <button>." },
+    "disabled": { "type": "boolean", "default": false },
+    "onClick": { "type": "(e: MouseEvent) => void", "required": false },
+    "className": { "type": "string", "required": false }
+  },
+  "rules": [
+    "Exactly one `primary` button per surface — it is the key action.",
+    "Use `link` for inline navigation, not for primary CTAs."
+  ]
+}

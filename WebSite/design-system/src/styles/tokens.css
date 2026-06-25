@@ -1,0 +1,179 @@
+/* =========================================================
+   Tiny — Design Tokens · "Field Notes"  (canonical source)
+   Paper-light ground, ink text, one life-signal green reserved
+   for genuinely live evidence, ember for action, violet as the
+   soul/lineage trace.
+
+   This file is the CANONICAL CSS source of truth for tokens.
+   The DTCG machine-readable mirror (tokens/tiny.tokens.json) is
+   generated FROM this file by tokens/extract-dtcg.mjs, so AI
+   tools and humans never drift. Exact CSS var names are preserved
+   so consuming product UIs keep rendering unchanged.
+   ========================================================= */
+
+@import url("https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap");
+
+:root {
+  /* ---------- CORE PALETTE ---------- */
+  /* Paper ground — warm, slightly fibrous, never sterile white. */
+  --paper-50:  #faf8f2;
+  --paper-100: #f4f1e7;
+  --paper-200: #ece7d8;
+  --paper-300: #ded7c2;
+  --paper-400: #c9c0a6;
+  /* The desk itself — deeper than every paper object that sits on it. */
+  --ground-0:  #efe7d4;
+
+  /* Ink — warm near-black, never pure #000. */
+  --ink-text-900: #1c1a14;
+  --ink-text-700: #45412f;
+  --ink-text-500: #736d54;
+  --ink-text-300: #a39b7e;
+
+  /* Brand ember — action only. Inherited from the sigil. */
+  --ember-900: #8a1a33;
+  --ember-700: #b62744;
+  --ember-600: #e94560;
+  --ember-500: #d4385a;   /* hover on light needs more pigment, not less */
+  --ember-300: #e98aa0;
+  --ember-100: #fbe3e8;
+
+  /* Life-signal green — RESERVED for live evidence + liveness. */
+  --live-700: #1d6e4b;
+  --live-600: #1f8a5c;
+  --live-100: #ddf0e4;
+
+  /* Soul violet — lineage, forks, souls. Trace accent only. */
+  --violet-900: #2b1a4a;
+  --violet-700: #533483;
+  --violet-600: #6b44a8;
+  --violet-500: #6b44a8;
+  --violet-400: #7d56bd;
+  --violet-200: #4a2f76;
+  --violet-100: #ece4f7;
+
+  /* Bone (legacy warm paper family) — now the actual ground. */
+  --bone-50:  #faf8f2;
+  --bone-100: #f4f1e7;
+  --bone-200: #ece7d8;
+  --bone-300: #ded7c2;
+  --bone-500: #87826f;
+  --bone-700: #4a4738;
+
+  /* Legacy ink family (remapped to paper-light equivalents). */
+  --ink-900: #1c1a14;
+  --ink-800: #f4f1e7;
+  --ink-700: #ece7d8;
+  --ink-600: #e4decb;
+  --ink-500: #d6cfb8;
+  --ink-400: #c9c0a6;
+
+  /* Status — muted, honest. Idle/asleep is a first-class state. */
+  --signal-live: #1f8a5c;
+  --signal-idle: #b08a2e;
+  --signal-warn: #c96f24;
+  --signal-error: #b62744;
+
+  /* ---------- SEMANTIC ---------- */
+  --bg-0: var(--ground-0);
+  --bg-1: var(--paper-50);
+  --bg-2: var(--paper-100);
+  --bg-3: var(--paper-200);
+  --bg-inset: var(--paper-200);
+
+  --fg-1: var(--ink-text-900);
+  --fg-2: var(--ink-text-700);
+  --fg-3: var(--ink-text-500);
+  --fg-4: var(--ink-text-300);
+  --fg-on-ember: #fff8f2;
+  --fg-on-violet: #f5f1ff;
+
+  --border-1: rgba(28, 26, 20, 0.12);
+  --border-2: rgba(28, 26, 20, 0.22);
+  --border-strong: rgba(182, 39, 68, 0.5);
+
+  --accent: var(--ember-600);
+  --accent-hover: var(--ember-700);
+  --accent-press: var(--ember-900);
+  --accent-quiet: rgba(233, 69, 96, 0.08);
+
+  --graph-violet: var(--violet-600);
+  --graph-violet-glow: rgba(107, 68, 168, 0.28);
+
+  /* ---------- READOUT (dark instrument panel — where Tiny SHOWS) ---------- */
+  --panel: #16150f;
+  --panel-raised: #211f17;
+  --panel-line: #36331f;
+  --on-panel: #f4f1e7;
+  --on-panel-soft: #b9b2a0;
+  --live-bright: #46b483;
+  --violet-bright: #a98fe0;
+
+  /* ---------- TYPE ---------- */
+  --font-voice: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-display: "Newsreader", Georgia, serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --fraunces-soft: "opsz" 72;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+  --fs-4xl: 48px;
+  --fs-5xl: 68px;
+  --fs-6xl: 96px;
+
+  --lh-tight: 1.05;
+  --lh-snug: 1.2;
+  --lh-normal: 1.45;
+  --lh-loose: 1.65;
+
+  --ls-tight: -0.02em;
+  --ls-normal: 0;
+  --ls-caps: 0.14em;
+
+  /* ---------- SHAPE ---------- */
+  --radius-xs: 3px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 22px;
+  --radius-pill: 999px;
+  --radius-card: 10px;
+
+  /* ---------- SPACE (4px base) ---------- */
+  --s-0: 0;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+  --s-20: 80px;
+  --s-24: 96px;
+
+  /* ---------- ELEVATION ---------- */
+  --shadow-sm: 0 1px 2px rgba(28, 26, 20, 0.06), 0 2px 6px rgba(28, 26, 20, 0.04);
+  --shadow-md: 0 2px 4px rgba(28, 26, 20, 0.06), 0 10px 26px rgba(28, 26, 20, 0.08);
+  --shadow-lg: 0 4px 10px rgba(28, 26, 20, 0.08), 0 22px 48px rgba(28, 26, 20, 0.1);
+  --glow-graph: 0 0 0 1px rgba(107, 68, 168, 0.25);
+  --glow-ember: 0 0 0 1px rgba(233, 69, 96, 0.3);
+
+  /* ---------- MOTION ---------- */
+  --ease-summon: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 360ms;
+  --dur-ritual: 700ms;
+}
