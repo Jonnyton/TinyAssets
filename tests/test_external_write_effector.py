@@ -364,14 +364,14 @@ def test_run_effects_for_branch_records_unknown_sink():
                 node_id="emit",
                 display_name="Emit",
                 output_keys=["packet"],
-                effects=["twitter_post"],  # not yet supported
+                effects=["not_a_real_sink"],  # not a registered effector
             ),
         ],
     )
     ev_map = run_effects_for_branch(
         branch=branch, run_state={"packet": "x"},
     )
-    assert ev_map["emit"]["twitter_post"]["error_kind"] == "unknown_sink"
+    assert ev_map["emit"]["not_a_real_sink"]["error_kind"] == "unknown_sink"
 
 
 # ─── 6. Error collection helper ───────────────────────────────────────────

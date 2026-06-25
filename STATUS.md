@@ -30,8 +30,6 @@ universe_server.py: 14012 → 1927 LOC live in main. PLAN.md restructured 30→1
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| **#906 host merge key** — Open-brain v2 slice C cost-ledger READ surface; Claude checker APPROVED 2026-05-19 | workflow/daemon_brain.py, workflow/api/status.py + plugin mirrors | - | host-action |
-| **#907 host merge key** — Bounded autonomous spend CI writer-prompt guardrail; Claude checker APPROVED 2026-05-19 | .github/workflows/auto-fix-bug.yml, docs/ops/auto-fix-runbook.md | - | host-action |
 | **Codex verdict ADAPT** — in-node enqueue #1214 stays dark; before flag flip add current-universe context, queue/lineage cap, branch target validation | workflow/graph_compiler.py, workflow/branch_tasks.py, fantasy_daemon/__main__.py, tests/test_node_enqueue_*.py | verdict filed in `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | **L4 reducer law** — `_dict_merge` (graph_compiler.py ~351 + plugin mirror) is shallow right-biased, non-convergent; fix to per-key lattice join or restrict to single-writer; both-provider confirmed 2026-06-10 (basis audit L4 + codex review adaptation #5) | workflow/graph_compiler.py, packaging/claude-plugin mirror, tests/ | coordinate with in-node enqueue row (shared file) | dev-ready |
 | External directory acceptance — PRs landed, public canaries green 2026-05-02T12:34-07:00; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |
@@ -47,18 +45,17 @@ universe_server.py: 14012 → 1927 LOC live in main. PLAN.md restructured 30→1
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | host | host-decision |
 | Host decision: BUG-018 canonical filename trailing-hyphen — rename canonical to drop, or `wiki action=promote` draft to overwrite? | wiki | - | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
-| **Loop telemetry slice** (PR-172 + spec §15 D1-2): model/provider stamps on run receipts, worker liveness heartbeat, periodic stuck-claim recovery — so loop dormancy is detected, not discovered | fantasy_daemon/__main__.py, workflow/branch_tasks.py, workflow/providers/router.py, workflow/api/status.py + plugin mirrors, tests/ | - | claimed:claude-fable ACTIVE 2026-06-10 |
 | Host-action: re-register `Workflow DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 | Memory-scope Stage 2c flag | - | 30d clean | monitoring |
 
 ## Live brain notes (informational; not work rows)
 
-Substantive work flowing through the live MCP brain — not duplicated here. Currently active:
+Substantive work flowing through the live MCP brain — not duplicated here. **[Snapshot last swept 2026-05-19 — STALE; verify in the live brain (read_page) before relying.]**
 
 - **PR-129** (filed 2026-05-19) — Goal-bound branch protocols / ordered branch family runbook with typed artifact handoffs. Real community-build case (chatbot already composed manually via wiki prose; needs first-class durability). Dispatcher `ec15c952-aefa-42ab-b50b-eee1524d3ef9` queued.
 - **PR-131** (filed 2026-05-19) — Host-local Windows desktop effect adapter; closes BUG-043 generalized. First consumer of #914 external-write design. Dispatcher `bc6ed9df-e764-495a-b466-c5c86d7e0e2e` queued.
 - **PR-130** (Markovic) — peer-reviewed simulation-biology publication strategy.
-- **PR-139 / GH #1090** — souled-universe consolidation; slices #1089/#1091/#1092 landed; slice 4 permission lane in flight.
+- **PR-139 / GH #1090** — souled-universe consolidation; all 10 slices merged + deployed 2026-05-28.
 - **New universes in flight:** Meridian Ashes (fantasy prose-lab), Etsy Printify v2 (commerce via effect packets), Markovic (scientific publication).
 
 For full live-brain enumeration see `.claude/agent-memory/navigator/wiki_sweep_cursor.md` (refreshed 2026-05-19: 890 promoted + 134 drafts + theme distribution).
@@ -66,7 +63,6 @@ For full live-brain enumeration see `.claude/agent-memory/navigator/wiki_sweep_c
 ## Next
 
 1. **Live brain is primary** for substantive work flow — wiki + dispatcher + auto-change loop. STATUS.md is the project-folder-access coordination layer; check both.
-2. **PRs in your queue:** #906 + #907 (Claude APPROVED 2026-05-19, awaiting host merge key).
-3. **Auto-change loop is landing slice work** — ExperiencePool/AcceptanceScenario/PrivateTraceCommons Slices 1-3 merged (#936/#937/#938/#954/#956) without the Claude review-gate audits the prior STATUS rows referenced. Treat live brain as the substantive build surface; review gates re-enter only if a slice trips a real concern.
-4. **No-shims-ever rule active** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
-5. **Scoping rules apply to design questions themselves** (per `feedback_design_questions_apply_scoping_rules_first.md`) — if X composes from primitives or has open-ended variations, do NOT present "platform builds it" as an option when steering.
+2. **Auto-change loop is landing slice work** — ExperiencePool/AcceptanceScenario/PrivateTraceCommons Slices 1-3 merged (#936/#937/#938/#954/#956) without the Claude review-gate audits the prior STATUS rows referenced. Treat live brain as the substantive build surface; review gates re-enter only if a slice trips a real concern.
+3. **No-shims-ever rule active** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
+4. **Scoping rules apply to design questions themselves** (per `feedback_design_questions_apply_scoping_rules_first.md`) — if X composes from primitives or has open-ended variations, do NOT present "platform builds it" as an option when steering.
