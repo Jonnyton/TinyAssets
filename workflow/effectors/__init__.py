@@ -17,14 +17,16 @@ user-buildable-loop-2-to.md
 
 from __future__ import annotations
 
-from workflow.effectors.github_pr import (
-    EXTERNAL_WRITE_SINK_GITHUB_PR,
-    run_effects_for_branch as _run_github_pr_effects_for_branch,
-    run_github_pr_effector,
-)
 from workflow.effectors.github_merge import (
     EXTERNAL_WRITE_SINK_GITHUB_MERGE,
     run_github_merge_effector,
+)
+from workflow.effectors.github_pr import (
+    EXTERNAL_WRITE_SINK_GITHUB_PR,
+    run_github_pr_effector,
+)
+from workflow.effectors.github_pr import (
+    run_effects_for_branch as _run_github_pr_effects_for_branch,
 )
 from workflow.effectors.github_read import (
     read_repo_files,
@@ -33,6 +35,10 @@ from workflow.effectors.github_read import (
 from workflow.effectors.github_search import (
     register_search_repo_files,
     search_repo_files,
+)
+from workflow.effectors.twitter_post import (
+    EXTERNAL_WRITE_SINK_TWITTER_POST,
+    run_twitter_post_effector,
 )
 from workflow.effectors.wiki_write_back import (
     EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
@@ -113,6 +119,7 @@ def run_effects_for_branch(
 __all__ = [
     "EXTERNAL_WRITE_SINK_GITHUB_MERGE",
     "EXTERNAL_WRITE_SINK_GITHUB_PR",
+    "EXTERNAL_WRITE_SINK_TWITTER_POST",
     "EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME",
     "EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK",
     "read_repo_files",
@@ -121,6 +128,7 @@ __all__ = [
     "register_search_repo_files",
     "run_github_merge_effector",
     "run_github_pr_effector",
+    "run_twitter_post_effector",
     "run_windows_desktop_effector",
     "run_wiki_write_back_effector",
     "run_effects_for_branch",
