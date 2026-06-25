@@ -1,9 +1,9 @@
 
-# cloudflare-ops
+# Cloudflare (infra-ops reference)
 
 Automate Cloudflare account admin using the host's logged-in browser (via `scripts/lead_browser.py`) for one-time dashboard operations, and `scripts/emergency_dns_flip.py` for API-driven operations going forward.
 
-Reuses the shared browser lock pattern — see `godaddy-ops` skill for the base lock mechanics.
+Reuses the shared browser lock pattern — see `references/godaddy.md` for the base lock mechanics.
 
 ## When to use
 
@@ -16,11 +16,11 @@ For repeated DNS CRUD + Worker Route CRUD once a token exists, prefer `scripts/e
 
 ### Monaco editor clipboard paste (Worker script paste)
 
-Works reliably via focus + `navigator.clipboard.writeText` + Ctrl+V. See `godaddy-ops` §Cloudflare Workers — this pattern is proven.
+Works reliably via focus + `navigator.clipboard.writeText` + Ctrl+V. See `references/godaddy.md` §Cloudflare Workers — this pattern is proven.
 
 ### Radix UI zone dropdown (Worker route binding)
 
-`aria-haspopup="menu"` trigger inside `form#domains_and_routes_form`; options render with `role="menuitem"`. See `godaddy-ops` §Worker-route-binding.
+`aria-haspopup="menu"` trigger inside `form#domains_and_routes_form`; options render with `role="menuitem"`. See `references/godaddy.md` §Worker-route-binding.
 
 ### Custom Token form: react-select dropdowns (KNOWN HARD)
 
@@ -93,7 +93,7 @@ Token naming: `workflow-<purpose>` (e.g. `workflow-cutover`, `workflow-ci-deploy
 - Worker script: no rotation; redeploy on change.
 - DNS: no rotation.
 
-## Related skills
+## Related references
 
-- `godaddy-ops` — GoDaddy dashboard + Websites + Marketing + base browser-lock pattern + Monaco/Radix helpers.
+- `references/godaddy.md` — GoDaddy dashboard + Websites + Marketing + base browser-lock pattern + Monaco/Radix helpers.
 - `browser-testing-with-devtools` — Chrome DevTools MCP for richer DOM inspection if Playwright selectors fail.

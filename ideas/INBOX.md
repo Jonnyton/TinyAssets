@@ -157,3 +157,12 @@ half-formed experiments.
   - `docs/specs/2026-04-27-hyperparameter-importance-evaluator-node.md`
   - `docs/specs/2026-04-27-hyperparameter-importance-fixture-pack.md`
   - `docs/exec-plans/active/2026-04-27-hyperparameter-importance-implementation-cards.md`
+- [2026-06-24] (source: audit 2026-06-24 SDLC/vibe-coding + Claude-large-codebases best practices (G1), owner: navigator, status: captured) Eval + trajectory-evaluation discipline for daemon OUTPUT quality (rubric'd golden runs + output-eval + trajectory-eval gate). Whitepaper's central thesis: generation solved, verification is the remaining work. Deepest agentic-engineering gap; aligns with existing Evaluator frame.
+  Next: idea-refine -> navigator design -> opposite-provider review gate before any build
+  Links: docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md, PLAN.md (Evaluator), .claude/agents/critic.md
+- [2026-06-24] (source: audit 2026-06-24 best-practices (G2b), owner: host-decision, status: captured) Committed home for shared Claude Code config: .claude/settings.json is gitignored, so deny-lists/hook-registrations/permissions can't propagate across machines/providers (contradicts blog's version-controlled exclusions). Commit settings.shared.json or a seed-from-template setup step.
+  Next: decide shared-config story; unblocks team-wide deny-list (G2) + reflection hook (G3)
+  Links: docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md, .gitignore:22, .claude/settings.json
+- [2026-06-24] (source: audit 2026-06-24 best-practices (G3), owner: engineering, status: captured) Automated session-reflection Stop/SessionEnd hook: continuous-learning + REFLECTION.md norm is manual and lapses (project's own feedback_hooks_enforce_session_norms says automatic norms become hooks). When a session changed durable state, prompt one-line reflection + propose AGENTS.md/memory/skill update while context is fresh.
+  Next: author .claude/hooks/session_reflection.py; depends on G2b for shared registration
+  Links: docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md, .claude/hooks/

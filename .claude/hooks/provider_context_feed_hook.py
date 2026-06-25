@@ -46,7 +46,7 @@ def _load_candidates(project_dir: Path, phase: str) -> list[dict[str, Any]]:
     try:
         result = subprocess.run(
             [
-                "python",
+                sys.executable or "python",
                 str(script),
                 "--provider",
                 "claude",
@@ -59,7 +59,11 @@ def _load_candidates(project_dir: Path, phase: str) -> list[dict[str, Any]]:
             cwd=project_dir,
             capture_output=True,
             text=True,
-            timeout=8,
+            # Inner budget kept just under the 10s hook ceiling so a slow feed
+            # (grows with live worktree count) fails safe instead of timing the
+            # whole hook out. Durable fix for the growth case = caching the
+            # git porcelain/merge-base calls inside provider_context_feed.py.
+            timeout=9,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []

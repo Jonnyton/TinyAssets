@@ -39,6 +39,9 @@ from scripts.invariants import Invariant, Status  # noqa: E402
 from scripts.invariants.concerns_staleness import (  # noqa: E402
     ConcernsStalenessInvariant,
 )
+from scripts.invariants.context_budget import (  # noqa: E402
+    ContextBudgetInvariant,
+)
 from scripts.invariants.cross_provider_drift import (  # noqa: E402
     CrossProviderDriftInvariant,
 )
@@ -56,6 +59,7 @@ def _all_invariants() -> list[Invariant]:
         SkillsValidInvariant(),
         TabSingleInvariant(),
         ConcernsStalenessInvariant(),
+        ContextBudgetInvariant(),
     ]
 
 

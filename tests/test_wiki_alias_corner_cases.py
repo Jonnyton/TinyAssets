@@ -1,4 +1,4 @@
-"""Tests for `_resolve_bugs_canonical` + `_wiki_write` alias resolution corner cases.
+"""Tests for `_resolve_filed_page_canonical` + `_wiki_write` alias resolution corner cases.
 
 Covers Wiki #32 corner-case fixes:
 
@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from workflow.api.wiki import (
-    _resolve_bugs_canonical,
+    _resolve_filed_page_canonical,
     _wiki_write,
 )
 
@@ -59,25 +59,25 @@ def wiki_dir(tmp_path, monkeypatch):
     return wiki_root
 
 
-# ── _resolve_bugs_canonical unit tests ────────────────────────────────────────
+# ── _resolve_filed_page_canonical unit tests ────────────────────────────────────────
 
 
 class TestResolveBugsCanonical:
     def test_returns_none_when_no_match(self, wiki_dir):
         parent = wiki_dir / "pages" / "bugs"
-        assert _resolve_bugs_canonical(parent, "bug-001-nope") is None
+        assert _resolve_filed_page_canonical(parent, "bug-001-nope", category="bugs") is None
 
     def test_returns_none_for_missing_parent(self, tmp_path):
-        # _resolve_bugs_canonical iterates parent.glob; missing dir → empty
+        # _resolve_filed_page_canonical iterates parent.glob; missing dir → empty
         # list → None. Tested here so callers can rely on the contract.
         missing = tmp_path / "does" / "not" / "exist"
-        assert _resolve_bugs_canonical(missing, "bug-001-x") is None
+        assert _resolve_filed_page_canonical(missing, "bug-001-x", category="bugs") is None
 
     def test_exact_match_returns_path(self, wiki_dir):
         parent = wiki_dir / "pages" / "bugs"
         target = parent / "bug-001-example.md"
         target.write_text("x", encoding="utf-8")
-        result = _resolve_bugs_canonical(parent, "bug-001-example")
+        result = _resolve_filed_page_canonical(parent, "bug-001-example", category="bugs")
         assert result == target
 
     def test_wrong_case_canonical_resolved(self, wiki_dir):
@@ -85,7 +85,7 @@ class TestResolveBugsCanonical:
         parent = wiki_dir / "pages" / "bugs"
         canonical = parent / "BUG-007-foo-bar.md"
         canonical.write_text("x", encoding="utf-8")
-        result = _resolve_bugs_canonical(parent, "bug-007-foo-bar")
+        result = _resolve_filed_page_canonical(parent, "bug-007-foo-bar", category="bugs")
         assert result == canonical
 
     @_skip_case_insensitive
@@ -96,7 +96,7 @@ class TestResolveBugsCanonical:
         duplicate = parent / "bug-003-example.md"
         canonical.write_text("canonical", encoding="utf-8")
         duplicate.write_text("dup", encoding="utf-8")
-        result = _resolve_bugs_canonical(parent, "bug-003-example")
+        result = _resolve_filed_page_canonical(parent, "bug-003-example", category="bugs")
         assert result == canonical, (
             "When a lowercase duplicate and an uppercase canonical coexist, "
             "BUG-003 fix requires the uppercase canonical to be preferred."
@@ -109,7 +109,7 @@ class TestResolveBugsCanonical:
         canonical.write_text("x", encoding="utf-8")
         # Slug sanitization strips trailing hyphens; so the slug entering
         # alias-resolution is "bug-018-foo" not "bug-018-foo-".
-        result = _resolve_bugs_canonical(parent, "bug-018-foo")
+        result = _resolve_filed_page_canonical(parent, "bug-018-foo", category="bugs")
         assert result == canonical
 
     @_skip_case_insensitive
@@ -120,7 +120,7 @@ class TestResolveBugsCanonical:
         lower_no_dash = parent / "bug-018-foo.md"
         upper_dash.write_text("upper", encoding="utf-8")
         lower_no_dash.write_text("lower", encoding="utf-8")
-        result = _resolve_bugs_canonical(parent, "bug-018-foo")
+        result = _resolve_filed_page_canonical(parent, "bug-018-foo", category="bugs")
         assert result == upper_dash
 
     def test_exact_slug_preferred_over_trailing_hyphen(self, wiki_dir):
@@ -130,7 +130,7 @@ class TestResolveBugsCanonical:
         with_dash = parent / "bug-018-foo-.md"
         exact.write_text("exact", encoding="utf-8")
         with_dash.write_text("dash", encoding="utf-8")
-        result = _resolve_bugs_canonical(parent, "bug-018-foo")
+        result = _resolve_filed_page_canonical(parent, "bug-018-foo", category="bugs")
         assert result == exact
 
 

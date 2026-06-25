@@ -1,5 +1,5 @@
 
-# godaddy-ops
+# GoDaddy (infra-ops reference)
 
 Drive GoDaddy's web dashboard from the lead agent via the shared CDP Chrome browser. GoDaddy has no first-class API for the products this project uses (domain DNS, Website Builder), so we navigate the admin UI programmatically. All ops run through `scripts/lead_browser.py`.
 
