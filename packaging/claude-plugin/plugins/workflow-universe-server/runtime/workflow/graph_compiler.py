@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import hashlib
 import json
 import logging
 import operator
@@ -1199,12 +1200,35 @@ def _validate_source_code(node: NodeDefinition) -> None:
     """Gate source_code nodes: require approval + no obviously dangerous
     patterns. This is belt-and-suspenders; host approval is the primary
     defense. See spec §Risks — a proper sandbox is future work."""
+    src = node.source_code or ""
     if not node.approved:
         raise UnapprovedNodeError(
             f"Node '{node.node_id}' is source_code and must be approved "
             f"by the host before running."
         )
-    src = node.source_code or ""
+    # SECURITY (Codex ADAPT, PR #1349): the ``approved`` boolean alone is not
+    # sufficient provenance. A branch node can node_ref an approved node and
+    # then override ``source_code`` while keeping ``approved=True``, so the
+    # flag could authorize code the approver never reviewed. When approval
+    # provenance is recorded (``approved_source_hash`` is non-empty — which
+    # every approval minted through the real ``approve`` gate now carries),
+    # it MUST match the hash of the source_code about to run. A mismatch means
+    # the source was overridden after approval; fail closed.
+    #
+    # An empty hash is only reachable via trusted in-process construction
+    # (host code / tests build NodeDefinition directly). The authoring surface
+    # (_apply_node_spec) can no longer persist ``approved=True`` without a
+    # matching hash, so the node_ref-override bypass is closed at both ends.
+    approved_hash = (node.approved_source_hash or "").strip()
+    if approved_hash:
+        actual_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()
+        if approved_hash != actual_hash:
+            raise UnapprovedNodeError(
+                f"Node '{node.node_id}' source_code does not match its "
+                f"approved hash (approval is stale or forged — source was "
+                f"changed after approval). Re-approve the node against its "
+                f"current source before running."
+            )
     for pattern in _DANGEROUS_PATTERNS:
         if pattern in src:
             raise CompilerError(

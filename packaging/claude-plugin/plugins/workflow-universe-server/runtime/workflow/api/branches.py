@@ -197,6 +197,50 @@ def _clear_source_code_approval(node: Any) -> None:
     node.approval_reason = ""
 
 
+def _approval_provenance_valid(
+    approved: Any, source_code: str, approved_source_hash: str,
+) -> bool:
+    """True only when an ``approved`` flag is backed by hash provenance.
+
+    A source_code node is genuinely approved iff the recorded
+    ``approved_source_hash`` equals the hash of the *current* source_code.
+    A bare ``approved=True`` with no/stale hash is forged or stale and must
+    not authorize execution. Prompt-template (non-source) nodes carry no
+    executable surface to gate, so an empty source_code is treated as
+    matching an empty hash only when no hash was recorded.
+    """
+    if not approved:
+        return False
+    if not source_code:
+        # No executable content to gate. Approval is meaningless here but
+        # also harmless — the compiler only gates source_code nodes.
+        return True
+    return bool(approved_source_hash) and (
+        approved_source_hash == _source_code_hash(source_code)
+    )
+
+
+def _reconcile_copied_approval(merged: dict[str, Any]) -> None:
+    """Strip approval metadata from a copied/merged node body unless the
+    effective source hash still matches the recorded approved hash.
+
+    Used by the ``node_ref`` copy path: a caller can inherit an approved
+    body and then override ``source_code``/other executable content. The
+    inherited ``approved=True`` must not survive a content change the
+    approver never reviewed. See Codex ADAPT review on PR #1349.
+    """
+    if not _approval_provenance_valid(
+        merged.get("approved"),
+        merged.get("source_code") or "",
+        merged.get("approved_source_hash") or "",
+    ):
+        merged["approved"] = False
+        merged["approved_by"] = ""
+        merged["approved_at"] = ""
+        merged["approved_source_hash"] = ""
+        merged["approval_reason"] = ""
+
+
 def _ensure_workflow_db() -> None:
     """Ensure the shared SQLite schema exists before any branch action runs.
 
@@ -1378,6 +1422,14 @@ def _resolve_node_spec(
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
+        # SECURITY (Codex ADAPT, PR #1349): approval provenance must follow
+        # the *executable content*, never the inherited boolean. A caller can
+        # node_ref an approved node and then override ``source_code`` — that
+        # forges/staleifies approval for code the approver never saw. Approval
+        # only survives when the effective source hash still matches the
+        # approved hash; otherwise strip every approval field so this copy is
+        # treated as unapproved and re-runs the approve gate.
+        _reconcile_copied_approval(merged)
         return merged, ""
 
     # No explicit ref — fall back to raw. If the node_id shadows a
@@ -1444,6 +1496,10 @@ def _lookup_node_body(
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
             "approved": bool(hit.get("approved", False)),
+            "approved_by": hit.get("approved_by", ""),
+            "approved_at": hit.get("approved_at", ""),
+            "approved_source_hash": hit.get("approved_source_hash", ""),
+            "approval_reason": hit.get("approval_reason", ""),
         }, ""
 
     # Otherwise treat `source` as a branch_def_id.
@@ -1475,6 +1531,10 @@ def _lookup_node_body(
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
                 "approved": bool(nd.get("approved", False)),
+                "approved_by": nd.get("approved_by", ""),
+                "approved_at": nd.get("approved_at", ""),
+                "approved_source_hash": nd.get("approved_source_hash", ""),
+                "approval_reason": nd.get("approval_reason", ""),
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
@@ -1569,6 +1629,29 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         return (
             f"node '{nid}' effects must be a JSON array of strings"
         )
+    # SECURITY (Codex ADAPT, PR #1349): a node is only approved when the
+    # recorded approval hash matches the *effective* source_code being stored.
+    # This is the authoring-time half of the provenance gate; the compiler
+    # enforces the same check at run time (_validate_source_code). Without
+    # this, a caller could pass a bare ``approved=True`` (or inherit one via
+    # an inline override) for code no approver ever reviewed. We only carry
+    # the approval boolean + provenance forward when the hash matches; any
+    # mismatch demotes the node to unapproved with blank provenance.
+    approved_source_hash = (raw.get("approved_source_hash") or "").strip()
+    if _approval_provenance_valid(
+        raw.get("approved"), source_code, approved_source_hash,
+    ):
+        approved_arg = bool(raw.get("approved"))
+        approved_by_arg = raw.get("approved_by") or ""
+        approved_at_arg = raw.get("approved_at") or ""
+        approved_hash_arg = approved_source_hash if source_code else ""
+        approval_reason_arg = raw.get("approval_reason") or ""
+    else:
+        approved_arg = False
+        approved_by_arg = ""
+        approved_at_arg = ""
+        approved_hash_arg = ""
+        approval_reason_arg = ""
     try:
         node = NodeDefinition(
             node_id=nid,
@@ -1585,7 +1668,11 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             llm_policy=llm_policy,
             timeout_seconds=timeout_seconds,
             author=raw.get("author") or _current_actor(),
-            approved=bool(raw.get("approved", False)),
+            approved=approved_arg,
+            approved_by=approved_by_arg,
+            approved_at=approved_at_arg,
+            approved_source_hash=approved_hash_arg,
+            approval_reason=approval_reason_arg,
             invoke_branch_spec=invoke_branch_arg,
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,

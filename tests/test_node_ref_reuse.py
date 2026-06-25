@@ -429,3 +429,207 @@ class TestIntentEdgeCases:
             node_ref_json="{not: valid json",
         )
         assert "error" in result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECURITY: approval provenance must follow the executable content
+# (Codex ADAPT review, PR #1349)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _approve_standalone(us, monkeypatch, node_id: str):
+    """Approve a standalone node as a DISTINCT actor (the gate rejects
+    self-approval), then restore the original actor.
+    """
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host-operator")
+    try:
+        result = _call(us, "extensions", "approve", node_id=node_id)
+    finally:
+        monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    return result
+
+
+class TestNodeRefSourceOverrideCannotForgeApproval:
+    """A caller must not be able to node_ref an approved source_code node,
+    override ``source_code`` with different code, and keep ``approved=True``.
+
+    Codex flagged this as the live bypass: approval provenance was checked
+    only as a boolean, so forged/stale approval could authorize code the
+    approver never reviewed. Approval must be bound to the source hash at
+    both authoring time (the persisted node comes out unapproved) and run
+    time (the compiler refuses to execute a hash-mismatched node).
+    """
+
+    APPROVED_SRC = "def run(state): return {'manifest': 'approved'}\n"
+    # Different executable body than what was approved — the forged-approval
+    # surface. Marker string lets us assert the override actually landed.
+    MALICIOUS_SRC = "def run(state): return {'manifest': 'forged-by-pwned'}\n"
+
+    def _approved_standalone(self, us, monkeypatch):
+        # input/output keys must match the branch state_schema below.
+        _call(
+            us, "extensions", "register",
+            node_id="approved_recipe",
+            display_name="Approved Recipe",
+            description="Approved Recipe",
+            phase="custom",
+            input_keys="manifest",
+            output_keys="manifest",
+            source_code=self.APPROVED_SRC,
+        )
+        approved = _approve_standalone(us, monkeypatch, "approved_recipe")
+        assert approved["approved"] is True, approved
+        assert approved["approved_source_hash"], approved
+        return approved["approved_source_hash"]
+
+    def test_node_ref_with_source_override_comes_out_unapproved(
+        self, ext_env, monkeypatch,
+    ):
+        us, base = ext_env
+        self._approved_standalone(us, monkeypatch)
+
+        # node_ref the approved node but OVERRIDE its source_code. The
+        # inherited approved=True must NOT survive the content change.
+        spec = {
+            "name": "approval-forge-attempt",
+            "entry_point": "approved_recipe",
+            "node_defs": [{
+                "node_id": "approved_recipe",
+                "display_name": "",
+                "node_ref": {
+                    "source": "standalone",
+                    "node_id": "approved_recipe",
+                },
+                "source_code": self.MALICIOUS_SRC,
+            }],
+            "edges": [
+                {"from": "START", "to": "approved_recipe"},
+                {"from": "approved_recipe", "to": "END"},
+            ],
+            "state_schema": [{"name": "manifest", "type": "str"}],
+        }
+        built = _call(us, "extensions", "build_branch",
+                      spec_json=json.dumps(spec))
+        assert built["status"] == "built", built
+
+        from workflow.daemon_server import get_branch_definition
+        branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
+        nd = next(
+            n for n in branch["node_defs"]
+            if n["node_id"] == "approved_recipe"
+        )
+        # The overridden body landed, but approval did NOT carry over.
+        assert "forged-by-pwned" in nd["source_code"]
+        assert nd["approved"] is False, nd
+        assert not nd.get("approved_source_hash"), nd
+
+    def test_node_ref_with_source_override_fails_execution_gate(
+        self, ext_env, monkeypatch,
+    ):
+        us, base = ext_env
+        self._approved_standalone(us, monkeypatch)
+        spec = {
+            "name": "approval-forge-run-attempt",
+            "entry_point": "approved_recipe",
+            "node_defs": [{
+                "node_id": "approved_recipe",
+                "display_name": "",
+                "node_ref": {
+                    "source": "standalone",
+                    "node_id": "approved_recipe",
+                },
+                "source_code": self.MALICIOUS_SRC,
+            }],
+            "edges": [
+                {"from": "START", "to": "approved_recipe"},
+                {"from": "approved_recipe", "to": "END"},
+            ],
+            "state_schema": [{"name": "manifest", "type": "str"}],
+        }
+        built = _call(us, "extensions", "build_branch",
+                      spec_json=json.dumps(spec))
+        assert built["status"] == "built", built
+
+        from workflow.branches import BranchDefinition
+        from workflow.daemon_server import get_branch_definition
+        from workflow.graph_compiler import UnapprovedNodeError, compile_branch
+
+        branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
+        bdef = BranchDefinition.from_dict(branch)
+        with pytest.raises(UnapprovedNodeError):
+            compile_branch(bdef)
+
+    def test_clean_node_ref_copy_stays_approved_and_runs(
+        self, ext_env, monkeypatch,
+    ):
+        """Guard the legit path: a node_ref copy with NO source override
+        must keep approval (hash still matches) and compile cleanly.
+        """
+        us, base = ext_env
+        self._approved_standalone(us, monkeypatch)
+        spec = {
+            "name": "approval-clean-copy",
+            "entry_point": "approved_recipe",
+            "node_defs": [{
+                "node_id": "approved_recipe",
+                "display_name": "",
+                "node_ref": {
+                    "source": "standalone",
+                    "node_id": "approved_recipe",
+                },
+            }],
+            "edges": [
+                {"from": "START", "to": "approved_recipe"},
+                {"from": "approved_recipe", "to": "END"},
+            ],
+            "state_schema": [{"name": "manifest", "type": "str"}],
+        }
+        built = _call(us, "extensions", "build_branch",
+                      spec_json=json.dumps(spec))
+        assert built["status"] == "built", built
+
+        from workflow.branches import BranchDefinition
+        from workflow.daemon_server import get_branch_definition
+        from workflow.graph_compiler import compile_branch
+
+        branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
+        nd = next(
+            n for n in branch["node_defs"]
+            if n["node_id"] == "approved_recipe"
+        )
+        assert nd["approved"] is True, nd
+        assert nd["approved_source_hash"], nd
+        # Clean copy compiles without raising — provenance hash matches.
+        compile_branch(BranchDefinition.from_dict(branch))
+
+    def test_runtime_gate_rejects_hash_mismatch_directly(self):
+        """Unit-level guard on the run-time gate itself: an ``approved=True``
+        node whose ``approved_source_hash`` does not match its current
+        ``source_code`` must be refused at compile, independent of the
+        authoring path.
+        """
+        from workflow.api.branches import _source_code_hash
+        from workflow.branches import (
+            BranchDefinition,
+            EdgeDefinition,
+            GraphNodeRef,
+            NodeDefinition,
+        )
+        from workflow.graph_compiler import UnapprovedNodeError, compile_branch
+
+        approved_src = "def run(state): return {}\n"
+        running_src = "def run(state): return {'x': 1}\n"  # different body
+        b = BranchDefinition(name="forged", entry_point="only")
+        b.node_defs = [NodeDefinition(
+            node_id="only", display_name="Only",
+            source_code=running_src,
+            approved=True,
+            approved_source_hash=_source_code_hash(approved_src),
+        )]
+        b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
+        b.edges = [
+            EdgeDefinition(from_node="START", to_node="only"),
+            EdgeDefinition(from_node="only", to_node="END"),
+        ]
+        with pytest.raises(UnapprovedNodeError):
+            compile_branch(b)
