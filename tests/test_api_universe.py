@@ -89,9 +89,10 @@ def test_module_exposes_expected_public_names() -> None:
     )
 
 
-def test_write_actions_table_has_24_entries() -> None:
-    """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes."""
-    assert len(univ_mod.WRITE_ACTIONS) == 24
+def test_write_actions_table_has_25_entries() -> None:
+    """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes
+    plus set_persona_name (founder naming the universe persona)."""
+    assert len(univ_mod.WRITE_ACTIONS) == 25
 
 
 def test_write_actions_entries_are_extractor_gate_tuples() -> None:

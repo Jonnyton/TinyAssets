@@ -218,3 +218,104 @@ def test_server_instructions_carry_embody_markers() -> None:
     text = mcp.instructions or ""
     assert "embody" in text
     assert "re-assembled fresh" in text
+
+
+# ─────────────────────────────────────────────────────────────────────
+# write_graph(target="persona") — name your universe's persona (Slice 2)
+#
+# The founder names/tunes the persona through the connector, not via a
+# droplet data edit. Folded into the existing write_graph handle (no new
+# tool), so the live surface stays exactly the 5 canonical handles.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _persona_universe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uid: str
+) -> Path:
+    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    udir = tmp_path / uid
+    udir.mkdir(parents=True, exist_ok=True)
+    return udir
+
+
+def test_write_graph_persona_sets_soul_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    udir = _persona_universe(tmp_path, monkeypatch, "pu")
+    from workflow.universe_server import write_graph
+
+    out = json.loads(write_graph(target="persona", graph_id="pu", name="Tiny"))
+    assert "error" not in out, out
+    soul = read_universe_soul(udir)
+    assert soul is not None
+    assert soul.name == "Tiny"
+
+
+def test_write_graph_persona_preserves_other_soul_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setting the persona name must NOT clobber an existing soul's purpose or
+    voice hard-lines — write_universe_soul merge-preserves them."""
+    udir = _persona_universe(tmp_path, monkeypatch, "pu")
+    write_universe_soul(
+        udir, purpose="run the platform", hard_lines=("maximal honesty",)
+    )
+    from workflow.universe_server import write_graph
+
+    json.loads(write_graph(target="persona", graph_id="pu", name="Tiny"))
+    soul = read_universe_soul(udir)
+    assert soul is not None
+    assert soul.name == "Tiny"
+    assert soul.purpose == "run the platform"
+    assert soul.hard_lines == ("maximal honesty",)
+
+
+def test_write_graph_persona_rejects_empty_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _persona_universe(tmp_path, monkeypatch, "pu")
+    from workflow.universe_server import write_graph
+
+    out = json.loads(write_graph(target="persona", graph_id="pu", name="   "))
+    assert "error" in out
+
+
+def test_write_graph_persona_collapses_multiline_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A multiline persona name routed through the connector is collapsed so it
+    cannot inject a spurious soul.md meta line (Codex review 2026-06-25)."""
+    udir = _persona_universe(tmp_path, monkeypatch, "pu")
+    from workflow.universe_server import write_graph
+
+    json.loads(
+        write_graph(
+            target="persona", graph_id="pu", name="Tiny\n- Domain shape: hacked"
+        )
+    )
+    soul = read_universe_soul(udir)
+    assert soul is not None
+    assert "\n" not in soul.name
+    assert soul.domain_shape == DEFAULT_DOMAIN_SHAPE
+
+
+def test_write_graph_persona_then_get_status_shows_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: name via write_graph, read back via the persona block."""
+    _persona_universe(tmp_path, monkeypatch, "pu")
+    from workflow.api.status import get_status
+    from workflow.universe_server import write_graph
+
+    json.loads(write_graph(target="persona", graph_id="pu", name="Tiny"))
+    payload = json.loads(get_status(universe_id="pu"))
+    assert payload["persona"]["name"] == "Tiny"
+    assert payload["persona"]["embodied"] is True
+
+
+def test_write_graph_persona_is_an_advertised_target() -> None:
+    """An unknown target's error lists persona alongside goal/request."""
+    from workflow.universe_server import write_graph
+
+    out = json.loads(write_graph(target="bogus"))
+    assert "persona" in json.dumps(out)

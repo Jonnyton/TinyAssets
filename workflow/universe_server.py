@@ -473,13 +473,16 @@ def write_graph(
     """Create or queue Workflow graph state.
 
     Args:
-        target: What to write: goal or request.
-        name: Human-readable shared-goal name.
+        target: What to write: goal, request, or persona.
+        name: Human-readable shared-goal name; with target=persona, the name
+            the universe's persona is given (e.g. "Tiny"). The chatbot embodies
+            it in the first person on the next get_status persona block.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
         visibility: Shared-goal visibility, usually public.
         text: Request text to queue.
-        graph_id: Optional target graph/universe identifier.
+        graph_id: Optional target graph/universe identifier; with target=persona
+            it is the universe whose persona is being named.
         request_type: Workflow request type.
         branch_id: Optional target branch identifier.
     """
@@ -500,7 +503,13 @@ def write_graph(
             request_type=request_type,
             branch_id=branch_id,
         )
-    return _unknown_target("write_graph", target, ("goal", "request"))
+    if normalized == "persona":
+        return _universe_impl(
+            action="set_persona_name",
+            universe_id=graph_id,
+            text=name,
+        )
+    return _unknown_target("write_graph", target, ("goal", "request", "persona"))
 
 
 _mcp_write_graph = _register_structured_tool(
