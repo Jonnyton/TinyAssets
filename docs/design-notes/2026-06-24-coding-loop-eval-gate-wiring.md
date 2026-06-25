@@ -208,8 +208,14 @@ Same warn→enforce ladder as S2, on a separate channel:
 ### Gate status
 Pure scorer + 31 tests SHIP'd (Codex, thread `019f0022`). Warn-only gate wiring +
 ledger observability SHIP'd next (zero block-behavior change). **Enforce path
-LANDED 2026-06-25** (Codex SHIP, thread `019f00f9`, no blocking findings) — S3 is
-now at full off/warn/enforce parity with S2, all behind a default-`warn` flag.
-The ONLY remaining work is the host FLIP itself (set the env to `enforce` on the
-live daemon), which is genuinely host-gated + warn-data-gated by the project's
-own producers-first → watched-warn → flip discipline — not an engineering gap.
+LANDED 2026-06-25** (Codex SHIP, thread `019f00f9`, no blocking findings) — S3 at
+full off/warn/enforce parity with S2. **ENFORCE FLIP LIVE + verified 2026-06-25**
+(host-approved, overriding the warn-period gate): the running droplet daemon has
+`WORKFLOW_AUTO_SHIP_{RUBRIC,TRAJECTORY}_MODE=enforce` (`docker exec ... printenv`),
+durable in systemd's `/opt/workflow/compose.yml`, daemon `healthy`, loopback +
+public canary green; repo config flipped to match (`deploy/compose.yml` +
+`workflow-env.template`, 3836d073). Because the gate is the on-demand
+`validate_ship_packet` MCP action (not an autonomous-loop gate), enforce blocks
+only explicit ship-validation calls and cannot wedge the loop. Watch (flip-time
+item (a) above): the run-event-backed source is still worth wiring if
+`child_integrity` proves thin-packet-noisy — track via `summarize_trajectory_warnings`.
