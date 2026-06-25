@@ -135,11 +135,41 @@ unset WORKFLOW_CODEX_AUTH_JSON_B64
 # shared /data volume so daemon + worker preserve one subscription login state
 # across image redeploys, matching the Codex /data/.codex pattern.
 export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/data/.claude}"
+CLAUDE_CREDENTIALS_FILE="${CLAUDE_CONFIG_DIR}/.credentials.json"
 mkdir -p "${CLAUDE_CONFIG_DIR}"
 chmod 700 "${CLAUDE_CONFIG_DIR}" 2>/dev/null || true
-if [[ -d "${CLAUDE_CONFIG_DIR}" ]]; then
-    echo "[entrypoint] preserving Claude subscription auth config at ${CLAUDE_CONFIG_DIR}"
+
+# Seed Claude auth so a FRESH /data volume is not left "Not logged in" —
+# which fails every pinned claude-code writer call (the 2026-06-25 loop-wedge
+# incident: missing creds silently took out half the worker fleet). Mirrors
+# the Codex auth.json block above. Two sources, both first-boot-only so a
+# rotated in-place token is never clobbered:
+#   * CLAUDE_CODE_OAUTH_TOKEN — a `claude setup-token` long-lived token that
+#     Claude Code reads straight from the env (no file needed). Preferred: it
+#     sidesteps shared-refresh-token rotation between machines. Already used by
+#     the CI workers (auto-fix-bug.yml / auto-check-pr.yml).
+#   * WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 — base64 of a subscription
+#     ~/.claude/.credentials.json bundle, decoded to the config dir (the direct
+#     Codex-style mirror for hosts that seed a credentials file).
+if [[ -n "${WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64:-}" && ! -f "${CLAUDE_CREDENTIALS_FILE}" ]]; then
+    echo "[entrypoint] seeding claude credentials at ${CLAUDE_CREDENTIALS_FILE} (first boot / volume recovery)"
+    CLAUDE_CRED_TMP="$(mktemp "${CLAUDE_CONFIG_DIR}/.credentials.json.XXXXXX")"
+    if printf '%s' "${WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64}" | base64 -d > "${CLAUDE_CRED_TMP}"; then
+        chmod 600 "${CLAUDE_CRED_TMP}"
+        mv "${CLAUDE_CRED_TMP}" "${CLAUDE_CREDENTIALS_FILE}"
+    else
+        rm -f "${CLAUDE_CRED_TMP}"
+        echo "[entrypoint] failed to decode WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64" >&2
+        exit 1
+    fi
+elif [[ -f "${CLAUDE_CREDENTIALS_FILE}" ]]; then
+    echo "[entrypoint] preserving existing claude credentials at ${CLAUDE_CREDENTIALS_FILE} (in-place refresh chain)"
+elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    echo "[entrypoint] using CLAUDE_CODE_OAUTH_TOKEN from env for claude-code auth (no credentials file needed)"
+else
+    echo "[entrypoint] WARNING: no claude credentials present and neither WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 nor CLAUDE_CODE_OAUTH_TOKEN is set — claude-code writer will be unauthenticated (codex-only fleet OK; pinned claude workers will fail)" >&2
 fi
+unset WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64
 
 _workflow_bash_path() {
     local _path="${1:-}"
