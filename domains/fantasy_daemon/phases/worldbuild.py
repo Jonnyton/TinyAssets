@@ -532,7 +532,10 @@ def _handle_contradiction(
 
     topic_slug = safe_canon_slug(topic)
 
-    # Find the relevant canon file
+    # Find the relevant canon file. Enforce canon-directory containment
+    # before reading: ``f.is_file()`` / ``read_text`` follow symlinks, so a
+    # symlinked ``.md`` whose target lives outside ``canon_dir`` must be
+    # rejected here (same guard as ``_write_canon_file``).
     canon_content = ""
     canon_filename = ""
     if canon_dir.exists():
@@ -540,7 +543,8 @@ def _handle_contradiction(
             if f.is_file() and f.suffix == ".md":
                 slug = f.stem.lower().replace("-", "_").replace(" ", "_")
                 if slug == topic_slug or topic_slug in slug or slug in topic_slug:
-                    canon_content = f.read_text(encoding="utf-8")
+                    filepath = _resolve_within_canon(canon_dir, f.name, kind="existing file")
+                    canon_content = filepath.read_text(encoding="utf-8")
                     canon_filename = f.name
                     break
 
@@ -579,7 +583,7 @@ def _handle_contradiction(
         fallback_response=canon_content,  # Keep original on failure
     )
     if new_content and new_content != canon_content:
-        filepath = canon_dir / canon_filename
+        filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
         filepath.write_text(new_content, encoding="utf-8")
         # Update provenance marker
         _write_canon_marker(canon_dir, canon_filename, model=last_provider)
@@ -600,7 +604,10 @@ def _handle_expansion(
 
     topic_slug = safe_canon_slug(topic)
 
-    # Find the relevant canon file
+    # Find the relevant canon file. Enforce canon-directory containment
+    # before reading: ``f.is_file()`` / ``read_text`` follow symlinks, so a
+    # symlinked ``.md`` whose target lives outside ``canon_dir`` must be
+    # rejected here (same guard as ``_write_canon_file``).
     canon_content = ""
     canon_filename = ""
     if canon_dir.exists():
@@ -608,7 +615,8 @@ def _handle_expansion(
             if f.is_file() and f.suffix == ".md":
                 slug = f.stem.lower().replace("-", "_").replace(" ", "_")
                 if slug == topic_slug or topic_slug in slug or slug in topic_slug:
-                    canon_content = f.read_text(encoding="utf-8")
+                    filepath = _resolve_within_canon(canon_dir, f.name, kind="existing file")
+                    canon_content = filepath.read_text(encoding="utf-8")
                     canon_filename = f.name
                     break
 
@@ -640,7 +648,7 @@ def _handle_expansion(
         fallback_response=canon_content,  # Keep original on failure
     )
     if new_content and new_content != canon_content:
-        filepath = canon_dir / canon_filename
+        filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
         filepath.write_text(new_content, encoding="utf-8")
         _write_canon_marker(canon_dir, canon_filename, model=last_provider)
         logger.info(
@@ -799,10 +807,20 @@ def _record_synthesis_failure(canon_dir: Path, source_file: str) -> None:
 def _write_canon_marker(
     canon_dir: Path, filename: str, model: str = ""
 ) -> None:
-    """Write a provenance marker for a canon file (used by reflect)."""
+    """Write a provenance marker for a canon file (used by reflect).
+
+    Resolves the marker path and enforces canon-directory containment so a
+    symlinked ``.reviewed`` marker cannot redirect the write outside
+    ``canon_dir`` (same guard as ``_write_canon_file``).
+
+    ``filename`` is the verbatim on-disk canon filename — the marker name
+    must stay ``.{filename}.reviewed`` so ``reflect._get_file_model`` (which
+    keys on ``filepath.name``) finds it. We do NOT re-normalize the filename
+    here; containment, not normalization, is the security property.
+    """
     import time as _time
 
-    marker = canon_dir / f".{filename}.reviewed"
+    marker = _resolve_within_canon(canon_dir, f".{filename}.reviewed", kind="marker")
     try:
         marker.write_text(
             json.dumps({"reviewed_at": _time.time(), "model": model}),
@@ -1020,6 +1038,23 @@ def _mock_worldbuild_response(topic: str) -> str:
     )
 
 
+def _resolve_within_canon(canon_dir: Path, name: str, kind: str = "path") -> Path:
+    """Resolve ``name`` inside ``canon_dir`` and enforce containment.
+
+    Returns the resolved absolute path. ``.resolve()`` follows symlinks, so
+    a symlinked canon file or marker that points outside ``canon_dir`` is
+    rejected here before any read or write. This is the single containment
+    primitive reused by every canon write path (new files, contradiction /
+    expansion overwrites, and provenance markers). ``kind`` only shapes the
+    error message ("filename", "marker", "existing file") for debuggability.
+    """
+    canon_root = canon_dir.resolve()
+    resolved = (canon_dir / name).resolve()
+    if not resolved.is_relative_to(canon_root):
+        raise ValueError(f"canon {kind} escapes canon directory: {name!r}")
+    return resolved
+
+
 def _write_canon_file(
     canon_dir: Path, filename: str, content: str, model: str = "",
 ) -> None:
@@ -1035,15 +1070,12 @@ def _write_canon_file(
 
     canon_dir.mkdir(parents=True, exist_ok=True)
     safe_filename = safe_canon_filename(filename)
-    canon_root = canon_dir.resolve()
-    filepath = (canon_dir / safe_filename).resolve()
-    if not filepath.is_relative_to(canon_root):
-        raise ValueError(f"canon filename escapes canon directory: {filename!r}")
+    filepath = _resolve_within_canon(canon_dir, safe_filename, kind="filename")
 
     # Write provenance marker
-    marker = (canon_dir / f".{safe_filename}.reviewed").resolve()
-    if not marker.is_relative_to(canon_root):
-        raise ValueError(f"canon marker escapes canon directory: {filename!r}")
+    marker = _resolve_within_canon(
+        canon_dir, f".{safe_filename}.reviewed", kind="marker"
+    )
 
     filepath.write_text(content, encoding="utf-8")
     try:

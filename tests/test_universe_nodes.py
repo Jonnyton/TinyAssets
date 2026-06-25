@@ -36,12 +36,15 @@ from domains.fantasy_daemon.phases.universe_cycle import universe_cycle
 from domains.fantasy_daemon.phases.worldbuild import (
     _MAX_DOCS_PER_CYCLE,
     WORLDBUILD_TOPICS,
+    _handle_contradiction,
+    _handle_expansion,
     _identify_gaps,
     _mock_worldbuild_response,
     _read_direction_notes,
     _read_premise,
     _scan_existing_canon,
     _write_canon_file,
+    _write_canon_marker,
     worldbuild,
 )
 from workflow.notes import add_note, update_note_status
@@ -613,6 +616,71 @@ class TestWorldbuildCanonGeneration:
         else:
             raise AssertionError("expected escaped marker path to fail")
         assert not (canon_dir / "escape.md").exists()
+
+    def test_write_canon_marker_rejects_symlink_escape(self, tmp_path):
+        """A symlinked ``.reviewed`` marker must not redirect the write out.
+
+        ``_write_canon_marker`` is the provenance-marker path used by the
+        contradiction/expansion overwrites. Without containment, a symlinked
+        ``.{name}.reviewed`` pointing outside canon_dir would let a write
+        escape (Codex ADAPT finding).
+        """
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        outside = tmp_path / "marker-outside"
+        try:
+            (canon_dir / ".magic_system.md.reviewed").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            # Windows without the "Create symbolic links" privilege (or other
+            # platforms that forbid symlink creation) cannot set up this
+            # fixture; the containment check itself is still exercised on
+            # symlink-capable platforms (CI/Linux).
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        with pytest.raises(ValueError, match="canon marker escapes"):
+            _write_canon_marker(canon_dir, "magic_system.md", model="claude")
+        assert not outside.exists()
+
+    def test_handle_contradiction_rejects_symlinked_existing_file(self, tmp_path):
+        """A matched canon ``.md`` that is a symlink out of canon_dir is rejected.
+
+        ``_handle_contradiction`` reads then overwrites an existing canon file
+        located by slug match. ``f.is_file()`` / ``read_text`` / ``write_text``
+        all follow symlinks, so a symlinked match could read or clobber a file
+        outside canon_dir. Containment must reject it before any I/O.
+        """
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        outside = tmp_path / "secret.md"
+        outside.write_text("# Outside secret", encoding="utf-8")
+        try:
+            (canon_dir / "magic_system.md").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        with pytest.raises(ValueError, match="canon existing file escapes"):
+            _handle_contradiction(
+                canon_dir, "magic_system", "detail", "premise", {}
+            )
+        # The outside target must be untouched.
+        assert outside.read_text(encoding="utf-8") == "# Outside secret"
+
+    def test_handle_expansion_rejects_symlinked_existing_file(self, tmp_path):
+        """Same containment guard on the expansion overwrite path."""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        outside = tmp_path / "secret.md"
+        outside.write_text("# Outside secret", encoding="utf-8")
+        try:
+            (canon_dir / "magic_system.md").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        with pytest.raises(ValueError, match="canon existing file escapes"):
+            _handle_expansion(
+                canon_dir, "magic_system", "detail", "premise", {}
+            )
+        assert outside.read_text(encoding="utf-8") == "# Outside secret"
 
     def test_mock_worldbuild_response_has_content(self):
         """Mock response should produce valid markdown."""
