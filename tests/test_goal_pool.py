@@ -17,6 +17,7 @@ pinning avoids needing a git scaffold.
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -45,6 +46,7 @@ from workflow.producers.goal_pool import (
     POOL_DIRNAME,
     POOL_ORIGIN,
     GoalPoolProducer,
+    _accessible_branch_slugs,
     goal_pool_enabled,
     repo_root_path,
     validate_pool_task_inputs,
@@ -72,9 +74,16 @@ def _clean_branch_task_registry():
     bt_producer_mod._REGISTRY.extend(saved)
 
 
+def _register_fantasy_branch_slugs() -> None:
+    import fantasy_daemon.branch_registrations as registrations
+
+    importlib.reload(registrations)
+
+
 @pytest.fixture
 def repo_root(tmp_path: Path, monkeypatch) -> Path:
     """Tmp repo-root with env pinning (avoids git scaffolding)."""
+    _register_fantasy_branch_slugs()
     root = tmp_path / "repo"
     root.mkdir()
     (root / "branches").mkdir()
@@ -93,6 +102,7 @@ def universe_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def two_universe(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
     """Two universes sharing a repo_root. Returns (repo_root, uni_a, uni_b)."""
+    _register_fantasy_branch_slugs()
     root = tmp_path / "shared_repo"
     root.mkdir()
     (root / "branches").mkdir()
@@ -360,6 +370,31 @@ def test_goal_pool_unresolved_branch_slug_skipped(
         universe_dir, subscribed_goals=["maintenance"],
     )
     assert out == []
+
+
+def test_accessible_branch_slugs_do_not_inject_fantasy_by_default(
+    repo_root, universe_dir,
+):
+    from workflow.domain_registry import clear_domain_branch_slugs
+
+    clear_domain_branch_slugs()
+
+    assert _accessible_branch_slugs(repo_root, universe_dir) == set()
+
+
+def test_goal_pool_accepts_registered_fantasy_seed(repo_root, universe_dir):
+    from workflow.domain_registry import clear_domain_branch_slugs
+
+    clear_domain_branch_slugs()
+    _register_fantasy_branch_slugs()
+    _write_pool_yaml(repo_root, "maintenance", "registered_fantasy_seed")
+
+    out = GoalPoolProducer().produce(
+        universe_dir, subscribed_goals=["maintenance"],
+    )
+
+    assert len(out) == 1
+    assert out[0].branch_def_id == "fantasy_author:universe_cycle_wrapper"
 
 
 def test_goal_pool_mtime_cache_invalidation(repo_root, universe_dir):
@@ -947,6 +982,15 @@ def test_repo_root_raises_when_unresolvable(tmp_path, monkeypatch):
     monkeypatch.delenv("WORKFLOW_REPO_ROOT", raising=False)
     bare = tmp_path / "bare"
     bare.mkdir()
+    checked_dirs = {bare.resolve(), *bare.resolve().parents}
+    real_exists = Path.exists
+
+    def exists_without_git_ancestor(path: Path) -> bool:
+        if path.name == ".git" and path.parent in checked_dirs:
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", exists_without_git_ancestor)
     with pytest.raises(RuntimeError, match="WORKFLOW_REPO_ROOT"):
         repo_root_path(bare)
 

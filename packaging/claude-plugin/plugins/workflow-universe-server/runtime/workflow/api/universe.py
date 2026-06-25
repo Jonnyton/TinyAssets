@@ -336,13 +336,25 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
 def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
     soul = read_universe_soul(udir)
     if soul is None:
+        if not read_legacy_premise(udir).strip():
+            return NO_LOOP_DECLARED, {
+                "source": "no_soul_no_loop_declared",
+                "has_soul": False,
+                "branch_def_id": "",
+                "error": "universe_loop_not_declared",
+                "note": (
+                    "This universe has no soul.md and no legacy PROGRAM.md; "
+                    "declare a Loop branch in soul.md before queuing work."
+                ),
+            }
         return LEGACY_FANTASY_LOOP_BRANCH_DEF_ID, {
-            "source": "legacy_no_soul_compat",
+            "source": "legacy_program_fantasy_compat",
             "has_soul": False,
             "branch_def_id": LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
             "caveat": (
-                "Legacy universe has no soul.md; keeping the existing fantasy "
-                "loop only until the universe is migrated to a soul-declared loop."
+                "Legacy universe has PROGRAM.md but no soul.md; keeping the "
+                "fantasy loop as an explicit compatibility path only until "
+                "the universe is migrated to a soul-declared loop."
             ),
         }
     branch_def_id = soul.loop_branch_def_id.strip()

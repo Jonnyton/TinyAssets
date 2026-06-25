@@ -190,9 +190,28 @@ def test_submit_request_rejects_souled_universe_without_declared_loop(us):
     assert not (base / "thin-uni" / "branch_tasks.json").exists()
 
 
-def test_submit_request_legacy_no_soul_keeps_named_compat_loop(us):
+def test_submit_request_rejects_soulless_universe_without_legacy_marker(us):
+    base = Path(us._base_path())
+    empty = _mkuniverse(base, "empty-uni")
+    assert not (empty / "soul.md").exists()
+
+    result = json.loads(us._action_submit_request(
+        universe_id="empty-uni",
+        text="Do undeclared work.",
+        request_type="general",
+    ))
+
+    assert result["error"] == "universe_loop_not_declared"
+    assert result["loop_dispatch"]["source"] == "no_soul_no_loop_declared"
+    assert result["loop_dispatch"]["branch_def_id"] == ""
+    assert not (empty / "requests.json").exists()
+    assert not (empty / "branch_tasks.json").exists()
+
+
+def test_submit_request_legacy_program_no_soul_keeps_named_compat_loop(us):
     base = Path(us._base_path())
     legacy = _mkuniverse(base, "legacy-uni")
+    (legacy / "PROGRAM.md").write_text("A legacy fantasy premise.", encoding="utf-8")
     assert not (legacy / "soul.md").exists()
 
     result = json.loads(us._action_submit_request(
@@ -202,6 +221,6 @@ def test_submit_request_legacy_no_soul_keeps_named_compat_loop(us):
     ))
 
     assert result["status"] == "pending"
-    assert result["loop_dispatch"]["source"] == "legacy_no_soul_compat"
+    assert result["loop_dispatch"]["source"] == "legacy_program_fantasy_compat"
     queue = json.loads((legacy / "branch_tasks.json").read_text(encoding="utf-8"))
     assert queue[0]["branch_def_id"] == "fantasy_author:universe_cycle_wrapper"

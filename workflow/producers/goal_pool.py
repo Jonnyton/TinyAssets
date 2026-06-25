@@ -187,6 +187,8 @@ def _accessible_branch_slugs(repo_root: Path, universe_path: Path | None = None)
     Per R9: subscriber's accessible Branches = public (in
     ``<repo_root>/branches/*.yaml``) plus subscriber-local.
     """
+    from workflow.domain_registry import registered_domain_branch_slugs
+
     slugs: set[str] = set()
     branches_dir = repo_root / "branches"
     if branches_dir.is_dir():
@@ -194,10 +196,7 @@ def _accessible_branch_slugs(repo_root: Path, universe_path: Path | None = None)
             slugs.add(p.stem)
     if universe_path is not None:
         slugs.update(_catalog_branch_slugs(universe_path))
-    # Fantasy seed always available — the wrapper is registered
-    # at import time via domain registry.
-    slugs.add("fantasy_author/universe-cycle")
-    slugs.add("fantasy_author:universe_cycle_wrapper")
+    slugs.update(registered_domain_branch_slugs())
     return slugs
 
 

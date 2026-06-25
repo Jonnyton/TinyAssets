@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _DomainCallable = Callable[[dict[str, Any]], dict[str, Any]]
 
 _REGISTRY: dict[tuple[str, str], _DomainCallable] = {}
+_DOMAIN_BRANCH_SLUGS: dict[str, set[str]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,36 @@ def clear_registry() -> None:
     """Testing-only helper; drops all registrations."""
     _REGISTRY.clear()
     _EPISODIC_COORDINATE_SHAPES.clear()
+    _DOMAIN_BRANCH_SLUGS.clear()
+
+
+def register_domain_branch_slug(domain_id: str, branch_slug: str) -> None:
+    """Register a Branch slug owned by a domain.
+
+    Goal-pool subscribers use this to discover always-available domain
+    branches without core producer code naming any one domain.
+    """
+    clean_domain = domain_id.strip()
+    clean_slug = branch_slug.strip()
+    if not clean_domain or not clean_slug:
+        return
+    _DOMAIN_BRANCH_SLUGS.setdefault(clean_domain, set()).add(clean_slug)
+
+
+def registered_domain_branch_slugs(domain_id: str = "") -> tuple[str, ...]:
+    """Return registered Branch slugs, optionally limited to one domain."""
+    clean_domain = domain_id.strip()
+    if clean_domain:
+        return tuple(sorted(_DOMAIN_BRANCH_SLUGS.get(clean_domain, set())))
+    slugs: set[str] = set()
+    for domain_slugs in _DOMAIN_BRANCH_SLUGS.values():
+        slugs.update(domain_slugs)
+    return tuple(sorted(slugs))
+
+
+def clear_domain_branch_slugs() -> None:
+    """Testing-only helper; drops registered domain Branch slugs."""
+    _DOMAIN_BRANCH_SLUGS.clear()
 
 
 def register_episodic_coordinate_shape(
