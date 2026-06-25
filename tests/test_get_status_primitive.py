@@ -245,6 +245,9 @@ def _get_endpoint_hint(
         "OLLAMA_HOST", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY",
         "XAI_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
         "WORKFLOW_ALLOW_API_KEY_PROVIDERS", "CODEX_HOME",
+        # claude is "bound" only with binary AND subscription auth; clear both
+        # auth sources so the default is not-authed and tests opt in explicitly.
+        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, val in env.items():
@@ -344,19 +347,33 @@ def test_llm_endpoint_bound_openai_key_without_codex_cli_falls_through(
 ) -> None:
     hint = _get_endpoint_hint(
         monkeypatch,
-        env={"OPENAI_API_KEY": "sk-test"},
+        env={"OPENAI_API_KEY": "sk-test", "CLAUDE_CODE_OAUTH_TOKEN": "tok"},
         which_map={"claude": "/usr/local/bin/claude"},
     )
     assert hint == "claude"
 
 
 def test_llm_endpoint_bound_claude_cli(monkeypatch) -> None:
+    # claude is bound only with binary AND subscription auth (auth-aware fix).
+    hint = _get_endpoint_hint(
+        monkeypatch,
+        env={"CLAUDE_CODE_OAUTH_TOKEN": "tok"},
+        which_map={"claude": "/usr/local/bin/claude"},
+    )
+    assert hint == "claude"
+
+
+def test_llm_endpoint_bound_claude_cli_present_but_unauthed_is_unset(
+    monkeypatch,
+) -> None:
+    # Binary present, NO auth → must NOT report claude as bound (the 2026-06-25
+    # blind spot the auth-aware fix closes).
     hint = _get_endpoint_hint(
         monkeypatch,
         env={},
         which_map={"claude": "/usr/local/bin/claude"},
     )
-    assert hint == "claude"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_unset_when_nothing_available(monkeypatch) -> None:
@@ -465,7 +482,7 @@ def test_llm_endpoint_bound_claude_beats_xai(monkeypatch) -> None:
     only feeds an SDK-keyed tertiary fallback. Claude wins."""
     hint = _get_endpoint_hint(
         monkeypatch,
-        env={"XAI_API_KEY": "xai-test"},
+        env={"XAI_API_KEY": "xai-test", "CLAUDE_CODE_OAUTH_TOKEN": "tok"},
         which_map={"claude": "/usr/local/bin/claude"},
     )
     assert hint == "claude"
