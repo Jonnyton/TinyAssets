@@ -45,30 +45,25 @@ this branch on GitHub Pages (separate public repo `Jonnyton/tiny-site-react-prev
   # preview repo's gh-pages branch. (Or use the auto-updating CF Pages flow below.)
   ```
 
-## 3b. Auto-updating hosted preview (Cloudflare Pages, per-PR) — with LIVE data
+## 3b. Live-data hosted preview (Cloudflare Worker) — the good one
 
-Unlike the GitHub Pages snapshot (which can't reach `/mcp` cross-origin, so
-TinyBot shows his "unreachable" ×-eyes face), the Cloudflare Pages preview serves
-at root and proxies `/mcp` **same-origin** via `cf-functions/mcp.js` (a Pages
-Function) → real live data, so TinyBot/vital signs/goals/graph show their true
-state. Built and ready; it deploys once the token has the Pages:Edit scope below.
+**https://tiny-site-react-preview.jonathan-m-farnsworth.workers.dev** — a
+Cloudflare **Worker** that serves the static export and proxies `/mcp`
+**same-origin** (via `cf-worker/worker.js`). So it shows **real live data** —
+TinyBot is alive (open eyes, moving), vital signs/goals/graph read the live
+engine — unlike the GitHub Pages snapshot (where cross-origin `/mcp` is blocked,
+so TinyBot shows his ×-eyes "unreachable" face).
 
-Open or push to a **pull request** that touches `WebSite/site-react/**` (or run
-the `preview-site-react.yml` workflow manually). It builds the site and deploys to
-a **separate Cloudflare Pages project** (`tiny-site-react-preview`), then comments
-the `https://…pages.dev` URL on the PR. That project is independent of
-tinyassets.io — safe to deploy on every change. The hosted build points at the
-live `/mcp`, so widgets show real data when CORS permits (otherwise they degrade to
-"reading…/asleep", same as production behavior).
+Deployed by `preview-worker.yml` on every PR push (and the comment posts the URL),
+using the **existing** Workers-scoped `CLOUDFLARE_API_TOKEN` — **no extra
+permissions or setup needed**. Separate from the production MCP worker; never
+touches tinyassets.io.
 
-> One-time host setup: the `CLOUDFLARE_API_TOKEN` secret needs the
-> **Cloudflare Pages: Edit** permission added (it currently has Workers Routes
-> scope). After that, the preview URL appears automatically on every site PR.
-
-## The approval loop (default: hosted preview)
+## The approval loop (default: live Worker preview)
 
 1. A change lands on a branch / PR (made by you or by an agent).
-2. `preview-site-react.yml` posts the hosted preview URL on the PR.
+2. `preview-worker.yml` posts the live preview URL on the PR (and the GitHub Pages
+   snapshot auto-refreshes within ~20 min as a no-Cloudflare fallback).
 3. You review on the link; request tweaks or approve.
 4. On approval → merge to `main`. **Merging does not auto-publish** — the React
    site only goes live when the host runs the cutover (`deploy-site-react.yml`,
