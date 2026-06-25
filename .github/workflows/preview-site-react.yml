@@ -85,18 +85,34 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
+          set +e  # surface wrangler's error text instead of aborting silently
+          project=tiny-site-react-preview
+
+          # Create the project if it doesn't exist yet (idempotent; ignore "already exists").
+          npx --yes wrangler@latest pages project create "${project}" \
+            --production-branch=main 2>&1 | tee /tmp/cf-create.log || true
+
           out="$(npx --yes wrangler@latest pages deploy WebSite/site-react/out \
-            --project-name=tiny-site-react-preview \
+            --project-name="${project}" \
             --branch="${GITHUB_REF_NAME}" \
             --commit-dirty=true 2>&1)"
+          status=$?
           echo "${out}"
-          url="$(echo "${out}" | grep -oE 'https://[a-z0-9-]+\.tiny-site-react-preview\.pages\.dev' | head -1)"
-          if [ -z "${url}" ]; then
-            url="$(echo "${out}" | grep -oE 'https://[a-z0-9.-]+\.pages\.dev' | head -1)"
+
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::wrangler pages deploy failed (exit ${status})."
+            if echo "${out}${_}$(cat /tmp/cf-create.log 2>/dev/null)" | grep -qiE "permission|authoriz|forbidden|10000|not allowed|Pages"; then
+              echo "::error::The CLOUDFLARE_API_TOKEN likely lacks the 'Cloudflare Pages: Edit' permission. Add it in the CF dashboard, then re-run."
+            fi
+            exit "${status}"
           fi
+
+          url="$(echo "${out}" | grep -oE 'https://[a-z0-9.-]+\.pages\.dev' | head -1)"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
-          echo "### React site preview" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Preview URL: ${url}" >> "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "### React site preview"
+            echo "Preview URL: ${url}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request' && steps.deploy.outputs.url != ''
