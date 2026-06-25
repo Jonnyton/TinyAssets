@@ -32,6 +32,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from workflow.phase_vocab import VALID_PHASES, normalize_phase
+
 # Placeholder-extraction regex pair — kept in sync with
 # ``workflow/graph_compiler.py`` (_PLACEHOLDER_RE + _DOUBLE_PLACEHOLDER_RE
 # + _ESCAPED_PLACEHOLDER_RE). Duplicated here so ``validate()`` can run
@@ -254,10 +256,7 @@ class StateFieldDecl:
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Valid phases — same set as the existing node registration system.
-VALID_PHASES = {
-    "orient", "plan", "draft", "commit", "learn",
-    "reflect", "worldbuild", "custom",
-}
+# ``worldbuild`` is a deprecated same-arc alias for ``enrich``.
 
 
 @dataclass
@@ -415,6 +414,7 @@ class NodeDefinition:
                 f"Invalid phase '{self.phase}'. "
                 f"Must be one of: {', '.join(sorted(VALID_PHASES))}"
             )
+        self.phase = normalize_phase(self.phase)
         # Read-side strict validation for input_keys / output_keys
         # (Task #12, Option B). Fail loudly when a persisted branch row
         # holds a non-list value — typically a bare string from a

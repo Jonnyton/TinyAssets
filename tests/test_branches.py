@@ -102,7 +102,7 @@ class TestNodeDefinition:
     def test_all_valid_phases(self):
         for p in VALID_PHASES:
             n = NodeDefinition(node_id="x", display_name="X", phase=p)
-            assert n.phase == p
+            assert n.phase == ("enrich" if p == "worldbuild" else p)
 
     def test_invalid_phase_raises(self):
         with pytest.raises(ValueError, match="Invalid phase"):

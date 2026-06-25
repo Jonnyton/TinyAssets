@@ -325,7 +325,7 @@ Each registered node declares:
 - `input_keys`: which state fields it reads
 - `output_keys`: which state fields it writes
 - `phase`: where in the workflow it fits (orient, plan, draft, commit,
-  learn, reflect, worldbuild, or "custom")
+  learn, reflect, enrich, or "custom")
 - `source_code`: the Python source (executed in sandbox)
 - `dependencies`: pip packages it needs (validated against allowlist)
 

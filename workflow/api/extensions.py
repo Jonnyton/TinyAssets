@@ -86,6 +86,7 @@ from workflow.api.runtime_ops import (
     _PROJECT_MEMORY_WRITE_ACTIONS,
     _SCHEDULER_ACTIONS,
 )
+from workflow.phase_vocab import VALID_PHASES, normalize_phase
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ class NodeRegistration:
     node_id: str
     display_name: str
     description: str
-    phase: str  # orient, plan, draft, commit, learn, reflect, worldbuild, custom
+    phase: str  # orient, plan, draft, commit, learn, reflect, enrich, custom
     input_keys: list[str]
     output_keys: list[str]
     source_code: str
@@ -114,6 +115,14 @@ class NodeRegistration:
     approved_by: str = ""
     approved_at: str = ""
     approved_source_hash: str = ""
+
+    def __post_init__(self) -> None:
+        if self.phase not in VALID_PHASES:
+            raise ValueError(
+                f"Invalid phase '{self.phase}'. "
+                f"Must be one of: {', '.join(sorted(VALID_PHASES))}"
+            )
+        self.phase = normalize_phase(self.phase)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -214,10 +223,7 @@ def _save_nodes(nodes: list[dict[str, Any]]) -> None:
     )
 
 
-VALID_PHASES = {
-    "orient", "plan", "draft", "commit", "learn",
-    "reflect", "worldbuild", "custom",
-}
+# ``worldbuild`` remains a deprecated same-arc alias for ``enrich``.
 
 ALLOWED_DEPENDENCIES = {
     "requests", "httpx", "json", "re", "datetime", "collections",
@@ -777,6 +783,7 @@ def _ext_register(
         return json.dumps({
             "error": f"Invalid phase '{phase}'. Must be one of: {', '.join(sorted(VALID_PHASES))}",
         })
+    phase = normalize_phase(phase)
 
     in_keys = [k.strip() for k in input_keys.split(",") if k.strip()] if input_keys else []
     out_keys = [k.strip() for k in output_keys.split(",") if k.strip()] if output_keys else []
@@ -833,7 +840,11 @@ def _ext_list(phase: str = "", enabled_only: bool = True) -> str:
     nodes = _load_nodes()
 
     if phase:
-        nodes = [n for n in nodes if n.get("phase") == phase]
+        phase = normalize_phase(phase)
+        nodes = [
+            n for n in nodes
+            if normalize_phase(str(n.get("phase", ""))) == phase
+        ]
     if enabled_only:
         nodes = [n for n in nodes if n.get("enabled", True)]
 

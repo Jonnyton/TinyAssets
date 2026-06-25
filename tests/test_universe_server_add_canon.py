@@ -24,6 +24,7 @@ import pytest
 
 import workflow.api.engine_helpers as eh
 import workflow.api.universe as us
+from workflow.enrichment_signals import load_enrichment_signals
 
 
 def _call(action: str, **kwargs) -> dict:
@@ -64,10 +65,7 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def _signals(uid: str) -> list[dict]:
-    path = us._base_path() / uid / "worldbuild_signals.json"
-    if not path.exists():
-        return []
-    return json.loads(path.read_text(encoding="utf-8"))
+    return load_enrichment_signals(us._base_path() / uid)
 
 
 # ─── add_canon now emits synthesize_source ─────────────────────────────

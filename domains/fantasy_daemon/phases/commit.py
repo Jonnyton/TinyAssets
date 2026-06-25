@@ -33,6 +33,7 @@ from domains.fantasy_daemon.phases.world_state_db import (
     store_fact,
     upsert_character,
 )
+from workflow.enrichment_signals import append_enrichment_signals
 from workflow.evaluation.editorial import EditorialNotes, read_editorial
 from workflow.evaluation.process import ProcessEvaluation, evaluate_scene_process
 from workflow.evaluation.structural import StructuralEvaluator, StructuralResult
@@ -1008,9 +1009,9 @@ def _persist_worldbuild_signals(
     state: dict[str, Any],
     signals: list[dict[str, Any]],
 ) -> None:
-    """Append worldbuild signals to the universe's signals file.
+    """Append enrichment signals to the universe's signals file.
 
-    Writes to ``{universe_path}/worldbuild_signals.json`` so that
+    Writes to ``{universe_path}/enrichment_signals.json`` so that
     universe-level nodes (select_task, worldbuild) can read them
     without requiring signals to propagate through graph state.
     """
@@ -1018,29 +1019,14 @@ def _persist_worldbuild_signals(
     if not universe_path:
         return
 
-    signals_file = Path(universe_path) / "worldbuild_signals.json"
     try:
-        existing: list[dict[str, Any]] = []
-        if signals_file.exists():
-            try:
-                existing = json.loads(
-                    signals_file.read_text(encoding="utf-8")
-                )
-                if not isinstance(existing, list):
-                    existing = []
-            except (json.JSONDecodeError, TypeError):
-                existing = []
-
-        existing.extend(signals)
-        signals_file.write_text(
-            json.dumps(existing, indent=2), encoding="utf-8"
-        )
+        append_enrichment_signals(universe_path, signals)
         logger.info(
-            "Persisted %d worldbuild signals to %s",
-            len(signals), signals_file,
+            "Persisted %d enrichment signals to %s",
+            len(signals), Path(universe_path) / "enrichment_signals.json",
         )
     except OSError as e:
-        logger.warning("Failed to persist worldbuild signals: %s", e)
+        logger.warning("Failed to persist enrichment signals: %s", e)
 
 
 def _export_prose(state: dict[str, Any], prose: str) -> None:
@@ -1184,6 +1170,7 @@ def _emit_scene_packet(
         editorial=editorial_verdict,
         word_count=word_count,
         is_revision=is_revision,
+        enrichment_signals=worldbuild_signals,
         worldbuild_signals=worldbuild_signals,
     )
 

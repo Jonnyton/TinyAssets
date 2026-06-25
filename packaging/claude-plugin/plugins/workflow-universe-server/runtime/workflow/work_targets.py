@@ -17,6 +17,10 @@ from pathlib import Path
 from typing import Any
 
 from workflow import daemon_server as author_server
+from workflow.enrichment_signals import (
+    load_enrichment_signals,
+    write_enrichment_signals,
+)
 from workflow.ingestion.canon_io import read_canon_text, safe_canon_path
 from workflow.notes import add_note
 
@@ -699,10 +703,7 @@ def sync_source_synthesis_priorities(
 ) -> tuple[list[HardPriorityItem], list[dict[str, Any]]]:
     """Mirror synthesize_source signals into explicit hard priorities."""
     universe_dir = Path(universe_path)
-    signals_file = universe_dir / "worldbuild_signals.json"
-    raw_signals = _read_json(signals_file, [])
-    if not isinstance(raw_signals, list):
-        raw_signals = []
+    raw_signals = load_enrichment_signals(universe_dir)
     raw_signals = _rehydrate_missing_synthesis_signals(
         universe_dir, raw_signals,
     )
@@ -822,7 +823,7 @@ def _rehydrate_missing_synthesis_signals(
         appended = True
 
     if appended:
-        _write_json(universe_dir / "worldbuild_signals.json", raw_signals)
+        write_enrichment_signals(universe_dir, raw_signals)
     return raw_signals
 
 

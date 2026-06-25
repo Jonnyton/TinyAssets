@@ -1944,6 +1944,7 @@ def _apply_node_updates(
 ) -> str:
     """Apply validated node update fields shared by both update surfaces."""
     from workflow.api.extensions import VALID_PHASES
+    from workflow.phase_vocab import normalize_phase
 
     editable_updates = {
         key: value
@@ -1976,7 +1977,7 @@ def _apply_node_updates(
                 f"Invalid phase '{new_phase}'. Must be one of: "
                 f"{', '.join(sorted(VALID_PHASES))}"
             )
-        node.phase = new_phase
+        node.phase = normalize_phase(new_phase)
     if "prompt_template" in editable_updates:
         node.prompt_template = editable_updates["prompt_template"]
         if node.prompt_template:
@@ -3083,6 +3084,7 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
         get_branch_definition,
         save_branch_definition,
     )
+    from workflow.phase_vocab import normalize_phase
 
     bid = (kwargs.get("branch_def_id") or "").strip()
     if not bid:
@@ -3121,6 +3123,8 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
                 f"{', '.join(sorted(VALID_PHASES))}"
             ),
         })
+    if field == "phase":
+        value = normalize_phase(str(value))
 
     _ensure_workflow_db()
     try:

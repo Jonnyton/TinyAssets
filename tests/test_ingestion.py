@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from workflow.enrichment_signals import ENRICHMENT_SIGNALS_FILENAME
 from workflow.ingestion.core import (
     SIZE_THRESHOLD,
     FileType,
@@ -231,12 +232,36 @@ class TestIngestFile:
             universe_path=universe_path,
         )
 
-        signals_file = universe_path / "worldbuild_signals.json"
+        signals_file = universe_path / ENRICHMENT_SIGNALS_FILENAME
         assert signals_file.exists()
         signals = json.loads(signals_file.read_text(encoding="utf-8"))
         assert len(signals) == 1
         assert signals[0]["type"] == "synthesize_source"
         assert signals[0]["source_file"] == "epic.md"
+
+    def test_large_file_appends_legacy_signals_to_enrichment_signal_file(self, tmp_path):
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        universe_path = tmp_path
+        legacy_file = universe_path / "worldbuild_signals.json"
+        legacy_file.write_text(
+            json.dumps([{"type": "new_element", "topic": "legacy"}]),
+            encoding="utf-8",
+        )
+
+        ingest_file(
+            canon_dir, "source.md", b"x" * (SIZE_THRESHOLD + 1),
+            universe_path=universe_path,
+        )
+
+        signals_file = universe_path / ENRICHMENT_SIGNALS_FILENAME
+        assert signals_file.exists()
+        signals = json.loads(signals_file.read_text(encoding="utf-8"))
+        assert [signal["type"] for signal in signals] == [
+            "new_element",
+            "synthesize_source",
+        ]
+        assert legacy_file.exists()
 
     def test_manifest_updated_after_ingest(self, tmp_path):
         canon_dir = tmp_path / "canon"
@@ -316,7 +341,7 @@ class TestIngestFile:
         universe_path = tmp_path
 
         # Pre-existing signal
-        signals_file = universe_path / "worldbuild_signals.json"
+        signals_file = universe_path / ENRICHMENT_SIGNALS_FILENAME
         signals_file.write_text(
             json.dumps([{"type": "new_element", "topic": "dragons"}]),
             encoding="utf-8",

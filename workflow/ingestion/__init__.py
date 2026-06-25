@@ -3,7 +3,7 @@
 Handles incoming files (via API or direct drop) and routes them:
 - Small files (<=5KB): directly to canon/
 - Large files (>5KB): to canon/sources/ with a synthesis signal
-  for the worldbuild node to process into canon documents.
+  for the enrichment phase to process into canon documents.
 
 Tracks all mappings in canon/.manifest.json.
 """

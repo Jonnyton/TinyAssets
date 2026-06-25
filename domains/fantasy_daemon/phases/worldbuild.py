@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from domains.fantasy_daemon.phases.world_state_db import connect, get_all_facts, init_db
+from workflow.enrichment_signals import (
+    ENRICHMENT_STATE_KEY,
+    load_enrichment_signals,
+    state_enrichment_signals,
+    write_enrichment_signals,
+)
 from workflow.ingestion.canon_io import iter_canon_files
 from workflow.ingestion.canon_names import (
     resolve_within_canon as _resolve_within_canon,
@@ -83,7 +89,7 @@ def worldbuild(state: dict[str, Any]) -> dict[str, Any]:
         Partial state with:
         - ``world_state_version``: incremented version.
         - ``canon_facts_count``: updated count of high-confidence facts.
-        - ``worldbuild_signals``: empty list (signals consumed).
+        - ``enrichment_signals``: empty list (signals consumed).
         - ``quality_trace``: trace entry for this node.
     """
     from domains.fantasy_daemon.phases._activity import activity_log, update_phase
@@ -94,7 +100,7 @@ def worldbuild(state: dict[str, Any]) -> dict[str, Any]:
     canon_count = state.get("canon_facts_count", 0)
 
     activity_log(state, "Worldbuild: starting cycle")
-    update_phase(state, "worldbuild")
+    update_phase(state, "enrich")
 
     # --- 0. Auto-generate premise from canon if PROGRAM.md is missing ---
     auto_premise = _maybe_generate_premise(state)
@@ -208,7 +214,8 @@ def worldbuild(state: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {
         "world_state_version": new_version,
         "canon_facts_count": canon_count,
-        "worldbuild_signals": [],  # Signals consumed
+        ENRICHMENT_STATE_KEY: [],  # Signals consumed
+        "worldbuild_signals": [],  # Deprecated alias for same-arc compatibility.
         "health": health,
         "quality_trace": [
             {
@@ -346,16 +353,17 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
 
 
 def _load_worldbuild_signals(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Load pending worldbuild signals from state or disk.
+    """Load pending enrichment signals from state or disk.
 
     Checks two sources:
-    1. ``worldbuild_signals`` in state (direct propagation).
-    2. ``{universe_path}/worldbuild_signals.json`` on disk (file-based).
+    1. ``enrichment_signals`` in state, falling back to ``worldbuild_signals``.
+    2. ``{universe_path}/enrichment_signals.json`` on disk, falling back to
+       ``worldbuild_signals.json`` during the deprecation window.
     """
     # Check state first
-    signals = state.get("worldbuild_signals", [])
+    signals = state_enrichment_signals(state)
     if signals:
-        return list(signals)
+        return signals
 
     # Check file-based signals
     universe_path = state.get(
@@ -364,18 +372,7 @@ def _load_worldbuild_signals(state: dict[str, Any]) -> list[dict[str, Any]]:
     if not universe_path:
         return []
 
-    signals_file = Path(universe_path) / "worldbuild_signals.json"
-    if not signals_file.exists():
-        return []
-
-    try:
-        data = json.loads(signals_file.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return data
-    except (json.JSONDecodeError, OSError, TypeError):
-        pass
-
-    return []
+    return load_enrichment_signals(universe_path)
 
 
 def _remove_consumed_signals(
@@ -392,25 +389,20 @@ def _remove_consumed_signals(
     if not universe_path or not consumed_indices:
         return
 
-    signals_file = Path(universe_path) / "worldbuild_signals.json"
     try:
-        if not signals_file.exists():
-            return
-        all_signals = json.loads(signals_file.read_text(encoding="utf-8"))
-        if not isinstance(all_signals, list):
+        all_signals = load_enrichment_signals(universe_path)
+        if not all_signals:
             return
         remaining = [
             s for i, s in enumerate(all_signals) if i not in consumed_indices
         ]
-        signals_file.write_text(
-            json.dumps(remaining, indent=2) + "\n", encoding="utf-8",
-        )
+        write_enrichment_signals(universe_path, remaining)
         logger.info(
             "Removed %d consumed signals, %d remaining",
             len(consumed_indices), len(remaining),
         )
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning("Failed to update worldbuild signals: %s", e)
+    except OSError as e:
+        logger.warning("Failed to update enrichment signals: %s", e)
 
 
 def _act_on_signals_incremental(

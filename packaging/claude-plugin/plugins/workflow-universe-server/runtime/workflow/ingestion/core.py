@@ -3,11 +3,11 @@
 Routes incoming files based on size and type:
 - Files <=5KB: written directly to canon/ (small enough to be useful as-is)
 - Files >5KB: written to canon/sources/ and a ``synthesize_source`` signal
-  is emitted for the worldbuild node to process into canon documents.
+  is emitted for the enrichment phase to process into canon documents.
 
 The manifest (canon/.manifest.json) tracks:
 - Every source file and its metadata
-- Source -> synthesized document mappings (populated by worldbuild)
+- Source -> synthesized document mappings (populated by enrichment)
 - File hashes for change detection
 """
 
@@ -19,8 +19,8 @@ import logging
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
+from workflow.enrichment_signals import append_enrichment_signals
 from workflow.ingestion.canon_names import resolve_within_canon
 
 logger = logging.getLogger(__name__)
@@ -510,10 +510,10 @@ def _emit_synthesis_signal(
     detected: DetectedType,
     byte_count: int,
 ) -> None:
-    """Append a synthesize_source signal for the worldbuild node.
+    """Append a synthesize_source signal for the enrichment phase.
 
-    Signals are stored in worldbuild_signals.json alongside existing
-    worldbuild signals (new_element, contradiction, expansion).
+    Signals are stored in enrichment_signals.json. During the deprecation
+    window, legacy worldbuild_signals.json is read and migrated forward.
     """
     signal = {
         "type": "synthesize_source",
@@ -524,19 +524,8 @@ def _emit_synthesis_signal(
         "mime_type": detected.mime_type,
     }
 
-    signals_file = universe_path / "worldbuild_signals.json"
     try:
-        existing: list[dict[str, Any]] = []
-        if signals_file.exists():
-            raw = signals_file.read_text(encoding="utf-8")
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                existing = parsed
-
-        existing.append(signal)
-        signals_file.write_text(
-            json.dumps(existing, indent=2) + "\n", encoding="utf-8",
-        )
+        append_enrichment_signals(universe_path, [signal])
         logger.info("Emitted synthesize_source signal for %s", filename)
-    except (OSError, json.JSONDecodeError):
+    except OSError:
         logger.debug("Failed to emit synthesis signal", exc_info=True)

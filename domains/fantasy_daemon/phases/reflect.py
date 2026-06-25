@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from workflow.enrichment_signals import load_enrichment_signals, state_enrichment_signals
 from workflow.ingestion.canon_io import iter_canon_files, safe_canon_path
 from workflow.universe_soul import premise_from_soul, read_legacy_premise
 from workflow.utils.json_parsing import parse_llm_json
@@ -233,18 +234,11 @@ def _extract_signal_topics(
     topics: set[str] = set()
 
     # Check state for signals
-    signals = state.get("worldbuild_signals", [])
+    signals = state_enrichment_signals(state)
 
     # Check file-based signals
     if not signals:
-        signals_file = universe_dir / "worldbuild_signals.json"
-        if signals_file.exists():
-            try:
-                data = json.loads(signals_file.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    signals = data
-            except (json.JSONDecodeError, OSError, TypeError):
-                pass
+        signals = load_enrichment_signals(universe_dir)
 
     if not signals:
         return None

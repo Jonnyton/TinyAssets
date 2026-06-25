@@ -318,8 +318,8 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
             "complete": False,
         },
         {
-            "id": "daemon_worldbuild",
-            "label": "Let the daemon process the synthesize_source signal in a worldbuild cycle.",
+            "id": "daemon_enrich",
+            "label": "Let the daemon process the synthesize_source signal in an enrich cycle.",
             "complete": False,
         },
     ]
@@ -3855,7 +3855,7 @@ def _action_add_canon(
     through :func:`workflow.ingestion.core.ingest_file` so the signal
     fires (the earlier direct-write path bypassed it, breaking MCP
     uploads). Files still land under ``canon/sources/`` on user
-    uploads; the daemon's worldbuild node picks up the signal and
+    uploads; the daemon's enrich phase picks up the signal and
     synthesizes canon from the source.
     """
     from workflow.api.engine_helpers import _current_actor

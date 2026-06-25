@@ -265,7 +265,7 @@ def test_create_universe_surfaces_synthesis_first_run_checklist(
         "premise",
         "canon_source",
         "synthesis_signal",
-        "daemon_worldbuild",
+        "daemon_enrich",
     ]
     assert checklist["steps"][0]["complete"] is True
     assert checklist["steps"][1]["complete"] is False

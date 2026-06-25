@@ -258,8 +258,9 @@ def _check_cross_universe_synthesis(state: dict[str, Any]) -> str:
 
     Returns the universe ID to switch to, or empty string if none.
     """
-    import json
     from pathlib import Path
+
+    from workflow.enrichment_signals import load_enrichment_signals
 
     # Only check when current universe has no pending synthesis
     current_path = state.get("_universe_path", "")
@@ -267,16 +268,12 @@ def _check_cross_universe_synthesis(state: dict[str, Any]) -> str:
         return ""
 
     current_dir = Path(current_path)
-    current_signals = current_dir / "worldbuild_signals.json"
-    if current_signals.exists():
-        try:
-            data = json.loads(current_signals.read_text(encoding="utf-8"))
-            if isinstance(data, list) and any(
-                s.get("type") == "synthesize_source" for s in data if isinstance(s, dict)
-            ):
-                return ""  # Current universe still has work
-        except (json.JSONDecodeError, OSError):
-            pass
+    current_signals = load_enrichment_signals(current_dir)
+    if any(
+        s.get("type") == "synthesize_source"
+        for s in current_signals if isinstance(s, dict)
+    ):
+        return ""  # Current universe still has work
 
     # Scan sibling universes for pending synthesis
     base_dir = current_dir.parent
@@ -287,18 +284,12 @@ def _check_cross_universe_synthesis(state: dict[str, Any]) -> str:
         for entry in sorted(base_dir.iterdir()):
             if not entry.is_dir() or entry == current_dir:
                 continue
-            signals_file = entry / "worldbuild_signals.json"
-            if not signals_file.exists():
-                continue
-            try:
-                data = json.loads(signals_file.read_text(encoding="utf-8"))
-                if isinstance(data, list) and any(
-                    s.get("type") == "synthesize_source"
-                    for s in data if isinstance(s, dict)
-                ):
-                    return entry.name
-            except (json.JSONDecodeError, OSError):
-                continue
+            data = load_enrichment_signals(entry)
+            if any(
+                s.get("type") == "synthesize_source"
+                for s in data if isinstance(s, dict)
+            ):
+                return entry.name
     except OSError:
         pass
 

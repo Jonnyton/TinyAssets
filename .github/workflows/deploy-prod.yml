@@ -652,6 +652,7 @@ jobs:
               ".runtime_status.json",
               "status.json",
               "activity.log",
+              "enrichment_signals.json",
               "worldbuild_signals.json",
               "work_targets.json",
           ):
