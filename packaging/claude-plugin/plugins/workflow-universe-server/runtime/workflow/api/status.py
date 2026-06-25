@@ -1016,4 +1016,17 @@ def get_status(universe_id: str = "") -> str:
         "universe_id": uid,
         "universe_exists": universe_exists,
     }
+
+    # persona — Slice 1 "Tiny speaks". Resolve the active universe's embodied
+    # persona from its soul so the chatbot can EMBODY it and speak in the
+    # first person. Read-only: the substrate only surfaces the identity; the
+    # LLM does the speaking. An absent soul yields an unnamed persona.
+    from workflow.persona import resolve_persona
+    from workflow.universe_soul import read_universe_soul
+
+    persona = resolve_persona(read_universe_soul(udir))
+    # persona first so text-only MCP clients (whose text payload truncates at
+    # _MCP_TEXT_CONTENT_MAX_CHARS) still see it (Codex review 2026-06-25).
+    response = {"persona": persona.summary(), **response}
+
     return json.dumps(response)

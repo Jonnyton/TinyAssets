@@ -63,6 +63,6 @@ For full live-brain enumeration see `.claude/agent-memory/navigator/wiki_sweep_c
 ## Next
 
 1. **Live brain is primary** for substantive work flow — wiki + dispatcher + auto-change loop. STATUS.md is the project-folder-access coordination layer; check both.
-2. **Auto-change loop is landing slice work** — ExperiencePool/AcceptanceScenario/PrivateTraceCommons Slices 1-3 merged (#936/#937/#938/#954/#956) without the Claude review-gate audits the prior STATUS rows referenced. Treat live brain as the substantive build surface; review gates re-enter only if a slice trips a real concern.
+2. **Cheat-loop CI retired per 2026-06-25 host directive** — `AUTO_FIX_DISABLED=true`; remove intake/writer/checker machinery while preserving get_status, deploy lanes, MCP canaries, and live brain/dispatcher surfaces.
 3. **No-shims-ever rule active** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 4. **Scoping rules apply to design questions themselves** (per `feedback_design_questions_apply_scoping_rules_first.md`) — if X composes from primitives or has open-ended variations, do NOT present "platform builds it" as an option when steering.

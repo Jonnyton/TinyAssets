@@ -736,10 +736,8 @@ function queueSummaryEvent(stage: LoopStageId, title: string, issues: GitHubIssu
 }
 
 async function fetchGitHubLoopMonitorFeed(warnings: string[]): Promise<PatchLoopFeed | null> {
-  const [issues, intakeRun, writerRun, deploySiteRun, deployProdRun, observationRun, watchRun] = await Promise.all([
+  const [issues, deploySiteRun, deployProdRun, observationRun, watchRun] = await Promise.all([
     fetchLoopIssues(warnings),
-    fetchLatestWorkflowRun('wiki-bug-sync.yml', warnings),
-    fetchLatestWorkflowRun('auto-fix-bug.yml', warnings),
     fetchLatestWorkflowRun('deploy-site.yml', warnings),
     fetchLatestWorkflowRun('deploy-prod.yml', warnings),
     fetchLatestWorkflowRun('uptime-canary.yml', warnings),
@@ -750,8 +748,6 @@ async function fetchGitHubLoopMonitorFeed(warnings: string[]): Promise<PatchLoop
     queueSummaryEvent('investigation', 'Patch request queue', issues, ['daemon-request', 'auto-change']),
     queueSummaryEvent('gate', 'Evidence gate queue', issues, ['gate-required', 'needs-human']),
     ...issues.flatMap(issueEvents).slice(0, 18),
-    workflowEvent('intake', 'Wiki bug sync', 'wiki-bug-sync.yml', intakeRun),
-    workflowEvent('coding', 'Auto-fix writer', 'auto-fix-bug.yml', writerRun),
     workflowEvent('release', 'Site deploy', 'deploy-site.yml', deploySiteRun),
     workflowEvent('release', 'Production deploy', 'deploy-prod.yml', deployProdRun),
     workflowEvent('observe', 'Uptime canary', 'uptime-canary.yml', observationRun),

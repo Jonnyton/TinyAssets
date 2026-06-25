@@ -24,6 +24,9 @@ NO_LOOP_MARKER = "_None recorded._"
 @dataclass(frozen=True)
 class UniverseSoul:
     schema_version: int = SOUL_SCHEMA_VERSION
+    # Persona identity — the universe's name as its embodied projection
+    # speaks it (e.g. "Tiny"). Empty = no name declared yet.
+    name: str = ""
     purpose: str = ""
     why: str = ""
     hard_lines: tuple[str, ...] = ()
@@ -43,6 +46,7 @@ class UniverseSoul:
         return {
             "path": SOUL_FILENAME,
             "schema_version": self.schema_version,
+            "name": self.name,
             "purpose": self.purpose,
             "domain_shape": self.domain_shape,
             "lineage": self.lineage,
@@ -68,6 +72,7 @@ class PinnedUniverseSoul:
             "version_id": self.version_id,
             "content_sha256": self.content_sha256,
             "schema_version": self.soul.schema_version,
+            "name": self.soul.name,
             "purpose": self.soul.purpose,
             "why": self.soul.why,
             "hard_lines": list(self.soul.hard_lines),
@@ -104,6 +109,7 @@ def render_soul_markdown(soul: UniverseSoul) -> str:
         "# Universe Soul",
         "",
         f"- Schema version: {soul.schema_version}",
+        f"- Name: {soul.name or NO_LOOP_MARKER}",
         f"- Domain shape: {soul.domain_shape}",
         f"- Lineage: {soul.lineage}",
         f"- Edit authority: {soul.edit_authority}",
@@ -151,6 +157,7 @@ def read_universe_soul(universe_dir: Path) -> UniverseSoul | None:
 
     return UniverseSoul(
         schema_version=_read_int_meta(text, "Schema version", SOUL_SCHEMA_VERSION),
+        name=_read_name_meta(text),
         purpose=_read_section(text, "Purpose"),
         why=_read_section(text, "Why"),
         hard_lines=_read_list_section(text, "Hard Lines"),
@@ -193,6 +200,7 @@ def read_pinned_universe_soul(universe_dir: Path) -> PinnedUniverseSoul | None:
 def write_universe_soul(
     universe_dir: Path,
     *,
+    name: str = "",
     purpose: str = "",
     why: str = "",
     hard_lines: tuple[str, ...] = (),
@@ -205,9 +213,13 @@ def write_universe_soul(
     effect_authority: tuple[str, ...] = (),
 ) -> UniverseSoul:
     universe_dir.mkdir(parents=True, exist_ok=True)
+    # Collapse the persona name to a single line: a multiline name would inject
+    # spurious meta lines / corrupt soul.md (Codex review 2026-06-25).
+    name = " ".join(name.split())
     existing = read_universe_soul(universe_dir)
     if existing is None:
         soul = UniverseSoul(
+            name=name,
             purpose=purpose.strip(),
             why=why.strip(),
             hard_lines=tuple(item.strip() for item in hard_lines if item.strip()),
@@ -228,6 +240,7 @@ def write_universe_soul(
     else:
         soul = replace(
             existing,
+            name=name or existing.name,
             purpose=purpose.strip() if purpose.strip() else existing.purpose,
             why=why.strip() if why.strip() else existing.why,
             hard_lines=(
@@ -364,6 +377,14 @@ def _read_loop_branch_meta(text: str) -> str:
     if raw in {NO_LOOP_MARKER, "none", "None", "NONE"}:
         return NO_LOOP_DECLARED
     return raw
+
+
+def _read_name_meta(text: str) -> str:
+    """Read the persona Name meta line. An empty name renders as the
+    ``_None recorded._`` placeholder (so the line carries content and the
+    next meta value isn't absorbed by the regex); translate it back to ""."""
+    raw = _read_meta(text, "Name", "")
+    return "" if raw == NO_LOOP_MARKER else raw
 
 
 def _read_section(text: str, heading: str) -> str:

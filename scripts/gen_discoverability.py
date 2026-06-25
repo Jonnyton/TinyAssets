@@ -42,17 +42,43 @@ def count_tests() -> tuple[int, int]:
 
 
 def render(n_files: int, n_funcs: int, date: str) -> str:
-    return f"""{START}
-The engine runs on its own infrastructure and patches itself in public. The volatile facts below are *linked to live state* rather than copied here, so this section can't go stale:
-
-- **It ships its own fixes.** The patch loop turns filed capability gaps into machine-authored PRs through a cross-family writer/checker gate — see [`.github/workflows/auto-fix-bug.yml`](.github/workflows/auto-fix-bug.yml) and [`workflow/bug_investigation.py`](workflow/bug_investigation.py). Recent self-patches: the [commit and Actions history](https://github.com/Jonnyton/Workflow/actions).
-- **Canary-gated deploys, live receipts.** The current deploy SHA, canary status, queue throughput, and the provider list are returned live by the `get_status` MCP tool and rendered at [tinyassets.io/fine-print](https://tinyassets.io/fine-print) — read the numbers there rather than trusting a copy here.
-- **{n_funcs:,} tests across {n_files:,} files, all offline.** Providers are mocked (`_FORCE_MOCK=True`); no API keys: `pip install -e .[dev] && pytest -q`.
-
-Honest caveat (the site says this too): the *user-facing* outcome loop hasn't shipped a real external artifact yet — draft mode is on, OAuth is unwired, `run_count` is 0. What's proven today is the engine, the architecture, and the self-patching loop; the first shipped real-world outcome is the next milestone.
-
-<sub>Repo facts refreshed {date} by `scripts/gen_discoverability.py` (bounded — rewrites only between the markers).</sub>
-{END}"""
+    return "\n".join(
+        [
+            START,
+            (
+                "The engine runs on its own infrastructure. The volatile facts below are "
+                "*linked to live state* rather than copied here, so this section can't go "
+                "stale:"
+            ),
+            "",
+            (
+                "- **Canary-gated deploys, live receipts.** The current deploy SHA, "
+                "canary status, queue throughput, and the provider list are returned "
+                "live by the `get_status` MCP tool and rendered at "
+                "[tinyassets.io/fine-print](https://tinyassets.io/fine-print) — read "
+                "the numbers there rather than trusting a copy here."
+            ),
+            (
+                f"- **{n_funcs:,} tests across {n_files:,} files, all offline.** "
+                "Providers are mocked (`_FORCE_MOCK=True`); no API keys: "
+                "`pip install -e .[dev] && pytest -q`."
+            ),
+            "",
+            (
+                "Honest caveat (the site says this too): the *user-facing* outcome loop "
+                "hasn't shipped a real external artifact yet — draft mode is on, OAuth "
+                "is unwired, `run_count` is 0. What's proven today is the engine and "
+                "the architecture; the first shipped real-world outcome is the next "
+                "milestone."
+            ),
+            "",
+            (
+                f"<sub>Repo facts refreshed {date} by `scripts/gen_discoverability.py` "
+                "(bounded — rewrites only between the markers).</sub>"
+            ),
+            END,
+        ]
+    )
 
 
 def main() -> None:
@@ -62,7 +88,13 @@ def main() -> None:
     if START in text and END in text:
         new = re.sub(re.escape(START) + r".*?" + re.escape(END), block, text, count=1, flags=re.S)
     else:
-        new = re.sub(r"## Proof of life\n.*?(?=\n## )", "## Proof of life\n\n" + block + "\n", text, count=1, flags=re.S)
+        new = re.sub(
+            r"## Proof of life\n.*?(?=\n## )",
+            "## Proof of life\n\n" + block + "\n",
+            text,
+            count=1,
+            flags=re.S,
+        )
     if "--check" in sys.argv:
         sys.exit(0 if new == text else 1)
     README.write_text(new, encoding="utf-8")

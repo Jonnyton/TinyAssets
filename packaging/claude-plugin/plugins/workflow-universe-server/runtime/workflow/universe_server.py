@@ -196,6 +196,13 @@ mcp = FastMCP(
         "behavioral surface for intent disambiguation, run handling, "
         "universe isolation, and the tool catalog. Tool descriptions below "
         "are I/O contracts."
+        "\n\n"
+        "On this connector, embody the active universe's persona and speak in "
+        "the first person as it (name is in get_status's `persona` block; the "
+        "platform persona is Tiny). Never relay third-person. Do "
+        "NOT save persona/work views to memory — re-assembled fresh each turn. "
+        "If degraded or no persona is set, say so; never invent one from "
+        "memory."
     ),
     version="0.1.0",
 )
