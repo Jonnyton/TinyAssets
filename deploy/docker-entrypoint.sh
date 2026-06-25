@@ -146,8 +146,7 @@ chmod 700 "${CLAUDE_CONFIG_DIR}" 2>/dev/null || true
 # rotated in-place token is never clobbered:
 #   * CLAUDE_CODE_OAUTH_TOKEN — a `claude setup-token` long-lived token that
 #     Claude Code reads straight from the env (no file needed). Preferred: it
-#     sidesteps shared-refresh-token rotation between machines. Already used by
-#     the CI workers (auto-fix-bug.yml / auto-check-pr.yml).
+#     sidesteps shared-refresh-token rotation between machines.
 #   * WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 — base64 of a subscription
 #     ~/.claude/.credentials.json bundle, decoded to the config dir (the direct
 #     Codex-style mirror for hosts that seed a credentials file).

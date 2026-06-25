@@ -9,20 +9,19 @@ This repo contains substantial architecture and implementation work. The starter
 ## Proof of life
 
 <!-- proof:start -->
-The engine runs on its own infrastructure and patches itself in public. The volatile facts below are *linked to live state* rather than copied here, so this section can't go stale:
+The engine runs on its own infrastructure. The volatile facts below are *linked to live state* rather than copied here, so this section can't go stale:
 
-- **It ships its own fixes.** The patch loop turns filed capability gaps into machine-authored PRs through a cross-family writer/checker gate — see [`.github/workflows/auto-fix-bug.yml`](.github/workflows/auto-fix-bug.yml) and [`workflow/bug_investigation.py`](workflow/bug_investigation.py). Recent self-patches: the [commit and Actions history](https://github.com/Jonnyton/Workflow/actions).
 - **Canary-gated deploys, live receipts.** The current deploy SHA, canary status, queue throughput, and the provider list are returned live by the `get_status` MCP tool and rendered at [tinyassets.io/fine-print](https://tinyassets.io/fine-print) — read the numbers there rather than trusting a copy here.
-- **7,856 tests across 406 files, all offline.** Providers are mocked (`_FORCE_MOCK=True`); no API keys: `pip install -e .[dev] && pytest -q`.
+- **7,925 tests across 418 files, all offline.** Providers are mocked (`_FORCE_MOCK=True`); no API keys: `pip install -e .[dev] && pytest -q`.
 
-Honest caveat (the site says this too): the *user-facing* outcome loop hasn't shipped a real external artifact yet — draft mode is on, OAuth is unwired, `run_count` is 0. What's proven today is the engine, the architecture, and the self-patching loop; the first shipped real-world outcome is the next milestone.
+Honest caveat (the site says this too): the *user-facing* outcome loop hasn't shipped a real external artifact yet — draft mode is on, OAuth is unwired, `run_count` is 0. What's proven today is the engine and the architecture; the first shipped real-world outcome is the next milestone.
 
-<sub>Repo facts refreshed 2026-06-14 by `scripts/gen_discoverability.py` (bounded — rewrites only between the markers).</sub>
+<sub>Repo facts refreshed 2026-06-25 by `scripts/gen_discoverability.py` (bounded — rewrites only between the markers).</sub>
 <!-- proof:end -->
 
-## The flagship: the patch loop
+## The flagship: the Loop
 
-A user's chatbot hits a capability gap → files it as a patch request → a daemon picks it up, drafts a fix, routes it through evidence gates, and ships when the gates are satisfied → the next summon starts smarter. No design committee drew this loop; it was pulled out of `user-sim` sessions where chatbot-personas filed the first patches against the system. Walk it on the site at [/patch-loop](https://tinyassets.io/patch-loop); read the implementation in [`auto-fix-bug.yml`](.github/workflows/auto-fix-bug.yml) + [`workflow/bug_investigation.py`](workflow/bug_investigation.py).
+A user's chatbot hits a capability gap, files it as a patch request, and the system routes the work through branch, evidence-gate, and deploy surfaces so the next summon starts smarter. The retired CI writer loop has been removed; the active direction is the general Loop substrate described in [`PLAN.md`](PLAN.md) and the branch/gate implementation under [`workflow/`](workflow).
 
 ## See the code (one click from here)
 

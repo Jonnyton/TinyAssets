@@ -186,5 +186,4 @@ Cloud-daemon-redeploy unblocks ~10 deferred wiki writes that have been sitting i
 
 Companion docs:
 - `docs/ops/post-redeploy-validation-runbook.md` — deploy fingerprint + canary + fix validation; this playbook implements its §5.5 row.
-- `docs/ops/wiki-bug-sync-runbook.md` — GH Issue auto-sync after wiki writes; runs every 15 min and will pick up status changes.
 - `docs/ops/cloud-daemon-restart.md` — restart-only ops if §3 hits a cache layer.

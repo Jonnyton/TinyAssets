@@ -44,17 +44,42 @@ def test_alarm_sink_can_dispatch_actions():
     wf = _load()
     permissions = wf.get("permissions", {})
     assert permissions.get("actions") == "write", (
-        "community-loop-watch needs actions: write to dispatch stale dependency workflows"
+        "community-loop-watch needs actions: write to dispatch stale uptime canary checks"
     )
+    assert permissions.get("pull-requests") is None
 
 
-def test_alarm_sink_dispatches_stale_dependency_workflows():
+def test_alarm_sink_dispatches_only_stale_uptime_canary_workflow():
     wf = _load()
     script = _alarm_script(wf)
+    retired_workflows = [
+        "wiki-" + "bug-sync.yml",
+        "auto-" + "fix-bug.yml",
+        "auto-" + "check-pr.yml",
+    ]
     assert "createWorkflowDispatch" in script
-    assert "wiki-bug-sync.yml" in script
     assert "uptime-canary.yml" in script
+    for workflow_id in retired_workflows:
+        assert workflow_id not in script
     assert "has not run successfully" in script
+
+
+def test_workflow_triggers_exclude_retired_cheat_loop_workflows():
+    wf = _load()
+    triggers = wf.get(True, wf.get("on", {}))
+    workflow_run = triggers.get("workflow_run", {})
+    workflows = workflow_run.get("workflows", [])
+
+    assert "Uptime canary" in workflows
+    assert "deploy-site" in workflows
+    assert "Deploy prod" in workflows
+    retired_names = [
+        "Wiki " + "bug sync",
+        "Auto-" + "fix change",
+        "Auto-" + "check PR",
+    ]
+    for workflow_name in retired_names:
+        assert workflow_name not in workflows
 
 
 def test_alarm_sink_retries_transient_issue_api_failures():

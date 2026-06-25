@@ -99,11 +99,9 @@ Research pass: 2026-05-02. Primary sources and host directive checked:
 
 As-built Workflow loop alignment:
 
-- `.github/workflows/auto-fix-bug.yml` is the current reference free claimant.
-  It picks Claude OAuth first, Codex subscription second, and never falls
-  through to API-key billing lanes for default daemon writing. The v1 core team
-  makes that Claude-first path explicit: Noor is the Claude flagship writer and
-  Soren is the Codex/OpenAI flagship checker.
+- The compiled CI writer/checker claimant was retired by host directive on
+  2026-06-25. This document remains a design record for the named core-team
+  pattern, not an active workflow map.
 - `daemon-request-policy.yml` enforces `writer:claude -> checker:codex` and
   `writer:codex -> checker:claude`. The core team covers the first pair. A
   Codex-writer fallback must use a distinct Codex writer identity and a distinct

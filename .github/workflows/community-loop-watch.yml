@@ -1,11 +1,9 @@
 name: Community loop watch
 
-# Cloud-side status/alarm for the community-driven change loop.
-#
-# This is the uptime-shaped acceptance layer above raw MCP canaries:
-# intake sync, auto-fix writer, open loop queue, deploy lanes, and observation
-# incidents must line up as one working system. Runs on GitHub infrastructure,
-# so the signal survives the local development machine being off.
+# Cloud-side status/alarm for retained uptime surfaces after the 2026-06-25
+# cheat-loop retirement. This keeps MCP canary, Tier-3 clone, deploy-lane, and
+# P0 outage monitoring on GitHub infrastructure so the signal survives the local
+# development machine being off.
 
 on:
   schedule:
@@ -17,20 +15,17 @@ on:
         required: false
         default: "false"
   workflow_run:
-    workflows: ["Wiki bug sync", "Auto-fix change", "Auto-check PR", "Uptime canary", "tier3-oss-clone-nightly", "deploy-site", "Deploy prod"]
+    workflows: ["Uptime canary", "tier3-oss-clone-nightly", "deploy-site", "Deploy prod"]
     types: [completed]
   push:
     branches: [main]
     paths:
       - "scripts/community_loop_watch.py"
       - ".github/workflows/community-loop-watch.yml"
-      - ".github/workflows/auto-check-pr.yml"
-      - "docs/exec-plans/active/2026-04-30-live-community-reiteration-loop.md"
 
 permissions:
   contents: read
   issues: write
-  pull-requests: write
   actions: write
 
 concurrency:
@@ -106,7 +101,7 @@ jobs:
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Fail when loop is red
+      - name: Fail when retained uptime surface is red
         if: steps.watch.outputs.overall == 'red'
         run: |
           exit 2
@@ -132,10 +127,7 @@ jobs:
             const probeMsg = process.env.PROBE_MSG || '';
             const now = new Date().toISOString();
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            const staleDispatchable = new Set([
-              'wiki-bug-sync.yml',
-              'uptime-canary.yml',
-            ]);
+            const staleDispatchable = new Set(['uptime-canary.yml']);
             const isSelfHealFollowup = context.payload.inputs?.self_heal_followup === 'true';
             const retryDelaysMs = [1000, 3000, 7000];
 
@@ -180,7 +172,7 @@ jobs:
               try {
                 status = JSON.parse(probeMsg);
               } catch (error) {
-                core.warning(`Could not parse community loop status JSON for self-heal dispatch: ${error.message}`);
+                core.warning(`Could not parse status JSON for self-heal dispatch: ${error.message}`);
                 return false;
               }
 
@@ -208,133 +200,11 @@ jobs:
                   }
                 }
               }
-
-              const writerStage = stages.find((stage) => stage?.name === 'Writer workflow');
-              const queueStage = stages.find((stage) => stage?.name === 'Writer queue');
-              const queueDetails = queueStage?.details || {};
-              const count = (name) => Array.isArray(queueDetails[name])
-                ? queueDetails[name].length
-                : 0;
-              const hasBacklog = (
-                count('needs_human') > 0 ||
-                count('old_pending') > 0 ||
-                count('pending') > 0
-              );
-              const blockedByUnavailableAuth = (
-                count('auth_missing') > 0 ||
-                count('missing_codex_subscription') > 0 ||
-                count('provider_exhausted') > 0
-              );
-              const writerAlreadyRunning = writerStage?.status === 'yellow';
-              const writerStale = (
-                writerStage?.status === 'red' &&
-                writerStage?.details?.workflow_id === 'auto-fix-bug.yml' &&
-                String(writerStage?.summary || '').includes('has not run successfully')
-              );
-              if (
-                (queueStage?.status === 'red' || writerStale) &&
-                hasBacklog &&
-                !blockedByUnavailableAuth &&
-                !writerAlreadyRunning
-              ) {
-                try {
-                  await github.rest.actions.createWorkflowDispatch({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    workflow_id: 'auto-fix-bug.yml',
-                    ref: 'main',
-                  });
-                  console.log('dispatched auto-fix-bug.yml for red writer queue');
-                  dispatched = true;
-                } catch (error) {
-                  core.warning(`Could not dispatch auto-fix-bug.yml for red writer queue: ${error.message}`);
-                }
-              }
-
-              return dispatched;
-            }
-
-            async function ensureLabel(name, color, description) {
-              const existing = await githubCall(`lookup label ${name}`, () => github.rest.issues.getLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name,
-              }));
-              if (existing) {
-                return true;
-              }
-              const created = await githubCall(`create label ${name}`, () => github.rest.issues.createLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name,
-                color,
-                description,
-              }));
-              return Boolean(created);
-            }
-
-            async function dispatchCheckerWorkers() {
-              let status;
-              try {
-                status = JSON.parse(probeMsg);
-              } catch (error) {
-                core.warning(`Could not parse community loop status JSON for checker dispatch: ${error.message}`);
-                return false;
-              }
-
-              const stages = Array.isArray(status.stages) ? status.stages : [];
-              const checkerStage = stages.find((stage) => stage?.name === 'Checker queue');
-              const dispatches = Array.isArray(checkerStage?.details?.self_heal_dispatches)
-                ? checkerStage.details.self_heal_dispatches
-                : [];
-              if (!dispatches.length) {
-                return false;
-              }
-
-              await ensureLabel(
-                'auto-checker-dispatched',
-                '0052cc',
-                'An automatic independent checker worker has been dispatched for this PR.',
-              );
-
-              let dispatched = false;
-              for (const dispatch of dispatches) {
-                const workflowId = dispatch?.workflow_id || 'auto-check-pr.yml';
-                const inputs = dispatch?.inputs || {};
-                const prNumber = Number(dispatch?.pr_number || inputs.pr_number || 0);
-                if (!prNumber || !inputs.pr_number || !inputs.checker_family) {
-                  core.warning(`Skipping malformed checker dispatch: ${JSON.stringify(dispatch)}`);
-                  continue;
-                }
-
-                const result = await githubCall(`dispatch checker worker for PR #${prNumber}`, () => (
-                  github.rest.actions.createWorkflowDispatch({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    workflow_id: workflowId,
-                    ref: 'main',
-                    inputs,
-                  })
-                ));
-                if (!result) {
-                  continue;
-                }
-
-                await githubCall(`mark PR #${prNumber} checker-dispatched`, () => github.rest.issues.addLabels({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  labels: ['auto-checker-dispatched'],
-                }));
-                console.log(`dispatched ${workflowId} for PR #${prNumber}`);
-                dispatched = true;
-              }
               return dispatched;
             }
 
             const dispatchedSelfHeal = await dispatchStaleDependencies();
-            const dispatchedChecker = await dispatchCheckerWorkers();
-            if ((dispatchedSelfHeal || dispatchedChecker) && !isSelfHealFollowup) {
+            if (dispatchedSelfHeal && !isSelfHealFollowup) {
               try {
                 await github.rest.actions.createWorkflowDispatch({
                   owner: context.repo.owner,
@@ -362,7 +232,7 @@ jobs:
                   repo: context.repo.repo,
                   name: label,
                   color: 'd73a4a',
-                  description: 'Auto-opened when the community change loop is not operating end-to-end.',
+                  description: 'Auto-opened when a retained uptime or deploy surface is red.',
                 }));
               } else {
                 core.warning(`Could not confirm alarm label ${label}: ${e.message || e}`);
@@ -378,87 +248,54 @@ jobs:
               per_page: 5,
             }));
             if (!openIssues) {
-              core.warning('Skipping alarm issue mutation because open issue lookup failed.');
               return;
             }
-            const openIssue = openIssues.data[0] || null;
 
-            function formatBody(kind) {
-              return [
-                `**${kind}** @ ${now}`,
-                ``,
-                `- watch exit: \`${probeStatus}\``,
-                `- workflow run: ${runUrl}`,
-                ``,
-                `<details><summary>community loop status JSON</summary>`,
-                ``,
-                '```json',
-                probeMsg.trim() || '(empty)',
-                '```',
-                ``,
-                `</details>`,
-              ].join('\n');
-            }
+            const title = 'Community loop watch red';
+            const body = [
+              `Community loop watch is **${overall.toUpperCase()}** as of ${now}.`,
+              '',
+              `Run: ${runUrl}`,
+              `Probe exit: ${probeStatus}`,
+              '',
+              '```json',
+              probeMsg.slice(0, 60000),
+              '```',
+            ].join('\n');
 
             if (overall === 'red') {
-              if (openIssue) {
-                const comment = await githubCall('append RED alarm comment', () => github.rest.issues.createComment({
+              const existing = openIssues.data.find((issue) => issue.title === title);
+              if (existing) {
+                await githubCall('append RED alarm comment', () => github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: openIssue.number,
-                  body: formatBody('RED'),
+                  issue_number: existing.number,
+                  body,
                 }));
-                if (comment) {
-                  console.log(`appended RED to #${openIssue.number}`);
-                }
-                return;
-              }
-
-              const result = await githubCall('open RED alarm issue', () => github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: `Community loop red - ${now}`,
-                labels: [label],
-                body: [
-                  'Auto-opened by the community loop watch.',
-                  'The loop is not operating end-to-end from cloud-visible public evidence.',
-                  '',
-                  formatBody('RED'),
-                ].join('\n'),
-              }));
-              if (result) {
-                console.log(`opened issue #${result.data.number}`);
+              } else {
+                await githubCall('open RED alarm issue', () => github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                  labels: [label],
+                }));
               }
               return;
             }
 
-            if (openIssue) {
+            for (const issue of openIssues.data) {
               await githubCall('append recovered alarm comment', () => github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: openIssue.number,
-                body: formatBody(`${overall.toUpperCase()} - RECOVERED`),
+                issue_number: issue.number,
+                body: `Recovered at ${now}. Latest run: ${runUrl}`,
               }));
-              const closed = await githubCall('close recovered alarm issue', () => github.rest.issues.update({
+              await githubCall('close recovered alarm issue', () => github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: openIssue.number,
+                issue_number: issue.number,
                 state: 'closed',
-                state_reason: 'completed',
               }));
-              if (closed) {
-                console.log(`closed #${openIssue.number} as recovered`);
-              }
-            } else {
-              console.log(`steady ${overall} - no community-loop-red issue open`);
+              console.log(`closed recovered alarm issue #${issue.number}`);
             }
-
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "### Community loop alarm sink"
-            echo ""
-            echo "- **overall**: ${{ needs.watch.outputs.overall }}"
-            echo "- **label**: ${{ env.ALARM_ISSUE_LABEL }}"
-          } >> "$GITHUB_STEP_SUMMARY"
