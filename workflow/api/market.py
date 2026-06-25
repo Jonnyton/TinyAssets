@@ -3490,9 +3490,19 @@ def _action_gates_release_bonus(kwargs: dict[str, Any]) -> str:
     Requires: claim_id, eval_verdict ("pass"|"fail"|"skip"),
     node_last_claimer (who gets the payout on pass).
     Rejected when no verdict supplied or bonus_stake is 0.
+
+    Authorization (slice1a review CRITICAL — round 3): releasing/refunding a gate
+    bonus moves staked value. Only the legitimate gate-outcome authority may do
+    it — the Goal owner (who owns the ladder that defines the gate), the
+    configured host (``UNIVERSE_SERVER_HOST_USER``), or an actor holding the
+    gate-claim capability (``CAP_RETRACT_GATE_CLAIM``). An arbitrary write-scoped
+    caller who knows a ``claim_id`` cannot settle another actor's bonus to a
+    caller-supplied recipient, nor refund another actor's stake to themselves.
     """
     from workflow.api.branches import _ensure_workflow_db
+    from workflow.daemon_server import CAP_RETRACT_GATE_CLAIM, get_goal
     from workflow.gates.actions import release_bonus
+    from workflow.gates.schema import GateBonusClaim
     from workflow.producers.node_bid import paid_market_enabled
 
     if not paid_market_enabled():
@@ -3524,16 +3534,55 @@ def _action_gates_release_bonus(kwargs: dict[str, Any]) -> str:
             ),
         })
 
-    staker = _current_actor_or_anon()
     _ensure_workflow_db()
     from workflow.storage import _connect as _storage_connect
     with _storage_connect(_base_path()) as conn:
+        # Load the claim BEFORE any disbursement so authorization can be checked
+        # against recorded state (goal owner, recorded staker), never against
+        # caller-supplied identities.
+        row = conn.execute(
+            "SELECT * FROM gate_claims WHERE claim_id = ?", (claim_id,)
+        ).fetchone()
+        if row is None:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"Claim '{claim_id}' not found.",
+            })
+        claim = GateBonusClaim.from_row(row)
+
+        # Authorization: only the gate-outcome authority may release/refund.
+        actor = _current_actor_or_anon()
+        goal_owner = ""
+        if claim.goal_id:
+            try:
+                goal = get_goal(_base_path(), goal_id=claim.goal_id)
+                goal_owner = (goal.get("author") or "").strip()
+            except KeyError:
+                goal_owner = ""
+        host_user = _escrow_host_user()
+        allowed = {a for a in (goal_owner, host_user) if a}
+        if actor not in allowed and not _current_actor_has_capability(
+            CAP_RETRACT_GATE_CLAIM,
+        ):
+            return json.dumps({
+                "status": "rejected",
+                "error": (
+                    "Cross-actor bonus release is not permitted: only the Goal "
+                    f"owner ('{goal_owner}'), the host ('{host_user}'), or an "
+                    f"actor with {CAP_RETRACT_GATE_CLAIM!r} can release/refund a "
+                    f"gate bonus. Authenticated actor '{actor}' is not the "
+                    "gate-outcome authority for this claim."
+                ),
+            })
+
+        # The refund recipient is always the recorded staker — pass it as an
+        # assertion so release_bonus rejects any mismatch (defense in depth).
         result = release_bonus(
             conn,
             claim_id=claim_id,
             eval_verdict=eval_verdict,
             node_last_claimer=node_last_claimer,
-            staker=staker,
+            staker=claim.claimed_by,
         )
     return json.dumps(result, default=str)
 
@@ -3915,7 +3964,10 @@ def gates(
                     claim_id. Only the original staker can unstake.
       release_bonus Resolve a bonus payout via evaluator verdict. Needs
                     claim_id, eval_verdict ("pass"|"fail"|"skip"),
-                    node_last_claimer (recipient on pass).
+                    node_last_claimer (recipient on pass). Only the Goal
+                    owner, the host, or an actor with the gate-claim
+                    capability may release/refund — refunds always return
+                    to the recorded staker.
 
     Evidence URL must be http(s) with a host or a Workflow run
     evidence handle such as ``workflow:run:<run_id>``; content is not

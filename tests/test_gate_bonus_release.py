@@ -108,6 +108,82 @@ def test_release_bonus_pass_disburses_to_node_last_claimer():
     assert dict(row) == {"bonus_stake": 0, "bonus_refund_after": None}
 
 
+def test_release_bonus_fail_refunds_recorded_staker_not_caller_supplied():
+    """A refund returns to the RECORDED staker (claimed_by), never a
+    caller-supplied staker (slice1a review CRITICAL — round 3)."""
+    conn = _make_conn()
+    _insert_claim(
+        conn,
+        claim_id="claim-fail",
+        claimed_by="real-staker",
+        bonus_stake=400,
+        bonus_refund_after="2026-06-29T00:00:00+00:00",
+    )
+
+    # No staker asserted → trusted in-process call → refund to recorded staker.
+    result = release_bonus(
+        conn,
+        claim_id="claim-fail",
+        eval_verdict="fail",
+        node_last_claimer="node-winner",
+    )
+    assert result["status"] == "ok"
+    assert result["disposition"] == "refunded"
+    assert result["recipient"] == "real-staker"
+
+
+def test_release_bonus_rejects_mismatched_staker_assertion():
+    """A supplied staker that does not match the recorded staker is rejected
+    with no disbursement — a caller cannot redirect a refund to themselves."""
+    conn = _make_conn()
+    _insert_claim(
+        conn,
+        claim_id="claim-mismatch",
+        claimed_by="real-staker",
+        bonus_stake=700,
+        bonus_refund_after="2026-06-29T00:00:00+00:00",
+    )
+
+    result = release_bonus(
+        conn,
+        claim_id="claim-mismatch",
+        eval_verdict="fail",
+        node_last_claimer="node-winner",
+        staker="attacker",
+    )
+    assert result["status"] == "rejected"
+    assert "recorded staker" in result["error"].lower()
+
+    # Stake untouched.
+    row = conn.execute(
+        "SELECT bonus_stake FROM gate_claims WHERE claim_id = ?",
+        ("claim-mismatch",),
+    ).fetchone()
+    assert dict(row)["bonus_stake"] == 700
+
+
+def test_release_bonus_pass_with_matching_staker_assertion_succeeds():
+    """Passing the correct recorded staker as an assertion still releases."""
+    conn = _make_conn()
+    _insert_claim(
+        conn,
+        claim_id="claim-match",
+        claimed_by="real-staker",
+        bonus_stake=300,
+        bonus_refund_after="2026-06-29T00:00:00+00:00",
+    )
+    result = release_bonus(
+        conn,
+        claim_id="claim-match",
+        eval_verdict="pass",
+        node_last_claimer="node-winner",
+        staker="real-staker",
+    )
+    assert result["status"] == "ok"
+    assert result["disposition"] == "released"
+    assert result["recipient"] == "node-winner"
+
+
 def test_release_bonus_retracted_claim_is_rejected_before_disbursement():
     conn = _make_conn()
     _insert_claim(

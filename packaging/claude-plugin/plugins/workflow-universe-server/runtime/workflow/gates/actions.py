@@ -195,15 +195,28 @@ def release_bonus(
     claim_id: str,
     eval_verdict: str,
     node_last_claimer: str,
-    staker: str,
+    staker: str | None = None,
 ) -> dict[str, Any]:
     """Release or refund a bonus based on the evaluator verdict.
 
     eval_verdict: "pass" → release to node_last_claimer.
-                  "fail" or "skip" → refund to staker.
+                  "fail" or "skip" → refund to the ORIGINAL staker.
+
+    Financial-integrity rule (slice1a review CRITICAL — round 3): a refund must
+    return the stake to the actor who actually staked it, which is recorded on
+    the claim (``claimed_by``), NOT a caller-supplied ``staker`` identity. A
+    write-scoped caller must never be able to redirect another actor's refund to
+    themselves by passing their own id. ``staker`` is now only an OPTIONAL
+    assertion: when provided it must match the recorded staker, otherwise the
+    release is rejected — it never overrides the recorded staker.
 
     Returns a result dict describing the disbursement.
     Retracted claims are rejected before any payout or refund path runs.
+
+    Authorization (who may call release at all — i.e. who adjudicates the gate
+    outcome) is enforced by the caller (``_action_gates_release_bonus``):
+    only the Goal owner, the configured host, or an actor holding the
+    gate-claim capability may release/refund a bonus.
     """
     ensure_bonus_columns(conn)
 
@@ -236,6 +249,19 @@ def release_bonus(
             ),
         }
 
+    # The refund recipient is the recorded staker, never caller-supplied. A
+    # supplied ``staker`` is honored only as an assertion that must match.
+    recorded_staker = (claim.claimed_by or "").strip()
+    if staker is not None and (staker or "").strip() != recorded_staker:
+        return {
+            "status": "rejected",
+            "error": (
+                f"staker {staker!r} does not match the recorded staker "
+                f"{recorded_staker!r} for claim {claim_id!r}; a bonus refund "
+                "always returns to the original staker."
+            ),
+        }
+
     stake = claim.bonus_stake
     net, treasury = compute_bonus_payout(stake)
     resolved_at = _now_iso()
@@ -244,7 +270,7 @@ def release_bonus(
         recipient = node_last_claimer
         disposition = "released"
     else:
-        recipient = staker
+        recipient = recorded_staker
         disposition = "refunded"
 
     # Clear the bonus (mark resolved by zeroing stake; retraction is a separate op).
