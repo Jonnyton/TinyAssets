@@ -128,6 +128,48 @@ class TestChainDrainWarning:
             for record in caplog.records
         ), "CHAIN_DRAINED warning not emitted when all API providers in cooldown"
 
+    def test_chain_drain_warning_with_unregistered_api_provider(self, caplog):
+        """Part A warning fires on a claude-only cloud host too (Codex review).
+
+        Mirrors the Part B guard in test_provider_router_bug029: claude-code is
+        registered + cooled while codex is unregistered (absent binary). The
+        absent codex must not veto the CHAIN_DRAINED warning — guards against a
+        pre-effective_chain drain check, which would put never-cooled codex into
+        the drain set and suppress the warning on this exact config.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from workflow.exceptions import AllProvidersExhaustedError
+        from workflow.providers.base import ProviderResponse
+        from workflow.providers.quota import QuotaTracker
+        from workflow.providers.router import ProviderRouter
+
+        qt = QuotaTracker()
+        qt.cooldown("claude-code", 120)
+
+        claude = AsyncMock()
+        claude.name = "claude-code"
+        claude.complete.return_value = ProviderResponse(
+            text="api", provider="claude-code", model="m", family="f", latency_ms=0.0,
+        )
+        # ollama-local fails so the chain exhausts and reaches Part A.
+        local = AsyncMock()
+        local.name = "ollama-local"
+        local.complete.side_effect = Exception("local failed")
+        # codex intentionally NOT registered (absent binary on a claude-only host).
+        router = ProviderRouter(
+            providers={"claude-code": claude, "ollama-local": local}, quota=qt,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="workflow.providers.router"):
+            with pytest.raises(AllProvidersExhaustedError):
+                asyncio.run(router.call("writer", "prompt", "system"))
+
+        assert any(
+            "CHAIN_DRAINED" in record.message for record in caplog.records
+        ), "CHAIN_DRAINED warning not emitted on claude-only host with codex absent"
+
 
 class TestGetStatusCooldownField:
     def test_get_status_has_per_provider_cooldown_remaining(self):
