@@ -24,6 +24,7 @@ Graph topology JSON follows LangGraph's native API shape:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -482,6 +483,40 @@ class NodeDefinition:
         Used during migration from .node_registry.json.
         """
         return cls.from_dict(reg)
+
+    def mark_approved(
+        self,
+        *,
+        approved_by: str = "",
+        reason: str = "",
+        at: str = "",
+    ) -> NodeDefinition:
+        """Record genuine approval together with its source-hash provenance.
+
+        SECURITY (PR #1349, Codex residual): the runtime gate
+        (``graph_compiler._validate_source_code``) is fail-closed — a
+        source_code node executes only when ``approved=True`` AND
+        ``approved_source_hash`` equals ``sha256(source_code)``. A bare
+        ``approved=True`` with an empty/stale hash is treated as forged or
+        carried-from-elsewhere and refused.
+
+        This is the ONLY sanctioned in-process approval helper. Trusted
+        construction (host code, fixtures) must call it instead of setting
+        ``approved=True`` directly, so the hash is always bound to the source
+        actually being approved. Do NOT use this to sprinkle hashes onto code
+        you have not genuinely approved — it binds the hash to whatever
+        ``source_code`` is set at call time.
+
+        Returns ``self`` so it can be chained at construction sites.
+        """
+        self.approved = True
+        self.approved_by = approved_by
+        self.approved_at = at or datetime.now(timezone.utc).isoformat()
+        self.approved_source_hash = hashlib.sha256(
+            (self.source_code or "").encode("utf-8")
+        ).hexdigest()
+        self.approval_reason = reason
+        return self
 
 
 # ═══════════════════════════════════════════════════════════════════════════

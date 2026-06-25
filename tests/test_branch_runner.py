@@ -125,8 +125,7 @@ def test_compiler_accepts_approved_source_code():
     b.node_defs = [NodeDefinition(
         node_id="only", display_name="Only",
         source_code="def run(state): return {'out': state.get('x', 0) + 1}",
-        approved=True,
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="only"),
@@ -172,8 +171,7 @@ def test_source_code_node_can_call_allowed_mcp_action(monkeypatch):
         input_keys=["goal_id"],
         output_keys=["leaderboard_count"],
         tools_allowed=["goals.leaderboard"],
-        approved=True,
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="only"),
@@ -215,8 +213,7 @@ def test_source_code_node_rejects_mcp_action_not_in_tools_allowed(monkeypatch):
         ),
         output_keys=["out"],
         tools_allowed=[],
-        approved=True,
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="only"),
@@ -257,8 +254,7 @@ def test_source_code_node_can_call_wiki_read(monkeypatch):
         input_keys=["q"],
         output_keys=["n"],
         tools_allowed=["wiki.search"],
-        approved=True,
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="only"),
@@ -300,8 +296,7 @@ def test_source_code_node_cannot_call_wiki_write(monkeypatch):
         ),
         output_keys=["out"],
         tools_allowed=["wiki.write"],
-        approved=True,
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="only"),
@@ -345,8 +340,7 @@ def test_node_wiki_dispatch_blocks_write_even_if_aliased(monkeypatch):
         ),
         output_keys=["out"],
         tools_allowed=["wiki.write"],
-        approved=True,
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="only"),
@@ -385,13 +379,13 @@ def test_compiler_synthesized_typeddict_reducer_append():
     b = BranchDefinition(name="accumulator", entry_point="a")
     b.node_defs = [
         NodeDefinition(
-            node_id="a", display_name="A", approved=True,
+            node_id="a", display_name="A",
             source_code="def run(state): return {'log': ['from-a']}",
-        ),
+        ).mark_approved(),
         NodeDefinition(
-            node_id="b", display_name="B", approved=True,
+            node_id="b", display_name="B",
             source_code="def run(state): return {'log': ['from-b']}",
-        ),
+        ).mark_approved(),
     ]
     b.graph_nodes = [
         GraphNodeRef(id="a", node_def_id="a", position=0),
@@ -544,9 +538,9 @@ def test_execute_branch_end_to_end(tmp_path):
 
     b = BranchDefinition(name="test", entry_point="n1")
     b.node_defs = [NodeDefinition(
-        node_id="n1", display_name="N1", approved=True,
+        node_id="n1", display_name="N1",
         source_code="def run(state): return {'out': state.get('x', 0) * 2}",
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="n1"),
@@ -575,9 +569,9 @@ def test_execute_branch_reports_node_status_callback(tmp_path):
 
     b = BranchDefinition(name="test", entry_point="n1")
     b.node_defs = [NodeDefinition(
-        node_id="n1", display_name="N1", approved=True,
+        node_id="n1", display_name="N1",
         source_code="def run(state): return {'out': state.get('x', 0) * 2}",
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="n1"),
@@ -1169,9 +1163,9 @@ def test_async_run_completes_successfully(tmp_path):
 
     b = BranchDefinition(name="Async", entry_point="n")
     b.node_defs = [NodeDefinition(
-        node_id="n", display_name="N", approved=True,
+        node_id="n", display_name="N",
         source_code="def run(state): return {'out': state.get('x', 0) * 3}",
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="n", node_def_id="n")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="n"),

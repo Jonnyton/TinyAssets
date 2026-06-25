@@ -1197,46 +1197,54 @@ def _build_prompt_template_node(
 
 
 def _validate_source_code(node: NodeDefinition) -> None:
-    """Gate source_code nodes: require approval + no obviously dangerous
-    patterns. This is belt-and-suspenders; host approval is the primary
-    defense. See spec §Risks — a proper sandbox is future work."""
+    """Gate source_code nodes (FAIL-CLOSED): a node may run only when
+    ``approved=True`` AND ``approved_source_hash`` is present AND equals
+    ``sha256(source_code)``, and the source contains no obviously dangerous
+    patterns. This is the runtime line of defense; host approval is the
+    primary one. See spec §Risks — a proper sandbox is future work."""
     src = node.source_code or ""
     if not node.approved:
         raise UnapprovedNodeError(
             f"Node '{node.node_id}' is source_code and must be approved "
             f"by the host before running."
         )
-    # SECURITY (Codex ADAPT, PR #1349): the ``approved`` boolean alone is not
-    # sufficient provenance. A branch node can node_ref an approved node and
-    # then override ``source_code`` while keeping ``approved=True``, so the
-    # flag could authorize code the approver never reviewed. When approval
-    # provenance is recorded (``approved_source_hash`` is non-empty — which
-    # every approval minted through the real ``approve`` gate now carries),
-    # it MUST match the hash of the source_code about to run. A mismatch means
-    # the source was overridden after approval; fail closed.
+    # SECURITY (Codex ADAPT + final residual, PR #1349): the ``approved``
+    # boolean alone is not sufficient provenance, AND the gate is FAIL-CLOSED.
+    # A source_code node executes only when ``approved=True`` *and*
+    # ``approved_source_hash`` is present *and* equals sha256(effective source).
     #
-    # An empty hash is only reachable via trusted in-process construction
-    # (host code / tests build NodeDefinition directly). Every MCP-reachable
-    # authoring path now upholds the invariant "no persisted node carries
-    # approved=True with an empty/stale approved_source_hash once it has
-    # executable content": _apply_node_spec (define/add/set), _apply_node_updates
-    # (update_node), _reconcile_copied_approval (node_ref copy), and — closing
-    # the Codex round-2 gap — _ext_branch_patch_nodes (patch_nodes) all clear
-    # approval on any unmatched content change. The standalone registry only
-    # mints approval through _ext_manage, which always records a matching hash.
-    # So a runtime empty hash means trusted construction, never an MCP write,
-    # and the carve-out cannot authorize MCP-injected code. The node_ref-override
-    # and patch_nodes bypasses are closed at both ends.
+    # The earlier version carved out an empty hash as "trusted in-process
+    # construction". That carve-out was exploitable: a legacy/trusted snapshot
+    # carrying ``source_code`` + ``approved=True`` + ``approved_source_hash=""``
+    # could be persisted (via build_branch fork-copy or rollback_node restore)
+    # and run, because the runtime only checked NON-empty hashes. Carrying
+    # paths re-validate against the hash now (branches.build_branch fork-copy,
+    # evaluation.rollback_node), but the runtime is the last line of defense
+    # and must not trust an empty hash regardless of how the node arrived.
+    #
+    # Genuine in-process approval records the hash via
+    # ``NodeDefinition.mark_approved`` (host code / fixtures) or the
+    # ``approve`` / ``_ext_manage`` MCP gates (which compute the hash from the
+    # approved source). A runtime empty/stale hash therefore means the approval
+    # is forged, carried-from-elsewhere, or pre-dates the provenance field;
+    # fail closed and require re-approval.
     approved_hash = (node.approved_source_hash or "").strip()
-    if approved_hash:
-        actual_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()
-        if approved_hash != actual_hash:
-            raise UnapprovedNodeError(
-                f"Node '{node.node_id}' source_code does not match its "
-                f"approved hash (approval is stale or forged — source was "
-                f"changed after approval). Re-approve the node against its "
-                f"current source before running."
-            )
+    if not approved_hash:
+        raise UnapprovedNodeError(
+            f"Node '{node.node_id}' is marked approved but carries no "
+            f"approved_source_hash provenance. A source_code node may run "
+            f"only when its approval is bound to the hash of the approved "
+            f"source (fail-closed). Re-approve the node against its current "
+            f"source before running."
+        )
+    actual_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()
+    if approved_hash != actual_hash:
+        raise UnapprovedNodeError(
+            f"Node '{node.node_id}' source_code does not match its "
+            f"approved hash (approval is stale or forged — source was "
+            f"changed after approval). Re-approve the node against its "
+            f"current source before running."
+        )
     for pattern in _DANGEROUS_PATTERNS:
         if pattern in src:
             raise CompilerError(

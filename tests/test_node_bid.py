@@ -134,9 +134,8 @@ def _make_approved_node(node_id: str, source_code: str):
     return NodeDefinition(
         node_id=node_id,
         display_name=node_id,
-        approved=True,
         source_code=source_code,
-    )
+    ).mark_approved()
 
 
 # ───────────────────────────────────────────────────────────────────────

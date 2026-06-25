@@ -241,6 +241,47 @@ def _reconcile_copied_approval(merged: dict[str, Any]) -> None:
         merged["approval_reason"] = ""
 
 
+def _node_source_code_unrunnable(nd: dict[str, Any]) -> bool:
+    """True when a node dict has executable source_code but is NOT genuinely
+    approved (provenance-checked), so the fail-closed runtime gate would refuse
+    it. Used by the describe/validate/get_branch runnability surfaces so what
+    they report matches what ``_validate_source_code`` will actually accept: a
+    bare ``approved=True`` with a missing/stale ``approved_source_hash`` is
+    reported as unrunnable, not runnable. PR #1349.
+    """
+    if not nd.get("source_code"):
+        return False
+    return not _approval_provenance_valid(
+        nd.get("approved", False),
+        nd.get("source_code") or "",
+        nd.get("approved_source_hash") or "",
+    )
+
+
+def _reconcile_node_approval(node: Any) -> Any:
+    """Object-level twin of :func:`_reconcile_copied_approval`.
+
+    Re-validates a carried/restored ``NodeDefinition`` object's approval
+    against its current source hash and clears the approval metadata when the
+    provenance does not match. Used by paths that carry node bodies forward as
+    NodeDefinition objects rather than dicts: ``build_branch`` fork-copy
+    (inherits the parent's ``node_defs`` wholesale) and ``rollback_node``
+    (restores a raw audit body). A trusted/legacy snapshot carrying
+    ``source_code`` + ``approved=True`` + empty/stale ``approved_source_hash``
+    must not survive the copy as still-approved. Closes the Codex final
+    residual on PR #1349 (carried-snapshot bypass).
+
+    Returns the node for chaining.
+    """
+    if not _approval_provenance_valid(
+        getattr(node, "approved", False),
+        getattr(node, "source_code", "") or "",
+        getattr(node, "approved_source_hash", "") or "",
+    ):
+        _clear_source_code_approval(node)
+    return node
+
+
 def _ensure_workflow_db() -> None:
     """Ensure the shared SQLite schema exists before any branch action runs.
 
@@ -422,7 +463,7 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
         for nd in branch.get("node_defs", [])
-        if nd.get("source_code") and not nd.get("approved", False)
+        if _node_source_code_unrunnable(nd)
     ]
     branch["unapproved_source_code_nodes"] = unapproved_sc
     branch["runnable"] = not unapproved_sc
@@ -843,7 +884,7 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
         for nd in source_dict.get("node_defs", [])
-        if nd.get("source_code") and not nd.get("approved", False)
+        if _node_source_code_unrunnable(nd)
     ]
 
     # sandbox-compat warning: list any requires_sandbox=True nodes when
@@ -1059,7 +1100,7 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
         for nd in source_dict.get("node_defs", [])
-        if nd.get("source_code") and not nd.get("approved", False)
+        if _node_source_code_unrunnable(nd)
     ]
 
     node_lines = [
@@ -1190,7 +1231,13 @@ def _branch_authoring_batch_receipt(
         if not getattr(node, "source_code", ""):
             continue
         source_code_node_count += 1
-        if bool(getattr(node, "approved", False)):
+        # PR #1349 fail-closed: count as approved only when the approval is
+        # backed by matching hash provenance, mirroring the runtime gate.
+        if _approval_provenance_valid(
+            getattr(node, "approved", False),
+            getattr(node, "source_code", "") or "",
+            getattr(node, "approved_source_hash", "") or "",
+        ):
             approved_source_code_node_count += 1
         else:
             unapproved_nodes.append({
@@ -2082,7 +2129,17 @@ def _staged_branch_from_spec(
             if "skills" not in spec:
                 branch.skills = parent_skills
             if "node_defs" not in spec and "nodes" not in spec:
-                branch.node_defs = parent_copy.node_defs
+                # SECURITY (Codex final residual, PR #1349): the parent's
+                # node_defs are inherited wholesale. A carried node whose
+                # source no longer matches its recorded approval hash — or
+                # which carries approved=True with an empty/legacy hash — must
+                # not survive the fork as still-approved. Re-validate each
+                # carried node against its source hash; the fail-closed runtime
+                # gate is the backstop, this keeps the persisted snapshot
+                # honest at authoring time.
+                branch.node_defs = [
+                    _reconcile_node_approval(n) for n in parent_copy.node_defs
+                ]
                 branch.graph_nodes = parent_copy.graph_nodes
             if not _spec_has_graph_key("edges"):
                 branch.edges = parent_copy.edges
