@@ -45,6 +45,10 @@ class NodeBid:
     inputs: dict = field(default_factory=dict)
     bid: float = 0.0
     submitted_by: str = ""
+    owner_user_id: str = ""
+    daemon_id: str = ""
+    runtime_instance_id: str = ""
+    worker_id: str = ""
     status: str = "open"
     evidence_url: str = ""
     submitted_at: str = ""
@@ -250,7 +254,13 @@ def _revert_claim(
 
 
 def claim_node_bid(
-    repo_root: Path, node_bid_id: str, daemon_id: str,
+    repo_root: Path,
+    node_bid_id: str,
+    daemon_id: str,
+    *,
+    owner_user_id: str = "",
+    runtime_instance_id: str = "",
+    worker_id: str = "",
 ) -> "NodeBid | None":
     """Atomic claim via git-rename + push (preflight §4.1 #1).
 
@@ -298,6 +308,10 @@ def claim_node_bid(
             return None
         data["node_bid_id"] = p.stem
         data["status"] = f"claimed:{daemon_id}"
+        data["owner_user_id"] = owner_user_id or ""
+        data["daemon_id"] = daemon_id or ""
+        data["runtime_instance_id"] = runtime_instance_id or ""
+        data["worker_id"] = worker_id or ""
         try:
             claimed_path.write_text(
                 yaml.safe_dump(data, sort_keys=False, default_flow_style=False),

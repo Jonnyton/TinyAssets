@@ -32,8 +32,16 @@ from workflow.runs import (
 )
 
 
-def _fresh_run(tmp_path, *, branch_def_id: str = "b1", actor: str = "alice",
-               branch_version_id: str | None = None) -> str:
+def _fresh_run(
+    tmp_path,
+    *,
+    branch_def_id: str = "b1",
+    actor: str = "alice",
+    branch_version_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
+) -> str:
     """Create a fresh queued run, return its run_id."""
     initialize_runs_db(tmp_path)
     return create_run(
@@ -44,6 +52,9 @@ def _fresh_run(tmp_path, *, branch_def_id: str = "b1", actor: str = "alice",
         run_name="emit-test",
         actor=actor,
         branch_version_id=branch_version_id,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
     )
 
 
@@ -127,6 +138,46 @@ class TestTerminalStatusEmits:
         ev = events[0]
         assert ev["source_artifact_id"] == "b1@abc12345"
         assert ev["source_artifact_kind"] == "branch_version"
+
+    def test_completed_run_emits_full_identity_tuple(self, tmp_path):
+        from workflow.daemon_registry import create_daemon
+
+        daemon = create_daemon(
+            tmp_path,
+            display_name="Economic Worker",
+            created_by="owner-user",
+            soul_mode="soulless",
+        )
+        run_id = _fresh_run(
+            tmp_path,
+            daemon_id=daemon["daemon_id"],
+            runtime_instance_id="runtime-1",
+            worker_id="worker-1",
+        )
+        update_run_status(tmp_path, run_id, status=RUN_STATUS_COMPLETED)
+        events = _events(tmp_path, run_id)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["actor_id"] == "alice"
+        assert ev["owner_user_id"] == "owner-user"
+        assert ev["daemon_id"] == daemon["daemon_id"]
+        assert ev["runtime_instance_id"] == "runtime-1"
+        assert ev["worker_id"] == "worker-1"
+        assert ev["weight"] == 1.0
+
+    def test_unresolvable_daemon_owner_defaults_empty_on_emit(self, tmp_path):
+        run_id = _fresh_run(
+            tmp_path,
+            daemon_id="daemon::missing",
+            runtime_instance_id="runtime-missing",
+            worker_id="worker-missing",
+        )
+        update_run_status(tmp_path, run_id, status=RUN_STATUS_COMPLETED)
+        ev = _events(tmp_path, run_id)[0]
+        assert ev["owner_user_id"] == ""
+        assert ev["daemon_id"] == "daemon::missing"
+        assert ev["runtime_instance_id"] == "runtime-missing"
+        assert ev["worker_id"] == "worker-missing"
 
 
 # ── Non-terminal status does NOT emit ────────────────────────────────────────

@@ -640,11 +640,32 @@ def _try_execute_claimed_node_bid(
         except RuntimeError as exc:
             return False, f"repo_root_not_resolvable: {exc}"
 
+        runtime_instance_id = os.environ.get(
+            "WORKFLOW_RUNTIME_INSTANCE_ID", "",
+        ).strip()
+        worker_id = os.environ.get("WORKFLOW_WORKER_ID", "").strip()
+        owner_user_id = ""
+        try:
+            from workflow.daemon_registry import get_daemon
+            from workflow.storage import data_dir
+
+            daemon = get_daemon(data_dir(), daemon_id=daemon_id)
+            owner_user_id = str(daemon.get("owner_user_id") or "")
+        except Exception:  # noqa: BLE001
+            owner_user_id = ""
+
         # Preflight §4.1 #1: atomic claim via git-rename + push BEFORE
         # execution. claim_node_bid returns None on race loss; we
         # fall through to "claim_race_lost" so the BranchTask is
         # marked failed and the next cycle proceeds.
-        claimed_bid = claim_node_bid(repo_root, node_bid_id, daemon_id)
+        claimed_bid = claim_node_bid(
+            repo_root,
+            node_bid_id,
+            daemon_id,
+            owner_user_id=owner_user_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+        )
         if claimed_bid is None:
             # Bid YAML may have been deleted between producer emit
             # and claim attempt (or race was lost, or status != open).
@@ -681,7 +702,13 @@ def _try_execute_claimed_node_bid(
         completed_at = datetime.now(timezone.utc).isoformat()
         try:
             record_settlement_event(
-                repo_root, bid, result, daemon_id,
+                repo_root,
+                bid,
+                result,
+                daemon_id,
+                owner_user_id=owner_user_id,
+                runtime_instance_id=runtime_instance_id,
+                worker_id=worker_id,
             )
         except SettlementExistsError:
             # Already recorded — idempotent finalize path (e.g.

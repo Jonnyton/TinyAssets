@@ -237,6 +237,39 @@ def test_claim_node_bid_first_wins(repo_root):
     assert second is None
 
 
+def test_claim_node_bid_records_identity_tuple(repo_root, monkeypatch):
+    import workflow.bid.node_bid as nb_mod
+    from workflow.bid.node_bid import bids_dir
+
+    monkeypatch.setattr(nb_mod, "_git_has_remote", lambda _root: False)
+
+    _write_bid_yaml(repo_root, "nb_identity")
+    claimed = claim_node_bid(
+        repo_root,
+        "nb_identity",
+        "daemon-A",
+        owner_user_id="owner-A",
+        runtime_instance_id="runtime-A",
+        worker_id="worker-A",
+    )
+    assert claimed is not None
+    assert claimed.status == "claimed:daemon-A"
+    assert claimed.owner_user_id == "owner-A"
+    assert claimed.daemon_id == "daemon-A"
+    assert claimed.runtime_instance_id == "runtime-A"
+    assert claimed.worker_id == "worker-A"
+
+    [claimed_path] = [
+        p for p in bids_dir(repo_root).iterdir()
+        if p.name.startswith("nb_identity.yaml.claimed_by_")
+    ]
+    data = yaml.safe_load(claimed_path.read_text(encoding="utf-8"))
+    assert data["owner_user_id"] == "owner-A"
+    assert data["daemon_id"] == "daemon-A"
+    assert data["runtime_instance_id"] == "runtime-A"
+    assert data["worker_id"] == "worker-A"
+
+
 def test_claim_missing_bid_returns_none(repo_root):
     assert claim_node_bid(repo_root, "nb_missing", "daemon-A") is None
 
@@ -801,6 +834,37 @@ def test_settlement_emitted_on_succeeded_bid(repo_root):
     assert "success" not in data
 
 
+def test_settlement_records_identity_tuple_without_changing_amount(repo_root):
+    from workflow.bid.settlements import record_settlement_event
+    from workflow.executors.node_bid import NodeBidResult
+
+    bid = NodeBid(
+        node_bid_id="nb_identity", node_def_id="n/x",
+        submitted_by="alice", bid=7.25,
+    )
+    result = NodeBidResult(
+        node_bid_id="nb_identity", status="succeeded",
+        evidence_url="file:///tmp/e",
+    )
+    path = record_settlement_event(
+        repo_root,
+        bid,
+        result,
+        "daemon-1",
+        owner_user_id="owner-1",
+        runtime_instance_id="runtime-1",
+        worker_id="worker-1",
+    )
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert data["owner_user_id"] == "owner-1"
+    assert data["daemon_id"] == "daemon-1"
+    assert data["runtime_instance_id"] == "runtime-1"
+    assert data["worker_id"] == "worker-1"
+    assert data["bid_amount"] == 7.25
+    assert data["outcome_status"] == "succeeded"
+    assert data["settled"] is False
+
+
 def test_settlement_emitted_on_failed_bid(repo_root):
     from workflow.bid.settlements import record_settlement_event
     from workflow.executors.node_bid import NodeBidResult
@@ -1092,7 +1156,7 @@ def test_race_bypass_rejected_when_remote_configured(
     # up the patched callable.
     import workflow.bid.node_bid as nb_mod
 
-    def _patched_claim(repo, bid_id, daemon_id):
+    def _patched_claim(repo, bid_id, daemon_id, **_kwargs):
         return None  # always "race lost"
     monkeypatch.setattr(nb_mod, "claim_node_bid", _patched_claim)
 
@@ -1179,7 +1243,7 @@ def test_fallback_rejected_when_remote_and_yaml_missing(
 
     import workflow.bid.node_bid as nb_mod
     monkeypatch.setattr(
-        nb_mod, "claim_node_bid", lambda r, b, d: None,
+        nb_mod, "claim_node_bid", lambda r, b, d, **_kwargs: None,
     )
 
     from fantasy_daemon.__main__ import _try_execute_claimed_node_bid

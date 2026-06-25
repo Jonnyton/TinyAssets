@@ -715,6 +715,10 @@ def _action_record_remix(kwargs: dict[str, Any]) -> str:
     credit_share = max(0.0, min(1.0, credit_share))
 
     actor_id = (kwargs.get("actor_id") or "anonymous").strip() or "anonymous"
+    owner_user_id = (kwargs.get("owner_user_id") or "").strip()
+    daemon_id = (kwargs.get("daemon_id") or "").strip()
+    runtime_instance_id = (kwargs.get("runtime_instance_id") or "").strip()
+    worker_id = (kwargs.get("worker_id") or "").strip()
     base = _base_path()
 
     with _attribution_connect(base) as conn:
@@ -773,12 +777,16 @@ def _action_record_remix(kwargs: dict[str, Any]) -> str:
                 """
                 INSERT OR IGNORE INTO attribution_credit
                     (credit_id, artifact_id, artifact_kind, actor_id,
+                     owner_user_id, daemon_id, runtime_instance_id, worker_id,
                      credit_share, royalty_share, generation_depth,
                      contribution_kind, recorded_at)
-                VALUES (?, ?, 'branch', ?, ?, 0.0, ?, ?, ?)
+                VALUES (?, ?, 'branch', ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?)
                 """,
-                (credit_id, child_id, actor_id, credit_share,
-                 generation_depth, contribution_kind, created_at),
+                (
+                    credit_id, child_id, actor_id, owner_user_id, daemon_id,
+                    runtime_instance_id, worker_id, credit_share,
+                    generation_depth, contribution_kind, created_at,
+                ),
             )
 
     return json.dumps({

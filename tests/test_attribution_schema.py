@@ -36,6 +36,10 @@ def _credit_row(**overrides) -> dict:
         "artifact_id": "branch-B",
         "artifact_kind": "branch",
         "actor_id": "alice",
+        "owner_user_id": "owner-alice",
+        "daemon_id": "daemon::alice-worker",
+        "runtime_instance_id": "runtime-1",
+        "worker_id": "worker-1",
         "credit_share": 0.7,
         "royalty_share": 0.05,
         "generation_depth": 0,
@@ -113,9 +117,25 @@ class TestAttributionCredit:
         c = AttributionCredit.from_row(_credit_row())
         assert c.credit_id == "cred-1"
         assert c.actor_id == "alice"
+        assert c.owner_user_id == "owner-alice"
+        assert c.daemon_id == "daemon::alice-worker"
+        assert c.runtime_instance_id == "runtime-1"
+        assert c.worker_id == "worker-1"
         assert c.credit_share == pytest.approx(0.7)
         assert c.royalty_share == pytest.approx(0.05)
         assert c.generation_depth == 0
+
+    def test_schema_has_optional_identity_tuple_columns(self, db):
+        columns = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(attribution_credit)")
+        }
+        assert {
+            "owner_user_id",
+            "daemon_id",
+            "runtime_instance_id",
+            "worker_id",
+        } <= columns
 
     def test_is_original_author_true(self):
         c = AttributionCredit.from_row(_credit_row(generation_depth=0))
@@ -166,6 +186,10 @@ class TestAttributionCredit:
         assert c.royalty_share == pytest.approx(0.0)
         assert c.generation_depth == 0
         assert c.contribution_kind == "original"
+        assert c.owner_user_id == ""
+        assert c.daemon_id == ""
+        assert c.runtime_instance_id == ""
+        assert c.worker_id == ""
 
 
 # ── RemixProvenance ────────────────────────────────────────────────────────────
