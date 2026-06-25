@@ -9,6 +9,11 @@ Type=oneshot
 User=root
 Group=root
 WorkingDirectory=/opt/workflow
+# Load WORKFLOW_IMAGE (and the rest of the deploy env) so the script's
+# `docker compose ps` can interpolate services.daemon.image. Without this the
+# unit failed `required variable WORKFLOW_IMAGE is missing a value` and the
+# whole auto-recovery layer was dark (2026-06-25 loop-wedge incident).
+EnvironmentFile=/etc/workflow/env
 ExecStart=/opt/workflow/deploy/daemon-watchdog.sh
 TimeoutStartSec=90s
 StandardOutput=journal

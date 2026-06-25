@@ -7,7 +7,10 @@ set -euo pipefail
 COMPOSE_FILE="${WORKFLOW_COMPOSE_FILE:-/opt/workflow/compose.yml}"
 SERVICE_UNIT="${WORKFLOW_DAEMON_UNIT:-workflow-daemon.service}"
 DATA_VOLUME="${WORKFLOW_DATA_VOLUME:-workflow-data}"
-HEARTBEAT_RELATIVE="${WORKFLOW_HEARTBEAT_RELATIVE:-earthos/heartbeat}"
+# Empty default -> auto-discover the freshest worker-supervisor heartbeat
+# (see heartbeat_path). Set WORKFLOW_HEARTBEAT_RELATIVE to a
+# "<universe>/<file>" path under the data volume to pin a specific one.
+HEARTBEAT_RELATIVE="${WORKFLOW_HEARTBEAT_RELATIVE:-}"
 HEARTBEAT_MAX_AGE_SECONDS="${WORKFLOW_HEARTBEAT_MAX_AGE_SECONDS:-900}"
 LOCK_FILE="${WORKFLOW_DAEMON_WATCHDOG_LOCK:-/run/workflow-daemon-watchdog.lock}"
 LOG_TAG="daemon-watchdog"
@@ -36,7 +39,23 @@ heartbeat_path() {
     if [[ -z "$mountpoint" ]]; then
         return 1
     fi
-    printf '%s/%s\n' "$mountpoint" "$HEARTBEAT_RELATIVE"
+    # Operator-pinned path wins.
+    if [[ -n "$HEARTBEAT_RELATIVE" ]]; then
+        printf '%s/%s\n' "$mountpoint" "$HEARTBEAT_RELATIVE"
+        return 0
+    fi
+    # Auto-discover: the active universe rewrites
+    # <universe>/.worker_supervisor*.json every ~15s. Check the FRESHEST one so
+    # a restart fires only when the ENTIRE fleet has gone silent — not a single
+    # dormant universe. The legacy default (earthos/heartbeat) pointed at a path
+    # that never existed, so heartbeat detection was effectively dead.
+    local freshest
+    freshest="$(find "$mountpoint" -name '.worker_supervisor*.json' -printf '%T@ %p\n' 2>/dev/null \
+        | sort -rn | head -1 | cut -d' ' -f2-)"
+    if [[ -z "$freshest" ]]; then
+        return 1
+    fi
+    printf '%s\n' "$freshest"
 }
 
 heartbeat_stale() {
