@@ -282,6 +282,8 @@ def test_node_payload_always_includes_timeout_seconds():
 def test_goal_round_trip_is_identity():
     # Phase 6.3: `gate_ladder` rides through as a goal attribute,
     # defaulting to [] when absent. The round-trip always surfaces it.
+    # PR-129 (#991) adds `branch_protocol` as a parallel optional goal
+    # attribute with the same always-surfaced, [] default contract.
     original = {
         "goal_id": "goal_xyz",
         "name": "Produce academic paper",
@@ -292,6 +294,7 @@ def test_goal_round_trip_is_identity():
         "created_at": 1712000000.0,
         "updated_at": 1712000500.0,
         "gate_ladder": [],
+        "branch_protocol": [],
     }
     payload = goal_to_yaml_payload(original)
     reconstituted = goal_from_yaml_payload(payload)
