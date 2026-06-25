@@ -25,8 +25,8 @@
       "chain": "PulseChain",
       "label": "PulseChain",
       "address_main": "0x92a242f94db176082Df4D386B366f4217ab7fAFd",
-      "explorer": "https://pulsescan.finvesta.io/#/token/0x92a242f94db176082Df4D386B366f4217ab7fAFd",
-      "buy": "https://pulsescan.finvesta.io/#/token/0x92a242f94db176082Df4D386B366f4217ab7fAFd",
+      "explorer": "https://scan.pulsechain.com/address/0x92a242f94db176082Df4D386B366f4217ab7fAFd",
+      "buy": "https://scan.pulsechain.com/address/0x92a242f94db176082Df4D386B366f4217ab7fAFd",
       "primary": false,
       "workflow_status": "reference-only"
     },
