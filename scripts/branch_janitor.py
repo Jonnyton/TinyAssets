@@ -11,9 +11,9 @@ branches.
 Categories
 ----------
 PROTECTED    main/master/production/release/* — never touched.
-MERGED       ancestor of the base ref — its commits are already on main, so
-             deleting the branch loses nothing. Swept in --apply (or
-             --only-merged).
+MERGED       already merged into the base ref (ancestor *or* squash-merged) —
+             its changes are all on main, so deleting the branch loses nothing.
+             Swept in --apply (or --only-merged).
 STALE_FLAG   unmerged, no open PR, no commit in STALE_DAYS — reported only.
 STALE_DELETE flagged and still untouched past GRACE_DAYS — deleted in --apply.
 ACTIVE       has an open PR, or a commit younger than RECENT_DAYS, or simply
@@ -38,6 +38,10 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from git_squash_merge import is_merged_into  # noqa: E402  (sibling-script import)
 
 PROTECTED_EXACT = {"main", "master", "production", "develop", "HEAD"}
 PROTECTED_PREFIXES = ("release/", "hotfix/")
@@ -127,8 +131,9 @@ def is_protected(name: str) -> bool:
 
 
 def is_merged(remote: str, name: str, base_ref: str) -> bool:
-    proc = _run(["git", "merge-base", "--is-ancestor", f"refs/remotes/{remote}/{name}", base_ref])
-    return proc.returncode == 0
+    # Squash-aware: PRs here squash-merge, so --is-ancestor alone would miss the
+    # default merge style and leave merged branches lingering until STALE_DELETE.
+    return is_merged_into(_run, f"refs/remotes/{remote}/{name}", base_ref)
 
 
 def classify(
@@ -148,7 +153,7 @@ def classify(
             continue
         if is_merged(remote, name, base_ref):
             verdicts.append(
-                BranchVerdict(name, "MERGED", age_days, "already an ancestor of base ref", ts)
+                BranchVerdict(name, "MERGED", age_days, "already merged into base ref", ts)
             )
             continue
         if name in prs:
