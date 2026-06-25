@@ -180,7 +180,7 @@ A probed invariant: ready to go viral tomorrow while the host sleeps. **Experien
 
 ## 13. Deletion & freeze ledger
 
-**DELETE** ("never supposed to be a thing"): the compiled cheat loop — scripts/wiki_bug_sync.py, wiki-bug-sync.yml, auto-fix-bug.yml + sibling workflows, runbook → tombstone ADR; port only the terminal-receipt invariant. Domain-protocol decorative layer + research_probe. ~115 fantasy shims, FantasyAuthorError, _provider_stub misnomer. host_pool/. node_eval.py (wire or delete). Dead flags (WORKFLOW_UNIFIED_EXECUTION; tiered-scope flip-or-kill).
+**DONE 2026-06-25:** the compiled cheat-loop CI writer/intake/checker path was removed per host directive; preserve only the terminal-receipt invariant in future Loop substrate. **DELETE** ("never supposed to be a thing"): Domain-protocol decorative layer + research_probe. ~115 fantasy shims, FantasyAuthorError, _provider_stub misnomer. host_pool/. node_eval.py (wire or delete). Dead flags (WORKFLOW_UNIFIED_EXECUTION; tiered-scope flip-or-kill).
 
 **FREEZE** (schemas may stay; unfreeze condition named): $tiny live rails (first paying demand); DAO/moderation councils (real community); hostless BYOK capacity grants (org #2 demand); compliance privacy tiers (first regulated org).
 

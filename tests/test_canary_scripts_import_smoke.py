@@ -49,7 +49,6 @@ CANARY_MODULES = (
 NON_CANARY_URL_SCRIPTS = (
     "navigator_wiki_sweep",
     "mcp_probe",
-    "wiki_bug_sync",
     "verify_llm_binding",
 )
 

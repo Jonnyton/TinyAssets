@@ -2646,13 +2646,6 @@ def _action_community_change_context(
     )
     if issues_err:
         result["errors"].append(issues_err)
-    runs, runs_err = _github_read(
-        f"/repos/{repo}/actions/workflows/auto-fix-bug.yml/runs",
-        params={"per_page": min(n_limit, 10)},
-    )
-    if runs_err:
-        result["errors"].append(runs_err)
-
     if isinstance(prs, list):
         result["open_prs"] = [_summarize_pr(pr) for pr in prs[:n_limit]]
         result["open_auto_change_prs"] = [
@@ -2668,19 +2661,6 @@ def _action_community_change_context(
         result["open_change_requests"] = change_requests
         result["open_daemon_request_issues"] = [
             issue for issue in change_requests if "daemon-request" in issue["labels"]
-        ]
-    if isinstance(runs, dict):
-        result["latest_auto_fix_runs"] = [
-            {
-                "id": run.get("id"),
-                "status": run.get("status"),
-                "conclusion": run.get("conclusion"),
-                "event": run.get("event"),
-                "head_sha": run.get("head_sha"),
-                "created_at": run.get("created_at"),
-                "html_url": run.get("html_url"),
-            }
-            for run in runs.get("workflow_runs", [])[: min(n_limit, 10)]
         ]
     result["usage"] = (
         "Use filter_text='pr:NUMBER' for changed files/comments/reviews, "

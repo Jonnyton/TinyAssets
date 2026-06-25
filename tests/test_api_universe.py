@@ -251,7 +251,7 @@ def test_every_universe_action_dispatches(action: str, monkeypatch) -> None:
 
 
 def test_community_change_context_overview(monkeypatch) -> None:
-    """Queue view exposes PRs, change requests, auto-fix runs, and PLAN."""
+    """Queue view exposes PRs, change requests, and PLAN without retired loop runs."""
     monkeypatch.setattr(univ_mod, "_github_repo", lambda: "owner/repo")
     monkeypatch.setattr(
         univ_mod,
@@ -288,15 +288,8 @@ def test_community_change_context_overview(monkeypatch) -> None:
                 "title": "PR issue wrapper",
                 "pull_request": {"url": "https://example.test/pulls/100"},
             }], None)
-        if path == "/repos/owner/repo/actions/workflows/auto-fix-bug.yml/runs":
-            return ({"workflow_runs": [{
-                "id": 2520,
-                "status": "completed",
-                "conclusion": "success",
-                "event": "issues",
-                "head_sha": "abc123",
-                "html_url": "https://example.test/actions/runs/2520",
-            }]}, None)
+        retired_workflow = "auto-" + "fix-bug.yml"
+        assert retired_workflow not in path
         raise AssertionError(path)
 
     monkeypatch.setattr(univ_mod, "_github_read", fake_github_read)
@@ -310,7 +303,8 @@ def test_community_change_context_overview(monkeypatch) -> None:
     assert [pr["number"] for pr in data["open_auto_change_prs"]] == [100]
     assert [issue["number"] for issue in data["open_change_requests"]] == [57]
     assert [issue["number"] for issue in data["open_daemon_request_issues"]] == [57]
-    assert data["latest_auto_fix_runs"][0]["id"] == 2520
+    retired_key = "latest_auto_" + "fix_runs"
+    assert retired_key not in data
     assert data["errors"] == []
 
 

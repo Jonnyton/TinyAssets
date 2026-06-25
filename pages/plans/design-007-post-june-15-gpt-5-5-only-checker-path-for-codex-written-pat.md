@@ -101,9 +101,10 @@ A GPT-5.5-only checker pass is merge evidence only when all of these are true:
 When the cutoff policy is activated, update the policy surfaces together:
 
 - `.github/workflows/daemon-request-policy.yml`
-- `.github/workflows/auto-fix-bug.yml`
-- `docs/ops/auto-fix-runbook.md`
 - `docs/conventions/gate-branch-shape.md`
+
+The compiled CI writer path was retired on 2026-06-25 and no longer
+participates in this cutoff policy.
 
 The activation patch should add tests that prove pre-cutoff Codex PRs still
 require Claude-family checking while post-cutoff GPT-5.5-only PRs require the
