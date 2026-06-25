@@ -194,8 +194,12 @@ def _accessible_branch_slugs(repo_root: Path, universe_path: Path | None = None)
     domain, so this set is **process-dependent by design**: a process that has
     not loaded a domain (the cloud-worker producer pump, the plugin runtime)
     will not see that domain's slugs, and a goal-pool task targeting one is
-    skipped here. That is not a lost task — the domain's own daemon, which
-    imports its registrations, still scans the pool at graph-start. Re-injecting
+    skipped here **when the subscriber can reach at least one other branch**
+    (the accessibility filter in ``_parse_pool_yaml`` fail-OPENS on a fully
+    empty accessible set — see
+    ``test_goal_pool_fails_open_when_no_accessible_slugs``). That is not a lost
+    task — the domain's own daemon, which imports its registrations, still scans
+    the pool at graph-start. Re-injecting
     a hardcoded domain slug to "fix" this divergence would re-couple the engine
     to a domain and is explicitly not wanted. See
     ``test_goal_pool_skips_fantasy_seed_when_unregistered`` /
@@ -362,6 +366,12 @@ class GoalPoolProducer:
             return None
 
         # R9 / invariant 6: reject branch slugs the subscriber can't run.
+        # Conditional by design: an empty ``accessible_slugs`` means the
+        # subscriber could not enumerate ANY branch ("can't determine
+        # accessibility"), so the filter fail-OPENS and the task is queued
+        # rather than silently dropped. Not fantasy-specific. Pinned by
+        # ``test_goal_pool_fails_open_when_no_accessible_slugs``; the non-empty
+        # filter half is pinned by the de-fantasy divergence tests.
         if accessible_slugs and branch_def_id not in accessible_slugs:
             logger.info(
                 "goal_pool: branch_def_id=%r not in accessible slugs; "

@@ -425,6 +425,36 @@ def test_goal_pool_skips_fantasy_seed_when_unregistered(repo_root, universe_dir)
     assert out == []
 
 
+def test_goal_pool_fails_open_when_no_accessible_slugs(repo_root, universe_dir):
+    """Pin the fail-OPEN half of the accessibility filter.
+
+    The guard in ``_parse_pool_yaml`` is ``if accessible_slugs and ...`` — it
+    only filters when the subscriber can reach at least one branch. When the
+    accessible set is genuinely empty (no public branches, no catalog slugs, no
+    registered domain — a bare/degenerate repo, or enumeration that legitimately
+    found nothing) the filter fail-OPENS and the task is queued rather than
+    silently dropped, because an empty set means "can't determine accessibility,"
+    not "this branch is inaccessible." This is intentional and NOT
+    fantasy-specific. Pinning it keeps the fail-open an explicit contract so a
+    future "tighten the guard" change has to confront this test rather than
+    silently flipping degenerate-repo behavior to fail-closed.
+    """
+    from workflow.domain_registry import clear_domain_branch_slugs
+
+    clear_domain_branch_slugs()  # no registered domain slugs
+    # Deliberately create NO public branch, so accessible_slugs stays empty
+    # (the complement of test_goal_pool_skips_fantasy_seed_when_unregistered,
+    # which seeds public_branch.yaml to activate the filter).
+    _write_pool_yaml(repo_root, "maintenance", "seed_in_bare_repo")
+
+    out = GoalPoolProducer().produce(
+        universe_dir, subscribed_goals=["maintenance"],
+    )
+
+    assert len(out) == 1
+    assert out[0].branch_def_id == "fantasy_author:universe_cycle_wrapper"
+
+
 def test_goal_pool_mtime_cache_invalidation(repo_root, universe_dir):
     """R3: mtime-based cache. Adding a file invalidates."""
     _write_pool_yaml(repo_root, "maintenance", "first")
