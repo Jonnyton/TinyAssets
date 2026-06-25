@@ -333,7 +333,7 @@ export default function HomeClient() {
                 </header>
                 <Ladder rungs={l.rungs} start={l.start} />
                 <footer className="ladder-card__foot">
-                  <Tick href={`/goals/${l.goalId}`} label={`goal ${l.goalId}`} />
+                  <Tick href={`/goal/?id=${l.goalId}`} label={`goal ${l.goalId}`} />
                 </footer>
               </article>
             ))}

@@ -376,7 +376,7 @@ export default function GraphClient() {
   const activate = useCallback(
     (n: FNode) => {
       if (n.kind === "goal" && n.refId) {
-        router.push(`/goals/${n.refId}`);
+        router.push(`/goal/?id=${n.refId}`);
         return;
       }
       if (n.kind === "universe" && n.refId) {
@@ -778,7 +778,7 @@ export default function GraphClient() {
                 .filter((n) => n.kind === "goal")
                 .map((g) => (
                   <li key={g.id}>
-                    <a className="leafrow leafrow--goal" href={`/goals/${g.refId}`}>
+                    <a className="leafrow leafrow--goal" href={`/goal/?id=${g.refId}`}>
                       {g.label}
                     </a>
                   </li>

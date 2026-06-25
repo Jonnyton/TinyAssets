@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/spa-fallback.mjs",
+    "build": "next build",
     "preview": "npm run build && npx --yes serve out -l 4322 --no-clipboard",
     "start": "next start",
     "lint": "next lint"
