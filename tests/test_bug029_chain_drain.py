@@ -89,21 +89,34 @@ class TestChainDrainWarning:
         import asyncio
         from unittest.mock import AsyncMock
 
+        from workflow.providers.base import ProviderResponse
         from workflow.providers.quota import QuotaTracker
         from workflow.providers.router import FALLBACK_CHAINS, ProviderRouter
 
         qt = QuotaTracker()
-        # Cool all API providers in the writer chain.
+        providers: dict = {}
+        # Register + cool every API provider in the writer chain. A cooled
+        # provider stays registered, so it survives effective_chain (FEAT-006)
+        # narrowing and reaches the BUG-029 Part A drain check. Registering
+        # only ollama-local while cooling unregistered API names made the drain
+        # check see a local-only chain and never fire (BUG-029 regression).
         for p in FALLBACK_CHAINS["writer"]:
             if p != "ollama-local":
+                cooled = AsyncMock()
+                cooled.name = p
+                cooled.complete.return_value = ProviderResponse(
+                    text="api", provider=p, model="m", family="f", latency_ms=0.0,
+                )
+                providers[p] = cooled
                 qt.cooldown(p, 120)
 
         # Make ollama-local fail too so the chain exhausts (no providers succeed).
         mock_local = AsyncMock()
         mock_local.name = "ollama-local"
         mock_local.complete.side_effect = Exception("local failed")
+        providers["ollama-local"] = mock_local
 
-        router = ProviderRouter(providers={"ollama-local": mock_local}, quota=qt)
+        router = ProviderRouter(providers=providers, quota=qt)
 
         from workflow.exceptions import AllProvidersExhaustedError
         with caplog.at_level(logging.WARNING, logger="workflow.providers.router"):
@@ -114,6 +127,48 @@ class TestChainDrainWarning:
             "CHAIN_DRAINED" in record.message
             for record in caplog.records
         ), "CHAIN_DRAINED warning not emitted when all API providers in cooldown"
+
+    def test_chain_drain_warning_with_unregistered_api_provider(self, caplog):
+        """Part A warning fires on a claude-only cloud host too (Codex review).
+
+        Mirrors the Part B guard in test_provider_router_bug029: claude-code is
+        registered + cooled while codex is unregistered (absent binary). The
+        absent codex must not veto the CHAIN_DRAINED warning — guards against a
+        pre-effective_chain drain check, which would put never-cooled codex into
+        the drain set and suppress the warning on this exact config.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from workflow.exceptions import AllProvidersExhaustedError
+        from workflow.providers.base import ProviderResponse
+        from workflow.providers.quota import QuotaTracker
+        from workflow.providers.router import ProviderRouter
+
+        qt = QuotaTracker()
+        qt.cooldown("claude-code", 120)
+
+        claude = AsyncMock()
+        claude.name = "claude-code"
+        claude.complete.return_value = ProviderResponse(
+            text="api", provider="claude-code", model="m", family="f", latency_ms=0.0,
+        )
+        # ollama-local fails so the chain exhausts and reaches Part A.
+        local = AsyncMock()
+        local.name = "ollama-local"
+        local.complete.side_effect = Exception("local failed")
+        # codex intentionally NOT registered (absent binary on a claude-only host).
+        router = ProviderRouter(
+            providers={"claude-code": claude, "ollama-local": local}, quota=qt,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="workflow.providers.router"):
+            with pytest.raises(AllProvidersExhaustedError):
+                asyncio.run(router.call("writer", "prompt", "system"))
+
+        assert any(
+            "CHAIN_DRAINED" in record.message for record in caplog.records
+        ), "CHAIN_DRAINED warning not emitted on claude-only host with codex absent"
 
 
 class TestGetStatusCooldownField:
