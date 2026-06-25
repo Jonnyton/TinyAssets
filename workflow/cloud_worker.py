@@ -300,6 +300,53 @@ def _truthy_env(name: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _soul_loop_declared_for_universe(universe: Path) -> bool:
+    """Return True when the dark soul-loop worker route should be used."""
+    if not _truthy_env("WORKFLOW_SOUL_LOOP_DISPATCH"):
+        return False
+    try:
+        from workflow.api.universe import (
+            LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
+            _universe_loop_dispatch,
+        )
+
+        loop_branch_def_id, _info = _universe_loop_dispatch(universe)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "cloud_worker: soul-loop dispatch resolution failed for %s",
+            universe,
+        )
+        return False
+    return bool(
+        loop_branch_def_id
+        and loop_branch_def_id != LEGACY_FANTASY_LOOP_BRANCH_DEF_ID
+    )
+
+
+def _daemon_module_for_universe(universe: Path) -> str:
+    if _soul_loop_declared_for_universe(universe):
+        return "workflow"
+    return "fantasy_daemon"
+
+
+def _spawn_daemon_for_universe(
+    universe: Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> subprocess.Popen:
+    """Spawn the legacy daemon, or the workflow bridge for flagged soul loops."""
+    module = _daemon_module_for_universe(universe)
+    if module == "fantasy_daemon":
+        if extra_args is None:
+            return _spawn_fantasy_daemon(universe)
+        return _spawn_fantasy_daemon(universe, extra_args=extra_args)
+    return _spawn_fantasy_daemon(
+        universe,
+        module=module,
+        extra_args=extra_args,
+    )
+
+
 def _register_branch_task_producers_from_env() -> None:
     """Register flag-enabled producers in this worker process.
 
@@ -559,7 +606,7 @@ def run_supervisor(
     """Run the supervisor loop until max_iterations or SIGTERM.
 
     Each iteration:
-      1. Spawn fantasy_daemon against the universe.
+      1. Spawn the daemon against the universe.
       2. Wait for it to exit.
       3. Record exit as clean or crash.
       4. Sleep with exponential backoff after consecutive clean exits or
@@ -569,16 +616,19 @@ def run_supervisor(
     ``max_iterations`` is an injection seam for tests — leave None in
     production for an unbounded loop. ``spawn_fn`` + ``sleep_fn`` are
     test seams so the loop can be exercised without subprocess I/O.
-    None defaults resolve to the module-level ``_spawn_fantasy_daemon``
+    None defaults resolve to the module-level ``_spawn_daemon_for_universe``
     + ``time.sleep`` at call time (not import time), so tests can
     monkeypatch the module attribute freely.
     """
     if spawn_fn is None:
         if daemon_args:
             def spawn_fn(universe: Path) -> subprocess.Popen:
-                return _spawn_fantasy_daemon(universe, extra_args=daemon_args)
+                return _spawn_daemon_for_universe(
+                    universe,
+                    extra_args=daemon_args,
+                )
         else:
-            spawn_fn = _spawn_fantasy_daemon
+            spawn_fn = _spawn_daemon_for_universe
     if sleep_fn is None:
         sleep_fn = time.sleep
 
