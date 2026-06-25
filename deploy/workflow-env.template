@@ -105,6 +105,18 @@ WORKFLOW_CODEX_AUTH_JSON_B64=
 #   sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude workflow-daemon claude auth login --claudeai
 CLAUDE_CONFIG_DIR=/data/.claude
 
+# Claude auth seeding so a fresh /data volume is not left "Not logged in"
+# (which fails every pinned claude-code writer). Set ONE of these; the
+# entrypoint applies it only when /data/.claude/.credentials.json is missing,
+# never clobbering a rotated in-place token:
+#   * CLAUDE_CODE_OAUTH_TOKEN — preferred. A `claude setup-token` long-lived
+#     token Claude Code reads from the env directly (no file, rotation-safe).
+#   * WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 — base64 of a subscription
+#     ~/.claude/.credentials.json (base64 -w0 ~/.claude/.credentials.json),
+#     the direct mirror of WORKFLOW_CODEX_AUTH_JSON_B64.
+CLAUDE_CODE_OAUTH_TOKEN=
+WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64=
+
 # Deprecated legacy placeholder. Daemon startup strips this var unless
 # WORKFLOW_ALLOW_API_KEY_PROVIDERS=1; do not fill it for normal Workflow
 # daemons.

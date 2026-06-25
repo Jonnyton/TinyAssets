@@ -21,7 +21,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -59,10 +58,11 @@ def _run_entrypoint(
     env_extra: dict,
     *,
     create_existing_auth: str | None = None,
-) -> tuple[subprocess.CompletedProcess, Path]:
-    """Run the entrypoint with temp HOME/CODEX_HOME + stubbed data file.
+    create_existing_claude_cred: str | None = None,
+) -> tuple[subprocess.CompletedProcess, Path, Path]:
+    """Run the entrypoint with temp HOME/CODEX_HOME/CLAUDE_CONFIG_DIR.
 
-    Returns (process result, auth_file_path).
+    Returns (process result, codex_auth_file_path, claude_credentials_path).
     """
     # Synthesize HOME plus a persistent CODEX_HOME with optional
     # pre-existing auth.json.
@@ -76,6 +76,17 @@ def _run_entrypoint(
         # Match the chmod 600 the entrypoint would have set.
         try:
             auth_file.chmod(0o600)
+        except OSError:
+            pass
+
+    # Persistent CLAUDE_CONFIG_DIR with optional pre-existing credentials.
+    claude_dir = tmp_path / "claude-config"
+    claude_dir.mkdir(parents=True)
+    claude_cred = claude_dir / ".credentials.json"
+    if create_existing_claude_cred is not None:
+        claude_cred.write_text(create_existing_claude_cred, encoding="utf-8")
+        try:
+            claude_cred.chmod(0o600)
         except OSError:
             pass
 
@@ -96,6 +107,7 @@ def _run_entrypoint(
         "WORKFLOW_ALLOW_API_KEY_PROVIDERS": "0",
         "HOME": _bash_path(home),
         "CODEX_HOME": _bash_path(codex_dir),
+        "CLAUDE_CONFIG_DIR": _bash_path(claude_dir),
         "WORKFLOW_PACKAGE_ROOT": _bash_path(pkg_root),
     }
     env.update(env_extra)
@@ -118,17 +130,21 @@ def _run_entrypoint(
         )
     else:
         full_env = {**os.environ, **env}
-        # Drop any inherited codex env that would confuse the test.
-        full_env.pop("WORKFLOW_CODEX_AUTH_JSON_B64", None)
-        if "WORKFLOW_CODEX_AUTH_JSON_B64" in env_extra:
-            full_env["WORKFLOW_CODEX_AUTH_JSON_B64"] = env_extra[
-                "WORKFLOW_CODEX_AUTH_JSON_B64"
-            ]
+        # Drop any inherited codex/claude auth env that would confuse the test,
+        # then re-add only what env_extra explicitly provides.
+        for _var in (
+            "WORKFLOW_CODEX_AUTH_JSON_B64",
+            "WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ):
+            full_env.pop(_var, None)
+            if _var in env_extra:
+                full_env[_var] = env_extra[_var]
         cmd = [_BASH, _bash_path(ENTRYPOINT), *cmd_args]
         result = subprocess.run(
             cmd, capture_output=True, text=True, env=full_env
         )
-    return result, auth_file
+    return result, auth_file, claude_cred
 
 
 def _b64(payload: str) -> str:
@@ -142,7 +158,7 @@ def _b64(payload: str) -> str:
 
 def test_seeds_auth_when_env_set_and_file_missing(tmp_path):
     seed_payload = '{"OPENAI_API_KEY":"sk-seeded","tokens":{"id_token":"seeded"}}'
-    result, auth_file = _run_entrypoint(
+    result, auth_file, _ = _run_entrypoint(
         tmp_path,
         env_extra={"WORKFLOW_CODEX_AUTH_JSON_B64": _b64(seed_payload)},
         create_existing_auth=None,
@@ -174,7 +190,7 @@ def test_preserves_auth_when_env_set_and_file_present(tmp_path):
     """
     rotated_payload = '{"tokens":{"refresh_token":"rotated-fresh-token-v3"}}'
     stale_env_payload = '{"tokens":{"refresh_token":"stale-bootstrap-token-v1"}}'
-    result, auth_file = _run_entrypoint(
+    result, auth_file, _ = _run_entrypoint(
         tmp_path,
         env_extra={"WORKFLOW_CODEX_AUTH_JSON_B64": _b64(stale_env_payload)},
         create_existing_auth=rotated_payload,
@@ -200,7 +216,7 @@ def test_preserves_auth_when_env_set_and_file_present(tmp_path):
 
 def test_preserves_auth_when_env_unset_and_file_present(tmp_path):
     rotated_payload = '{"tokens":{"refresh_token":"volume-only-token"}}'
-    result, auth_file = _run_entrypoint(
+    result, auth_file, _ = _run_entrypoint(
         tmp_path,
         env_extra={},  # no WORKFLOW_CODEX_AUTH_JSON_B64
         create_existing_auth=rotated_payload,
@@ -214,3 +230,64 @@ def test_preserves_auth_when_env_unset_and_file_present(tmp_path):
     combined = result.stdout + result.stderr
     assert "preserving existing codex auth.json" in combined
     assert "seeding codex auth.json" not in combined
+
+
+# ---------------------------------------------------------------------------
+# Claude auth seeding — mirrors the codex branches (2026-06-25 loop-wedge fix)
+# ---------------------------------------------------------------------------
+
+
+def test_seeds_claude_credentials_when_env_set_and_file_missing(tmp_path):
+    seed_payload = '{"claudeAiOauth":{"accessToken":"seeded-tok"}}'
+    result, _, claude_cred = _run_entrypoint(
+        tmp_path,
+        env_extra={"WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64": _b64(seed_payload)},
+        create_existing_claude_cred=None,
+    )
+    assert result.returncode == 0, (
+        f"entrypoint exit {result.returncode}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert claude_cred.exists(), ".credentials.json should have been seeded"
+    assert claude_cred.read_text(encoding="utf-8") == seed_payload
+    assert "seeding claude credentials" in (result.stdout + result.stderr)
+
+
+def test_preserves_claude_credentials_when_env_set_and_file_present(tmp_path):
+    """A rotated .credentials.json must NOT be overwritten by a stale B64."""
+    rotated = '{"claudeAiOauth":{"refreshToken":"rotated-fresh"}}'
+    stale = '{"claudeAiOauth":{"refreshToken":"stale-bootstrap"}}'
+    result, _, claude_cred = _run_entrypoint(
+        tmp_path,
+        env_extra={"WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64": _b64(stale)},
+        create_existing_claude_cred=rotated,
+    )
+    assert result.returncode == 0
+    assert claude_cred.read_text(encoding="utf-8") == rotated, (
+        "rotated claude credentials must be preserved; stale B64 must not win"
+    )
+    combined = result.stdout + result.stderr
+    assert "preserving existing claude credentials" in combined
+    assert "seeding claude credentials" not in combined
+
+
+def test_claude_env_token_used_when_no_credentials_file(tmp_path):
+    result, _, claude_cred = _run_entrypoint(
+        tmp_path,
+        env_extra={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-stub"},
+        create_existing_claude_cred=None,
+    )
+    assert result.returncode == 0
+    assert not claude_cred.exists(), "env-token path must not write a file"
+    assert "using CLAUDE_CODE_OAUTH_TOKEN" in (result.stdout + result.stderr)
+
+
+def test_claude_warns_when_no_auth_present(tmp_path):
+    result, _, claude_cred = _run_entrypoint(
+        tmp_path,
+        env_extra={},
+        create_existing_claude_cred=None,
+    )
+    assert result.returncode == 0, "missing claude auth warns, never aborts boot"
+    assert not claude_cred.exists()
+    assert "no claude credentials present" in (result.stdout + result.stderr)
