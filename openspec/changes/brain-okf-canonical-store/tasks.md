@@ -14,11 +14,23 @@
 
 ## 3. Cross-provider review gate (MUST precede any build-gating)
 
-- [ ] 3.1 Request a Codex review pass on this amendment (OKF-as-foundation is research-derived → opposite-provider review per AGENTS.md); record the verdict artifact path in this change
-- [ ] 3.2 Fold any Codex adaptations back into the narrative spec + the `brain-canonical-store` delta
+- [x] 3.1 Codex review pass obtained — verdict **ADAPT** (`docs/audits/2026-06-24-brain-okf-canonical-codex-review.md`); 6 required adaptations
+- [x] 3.2 Folded all 6 adaptations into the spec delta + design + proposal + ratified spec:
+  - [x] 3.2.1 Commit protocol replaces "write-through resolves Gap #4" (spec Req 2; design D2; proposal)
+  - [x] 3.2.2 `log.md` (human history) split from the transactional journal/outbox (spec "Reserved files" Req; design D2)
+  - [x] 3.2.3 OKF compatibility shim — wiki not conformant as-is (spec "compatibility shim" Req; design D5; proposal slice-1)
+  - [x] 3.2.4 Build-boundary: conformance validation = `[substrate]`; upstream-watch steward = `[composable]` (spec Req; design D4; §13)
+  - [x] 3.2.5 Redaction: block operational index FIRST; secrets tombstone omits content-hash (spec Req; §11.2)
+  - [x] 3.2.6 Reword inconsistency → cross-artifact mismatch; SHOULD-not-MUST key preservation; broken-link wording (proposal Why; design Context; spec Req 3)
 
 ## 4. OpenSpec fold-back
 
-- [ ] 4.1 `sync-specs`: merge the `brain-canonical-store` delta into `openspec/specs/brain-canonical-store/spec.md`
-- [ ] 4.2 Open a PR to `main` linking this change so the live sessions see the new canonicality (merge gated on the §3 review + host key — merging to main is production-impacting)
+- [ ] 4.1 `sync-specs`: merge the `brain-canonical-store` delta into `openspec/specs/brain-canonical-store/spec.md` (after host merge key)
+- [x] 4.2 Draft PR opened — #1369 (merge to `main` still host-key gated; production-impacting)
 - [ ] 4.3 Archive the change after merge
+
+## 5. Future build (gated — NOT in this change; behind the Codex 6 pre-build gates)
+
+- [ ] 5.1 OKF compatibility shim (wikilink→Markdown projection; root-`index.md`→`okf_version`-only; `log.md` normalization; `drafts/` bundle-vs-staging rule)
+- [ ] 5.2 Write commit protocol (idempotency key; pending→durable states; atomic temp+rename; outbox ordering; crash recovery; rebuild reconciliation)
+- [ ] 5.3 Conformance validation `[substrate]` + `okf_version` pin + composable upstream-watch steward
