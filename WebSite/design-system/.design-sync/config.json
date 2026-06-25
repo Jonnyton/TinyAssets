@@ -1,0 +1,10 @@
+{
+  "pkg": "@tiny/design-system",
+  "globalName": "TinyDS",
+  "shape": "storybook",
+  "storybookStatic": ".design-sync/sb-reference",
+  "storybookConfigDir": ".storybook",
+  "buildCmd": "npm run build",
+  "projectId": "48072c27-c3d6-488c-8c6d-be873636e652",
+  "readmeHeader": ".design-sync/conventions.md"
+}
