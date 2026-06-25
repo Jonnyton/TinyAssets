@@ -257,8 +257,8 @@ def synthesize_source(
     list[str]
         Filenames of synthesized documents.
     """
-    from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
     from domains.fantasy_daemon.phases.worldbuild import _write_canon_file
+    from workflow.providers.call import call_provider, get_last_provider
 
     if not source_text.strip():
         return []
@@ -312,7 +312,7 @@ def synthesize_source(
                 pass
 
         _write_canon_file(
-            canon_dir, doc_filename, content, model=last_provider,
+            canon_dir, doc_filename, content, model=get_last_provider(),
         )
         generated.append(doc_filename)
         logger.info(

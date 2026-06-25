@@ -378,13 +378,13 @@ def build_phase_query(
 
 def _build_provider_call() -> Callable[[str, str, str], Any] | None:
     """Return the async decomposition callable when real providers are enabled."""
-    from domains.fantasy_daemon.phases import _provider_stub
+    from workflow.providers import call as provider_call
 
-    if _provider_stub._FORCE_MOCK:
+    if provider_call.is_force_mock():
         return None
 
     async def _async_provider_call(prompt: str, system: str, role: str) -> str:
-        return _provider_stub.call_provider(
+        return provider_call.call_provider(
             prompt,
             system,
             role=role,

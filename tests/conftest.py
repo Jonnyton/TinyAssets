@@ -14,9 +14,9 @@ import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 # Force mock provider responses in all tests to avoid real API calls
-import domains.fantasy_daemon.phases._provider_stub as _provider_stub
+from workflow.providers import call as _provider_call
 
-_provider_stub._FORCE_MOCK = True
+_provider_call.set_force_mock(True)
 
 
 @pytest.fixture(autouse=True)

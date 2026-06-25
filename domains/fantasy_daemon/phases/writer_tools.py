@@ -81,7 +81,7 @@ def _select_tool_names(
 
     allowed = {tool.name for tool in tools}
     defaults = _default_tool_names(phase, state, tools)
-    if _provider_stub._FORCE_MOCK:
+    if _provider_stub.is_force_mock():
         return defaults
 
     plan_output = state.get("plan_output") or {}

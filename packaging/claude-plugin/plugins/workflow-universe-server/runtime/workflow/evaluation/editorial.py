@@ -116,7 +116,7 @@ def read_editorial(
         return None
 
     if provider_call is None:
-        from domains.fantasy_daemon.phases._provider_stub import call_provider
+        from workflow.providers.call import call_provider
         provider_call = call_provider
 
     # Build prompt with context sections

@@ -486,7 +486,7 @@ def _handle_new_element(
     state: dict[str, Any],
 ) -> None:
     """Create a focused canon document for a newly discovered element."""
-    from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
+    from workflow.providers.call import call_provider, get_last_provider
 
     topic_slug = safe_canon_slug(topic)
     topic_label = topic.replace("_", " ").title()
@@ -520,7 +520,7 @@ def _handle_new_element(
     )
     if content:
         filename = safe_canon_filename(topic_slug)
-        _write_canon_file(canon_dir, filename, content, model=last_provider)
+        _write_canon_file(canon_dir, filename, content, model=get_last_provider())
         logger.info("Created canon for new element: %s", filename)
 
 
@@ -536,7 +536,7 @@ def _handle_contradiction(
     Asks the LLM which version makes for a better, more coherent universe
     given the full premise and context. Does NOT default to either side.
     """
-    from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
+    from workflow.providers.call import call_provider, get_last_provider
 
     topic_slug = safe_canon_slug(topic)
 
@@ -591,7 +591,7 @@ def _handle_contradiction(
         filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
         filepath.write_text(new_content, encoding="utf-8")
         # Update provenance marker
-        _write_canon_marker(canon_dir, canon_filename, model=last_provider)
+        _write_canon_marker(canon_dir, canon_filename, model=get_last_provider())
         logger.info(
             "Resolved contradiction in %s: %s", canon_filename, detail[:80]
         )
@@ -605,7 +605,7 @@ def _handle_expansion(
     state: dict[str, Any],
 ) -> None:
     """Expand an existing thin canon document with new details from prose."""
-    from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
+    from workflow.providers.call import call_provider, get_last_provider
 
     topic_slug = safe_canon_slug(topic)
 
@@ -652,7 +652,7 @@ def _handle_expansion(
     if new_content and new_content != canon_content:
         filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
         filepath.write_text(new_content, encoding="utf-8")
-        _write_canon_marker(canon_dir, canon_filename, model=last_provider)
+        _write_canon_marker(canon_dir, canon_filename, model=get_last_provider())
         logger.info(
             "Expanded %s with: %s", canon_filename, detail[:80]
         )
@@ -906,9 +906,9 @@ def _generate_canon_documents(state: dict[str, Any]) -> list[str]:
                 topic, premise, direction_notes, existing_topics
             )
             if content:
-                from domains.fantasy_daemon.phases._provider_stub import last_provider
+                from workflow.providers.call import get_last_provider
                 filename = safe_canon_filename(topic)
-                _write_canon_file(canon_dir, filename, content, model=last_provider)
+                _write_canon_file(canon_dir, filename, content, model=get_last_provider())
                 # Verify the file actually exists on disk. ``filename`` already
                 # passed ``safe_canon_filename`` + ``_write_canon_file``
                 # containment; route the existence check through the same

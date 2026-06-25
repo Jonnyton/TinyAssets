@@ -1,111 +1,36 @@
-"""Provider bridge for graph nodes.
+"""Fantasy-domain prompt assembly + provider calls for graph nodes.
 
-Routes all LLM calls through the real ``ProviderRouter`` using its
-synchronous ``call_sync`` method.  Falls back to deterministic mock
-output when ``_FORCE_MOCK`` is True (tests) or when all providers are
-exhausted.
+The general, domain-agnostic LLM-call primitive (``call_provider``, the router,
+force-mock, ``last_provider``) now lives in :mod:`workflow.providers.call` — the
+engine's shared bridge. This module keeps the *fantasy-specific* prompt builders
+and deterministic mock fixtures, and routes its LLM calls through that general
+primitive.
 
-This module lives in ``nodes/`` (graph-core's directory) to respect
-file ownership boundaries.
+``call_provider`` is re-exported here (it is imported for this module's own
+``call_for_*`` helpers) so existing fantasy-domain callers that do
+``from ..._provider_stub import call_provider`` keep working. Engine code must
+import from :mod:`workflow.providers.call` directly (de-fantasy import boundary).
+Read force-mock via ``is_force_mock()`` rather than a module global.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any
 
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+from workflow.providers.call import call_provider, is_force_mock
 
-logger = logging.getLogger(__name__)
-
-# Set to True to skip real provider calls and use mock responses.
-# Tests should set this before importing nodes.
-_FORCE_MOCK = False
-
-# ---------------------------------------------------------------------------
-# Import the real provider router
-# ---------------------------------------------------------------------------
-
-_real_router = None
-
-# Tracks which provider was used for the most recent call.
-# Used by reflect/worldbuild to enforce model quality tiers.
-last_provider: str = ""
-
-try:
-    from workflow.providers.router import ProviderRouter as _RealRouter
-
-    _real_router = _RealRouter()
-
-    # Register available providers so the router works without the daemon.
-    # The daemon's DaemonController.start() overwrites _real_router with its
-    # own fully-configured instance, so these registrations are only the
-    # fallback for standalone / script usage.
-
-    try:
-        from workflow.providers.claude_provider import ClaudeProvider
-        if ClaudeProvider.is_available():
-            _real_router.register(ClaudeProvider())
-            logger.info("Registered ClaudeProvider")
-        else:
-            logger.debug("claude binary not found — ClaudeProvider skipped")
-    except Exception:
-        logger.debug("ClaudeProvider not available")
-
-    try:
-        from workflow.providers.codex_provider import CodexProvider
-        if CodexProvider.is_available():
-            _real_router.register(CodexProvider())
-            logger.info("Registered CodexProvider")
-        else:
-            logger.debug("codex binary not found — CodexProvider skipped")
-    except Exception:
-        logger.debug("CodexProvider not available")
-
-    try:
-        from workflow.providers.ollama_provider import OllamaProvider
-        _real_router.register(OllamaProvider())
-        logger.info("Registered OllamaProvider")
-    except Exception:
-        logger.debug("OllamaProvider not available")
-
-    try:
-        from workflow.providers.gemini_provider import GeminiProvider
-        _real_router.register(GeminiProvider())
-        logger.info("Registered GeminiProvider")
-    except Exception:
-        logger.debug("GeminiProvider not available")
-
-    try:
-        from workflow.providers.groq_provider import GroqProvider
-        _real_router.register(GroqProvider())
-        logger.info("Registered GroqProvider")
-    except Exception:
-        logger.debug("GroqProvider not available")
-
-    try:
-        from workflow.providers.grok_provider import GrokProvider
-        _real_router.register(GrokProvider())
-        logger.info("Registered GrokProvider")
-    except Exception:
-        logger.debug("GrokProvider not available")
-
-    logger.info(
-        "ProviderRouter ready with providers: %s",
-        _real_router.available_providers,
-    )
-except ImportError:
-    logger.info("Real ProviderRouter not available; using stub provider")
+__all__ = [
+    "call_provider",
+    "is_force_mock",
+    "call_for_plan",
+    "call_for_draft",
+    "call_for_extraction",
+]
 
 
 # ---------------------------------------------------------------------------
-# Mock provider responses
+# Prompt-context formatters
 # ---------------------------------------------------------------------------
 
 
@@ -252,6 +177,11 @@ def _format_memory_context(memory_ctx: dict[str, Any]) -> str:
     return "# Story Memory\n\n" + "\n\n".join(parts) + "\n\n"
 
 
+# ---------------------------------------------------------------------------
+# Deterministic mock fixtures (used when force-mock is on)
+# ---------------------------------------------------------------------------
+
+
 def _mock_plan_response(orient_result: dict[str, Any]) -> str:
     """Generate a deterministic mock plan response.
 
@@ -356,103 +286,8 @@ def _mock_extraction_response(prose: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Fantasy-domain provider calls (route through workflow.providers.call)
 # ---------------------------------------------------------------------------
-
-
-def _call_router_with_retry(role: str, prompt: str, system: str) -> str:
-    """Call the real router with tenacity retry on transient exhaustion.
-
-    Retries up to 3 times with exponential backoff (2s, 4s, 8s) when
-    all providers are temporarily exhausted. This handles the common case
-    where rate-limit cooldowns expire between attempts.
-    """
-    from workflow.exceptions import AllProvidersExhaustedError
-
-    @retry(
-        retry=retry_if_exception_type(AllProvidersExhaustedError),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
-        reraise=True,
-    )
-    def _attempt() -> str:
-        global last_provider
-        result = _real_router.call_sync(role, prompt, system)
-        last_provider = result.provider
-        return result.text
-
-    return _attempt()
-
-
-def call_provider(
-    prompt: str,
-    system: str = "",
-    *,
-    role: str = "writer",
-    fallback_response: str | None = None,
-) -> str:
-    """Call an LLM provider with automatic fallback.
-
-    Uses the real ProviderRouter's ``call_sync`` method which runs the
-    async fallback chain in a dedicated thread.  Falls back to mock
-    output only when all providers are exhausted.
-
-    On transient exhaustion (all providers in cooldown), retries up to 3
-    times with exponential backoff before giving up.
-
-    Parameters
-    ----------
-    prompt : str
-        The user prompt.
-    system : str
-        System prompt.
-    role : str
-        The role for routing (writer, judge, extract).
-    fallback_response : str or None
-        If all providers fail, return this string.  If None, returns
-        a generic placeholder.
-
-    Returns
-    -------
-    str
-        The provider's response text.
-    """
-    if _FORCE_MOCK:
-        if fallback_response is not None:
-            return fallback_response
-        return "[Mock response -- _FORCE_MOCK is True]"
-
-    provider_error: Exception | None = None
-
-    # Use the real router's synchronous entry point with retry
-    if _real_router is not None:
-        try:
-            return _call_router_with_retry(role, prompt, system)
-        except Exception as e:
-            provider_error = e
-            logger.error(
-                "All providers exhausted for role=%s after retries: %s", role, e,
-            )
-
-    # Fallback: only use mock content if an explicit fallback was provided.
-    # In production (no _FORCE_MOCK), callers should pass fallback_response=None
-    # so provider exhaustion surfaces as the real provider error instead of
-    # masquerading as an empty LLM response downstream.
-    if fallback_response is not None:
-        logger.warning(
-            "Using fallback response for role=%s (%d chars)",
-            role, len(fallback_response),
-        )
-        return fallback_response
-    if provider_error is not None:
-        raise provider_error
-
-    from workflow.exceptions import AllProvidersExhaustedError
-
-    raise AllProvidersExhaustedError(
-        f"No provider router available for role={role!r} and no fallback_response "
-        "was provided."
-    )
 
 
 def call_for_plan(
@@ -519,7 +354,7 @@ def call_for_plan(
         "Generate 3-5 alternative beat sheets for this scene."
     )
 
-    fallback = _mock_plan_response(orient_result) if _FORCE_MOCK else None
+    fallback = _mock_plan_response(orient_result) if is_force_mock() else None
     result = call_provider(
         prompt,
         system,
@@ -561,7 +396,7 @@ def call_for_draft(
     if writer_context:
         prompt += writer_context
         prompt += "Write the scene prose now."
-        fallback = _mock_draft_response(plan_output) if _FORCE_MOCK else None
+        fallback = _mock_draft_response(plan_output) if is_force_mock() else None
         result = call_provider(
             prompt,
             system,
@@ -639,7 +474,7 @@ def call_for_draft(
 
     prompt += "Write the scene prose now."
 
-    fallback = _mock_draft_response(plan_output) if _FORCE_MOCK else None
+    fallback = _mock_draft_response(plan_output) if is_force_mock() else None
     result = call_provider(
         prompt,
         system,
@@ -661,7 +496,7 @@ def call_for_extraction(prose: str, pov_character: str | None = None) -> str:
 
     prompt = build_extraction_prompt(prose, pov_character)
 
-    fallback = _mock_extraction_response(prose) if _FORCE_MOCK else None
+    fallback = _mock_extraction_response(prose) if is_force_mock() else None
     result = call_provider(
         prompt,
         FACT_EXTRACTION_SYSTEM,

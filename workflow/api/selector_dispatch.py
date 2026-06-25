@@ -730,7 +730,7 @@ def dispatch_selector(
     # ``_action_run_branch_version``.
     if provider_call is None:
         try:
-            from domains.fantasy_daemon.phases._provider_stub import (
+            from workflow.providers.call import (
                 call_provider as _default_provider_call,
             )
             provider_call = _default_provider_call

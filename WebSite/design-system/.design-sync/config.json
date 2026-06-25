@@ -5,6 +5,6 @@
   "storybookStatic": ".design-sync/sb-reference",
   "storybookConfigDir": ".storybook",
   "buildCmd": "npm run build",
-  "projectId": "48072c27-c3d6-488c-8c6d-be873636e652",
+  "projectId": "a7672917-0a44-4947-a53c-b5314b222b42",
   "readmeHeader": ".design-sync/conventions.md"
 }

@@ -337,7 +337,7 @@ def rebuild_raptor_from_canon(
 
     # Async wrapper for the sync provider stub
     async def _summarize(prompt: str, system: str, role: str) -> str:
-        from domains.fantasy_daemon.phases._provider_stub import call_provider
+        from workflow.providers.call import call_provider
         return call_provider(prompt, system, role=role, fallback_response="")
 
     # Build tree

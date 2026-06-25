@@ -1,0 +1,14 @@
+{
+  "name": "Term",
+  "import": "import { Term } from \"@tiny/design-system\";",
+  "description": "Inline first-use definition: dotted-underlined text with a tooltip on hover/focus.",
+  "props": {
+    "def": { "type": "string", "required": true, "description": "Plain-words definition shown in the tooltip and accessible label." },
+    "children": { "type": "ReactNode", "required": false, "description": "The term being defined inline." }
+  },
+  "rules": [
+    "Use only on first use of a term or project phrase.",
+    "Keep `def` short, concrete, and plain-spoken.",
+    "Do not use Term as decorative underlining or for repeated glossary noise."
+  ]
+}

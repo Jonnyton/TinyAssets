@@ -1,0 +1,19 @@
+{
+  "name": "Ladder",
+  "import": "import { Ladder } from \"@tiny/design-system\";",
+  "description": "An outcome ladder with ●/○ rung marks. A rung lights only when it has an evidence URL; unlit is the honest default.",
+  "props": {
+    "rungs": {
+      "type": "Array<{ name: string; lit?: boolean; evidence_url?: string; key?: string; description?: string }>",
+      "required": true,
+      "description": "Ordered outcome rungs. `lit` is honored only when `evidence_url` is also present."
+    },
+    "start": { "type": "string", "default": "start", "description": "Short mono label above the ladder." },
+    "compact": { "type": "boolean", "default": false, "description": "Tightens spacing and hides descriptions." }
+  },
+  "rules": [
+    "A rung lights ONLY with an evidence URL.",
+    "Leave rungs unlit by default; unlit is the honest state.",
+    "Use for outcome/proof progression, not generic timelines."
+  ]
+}
