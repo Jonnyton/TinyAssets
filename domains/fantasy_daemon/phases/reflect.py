@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from workflow.ingestion.canon_io import iter_canon_files, safe_canon_path
 from workflow.universe_soul import premise_from_soul, read_legacy_premise
 from workflow.utils.json_parsing import parse_llm_json
 
@@ -148,7 +149,17 @@ def _review_canon_quality(state: dict[str, Any]) -> dict[str, Any]:
     for issue in issues[:_MAX_REWRITES_PER_CYCLE]:
         filename = issue.get("filename", "")
         reason = issue.get("reason", "drift detected")
-        filepath = canon_dir / filename
+        # ``filename`` is LLM-supplied (from ``_evaluate_canon`` output), so a
+        # ``../`` traversal or symlinked name could let the rewrite ``write_text``
+        # below clobber a file outside the canon sandbox. Resolve + contain
+        # before any ``exists`` / read / write.
+        try:
+            filepath = safe_canon_path(canon_dir, filename, kind="rewrite target")
+        except ValueError:
+            logger.warning(
+                "Skipping canon rewrite escaping canon dir: %r", filename
+            )
+            continue
         if not filepath.exists():
             continue
 
@@ -181,10 +192,20 @@ def _review_canon_quality(state: dict[str, Any]) -> dict[str, Any]:
         except Exception as e:
             logger.warning("Failed to rewrite %s: %s", filename, e)
 
-    # Stamp reviewed files that were NOT rewritten
+    # Stamp reviewed files that were NOT rewritten. ``canon_files`` keys come
+    # from ``iter_canon_files`` (already contained), but resolve + contain
+    # again so the stamp marker derived from this path cannot escape.
     for filename in canon_files:
-        filepath = canon_dir / filename
-        if filename not in rewritten and filepath.exists():
+        if filename in rewritten:
+            continue
+        try:
+            filepath = safe_canon_path(canon_dir, filename, kind="reviewed file")
+        except ValueError:
+            logger.warning(
+                "Skipping reviewed-stamp escaping canon dir: %r", filename
+            )
+            continue
+        if filepath.exists():
             _stamp_reviewed(filepath, model=current_model)
 
     return {"files_reviewed": files_reviewed, "files_rewritten": rewritten}
@@ -253,10 +274,12 @@ def _collect_reviewable_canon(
     """
     result: dict[str, str] = {}
 
-    for f in sorted(canon_dir.iterdir()):
-        if not f.is_file() or f.suffix != ".md":
-            continue
-
+    # Enumeration is routed through ``iter_canon_files`` so each entry is
+    # resolved + contained before stat/read; a symlinked ``.md`` escaping
+    # canon_dir is skipped. The keys returned here become the ``filename``
+    # values later passed back into ``canon_dir / filename`` for rewrite, so
+    # only contained basenames must ever land in the map.
+    for f in iter_canon_files(canon_dir, suffix=".md"):
         # If signal topics are specified, only review matching files
         if signal_topics:
             slug = f.stem.lower().replace("-", "_").replace(" ", "_")

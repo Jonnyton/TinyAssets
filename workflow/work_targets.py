@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from workflow import daemon_server as author_server
+from workflow.ingestion.canon_io import read_canon_text, safe_canon_path
 from workflow.notes import add_note
 
 logger = logging.getLogger(__name__)
@@ -787,11 +788,14 @@ def _rehydrate_missing_synthesis_signals(
     truncated signal file cannot leave active synthesis targets permanently
     unexecutable.
     """
-    manifest_path = universe_dir / "canon" / ".manifest.json"
-    if not manifest_path.exists():
-        return raw_signals
+    # Route the manifest read through the canon-I/O chokepoint so a symlinked
+    # ``.manifest.json`` pointing outside canon is rejected before any read.
+    canon_dir = universe_dir / "canon"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(read_canon_text(canon_dir, ".manifest.json"))
+    except ValueError:
+        # Containment escape: treat as no manifest rather than reading outside.
+        return raw_signals
     except (OSError, json.JSONDecodeError):
         return raw_signals
     if not isinstance(manifest, dict):
@@ -844,7 +848,16 @@ def _manifest_entry_needs_synthesis(
         attempts = 0
     if attempts >= SYNTHESIS_RETRY_LIMIT:
         return False
-    return (universe_dir / "canon" / source_path).is_file()
+    # ``source_path`` is a manifest-supplied (untrusted) value. Resolve + contain
+    # it against the canon ROOT before the ``is_file`` stat so a crafted
+    # ``../`` source_path or a symlinked source cannot probe outside canon.
+    try:
+        target = safe_canon_path(
+            universe_dir / "canon", source_path, kind="source file"
+        )
+    except ValueError:
+        return False
+    return target.is_file()
 
 
 def _synthesis_signal_from_manifest(

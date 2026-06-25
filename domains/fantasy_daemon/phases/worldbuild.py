@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from domains.fantasy_daemon.phases.world_state_db import connect, get_all_facts, init_db
+from workflow.ingestion.canon_io import iter_canon_files
+from workflow.ingestion.canon_names import (
+    resolve_within_canon as _resolve_within_canon,
+)
+from workflow.ingestion.canon_names import safe_canon_filename, safe_canon_slug
 from workflow.universe_soul import (
     premise_from_soul,
     read_legacy_premise,
@@ -269,14 +274,18 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
         return ""
 
     canon_files: list[tuple[str, str]] = []
+    # ``iter_canon_files`` resolves + contains each entry BEFORE stat/read, so
+    # a symlinked ``.md`` whose target lives outside canon_dir is skipped (its
+    # content can't leak into the premise prompt).
     try:
-        for f in sorted(canon_dir.iterdir()):
-            if f.is_file() and f.suffix == ".md" and not f.name.startswith("."):
-                try:
-                    sample = f.read_text(encoding="utf-8")[:500]
-                    canon_files.append((f.name, sample))
-                except OSError:
-                    canon_files.append((f.name, ""))
+        for filepath in iter_canon_files(
+            canon_dir, suffix=".md", include_hidden=False
+        ):
+            try:
+                sample = filepath.read_text(encoding="utf-8")[:500]
+                canon_files.append((filepath.name, sample))
+            except OSError:
+                canon_files.append((filepath.name, ""))
             if len(canon_files) >= 10:
                 break
     except OSError:
@@ -479,7 +488,7 @@ def _handle_new_element(
     """Create a focused canon document for a newly discovered element."""
     from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
 
-    topic_slug = topic.lower().replace(" ", "_").replace("-", "_")
+    topic_slug = safe_canon_slug(topic)
     topic_label = topic.replace("_", " ").title()
 
     # Read existing canon for context
@@ -510,7 +519,7 @@ def _handle_new_element(
         fallback_response=_mock_worldbuild_response(topic),
     )
     if content:
-        filename = f"{topic_slug}.md"
+        filename = safe_canon_filename(topic_slug)
         _write_canon_file(canon_dir, filename, content, model=last_provider)
         logger.info("Created canon for new element: %s", filename)
 
@@ -529,19 +538,20 @@ def _handle_contradiction(
     """
     from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
 
-    topic_slug = topic.lower().replace(" ", "_").replace("-", "_")
+    topic_slug = safe_canon_slug(topic)
 
-    # Find the relevant canon file
+    # Find the relevant canon file. ``iter_canon_files`` resolves + contains
+    # each entry BEFORE stat/read, so a symlinked ``.md`` whose target lives
+    # outside ``canon_dir`` is skipped (same containment guard as
+    # ``_write_canon_file``).
     canon_content = ""
     canon_filename = ""
-    if canon_dir.exists():
-        for f in canon_dir.iterdir():
-            if f.is_file() and f.suffix == ".md":
-                slug = f.stem.lower().replace("-", "_").replace(" ", "_")
-                if slug == topic_slug or topic_slug in slug or slug in topic_slug:
-                    canon_content = f.read_text(encoding="utf-8")
-                    canon_filename = f.name
-                    break
+    for filepath in iter_canon_files(canon_dir, suffix=".md"):
+        slug = filepath.stem.lower().replace("-", "_").replace(" ", "_")
+        if slug == topic_slug or topic_slug in slug or slug in topic_slug:
+            canon_content = filepath.read_text(encoding="utf-8")
+            canon_filename = filepath.name
+            break
 
     if not canon_content:
         # No existing canon to contradict -- treat as new element
@@ -578,7 +588,7 @@ def _handle_contradiction(
         fallback_response=canon_content,  # Keep original on failure
     )
     if new_content and new_content != canon_content:
-        filepath = canon_dir / canon_filename
+        filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
         filepath.write_text(new_content, encoding="utf-8")
         # Update provenance marker
         _write_canon_marker(canon_dir, canon_filename, model=last_provider)
@@ -597,19 +607,20 @@ def _handle_expansion(
     """Expand an existing thin canon document with new details from prose."""
     from domains.fantasy_daemon.phases._provider_stub import call_provider, last_provider
 
-    topic_slug = topic.lower().replace(" ", "_").replace("-", "_")
+    topic_slug = safe_canon_slug(topic)
 
-    # Find the relevant canon file
+    # Find the relevant canon file. ``iter_canon_files`` resolves + contains
+    # each entry BEFORE stat/read, so a symlinked ``.md`` whose target lives
+    # outside ``canon_dir`` is skipped (same containment guard as
+    # ``_write_canon_file``).
     canon_content = ""
     canon_filename = ""
-    if canon_dir.exists():
-        for f in canon_dir.iterdir():
-            if f.is_file() and f.suffix == ".md":
-                slug = f.stem.lower().replace("-", "_").replace(" ", "_")
-                if slug == topic_slug or topic_slug in slug or slug in topic_slug:
-                    canon_content = f.read_text(encoding="utf-8")
-                    canon_filename = f.name
-                    break
+    for filepath in iter_canon_files(canon_dir, suffix=".md"):
+        slug = filepath.stem.lower().replace("-", "_").replace(" ", "_")
+        if slug == topic_slug or topic_slug in slug or slug in topic_slug:
+            canon_content = filepath.read_text(encoding="utf-8")
+            canon_filename = filepath.name
+            break
 
     if not canon_content:
         # No existing doc -- treat as new element
@@ -639,7 +650,7 @@ def _handle_expansion(
         fallback_response=canon_content,  # Keep original on failure
     )
     if new_content and new_content != canon_content:
-        filepath = canon_dir / canon_filename
+        filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
         filepath.write_text(new_content, encoding="utf-8")
         _write_canon_marker(canon_dir, canon_filename, model=last_provider)
         logger.info(
@@ -661,8 +672,20 @@ def _handle_synthesize_source(
 
     Returns True if synthesis produced at least one document.
     """
-    sources_dir = canon_dir / "sources"
-    source_path = sources_dir / source_file
+    # Containment before read: ``source_file`` is signal-controlled, so a
+    # ``../`` traversal or a symlinked ``canon/sources`` / source entry could
+    # read a file outside canon_dir and feed it into synthesis. Resolve the
+    # path under canon_dir (subdirs like ``sources/`` are legitimate; only
+    # escapes are rejected) before any filesystem I/O.
+    try:
+        source_path = _resolve_within_canon(
+            canon_dir, f"sources/{source_file}", kind="source file"
+        )
+    except ValueError:
+        logger.warning(
+            "Source file escapes canon dir, refusing to read: %s", source_file
+        )
+        return False
     if not source_path.exists():
         logger.warning("Source file not found: %s", source_path)
         return False
@@ -761,7 +784,17 @@ def _record_synthesis_failure(canon_dir: Path, source_file: str) -> None:
     This is the only place synthesis_attempts should be incremented —
     the API re-emit path reads the count but never changes it.
     """
-    manifest_path = canon_dir / ".manifest.json"
+    # Containment before read/write: the manifest is read AND written through
+    # ``canon_dir / .manifest.json``; a symlinked marker pointing outside
+    # canon_dir would let both the read and the clobbering write escape.
+    # Resolve and reject escapes before any I/O.
+    try:
+        manifest_path = _resolve_within_canon(
+            canon_dir, ".manifest.json", kind="manifest"
+        )
+    except ValueError:
+        logger.warning("Manifest escapes canon dir, refusing to update")
+        return
     manifest: dict[str, Any] = {}
     try:
         if manifest_path.exists():
@@ -798,10 +831,20 @@ def _record_synthesis_failure(canon_dir: Path, source_file: str) -> None:
 def _write_canon_marker(
     canon_dir: Path, filename: str, model: str = ""
 ) -> None:
-    """Write a provenance marker for a canon file (used by reflect)."""
+    """Write a provenance marker for a canon file (used by reflect).
+
+    Resolves the marker path and enforces canon-directory containment so a
+    symlinked ``.reviewed`` marker cannot redirect the write outside
+    ``canon_dir`` (same guard as ``_write_canon_file``).
+
+    ``filename`` is the verbatim on-disk canon filename — the marker name
+    must stay ``.{filename}.reviewed`` so ``reflect._get_file_model`` (which
+    keys on ``filepath.name``) finds it. We do NOT re-normalize the filename
+    here; containment, not normalization, is the security property.
+    """
     import time as _time
 
-    marker = canon_dir / f".{filename}.reviewed"
+    marker = _resolve_within_canon(canon_dir, f".{filename}.reviewed", kind="marker")
     try:
         marker.write_text(
             json.dumps({"reviewed_at": _time.time(), "model": model}),
@@ -864,10 +907,15 @@ def _generate_canon_documents(state: dict[str, Any]) -> list[str]:
             )
             if content:
                 from domains.fantasy_daemon.phases._provider_stub import last_provider
-                filename = f"{topic}.md"
+                filename = safe_canon_filename(topic)
                 _write_canon_file(canon_dir, filename, content, model=last_provider)
-                # Verify the file actually exists on disk
-                written_path = canon_dir / filename
+                # Verify the file actually exists on disk. ``filename`` already
+                # passed ``safe_canon_filename`` + ``_write_canon_file``
+                # containment; route the existence check through the same
+                # helper so no raw ``canon_dir / ...`` resolve remains.
+                written_path = _resolve_within_canon(
+                    canon_dir, filename, kind="filename"
+                )
                 if written_path.exists():
                     generated.append(filename)
                     logger.info(
@@ -930,11 +978,13 @@ def _scan_existing_canon(canon_dir: Path) -> set[str]:
         return set()
 
     existing: set[str] = set()
+    # ``iter_canon_files`` resolves + contains each entry BEFORE stat, so a
+    # symlinked entry pointing outside canon_dir is skipped (it can't register
+    # a spurious topic and suppress legitimate (re)generation).
     try:
-        for f in canon_dir.iterdir():
-            if f.is_file() and f.suffix == ".md":
-                slug = f.stem.lower().replace("-", "_").replace(" ", "_")
-                existing.add(slug)
+        for filepath in iter_canon_files(canon_dir, suffix=".md"):
+            slug = filepath.stem.lower().replace("-", "_").replace(" ", "_")
+            existing.add(slug)
     except OSError:
         logger.debug("Failed to scan canon directory", exc_info=True)
 
@@ -1033,11 +1083,15 @@ def _write_canon_file(
     import time as _time
 
     canon_dir.mkdir(parents=True, exist_ok=True)
-    filepath = canon_dir / filename
-    filepath.write_text(content, encoding="utf-8")
+    safe_filename = safe_canon_filename(filename)
+    filepath = _resolve_within_canon(canon_dir, safe_filename, kind="filename")
 
     # Write provenance marker
-    marker = canon_dir / f".{filename}.reviewed"
+    marker = _resolve_within_canon(
+        canon_dir, f".{safe_filename}.reviewed", kind="marker"
+    )
+
+    filepath.write_text(content, encoding="utf-8")
     try:
         marker.write_text(
             _json.dumps({"reviewed_at": _time.time(), "model": model}),
@@ -1093,17 +1147,20 @@ def _trigger_kg_reindex(state: dict[str, Any]) -> None:
         "entities": 0, "edges": 0, "facts": 0, "chunks_indexed": 0,
     }
 
+    # ``iter_canon_files`` resolves + contains each entry BEFORE stat/read, so
+    # a symlinked entry pointing outside canon_dir is skipped (its external
+    # content can't leak into the KG/vector index).
     try:
-        for f in sorted(canon_dir.iterdir()):
-            if not f.is_file() or f.suffix != ".md" or f.name.startswith("."):
-                continue
+        for filepath in iter_canon_files(
+            canon_dir, suffix=".md", include_hidden=False
+        ):
             try:
-                text = f.read_text(encoding="utf-8")
+                text = filepath.read_text(encoding="utf-8")
                 if not text.strip():
                     continue
                 stats = index_text(
                     text,
-                    source_id=f.stem,
+                    source_id=filepath.stem,
                     knowledge_graph=kg,
                     vector_store=vs,
                     embed_fn=embed,
@@ -1113,7 +1170,7 @@ def _trigger_kg_reindex(state: dict[str, Any]) -> None:
                 for k, v in stats.items():
                     total_stats[k] = total_stats.get(k, 0) + v
             except Exception as e:
-                logger.warning("Failed to index %s: %s", f.name, e)
+                logger.warning("Failed to index %s: %s", filepath.name, e)
     except OSError:
         logger.debug("Failed to scan canon directory for indexing")
 

@@ -251,6 +251,8 @@ def _is_world_state_stale(state: dict[str, Any]) -> bool:
 
 def _count_canon_files(state: dict[str, Any]) -> int:
     """Count .md files in the universe's canon directory."""
+    from workflow.ingestion.canon_io import iter_canon_files
+
     universe_path = state.get(
         "_universe_path", state.get("universe_path", "")
     )
@@ -259,11 +261,12 @@ def _count_canon_files(state: dict[str, Any]) -> int:
     canon_dir = Path(universe_path) / "canon"
     if not canon_dir.exists():
         return 0
+    # Enumeration is routed through ``iter_canon_files`` (the canon-I/O
+    # chokepoint), which resolves + contains each entry against the canon
+    # ROOT before any stat, so a symlinked ``.md`` escaping canon is skipped
+    # rather than counted.
     try:
-        return sum(
-            1 for f in canon_dir.iterdir()
-            if f.is_file() and f.suffix == ".md"
-        )
+        return sum(1 for _ in iter_canon_files(canon_dir, suffix=".md"))
     except OSError:
         return 0
 

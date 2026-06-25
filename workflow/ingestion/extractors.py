@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from workflow.ingestion.canon_names import resolve_within_canon, safe_canon_filename
 from workflow.ingestion.core import FileType, detect_file_type
 from workflow.utils.json_parsing import parse_llm_json
 
@@ -278,11 +279,27 @@ def synthesize_source(
     for topic, content in docs.items():
         if not content or not content.strip():
             continue
-        slug = topic.lower().replace("-", "_").replace(" ", "_")
-        doc_filename = f"{slug}.md"
+        try:
+            doc_filename = safe_canon_filename(topic)
+        except ValueError:
+            logger.warning("Skipping synthesized canon topic with unsafe empty slug: %r", topic)
+            continue
 
-        # Don't overwrite user-authored canon (check for .reviewed marker)
-        marker = canon_dir / f".{doc_filename}.reviewed"
+        # Don't overwrite user-authored canon (check for .reviewed marker).
+        # Containment before read: ``read_text`` follows symlinks, so a
+        # symlinked ``.reviewed`` marker pointing outside canon_dir would leak
+        # external content into the overwrite-guard decision. Resolve and
+        # reject escapes before any read.
+        try:
+            marker = resolve_within_canon(
+                canon_dir, f".{doc_filename}.reviewed", kind="marker"
+            )
+        except ValueError:
+            logger.warning(
+                "Marker escapes canon dir, skipping synthesized doc: %s",
+                doc_filename,
+            )
+            continue
         if marker.exists():
             try:
                 marker_data = json.loads(marker.read_text(encoding="utf-8"))

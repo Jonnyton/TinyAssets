@@ -39,6 +39,7 @@ from domains.fantasy_daemon.phases.world_state_db import (
     get_recent_scenes,
     init_db,
 )
+from workflow.ingestion.canon_io import iter_canon_files
 
 logger = logging.getLogger(__name__)
 
@@ -795,10 +796,11 @@ def _read_canon_context(state: dict[str, Any]) -> str:
     max_per_file = 2000
     max_total = 8000
 
+    # Enumeration is routed through ``iter_canon_files`` so each entry is
+    # resolved and contained before stat/read; a symlinked ``.md`` escaping
+    # canon_dir is skipped, not read.
     try:
-        for f in sorted(canon_dir.iterdir()):
-            if not f.is_file() or f.suffix != ".md" or f.name.startswith("."):
-                continue
+        for f in iter_canon_files(canon_dir, suffix=".md", include_hidden=False):
             try:
                 content = f.read_text(encoding="utf-8")[:max_per_file]
                 if content.strip():

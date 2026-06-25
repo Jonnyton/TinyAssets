@@ -877,6 +877,30 @@ class TestWorldbuildSynthesisSignal:
         assert acted == 1
         assert 0 in consumed
 
+    def test_synthesis_sanitizes_llm_topic_before_writing(self, tmp_path):
+        """Synthesized LLM topic names must not become path components."""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+
+        mock_response = json.dumps({
+            "../../escape": "# Escape\n\nShould stay inside canon.",
+        })
+
+        with patch(
+            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            return_value=mock_response,
+        ):
+            generated = synthesize_source(
+                "# Source\n\nA malicious topic.",
+                "source.md",
+                canon_dir,
+                "Epic fantasy.",
+            )
+
+        assert generated == ["escape.md"]
+        assert (canon_dir / "escape.md").exists()
+        assert not (tmp_path / "escape.md").exists()
+
     def test_synthesis_failure_consumes_signal_and_records_attempt(self, tmp_path):
         """When synthesis fails, signal is consumed and attempt is recorded.
 

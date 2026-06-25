@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from domains.fantasy_daemon.phases.diagnose import diagnose
 from domains.fantasy_daemon.phases.reflect import (
     _MAX_REWRITES_PER_CYCLE,
@@ -34,11 +36,19 @@ from domains.fantasy_daemon.phases.universe_cycle import universe_cycle
 from domains.fantasy_daemon.phases.worldbuild import (
     _MAX_DOCS_PER_CYCLE,
     WORLDBUILD_TOPICS,
+    _handle_contradiction,
+    _handle_expansion,
+    _handle_synthesize_source,
     _identify_gaps,
+    _maybe_generate_premise,
     _mock_worldbuild_response,
     _read_direction_notes,
     _read_premise,
+    _record_synthesis_failure,
     _scan_existing_canon,
+    _trigger_kg_reindex,
+    _write_canon_file,
+    _write_canon_marker,
     worldbuild,
 )
 from workflow.notes import add_note, update_note_status
@@ -569,6 +579,451 @@ class TestWorldbuildCanonGeneration:
         """No gaps when everything is covered."""
         existing = set(WORLDBUILD_TOPICS)
         assert _identify_gaps(existing) == []
+
+    def test_write_canon_file_sanitizes_traversal_filename(self, tmp_path):
+        """LLM-derived canon filenames must not escape canon_dir."""
+        canon_dir = tmp_path / "canon"
+
+        _write_canon_file(canon_dir, "../../escape.md", "# Escaped")
+
+        assert (canon_dir / "escape.md").read_text(encoding="utf-8") == "# Escaped"
+        assert not (tmp_path / "escape.md").exists()
+
+    def test_write_canon_file_rejects_empty_safe_filename(self, tmp_path):
+        """A filename that sanitizes to empty is not written."""
+        canon_dir = tmp_path / "canon"
+
+        try:
+            _write_canon_file(canon_dir, "../..", "# Empty")
+        except ValueError as exc:
+            assert "non-empty safe slug" in str(exc)
+        else:
+            raise AssertionError("expected unsafe empty canon filename to fail")
+
+    def test_write_canon_file_rejects_marker_symlink_escape(self, tmp_path):
+        """The provenance marker write must stay under canon_dir too."""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        try:
+            (canon_dir / ".escape.md.reviewed").symlink_to(tmp_path / "marker-outside")
+        except (OSError, NotImplementedError) as exc:
+            # Windows without the "Create symbolic links" privilege (or other
+            # platforms that forbid symlink creation) cannot set up this
+            # fixture; the containment check itself is still covered on
+            # symlink-capable platforms (CI/Linux).
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        try:
+            _write_canon_file(canon_dir, "escape.md", "# Escaped")
+        except ValueError as exc:
+            assert "canon marker escapes" in str(exc)
+        else:
+            raise AssertionError("expected escaped marker path to fail")
+        assert not (canon_dir / "escape.md").exists()
+
+    def test_write_canon_marker_rejects_symlink_escape(self, tmp_path):
+        """A symlinked ``.reviewed`` marker must not redirect the write out.
+
+        ``_write_canon_marker`` is the provenance-marker path used by the
+        contradiction/expansion overwrites. Without containment, a symlinked
+        ``.{name}.reviewed`` pointing outside canon_dir would let a write
+        escape (Codex ADAPT finding).
+        """
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        outside = tmp_path / "marker-outside"
+        try:
+            (canon_dir / ".magic_system.md.reviewed").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            # Windows without the "Create symbolic links" privilege (or other
+            # platforms that forbid symlink creation) cannot set up this
+            # fixture; the containment check itself is still exercised on
+            # symlink-capable platforms (CI/Linux).
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        with pytest.raises(ValueError, match="canon marker escapes"):
+            _write_canon_marker(canon_dir, "magic_system.md", model="claude")
+        assert not outside.exists()
+
+    def test_handle_contradiction_rejects_symlinked_existing_file(self, tmp_path):
+        """A matched canon ``.md`` that is a symlink out of canon_dir is rejected.
+
+        ``_handle_contradiction`` reads then overwrites an existing canon file
+        located by slug match. ``f.is_file()`` / ``read_text`` / ``write_text``
+        all follow symlinks, so a symlinked match could read or clobber a file
+        outside canon_dir. Containment must reject it before any I/O.
+        """
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        outside = tmp_path / "secret.md"
+        outside.write_text("# Outside secret", encoding="utf-8")
+        try:
+            (canon_dir / "magic_system.md").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        with pytest.raises(ValueError, match="canon existing file escapes"):
+            _handle_contradiction(
+                canon_dir, "magic_system", "detail", "premise", {}
+            )
+        # The outside target must be untouched.
+        assert outside.read_text(encoding="utf-8") == "# Outside secret"
+
+    def test_handle_expansion_rejects_symlinked_existing_file(self, tmp_path):
+        """Same containment guard on the expansion overwrite path."""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        outside = tmp_path / "secret.md"
+        outside.write_text("# Outside secret", encoding="utf-8")
+        try:
+            (canon_dir / "magic_system.md").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        with pytest.raises(ValueError, match="canon existing file escapes"):
+            _handle_expansion(
+                canon_dir, "magic_system", "detail", "premise", {}
+            )
+        assert outside.read_text(encoding="utf-8") == "# Outside secret"
+
+    # ------------------------------------------------------------------
+    # Round-2 containment: every canon READ path resolves + contains the
+    # path BEFORE filesystem I/O (a symlinked file can leak outside content
+    # into the LLM prompt / index / overwrite-guard). Codex round-2 finding.
+    # ------------------------------------------------------------------
+
+    def test_handle_synthesize_source_rejects_symlinked_source(self, tmp_path):
+        """A signal-controlled ``source_file`` symlink out of canon is rejected.
+
+        ``_handle_synthesize_source`` joins ``source_file`` under
+        ``canon/sources`` and reads it. ``read_bytes`` follows symlinks, so a
+        symlinked source entry pointing outside canon_dir would feed external
+        content into synthesis. Containment must reject it before any read,
+        so synthesis reports no documents (the read never happens).
+        """
+        canon_dir = tmp_path / "canon"
+        sources_dir = canon_dir / "sources"
+        sources_dir.mkdir(parents=True)
+        outside = tmp_path / "secret.txt"
+        outside.write_text("EXTERNAL SECRET", encoding="utf-8")
+        try:
+            (sources_dir / "evil.txt").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        # Returns False (refused) and never reads the symlink target.
+        assert _handle_synthesize_source(canon_dir, "evil.txt", "premise", {}) is False
+        assert outside.read_text(encoding="utf-8") == "EXTERNAL SECRET"
+
+    def test_handle_synthesize_source_rejects_traversal_source(self, tmp_path):
+        """A ``../`` traversal in ``source_file`` is rejected on any platform.
+
+        No symlink privilege needed: ``.resolve()`` collapses the ``..`` and
+        the containment check lands the path outside canon_dir.
+        """
+        canon_dir = tmp_path / "canon"
+        (canon_dir / "sources").mkdir(parents=True)
+        outside = tmp_path / "secret.txt"
+        outside.write_text("EXTERNAL SECRET", encoding="utf-8")
+
+        assert (
+            _handle_synthesize_source(canon_dir, "../../secret.txt", "premise", {})
+            is False
+        )
+        assert outside.read_text(encoding="utf-8") == "EXTERNAL SECRET"
+
+    def test_record_synthesis_failure_rejects_symlinked_manifest(self, tmp_path):
+        """A symlinked ``.manifest.json`` must not redirect the read/write out.
+
+        ``_record_synthesis_failure`` reads and then rewrites the manifest;
+        both follow symlinks. Containment must reject the escape before any
+        I/O so the outside target is left untouched.
+        """
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        outside = tmp_path / "manifest-outside.json"
+        try:
+            (canon_dir / ".manifest.json").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        # No raise: the function logs + returns; the escape must not be written.
+        _record_synthesis_failure(canon_dir, "source.pdf")
+        assert not outside.exists()
+
+    def test_maybe_generate_premise_skips_symlinked_canon(self, tmp_path):
+        """A symlinked canon ``.md`` must not leak into the premise prompt.
+
+        ``_maybe_generate_premise`` reads a 500-char sample of each canon
+        ``.md``; ``read_text`` follows symlinks. With ONLY an escaping symlink
+        present, the file is skipped, ``canon_files`` is empty, and the
+        function returns "" without ever invoking the provider.
+        """
+        universe_dir = tmp_path / "universe"
+        canon_dir = universe_dir / "canon"
+        canon_dir.mkdir(parents=True)
+        outside = tmp_path / "secret.md"
+        outside.write_text("EXTERNAL SECRET PREMISE SOURCE", encoding="utf-8")
+        try:
+            (canon_dir / "leak.md").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        called = {"provider": False}
+
+        def _fail_provider(*args, **kwargs):  # pragma: no cover - must not run
+            called["provider"] = True
+            return "should not happen"
+
+        with patch(
+            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            _fail_provider,
+        ):
+            result = _maybe_generate_premise(
+                {"_universe_path": str(universe_dir), "world_state_version": 0}
+            )
+        assert result == ""
+        assert called["provider"] is False
+
+    def test_trigger_kg_reindex_skips_symlinked_canon(self, tmp_path):
+        """A symlinked canon ``.md`` must not be read into the KG/vector index.
+
+        ``_trigger_kg_reindex`` reads each canon ``.md`` and passes the text to
+        ``index_text``. ``read_text`` follows symlinks, so an escaping symlink
+        would index external content. Containment skips it: with only an
+        escaping symlink present, ``index_text`` is never called.
+        """
+        from workflow import runtime_singletons as runtime
+
+        universe_dir = tmp_path / "universe"
+        canon_dir = universe_dir / "canon"
+        canon_dir.mkdir(parents=True)
+        outside = tmp_path / "secret.md"
+        outside.write_text("EXTERNAL SECRET TO INDEX", encoding="utf-8")
+        try:
+            (canon_dir / "leak.md").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        indexed = {"count": 0}
+
+        def _fake_index_text(*args, **kwargs):  # pragma: no cover - must not run
+            indexed["count"] += 1
+            return {"entities": 0, "edges": 0, "facts": 0, "chunks_indexed": 0}
+
+        # Provide a non-None backend so the early "no backends" return is skipped.
+        sentinel = object()
+        with patch.object(runtime, "knowledge_graph", sentinel), \
+                patch.object(runtime, "vector_store", sentinel), \
+                patch.object(runtime, "embed_fn", None), \
+                patch(
+                    "workflow.ingestion.indexer.index_text", _fake_index_text
+                ):
+            _trigger_kg_reindex({"_universe_path": str(universe_dir)})
+        assert indexed["count"] == 0
+
+    def test_scan_existing_canon_skips_symlinked_escape(self, tmp_path):
+        """A symlinked canon ``.md`` escaping canon_dir is not counted.
+
+        Without the guard, a symlinked ``magic_system.md -> /outside`` would
+        register a spurious covered topic and suppress legitimate regeneration.
+        """
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        outside = tmp_path / "magic_system.md"
+        outside.write_text("# Outside", encoding="utf-8")
+        try:
+            (canon_dir / "magic_system.md").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        assert _scan_existing_canon(canon_dir) == set()
+
+    # ------------------------------------------------------------------
+    # Containment ORDERING: containment must run BEFORE the ``is_file``
+    # stat. ``Path.is_file()`` follows symlinks (it calls ``os.stat`` on
+    # the target), so an entry that is itself an escaping symlink must be
+    # resolved + rejected *before* any stat touches the external target.
+    # Every canon enumeration now routes through
+    # ``workflow.ingestion.canon_io.iter_canon_files`` (the chokepoint),
+    # which calls ``resolve_within_canon`` per entry before touching
+    # ``is_file``. These tests patch the chokepoint's resolver to reject one
+    # specific filename, then assert ``Path.is_file`` is never invoked for
+    # that rejected entry — proving the resolve-first ordering through the
+    # shared chokepoint. No symlink privilege is required, so they run live
+    # on Windows too.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ordering_spy(reject_name: str):
+        """Build (patch target, is_file spy, events) for the ordering proof.
+
+        Returns ``(patch_target_ctx, spy_is_file, events)`` where
+        ``patch_target_ctx`` is a callable producing the ``unittest.mock.patch``
+        context manager that swaps the chokepoint resolver. ``events`` records
+        ``("resolve", name)`` and ``("is_file", name)`` in call order. The
+        patched resolver raises ``ValueError`` for ``reject_name`` (simulating
+        an escaping entry) and resolves everything else normally.
+        """
+        from workflow.ingestion.canon_names import (
+            resolve_within_canon as _real_resolve,
+        )
+
+        events: list[tuple[str, str]] = []
+
+        def fake_resolve(canon_dir, name, kind="path"):
+            events.append(("resolve", name))
+            if name == reject_name:
+                raise ValueError(f"canon {kind} escapes canon directory: {name!r}")
+            return _real_resolve(canon_dir, name, kind=kind)
+
+        real_is_file = Path.is_file
+
+        def spy_is_file(self):
+            events.append(("is_file", self.name))
+            return real_is_file(self)
+
+        return fake_resolve, spy_is_file, events
+
+    def test_scan_existing_canon_resolves_before_stat(self, tmp_path):
+        """``_scan_existing_canon`` resolves containment before ``is_file``.
+
+        Runs live on Windows: a rejected entry must never reach ``is_file``,
+        and a legitimate sibling must still be counted.
+        """
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        (canon_dir / "escape.md").write_text("# stand-in for escaping entry", encoding="utf-8")
+        (canon_dir / "magic_system.md").write_text("# Magic", encoding="utf-8")
+
+        fake_resolve, spy_is_file, events = self._ordering_spy("escape.md")
+        with patch(
+            "workflow.ingestion.canon_io.resolve_within_canon",
+            fake_resolve,
+        ), patch.object(Path, "is_file", spy_is_file):
+            existing = _scan_existing_canon(canon_dir)
+
+        # The rejected entry is dropped; the legitimate sibling survives.
+        assert "magic_system" in existing
+        assert "escape" not in existing
+        # No ``is_file`` for the rejected entry, and for it ``resolve`` precedes
+        # any stat (the entry is skipped before any stat).
+        assert ("is_file", "escape.md") not in events
+        assert ("resolve", "escape.md") in events
+        # For the legitimate entry, resolve precedes its is_file.
+        ri = events.index(("resolve", "magic_system.md"))
+        fi = events.index(("is_file", "magic_system.md"))
+        assert ri < fi
+
+    def test_maybe_generate_premise_resolves_before_stat(self, tmp_path):
+        """``_maybe_generate_premise`` resolves containment before ``is_file``."""
+        universe_dir = tmp_path / "universe"
+        canon_dir = universe_dir / "canon"
+        canon_dir.mkdir(parents=True)
+        (canon_dir / "escape.md").write_text("EXTERNAL", encoding="utf-8")
+        (canon_dir / "world.md").write_text("A realm of glass.", encoding="utf-8")
+
+        fake_resolve, spy_is_file, events = self._ordering_spy("escape.md")
+
+        def _fail_provider(*args, **kwargs):  # provider may or may not run
+            return "premise"
+
+        with patch(
+            "workflow.ingestion.canon_io.resolve_within_canon",
+            fake_resolve,
+        ), patch.object(Path, "is_file", spy_is_file), patch(
+            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            _fail_provider,
+        ):
+            _maybe_generate_premise(
+                {"_universe_path": str(universe_dir), "world_state_version": 0}
+            )
+
+        assert ("is_file", "escape.md") not in events
+        assert ("resolve", "escape.md") in events
+        ri = events.index(("resolve", "world.md"))
+        fi = events.index(("is_file", "world.md"))
+        assert ri < fi
+
+    def test_trigger_kg_reindex_resolves_before_stat(self, tmp_path):
+        """``_trigger_kg_reindex`` resolves containment before ``is_file``."""
+        from workflow import runtime_singletons as runtime
+
+        universe_dir = tmp_path / "universe"
+        canon_dir = universe_dir / "canon"
+        canon_dir.mkdir(parents=True)
+        (canon_dir / "escape.md").write_text("EXTERNAL", encoding="utf-8")
+        (canon_dir / "world.md").write_text("Lore to index.", encoding="utf-8")
+
+        fake_resolve, spy_is_file, events = self._ordering_spy("escape.md")
+        indexed_names: list[str] = []
+
+        def _fake_index_text(*args, **kwargs):
+            indexed_names.append(kwargs.get("source_id", ""))
+            return {"entities": 0, "edges": 0, "facts": 0, "chunks_indexed": 0}
+
+        sentinel = object()
+        with patch.object(runtime, "knowledge_graph", sentinel), \
+                patch.object(runtime, "vector_store", sentinel), \
+                patch.object(runtime, "embed_fn", None), \
+                patch(
+                    "workflow.ingestion.canon_io.resolve_within_canon",
+                    fake_resolve,
+                ), \
+                patch.object(Path, "is_file", spy_is_file), \
+                patch("workflow.ingestion.indexer.index_text", _fake_index_text):
+            _trigger_kg_reindex({"_universe_path": str(universe_dir)})
+
+        # Escaping entry never stat'd nor indexed; legitimate entry indexed.
+        assert ("is_file", "escape.md") not in events
+        assert ("resolve", "escape.md") in events
+        assert "world" in indexed_names
+        assert "escape" not in indexed_names
+
+    def test_handle_contradiction_resolves_before_stat(self, tmp_path):
+        """``_handle_contradiction`` resolves containment before ``is_file``.
+
+        The escaping entry's slug also matches the topic; the resolve-first
+        guard must skip it (no stat, no read) and fall through to new-element
+        handling rather than reading the escaping target.
+        """
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        (canon_dir / "magic_system.md").write_text("# real canon", encoding="utf-8")
+
+        fake_resolve, spy_is_file, events = self._ordering_spy("magic_system.md")
+        with patch(
+            "workflow.ingestion.canon_io.resolve_within_canon",
+            fake_resolve,
+        ), patch.object(Path, "is_file", spy_is_file), patch(
+            "domains.fantasy_daemon.phases.worldbuild._handle_new_element",
+        ) as new_el:
+            _handle_contradiction(canon_dir, "magic_system", "detail", "premise", {})
+
+        # The escaping match was skipped before any stat, so no canon content
+        # was found and the new-element path ran instead.
+        assert ("is_file", "magic_system.md") not in events
+        assert ("resolve", "magic_system.md") in events
+        new_el.assert_called_once()
+
+    def test_handle_expansion_resolves_before_stat(self, tmp_path):
+        """``_handle_expansion`` resolves containment before ``is_file``."""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        (canon_dir / "magic_system.md").write_text("# real canon", encoding="utf-8")
+
+        fake_resolve, spy_is_file, events = self._ordering_spy("magic_system.md")
+        with patch(
+            "workflow.ingestion.canon_io.resolve_within_canon",
+            fake_resolve,
+        ), patch.object(Path, "is_file", spy_is_file), patch(
+            "domains.fantasy_daemon.phases.worldbuild._handle_new_element",
+        ) as new_el:
+            _handle_expansion(canon_dir, "magic_system", "detail", "premise", {})
+
+        assert ("is_file", "magic_system.md") not in events
+        assert ("resolve", "magic_system.md") in events
+        new_el.assert_called_once()
 
     def test_mock_worldbuild_response_has_content(self):
         """Mock response should produce valid markdown."""
