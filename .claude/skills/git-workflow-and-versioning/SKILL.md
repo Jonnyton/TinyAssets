@@ -60,6 +60,9 @@ prefer native tools, then fall back to git. Never fight the harness.**
 
 ### Workflow Project Worktree Discipline
 
+Canonical full procedure: `docs/reference/worktree-discipline.md` (`AGENTS.md`
+keeps the inline invariants + a pointer). This section is the on-demand summary.
+
 For this repo, conform to GitHub's branch/PR model:
 
 - One buildable work item maps to one Git branch, one local `../wf-<slug>`
@@ -82,8 +85,8 @@ For this repo, conform to GitHub's branch/PR model:
     `STATUS.md` and checked against `PLAN.md`.
   - Abandoned/swept: worktree removed or logged abandoned in
     `.agents/worktrees.md`; useful ideas extracted first.
-- Every new worktree gets `_PURPOSE.md` at its root. See `AGENTS.md`
-  §"GitHub-Aligned Worktree Discipline" for the canonical 12-field template.
+- Every new worktree gets `_PURPOSE.md` at its root. See
+  `docs/reference/worktree-discipline.md` for the canonical 12-field template.
 - Append create/remove/sweep events to `.agents/worktrees.md`.
 - Run `python scripts/worktree_status.py` at session start to see active lanes,
   parked drafts, dirty current checkouts, missing/incomplete `_PURPOSE.md`,

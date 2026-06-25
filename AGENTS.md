@@ -397,137 +397,48 @@ Files to be narrower (the overlap was a hint, not a real write).
 
 ### GitHub-Aligned Worktree Discipline
 
-GitHub is the integration model. A Workflow worktree is the local checkout
-for one Git branch; the branch folds back through a PR; `STATUS.md` is the
-claim surface, not a replacement for GitHub history. A branch by itself is
-not durable memory. It remembers commits, not why the branch exists, whether
-it is live-safe, what blocks it, what ideas are parked in it, who owns it, or
-whether it should merge, split, be abandoned, or become a PR. Uncommitted
-changes are weaker: they exist only in that local worktree. The durable memory
-layer is `_PURPOSE.md`, `.agents/worktrees.md`, `STATUS.md`, idea files, and
-draft PR bodies.
+GitHub is the integration model: a worktree is the local checkout for one
+branch, the branch folds back through a PR, and `STATUS.md` is the claim surface
+— not a replacement for GitHub history. **A branch is not durable memory** (it
+remembers commits, not why it exists, whether it is live-safe, what blocks it,
+or who owns it); the durable layer is `_PURPOSE.md`, `.agents/worktrees.md`,
+`STATUS.md`, idea files, and draft-PR bodies.
 
-Every branch/worktree must be in exactly one lane state:
+**Full procedure → [`docs/reference/worktree-discipline.md`](docs/reference/worktree-discipline.md)**
+(the `_PURPOSE.md` template, numbered creation steps, `worktree_status.py`
+diagnostic states, and the branch-lifecycle automation layers). Read it before
+creating, taking over, or sweeping a worktree. Invariants you must honor without
+opening it:
 
-- **Active lane**: actionable now. Has a `STATUS.md` row with exact Files /
-  Depends / Status ownership, a local worktree path, a branch, and
-  `_PURPOSE.md`.
-- **Parked draft lane**: not necessarily actionable now. Has a pushed branch
-  and draft PR. The PR body or `_PURPOSE.md` records ship condition, abandon
-  condition, blockers, review gates, memory refs, related implications, and
-  pickup hints.
-- **Idea/reference only**: no build authority. Captured in `ideas/INBOX.md`,
-  `ideas/PIPELINE.md`, or the bottom "Idea feed refs" section of
-  `_PURPOSE.md`. It must be promoted into `STATUS.md` and checked against
-  `PLAN.md` before implementation.
-- **Abandoned/swept**: worktree removed or marked abandoned in
-  `.agents/worktrees.md` with a reason. Useful ideas are extracted before
-  deletion.
-
-`worktree_status.py` emits more diagnostic states than the four canonical
-lane states. `ACTIVE_LANE` and `PARKED_DRAFT` map directly to canonical lane
-states. `DIRTY_*`, `IN_FLIGHT*`, `NEEDS_*`, `PURPOSE_INCOMPLETE`, `ORPHANED`,
-`MISSING`, and `READY_TO_REMOVE` are action-required intermediate states that
-must be fixed, promoted, parked, or swept before the branch is considered
-durably remembered. `Idea/reference only` has no worktree state because it
-lives in `ideas/*.md` or bottom-of-lane "Idea feed refs", not in a checkout.
-
-Branch-selector safety rule: a non-main branch is isolated from the live
-deploy chain until merged to `main`. Merging to `main` is production-impacting
-for the live MCP/backend deploy chain and must pass the relevant gates.
-Switching a dirty checkout to `main` is unsafe because it can drag branch
-changes into main or confuse what is live-safe. For new live-ready work, start
-a clean session/worktree from `main`. Leaving a branch as-is is safe only when
-the lane has durable metadata; otherwise it is forgotten-work risk.
-
-When creating a worktree:
-
-1. Use a purpose-named branch (`codex/<slug>`, `claude/<slug>`,
-   `cursor/<slug>`, `fix/<slug>`, `chore/<slug>`, etc.).
-2. Use a sibling path `../wf-<slug>` unless an existing manager names it
-   differently. Avoid `Workflow-foo`, nested `Workflow/foo`, and hash-only
-   names for new work.
-3. Create `_PURPOSE.md` at the worktree root, <=30 lines: purpose,
-   provider/session, branch, base ref, STATUS row / PR / issue, relevant
-   PLAN module refs, ship condition, abandon condition, pickup hints, memory
-   refs, related implication refs, and a bottom "Idea feed refs" section for
-   loose ideas that must not be forgotten but are not build authority.
-4. Append a create event to `.agents/worktrees.md`; append a remove event
-   when the PR lands or the lane is abandoned.
-5. Run `python scripts/worktree_status.py` at session start or before a
-   cleanup pass to find pickup-ready, stale, orphaned, or dirty worktrees.
-
-Memory refs are required for inherited work. When a worktree continues,
-reviews, or builds on work from another provider/family, `_PURPOSE.md`,
-`.agents/worktrees.md`, the STATUS row, or the PR body must reference the
-preceding provider's durable memory/artifact paths, for example
-`.claude/agent-memory/navigator/2026-05-02-worktree-discipline-design.md`.
-Before coding, the pickup provider reads those memories plus the source
-artifact and records any new memory refs it creates. If no memory path is
-listed, search `.claude/agent-memory/`, `.agents/activity.log`, recent audit
-artifacts, and branch/PR notes by task slug before assuming context is absent.
-
-Related implications stay live across the whole GitHub/worktree lifecycle.
-At planning, build, review, and fold-back, re-check the relevant `PLAN.md`
-modules as the project/module understanding. Also re-check linked `STATUS.md`
-lanes, `ideas/PIPELINE.md` rows, research artifacts, design notes, and memory
-refs that touch the same files, primitives, user surfaces, or review gates.
-`ideas/INBOX.md` captures are not design truth or build authority; copy them
-into the bottom "Idea feed refs" area of the worktree/PR when they are useful
-reminders. If a related implication changes the approach, update the STATUS
-row and PR body before continuing; if it does not apply, record that in the PR
-or handoff.
-
-Review-blocked work still gets a lane. If a finding needs opposite-provider
-review, create the review row as claimable and create/reserve the
-implementation row as `pending` with `Depends` naming the review artifact and
-required verdict. The worktree/branch may exist before review, but runtime
-implementation, push, live rollout, and acceptance-test advancement stay
-blocked until the review returns `approve` or `adapt`. If a branch has enough
-metadata to push, use a draft PR or clearly blocked PR body rather than an
-untracked private branch.
-
-Legacy coordination docs (`ideas/PIPELINE.md`, `ideas/INBOX.md`,
-`docs/vetted-specs.md`, `docs/exec-plans/active/*`, old audit docs, and
-agent memories) are context, not build queues. Before building from any of
-them, promote/refactor the work into current project state:
-
-- re-check relevant `PLAN.md` modules as design truth, plus `STATUS.md`,
-  `ideas/PIPELINE.md`, recent commits, and active research gates;
-- create or update a `STATUS.md` Work row with exact Files, Depends, Status,
-  proposed branch, proposed worktree path, PR/fold-back expectation, and
-  PLAN module refs, prior-provider memory refs, and related implication refs;
-- carry `ideas/INBOX.md` captures only as bottom-of-lane "Idea feed refs" so
-  promising ideas are not forgotten, never as permission to build;
-- run `claim_check.py --check-files` before broadening Files;
-- only then claim and build in the worktree.
-
-Existing worktrees are retrofit-on-next-touch: add `_PURPOSE.md` and inventory
-events when you next work there. Do not bulk rewrite another provider's active
-worktree metadata unless the STATUS row or owner asks for it.
-
-### Branch & worktree lifecycle automation
-
-The branch/worktree hygiene that prevented the "1,209 behind / 600+ branches"
-drift is automated, not a manual ritual to remember. Design note:
-`docs/design-notes/2026-06-24-branch-lifecycle-automation.md`. Four layers:
-
-- **Layer 0 — table stakes.** Repo setting `delete_branch_on_merge=true` (GitHub
-  auto-deletes a PR's head branch on merge) plus `fetch.prune`/`rerere`. Apply
-  on any machine with `python scripts/setup_git_hygiene.py`.
-- **Layer 1 — `scripts/branch_janitor.py`.** Classifies every remote branch
-  PROTECTED / ACTIVE / MERGED / STALE_FLAG / STALE_DELETE. Default mode reports
-  only; `--apply` deletes MERGED (already on main) + STALE_DELETE. Hard
-  guardrails: never deletes main/release, open-PR branches, or commits < 7d.
-  Driven by `.github/workflows/branch-janitor.yml` (daily `apply-all`,
-  self-maintaining; manual `workflow_dispatch` with `report` / `apply-merged`
-  / `apply-all`, where `report` is an on-demand dry-run).
-- **Layer 2 — `python scripts/wt.py new|done|list`.** One command for both
-  halves of the loop: `new` creates a worktree off `origin/main` + scaffolds
-  `_PURPOSE.md`; `done` verifies the branch merged before removing the worktree
-  and branch (refuses unmerged unless `--force`). Use it instead of raw
-  `git worktree add`/`remove` so teardown stops being optional.
-- **Layer 3 — `scripts/session_sync_gate.py`.** Session-start step 0 above.
+- **Four lane states**, exactly one per branch/worktree: **Active** (actionable
+  now; STATUS row + worktree + branch + `_PURPOSE.md`), **Parked draft** (pushed
+  branch + draft PR recording ship/abandon conditions + review gates),
+  **Idea/reference only** (no build authority; lives in `ideas/*.md` or a
+  `_PURPOSE.md` "Idea feed refs" section; promote to `STATUS.md` + check
+  `PLAN.md` before building), **Abandoned/swept** (removed or logged in
+  `.agents/worktrees.md` with a reason; extract useful ideas first).
+- **Dirty-main safety.** A non-main branch is isolated from the live deploy
+  chain until merged; merging to `main` is production-impacting. Never switch a
+  dirty checkout to `main` — start a clean main-based worktree for live-ready
+  work.
+- **Lifecycle via tooling, not by hand.** Use `python scripts/wt.py new|done|list`
+  (creates off `origin/main` + scaffolds `_PURPOSE.md`; `done` refuses an
+  unmerged branch) instead of raw `git worktree add`/`remove`, so teardown stops
+  being optional. Run `python scripts/worktree_status.py` at session start to
+  surface stale / orphaned / dirty / incomplete lanes.
+- **Memory refs are required for inherited work.** When continuing or reviewing
+  another provider's work, `_PURPOSE.md` / `.agents/worktrees.md` / the STATUS
+  row / PR body must reference the prior provider's memory/artifact paths; read
+  them before coding. If none are listed, search `.claude/agent-memory/`,
+  `.agents/activity.log`, and recent audits by task slug before assuming absence.
+- **Review-blocked work still gets a lane.** Create the review row claimable and
+  the implementation row `pending` with `Depends` naming the review artifact +
+  required verdict; the branch may exist, but runtime implementation, push, live
+  rollout, and acceptance-test advancement stay blocked until review returns
+  `approve` / `adapt`.
+- **Legacy docs/ideas/memories are context, not build queues.** Promote into a
+  current `STATUS.md`/`PLAN.md` lane (re-check PLAN modules, add the Work row,
+  run `claim_check.py --check-files`) before building from them.
 
 ### Staying unblocked
 
@@ -568,101 +479,29 @@ keeps the next provider's `claim_check.py` accurate.
 
 ## Configuration — environment variables
 
-The daemon reads configuration from env vars. Defaults are
-CWD-independent so containerized deploys don't drift based on where
-the process was launched from.
+The daemon reads **all** configuration from env vars — data paths, auth/identity,
+feature flags, LLM/provider routing, observability, and local secrets. The full
+catalog (every var, its purpose, and default) is pointer-loaded per
+[ADR-002](docs/decisions/ADR-002-static-vs-dynamic-context-budget.md):
 
-### Data + paths
+> **Canonical reference → `docs/reference/environment-variables.md`.**
 
-| Var | Purpose | Default |
-|-----|---------|---------|
-| `WORKFLOW_DATA_DIR` | Canonical root for all on-disk state (SQLite checkpoint, LanceDB indexes, per-universe output dirs). Absolute path. | Platform default — Windows: `%APPDATA%\Workflow`; Linux/macOS/container: `~/.workflow`. |
-| `WORKFLOW_UNIVERSE` | Per-universe override — specific universe dir for the stdio MCP shim (`workflow.mcp_server`). | `$WORKFLOW_DATA_DIR/default-universe`. |
-| `UNIVERSE_SERVER_DEFAULT_UNIVERSE` | Which universe ID is active when none explicit. | First subdir of `$WORKFLOW_DATA_DIR`. |
-| `WORKFLOW_REPO_ROOT` | Path to the local git checkout for `workflow.producers.goal_pool` + git-backed catalog writes. When unset, resolved via `Path(__file__).resolve().parent.parent`. | Derived from module path. |
-| `WORKFLOW_WIKI_PATH` | Canonical root for the cross-project knowledge wiki the `wiki` tool reads/writes. Resolved via `workflow.storage.wiki_path()`; inherits `data_dir()` platform handling when unset. | `$WORKFLOW_DATA_DIR/wiki` (platform default). |
-| `WORKFLOW_UPLOAD_WHITELIST` | Colon/semicolon-separated absolute-path prefixes allowed for `add_canon_from_path`. Unset = accept any absolute path. | Unset (permissive). |
+Load-bearing invariants stay inline (don't make a reader open the catalog to
+honor these):
 
-### Auth + identity
-
-| Var | Purpose | Default |
-|-----|---------|---------|
-| `UNIVERSE_SERVER_USER` | Username the Workflow Server credits for commit-authorship + ledger write-author + request claims. Required for paid-market claims; otherwise falls back. | `anonymous`. |
-| `UNIVERSE_SERVER_HOST_USER` | Host-identity username used when a request is claimed by the box running the daemon (as opposed to an individual operator). | `host`. |
-| `UNIVERSE_SERVER_AUTH` | Auth mode. `"true"` / `"1"` enables OAuth-gated MCP. Disabled by default for single-operator dev. | `false`. |
-| `UNIVERSE_SERVER_PORT` | Port used by `workflow.auth.wellknown` when emitting OAuth metadata URLs. | `8001`. |
-| `WORKFLOW_GIT_AUTHOR` | Verbatim override for git commit author (e.g. `"Workflow User <user@users.noreply.workflow.local>"`). Highest precedence; falls through to `UNIVERSE_SERVER_USER`-derived synthetic. | Unset (synthetic from `UNIVERSE_SERVER_USER`). |
-
-### Feature flags
-
-Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-insensitive). Defaults chosen so out-of-the-box behavior matches current tier-1 contract.
-
-| Var | Purpose | Default |
-|-----|---------|---------|
-| `WORKFLOW_DISPATCHER_ENABLED` | Master switch for the dispatcher. Off = every request runs inline; on = dispatch goes through the claim/bid surface. | `on`. |
-| `WORKFLOW_PAID_MARKET` | Enables the paid-market bid/claim surface. `WORKFLOW_DISPATCHER_ENABLED` must also be on. Phase-G flag. | `off`. |
-| `WORKFLOW_GOAL_POOL` | Enables the goal-pool producer in `workflow.producers.goal_pool` — cross-branch goal aggregation. | `off`. |
-| `WORKFLOW_PRODUCER_INTERFACE` | Enables the producer-interface surface — multi-producer concurrency for branches. | `on`. |
-| `WORKFLOW_TIERED_SCOPE` | Enables the tiered-memory-scope retrieval router (`workflow.retrieval.router`). Memory scope is tier-gated (node/branch/goal/user/universe). | `off` (Stage 1 monitoring; flip to `on` at Stage 2c per task #19). |
-| `GATES_ENABLED` | Enables outcome-gate claims (Phase 6). When off, `gates` tool returns placeholder. | `off`. |
-| `WORKFLOW_STORAGE_BACKEND` | Catalog storage backend selection. Values: empty (default), `"git"`, `"sqlite"`. | Empty (auto-select per backend factory). |
-| `WORKFLOW_RUN_MAX_CONCURRENT` | Integer cap on concurrent in-flight branch runs. | Unset = unlimited. |
-
-### LLM + provider routing
-
-| Var | Purpose | Default |
-|-----|---------|---------|
-| `OLLAMA_HOST` | Local Ollama endpoint URL. Presence is the "local-LLM-bound" signal `get_status` reports. | Unset. |
-| `ANTHROPIC_BASE_URL` | Alternate Anthropic endpoint (e.g. self-hosted relay). Presence also flips `llm_endpoint_bound` to truthy. | Unset. |
-| `WORKFLOW_PIN_WRITER` | Pin a specific writer provider by name (e.g. `"claude-code"`, `"codex"`). Overrides the provider router's fallback chain. | Unset. |
-| `WORKFLOW_CODEX_AUTH_JSON_B64` | Base64-encoded `~/.codex/auth.json` bundle for the Codex provider's subscription auth. `deploy/docker-entrypoint.sh` decodes it on container startup and writes `~/.codex/auth.json`; rotate on each Codex CLI re-auth. | Unset. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Preferred Claude provider auth on the droplet: a `claude setup-token` long-lived token Claude Code reads straight from the env (no file, rotation-safe). The entrypoint reports it when present and no credentials file exists. Same secret the CI workers use. | Unset. |
-| `WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64` | Base64 of a subscription `~/.claude/.credentials.json` bundle (the Codex-style mirror). `deploy/docker-entrypoint.sh` decodes it to `$CLAUDE_CONFIG_DIR/.credentials.json` only when that file is missing (first boot / volume recovery), never clobbering a rotated in-place token. A fresh `/data` volume with neither this nor `CLAUDE_CODE_OAUTH_TOKEN` leaves claude-code "Not logged in" (2026-06-25 loop-wedge root cause). | Unset. |
-| `WORKFLOW_ALLOW_API_KEY_PROVIDERS` | Explicit opt-in for API-key-backed daemon providers. Default project-wide policy, including self-hosted daemons, is subscription-only: API-key env vars are ignored unless this is truthy. Use only when the host deliberately chooses to run an API-key daemon. | `off` |
-| `WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY` | Deprecated no-op placeholder retained in `deploy/compose.yml` and `deploy/workflow-env.template` for migration safety. No code path reads this flag; use `WORKFLOW_ALLOW_API_KEY_PROVIDERS` directly. | Unset (no-op). |
-| `OPENAI_API_KEY` | Stripped by `deploy/docker-entrypoint.sh` unless `WORKFLOW_ALLOW_API_KEY_PROVIDERS=1`. The legacy `codex login --with-api-key` path is intentionally not run; Codex auth flows through `WORKFLOW_CODEX_AUTH_JSON_B64`. | Unset. |
-| `GEMINI_API_KEY` / `GROQ_API_KEY` / `XAI_API_KEY` | Provider API keys for the Gemini / Groq / Grok providers respectively. Ignored unless `WORKFLOW_ALLOW_API_KEY_PROVIDERS` is truthy. | Unset. |
-| `FANTASY_DAEMON_LLM_TYPES` | Comma-separated list of LLM types the fantasy daemon prefers (e.g. `"claude,codex"`). Filters provider selection. | Unset. |
-
-### Observability + uptime
-
-| Var | Purpose | Default |
-|-----|---------|---------|
-| `WORKFLOW_MCP_CANARY_URL` | Public MCP URL the uptime canary probes. | `https://tinyassets.io/mcp` (canonical apex; `mcp.tinyassets.io` is an Access-gated internal tunnel origin, not user-facing — host directive 2026-04-20). |
-| `TAB_WATCHDOG_INTERVAL_S` | Interval (seconds) for the tray tab-watchdog's polling. `scripts/tab_watchdog.py`. | `60`. |
-| `WORKFLOW_CLAUDE_CHAT_SCREENSHOTS` | User-sim skill flag — capture a screenshot on every `claude_chat.py` response settle. Cost: ~200 KB per response. | Unset (off). |
-
-**Canonical resolver:** `workflow.storage.data_dir()` is the single
-source of truth for `WORKFLOW_DATA_DIR` resolution. Do not re-implement
-the precedence logic elsewhere — call the resolver.
-
-**Container deploys:** set `WORKFLOW_DATA_DIR=/data` + bind-mount the
-host path to `/data`. See `deploy/README.md` for the full pattern.
-
-### Local secrets — vault-first
-
-Local operator secrets (Cloudflare tokens, DigitalOcean token, Hetzner creds, OpenAI key) load from a password manager, not a plaintext file. Vendor is chosen via `WORKFLOW_SECRETS_VENDOR` — `1password` (default), `bitwarden`, or `plaintext` (migration-period opt-out, to be retired after cutover).
-
-Bootstrap on a fresh machine:
-
-```bash
-# 1. install vendor CLI (see docs/design-notes/2026-04-22-secrets-vault-integration.md)
-# 2. sign in:
-eval $(op signin)                       # 1Password
-# or: bw login && export BW_SESSION=$(bw unlock --raw)   # Bitwarden
-# 3. load into current shell:
-set -a; source scripts/load_secrets.sh; set +a
-```
-
-One-shot migration from the legacy `$HOME/workflow-secrets.env`:
-
-```bash
-python scripts/migrate_secrets_to_vault.py --vendor 1password --dry-run
-python scripts/migrate_secrets_to_vault.py --vendor 1password
-# verify, then shred ~/workflow-secrets.env
-```
-
-Canonical list of keys: `scripts/secrets_keys.txt` (edit there, not in shell profiles). Full rationale + vendor comparison + bootstrap runbook: `docs/design-notes/2026-04-22-secrets-vault-integration.md`. GitHub Actions secrets are out of scope — they stay in repo settings.
+- **Canonical, CWD-independent resolvers.** Path/data defaults must be
+  CWD-independent and go through the resolver APIs — `workflow.storage.data_dir()`
+  for `WORKFLOW_DATA_DIR`, `wiki_path()` for the wiki root — never `Path.cwd()`
+  logic or a re-implemented precedence.
+- **Container deploys.** Set `WORKFLOW_DATA_DIR=/data` + bind-mount the host path
+  to `/data` (`deploy/README.md`).
+- **Subscription-only by default.** API-key provider env vars (`OPENAI_API_KEY`,
+  `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, …) are ignored unless
+  `WORKFLOW_ALLOW_API_KEY_PROVIDERS` is truthy.
+- **Local secrets are vault-first.** Load via
+  `set -a; source scripts/load_secrets.sh; set +a` (`WORKFLOW_SECRETS_VENDOR` =
+  `1password` default / `bitwarden` / `plaintext`), never a committed plaintext
+  file. Canonical keys: `scripts/secrets_keys.txt`.
 
 ---
 
@@ -695,5 +534,7 @@ Canonical list of keys: `scripts/secrets_keys.txt` (edit there, not in shell pro
 | `knowledge/*.md` | Any human or AI | Human-readable compiled knowledge companion to `knowledge.db`. |
 | `docs/exec-plans/*.md` | Any AI, any tool | Multi-step execution plans and landing history. |
 | `docs/conventions.md` | Any AI, any tool | Stable documentation and linking patterns. |
+| `docs/reference/environment-variables.md` | Any AI, any tool | Canonical env-var catalog (pointer-loaded per ADR-002; AGENTS.md keeps the invariants + pointer). |
+| `docs/reference/worktree-discipline.md` | Any AI, any tool | Canonical worktree/branch lane procedure (pointer-loaded per ADR-002; AGENTS.md keeps the invariants + pointer). |
 | `docs/decisions/INDEX.md` | Any AI, any tool | ADR directory surface. |
 | `docs/specs/INDEX.md` | Any AI, any tool | Feature/change spec directory surface. |
