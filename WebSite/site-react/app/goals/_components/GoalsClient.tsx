@@ -279,7 +279,7 @@ export default function GoalsClient() {
                   <li key={g.id || g.name} className={`goal${phase !== "live" ? " goal--baked" : ""}`}>
                     <div className="goal__top">
                       <h3 className="goal__name">
-                        <a className="goal__link" href={`/goals/${g.id}`}>{g.name}</a>
+                        <a className="goal__link" href={`/goal/?id=${g.id}`}>{g.name}</a>
                       </h3>
                       {g.description && (
                         <p className="goal__desc">{g.description}</p>
@@ -305,7 +305,7 @@ export default function GoalsClient() {
                     )}
 
                     <footer className="goal__foot">
-                      <Tick href={`/goals/${g.id}`} label={`goal ${g.id || "unknown"}`} />
+                      <Tick href={`/goal/?id=${g.id}`} label={`goal ${g.id || "unknown"}`} />
                     </footer>
                   </li>
                 ))}
@@ -336,8 +336,8 @@ export default function GoalsClient() {
               <ul className="board__debris-list">
                 {debrisGoals.map((g) => (
                   <li key={g.id || g.name}>
-                    <a href={`/goals/${g.id}`}>{g.name}</a>
-                    <Tick href={`/goals/${g.id}`} label={`goal ${g.id || "unknown"}`} />
+                    <a href={`/goal/?id=${g.id}`}>{g.name}</a>
+                    <Tick href={`/goal/?id=${g.id}`} label={`goal ${g.id || "unknown"}`} />
                   </li>
                 ))}
               </ul>

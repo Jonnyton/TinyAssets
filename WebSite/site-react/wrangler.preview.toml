@@ -8,3 +8,5 @@ compatibility_date = "2025-06-01"
 [assets]
 directory = "./out"
 binding = "ASSETS"
+# Serve out/404.html for unmatched paths so the SPA fallback (deep-linked goals) works.
+not_found_handling = "404-page"

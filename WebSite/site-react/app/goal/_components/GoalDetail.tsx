@@ -14,13 +14,12 @@
 
 import * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
-import { callTool } from "../../../../lib/live";
-import bakedMcp from "../../../../lib/mcp-snapshot.json";
-import { fmtStamp, fmtRel } from "../../../../lib/fmt";
-import Ladder from "../../../../components/Ladder";
-import Term from "../../../../components/Term";
-import Tick from "../../../../components/Tick";
+import { callTool } from "../../../lib/live";
+import bakedMcp from "../../../lib/mcp-snapshot.json";
+import { fmtStamp, fmtRel } from "../../../lib/fmt";
+import Ladder from "../../../components/Ladder";
+import Term from "../../../components/Term";
+import Tick from "../../../components/Tick";
 
 type Rung = { key?: string; name: string; description?: string; lit?: boolean; evidence_url?: string };
 type Goal = {
@@ -107,9 +106,7 @@ function fromLive(raw: any, gid: string): Goal | null {
   };
 }
 
-export default function GoalDetailClient() {
-  const params = useParams();
-  const id = String((params?.id as string) ?? "");
+export default function GoalDetail({ id }: { id: string }) {
 
   // First paint: baked if present (instant, stamped with the snapshot date).
   const bakedStamp = fmtStamp((bakedMcp as any).fetched_at);
