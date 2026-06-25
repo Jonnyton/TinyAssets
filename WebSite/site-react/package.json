@@ -1,0 +1,25 @@
+{
+  "name": "tinyassets-site-react",
+  "version": "0.1.0",
+  "private": true,
+  "description": "tinyassets.io — Workflow/Tiny site, React/Next migration of WebSite/site (Svelte). Consumes @tiny/design-system.",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@tiny/design-system": "file:../design-system",
+    "next": "14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.5.0"
+  }
+}
