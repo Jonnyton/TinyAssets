@@ -146,6 +146,64 @@ def _rubric_only_violations(packet: dict) -> list:
     except Exception:  # noqa: BLE001 — fail-open: never break the gate on a rubric bug
         return []
 
+
+#: Coding-lane trajectory (path-quality) eval mode flag. "warn" (default):
+#: compute the trajectory eval and annotate the decision with
+#: `trajectory_warnings` on a channel SEPARATE from `rubric_warnings`, but NEVER
+#: block. "off": skip entirely. There is deliberately NO "enforce" in this slice
+#: — gating on path quality is a future host-gated step that would add a blocking
+#: path here (see docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md
+#: S3). Kept on its own channel so it can never double-report the output-rubric
+#: block rules (the S2 de-overlap lesson).
+TRAJECTORY_MODE_FLAG: str = "WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE"
+
+
+def _trajectory_mode() -> str:
+    """Coding-lane trajectory eval mode: 'off' | 'warn' (default).
+
+    Unknown values (including a premature 'enforce') resolve to 'warn' — this
+    slice never blocks on trajectory.
+    """
+    import os
+
+    mode = os.environ.get(TRAJECTORY_MODE_FLAG, "warn").strip().lower()
+    return "off" if mode == "off" else "warn"
+
+
+def _trajectory_warnings(packet: dict) -> list:
+    """Path-quality warnings for the trajectory warn period.
+
+    Surfaces one record per applicable failing check, but only when the eval is
+    CONCLUSIVE and its verdict is ``fail`` — i.e. exactly what a future enforce
+    mode would block — so the warn ledger measures the real prospective
+    block-rate. Inconclusive (skip) or passing trajectories yield nothing.
+
+    Fail-open by design: any exception yields an empty list, so a trajectory-eval
+    bug can never break the live ship gate.
+    """
+    try:
+        from workflow.evaluation.coding_process import (
+            coding_trajectory_from_packet,
+            evaluate_coding_trajectory,
+        )
+
+        result = evaluate_coding_trajectory(coding_trajectory_from_packet(packet))
+        if not result.conclusive or result.verdict != "fail":
+            return []
+        return [
+            {
+                "event": "trajectory_warning",
+                "check": check.name,
+                "score": check.score,
+                "observation": check.observation,
+            }
+            for check in result.checks
+            if check.applicable and not check.passed
+        ]
+    except Exception:  # noqa: BLE001 — fail-open: never break the gate on an eval bug
+        return []
+
+
 #: Heuristic regex patterns flagging probable secrets in diff content.
 #: Conservative — false positives are tolerable; false negatives ship secrets.
 SECRET_REGEX_PATTERNS: tuple[str, ...] = (
@@ -505,6 +563,13 @@ def validate_ship_request(packet: dict[str, Any]) -> dict[str, Any]:
             else:  # warn
                 rubric_warnings = _rubric_only
 
+    # §6.5 — coding-lane trajectory (path-quality) eval. Warn-only: annotates
+    # `trajectory_warnings` on a SEPARATE channel from `rubric_warnings` and
+    # NEVER blocks (no enforce path in this slice). Fail-open.
+    trajectory_warnings: list = []
+    if _trajectory_mode() != "off":
+        trajectory_warnings = _trajectory_warnings(packet)
+
     # Decision
     if violations:
         return {
@@ -515,6 +580,7 @@ def validate_ship_request(packet: dict[str, Any]) -> dict[str, Any]:
             "rollback_handle": None,
             "dry_run": True,
             "rubric_warnings": rubric_warnings,
+            "trajectory_warnings": trajectory_warnings,
         }
 
     # Passed — compute rollback handle from packet
@@ -532,4 +598,5 @@ def validate_ship_request(packet: dict[str, Any]) -> dict[str, Any]:
         "rollback_handle": f"revert:{handle_target}",
         "dry_run": True,
         "rubric_warnings": rubric_warnings,
+        "trajectory_warnings": trajectory_warnings,
     }

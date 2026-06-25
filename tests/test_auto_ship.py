@@ -93,6 +93,76 @@ class TestRubricMode:
         assert d["validation_result"] == "passed"
 
 
+# ── §6.5 coding-lane trajectory eval (warn-only, separate channel) ─────────
+
+
+class TestTrajectoryMode:
+    """The trajectory eval runs warn-only by default — it annotates
+    `trajectory_warnings` on a channel SEPARATE from `rubric_warnings` and NEVER
+    changes the pass/block decision. ``parent_loop_status="receipt_waiting"``
+    forces a conclusive trajectory FAIL (child_integrity is critical) without
+    touching the envelope, so it isolates the warn behavior."""
+
+    def _fail_traj_packet(self) -> dict:
+        return _valid_packet(parent_loop_status="receipt_waiting")
+
+    def test_warn_is_default_and_never_blocks(self, monkeypatch):
+        monkeypatch.delenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", raising=False)
+        d = validate_ship_request(self._fail_traj_packet())
+        # decision unchanged — envelope still passes
+        assert d["validation_result"] == "passed"
+        assert d["would_open_pr"] is True
+        assert d["violations"] == []
+        # but the path-quality concern is surfaced
+        assert d["trajectory_warnings"], "expected a trajectory warning"
+        checks = {w["check"] for w in d["trajectory_warnings"]}
+        assert "child_integrity" in checks
+        assert all(w["event"] == "trajectory_warning" for w in d["trajectory_warnings"])
+
+    def test_off_mode_skips_trajectory(self, monkeypatch):
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "off")
+        d = validate_ship_request(self._fail_traj_packet())
+        assert d["validation_result"] == "passed"
+        assert d["trajectory_warnings"] == []
+
+    def test_clean_packet_has_no_trajectory_warnings(self, monkeypatch):
+        monkeypatch.delenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", raising=False)
+        d = validate_ship_request(_valid_packet())
+        assert d["trajectory_warnings"] == []
+
+    def test_warn_never_changes_decision(self, monkeypatch):
+        # The decision must be byte-identical with trajectory off vs warn.
+        packet = self._fail_traj_packet()
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "off")
+        off = validate_ship_request(packet)
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "warn")
+        warn = validate_ship_request(packet)
+        assert off["validation_result"] == warn["validation_result"]
+        assert off["would_open_pr"] == warn["would_open_pr"]
+        assert off["violations"] == warn["violations"]
+
+    def test_premature_enforce_resolves_to_warn(self, monkeypatch):
+        # There is no trajectory enforce path yet; 'enforce' must NOT block.
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
+        d = validate_ship_request(self._fail_traj_packet())
+        assert d["validation_result"] == "passed"
+        assert d["would_open_pr"] is True
+        assert d["trajectory_warnings"], "enforce behaves as warn: still annotates"
+
+    def test_fail_open_on_eval_error(self, monkeypatch):
+        # A bug in the trajectory eval must never break the live gate.
+        import workflow.evaluation.coding_process as cp
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("simulated eval bug")
+
+        monkeypatch.setattr(cp, "evaluate_coding_trajectory", _boom)
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "warn")
+        d = validate_ship_request(self._fail_traj_packet())
+        assert d["validation_result"] == "passed"
+        assert d["trajectory_warnings"] == []
+
+
 # ── Phase-1 dry-run shape contract ────────────────────────────────────────
 
 

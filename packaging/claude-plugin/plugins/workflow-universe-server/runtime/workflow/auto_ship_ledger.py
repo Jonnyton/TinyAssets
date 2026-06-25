@@ -133,6 +133,11 @@ class ShipAttempt:
     # Forward-compat-safe like the Slice C fields above — from_dict ignores
     # unknown keys, so older runtimes still read newer rows and vice versa.
     rubric_warnings_json: str = ""
+    # Trajectory warn-mode observability: JSON list of path-quality warnings
+    # (one per failing trajectory check) recorded when
+    # WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE=warn (see auto_ship.py S3 wiring).
+    # SEPARATE channel from rubric_warnings_json. Forward-compat-safe.
+    trajectory_warnings_json: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -353,6 +358,48 @@ def summarize_rubric_warnings(
     }
 
 
+def summarize_trajectory_warnings(
+    universe_path: Path, *, limit: int | None = None,
+) -> dict:
+    """Read-only observability for the trajectory warn-mode period.
+
+    Aggregates ``trajectory_warnings_json`` across recorded attempts so the host
+    can see the real path-quality failure rate BEFORE any decision to gate on
+    trajectory (see docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md
+    S3). Returns total attempts scanned, how many carried trajectory warnings,
+    and per-``check`` counts (descending). Reads via the standard locked read
+    path; does not mutate any ledger row. Robust to hand-edited/corrupt rows
+    (non-list or unparseable ``trajectory_warnings_json`` is skipped, never
+    raises).
+    """
+    if not ledger_path(universe_path).exists():
+        return {"total_attempts": 0, "attempts_with_warnings": 0, "check_counts": {}}
+    attempts = read_attempts(universe_path, limit=limit)
+    check_counts: dict[str, int] = {}
+    warned = 0
+    for attempt in attempts:
+        raw = attempt.trajectory_warnings_json or ""
+        if not raw:
+            continue
+        try:
+            warns = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(warns, list) or not warns:
+            continue
+        warned += 1
+        for w in warns:
+            check = w.get("check", "?") if isinstance(w, dict) else "?"
+            check_counts[check] = check_counts.get(check, 0) + 1
+    return {
+        "total_attempts": len(attempts),
+        "attempts_with_warnings": warned,
+        "check_counts": dict(
+            sorted(check_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ),
+    }
+
+
 def record_attempt(universe_path: Path, attempt: ShipAttempt) -> None:
     """File-locked append. Validates ``ship_status``; stamps timestamps
     if missing.
@@ -499,5 +546,8 @@ def attempt_from_decision(
         error_message=error_message,
         rubric_warnings_json=json.dumps(
             decision.get("rubric_warnings") or [], default=str
+        ),
+        trajectory_warnings_json=json.dumps(
+            decision.get("trajectory_warnings") or [], default=str
         ),
     )

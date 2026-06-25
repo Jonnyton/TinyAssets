@@ -173,22 +173,34 @@ de-overlap the S2 enforce-set narrowing taught us. Two source normalizers exist:
 `coding_trajectory_from_packet` (thin, gate-time) and `coding_trajectory_from_run`
 (rich, post-run from run record + events).
 
-### Wiring plan (gated; not landed)
+### Wiring plan — warn-only LANDED 2026-06-25 (Codex SHIP)
 Same warn→enforce ladder as S2, on a separate channel:
-1. **Warn-only**: compute `evaluate_coding_trajectory(coding_trajectory_from_packet(packet))`
-   in `validate_ship_request`, attach `trajectory_warnings` to the decision +
-   persist a `trajectory_warnings_json` ledger column (mirror the S2 plumbing).
-   Never changes pass/block. Fail-open like the rubric path.
-2. **Watched period**: aggregate via a `summarize_trajectory_warnings` helper
-   (mirror `summarize_rubric_warnings`) to measure the real failure rate before
-   any gating.
-3. **Host flip**: only after the warn rate is acceptable AND opposite-provider
-   review re-confirms. The richer `coding_trajectory_from_run` source (needs
-   `run_id` + `list_events`) is a later slice — gate-time uses the packet view.
+1. **Warn-only — LANDED.** `validate_ship_request` computes
+   `evaluate_coding_trajectory(coding_trajectory_from_packet(packet))` behind
+   `WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE` (default `warn`; `off` skips). It attaches
+   `trajectory_warnings` to BOTH decision dicts and NEVER touches `violations`;
+   one record per failing applicable check, emitted only when the eval is
+   conclusive AND verdict==`fail` (= what enforce would block, so the warn rate
+   measures the real prospective block-rate). Fail-open. There is deliberately
+   **no enforce path** — a premature `enforce` value resolves to `warn` (an env
+   typo must not create a production gate failure). Ledger: additive
+   `trajectory_warnings_json` column (forward-compat) populated by
+   `attempt_from_decision`. **Zero block-behavior change** (Codex-verified).
+2. **Watched period — ready.** `summarize_trajectory_warnings(universe_path)`
+   aggregates `{total_attempts, attempts_with_warnings, check_counts}` (counts by
+   `check`, mirrors `summarize_rubric_warnings`) to measure the real path-failure
+   rate before any gating discussion.
+3. **Host flip (future, gated):** only after the warn rate is acceptable AND
+   opposite-provider review re-confirms; adding an enforce path is its own slice.
+   **Watch item (Codex 2026-06-25):** if `child_integrity` warnings turn out to
+   be dominated by thin-packet / receipt-state artifacts rather than real bad
+   execution paths, the packet-time source is too weak — prioritize the richer
+   run-event-backed `coding_trajectory_from_run` source BEFORE any enforce talk.
 
 ### Gate status
-Pure scorer + 31 tests landed; opposite-provider (Codex) review of schema +
-thresholds + false-positive behavior returned **SHIP** (2026-06-25, thread
-`019f0022`, after one ADAPT round that fixed the verdict-offset rule, the
-`coding_trajectory_from_run` event-parsing provenance, and the receipt-gate
-status check). Warn-only wiring is the next gated slice.
+Pure scorer + 31 tests SHIP'd (Codex, thread `019f0022`, after one ADAPT round:
+verdict-offset rule, `coding_trajectory_from_run` event-parsing provenance,
+receipt-gate status check). Warn-only gate wiring + ledger observability then
+SHIP'd on the same thread (zero block-behavior change verified). The remaining
+work is host/navigator-gated: the watched warn period, then an enforce-path
+slice — neither safely autonomous.

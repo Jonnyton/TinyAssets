@@ -35,6 +35,7 @@ from workflow.auto_ship_ledger import (
     read_attempts,
     record_attempt,
     summarize_rubric_warnings,
+    summarize_trajectory_warnings,
     update_attempt,
 )
 
@@ -116,6 +117,82 @@ def test_summarize_rubric_warnings_robust_to_malformed(tmp_path):
     row.rubric_warnings_json = "1"  # valid JSON, not a list
     record_attempt(tmp_path, row)
     summary = summarize_rubric_warnings(tmp_path)
+    assert summary["total_attempts"] == 1
+    assert summary["attempts_with_warnings"] == 0
+
+
+# ── trajectory warn-mode observability (separate channel from rubric) ──────
+
+
+def test_attempt_from_decision_persists_trajectory_warnings():
+    decision = {
+        "validation_result": "passed",
+        "would_open_pr": True,
+        "violations": [],
+        "rollback_handle": "revert:x",
+        "trajectory_warnings": [
+            {"event": "trajectory_warning", "check": "child_integrity", "score": 0.3},
+            {"event": "trajectory_warning", "check": "terminal_health", "score": 0.1},
+        ],
+    }
+    row = attempt_from_decision(decision=decision, request_id="t1")
+    parsed = json.loads(row.trajectory_warnings_json)
+    assert {w["check"] for w in parsed} == {"child_integrity", "terminal_health"}
+    # separate channel — rubric stays empty
+    assert row.rubric_warnings_json == "[]"
+
+
+def test_attempt_from_decision_empty_trajectory_warnings_default():
+    row = attempt_from_decision(
+        decision={"validation_result": "passed", "would_open_pr": True},
+        request_id="t2",
+    )
+    assert row.trajectory_warnings_json == "[]"
+
+
+def test_from_dict_defaults_trajectory_warnings_for_old_rows():
+    old = {
+        "ship_attempt_id": "ship_20260101_bbbbbbbb",
+        "created_at": "t",
+        "updated_at": "t",
+        "ship_status": "skipped",
+    }
+    assert ShipAttempt.from_dict(old).trajectory_warnings_json == ""
+
+
+def test_summarize_trajectory_warnings_aggregates(tmp_path):
+    warn_sets = [
+        [{"check": "child_integrity"}],
+        [{"check": "child_integrity"}, {"check": "terminal_health"}],
+        [],
+    ]
+    for i, warns in enumerate(warn_sets):
+        dec = {
+            "validation_result": "passed",
+            "would_open_pr": True,
+            "trajectory_warnings": warns,
+        }
+        record_attempt(tmp_path, attempt_from_decision(decision=dec, request_id=f"t{i}"))
+    summary = summarize_trajectory_warnings(tmp_path)
+    assert summary["total_attempts"] == 3
+    assert summary["attempts_with_warnings"] == 2
+    assert summary["check_counts"]["child_integrity"] == 2
+    assert summary["check_counts"]["terminal_health"] == 1
+
+
+def test_summarize_trajectory_warnings_robust_to_malformed(tmp_path):
+    assert summarize_trajectory_warnings(tmp_path) == {
+        "total_attempts": 0,
+        "attempts_with_warnings": 0,
+        "check_counts": {},
+    }
+    row = attempt_from_decision(
+        decision={"validation_result": "passed", "would_open_pr": True},
+        request_id="tx",
+    )
+    row.trajectory_warnings_json = "1"  # valid JSON, not a list
+    record_attempt(tmp_path, row)
+    summary = summarize_trajectory_warnings(tmp_path)
     assert summary["total_attempts"] == 1
     assert summary["attempts_with_warnings"] == 0
 
