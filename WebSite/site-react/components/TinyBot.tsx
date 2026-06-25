@@ -98,6 +98,7 @@ const OWN_UI_SELECTOR = [
   .filter(Boolean)
   .map((className) => `.${className}`)
   .join(", ");
+const OWN_UI_WITH_NAV_SELECTOR = OWN_UI_SELECTOR ? `${OWN_UI_SELECTOR}, nav` : "nav";
 
 const initialView: TinyBotView = {
   vitals: null,
@@ -295,7 +296,11 @@ export function TinyBot() {
   }
 
   function ownUi(el: Element): boolean {
-    return !!el.closest(`${OWN_UI_SELECTOR}, nav`);
+    return !!el.closest(OWN_UI_WITH_NAV_SELECTOR);
+  }
+
+  function ownWidgetUi(el: Element): boolean {
+    return OWN_UI_SELECTOR ? !!el.closest(OWN_UI_SELECTOR) : false;
   }
 
   // The block your mouse is on — climbing out of too-small or absurd matches.
@@ -442,7 +447,7 @@ export function TinyBot() {
   }
 
   function contextLine(el: Element): { key: string; lines: string[] } | null {
-    if (el.closest(OWN_UI_SELECTOR)) return null;
+    if (ownWidgetUi(el)) return null;
     const a = el.closest("a[href]");
     if (a) {
       const href = a.getAttribute("href") ?? "";

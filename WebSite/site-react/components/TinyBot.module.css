@@ -3,8 +3,20 @@
 .head {}
 .torso {}
 .arm {}
+.arm--l {}
+.arm--r {}
 .leg {}
+.leg--l {}
+.leg--r {}
 .zz {}
+.z1 {}
+.z2 {}
+.above {}
+.asleep {}
+.is-hiding {}
+.pant {}
+.skid {}
+.waving {}
 
 /* ---------- shy mode: the hiding-spot window ---------- */
 .tiny-shy {
