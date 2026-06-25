@@ -114,3 +114,81 @@ Plugin mirror rebuilt. **Zero production block-behavior change.**
 5. **Widen later**: re-add `child_output_evidence_missing` (the
    `child_candidate_patch_packet` half only) + `contradictory_child_claim`
    with envelope-overlap suppression.
+
+## S3 — coding-lane trajectory evaluator (pure scorer landed 2026-06-25)
+
+The third verification leg from the whitepaper — *was the execution **path**
+sound?* — now has a coding-lane implementation, addressing the Codex ADAPT
+point (don't reuse the scene evaluator; define a coding-specific schema +
+thresholds + false-positive behavior first). **What landed is pure and
+unwired** (`workflow/evaluation/coding_process.py`, imported only by its test) —
+zero behavior change, the same harmless beachhead state `coding_packet_rubric.py`
+itself started in. Gating is deferred (host-gated, like the enforce flip).
+
+### Grounding (verified against code, not assumed)
+The coding lane emits **no `quality_trace`** (that is prose-lane only). Its path
+data is assembled from a run record + `run_events` + `provider_calls` +
+`child_failures` + `__system__` telemetry, all keyed by `run_id`
+(`workflow/runs.py`). So this is genuinely new, not a port. Real signals scored:
+`recursion_limit_applied` (runs.py ~2328), `provider_calls[].attempts/degraded`
+(~2223), `failure_class` from `_classify_failure` (~4006) + `ACTIONABLE_BY`,
+`child_failures[].failure_class` (`ChildFailure`, ~1953), receipt-waiting gate
+(~2410), `run_events` node statuses (~2178).
+
+### Schema
+`evaluate_coding_trajectory(trajectory) -> CodingTrajectoryEvaluation`, kind
+`process` (mirrors `process.py`). Five weighted dimensions, each returning
+`applicable` / `passed` / `score` / `observation`:
+
+| Dimension | Weight | Signal | Heaviest because / lightest because |
+|---|---|---|---|
+| `terminal_health` | 0.25 | `run_status` + `failure_class` | clean terminal vs infra-failure path |
+| `child_integrity` | 0.25 | `child_failures`, receipt-waiting | child evidence grounds any coding KEEP |
+| `provider_efficiency` | 0.20 | `provider_calls[].attempts/degraded` | excessive retries / degraded = unhealthy path |
+| `recursion_discipline` | 0.15 | `recursion_limit_applied` (+empty output) | negative signal; absence is good |
+| `node_progression` | 0.15 | `run_events` statuses | lightest: `step_index` is an opaque cursor |
+
+### False-positive behavior (the Codex-required piece)
+1. **Only positive evidence deducts.** A signal that is simply absent makes its
+   check `applicable=False` and is **excluded from the aggregate** — never a
+   failure. (Thin gate-time packets therefore don't manufacture failures.)
+2. **`< 2` applicable checks → `skip`** (inconclusive), surfaced via the
+   reserved `EvalResult` not-applicable score `-1.0`. Warn mode emits nothing,
+   and any future enforce mode never blocks, on insufficient data.
+3. **A conclusive eval `fail`s via either path:** (a) a *critical* applicable
+   check fails — `terminal_health` or `child_integrity`, the two `.25`-weight
+   ground-truth dims — in which case it fails regardless of aggregate (so a hard
+   terminal failure or a broken child run can't be offset by clean modifier
+   checks); or (b) a *non-critical* applicable check fails **and** the weighted
+   aggregate is below `pass_threshold` (default 0.8). `>= pass_threshold` passes
+   for non-critical failures, matching the rubric's `>= 9.0` KEEP convention.
+
+### Separate axis — no double-report with the output rubric (S2 lesson)
+This scores **path quality** (a number); `validate_coding_packet_rubric` scores
+**claim validity** (block rules). Signals they share (`recursion_limit_applied`,
+child attachment) are *quality deductions* here, not re-emitted block rules.
+When this is later wired into the ship gate it must surface on its own
+`trajectory_warnings` channel, **distinct from `rubric_warnings`** — exactly the
+de-overlap the S2 enforce-set narrowing taught us. Two source normalizers exist:
+`coding_trajectory_from_packet` (thin, gate-time) and `coding_trajectory_from_run`
+(rich, post-run from run record + events).
+
+### Wiring plan (gated; not landed)
+Same warn→enforce ladder as S2, on a separate channel:
+1. **Warn-only**: compute `evaluate_coding_trajectory(coding_trajectory_from_packet(packet))`
+   in `validate_ship_request`, attach `trajectory_warnings` to the decision +
+   persist a `trajectory_warnings_json` ledger column (mirror the S2 plumbing).
+   Never changes pass/block. Fail-open like the rubric path.
+2. **Watched period**: aggregate via a `summarize_trajectory_warnings` helper
+   (mirror `summarize_rubric_warnings`) to measure the real failure rate before
+   any gating.
+3. **Host flip**: only after the warn rate is acceptable AND opposite-provider
+   review re-confirms. The richer `coding_trajectory_from_run` source (needs
+   `run_id` + `list_events`) is a later slice — gate-time uses the packet view.
+
+### Gate status
+Pure scorer + 31 tests landed; opposite-provider (Codex) review of schema +
+thresholds + false-positive behavior returned **SHIP** (2026-06-25, thread
+`019f0022`, after one ADAPT round that fixed the verdict-offset rule, the
+`coding_trajectory_from_run` event-parsing provenance, and the receipt-gate
+status check). Warn-only wiring is the next gated slice.

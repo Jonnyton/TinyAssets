@@ -2,7 +2,8 @@
 
 Structural: Deterministic checks (no LLM cost).
 Editorial: Natural-language feedback from a different model family.
-Process: Trace-quality grading over the scene loop.
+Process: Trace-quality grading over the scene loop (prose) and the
+    execution path (coding / community-patch lane).
 Protocol: Unified Evaluator interface for all evaluation kinds.
 """
 
@@ -11,6 +12,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from workflow.evaluation.coding_process import (
+    CodingTrajectoryCheck,
+    CodingTrajectoryEvaluation,
+    coding_trajectory_from_packet,
+    coding_trajectory_from_run,
+    evaluate_coding_trajectory,
+)
 from workflow.evaluation.editorial import (
     EditorialConcern,
     EditorialNotes,
@@ -78,12 +86,17 @@ __all__ = [
     "EvaluatorKind",
     # Existing evaluation types
     "CheckResult",
+    "CodingTrajectoryCheck",
+    "CodingTrajectoryEvaluation",
     "EditorialConcern",
     "EditorialNotes",
     "ProcessCheck",
     "ProcessEvaluation",
     "StructuralEvaluator",
     "StructuralResult",
+    "coding_trajectory_from_packet",
+    "coding_trajectory_from_run",
+    "evaluate_coding_trajectory",
     "evaluate_scene_process",
     "read_editorial",
 ]
