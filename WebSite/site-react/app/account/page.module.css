@@ -1,0 +1,8 @@
+.page { }
+
+.page :global(.stub) { max-width: 600px; margin: 0 auto; display: grid; gap: 18px; padding: clamp(72px, 13vw, 130px) clamp(18px, 4vw, 32px); }
+.page :global(.eyebrow) { display: block; }
+.page :global(h1) { font-family: var(--font-display); font-size: clamp(32px, 5.5vw, 54px); font-weight: 400; letter-spacing: -0.03em; line-height: 1.02; margin: 6px 0 0; max-width: 18ch; }
+.page :global(.stub__line) { font-family: var(--font-voice); font-size: clamp(16px, 1.9vw, 19px); line-height: 1.6; color: var(--fg-2); margin: 0; max-width: 56ch; }
+.page :global(.stub__cta) { justify-self: start; margin-top: 4px; font-family: var(--font-sans); font-size: 14px; font-weight: 600; color: var(--fg-on-ember); background: var(--accent); padding: 11px 20px; border-radius: var(--radius-pill); text-decoration: none; transition: background var(--dur-fast) var(--ease-standard); }
+.page :global(.stub__cta:hover) { background: var(--accent-hover); text-decoration: none; }

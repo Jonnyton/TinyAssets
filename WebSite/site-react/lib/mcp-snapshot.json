@@ -1,0 +1,1324 @@
+{
+  "fetched_at": "2026-04-30T02:40:04.938Z",
+  "source": "tinyassets.io/mcp",
+  "stats": {
+    "wiki_promoted": 55,
+    "wiki_drafts": 8,
+    "goals": 6,
+    "universes": 3,
+    "edges": 130
+  },
+  "goals": [
+    {
+      "id": "62f977e7ff0c",
+      "name": "Play classic games on modern computers",
+      "summary": "Help a user identify an old game from memory, find a legal acquisition path, adapt it for their current machine, install or configure it with approval, create a launcher, and verify the game starts. Community branches under this Goal should be forkable recipes for lawful game restoration and compatibility, not piracy or DRM bypass.",
+      "tags": [
+        "classic-games",
+        "game-preservation",
+        "compatibility",
+        "local-app",
+        "installers",
+        "legal-provenance"
+      ],
+      "author": "anonymous",
+      "visibility": "public"
+    },
+    {
+      "id": "dd187997039b",
+      "name": "Connect public web sources to Workflow universes",
+      "summary": "Let a chatbot fetch a public source URL, store the snapshot in a Workflow universe through MCP, preserve attribution/provenance, and route proposed changes through branch/gate review before promotion. Echoes of the Cosmos Reddit/RSS is the first live example.",
+      "tags": [
+        "public-source",
+        "mcp",
+        "universe",
+        "echoes",
+        "reddit",
+        "community",
+        "canon-gate"
+      ],
+      "author": "anonymous",
+      "visibility": "public"
+    },
+    {
+      "id": "4ff5862cc26d",
+      "name": "Route a patch request through investigation, PR, release, and live observation",
+      "summary": "Community-driven live-state loop for Workflow changes. Any patch request starts as a wiki report, runs through the best known investigation branch, passes gate review, dispatches a coding-team branch to produce a PR, passes further gates, and is then observed after landing with real or simulated users. The goal is long-horizon self-improvement: gates can send work backward with edits whenever evidence shows the patch did not land or did not work as intended.",
+      "tags": [
+        "patch-loop",
+        "community",
+        "gatekeeping",
+        "pr",
+        "live-observation",
+        "self-improvement"
+      ],
+      "author": "anonymous",
+      "visibility": "public"
+    },
+    {
+      "id": "f10caea2e437",
+      "name": "Turn a Workflow bug into a patch packet",
+      "summary": "Given a filed Workflow bug report, produce an actionable patch packet: normalized bug summary, minimal repro, likely root cause map, implementation sketch, regression tests, and attachable maintainer comment. Intended to be run automatically after wiki action=file_bug via the canonical branch for this goal.",
+      "tags": [
+        "bugs",
+        "patch-packet",
+        "workflow-engine",
+        "daemon",
+        "automation"
+      ],
+      "author": "anonymous",
+      "visibility": "public"
+    },
+    {
+      "id": "454b6e72348b",
+      "name": "Complete a software project end-to-end",
+      "summary": "Take a project brief and acceptance criteria as input; coordinate a team of Claude Code agents (lead, dev, checker, plus optional specialized roles) to plan, implement, test, and iterate until acceptance criteria are met. Human review is optional throughout — the system can run autonomously with retry budgets and task decomposition as escalation mechanisms. Branches bound to this goal range from 3-node minimum (lead/dev/checker) to 20-node production (with security/perf/ops/docs specialization).",
+      "tags": [
+        "agent-teams",
+        "claude-code",
+        "autonomous",
+        "end-to-end"
+      ],
+      "author": "anonymous",
+      "visibility": "public"
+    },
+    {
+      "id": "4ce84ff648d4",
+      "name": "Produce a research paper",
+      "summary": "Take a research topic or question as input and produce a full research paper — framed question, landscape survey, evidence synthesis, section outline, prose draft, and critiqued final revision. Branches bound to this goal may vary in depth (position paper vs full survey) but share the outcome: a complete paper draft.",
+      "tags": [],
+      "author": "anonymous",
+      "visibility": "public"
+    }
+  ],
+  "universes": [
+    {
+      "id": "concordance",
+      "phase": "paused",
+      "word_count": 52187,
+      "last_activity_at": "2026-04-29T23:10:09.235609+00:00",
+      "accept_rate": 1
+    },
+    {
+      "id": "echoes-of-the-cosmos",
+      "phase": "universe_cycle_wrapper",
+      "word_count": 0,
+      "last_activity_at": "2026-04-29T23:04:33.417425+00:00",
+      "accept_rate": null
+    },
+    {
+      "id": "wiki",
+      "phase": "idle-no-premise",
+      "word_count": 0,
+      "last_activity_at": null,
+      "accept_rate": null
+    }
+  ],
+  "wiki": {
+    "bugs": [
+      {
+        "id": "BUG-001",
+        "title": "patch_branch silently corrupts input_keys/output_keys when passed as strings",
+        "slug": "pages/bugs/BUG-001-patch-branch-silently-corrupts-input-keys-output-keys-when-p.md"
+      },
+      {
+        "id": "BUG-002",
+        "title": "list_branches node_count does not match describe_branch actual count",
+        "slug": "pages/bugs/BUG-002-list-branches-node-count-does-not-match-describe-branch-actu.md"
+      },
+      {
+        "id": "BUG-003",
+        "title": "build_branch and patch_branch do not expose conditional_edges, blocking in-graph routing and iteration loops",
+        "slug": "pages/bugs/BUG-003-build-branch-and-patch-branch-do-not-expose-conditional-edge.md"
+      },
+      {
+        "id": "BUG-004",
+        "title": "run_branch reports completed with empty LLM responses; no error surfaced",
+        "slug": "pages/bugs/BUG-004-run-branch-reports-completed-with-empty-llm-responses-no-err.md"
+      },
+      {
+        "id": "BUG-005",
+        "title": "No way for a node to invoke a sub-branch and receive its output",
+        "slug": "pages/bugs/BUG-005-no-way-for-a-node-to-invoke-a-sub-branch-and-receive-its-out.md"
+      },
+      {
+        "id": "BUG-006",
+        "title": "No per-node LLM policy / override at dispatch time",
+        "slug": "pages/bugs/BUG-006-no-per-node-llm-policy-override-at-dispatch-time.md"
+      },
+      {
+        "id": "BUG-007",
+        "title": "input_keys is not enforced as context isolation; prompt_template can read any state field",
+        "slug": "pages/bugs/BUG-007-input-keys-is-not-enforced-as-context-isolation-prompt-templ.md"
+      },
+      {
+        "id": "BUG-008",
+        "title": "No cross-run state query primitive; historical learning requires O(N) get_run calls",
+        "slug": "pages/bugs/BUG-008-no-cross-run-state-query-primitive-historical-learning-requi.md"
+      },
+      {
+        "id": "BUG-009",
+        "title": "No scheduled or event-triggered branch invocation primitive",
+        "slug": "pages/bugs/BUG-009-no-scheduled-or-event-triggered-branch-invocation-primitive.md"
+      },
+      {
+        "id": "BUG-010",
+        "title": "No project-scope persistent memory primitive; each run starts cold",
+        "slug": "pages/bugs/BUG-010-no-project-scope-persistent-memory-primitive-each-run-starts.md"
+      },
+      {
+        "id": "BUG-011",
+        "title": "Undocumented / missing durable execution across daemon restart",
+        "slug": "pages/bugs/BUG-011-undocumented-missing-durable-execution-across-daemon-restart.md"
+      },
+      {
+        "id": "BUG-012",
+        "title": "No concurrency budget primitive or observability for parallel fan-out bands",
+        "slug": "pages/bugs/BUG-012-no-concurrency-budget-primitive-or-observability-for-paralle.md"
+      },
+      {
+        "id": "BUG-013",
+        "title": "No file_feature_request wiki verb parallel to file_bug",
+        "slug": "pages/bugs/BUG-013-no-file-feature-request-wiki-verb-parallel-to-file-bug.md"
+      },
+      {
+        "id": "BUG-014",
+        "title": "Compiler rejects double-brace literal escapes in prompt_template; missing-key error fires at run time not build time",
+        "slug": "pages/bugs/BUG-014-compiler-rejects-double-brace-literal-escapes-in-prompt-temp.md"
+      },
+      {
+        "id": "BUG-015",
+        "title": "Multi-output_keys node silently drops all but first key into state",
+        "slug": "pages/bugs/BUG-015-multi-output-keys-node-silently-drops-all-but-first-key-into.md"
+      },
+      {
+        "id": "BUG-016",
+        "title": "Typed (non-str) output_keys from prompt-template nodes are not actually written to state",
+        "slug": "pages/bugs/BUG-016-typed-non-str-output-keys-from-prompt-template-nodes-are-not.md"
+      },
+      {
+        "id": "BUG-017",
+        "title": "Daemon sandbox (bubblewrap) lacks user-namespace permissions; dev/checker cannot execute anything",
+        "slug": "pages/bugs/BUG-017-daemon-sandbox-bubblewrap-lacks-user-namespace-permissions-d.md"
+      },
+      {
+        "id": "BUG-018",
+        "title": "No maintainer_notes field on nodes; builder-to-builder notes have no daemon-invisible home",
+        "slug": "pages/bugs/BUG-018-no-maintainer-notes-field-on-nodes-builder-to-builder-notes-.md"
+      },
+      {
+        "id": "BUG-019",
+        "title": "conditional_edges routing to END throws KeyError: '__end__' at runtime",
+        "slug": "pages/bugs/BUG-019-conditional-edges-routing-to-end-throws-keyerror-end-at-runt.md"
+      },
+      {
+        "id": "BUG-020",
+        "title": "No long-poll / synchronous-wait mode; chatbot tool-budget exhausted by iterative polling",
+        "slug": "pages/bugs/BUG-020-no-long-poll-synchronous-wait-mode-chatbot-tool-budget-exhau.md"
+      },
+      {
+        "id": "BUG-021",
+        "title": "LangGraph recursion_limit of 25 too tight for iterative loops; not exposed via run_branch",
+        "slug": "pages/bugs/BUG-021-langgraph-recursion-limit-of-25-too-tight-for-iterative-loop.md"
+      },
+      {
+        "id": "BUG-022",
+        "title": "conditional_edges to terminal no-op node dont fire; router falls through to looping target",
+        "slug": "pages/bugs/BUG-022-conditional-edges-to-terminal-no-op-node-dont-fire-router-fa.md"
+      },
+      {
+        "id": "BUG-023",
+        "title": "BUG-023-daemon-disk-full-after-one-heavy-wiki-session-no-storage-bud",
+        "slug": "pages/bugs/BUG-023-daemon-disk-full-after-one-heavy-wiki-session-no-storage-bud.md"
+      },
+      {
+        "id": "BUG-024",
+        "title": "_trim_to_budget trims list length but not string bodies — context overflows survive \"trimming\"",
+        "slug": "pages/bugs/BUG-024-trim-to-budget-trims-list-length-but-not-string-bodies-conte.md"
+      },
+      {
+        "id": "BUG-025",
+        "title": "claude-code provider listed first in writer chain but never available in container image",
+        "slug": "pages/bugs/BUG-025-claude-code-provider-listed-first-in-writer-chain-but-never-.md"
+      },
+      {
+        "id": "BUG-026",
+        "title": "data/world_rules.lp not copied into Docker image — ASPSolver silently degrades to empty base rules on prod",
+        "slug": "pages/bugs/BUG-026-data-world-rules-lp-not-copied-into-docker-image-aspsolver-s.md"
+      },
+      {
+        "id": "BUG-027",
+        "title": "No startup file-probe for required data files — missing artifacts degrade silently instead of failing loud",
+        "slug": "pages/bugs/BUG-027-no-startup-file-probe-for-required-data-files-missing-artifa.md"
+      },
+      {
+        "id": "BUG-028",
+        "title": "wiki action=write cannot update file_bug-created pages due to slug-case mismatch; stale duplicates accumulate",
+        "slug": "pages/bugs/BUG-028-wiki-action-write-cannot-update-file-bug-created-pages-due-t.md"
+      },
+      {
+        "id": "BUG-029",
+        "title": "Failed workflow run error says empty LLM response but gives no clear next action",
+        "slug": "pages/bugs/BUG-029-failed-workflow-run-error-says-empty-llm-response-but-gives-.md"
+      },
+      {
+        "id": "BUG-030",
+        "title": "Rename approval leaves user uncertain and rename does not appear saved",
+        "slug": "pages/bugs/BUG-030-rename-approval-leaves-user-uncertain-and-rename-does-not-ap.md"
+      },
+      {
+        "id": "BUG-031",
+        "title": "describe_branch marks source-code branches valid without warning that unapproved nodes cannot run",
+        "slug": "pages/bugs/BUG-031-describe-branch-marks-source-code-branches-valid-without-war.md"
+      },
+      {
+        "id": "BUG-032",
+        "title": "get_status storage accounting reports zero bytes for populated activity log and universe outputs",
+        "slug": "pages/bugs/BUG-032-get-status-storage-accounting-reports-zero-bytes-for-populat.md"
+      },
+      {
+        "id": "BUG-033",
+        "title": "goals search misses obvious multi-token match across title, tags, and description",
+        "slug": "pages/bugs/BUG-033-goals-search-misses-obvious-multi-token-match-across-title-t.md"
+      },
+      {
+        "id": "BUG-034",
+        "title": "All extensions actions return 'No approval received' while goals/wiki/universe/get_status work normally",
+        "slug": "pages/bugs/BUG-034-all-extensions-actions-return-no-approval-received-while-goa.md"
+      },
+      {
+        "id": "BUG-035",
+        "title": "Compile-time branch errors can collapse into generic background worker crash",
+        "slug": "pages/bugs/bug-035-compile-time-branch-errors-can-collapse-into-generic-backgro.md"
+      },
+      {
+        "id": "BUG-036",
+        "title": "Echoes public-source intake smoke run fails on empty LLM response",
+        "slug": "pages/bugs/bug-036-echoes-public-source-intake-smoke-run-fails-on-empty-llm-res.md"
+      },
+      {
+        "id": "BUG-037",
+        "title": "publish_version drops branch topology when publishing a live branch",
+        "slug": "pages/bugs/bug-037-publish-version-drops-branch-topology-when-publishing-a-live.md"
+      },
+      {
+        "id": "BUG-038",
+        "title": "Live branch run fails provider_exhausted before install-planning nodes",
+        "slug": "pages/bugs/bug-038-live-branch-run-fails-provider-exhausted-before-install-plan.md"
+      },
+      {
+        "id": "BUG-039",
+        "title": "Live provider chain exhaustion blocks Echoes intake output",
+        "slug": "pages/bugs/bug-039-live-provider-chain-exhaustion-blocks-echoes-intake-output.md"
+      },
+      {
+        "id": "BUG-040",
+        "title": "Wiki file_bug MCP schema rejects backend-supported tags field",
+        "slug": "pages/bugs/bug-040-wiki-file-bug-mcp-schema-rejects-backend-supported-tags-fiel.md"
+      },
+      {
+        "id": "BUG-041",
+        "title": "Failed branch run snapshot can leave failed node displayed as running",
+        "slug": "pages/bugs/bug-041-failed-branch-run-snapshot-can-leave-failed-node-displayed-a.md"
+      },
+      {
+        "id": "BUG-042",
+        "title": "Wiki file_bug MCP schema rejects backend-supported kind field",
+        "slug": "pages/bugs/bug-042-wiki-file-bug-mcp-schema-rejects-backend-supported-kind-fiel.md"
+      },
+      {
+        "id": "BUG-043",
+        "title": "Classic-game MCP branch cannot complete local desktop install",
+        "slug": "pages/bugs/bug-043-classic-game-mcp-branch-cannot-complete-local-desktop-instal.md"
+      }
+    ],
+    "concepts": [
+      {
+        "slug": "pages/concepts/cross-algorithm-parity-rf-vs-maxent.md",
+        "title": "RF vs MaxEnt Methodological Parity - How Chatbots Catch Invalid Cross-Algorithm Comparisons"
+      },
+      {
+        "slug": "pages/concepts/structured-json-node-outputs.md",
+        "title": "Structured JSON Node Outputs — a Pattern That Works Today"
+      }
+    ],
+    "notes": [
+      {
+        "slug": "pages/notes/builder-notes-agent-teams.md",
+        "title": "Builder Notes — Agent Team Branches (3/5/10/20-node)"
+      }
+    ],
+    "plans": [
+      {
+        "slug": "pages/plans/chatbot-builder-behaviors.md",
+        "title": "Chatbot Builder Behaviors — How User-Facing Chatbots Should Work on This Project"
+      },
+      {
+        "slug": "pages/plans/composition-patterns.md",
+        "title": "Composition Patterns - How Chatbots Build Convenience From Primitives"
+      },
+      {
+        "slug": "pages/plans/feature-describe-branch-related-wiki-pages.md",
+        "title": "describe_branch + get_branch surface related wiki pages for each branch/node"
+      },
+      {
+        "slug": "pages/plans/feature-prompt-template-literal-braces-and-build-time-validation.md",
+        "title": "Prompt_template literal-brace escape + build-time missing-key validation"
+      },
+      {
+        "slug": "pages/plans/methods-prose-rubric.md",
+        "title": "Methods-Prose Rubric - How Chatbots Validate Publication-Grade Methods Sections"
+      },
+      {
+        "slug": "pages/plans/next-level-primitives-roadmap.md",
+        "title": "Next-Level Primitives — Strategic Roadmap from 22 Filed Bugs"
+      },
+      {
+        "slug": "pages/plans/strategic-synthesis-2026-04-24.md",
+        "title": "Strategic Synthesis — Goals Engine Positioning, Real-World Gates, Swarm-Scale Substrate"
+      },
+      {
+        "slug": "pages/plans/tier-1-investigation-routing-resolver.md",
+        "title": "Tier 1 Investigation Plan — Routing Resolver + Recursion Budget"
+      }
+    ],
+    "drafts": [
+      {
+        "slug": "drafts/bugs/bug-018-no-maintainer-notes-field-on-nodes-builder-to-builder-notes.md",
+        "title": "No maintainer_notes field on nodes; builder-to-builder notes have no daemon-invisible home"
+      },
+      {
+        "slug": "drafts/concepts/workflow-patterns.md",
+        "title": "Workflow Patterns"
+      },
+      {
+        "slug": "drafts/notes/community-change-loop-v1-builder-notes.md",
+        "title": "Community Change Loop v1 Builder Notes"
+      },
+      {
+        "slug": "drafts/notes/community-change-loop-v1-piece-map.md",
+        "title": "Community Change Loop v1 Piece Map"
+      },
+      {
+        "slug": "drafts/notes/uptime-probe.md",
+        "title": "uptime-probe"
+      },
+      {
+        "slug": "drafts/plans/swarm-scale-shared-memory-architecture.md",
+        "title": "swarm-scale-shared-memory-architecture"
+      },
+      {
+        "slug": "drafts/projects/workflow-redesign-2026-04.md",
+        "title": "Workflow Redesign Session — April 2026"
+      },
+      {
+        "slug": "drafts/workflows/agent-teams-as-graphs.md",
+        "title": "Agent Teams as Workflow Graphs"
+      }
+    ]
+  },
+  "edges": [
+    {
+      "from": "bug:BUG-008",
+      "to": "bug:BUG-005",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-013",
+      "to": "bug:BUG-001",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-016",
+      "to": "bug:BUG-015",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-018",
+      "to": "bug:BUG-014",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-018",
+      "to": "bug:BUG-015",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-018",
+      "to": "bug:BUG-006",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-019",
+      "to": "bug:BUG-003",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-022",
+      "to": "bug:BUG-019",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-026",
+      "to": "bug:BUG-027",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-027",
+      "to": "bug:BUG-025",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-027",
+      "to": "bug:BUG-026",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-028",
+      "to": "bug:BUG-023",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-038",
+      "to": "bug:BUG-025",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-039",
+      "to": "bug:BUG-036",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-040",
+      "to": "bug:BUG-039",
+      "kind": "ref"
+    },
+    {
+      "from": "bug:BUG-042",
+      "to": "bug:BUG-040",
+      "kind": "ref"
+    },
+    {
+      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
+      "to": "plan:methods-prose-rubric",
+      "kind": "ref"
+    },
+    {
+      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
+      "to": "plan:composition-patterns",
+      "kind": "ref"
+    },
+    {
+      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
+      "to": "plan:chatbot-builder-behaviors",
+      "kind": "ref"
+    },
+    {
+      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
+      "to": "note:2026-04-27-cross-algorithm-parity-wiki-template",
+      "kind": "source"
+    },
+    {
+      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
+      "to": "note:2026-04-27-cross-algorithm-parity-publication-checklist",
+      "kind": "source"
+    },
+    {
+      "from": "concept:structured-json-node-outputs",
+      "to": "bug:BUG-015",
+      "kind": "ref"
+    },
+    {
+      "from": "concept:structured-json-node-outputs",
+      "to": "bug:BUG-016",
+      "kind": "ref"
+    },
+    {
+      "from": "concept:structured-json-node-outputs",
+      "to": "bug:BUG-004",
+      "kind": "ref"
+    },
+    {
+      "from": "concept:structured-json-node-outputs",
+      "to": "bug:BUG-014",
+      "kind": "ref"
+    },
+    {
+      "from": "concept:structured-json-node-outputs",
+      "to": "bug:BUG-004",
+      "kind": "source"
+    },
+    {
+      "from": "concept:structured-json-node-outputs",
+      "to": "bug:BUG-014",
+      "kind": "source"
+    },
+    {
+      "from": "concept:structured-json-node-outputs",
+      "to": "bug:BUG-015",
+      "kind": "source"
+    },
+    {
+      "from": "concept:structured-json-node-outputs",
+      "to": "bug:BUG-016",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-018",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-003",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-019",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-007",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-014",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-015",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-016",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-017",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-020",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-021",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "concept:structured-json-node-outputs",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "plan:chatbot-builder-behaviors",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "plan:feature-describe-branch-related-wiki-pages",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "plan:feature-prompt-template-literal-braces-and-build-time-validation",
+      "kind": "ref"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-003",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-004",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-005",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-006",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-007",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-014",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-015",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-016",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-017",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-018",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-019",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-020",
+      "kind": "source"
+    },
+    {
+      "from": "note:builder-notes-agent-teams",
+      "to": "bug:BUG-021",
+      "kind": "source"
+    },
+    {
+      "from": "plan:chatbot-builder-behaviors",
+      "to": "bug:BUG-005",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:chatbot-builder-behaviors",
+      "to": "bug:BUG-003",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:chatbot-builder-behaviors",
+      "to": "bug:BUG-018",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:chatbot-builder-behaviors",
+      "to": "bug:BUG-034",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:chatbot-builder-behaviors",
+      "to": "bug:BUG-017",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:chatbot-builder-behaviors",
+      "to": "concept:structured-json-node-outputs",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:chatbot-builder-behaviors",
+      "to": "bug:BUG-015",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:chatbot-builder-behaviors",
+      "to": "bug:BUG-016",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:chatbot-builder-behaviors",
+      "to": "note:builder-notes-agent-teams",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:feature-prompt-template-literal-braces-and-build-time-validation",
+      "to": "bug:BUG-014",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:feature-describe-branch-related-wiki-pages",
+      "to": "bug:BUG-018",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:composition-patterns",
+      "to": "bug:BUG-031",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:composition-patterns",
+      "to": "bug:BUG-028",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:methods-prose-rubric",
+      "to": "plan:composition-patterns",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:methods-prose-rubric",
+      "to": "concept:cross-algorithm-parity-rf-vs-maxent",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:methods-prose-rubric",
+      "to": "plan:chatbot-builder-behaviors",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:methods-prose-rubric",
+      "to": "plan:strategic-synthesis-2026-04-24",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:methods-prose-rubric",
+      "to": "note:2026-04-27-methods-prose-rubric-starter-pack",
+      "kind": "source"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-015",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-016",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-018",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-001",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-004",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-022",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-007",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-002",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-014",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-019",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-005",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-006",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-008",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-009",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-010",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-011",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-012",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-017",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-020",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-013",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-021",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-003",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "bug:BUG-001",
+      "kind": "source"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "concept:structured-json-node-outputs",
+      "kind": "source"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "note:builder-notes-agent-teams",
+      "kind": "source"
+    },
+    {
+      "from": "plan:next-level-primitives-roadmap",
+      "to": "draft:drafts/concepts/workflow-patterns (prior-session cross-cutting analysis)",
+      "kind": "source"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-019",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-021",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-022",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-003",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-014",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "plan:next-level-primitives-roadmap",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "note:builder-notes-agent-teams",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "plan:chatbot-builder-behaviors",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "plan:next-level-primitives-roadmap",
+      "kind": "source"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-003",
+      "kind": "source"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-015",
+      "kind": "source"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-016",
+      "kind": "source"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-019",
+      "kind": "source"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-021",
+      "kind": "source"
+    },
+    {
+      "from": "plan:tier-1-investigation-routing-resolver",
+      "to": "bug:BUG-022",
+      "kind": "source"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "plan:next-level-primitives-roadmap",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-023",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-018",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-005",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-006",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-022",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "plan:tier-1-investigation-routing-resolver",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-019",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-021",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-011",
+      "kind": "ref"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-019",
+      "kind": "source"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-021",
+      "kind": "source"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-022",
+      "kind": "source"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "bug:BUG-023",
+      "kind": "source"
+    },
+    {
+      "from": "plan:strategic-synthesis-2026-04-24",
+      "to": "note:builder-notes-agent-teams",
+      "kind": "source"
+    }
+  ],
+  "tags": {
+    "bug:BUG-002": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-003": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-001": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-004": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-005": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-006": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-007": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-009": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-010": [
+      "bug",
+      "extensions state model / universe memory"
+    ],
+    "bug:BUG-008": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-011": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-012": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-013": [
+      "bug",
+      "wiki"
+    ],
+    "bug:BUG-014": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-016": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-015": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-018": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-017": [
+      "bug",
+      "daemon runtime / sandboxing / bubblewrap config"
+    ],
+    "bug:BUG-020": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-019": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-021": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-022": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-024": [
+      "bug",
+      "workflow"
+    ],
+    "bug:BUG-025": [
+      "bug",
+      "providers"
+    ],
+    "bug:BUG-026": [
+      "bug",
+      "constraints"
+    ],
+    "bug:BUG-027": [
+      "bug",
+      "startup"
+    ],
+    "bug:BUG-028": [
+      "bug",
+      "universe_server"
+    ],
+    "bug:BUG-029": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-030": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-031": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-032": [
+      "bug",
+      "get_status"
+    ],
+    "bug:BUG-034": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-033": [
+      "bug",
+      "goals"
+    ],
+    "bug:BUG-035": [
+      "bug",
+      "workflow-runs"
+    ],
+    "bug:BUG-036": [
+      "bug",
+      "workflow-providers"
+    ],
+    "bug:BUG-037": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-038": [
+      "bug",
+      "extensions"
+    ],
+    "bug:BUG-039": [
+      "bug",
+      "workflow-providers"
+    ],
+    "bug:BUG-041": [
+      "bug",
+      "workflow-runs"
+    ],
+    "bug:BUG-040": [
+      "bug",
+      "wiki-mcp"
+    ],
+    "bug:BUG-042": [
+      "bug",
+      "wiki-mcp"
+    ],
+    "bug:BUG-043": [
+      "bug",
+      "workflow"
+    ],
+    "concept:structured-json-node-outputs": [
+      "pattern",
+      "workaround",
+      "agent-teams",
+      "extensions"
+    ],
+    "note:builder-notes-agent-teams": [
+      "builder-notes",
+      "agent-teams",
+      "workflow"
+    ],
+    "plan:feature-prompt-template-literal-braces-and-build-time-validation": [
+      "feature",
+      "compiler",
+      "prompt-template"
+    ],
+    "plan:feature-describe-branch-related-wiki-pages": [
+      "feature",
+      "extensions",
+      "wiki",
+      "convergent-commons"
+    ],
+    "plan:next-level-primitives-roadmap": [
+      "roadmap",
+      "primitives",
+      "architecture",
+      "agent-teams"
+    ],
+    "plan:tier-1-investigation-routing-resolver": [
+      "investigation",
+      "routing",
+      "conditional-edges",
+      "langgraph",
+      "tier-1"
+    ],
+    "plan:strategic-synthesis-2026-04-24": [
+      "strategy",
+      "goals",
+      "gates",
+      "substrate",
+      "positioning",
+      "forkable",
+      "distribution"
+    ],
+    "goal:62f977e7ff0c": [
+      "classic-games",
+      "game-preservation",
+      "compatibility",
+      "local-app",
+      "installers",
+      "legal-provenance"
+    ],
+    "goal:dd187997039b": [
+      "public-source",
+      "mcp",
+      "universe",
+      "echoes",
+      "reddit",
+      "community",
+      "canon-gate"
+    ],
+    "goal:4ff5862cc26d": [
+      "patch-loop",
+      "community",
+      "gatekeeping",
+      "pr",
+      "live-observation",
+      "self-improvement"
+    ],
+    "goal:f10caea2e437": [
+      "bugs",
+      "patch-packet",
+      "workflow-engine",
+      "daemon",
+      "automation"
+    ],
+    "goal:454b6e72348b": [
+      "agent-teams",
+      "claude-code",
+      "autonomous",
+      "end-to-end"
+    ]
+  }
+}
