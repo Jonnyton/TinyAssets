@@ -64,11 +64,6 @@ _VALID_TRANSITIONS = {
     "cancelled": set(),
 }
 
-# Absorbing states: once a task reaches one of these, a further
-# ``mark_status`` is treated as an idempotent no-op rather than an
-# error (multi-worker duplicate-finalize safety).
-_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
-
 
 @dataclass
 class BranchTask:
@@ -434,7 +429,7 @@ def mark_status(
             if row.get("branch_task_id") != task_id:
                 continue
             current = row.get("status", "pending")
-            if current in _TERMINAL_STATUSES:
+            if current in TERMINAL_STATUSES:
                 # Idempotent finalize: a peer worker or a lease reclaim
                 # already resolved this task. A duplicate finalize must
                 # never crash the daemon or flip a terminal result
