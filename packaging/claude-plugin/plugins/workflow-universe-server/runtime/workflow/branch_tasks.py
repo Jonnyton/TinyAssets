@@ -429,6 +429,22 @@ def mark_status(
             if row.get("branch_task_id") != task_id:
                 continue
             current = row.get("status", "pending")
+            if current in TERMINAL_STATUSES:
+                # Idempotent finalize: a peer worker or a lease reclaim
+                # already resolved this task. A duplicate finalize must
+                # never crash the daemon or flip a terminal result
+                # (first-writer-wins); it is a no-op. This is the
+                # defence-in-depth half of the 2026-06-25 loop-wedge fix
+                # (the cure is lease-aware startup recovery, which stops
+                # the double-claim that produces these duplicates).
+                if status != current:
+                    logger.warning(
+                        "mark_status: ignoring duplicate finalize "
+                        "%s -> %s for task %s (already terminal; "
+                        "keeping first result)",
+                        current, status, task_id,
+                    )
+                return
             if status not in _VALID_TRANSITIONS.get(current, set()):
                 raise ValueError(
                     f"Invalid transition {current} -> {status} "

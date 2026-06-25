@@ -168,20 +168,30 @@ def _soul_loop_dispatch_enabled() -> bool:
 
 
 def _dispatcher_startup(universe_path: Path) -> None:
-    """Phase E startup hook: recover claimed tasks + run GC.
+    """Phase E startup hook: reclaim expired-lease tasks + run GC.
 
     Invariant §4.3 #7 (claimed→pending recovery) and §4.3 #10
     (terminal-task archive). One-shot at ``_run_graph`` entry. Safe
     regardless of dispatcher flag: recovery and GC keep the queue
     file healthy even when the dispatcher is off.
+
+    Uses lease-aware :func:`reclaim_expired_leases`, NOT the blanket
+    :func:`recover_claimed_tasks`. The blanket reset is unsafe in the
+    multi-worker fleet (each worker shares ``/data``): a starting
+    worker would reset *every* ``running`` row — including tasks a live
+    peer worker is mid-execution on — back to ``pending``, so the task
+    gets re-claimed and double-finalized (the ``Invalid transition``
+    crash + lost results that wedged the loop, 2026-06-25 incident).
+    The lease-aware sweep only reclaims rows whose lease actually
+    expired (a wedged/dead worker), leaving healthy peers untouched.
     """
     try:
         from workflow.branch_tasks import (
             garbage_collect,
-            recover_claimed_tasks,
+            reclaim_expired_leases,
         )
 
-        recover_claimed_tasks(universe_path)
+        reclaim_expired_leases(universe_path)
         garbage_collect(universe_path)
     except Exception:  # noqa: BLE001
         logger.exception(
