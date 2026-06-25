@@ -27,7 +27,25 @@ This is byte-for-byte what GitHub Pages would publish. Live `/mcp` data does NOT
 load here (no same-origin endpoint on localhost) — use #1 for live data, #3 for a
 live-data hosted check.
 
-## 3. Hosted preview link (shareable, review on any device)
+## 3a. Live hosted snapshot (works right now, no setup)
+
+**https://jonnyton.github.io/tiny-site-react-preview/** — a published snapshot of
+this branch on GitHub Pages (separate public repo `Jonnyton/tiny-site-react-preview`,
+**not** the live tinyassets.io). Open it on any device. Notes:
+- It's a project-pages subpath build (`PAGES_BASE_PATH=/tiny-site-react-preview`),
+  so all links are prefixed; nav + in-content links work.
+- Live `/mcp` data may not load (cross-origin from github.io); widgets degrade to
+  "reading…/asleep" — use `npm run dev` for live data.
+- It's a **manual snapshot**, not auto-updating. To refresh after changes:
+  ```bash
+  cd WebSite/site-react
+  MSYS_NO_PATHCONV=1 PAGES_BASE_PATH=/tiny-site-react-preview \
+    NEXT_PUBLIC_MCP_PATH=https://tinyassets.io/mcp npm run build
+  # re-apply the raw-link prefix fixup + rm out/CNAME, then push out/ to the
+  # preview repo's gh-pages branch. (Or use the auto-updating CF Pages flow below.)
+  ```
+
+## 3b. Auto-updating hosted preview (Cloudflare Pages, per-PR)
 
 Open or push to a **pull request** that touches `WebSite/site-react/**` (or run
 the `preview-site-react.yml` workflow manually). It builds the site and deploys to
