@@ -24,7 +24,7 @@ EXPECTED_TOOLS = {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
-        "openWorldHint": True,
+        "openWorldHint": False,
     },
     "run_graph": {
         "readOnlyHint": False,
