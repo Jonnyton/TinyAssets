@@ -1216,11 +1216,14 @@ class TestListCanonSources:
         # Should count the existing signal, not duplicate it
         assert resp.json()["pending_synthesis"] == 1
 
-        signals = json.loads(
-            (universe_dir / "worldbuild_signals.json").read_text(
-                encoding="utf-8",
-            ),
-        )
+        # The API path migrates legacy reads forward to the canonical
+        # enrichment_signals.json, so assert the EFFECTIVE (canonical-first)
+        # state via the helper rather than rereading the legacy file the daemon
+        # no longer writes — a legacy reread can pass spuriously while canonical
+        # is missing or wrong.
+        from workflow.enrichment_signals import load_enrichment_signals
+
+        signals = load_enrichment_signals(universe_dir)
         synth = [
             s for s in signals if s.get("type") == "synthesize_source"
         ]

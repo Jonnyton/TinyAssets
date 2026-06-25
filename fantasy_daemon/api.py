@@ -1058,11 +1058,23 @@ def _reemit_synthesis_signals(
         pass
 
     reemitted: list[str] = []
-    try:
-        # Canonical ``enrichment_signals.json`` preferred; legacy
-        # ``worldbuild_signals.json`` read as fallback during deprecation.
-        existing: list[dict[str, Any]] = load_enrichment_signals(udir)
 
+    # Strict read: this path WRITES the signal list back, so a PRESENT-but-corrupt
+    # file must fail loud and be left untouched for recovery rather than silently
+    # overwritten with a derived list (Hard Rule #8 — would drop queued signals).
+    # Canonical ``enrichment_signals.json`` preferred; legacy
+    # ``worldbuild_signals.json`` read as fallback during deprecation.
+    try:
+        existing: list[dict[str, Any]] = load_enrichment_signals(udir, strict=True)
+    except RuntimeError:
+        logger.error(
+            "Refusing to re-emit synthesis signals: existing signal file for "
+            "%s is present but corrupt; leaving it untouched for recovery",
+            udir, exc_info=True,
+        )
+        return reemitted
+
+    try:
         # Only add signals for files not already queued
         already_queued = {
             s.get("source_file")
