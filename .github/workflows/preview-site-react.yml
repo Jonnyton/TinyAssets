@@ -38,7 +38,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # 22+ required by wrangler@4 (the Pages deploy CLI); fine for the builds too.
+          node-version: '22'
 
       - name: Build design system
         working-directory: WebSite/design-system
