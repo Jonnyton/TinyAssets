@@ -29,7 +29,7 @@ A user's chatbot hits a capability gap → files it as a patch request → a dae
 The entry path should reach functions, not just docs. Representative core:
 
 - **The MCP surface** every chatbot connects to — [`workflow/universe_server.py`](workflow/universe_server.py) (the `universe` / `extensions` / `goals` / `gates` / `wiki` / `get_status` tools).
-- **The daemon run loop** — [`fantasy_daemon/__main__.py`](fantasy_daemon/__main__.py) (LangGraph universe graph, SQLite checkpointer, pause/resume).
+- **The daemon run loop** — [`fantasy_daemon/__main__.py`](fantasy_daemon/__main__.py), the current default runtime (LangGraph universe graph, SQLite checkpointer, pause/resume). The branch-execution *substrate* is goal-agnostic — branch specs compile to graphs via [`workflow/graph_compiler.py`](workflow/graph_compiler.py) — though this domain is still the hardcoded default; extracting the runtime into each universe's soul-declared loop is tracked in the [de-fantasy audit](docs/audits/2026-06-24-fantasy-architecture-residue-audit.md).
 - **Branch spec → executable graph** — [`workflow/graph_compiler.py`](workflow/graph_compiler.py) (compiles a declarative branch into a runnable `StateGraph`; approval-gated node execution).
 - **The evaluation/gate primitive** — [`workflow/node_eval.py`](workflow/node_eval.py).
 
