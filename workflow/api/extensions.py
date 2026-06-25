@@ -111,6 +111,9 @@ class NodeRegistration:
     registered_at: str = ""
     enabled: bool = True
     approved: bool = False
+    approved_by: str = ""
+    approved_at: str = ""
+    approved_source_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -854,6 +857,9 @@ def _ext_inspect(node_id: str) -> str:
 
 
 def _ext_manage(node_id: str, action: str) -> str:
+    from workflow.api.branches import _source_code_hash
+    from workflow.api.engine_helpers import _current_actor
+
     if not node_id:
         return json.dumps({"error": "node_id is required."})
 
@@ -872,7 +878,22 @@ def _ext_manage(node_id: str, action: str) -> str:
         })
 
     if action == "approve":
+        actor = _current_actor()
+        registrant = (nodes[idx].get("author") or "").strip() or "anonymous"
+        if actor == registrant:
+            return json.dumps({
+                "status": "rejected",
+                "error": "node_approval_requires_distinct_actor",
+                "node_id": node_id,
+                "registrant": registrant,
+                "approver": actor,
+            })
         nodes[idx]["approved"] = True
+        nodes[idx]["approved_by"] = actor
+        nodes[idx]["approved_at"] = datetime.now(timezone.utc).isoformat()
+        nodes[idx]["approved_source_hash"] = _source_code_hash(
+            nodes[idx].get("source_code", ""),
+        )
     elif action == "disable":
         nodes[idx]["enabled"] = False
     elif action == "enable":
@@ -882,6 +903,10 @@ def _ext_manage(node_id: str, action: str) -> str:
     return json.dumps({
         "node_id": node_id,
         "action": action,
+        "status": "approved" if action == "approve" else action,
         "approved": nodes[idx].get("approved"),
+        "approved_by": nodes[idx].get("approved_by", ""),
+        "approved_at": nodes[idx].get("approved_at", ""),
+        "approved_source_hash": nodes[idx].get("approved_source_hash", ""),
         "enabled": nodes[idx].get("enabled"),
     })

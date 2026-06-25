@@ -303,6 +303,7 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
     "record_remix",
 })
 _EXTENSIONS_ADMIN_ACTIONS = frozenset({
+    "approve",
     "delete_branch",
     "approve_source_code",
     "cancel_run",

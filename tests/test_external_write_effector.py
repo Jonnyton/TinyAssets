@@ -496,14 +496,13 @@ def test_get_run_snapshot_surfaces_external_write_results(tmp_path, monkeypatch)
             NodeDefinition(
                 node_id="draft",
                 display_name="Draft",
-                approved=True,
                 source_code=(
                     "def run(state):\n"
                     "    return {'pr_packet': state['packet']}\n"
                 ),
                 output_keys=["pr_packet"],
                 effects=[EXTERNAL_WRITE_SINK_GITHUB_PR],
-            ),
+            ).mark_approved(),
         ],
         graph_nodes=[GraphNodeRef(id="draft", node_def_id="draft")],
         edges=[

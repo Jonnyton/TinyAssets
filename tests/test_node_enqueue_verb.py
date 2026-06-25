@@ -65,8 +65,7 @@ def _branch(src: str, tools_allowed: list[str]) -> BranchDefinition:
         source_code=src,
         output_keys=["status"],
         tools_allowed=tools_allowed,
-        approved=True,
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="only"),

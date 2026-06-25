@@ -705,6 +705,18 @@ def _action_rollback_node(kwargs: dict[str, Any]) -> str:
             "error": f"Restored body is not a valid NodeDefinition: {exc}",
         })
 
+    # SECURITY (Codex final residual, PR #1349): the restored body is a RAW
+    # audit snapshot. A snapshot of an old version may carry source_code +
+    # approved=True with an empty or stale approved_source_hash (e.g. approved
+    # before the provenance field existed, or rolled back across an unapproved
+    # edit). Restoring it verbatim would re-bless code the current approval
+    # provenance does not cover. Re-validate the restored node's approval
+    # against its source hash and clear it on mismatch. The fail-closed runtime
+    # gate is the backstop; this keeps the persisted node honest.
+    from workflow.api.branches import _reconcile_node_approval
+
+    _reconcile_node_approval(restored_node)
+
     node_before_body = current_node.to_dict()
 
     new_node_defs = [

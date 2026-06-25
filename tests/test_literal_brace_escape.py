@@ -236,8 +236,7 @@ def test_build_time_empty_template_no_errors():
         output_keys=["draft"],
         prompt_template="",
         source_code="def run(state): return {'draft': 'x'}",
-        approved=True,
-    )
+    ).mark_approved()
     branch = _single_node_branch(node)
     _add_entry_graph_node(branch, "n1")
 
