@@ -29,7 +29,28 @@ BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
 
 
 class SettlementBackendError(Exception):
-    """Raised when a settlement backend cannot complete a payout."""
+    """Raised when a settlement backend cannot complete a payout.
+
+    The ``submitted`` flag encodes whether the payout transaction may have been
+    submitted to the network before the error (slice1a review HIGH — round 2):
+
+      * ``False`` — DEFINITIVELY not submitted. No money moved; the caller may
+        safely auto-refund the debit and let a retry re-pay. Off-chain /
+        local-only backends (internal marker, mock on-chain client, and
+        pre-submit validation failures) use this.
+      * ``None``  — UNKNOWN / ambiguous (e.g. a network timeout AFTER the
+        broadcast). The payout MAY have landed. The caller must NOT auto-refund
+        or blind-retry; the withdrawal goes to an ``in_doubt`` state for
+        reconciliation. This is the safe default for a real on-chain backend.
+
+    A real backend should only pass ``submitted=False`` when it is certain the
+    transaction never reached the network (e.g. the request was rejected before
+    broadcast). Any ambiguity must leave ``submitted`` as ``None``.
+    """
+
+    def __init__(self, *args: object, submitted: bool | None = None) -> None:
+        super().__init__(*args)
+        self.submitted = submitted
 
 
 class SettlementBackend(ABC):
@@ -89,10 +110,22 @@ class OnChainClient(ABC):
 
 class MockOnChainClient(OnChainClient):
     """No-network stand-in for the real web3 client. Records calls; returns a
-    deterministic mock tx hash so tests assert without touching Base Sepolia."""
+    deterministic mock tx hash so tests assert without touching Base Sepolia.
 
-    def __init__(self) -> None:
+    ``fail_mode`` lets tests drive the failure contract (slice1a review HIGH —
+    round 2):
+
+      * ``None``                  — succeed (default).
+      * ``"not_submitted"``       — raise DEFINITIVELY-not-submitted. Because the
+        mock client never touches a network, a failure here cannot have
+        broadcast anything, so this is the only honest signal the mock can give.
+      * ``"unknown"``             — raise an ambiguous error (``submitted=None``)
+        to exercise the in-doubt reconciliation path a real backend would hit.
+    """
+
+    def __init__(self, *, fail_mode: str | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.fail_mode = fail_mode
 
     def send_erc20(
         self,
@@ -110,6 +143,19 @@ class MockOnChainClient(OnChainClient):
                 "idempotency_key": idempotency_key,
             }
         )
+        if self.fail_mode == "not_submitted":
+            # The mock client never reaches a network — a failure here is
+            # certain to have moved no money, so it is safe to auto-refund.
+            raise SettlementBackendError(
+                "mock on-chain client: transaction was not submitted.",
+                submitted=False,
+            )
+        if self.fail_mode == "unknown":
+            # Simulate a real backend's ambiguous post-broadcast failure.
+            raise SettlementBackendError(
+                "mock on-chain client: settlement result is unknown.",
+                submitted=None,
+            )
         digest = hashlib.sha256(
             f"{to_address}:{amount_base_units}:{idempotency_key}".encode()
         ).hexdigest()
@@ -143,8 +189,11 @@ class BaseSepoliaBackend(SettlementBackend):
         idempotency_key: str,
     ) -> dict[str, Any]:
         if not recipient_wallet:
+            # Pre-submit validation failure — nothing was broadcast, so this is
+            # definitively-not-submitted and safe to auto-refund.
             raise SettlementBackendError(
-                "base_sepolia settlement requires a recipient wallet address."
+                "base_sepolia settlement requires a recipient wallet address.",
+                submitted=False,
             )
         tx_hash = self.client.send_erc20(
             to_address=recipient_wallet,

@@ -26,7 +26,14 @@ from workflow.payments.identifiers import ActorId, MicroToken, NodeId, RunId
 
 EscrowBalanceStatus = Literal["locked", "released", "refunded", "partial"]
 SettlementStatus = Literal["pending", "batched", "settled", "cancelled"]
-BatchStatus = Literal["open", "flushed", "failed"]
+# 'submitted' — payout handed to the backend, outcome not yet confirmed
+#               (durable pre-settle reservation; see action_escrow_withdraw).
+# 'in_doubt'  — backend errored with an UNKNOWN result; the payout may or may
+#               not have landed and must be reconciled (never auto-refunded).
+BatchStatus = Literal[
+    "open", "submitted", "flushed", "failed", "in_doubt"
+]
+_BATCH_STATUS_VALUES = ("open", "submitted", "flushed", "failed", "in_doubt")
 TransactionKind = Literal[
     "lock", "release", "refund", "fee", "checkpoint_partial", "batch_flush"
 ]
@@ -111,7 +118,8 @@ CREATE TABLE IF NOT EXISTS settlement_batch (
     total_fee       INTEGER NOT NULL DEFAULT 0 CHECK (total_fee >= 0),
     item_count      INTEGER NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'open'
-                        CHECK (status IN ('open','flushed','failed')),
+                        CHECK (status IN
+                            ('open','submitted','flushed','failed','in_doubt')),
     opened_at       TEXT NOT NULL,
     flushed_at      TEXT
 );
@@ -388,26 +396,47 @@ def _pending_settlement_has_stale_fk(conn) -> bool:  # type: ignore[no-untyped-d
     return False
 
 
+# The CREATE for the scratch table, derived from the new-shape DDL. Held as a
+# single statement so the rebuild can run it via conn.execute() inside an
+# explicit transaction — conn.executescript() issues an implicit COMMIT, which
+# would commit the CREATE outside the intended transaction and leave the
+# scratch table behind on a mid-rebuild failure (slice1a review HIGH — r2).
+_PENDING_SETTLEMENT_NEW_TABLE_DDL = _PENDING_SETTLEMENT_NEW_DDL.replace(
+    "CREATE TABLE pending_settlement",
+    "CREATE TABLE pending_settlement_new",
+).strip()
+
+
 def _rebuild_pending_settlement(conn) -> None:  # type: ignore[no-untyped-def]
     """Migrate an existing pending_settlement off the legacy hard FK.
 
     SQLite cannot drop a column-level FK in place, so this does the standard
     create-new + copy + drop + rename rebuild. Foreign keys are toggled off for
     the swap (SQLite requires FKs disabled to rename/drop a referenced table
-    safely) and restored afterward. Wrapped in a transaction so it is atomic.
+    safely) and restored afterward.
+
+    Atomicity (slice1a review HIGH — round 2): every step runs as an individual
+    ``conn.execute()`` inside ONE explicit BEGIN/COMMIT transaction — never
+    ``conn.executescript()``, which issues an implicit COMMIT and would commit
+    the scratch-table CREATE outside the transaction. On any failure the
+    transaction is rolled back AND the scratch table is dropped in a fresh
+    transaction, so a partial failure leaves NO ``pending_settlement_new`` and
+    the original ``pending_settlement`` intact and untouched. The whole rebuild
+    is therefore safe to retry.
     """
     prev_fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
-    # foreign_keys cannot be changed inside a transaction; toggle outside.
+    # foreign_keys cannot be changed inside a transaction; toggle outside, and
+    # ensure no implicit transaction is open before we BEGIN our own.
+    if conn.in_transaction:
+        conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
-        with conn:  # atomic: commit on success, rollback on error
+        # Explicit single transaction. Individual conn.execute() statements only
+        # — no executescript() (its implicit COMMIT would break atomicity).
+        conn.execute("BEGIN")
+        try:
             conn.execute("DROP TABLE IF EXISTS pending_settlement_new")
-            conn.executescript(
-                _PENDING_SETTLEMENT_NEW_DDL.replace(
-                    "CREATE TABLE pending_settlement",
-                    "CREATE TABLE pending_settlement_new",
-                )
-            )
+            conn.execute(_PENDING_SETTLEMENT_NEW_TABLE_DDL)
             cols = ", ".join(_PENDING_SETTLEMENT_COLUMNS)
             conn.execute(
                 f"INSERT INTO pending_settlement_new ({cols}) "
@@ -425,21 +454,117 @@ def _rebuild_pending_settlement(conn) -> None:  # type: ignore[no-untyped-def]
                 "CREATE INDEX IF NOT EXISTS idx_settlement_status "
                 "ON pending_settlement(status)"
             )
+            conn.commit()
+        except Exception:
+            # Roll back the partial rebuild, then drop the scratch table in a
+            # fresh transaction so a retry starts clean and the original
+            # pending_settlement (restored by the rollback) is untouched.
+            conn.rollback()
+            try:
+                conn.execute("DROP TABLE IF EXISTS pending_settlement_new")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            raise
     finally:
         conn.execute(f"PRAGMA foreign_keys = {'ON' if prev_fk else 'OFF'}")
+
+
+_SETTLEMENT_BATCH_NEW_TABLE_DDL = """
+CREATE TABLE settlement_batch_new (
+    batch_id        TEXT PRIMARY KEY,
+    recipient_id    TEXT NOT NULL,
+    total_amount    INTEGER NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
+    total_fee       INTEGER NOT NULL DEFAULT 0 CHECK (total_fee >= 0),
+    item_count      INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN
+                            ('open','submitted','flushed','failed','in_doubt')),
+    opened_at       TEXT NOT NULL,
+    flushed_at      TEXT
+)
+""".strip()
+
+_SETTLEMENT_BATCH_COLUMNS = (
+    "batch_id", "recipient_id", "total_amount", "total_fee", "item_count",
+    "status", "opened_at", "flushed_at",
+)
+
+
+def _settlement_batch_has_legacy_status_check(conn) -> bool:  # type: ignore[no-untyped-def]
+    """True when an existing settlement_batch carries the legacy status CHECK
+    (only ``open/flushed/failed``) that rejects the newer ``submitted`` and
+    ``in_doubt`` states (slice1a review HIGH — round 2). Returns False if the
+    table is absent or already accepts the new states.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type='table' AND name='settlement_batch'"
+    ).fetchone()
+    if not row:
+        return False
+    sql = (row[0] if not isinstance(row, dict) else row.get("sql")) or ""
+    # The new states are absent in a legacy CHECK. Either both present (already
+    # migrated) or both absent (legacy); checking one is sufficient.
+    return "in_doubt" not in sql
+
+
+def _rebuild_settlement_batch(conn) -> None:  # type: ignore[no-untyped-def]
+    """Migrate a legacy settlement_batch to the wider status CHECK.
+
+    Same atomicity contract as ``_rebuild_pending_settlement`` (slice1a review
+    HIGH — round 2): individual ``conn.execute()`` statements inside ONE
+    explicit BEGIN/COMMIT, never ``conn.executescript()``. On failure the
+    transaction rolls back and the scratch table is dropped, leaving the
+    original settlement_batch intact and the rebuild safe to retry.
+    """
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP TABLE IF EXISTS settlement_batch_new")
+        conn.execute(_SETTLEMENT_BATCH_NEW_TABLE_DDL)
+        cols = ", ".join(_SETTLEMENT_BATCH_COLUMNS)
+        conn.execute(
+            f"INSERT INTO settlement_batch_new ({cols}) "
+            f"SELECT {cols} FROM settlement_batch"
+        )
+        conn.execute("DROP TABLE settlement_batch")
+        conn.execute("ALTER TABLE settlement_batch_new RENAME TO settlement_batch")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_batch_recipient "
+            "ON settlement_batch(recipient_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_batch_status "
+            "ON settlement_batch(status)"
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        try:
+            conn.execute("DROP TABLE IF EXISTS settlement_batch_new")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        raise
 
 
 def migrate_settlement_schema(conn) -> None:  # type: ignore[no-untyped-def]
     """Create settlement tables if absent, and migrate legacy schemas. Idempotent.
 
-    Safe on both fresh DBs (creates everything) and existing DBs (rebuilds a
-    legacy pending_settlement that still carries the hard escrow_id FK so it
-    accepts soft-ref rows — slice1a review HIGH 3).
+    Safe on both fresh DBs (creates everything) and existing DBs:
+      * rebuilds a legacy pending_settlement that still carries the hard
+        escrow_id FK so it accepts soft-ref rows (slice1a review HIGH 3);
+      * rebuilds a legacy settlement_batch whose status CHECK predates the
+        ``submitted`` / ``in_doubt`` states (slice1a review HIGH — round 2).
     """
-    # Rebuild a legacy pending_settlement BEFORE the CREATE-IF-NOT-EXISTS run,
-    # since the IF NOT EXISTS would otherwise leave the stale-FK table in place.
+    # Rebuild legacy tables BEFORE the CREATE-IF-NOT-EXISTS run, since the
+    # IF NOT EXISTS would otherwise leave the stale-constraint table in place.
     if _pending_settlement_has_stale_fk(conn):
         _rebuild_pending_settlement(conn)
+    if _settlement_batch_has_legacy_status_check(conn):
+        _rebuild_settlement_batch(conn)
     conn.executescript(
         STAKER_ESCROW_BUDGET_SCHEMA + "\n"
         + PAYOUT_WALLET_SCHEMA + "\n"

@@ -491,6 +491,45 @@ class TestCrossActorAuthorization:
         assert result["status"] == "ok"
         assert result["staker_id"] == "bob"
 
+    def test_refund_rejects_non_owner(self, tmp_path, monkeypatch):
+        # slice1a review CRITICAL — round 2: a write-scoped caller who knows
+        # another actor's lock_id must NOT be able to cancel their escrow.
+        _init(tmp_path)
+        lock = _ext(monkeypatch, tmp_path, user="alice",
+                    action="escrow_lock", node_id="node-r", escrow_amount=1000)
+        assert lock["status"] == "ok"
+        # bob (not the staker) tries to refund alice's lock — rejected.
+        result = _ext(monkeypatch, tmp_path, user="bob",
+                      action="escrow_refund", lock_id=lock["lock_id"])
+        assert result["status"] == "rejected"
+        assert "refund" in result["error"].lower()
+        # Lock is still locked — not cancelled; alice's reservation intact.
+        inspect = _ext(monkeypatch, tmp_path, user="alice",
+                       action="escrow_inspect", lock_id=lock["lock_id"])
+        assert inspect["lock"]["status"] == "locked"
+
+    def test_refund_owner_allowed(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        lock = _ext(monkeypatch, tmp_path, user="alice",
+                    action="escrow_lock", node_id="node-r2", escrow_amount=1000)
+        result = _ext(monkeypatch, tmp_path, user="alice",
+                      action="escrow_refund", lock_id=lock["lock_id"])
+        assert result["status"] == "ok"
+        assert result["disposition"] == "refunded"
+
+    def test_refund_host_may_act_cross_actor(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "platform-host")
+        lock = _ext(monkeypatch, tmp_path, user="alice",
+                    action="escrow_lock", node_id="node-r3", escrow_amount=1000)
+        # Host may refund another actor's lock on their behalf.
+        result = _ext(monkeypatch, tmp_path, user="platform-host",
+                      action="escrow_refund", lock_id=lock["lock_id"])
+        assert result["status"] == "ok"
+        assert result["disposition"] == "refunded"
+        # Refund returns to the original staker (alice), not the host.
+        assert result["refunded_to"] == "alice"
+
 
 # ── Pure business logic unit tests ────────────────────────────────────────────
 
@@ -546,6 +585,47 @@ class TestPaymentsActionsUnit:
         conn = self._conn(tmp_path)
         result = action_escrow_refund(conn, lock_id="no-such")
         assert result["status"] == "rejected"
+
+    def test_action_refund_rejects_non_owner(self, tmp_path):
+        # CRITICAL round 2: caller_id that doesn't own the lock is rejected.
+        from workflow.payments.actions import (
+            action_escrow_lock,
+            action_escrow_refund,
+        )
+        conn = self._conn(tmp_path)
+        lock = action_escrow_lock(conn, node_id="n1", amount=100, claimer="staker-1")
+        result = action_escrow_refund(
+            conn, lock_id=lock["lock_id"], caller_id="attacker", host_id="host"
+        )
+        assert result["status"] == "rejected"
+        assert "refund" in result["error"].lower()
+        # Lock untouched.
+        from workflow.payments.escrow import get_lock
+        assert get_lock(conn, lock["lock_id"]).status == "locked"
+
+    def test_action_refund_owner_allowed_with_caller_id(self, tmp_path):
+        from workflow.payments.actions import (
+            action_escrow_lock,
+            action_escrow_refund,
+        )
+        conn = self._conn(tmp_path)
+        lock = action_escrow_lock(conn, node_id="n2", amount=100, claimer="staker-1")
+        result = action_escrow_refund(
+            conn, lock_id=lock["lock_id"], caller_id="staker-1", host_id="host"
+        )
+        assert result["status"] == "ok"
+        assert result["disposition"] == "refunded"
+
+    def test_action_refund_no_caller_id_skips_auth(self, tmp_path):
+        # Internal callers (caller_id=None) keep the pre-fix behavior.
+        from workflow.payments.actions import (
+            action_escrow_lock,
+            action_escrow_refund,
+        )
+        conn = self._conn(tmp_path)
+        lock = action_escrow_lock(conn, node_id="n3", amount=100, claimer="staker-1")
+        result = action_escrow_refund(conn, lock_id=lock["lock_id"])
+        assert result["status"] == "ok"
 
     def test_action_inspect_no_params(self, tmp_path):
         from workflow.payments.actions import action_escrow_inspect

@@ -281,15 +281,48 @@ def action_escrow_refund(
     *,
     lock_id: str,
     reason: str = "",
+    caller_id: str | None = None,
+    host_id: str | None = None,
 ) -> dict[str, Any]:
     """Refund escrow back to staker on abandonment or rejection.
 
     Only works on locks in 'locked' status. One-way transition.
+
+    Financial-integrity rule (slice1a review CRITICAL — round 2): a refund
+    cancels the staker's escrow lock and returns the reserved funds. Only the
+    staker who owns the lock (or the configured host acting on their behalf)
+    may refund it — an arbitrary write-scoped caller who knows another actor's
+    ``lock_id`` cannot cancel their escrow. Pass ``caller_id`` (the
+    authenticated actor) to enforce this; when ``caller_id`` is None the check
+    is skipped (pure-unit / internal callers), matching ``action_escrow_release``.
     """
     ensure_escrow_schema(conn)
 
     if not lock_id:
         return {"status": "rejected", "error": "lock_id is required."}
+
+    # Authorization: resolve the lock first so we can check ownership before any
+    # state transition. refund_bonus would also raise on a missing lock, but we
+    # need the staker_id here to authorize.
+    if caller_id is not None:
+        existing = get_lock(conn, lock_id)
+        if existing is None:
+            return {
+                "status": "rejected",
+                "error": f"No escrow lock with lock_id={lock_id!r}.",
+            }
+        owner = (existing.staker_id or "").strip()
+        caller = (caller_id or "").strip()
+        host = (host_id or "").strip()
+        if caller != owner and (not host or caller != host):
+            return {
+                "status": "rejected",
+                "error": (
+                    f"Cross-actor escrow refund is not permitted: caller "
+                    f"{caller!r} does not own lock {lock_id!r} (staker "
+                    f"{owner!r}). Only the staker (or host) may refund it."
+                ),
+            }
 
     try:
         lock = refund_bonus(conn, lock_id=lock_id, resolved_at=_now_iso())
@@ -529,6 +562,54 @@ def _withdraw_result_from_batch(
     }
 
 
+def _indoubt_result_from_batch(
+    conn: sqlite3.Connection,
+    *,
+    idempotency_key: str,
+    actor_id: str,
+    currency: str,
+    chain_id: int,
+    wallet_address: str,
+) -> dict[str, Any] | None:
+    """Reconstruct the response for an in-doubt / submitted batch.
+
+    A batch left in ``'in_doubt'`` (backend returned an UNKNOWN result) or
+    ``'submitted'`` (handed to the backend, outcome not yet confirmed) must NOT
+    be auto-refunded or blind-retried — the payout may have landed. A retry that
+    hits this row gets a deterministic in-doubt response and the balance is left
+    debited pending reconciliation (slice1a review HIGH — round 2).
+    Returns None if no such batch with this key exists.
+    """
+    row = conn.execute(
+        "SELECT total_amount, status FROM settlement_batch WHERE batch_id = ?",
+        (idempotency_key,),
+    ).fetchone()
+    if row is None:
+        return None
+    rec = dict(row)
+    status = rec.get("status")
+    if status not in ("in_doubt", "submitted"):
+        return None
+    return {
+        "status": "in_doubt",
+        "actor_id": actor_id,
+        "currency": currency,
+        "amount": int(rec["total_amount"]),
+        "chain_id": chain_id,
+        "recipient_wallet": wallet_address,
+        "settlement_status": status,
+        "batch_id": idempotency_key,
+        "idempotent_replay": True,
+        "error": (
+            "A withdrawal with this idempotency key is awaiting settlement "
+            "reconciliation: the backend returned an ambiguous result and the "
+            "payout may already have landed. The balance stays debited and is "
+            "NOT auto-refunded. A retry will not re-pay; reconcile the batch "
+            f"(batch_id={idempotency_key!r}) before any further action."
+        ),
+    }
+
+
 def action_escrow_withdraw(
     conn: sqlite3.Connection,
     *,
@@ -543,12 +624,21 @@ def action_escrow_withdraw(
     The off-chain ledger is the source of truth; this settles balance OUT via
     the configured settlement backend (internal marker, or base_sepolia USDC).
 
-    Retry-idempotent (slice1a review HIGH 4): the idempotency key is derived
-    deterministically from the request (or supplied by the client), and the
-    batch row is reserved BEFORE the debit. A retry after an unknown result
-    therefore detects the prior operation and returns it unchanged instead of
-    debiting/paying out a second time. On backend failure the debit is refunded
-    AND the reservation is released so a genuine retry can proceed.
+    Retry-idempotent under an unknown backend result (slice1a review HIGH 4 +
+    HIGH round 2): the idempotency key is derived deterministically from the
+    request (or supplied by the client). The durable batch row is reserved in
+    'open' BEFORE the debit and is transitioned to 'submitted' AND COMMITTED
+    BEFORE ``backend.settle()`` is called, so a crash/retry mid-settle sees a
+    durable record and never re-debits.
+
+    Backend failure handling distinguishes the outcome:
+      * DEFINITIVELY-not-submitted (``SettlementBackendError.submitted is
+        False`` — off-chain / mock / pre-submit validation): the debit is
+        refunded and the batch row deleted, so a genuine retry can re-pay.
+      * UNKNOWN / ambiguous (``submitted is None`` — e.g. a real backend's
+        post-broadcast timeout): the batch is left in 'in_doubt', the balance
+        stays debited, and NO auto-refund happens. A retry detects the in-doubt
+        row and returns it without re-paying; reconciliation resolves it.
     """
     if not actor_id:
         return {"status": "rejected", "error": "actor_id is required."}
@@ -590,6 +680,21 @@ def action_escrow_withdraw(
         prior["remaining_spendable"] = bal.spendable_amount if bal else 0
         return prior
 
+    # An in-doubt / submitted batch with this key MUST NOT be re-paid: the prior
+    # payout may have landed. Return the in-doubt response unchanged.
+    indoubt = _indoubt_result_from_batch(
+        conn,
+        idempotency_key=key,
+        actor_id=actor_id,
+        currency=cur,
+        chain_id=chain_id,
+        wallet_address=wallet.address,
+    )
+    if indoubt is not None:
+        bal = get_balance(conn, staker_id=actor_id, currency=cur)
+        indoubt["remaining_spendable"] = bal.spendable_amount if bal else 0
+        return indoubt
+
     # Reserve the idempotency key by claiming the batch row in 'open' state
     # BEFORE debiting. A concurrent/duplicate in-flight call hits the PK
     # conflict here and is treated as a replay — no second debit.
@@ -605,7 +710,8 @@ def action_escrow_withdraw(
             (key, actor_id, amount, now),
         )
     except sqlite3.IntegrityError:
-        # An in-flight or completed withdrawal already reserved this key.
+        # An in-flight / completed / in-doubt withdrawal already reserved this
+        # key. Re-check every terminal-or-pending state — never re-debit.
         replay = _withdraw_result_from_batch(
             conn,
             idempotency_key=key,
@@ -618,6 +724,18 @@ def action_escrow_withdraw(
             bal = get_balance(conn, staker_id=actor_id, currency=cur)
             replay["remaining_spendable"] = bal.spendable_amount if bal else 0
             return replay
+        replay_indoubt = _indoubt_result_from_batch(
+            conn,
+            idempotency_key=key,
+            actor_id=actor_id,
+            currency=cur,
+            chain_id=chain_id,
+            wallet_address=wallet.address,
+        )
+        if replay_indoubt is not None:
+            bal = get_balance(conn, staker_id=actor_id, currency=cur)
+            replay_indoubt["remaining_spendable"] = bal.spendable_amount if bal else 0
+            return replay_indoubt
         return {
             "status": "rejected",
             "error": (
@@ -626,7 +744,8 @@ def action_escrow_withdraw(
             ),
         }
 
-    # Debit spendable balance; refund + release the reservation on any failure.
+    # Debit spendable balance; on a debit failure the reservation is removed so
+    # a genuine retry can proceed (no settlement was attempted).
     try:
         new_bal = withdraw_balance(
             conn, staker_id=actor_id, amount=amount, now_iso=now, currency=cur
@@ -634,6 +753,16 @@ def action_escrow_withdraw(
     except InsufficientFundsError as exc:
         conn.execute("DELETE FROM settlement_batch WHERE batch_id = ?", (key,))
         return {"status": "rejected", "error": str(exc)}
+
+    # Transition to a durable PRE-SETTLE state and COMMIT before handing the
+    # payout to the backend. If the process crashes during backend.settle(), a
+    # retry sees this 'submitted' row and routes to the in-doubt path instead of
+    # re-debiting/re-paying (slice1a review HIGH — round 2).
+    conn.execute(
+        "UPDATE settlement_batch SET status = 'submitted' WHERE batch_id = ?",
+        (key,),
+    )
+    conn.commit()
 
     backend = get_settlement_backend()
     try:
@@ -644,13 +773,59 @@ def action_escrow_withdraw(
             idempotency_key=key,
         )
     except SettlementBackendError as exc:
-        # Settlement failed — restore the debited balance and release the
-        # reservation so a genuine retry can proceed.
-        credit_balance(
-            conn, staker_id=actor_id, amount=amount, now_iso=_now_iso(), currency=cur
+        if exc.submitted is False:
+            # DEFINITIVELY not submitted — no money moved. Refund the debit and
+            # delete the reservation so a genuine retry can re-pay.
+            credit_balance(
+                conn, staker_id=actor_id, amount=amount,
+                now_iso=_now_iso(), currency=cur,
+            )
+            conn.execute(
+                "DELETE FROM settlement_batch WHERE batch_id = ?", (key,)
+            )
+            conn.commit()
+            return {
+                "status": "rejected",
+                "error": str(exc),
+                "settlement_status": "not_submitted",
+                "refunded": True,
+                "retryable": True,
+            }
+        # UNKNOWN / ambiguous result — the payout MAY have landed. Do NOT
+        # auto-refund and do NOT allow a blind retry to re-pay. Leave the batch
+        # in 'in_doubt' for reconciliation; the balance stays debited.
+        conn.execute(
+            "UPDATE settlement_batch SET status = 'in_doubt' WHERE batch_id = ?",
+            (key,),
         )
-        conn.execute("DELETE FROM settlement_batch WHERE batch_id = ?", (key,))
-        return {"status": "rejected", "error": str(exc)}
+        conn.execute(
+            """
+            INSERT INTO transaction_log
+                (kind, escrow_id, settlement_id, batch_id, actor_id, amount,
+                 recorded_at, note)
+            VALUES ('batch_flush', NULL, NULL, ?, ?, ?, ?, ?)
+            """,
+            (key, actor_id, amount, _now_iso(), f"in_doubt:{exc}"),
+        )
+        conn.commit()
+        bal = get_balance(conn, staker_id=actor_id, currency=cur)
+        return {
+            "status": "in_doubt",
+            "actor_id": actor_id,
+            "currency": cur,
+            "amount": amount,
+            "chain_id": chain_id,
+            "recipient_wallet": wallet.address,
+            "settlement_status": "in_doubt",
+            "batch_id": key,
+            "idempotent_replay": False,
+            "remaining_spendable": bal.spendable_amount if bal else 0,
+            "error": (
+                "Settlement returned an ambiguous result; the payout may have "
+                "landed. The balance is NOT auto-refunded and a retry will not "
+                f"re-pay. Reconcile batch_id={key!r}. Backend error: {exc}"
+            ),
+        }
 
     now = _now_iso()
     tx_ref = settlement["tx_ref"]

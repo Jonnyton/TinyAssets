@@ -529,6 +529,7 @@ def _action_escrow_release(kwargs: dict[str, Any]) -> str:
 
 def _action_escrow_refund(kwargs: dict[str, Any]) -> str:
     """Refund locked escrow to staker on abandonment or rejection."""
+    from workflow.api.engine_helpers import _current_actor
     from workflow.payments.actions import action_escrow_refund
     from workflow.producers.node_bid import paid_market_enabled
     from workflow.storage import _connect
@@ -541,9 +542,19 @@ def _action_escrow_refund(kwargs: dict[str, Any]) -> str:
 
     lock_id = (kwargs.get("lock_id") or "").strip()
     reason = (kwargs.get("reason") or "").strip()
+    # Only the lock's staker (or host) may refund it — pass the authenticated
+    # actor so action_escrow_refund can authorize ownership (CRITICAL round 2).
+    # A write-scoped caller cannot cancel another actor's escrow by lock_id.
+    caller_id = (_current_actor() or "").strip() or "anonymous"
 
     with _connect(_base_path()) as conn:
-        result = action_escrow_refund(conn, lock_id=lock_id, reason=reason)
+        result = action_escrow_refund(
+            conn,
+            lock_id=lock_id,
+            reason=reason,
+            caller_id=caller_id,
+            host_id=_escrow_host_user(),
+        )
     return json.dumps(result)
 
 
