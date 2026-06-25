@@ -33,3 +33,31 @@ def test_force_uses_force_delete():
 def test_unmerged_unforced_stays_safe_delete():
     # Unreachable in cmd_done (it bails first), but the helper stays conservative.
     assert wt._branch_delete_flag(merged=False, force=False) == "-d"
+
+
+def test_sweep_candidate_accepts_merged_clean():
+    assert wt._is_sweep_candidate({"state": "READY_TO_REMOVE", "dirty": False}) is True
+
+
+def test_sweep_candidate_rejects_dirty():
+    assert wt._is_sweep_candidate({"state": "READY_TO_REMOVE", "dirty": True}) is False
+
+
+def test_sweep_candidate_rejects_non_ready_states():
+    for state in ("IN_FLIGHT", "ORPHANED", "PARKED_DRAFT", "NEEDS_PURPOSE", "MISSING"):
+        assert wt._is_sweep_candidate({"state": state, "dirty": False}) is False
+
+
+def test_sweep_candidate_defaults_conservative_on_missing_fields():
+    # Missing dirty flag must default to "treat as dirty" (skip).
+    assert wt._is_sweep_candidate({"state": "READY_TO_REMOVE"}) is False
+    assert wt._is_sweep_candidate({}) is False
+
+
+def test_path_contains_excludes_current_tree(tmp_path):
+    parent = tmp_path / "wt"
+    (parent / "sub").mkdir(parents=True)
+    assert wt._path_contains(parent.resolve(), parent.resolve()) is True
+    assert wt._path_contains(parent.resolve(), (parent / "sub").resolve()) is True
+    assert wt._path_contains(parent.resolve(), tmp_path.resolve()) is False
+    assert wt._path_contains(parent.resolve(), (tmp_path / "other").resolve()) is False
