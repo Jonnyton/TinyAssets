@@ -3445,8 +3445,39 @@ def _action_gates_stake_bonus(kwargs: dict[str, Any]) -> str:
         })
 
     _ensure_workflow_db()
+    from workflow.gates.actions import ensure_bonus_columns
+    from workflow.gates.schema import GateBonusClaim
     from workflow.storage import _connect as _storage_connect
     with _storage_connect(_base_path()) as conn:
+        # Authorization (slice1a review CRITICAL — round 4): staking a bonus
+        # mutates an existing gate claim, and its refund leg always returns to
+        # the recorded claimer (``claimed_by``). Only the claim owner or the
+        # configured host may stake a bonus on a claim — a write-scoped caller
+        # who merely knows a ``claim_id`` must not be able to attach a stake to
+        # another actor's claim. Mirrors the ``unstake_bonus`` staker check.
+        ensure_bonus_columns(conn)
+        row = conn.execute(
+            "SELECT * FROM gate_claims WHERE claim_id = ?", (claim_id,)
+        ).fetchone()
+        if row is None:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"Claim '{claim_id}' not found.",
+            })
+        claim = GateBonusClaim.from_row(row)
+        actor = _current_actor_or_anon()
+        recorded_claimer = (claim.claimed_by or "").strip()
+        host_user = _escrow_host_user()
+        if actor != recorded_claimer and actor != host_user:
+            return json.dumps({
+                "status": "rejected",
+                "error": (
+                    "Cross-actor bonus staking is not permitted: only the claim "
+                    f"owner ('{recorded_claimer}') or the host ('{host_user}') "
+                    f"may stake a bonus on claim '{claim_id}'. Authenticated "
+                    f"actor '{actor}' is not authorized."
+                ),
+            })
         result = stake_bonus(
             conn,
             claim_id=claim_id,

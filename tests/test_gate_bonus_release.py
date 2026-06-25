@@ -216,3 +216,47 @@ def test_release_bonus_retracted_claim_is_rejected_before_disbursement():
         "bonus_stake": 500,
         "bonus_refund_after": "2026-06-29T00:00:00+00:00",
     }
+
+
+def test_release_bonus_refuses_double_settle_on_concurrent_release(monkeypatch):
+    """Compare-and-swap: if a concurrent release zeroes the stake between this
+    call's read and its conditional UPDATE, this call must bail BEFORE recording
+    any settlement — no double-settle (slice1a review CRITICAL — round 4)."""
+    import workflow.gates.actions as ga
+
+    conn = _make_conn()
+    _insert_claim(
+        conn,
+        claim_id="claim-race",
+        claimed_by="staker-1",
+        bonus_stake=500,
+        bonus_refund_after="2026-06-29T00:00:00+00:00",
+    )
+
+    # _now_iso() is the last call before the compare-and-swap UPDATE, so hooking
+    # it lets us simulate a concurrent release committing in the read→write
+    # window: it zeroes the stake right before our UPDATE runs.
+    original_now = ga._now_iso
+
+    def _zero_then_now() -> str:
+        conn.execute(
+            "UPDATE gate_claims SET bonus_stake = 0 WHERE claim_id = ?",
+            ("claim-race",),
+        )
+        return original_now()
+
+    monkeypatch.setattr(ga, "_now_iso", _zero_then_now)
+
+    result = release_bonus(
+        conn,
+        claim_id="claim-race",
+        eval_verdict="pass",
+        node_last_claimer="node-winner",
+        staker="staker-1",
+    )
+
+    assert result["status"] == "rejected"
+    assert "concurrent" in result["error"].lower()
+    # No settlement recorded — we bailed before the ledger write.
+    assert "settlement_id" not in result
+    assert result.get("ledger_recorded") is not True

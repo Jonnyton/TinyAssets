@@ -273,11 +273,24 @@ def release_bonus(
         recipient = recorded_staker
         disposition = "refunded"
 
-    # Clear the bonus (mark resolved by zeroing stake; retraction is a separate op).
-    conn.execute(
-        "UPDATE gate_claims SET bonus_stake = 0, bonus_refund_after = NULL WHERE claim_id = ?",
-        (claim_id,),
+    # Atomically clear the bonus, gated on the stake still being exactly what we
+    # read (compare-and-swap). Two concurrent release_bonus calls both read the
+    # same nonzero stake, but only the first UPDATE matches (bonus_stake = stake);
+    # the loser sees 0 rows changed and bails BEFORE any settlement is recorded,
+    # so a bonus can never be double-settled (slice1a review CRITICAL — round 4).
+    cur = conn.execute(
+        "UPDATE gate_claims SET bonus_stake = 0, bonus_refund_after = NULL "
+        "WHERE claim_id = ? AND bonus_stake = ?",
+        (claim_id, stake),
     )
+    if cur.rowcount != 1:
+        return {
+            "status": "rejected",
+            "error": (
+                f"Bonus on claim {claim_id!r} was already resolved by a "
+                "concurrent release; refusing to double-settle."
+            ),
+        }
 
     result: dict[str, Any] = {
         "status": "ok",

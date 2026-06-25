@@ -170,6 +170,53 @@ class TestStakeBonus:
         assert result["status"] == "rejected"
         assert "already" in result["error"].lower()
 
+    def test_stake_bonus_rejects_cross_actor(self, tmp_path, monkeypatch):
+        """Only the claim owner (or host) may stake a bonus on a claim — a
+        write-scoped caller who knows a claim_id cannot attach a stake to
+        another actor's claim (slice1a review CRITICAL — round 4)."""
+        _, _, claim_id = _seed_goal_and_claim(tmp_path, claimed_by="alice")
+        result = _gates(monkeypatch, tmp_path,
+                        user="mallory",
+                        action="stake_bonus",
+                        claim_id=claim_id,
+                        bonus_stake=1000,
+                        node_id="n1")
+        assert result["status"] == "rejected"
+        assert "cross-actor" in result["error"].lower()
+        # Stake must not have been attached to alice's claim.
+        replay = _gates(monkeypatch, tmp_path,
+                        user="alice",
+                        action="stake_bonus",
+                        claim_id=claim_id,
+                        bonus_stake=1000,
+                        node_id="n1")
+        assert replay["status"] == "ok"  # owner can still stake → mallory's was a no-op
+
+    def test_stake_bonus_owner_succeeds(self, tmp_path, monkeypatch):
+        """The recorded claim owner may stake a bonus on their own claim."""
+        _, _, claim_id = _seed_goal_and_claim(tmp_path, claimed_by="alice")
+        result = _gates(monkeypatch, tmp_path,
+                        user="alice",
+                        action="stake_bonus",
+                        claim_id=claim_id,
+                        bonus_stake=1000,
+                        node_id="n1")
+        assert result["status"] == "ok"
+        assert result["bonus_stake"] == 1000
+
+    def test_stake_bonus_host_may_stake_for_any_claim(self, tmp_path, monkeypatch):
+        """The configured host identity may stake on any claim."""
+        _, _, claim_id = _seed_goal_and_claim(tmp_path, claimed_by="alice")
+        result = _gates(monkeypatch, tmp_path,
+                        user="hostbox",
+                        host_user="hostbox",
+                        action="stake_bonus",
+                        claim_id=claim_id,
+                        bonus_stake=750,
+                        node_id="n1")
+        assert result["status"] == "ok"
+        assert result["bonus_stake"] == 750
+
 
 # ── unstake_bonus ─────────────────────────────────────────────────────────────
 
