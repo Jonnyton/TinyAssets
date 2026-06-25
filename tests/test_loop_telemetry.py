@@ -283,6 +283,37 @@ def test_worker_liveness_alive_and_dead(tmp_path):
     assert dead["beat_age_s"] > 3000
 
 
+def test_worker_liveness_enumerates_worker_specific_beats(tmp_path):
+    from workflow.api.universe import _worker_liveness
+
+    for worker_id, runtime_id in (
+        ("codex-1", "runtime-codex"),
+        ("claude-1", "runtime-claude"),
+    ):
+        beat = {
+            "ts": _iso(_utc(-10)),
+            "phase": "polling",
+            "planned_sleep_s": 0.0,
+            "worker_id": worker_id,
+            "runtime_instance_id": runtime_id,
+        }
+        (tmp_path / supervisor_heartbeat_filename(worker_id)).write_text(
+            json.dumps(beat), encoding="utf-8",
+        )
+
+    liveness = _worker_liveness(tmp_path)
+
+    assert liveness["present"] is True
+    assert liveness["worker_count"] == 2
+    assert liveness["runtime_instance_count"] == 2
+    workers = {
+        worker["worker_id"]: worker
+        for worker in liveness["workers"]
+    }
+    assert workers["codex-1"]["runtime_instance_id"] == "runtime-codex"
+    assert workers["claude-1"]["runtime_instance_id"] == "runtime-claude"
+
+
 # ---------------------------------------------------------------------------
 # canary worker_liveness preference
 # ---------------------------------------------------------------------------
