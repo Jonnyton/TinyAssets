@@ -319,3 +319,35 @@ def test_write_graph_persona_is_an_advertised_target() -> None:
 
     out = json.loads(write_graph(target="bogus"))
     assert "persona" in json.dumps(out)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Slice 3 — embody for the WHOLE turn, not a quoted/relayed persona block.
+# The live chatbot (host-run 2026-06-25) embodied Tiny only as a quoted
+# get_status echo ("here's what it reports back, as Tiny…") and otherwise
+# spoke in generic assistant voice. Slice 3 strengthens the prompt to
+# forbid relay/quote framings and the third-person "it" for the universe.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_control_station_prompt_demands_whole_turn_embodiment() -> None:
+    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+
+    # Collapse prose line-wraps so phrase checks don't break on newlines.
+    compact = " ".join(_CONTROL_STATION_PROMPT.split())
+    # Embodiment spans the whole turn, not a quoted identity block.
+    assert "whole turn" in compact
+    # Explicitly forbids relaying / quoting yourself in the third person.
+    assert "quote yourself" in compact
+    # The universe is first-person "me", never third-person "it".
+    assert "not *it*" in compact
+    # Carries the lifted-from-transcript banned-framing list.
+    assert "Banned framings" in compact
+
+
+def test_server_instructions_demand_whole_turn_embodiment() -> None:
+    from workflow.universe_server import mcp
+
+    text = mcp.instructions or ""
+    assert "whole turn" in text
+    assert "quote" in text
