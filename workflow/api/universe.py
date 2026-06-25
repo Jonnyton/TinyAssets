@@ -218,6 +218,18 @@ def _extract_set_premise(
     )
 
 
+def _extract_set_persona_name(
+    kwargs: dict[str, Any], _result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    from workflow.api.engine_helpers import _truncate
+    name = kwargs.get("text", "")
+    return (
+        SOUL_FILENAME,
+        _truncate(f"persona name: {name}"),
+        {"persona_name": name},
+    )
+
+
 def _extract_add_canon(
     kwargs: dict[str, Any], result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
@@ -596,6 +608,7 @@ WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
+    "set_persona_name": (_extract_set_persona_name, None),
     "add_canon": (_extract_add_canon, None),
     "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
@@ -3750,6 +3763,35 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": f"Failed to write premise: {exc}"})
 
 
+def _action_set_persona_name(
+    universe_id: str = "", text: str = "", **_kwargs: Any
+) -> str:
+    """Set the universe persona's name — the founder naming the mind they are
+    shaping (write_graph target=persona). Merge-preserves every other soul
+    field; the chatbot embodies the name on the next get_status persona block.
+    """
+    uid = universe_id or _default_universe()
+    udir = _universe_dir(uid)
+
+    name = " ".join(text.split())
+    if not name:
+        return json.dumps({"error": "Persona name cannot be empty."})
+    try:
+        udir.mkdir(parents=True, exist_ok=True)
+        soul = write_universe_soul(udir, name=name)
+        return json.dumps({
+            "universe_id": uid,
+            "status": "updated",
+            "persona": {"name": soul.name, "embodied": True},
+            "note": (
+                "Persona name saved. The chatbot embodies it (first person) on "
+                "the next get_status."
+            ),
+        })
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to set persona name: {exc}"})
+
+
 _CANON_SAME_FILENAME_BEHAVIOR = (
     "A later add_canon call with the same filename replaces the stored "
     "source bytes and manifest entry when the content hash changes; "
@@ -4680,6 +4722,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "give_direction": _action_give_direction,
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,
+    "set_persona_name": _action_set_persona_name,
     "add_canon": _action_add_canon,
     "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,

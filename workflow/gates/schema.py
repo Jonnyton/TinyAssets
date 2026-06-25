@@ -28,6 +28,11 @@ BONUS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("bonus_refund_after", "TEXT"),
     ("attachment_scope",  "TEXT NOT NULL DEFAULT 'node'"),
     ("node_id",           "TEXT"),
+    # Immutable owner-of-record for the staked bonus. Set once at stake time
+    # and NEVER derived from the mutable ``claimed_by`` (a gate re-claim can
+    # overwrite ``claimed_by`` on an active claim — see claim_gate — so basing
+    # unstake/refund authority on it would let a re-claimer steal the stake).
+    ("bonus_staker_id",   "TEXT"),
 )
 
 
@@ -56,6 +61,8 @@ class GateBonusClaim:
     bonus_refund_after: str | None = None
     attachment_scope: AttachmentScope = "node"
     node_id: str | None = None
+    # Immutable staker-of-record; see BONUS_COLUMNS. None on pre-migration rows.
+    bonus_staker_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.bonus_stake < 0:
@@ -90,6 +97,7 @@ class GateBonusClaim:
             bonus_refund_after=d.get("bonus_refund_after"),
             attachment_scope=d.get("attachment_scope") or "node",  # type: ignore[arg-type]
             node_id=d.get("node_id"),
+            bonus_staker_id=d.get("bonus_staker_id"),
         )
 
     @property

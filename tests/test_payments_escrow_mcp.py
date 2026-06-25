@@ -12,8 +12,27 @@ from pathlib import Path
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _init(base_path: Path) -> None:
+    import sqlite3
+
     from workflow.daemon_server import initialize_author_server
+    from workflow.payments.funding import credit_balance
+    from workflow.storage import db_path
     initialize_author_server(base_path)
+    # Escrow locks now require a funded staker budget; pre-fund the common test
+    # stakers generously so lock/release/refund flows have spendable budget.
+    conn = sqlite3.connect(db_path(base_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        for staker in ("alice", "bob", "staker-1", "daemon-bob", "anonymous"):
+            credit_balance(
+                conn,
+                staker_id=staker,
+                amount=1_000_000_000,
+                now_iso="2026-06-08T00:00:00+00:00",
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _ext(monkeypatch, tmp_path, *, paid_market: bool = True, user: str = "alice", **kwargs):
@@ -380,6 +399,138 @@ class TestEscrowRoundTrip:
         assert inspect["lock"]["status"] == "refunded"
 
 
+# ── Cross-actor authorization (slice1a review CRITICAL 1) ──────────────────────
+
+class TestCrossActorAuthorization:
+    """Money escrow actions must act on the authenticated actor only — a caller
+    cannot fund / set-wallet / withdraw against, or release, another actor's
+    escrow by supplying a foreign staker_id / lock_id."""
+
+    ADDR = "0x" + "a" * 40
+
+    def test_fund_rejects_cross_actor_staker(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        # alice authenticated, tries to fund bob's budget — rejected.
+        result = _ext(monkeypatch, tmp_path, user="alice",
+                      action="escrow_fund", escrow_amount=5000,
+                      escrow_staker_id="bob")
+        assert result["status"] == "rejected"
+        assert "cross-actor" in result["error"].lower()
+        # bob's budget is untouched.
+        bob_bal = _ext(monkeypatch, tmp_path, user="bob",
+                       action="escrow_balance")
+        assert bob_bal["total"] == 1_000_000_000  # only the _init pre-fund
+
+    def test_fund_own_staker_allowed(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        # Supplying your OWN id is fine (matches authenticated actor).
+        result = _ext(monkeypatch, tmp_path, user="alice",
+                      action="escrow_fund", escrow_amount=5000,
+                      escrow_staker_id="alice")
+        assert result["status"] == "ok"
+        assert result["staker_id"] == "alice"
+
+    def test_set_wallet_rejects_cross_actor(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        result = _ext(monkeypatch, tmp_path, user="alice",
+                      action="escrow_set_wallet",
+                      escrow_wallet_address=self.ADDR,
+                      escrow_staker_id="bob")
+        assert result["status"] == "rejected"
+        assert "cross-actor" in result["error"].lower()
+
+    def test_withdraw_rejects_cross_actor(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        # bob registers a wallet + has funds; alice tries to withdraw bob's.
+        _ext(monkeypatch, tmp_path, user="bob", action="escrow_set_wallet",
+             escrow_wallet_address=self.ADDR)
+        result = _ext(monkeypatch, tmp_path, user="alice",
+                      action="escrow_withdraw", escrow_amount=1000,
+                      escrow_staker_id="bob")
+        assert result["status"] == "rejected"
+        assert "cross-actor" in result["error"].lower()
+        # bob's balance untouched.
+        bob_bal = _ext(monkeypatch, tmp_path, user="bob",
+                       action="escrow_balance")
+        assert bob_bal["total"] == 1_000_000_000
+
+    def test_release_rejects_non_owner(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        # alice locks escrow on node-x; bob (not the staker) tries to release
+        # it to himself — rejected, alice's funds are not redirected.
+        lock = _ext(monkeypatch, tmp_path, user="alice",
+                    action="escrow_lock", node_id="node-x", escrow_amount=1000)
+        assert lock["status"] == "ok"
+        result = _ext(monkeypatch, tmp_path, user="bob",
+                      action="escrow_release", lock_id=lock["lock_id"],
+                      escrow_recipient_id="bob")
+        assert result["status"] == "rejected"
+        assert "release" in result["error"].lower()
+        # Lock is still locked — not redirected.
+        inspect = _ext(monkeypatch, tmp_path, user="alice",
+                       action="escrow_inspect", lock_id=lock["lock_id"])
+        assert inspect["lock"]["status"] == "locked"
+
+    def test_release_owner_allowed(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        lock = _ext(monkeypatch, tmp_path, user="alice",
+                    action="escrow_lock", node_id="node-y", escrow_amount=1000)
+        result = _ext(monkeypatch, tmp_path, user="alice",
+                      action="escrow_release", lock_id=lock["lock_id"],
+                      escrow_recipient_id="daemon-bob")
+        assert result["status"] == "ok"
+        assert result["disposition"] == "released"
+
+    def test_host_may_act_cross_actor(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        # The configured host identity is allowed to fund another actor.
+        monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "platform-host")
+        result = _ext(monkeypatch, tmp_path, user="platform-host",
+                      action="escrow_fund", escrow_amount=5000,
+                      escrow_staker_id="bob")
+        assert result["status"] == "ok"
+        assert result["staker_id"] == "bob"
+
+    def test_refund_rejects_non_owner(self, tmp_path, monkeypatch):
+        # slice1a review CRITICAL — round 2: a write-scoped caller who knows
+        # another actor's lock_id must NOT be able to cancel their escrow.
+        _init(tmp_path)
+        lock = _ext(monkeypatch, tmp_path, user="alice",
+                    action="escrow_lock", node_id="node-r", escrow_amount=1000)
+        assert lock["status"] == "ok"
+        # bob (not the staker) tries to refund alice's lock — rejected.
+        result = _ext(monkeypatch, tmp_path, user="bob",
+                      action="escrow_refund", lock_id=lock["lock_id"])
+        assert result["status"] == "rejected"
+        assert "refund" in result["error"].lower()
+        # Lock is still locked — not cancelled; alice's reservation intact.
+        inspect = _ext(monkeypatch, tmp_path, user="alice",
+                       action="escrow_inspect", lock_id=lock["lock_id"])
+        assert inspect["lock"]["status"] == "locked"
+
+    def test_refund_owner_allowed(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        lock = _ext(monkeypatch, tmp_path, user="alice",
+                    action="escrow_lock", node_id="node-r2", escrow_amount=1000)
+        result = _ext(monkeypatch, tmp_path, user="alice",
+                      action="escrow_refund", lock_id=lock["lock_id"])
+        assert result["status"] == "ok"
+        assert result["disposition"] == "refunded"
+
+    def test_refund_host_may_act_cross_actor(self, tmp_path, monkeypatch):
+        _init(tmp_path)
+        monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "platform-host")
+        lock = _ext(monkeypatch, tmp_path, user="alice",
+                    action="escrow_lock", node_id="node-r3", escrow_amount=1000)
+        # Host may refund another actor's lock on their behalf.
+        result = _ext(monkeypatch, tmp_path, user="platform-host",
+                      action="escrow_refund", lock_id=lock["lock_id"])
+        assert result["status"] == "ok"
+        assert result["disposition"] == "refunded"
+        # Refund returns to the original staker (alice), not the host.
+        assert result["refunded_to"] == "alice"
+
+
 # ── Pure business logic unit tests ────────────────────────────────────────────
 
 class TestPaymentsActionsUnit:
@@ -397,6 +548,11 @@ class TestPaymentsActionsUnit:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         migrate_escrow_schema(conn)
+        from workflow.payments.funding import credit_balance
+        credit_balance(
+            conn, staker_id="staker-1", amount=1_000_000,
+            now_iso="2026-06-08T00:00:00+00:00",
+        )
         return conn
 
     def test_action_lock_success(self, tmp_path):
@@ -429,6 +585,47 @@ class TestPaymentsActionsUnit:
         conn = self._conn(tmp_path)
         result = action_escrow_refund(conn, lock_id="no-such")
         assert result["status"] == "rejected"
+
+    def test_action_refund_rejects_non_owner(self, tmp_path):
+        # CRITICAL round 2: caller_id that doesn't own the lock is rejected.
+        from workflow.payments.actions import (
+            action_escrow_lock,
+            action_escrow_refund,
+        )
+        conn = self._conn(tmp_path)
+        lock = action_escrow_lock(conn, node_id="n1", amount=100, claimer="staker-1")
+        result = action_escrow_refund(
+            conn, lock_id=lock["lock_id"], caller_id="attacker", host_id="host"
+        )
+        assert result["status"] == "rejected"
+        assert "refund" in result["error"].lower()
+        # Lock untouched.
+        from workflow.payments.escrow import get_lock
+        assert get_lock(conn, lock["lock_id"]).status == "locked"
+
+    def test_action_refund_owner_allowed_with_caller_id(self, tmp_path):
+        from workflow.payments.actions import (
+            action_escrow_lock,
+            action_escrow_refund,
+        )
+        conn = self._conn(tmp_path)
+        lock = action_escrow_lock(conn, node_id="n2", amount=100, claimer="staker-1")
+        result = action_escrow_refund(
+            conn, lock_id=lock["lock_id"], caller_id="staker-1", host_id="host"
+        )
+        assert result["status"] == "ok"
+        assert result["disposition"] == "refunded"
+
+    def test_action_refund_no_caller_id_skips_auth(self, tmp_path):
+        # Internal callers (caller_id=None) keep the pre-fix behavior.
+        from workflow.payments.actions import (
+            action_escrow_lock,
+            action_escrow_refund,
+        )
+        conn = self._conn(tmp_path)
+        lock = action_escrow_lock(conn, node_id="n3", amount=100, claimer="staker-1")
+        result = action_escrow_refund(conn, lock_id=lock["lock_id"])
+        assert result["status"] == "ok"
 
     def test_action_inspect_no_params(self, tmp_path):
         from workflow.payments.actions import action_escrow_inspect

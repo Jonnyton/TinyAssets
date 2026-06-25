@@ -52,6 +52,7 @@ def _call(action: str, **kwargs) -> dict:
         "give_direction": us._action_give_direction,
         "read_premise": us._action_read_premise,
         "set_premise": us._action_set_premise,
+        "set_persona_name": us._action_set_persona_name,
         "add_canon": us._action_add_canon,
         "list_canon": us._action_list_canon,
         "read_canon": us._action_read_canon,
@@ -89,6 +90,7 @@ def test_write_actions_table_is_exhaustive() -> None:
     """
     expected = {
         "submit_request", "give_direction", "set_premise",
+        "set_persona_name",
         "add_canon", "add_canon_from_path",
         "control_daemon", "switch_universe", "create_universe",
         "queue_cancel",
@@ -118,6 +120,24 @@ def test_set_premise_appends_ledger(universe: str) -> None:
     assert "timestamp" in entry
     assert entry["payload"]["bytes"] == len("A tower of bones.".encode("utf-8"))
     assert entry["payload"]["legacy_program_mirror"] == "PROGRAM.md"
+
+
+def test_set_persona_name_appends_ledger(universe: str) -> None:
+    """Naming the persona is a public write — it lands in the ledger with the
+    soul as its target (the founder named the universe's mind)."""
+    out = _call("set_persona_name", text="Tiny")
+    assert out["status"] == "updated"
+    assert out["persona"]["name"] == "Tiny"
+
+    entries = _ledger(universe)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["action"] == "set_persona_name"
+    assert entry["actor"] == "test-user"
+    assert entry["target"] == us.SOUL_FILENAME
+    assert entry["summary"] == "persona name: Tiny"
+    assert "timestamp" in entry
+    assert entry["payload"]["persona_name"] == "Tiny"
 
 
 def test_set_premise_empty_does_not_append(universe: str) -> None:

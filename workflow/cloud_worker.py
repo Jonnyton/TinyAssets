@@ -84,6 +84,11 @@ DEFAULT_MAX_BACKOFF_S = 300.0     # 5-min ceiling on exponential backoff.
 DEFAULT_BACKOFF_MULT = 2.0        # Doubling per consecutive crash.
 DEFAULT_POLL_INTERVAL_S = 0.5     # Subprocess monitor poll granularity.
 DEFAULT_PRODUCER_POLL_INTERVAL_S = 30.0  # Goal-pool pickup latency cap.
+# Re-check cadence while a worker is auth-quarantined. Short enough that a
+# re-seeded credential resumes claiming promptly; long enough that a dead-auth
+# worker doesn't spin. NOT escalated like crash backoff — auth-dead is a steady
+# state, not a crash, and must not feed the crash counter.
+DEFAULT_AUTH_QUARANTINE_BACKOFF_S = 60.0
 
 # Host identity. Matches AGENTS.md §Configuration →
 # UNIVERSE_SERVER_HOST_USER semantics. We default to "cloud-droplet"
@@ -208,18 +213,34 @@ def _worker_model_for_provider(provider_name: str) -> str:
 
 
 def _subscription_auth_available(provider_name: str) -> bool:
-    if provider_name == "codex":
-        codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
-        return (codex_home / "auth.json").is_file()
-    if provider_name == "claude-code":
-        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
-            return True
-        config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
-        try:
-            return config_dir.is_dir() and any(config_dir.iterdir())
-        except OSError:
-            return False
-    return True
+    """True unless the provider's subscription credentials are missing.
+
+    Delegates to the shared ``subscription_auth_health`` probe so the worker
+    self-quarantine gate, the registry-visibility check, and ``get_status``
+    all read auth from one source of truth.
+    """
+    from workflow.providers.base import subscription_auth_health
+
+    return subscription_auth_health(provider_name).get("status") != "not_logged_in"
+
+
+def _worker_auth_health(daemon_args: list[str] | None) -> dict[str, str] | None:
+    """Resolve this worker's writer provider and its subscription-auth health.
+
+    Returns ``None`` when no specific writer is resolvable (a generic worker we
+    must not gate — it may legitimately route across the fallback chain).
+    Otherwise returns the ``subscription_auth_health`` dict for the worker's
+    pinned / ``--provider`` writer so the supervisor can self-quarantine a
+    dead-auth worker before it claims and poisons the queue.
+    """
+    provider = _provider_from_daemon_args(daemon_args) or os.environ.get(
+        "WORKFLOW_PIN_WRITER", ""
+    ).strip()
+    if not provider:
+        return None
+    from workflow.providers.base import subscription_auth_health
+
+    return subscription_auth_health(provider)
 
 
 def _register_worker_runtime(universe: Path, provider_name: str) -> str | None:
@@ -431,6 +452,9 @@ class SupervisorState:
         self.total_spawns = 0
         self.total_clean_exits = 0
         self.total_crashes = 0
+        # Times this worker skipped spawning a claim-subprocess because its
+        # writer provider was unauthenticated (auth self-quarantine).
+        self.auth_quarantine_count = 0
         self.started_at = _utcnow_iso()
         self.last_spawn_at = ""
         self.last_exit_rc: int | None = None
@@ -452,7 +476,8 @@ class SupervisorState:
             f"spawns={self.total_spawns} "
             f"clean={self.total_clean_exits} "
             f"crashes={self.total_crashes} "
-            f"consec={self.crash_count}"
+            f"consec={self.crash_count} "
+            f"auth_quarantined={self.auth_quarantine_count}"
         )
 
 
@@ -525,6 +550,7 @@ def run_supervisor(
     backoff_mult: float = DEFAULT_BACKOFF_MULT,
     poll_interval: float = DEFAULT_POLL_INTERVAL_S,
     producer_poll_interval: float = DEFAULT_PRODUCER_POLL_INTERVAL_S,
+    auth_quarantine_backoff: float = DEFAULT_AUTH_QUARANTINE_BACKOFF_S,
     max_iterations: int | None = None,
     daemon_args: list[str] | None = None,
     spawn_fn=None,
@@ -584,6 +610,28 @@ def run_supervisor(
         if max_iterations is not None and iteration >= max_iterations:
             break
         iteration += 1
+
+        # Pre-claim auth gate (2026-06-25 loop-wedge root cause): a worker
+        # whose writer provider is unauthenticated must NOT spawn the claim
+        # subprocess. A dead-auth worker claims tasks, fails every one, and
+        # corrupts the queue (failed > succeeded; genuine peer successes lost
+        # to Invalid-transition). Self-quarantine: skip the spawn, beat, back
+        # off, re-check — a re-seeded credential resumes claiming next tick.
+        auth = _worker_auth_health(daemon_args)
+        if auth is not None and auth.get("status") == "not_logged_in":
+            state.auth_quarantine_count += 1
+            logger.error(
+                "cloud_worker: writer provider %s is unauthenticated (%s) — "
+                "QUARANTINING worker, not claiming. Re-seed provider auth to "
+                "resume. (2026-06-25 loop-wedge prevention)",
+                auth.get("provider"), auth.get("detail"),
+            )
+            write_supervisor_heartbeat(
+                universe, state, iteration=iteration, phase="auth_quarantined",
+                planned_sleep_s=auth_quarantine_backoff,
+            )
+            sleep_fn(auth_quarantine_backoff)
+            continue
 
         try:
             proc = spawn_fn(universe)

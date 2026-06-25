@@ -390,6 +390,358 @@ class TestMigrateSettlementSchema:
         assert len(tables) >= 4
 
 
+# Legacy pending_settlement DDL — the pre-soft-ref shape with a HARD FK on
+# escrow_id (REFERENCES escrow_balance). Used to reproduce slice1a review HIGH 3.
+_LEGACY_PENDING_SETTLEMENT_DDL = """
+CREATE TABLE escrow_balance (
+    escrow_id       TEXT PRIMARY KEY,
+    node_id         TEXT NOT NULL,
+    run_id          TEXT NOT NULL,
+    staker_id       TEXT NOT NULL,
+    total_amount    INTEGER NOT NULL,
+    released_amount INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'locked',
+    locked_at       TEXT NOT NULL,
+    resolved_at     TEXT,
+    UNIQUE (node_id, run_id, staker_id)
+);
+CREATE TABLE pending_settlement (
+    settlement_id   TEXT PRIMARY KEY,
+    escrow_id       TEXT NOT NULL REFERENCES escrow_balance(escrow_id),
+    recipient_id    TEXT NOT NULL,
+    amount          INTEGER NOT NULL CHECK (amount >= 0),
+    treasury_fee    INTEGER NOT NULL DEFAULT 0,
+    net_amount      INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    event_type      TEXT NOT NULL DEFAULT 'completion',
+    settlement_key  TEXT NOT NULL UNIQUE,
+    created_at      TEXT NOT NULL,
+    settled_at      TEXT,
+    batch_id        TEXT
+);
+"""
+
+
+class TestLegacyFkMigration:
+    """slice1a review HIGH 3: a DB created before the soft-ref change keeps the
+    hard escrow_id FK, which rejects soft-ref settlement rows (lock_id / claim_id
+    origins). migrate_settlement_schema must rebuild the table off the FK."""
+
+    def _legacy_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(_LEGACY_PENDING_SETTLEMENT_DDL)
+        # Seed one valid (escrow-backed) row so we can verify data is preserved.
+        conn.execute(
+            "INSERT INTO escrow_balance "
+            "(escrow_id, node_id, run_id, staker_id, total_amount, locked_at) "
+            "VALUES ('e1','n1','r1','s1',1000,'2026-06-08T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO pending_settlement "
+            "(settlement_id, escrow_id, recipient_id, amount, treasury_fee, "
+            " net_amount, status, event_type, settlement_key, created_at) "
+            "VALUES ('s-old','e1','r1',1000,10,990,'settled','completion',"
+            "'old-key','2026-06-08T00:00:00Z')"
+        )
+        return conn
+
+    def test_legacy_db_rejects_soft_ref_before_migration(self):
+        """Baseline: the legacy FK blocks a soft-ref row (proves the bug)."""
+        conn = self._legacy_conn()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO pending_settlement "
+                "(settlement_id, escrow_id, recipient_id, amount, treasury_fee, "
+                " net_amount, status, event_type, settlement_key, created_at) "
+                "VALUES ('s-soft','lock-abc','r2',500,5,495,'settled',"
+                "'escrow_release','soft-key','2026-06-08T00:00:00Z')"
+            )
+
+    def test_migration_drops_stale_fk_and_accepts_soft_ref(self):
+        conn = self._legacy_conn()
+        migrate_settlement_schema(conn)
+        # FK is gone — a soft-ref row (escrow_id not in escrow_balance) inserts.
+        conn.execute(
+            "INSERT INTO pending_settlement "
+            "(settlement_id, escrow_id, recipient_id, amount, treasury_fee, "
+            " net_amount, status, event_type, settlement_key, created_at) "
+            "VALUES ('s-soft','lock-abc','r2',500,5,495,'settled',"
+            "'escrow_release','soft-key','2026-06-08T00:00:00Z')"
+        )
+        row = conn.execute(
+            "SELECT * FROM pending_settlement WHERE settlement_id='s-soft'"
+        ).fetchone()
+        assert row is not None
+        assert row["escrow_id"] == "lock-abc"
+
+    def test_migration_preserves_existing_rows(self):
+        conn = self._legacy_conn()
+        migrate_settlement_schema(conn)
+        row = conn.execute(
+            "SELECT * FROM pending_settlement WHERE settlement_id='s-old'"
+        ).fetchone()
+        assert row is not None
+        assert row["amount"] == 1000
+        assert row["net_amount"] == 990
+        assert row["settlement_key"] == "old-key"
+
+    def test_migration_idempotent_on_already_migrated_db(self):
+        conn = self._legacy_conn()
+        migrate_settlement_schema(conn)
+        # Second call must be a no-op (no stale FK left to rebuild) and keep data.
+        migrate_settlement_schema(conn)
+        rows = conn.execute(
+            "SELECT COUNT(*) AS c FROM pending_settlement"
+        ).fetchone()
+        assert rows["c"] == 1
+
+    def test_migration_noop_on_fresh_db(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        # Fresh DB — migration creates everything, then a soft-ref row inserts.
+        migrate_settlement_schema(conn)
+        conn.execute(
+            "INSERT INTO pending_settlement "
+            "(settlement_id, escrow_id, recipient_id, amount, treasury_fee, "
+            " net_amount, status, event_type, settlement_key, created_at) "
+            "VALUES ('s1','lock-x','r1',100,1,99,'settled','escrow_release',"
+            "'k1','2026-06-08T00:00:00Z')"
+        )
+        row = conn.execute(
+            "SELECT * FROM pending_settlement WHERE settlement_id='s1'"
+        ).fetchone()
+        assert row is not None
+
+
+# ── Migration atomicity (slice1a review HIGH — round 2) ────────────────────────
+
+class _FailingConn:
+    """Thin proxy over a real sqlite3 connection that raises on a chosen SQL
+    fragment, simulating a mid-rebuild crash. ``sqlite3.Connection.execute`` is
+    a read-only C attribute and can't be monkeypatched, so the rebuild is driven
+    through this proxy instead. All other attributes delegate to the real conn,
+    so commit/rollback/in_transaction behave exactly as on the underlying DB."""
+
+    def __init__(self, conn: sqlite3.Connection, *, fail_on: str) -> None:
+        self._conn = conn
+        self._fail_on = fail_on
+
+    def execute(self, sql, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self._fail_on in sql:
+            raise sqlite3.OperationalError("simulated mid-rebuild failure")
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def executescript(self, sql, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # Delegate verbatim. Pre-fix code creates the scratch table via
+        # executescript() (implicit COMMIT) — we let that run so the test can
+        # observe whether the scratch table leaks after a later failure.
+        if self._fail_on in sql:
+            raise sqlite3.OperationalError("simulated mid-rebuild failure")
+        return self._conn.executescript(sql, *args, **kwargs)
+
+    def __enter__(self):  # type: ignore[no-untyped-def]
+        # Support `with conn:` (the pre-fix rebuild used this) by delegating the
+        # transaction context to the real connection, so the test exercises the
+        # genuine commit/rollback behavior and can observe a scratch-table leak.
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, *exc):  # type: ignore[no-untyped-def]
+        return self._conn.__exit__(*exc)
+
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        # Delegate commit / rollback / in_transaction / etc. to the real conn.
+        return getattr(self._conn, name)
+
+
+class TestRebuildAtomicity:
+    """A mid-rebuild failure must leave NO scratch table and the original
+    pending_settlement intact. The fix replaces executescript() (implicit
+    COMMIT) with individual statements inside one explicit transaction plus a
+    drop-on-failure cleanup."""
+
+    def _legacy_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(_LEGACY_PENDING_SETTLEMENT_DDL)
+        conn.execute(
+            "INSERT INTO escrow_balance "
+            "(escrow_id, node_id, run_id, staker_id, total_amount, locked_at) "
+            "VALUES ('e1','n1','r1','s1',1000,'2026-06-08T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO pending_settlement "
+            "(settlement_id, escrow_id, recipient_id, amount, treasury_fee, "
+            " net_amount, status, event_type, settlement_key, created_at) "
+            "VALUES ('s-old','e1','r1',1000,10,990,'settled','completion',"
+            "'old-key','2026-06-08T00:00:00Z')"
+        )
+        conn.commit()
+        return conn
+
+    def _scratch_tables(self, conn: sqlite3.Connection) -> set[str]:
+        return {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE '%_new'"
+            )
+        }
+
+    def test_pending_rebuild_failure_leaves_no_scratch_table(self):
+        from workflow.payments import schema as schema_mod
+
+        conn = self._legacy_conn()
+        # Inject a failure AFTER the scratch table is created + populated but
+        # BEFORE the swap commits, by wrapping the connection in a proxy that
+        # raises on the copy-INSERT step. (sqlite3.Connection.execute is a
+        # read-only C attribute and cannot be monkeypatched directly.)
+        proxy = _FailingConn(conn, fail_on="INSERT INTO pending_settlement_new")
+        with pytest.raises(sqlite3.OperationalError, match="simulated"):
+            schema_mod._rebuild_pending_settlement(proxy)
+
+        # No scratch table left behind, and the original survives intact.
+        assert self._scratch_tables(conn) == set()
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "pending_settlement" in tables
+        row = conn.execute(
+            "SELECT * FROM pending_settlement WHERE settlement_id='s-old'"
+        ).fetchone()
+        assert row is not None
+        assert row["amount"] == 1000
+        assert row["net_amount"] == 990
+
+    def test_failed_rebuild_is_retryable_and_then_succeeds(self):
+        from workflow.payments import schema as schema_mod
+
+        conn = self._legacy_conn()
+        proxy = _FailingConn(conn, fail_on="INSERT INTO pending_settlement_new")
+        with pytest.raises(sqlite3.OperationalError):
+            schema_mod._rebuild_pending_settlement(proxy)
+
+        # A clean retry now completes (no leftover scratch table blocks it).
+        schema_mod.migrate_settlement_schema(conn)
+        assert self._scratch_tables(conn) == set()
+        # Soft-ref row now accepted (FK gone) — original data still present.
+        conn.execute(
+            "INSERT INTO pending_settlement "
+            "(settlement_id, escrow_id, recipient_id, amount, treasury_fee, "
+            " net_amount, status, event_type, settlement_key, created_at) "
+            "VALUES ('s-soft','lock-x','r2',500,5,495,'settled',"
+            "'escrow_release','soft-key','2026-06-08T00:00:00Z')"
+        )
+        assert conn.execute(
+            "SELECT COUNT(*) FROM pending_settlement"
+        ).fetchone()[0] == 2
+
+
+# Legacy settlement_batch DDL — the pre-round-2 shape whose status CHECK only
+# allows open/flushed/failed and rejects the newer submitted/in_doubt states.
+_LEGACY_SETTLEMENT_BATCH_DDL = """
+CREATE TABLE settlement_batch (
+    batch_id        TEXT PRIMARY KEY,
+    recipient_id    TEXT NOT NULL,
+    total_amount    INTEGER NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
+    total_fee       INTEGER NOT NULL DEFAULT 0 CHECK (total_fee >= 0),
+    item_count      INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open','flushed','failed')),
+    opened_at       TEXT NOT NULL,
+    flushed_at      TEXT
+);
+"""
+
+
+class TestLegacyBatchStatusMigration:
+    """slice1a review HIGH — round 2: a DB created before the in-doubt states
+    keeps a status CHECK that rejects 'submitted'/'in_doubt'. The migration must
+    rebuild settlement_batch to the wider CHECK while preserving rows."""
+
+    def _legacy_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(_LEGACY_SETTLEMENT_BATCH_DDL)
+        conn.execute(
+            "INSERT INTO settlement_batch "
+            "(batch_id, recipient_id, total_amount, status, opened_at) "
+            "VALUES ('b-old','r1',1000,'flushed','2026-06-08T00:00:00Z')"
+        )
+        conn.commit()
+        return conn
+
+    def test_legacy_rejects_in_doubt_before_migration(self):
+        conn = self._legacy_conn()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO settlement_batch "
+                "(batch_id, recipient_id, total_amount, status, opened_at) "
+                "VALUES ('b-id','r1',500,'in_doubt','2026-06-08T00:00:00Z')"
+            )
+
+    def test_migration_widens_check_and_preserves_rows(self):
+        conn = self._legacy_conn()
+        migrate_settlement_schema(conn)
+        # in_doubt / submitted now accepted.
+        conn.execute(
+            "INSERT INTO settlement_batch "
+            "(batch_id, recipient_id, total_amount, status, opened_at) "
+            "VALUES ('b-id','r1',500,'in_doubt','2026-06-08T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO settlement_batch "
+            "(batch_id, recipient_id, total_amount, status, opened_at) "
+            "VALUES ('b-sub','r1',300,'submitted','2026-06-08T00:00:00Z')"
+        )
+        # Original row preserved.
+        row = conn.execute(
+            "SELECT * FROM settlement_batch WHERE batch_id='b-old'"
+        ).fetchone()
+        assert row is not None
+        assert row["total_amount"] == 1000
+        assert row["status"] == "flushed"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM settlement_batch"
+        ).fetchone()[0] == 3
+
+    def test_migration_idempotent_on_already_widened_db(self):
+        conn = self._legacy_conn()
+        migrate_settlement_schema(conn)
+        # Second call is a no-op: no legacy CHECK left, scratch table absent.
+        migrate_settlement_schema(conn)
+        assert {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE '%_new'"
+            )
+        } == set()
+        assert conn.execute(
+            "SELECT COUNT(*) FROM settlement_batch"
+        ).fetchone()[0] == 1
+
+    def test_fresh_db_accepts_in_doubt(self):
+        conn = _fresh_conn()
+        conn.execute(
+            "INSERT INTO settlement_batch "
+            "(batch_id, recipient_id, total_amount, status, opened_at) "
+            "VALUES ('b1','r1',100,'in_doubt','2026-06-08T00:00:00Z')"
+        )
+        row = conn.execute(
+            "SELECT status FROM settlement_batch WHERE batch_id='b1'"
+        ).fetchone()
+        assert row["status"] == "in_doubt"
+
+
 # ── DDL integration ───────────────────────────────────────────────────────────
 
 class TestDDLIntegration:

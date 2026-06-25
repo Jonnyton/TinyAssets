@@ -407,6 +407,49 @@ def normalize_patch_request_incentive(
 
 # ── Escrow MCP handlers ────────────────────────────────────────────────────────
 
+
+def _escrow_host_user() -> str:
+    """The host identity allowed to act on behalf of other actors' escrow."""
+    return (os.environ.get("UNIVERSE_SERVER_HOST_USER") or "host").strip()
+
+
+def _resolve_escrow_actor(
+    kwargs: dict[str, Any], *, payload_key: str = "staker_id"
+) -> tuple[str | None, str | None]:
+    """Resolve the actor a money-escrow action operates on, from auth context.
+
+    Financial-integrity rule (slice1a review CRITICAL 1): money actions
+    (fund / set_wallet / withdraw) act on the AUTHENTICATED actor, never a
+    caller-supplied identity, so a caller cannot fund/withdraw/redirect another
+    actor's escrow. A caller-supplied ``staker_id`` is only honored when it
+    matches the authenticated actor, or when the authenticated actor is the
+    configured host (``UNIVERSE_SERVER_HOST_USER``) acting on behalf of another.
+
+    Returns ``(actor, None)`` on success, or ``(None, error_message)`` when a
+    cross-actor attempt is rejected.
+    """
+    from workflow.api.engine_helpers import _current_actor
+
+    authed = (_current_actor() or "").strip()
+    requested = (kwargs.get(payload_key) or "").strip()
+
+    if not requested or requested == authed:
+        return (authed, None)
+
+    if authed == _escrow_host_user():
+        # Host may act on behalf of another actor's escrow explicitly.
+        return (requested, None)
+
+    return (
+        None,
+        (
+            f"Cross-actor escrow is not permitted: authenticated actor "
+            f"{authed!r} cannot act on {payload_key}={requested!r}. Money "
+            f"actions operate on your own escrow only."
+        ),
+    )
+
+
 def _action_escrow_lock(kwargs: dict[str, Any]) -> str:
     """Lock escrow for a node request. Requires WORKFLOW_PAID_MARKET=on."""
     from workflow.payments.actions import action_escrow_lock
@@ -419,8 +462,12 @@ def _action_escrow_lock(kwargs: dict[str, Any]) -> str:
             "error": "Escrow actions require WORKFLOW_PAID_MARKET=on.",
         })
 
+    from workflow.api.engine_helpers import _current_actor
+
     node_id = (kwargs.get("node_id") or "").strip()
-    claimer = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    # Lock reserves the caller's OWN funded budget — always the authenticated
+    # actor, never a caller-supplied identity (slice1a review CRITICAL 1).
+    claimer = (_current_actor() or "").strip() or "anonymous"
     currency = (kwargs.get("currency") or "MicroToken").strip()
     raw_amount = kwargs.get("amount", 0)
     try:
@@ -444,6 +491,7 @@ def _action_escrow_lock(kwargs: dict[str, Any]) -> str:
 
 def _action_escrow_release(kwargs: dict[str, Any]) -> str:
     """Release locked escrow to a recipient on completion verdict."""
+    from workflow.api.engine_helpers import _current_actor
     from workflow.payments.actions import action_escrow_release
     from workflow.producers.node_bid import paid_market_enabled
     from workflow.storage import _connect
@@ -457,6 +505,9 @@ def _action_escrow_release(kwargs: dict[str, Any]) -> str:
     lock_id = (kwargs.get("lock_id") or "").strip()
     recipient_id = (kwargs.get("recipient_id") or "").strip()
     evidence = (kwargs.get("evidence") or "").strip()
+    # Only the lock's staker (or host) may release it — pass the authenticated
+    # actor so action_escrow_release can authorize ownership (CRITICAL 1).
+    caller_id = (_current_actor() or "").strip() or "anonymous"
 
     if not recipient_id:
         return json.dumps({
@@ -470,12 +521,15 @@ def _action_escrow_release(kwargs: dict[str, Any]) -> str:
             lock_id=lock_id,
             recipient_id=recipient_id,
             evidence=evidence,
+            caller_id=caller_id,
+            host_id=_escrow_host_user(),
         )
     return json.dumps(result)
 
 
 def _action_escrow_refund(kwargs: dict[str, Any]) -> str:
     """Refund locked escrow to staker on abandonment or rejection."""
+    from workflow.api.engine_helpers import _current_actor
     from workflow.payments.actions import action_escrow_refund
     from workflow.producers.node_bid import paid_market_enabled
     from workflow.storage import _connect
@@ -488,9 +542,19 @@ def _action_escrow_refund(kwargs: dict[str, Any]) -> str:
 
     lock_id = (kwargs.get("lock_id") or "").strip()
     reason = (kwargs.get("reason") or "").strip()
+    # Only the lock's staker (or host) may refund it — pass the authenticated
+    # actor so action_escrow_refund can authorize ownership (CRITICAL round 2).
+    # A write-scoped caller cannot cancel another actor's escrow by lock_id.
+    caller_id = (_current_actor() or "").strip() or "anonymous"
 
     with _connect(_base_path()) as conn:
-        result = action_escrow_refund(conn, lock_id=lock_id, reason=reason)
+        result = action_escrow_refund(
+            conn,
+            lock_id=lock_id,
+            reason=reason,
+            caller_id=caller_id,
+            host_id=_escrow_host_user(),
+        )
     return json.dumps(result)
 
 
@@ -507,11 +571,154 @@ def _action_escrow_inspect(kwargs: dict[str, Any]) -> str:
     return json.dumps(result)
 
 
+def _action_escrow_fund(kwargs: dict[str, Any]) -> str:
+    """Credit a staker's escrow budget (off-chain / testnet faucet).
+
+    Requires WORKFLOW_PAID_MARKET=on. Funds the authenticated actor's own
+    budget; a supplied staker_id is honored only when it is the authenticated
+    actor (or the host acting on behalf of another).
+    """
+    from workflow.payments.actions import action_escrow_fund
+    from workflow.producers.node_bid import paid_market_enabled
+    from workflow.storage import _connect
+
+    if not paid_market_enabled():
+        return json.dumps({
+            "status": "not_available",
+            "error": "Escrow actions require WORKFLOW_PAID_MARKET=on.",
+        })
+
+    staker_id, err = _resolve_escrow_actor(kwargs, payload_key="staker_id")
+    if err is not None:
+        return json.dumps({"status": "rejected", "error": err})
+    currency = (kwargs.get("currency") or "MicroToken").strip()
+    raw_amount = kwargs.get("amount", 0)
+    try:
+        amount = int(raw_amount)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "status": "rejected",
+            "error": f"amount must be an integer, got {raw_amount!r}.",
+        })
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_fund(
+            conn, staker_id=staker_id, amount=amount, currency=currency
+        )
+    return json.dumps(result)
+
+
+def _action_escrow_balance(kwargs: dict[str, Any]) -> str:
+    """Read-only — a staker's escrow budget (total / reserved / spendable)."""
+    from workflow.payments.actions import action_escrow_balance
+    from workflow.storage import _connect
+
+    staker_id = (
+        kwargs.get("staker_id") or os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    ).strip()
+    currency = (kwargs.get("currency") or "MicroToken").strip()
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_balance(conn, staker_id=staker_id, currency=currency)
+    return json.dumps(result)
+
+
+def _action_escrow_set_wallet(kwargs: dict[str, Any]) -> str:
+    """Register an actor's on-chain payout address (where withdrawals land).
+
+    Requires WORKFLOW_PAID_MARKET=on. Operates on the authenticated actor; a
+    supplied staker_id is honored only when it is the authenticated actor (or
+    the host acting on behalf of another) — a caller cannot redirect another
+    actor's payout address (slice1a review CRITICAL 1).
+    """
+    from workflow.payments.actions import action_escrow_set_wallet
+    from workflow.payments.settlement_backend import BASE_SEPOLIA_CHAIN_ID
+    from workflow.producers.node_bid import paid_market_enabled
+    from workflow.storage import _connect
+
+    if not paid_market_enabled():
+        return json.dumps({
+            "status": "not_available",
+            "error": "Escrow actions require WORKFLOW_PAID_MARKET=on.",
+        })
+
+    actor_id, err = _resolve_escrow_actor(kwargs, payload_key="staker_id")
+    if err is not None:
+        return json.dumps({"status": "rejected", "error": err})
+    address = (kwargs.get("wallet_address") or "").strip()
+    raw_chain = kwargs.get("chain_id") or BASE_SEPOLIA_CHAIN_ID
+    try:
+        chain_id = int(raw_chain)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "status": "rejected",
+            "error": f"chain_id must be an integer, got {raw_chain!r}.",
+        })
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_set_wallet(
+            conn, actor_id=actor_id, address=address, chain_id=chain_id
+        )
+    return json.dumps(result)
+
+
+def _action_escrow_withdraw(kwargs: dict[str, Any]) -> str:
+    """Withdraw spendable balance to the actor's payout wallet via the
+    configured settlement backend. Requires WORKFLOW_PAID_MARKET=on."""
+    from workflow.payments.actions import action_escrow_withdraw
+    from workflow.payments.settlement_backend import BASE_SEPOLIA_CHAIN_ID
+    from workflow.producers.node_bid import paid_market_enabled
+    from workflow.storage import _connect
+
+    if not paid_market_enabled():
+        return json.dumps({
+            "status": "not_available",
+            "error": "Escrow actions require WORKFLOW_PAID_MARKET=on.",
+        })
+
+    # Withdraw moves funds OUT — only against the authenticated actor's own
+    # balance/wallet (slice1a review CRITICAL 1).
+    actor_id, err = _resolve_escrow_actor(kwargs, payload_key="staker_id")
+    if err is not None:
+        return json.dumps({"status": "rejected", "error": err})
+    currency = (kwargs.get("currency") or "MicroToken").strip()
+    raw_amount = kwargs.get("amount", 0)
+    raw_chain = kwargs.get("chain_id") or BASE_SEPOLIA_CHAIN_ID
+    try:
+        amount = int(raw_amount)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "status": "rejected",
+            "error": f"amount must be an integer, got {raw_amount!r}.",
+        })
+    try:
+        chain_id = int(raw_chain)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "status": "rejected",
+            "error": f"chain_id must be an integer, got {raw_chain!r}.",
+        })
+    # Optional client-supplied idempotency key — a retry MUST reuse the same key
+    # so the withdrawal is not paid out twice (slice1a review HIGH 4).
+    idempotency_key = (kwargs.get("idempotency_key") or "").strip() or None
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_withdraw(
+            conn, actor_id=actor_id, amount=amount, currency=currency,
+            chain_id=chain_id, idempotency_key=idempotency_key,
+        )
+    return json.dumps(result)
+
+
 _ESCROW_ACTIONS: dict[str, Any] = {
     "escrow_lock": _action_escrow_lock,
     "escrow_release": _action_escrow_release,
     "escrow_refund": _action_escrow_refund,
     "escrow_inspect": _action_escrow_inspect,
+    "escrow_fund": _action_escrow_fund,
+    "escrow_balance": _action_escrow_balance,
+    "escrow_set_wallet": _action_escrow_set_wallet,
+    "escrow_withdraw": _action_escrow_withdraw,
 }
 
 # ── Outcome event MCP actions ─────────────────────────────────────────────
@@ -3238,13 +3445,48 @@ def _action_gates_stake_bonus(kwargs: dict[str, Any]) -> str:
         })
 
     _ensure_workflow_db()
+    from workflow.gates.actions import ensure_bonus_columns
+    from workflow.gates.schema import GateBonusClaim
     from workflow.storage import _connect as _storage_connect
     with _storage_connect(_base_path()) as conn:
+        # Authorization (slice1a review CRITICAL — round 4): staking a bonus
+        # mutates an existing gate claim, and its refund leg always returns to
+        # the recorded claimer (``claimed_by``). Only the claim owner or the
+        # configured host may stake a bonus on a claim — a write-scoped caller
+        # who merely knows a ``claim_id`` must not be able to attach a stake to
+        # another actor's claim. Mirrors the ``unstake_bonus`` staker check.
+        ensure_bonus_columns(conn)
+        row = conn.execute(
+            "SELECT * FROM gate_claims WHERE claim_id = ?", (claim_id,)
+        ).fetchone()
+        if row is None:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"Claim '{claim_id}' not found.",
+            })
+        claim = GateBonusClaim.from_row(row)
+        actor = _current_actor_or_anon()
+        recorded_claimer = (claim.claimed_by or "").strip()
+        host_user = _escrow_host_user()
+        if actor != recorded_claimer and actor != host_user:
+            return json.dumps({
+                "status": "rejected",
+                "error": (
+                    "Cross-actor bonus staking is not permitted: only the claim "
+                    f"owner ('{recorded_claimer}') or the host ('{host_user}') "
+                    f"may stake a bonus on claim '{claim_id}'. Authenticated "
+                    f"actor '{actor}' is not authorized."
+                ),
+            })
+        # The bonus belongs to the claim owner-of-record, recorded immutably as
+        # bonus_staker_id; even when the host initiates the stake, ownership
+        # stays with the claimer so a later re-claim cannot transfer it.
         result = stake_bonus(
             conn,
             claim_id=claim_id,
             bonus_stake=stake,
             node_id=node_id,
+            staker_id=recorded_claimer,
             attachment_scope=attachment_scope,
         )
     return json.dumps(result, default=str)
@@ -3283,9 +3525,19 @@ def _action_gates_release_bonus(kwargs: dict[str, Any]) -> str:
     Requires: claim_id, eval_verdict ("pass"|"fail"|"skip"),
     node_last_claimer (who gets the payout on pass).
     Rejected when no verdict supplied or bonus_stake is 0.
+
+    Authorization (slice1a review CRITICAL — round 3): releasing/refunding a gate
+    bonus moves staked value. Only the legitimate gate-outcome authority may do
+    it — the Goal owner (who owns the ladder that defines the gate), the
+    configured host (``UNIVERSE_SERVER_HOST_USER``), or an actor holding the
+    gate-claim capability (``CAP_RETRACT_GATE_CLAIM``). An arbitrary write-scoped
+    caller who knows a ``claim_id`` cannot settle another actor's bonus to a
+    caller-supplied recipient, nor refund another actor's stake to themselves.
     """
     from workflow.api.branches import _ensure_workflow_db
+    from workflow.daemon_server import CAP_RETRACT_GATE_CLAIM, get_goal
     from workflow.gates.actions import release_bonus
+    from workflow.gates.schema import GateBonusClaim
     from workflow.producers.node_bid import paid_market_enabled
 
     if not paid_market_enabled():
@@ -3317,16 +3569,60 @@ def _action_gates_release_bonus(kwargs: dict[str, Any]) -> str:
             ),
         })
 
-    staker = _current_actor_or_anon()
     _ensure_workflow_db()
     from workflow.storage import _connect as _storage_connect
     with _storage_connect(_base_path()) as conn:
+        # Load the claim BEFORE any disbursement so authorization can be checked
+        # against recorded state (goal owner, recorded staker), never against
+        # caller-supplied identities.
+        row = conn.execute(
+            "SELECT * FROM gate_claims WHERE claim_id = ?", (claim_id,)
+        ).fetchone()
+        if row is None:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"Claim '{claim_id}' not found.",
+            })
+        claim = GateBonusClaim.from_row(row)
+
+        # Authorization: only the gate-outcome authority may release/refund.
+        actor = _current_actor_or_anon()
+        goal_owner = ""
+        if claim.goal_id:
+            try:
+                goal = get_goal(_base_path(), goal_id=claim.goal_id)
+                goal_owner = (goal.get("author") or "").strip()
+            except KeyError:
+                goal_owner = ""
+        host_user = _escrow_host_user()
+        allowed = {a for a in (goal_owner, host_user) if a}
+        if actor not in allowed and not _current_actor_has_capability(
+            CAP_RETRACT_GATE_CLAIM,
+        ):
+            return json.dumps({
+                "status": "rejected",
+                "error": (
+                    "Cross-actor bonus release is not permitted: only the Goal "
+                    f"owner ('{goal_owner}'), the host ('{host_user}'), or an "
+                    f"actor with {CAP_RETRACT_GATE_CLAIM!r} can release/refund a "
+                    f"gate bonus. Authenticated actor '{actor}' is not the "
+                    "gate-outcome authority for this claim."
+                ),
+            })
+
+        # The refund recipient is always the IMMUTABLE recorded staker — pass it
+        # as an assertion so release_bonus rejects any mismatch (defense in
+        # depth). It must be bonus_staker_id, NOT claimed_by: a gate re-claim
+        # rewrites claimed_by, so asserting claimed_by would make the legitimate
+        # owner/host release fail against the immutable staker and strand the
+        # bonus (round-6 finding). Falls back to claimed_by for pre-migration rows.
+        assertion_staker = (claim.bonus_staker_id or claim.claimed_by or "").strip()
         result = release_bonus(
             conn,
             claim_id=claim_id,
             eval_verdict=eval_verdict,
             node_last_claimer=node_last_claimer,
-            staker=staker,
+            staker=assertion_staker,
         )
     return json.dumps(result, default=str)
 
@@ -3708,7 +4004,10 @@ def gates(
                     claim_id. Only the original staker can unstake.
       release_bonus Resolve a bonus payout via evaluator verdict. Needs
                     claim_id, eval_verdict ("pass"|"fail"|"skip"),
-                    node_last_claimer (recipient on pass).
+                    node_last_claimer (recipient on pass). Only the Goal
+                    owner, the host, or an actor with the gate-claim
+                    capability may release/refund — refunds always return
+                    to the recorded staker.
 
     Evidence URL must be http(s) with a host or a Workflow run
     evidence handle such as ``workflow:run:<run_id>``; content is not

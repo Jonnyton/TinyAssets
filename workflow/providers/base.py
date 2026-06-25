@@ -9,6 +9,7 @@ from __future__ import annotations
 import abc
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +105,59 @@ def subprocess_env_for_provider(provider_name: str) -> dict[str, str]:
         # raise ValueError above and fail loudly.
         pass
     return env
+
+
+# Subscription-auth health. The 2026-06-25 loop-wedge root cause was a worker
+# whose claude-code auth was dead (no credentials) that kept claiming tasks
+# and failing every one, poisoning the queue for ~3 weeks undetected.
+# ``is_available()`` only checks the binary is on PATH (``shutil.which``); it
+# does NOT check login state. This helper checks login state so workers can
+# self-quarantine (cloud_worker) and get_status can surface dead writer auth
+# instead of leaving it buried in worker logs.
+#
+# Returns ``{"provider", "status", "detail"}`` where status is one of:
+#   "ok"            — subscription credentials are present
+#   "not_logged_in" — credentials are missing (the actionable failure)
+#   "unknown"       — no checkable subscription auth here (API-key providers,
+#                     ollama, or an unrecognized name); callers never gate on it
+#
+# NOTE: this is a credentials-PRESENCE probe, not a token-validity probe. It
+# reliably catches missing creds (the dominant failure, and the exact 2026-06-25
+# case); a present-but-expired token still reads "ok" here and surfaces via
+# call-time provider failures + the loop_stalled liveness warning.
+def subscription_auth_health(provider_name: str) -> dict[str, str]:
+    """Return presence-based subscription-auth health for *provider_name*."""
+    name = (provider_name or "").strip()
+    if name == "codex":
+        codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+        if (codex_home / "auth.json").is_file():
+            return {"provider": name, "status": "ok",
+                    "detail": f"auth.json present at {codex_home}"}
+        return {"provider": name, "status": "not_logged_in",
+                "detail": f"no auth.json at {codex_home}"}
+    if name == "claude-code":
+        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
+            return {"provider": name, "status": "ok",
+                    "detail": "CLAUDE_CODE_OAUTH_TOKEN set"}
+        config_dir = Path(
+            os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")
+        )
+        # Deliberately conservative: any non-empty config dir reads "ok". For a
+        # quarantine gate, a false "not_logged_in" (quarantining a HEALTHY
+        # worker) is worse than a false "ok" (which still fails at call time and
+        # trips the loop_stalled warning). Only the empty/absent dir — the exact
+        # 2026-06-25 incident — yields "not_logged_in".
+        try:
+            if config_dir.is_dir() and any(config_dir.iterdir()):
+                return {"provider": name, "status": "ok",
+                        "detail": f"config dir populated at {config_dir}"}
+        except OSError as exc:
+            return {"provider": name, "status": "not_logged_in",
+                    "detail": f"config dir unreadable: {exc}"}
+        return {"provider": name, "status": "not_logged_in",
+                "detail": f"no token and empty/absent {config_dir}"}
+    return {"provider": name, "status": "unknown",
+            "detail": "no subscription-auth probe for this provider"}
 
 
 # bwrap failure signature emitted to stderr on Linux hosts that lack

@@ -338,6 +338,10 @@ def _extensions_impl(
     escrow_recipient_id: str = "",
     escrow_evidence: str = "",
     escrow_reason: str = "",
+    escrow_staker_id: str = "",
+    escrow_wallet_address: str = "",
+    escrow_chain_id: int = 0,
+    escrow_idempotency_key: str = "",
     event_id: str = "",
     event_type: str = "",
     event_date: str = "",
@@ -570,6 +574,10 @@ def _extensions_impl(
             "recipient_id": escrow_recipient_id,
             "evidence": escrow_evidence,
             "reason": escrow_reason,
+            "staker_id": escrow_staker_id,
+            "wallet_address": escrow_wallet_address,
+            "chain_id": escrow_chain_id,
+            "idempotency_key": escrow_idempotency_key,
         }
         return escrow_handler(escrow_kwargs)
 
@@ -732,6 +740,7 @@ def _extensions_impl(
             "publish_version", "get_branch_version", "list_branch_versions",
             "fork_tree",
             "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
+            "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
             "attest_gate_event", "verify_gate_event", "dispute_gate_event",
             "retract_gate_event", "get_gate_event", "list_gate_events",
             "schedule_branch", "unschedule_branch", "list_schedules",
