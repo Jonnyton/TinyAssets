@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from domains.fantasy_daemon.phases import _provider_stub
 from workflow.exceptions import AllProvidersExhaustedError
+from workflow.providers import call as _provider_stub
 
 
 class TestProviderRetry:
@@ -17,15 +17,15 @@ class TestProviderRetry:
         # errors mid-execution, unlike setup_method/teardown_method which
         # leaves _FORCE_MOCK=False permanent on a mid-setup crash and
         # contaminates downstream tests (notably test_writer_tools).
-        monkeypatch.setattr(_provider_stub, "_FORCE_MOCK", False)
+        monkeypatch.setattr(_provider_stub, "_force_mock", False)
 
     def test_force_mock_bypasses_retry(self, monkeypatch):
-        monkeypatch.setattr(_provider_stub, "_FORCE_MOCK", True)
+        monkeypatch.setattr(_provider_stub, "_force_mock", True)
         result = _provider_stub.call_provider("test", fallback_response="mock")
         assert result == "mock"
 
     def test_force_mock_default_response(self, monkeypatch):
-        monkeypatch.setattr(_provider_stub, "_FORCE_MOCK", True)
+        monkeypatch.setattr(_provider_stub, "_force_mock", True)
         result = _provider_stub.call_provider("test")
         assert "[Mock response" in result
 

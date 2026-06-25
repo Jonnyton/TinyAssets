@@ -739,7 +739,7 @@ class TestRAPTOR:
 
         try:
             with patch(
-                "domains.fantasy_daemon.phases._provider_stub.call_provider",
+                "workflow.providers.call.call_provider",
                 return_value="Summary of the cluster.",
             ):
                 tree = rebuild_raptor_from_canon(
@@ -788,7 +788,7 @@ class TestRAPTOR:
                 no_tray=True,
             )
             with patch(
-                "domains.fantasy_daemon.phases._provider_stub.call_provider",
+                "workflow.providers.call.call_provider",
                 return_value="Summary of cluster.",
             ):
                 controller._build_raptor_tree()

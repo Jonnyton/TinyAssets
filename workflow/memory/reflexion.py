@@ -202,12 +202,9 @@ class ReflexionEngine:
 
         Returns the LLM response or empty string if unavailable.
         """
-        from domains.fantasy_daemon.phases._provider_stub import (
-            _FORCE_MOCK,
-            call_provider,
-        )
+        from workflow.providers.call import call_provider, is_force_mock
 
-        if _FORCE_MOCK:
+        if is_force_mock():
             return ""
 
         scene_id = (
@@ -257,12 +254,9 @@ class ReflexionEngine:
 
         Returns the LLM response or empty string if unavailable.
         """
-        from domains.fantasy_daemon.phases._provider_stub import (
-            _FORCE_MOCK,
-            call_provider,
-        )
+        from workflow.providers.call import call_provider, is_force_mock
 
-        if _FORCE_MOCK:
+        if is_force_mock():
             return ""
 
         scene_id = (

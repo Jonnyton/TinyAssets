@@ -1173,9 +1173,9 @@ class DaemonController:
 
         # Inject router into the provider stub module so nodes can use it
         try:
-            import fantasy_daemon.nodes._provider_stub as stub
+            from workflow.providers.call import set_provider_router
 
-            stub._real_router = self._router
+            set_provider_router(self._router)
         except ImportError:
             pass
 
@@ -1959,7 +1959,8 @@ class DaemonController:
 
         # Track the most recently used LLM provider
         try:
-            from fantasy_daemon.nodes._provider_stub import last_provider
+            from workflow.providers.call import get_last_provider
+            last_provider = get_last_provider()
             if last_provider:
                 self._last_provider_used = last_provider
         except ImportError:
@@ -2224,7 +2225,7 @@ class DaemonController:
         active characters, open plot threads, and recent creative
         decisions.  Falls back to the chapter summary alone on failure.
         """
-        from fantasy_daemon.nodes._provider_stub import call_provider
+        from workflow.providers.call import call_provider
 
         chapter_summary = output.get("chapter_summary", "")
         if not chapter_summary:

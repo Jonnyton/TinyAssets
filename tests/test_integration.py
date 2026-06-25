@@ -24,9 +24,10 @@ import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 import domains.fantasy_daemon.phases._provider_stub as _provider_stub  # noqa: E402
+from workflow.providers import call as _provider_call  # noqa: E402
 
 # Force mock provider responses
-_provider_stub._FORCE_MOCK = True
+_provider_call.set_force_mock(True)
 
 from domains.fantasy_daemon.graphs.scene import build_scene_graph  # noqa: E402
 from domains.fantasy_daemon.phases.commit import commit  # noqa: E402
@@ -169,7 +170,7 @@ class TestOrientRetrievalIntegration:
         if mock_router_cls.called:
             kwargs = mock_router_cls.call_args[1]
             provider_call = kwargs.get("provider_call")
-            if provider_stub._FORCE_MOCK:
+            if provider_stub.is_force_mock():
                 assert provider_call is None
             else:
                 assert provider_call is not None
@@ -417,7 +418,7 @@ class TestProviderIntegration:
 
     def test_force_mock_returns_deterministic(self):
         """When _FORCE_MOCK is True, providers return mock responses."""
-        assert _provider_stub._FORCE_MOCK is True
+        assert _provider_stub.is_force_mock() is True
         result = _provider_stub.call_provider("test prompt", role="writer")
         assert isinstance(result, str)
         assert len(result) > 0
