@@ -61,7 +61,7 @@
 
 ## What shipped this session (verified durable fixes)
 
-All landed on branch `worktree-sdlc-best-practices-adoption`, ruff-clean, verified.
+All landed on branch `worktree-sdlc-best-practices-adoption`, ruff-clean, verified. The shipped code additionally passed an **independent Codex read-only correctness review via `mcp__codex__codex` — verdict SHIP** (2026-06-24, thread `019efd64`): `_merged_branch_set` semantically equivalent + fail-safe; the settings merge tool can't clobber local config; the budget invariant is correctly non-blocking; the test import matches the current API.
 
 1. **Unblocked the test suite** — fixed the stale `_resolve_bugs_canonical` import in `tests/test_wiki_alias_corner_cases.py` (renamed to `_resolve_filed_page_canonical(..., category="bugs")`, no compat shim). Full suite now collects **8287 tests, 0 errors** (was 1 fatal error); the file's own 13 tests pass (10 pass / 3 skip on Windows NTFS).
 2. **Context-budget guard** — `scripts/check_context_budget.py` measures the always-loaded set (CLAUDE.md+AGENTS.md+STATUS.md): HARD budget for STATUS.md (its own declared 4 KB/60 ln) exits 2 under `--strict`; soft advisory targets for AGENTS.md/CLAUDE.md warn only. Wired as the committed **`context-budget` invariant** (`scripts/invariants/context_budget.py`, propose-only, not commit-blocking — same stance as `concerns-staleness`) so the "AGENTS.md tripled unaudited" drift class is now caught automatically. This is the durable home (committed) vs the gitignored settings.json.
