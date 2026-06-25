@@ -1,0 +1,63 @@
+name: branch-janitor
+
+# Layer 1 + 4 of the branch lifecycle automation.
+# See docs/design-notes/2026-06-24-branch-lifecycle-automation.md
+#
+# The daily scheduled run sweeps in `apply-all` mode: it deletes MERGED
+# branches (already on main) and STALE_DELETE branches (unmerged, no open PR,
+# no commit in 45d), and updates the rolling tracking issue. Hard guardrails
+# always protect main/release, open-PR branches, and commits < 7d.
+# For an on-demand dry-run, trigger it manually with mode `report`.
+
+on:
+  schedule:
+    - cron: '17 9 * * *'   # 09:17 UTC daily
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report = dry-run issue only; apply-merged = also delete merged branches; apply-all = also delete stale branches'
+        required: true
+        default: report
+        type: choice
+        options:
+          - report
+          - apply-merged
+          - apply-all
+
+permissions:
+  contents: write   # delete remote branches
+  issues: write     # write the rolling tracking issue
+  pull-requests: read
+
+concurrency:
+  group: branch-janitor
+  cancel-in-progress: false
+
+jobs:
+  janitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history, all refs)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run branch janitor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # scheduled runs carry no input -> default to apply-all (self-maintaining sweep)
+          JANITOR_MODE: ${{ github.event.inputs.mode || 'apply-all' }}
+        run: |
+          set -euo pipefail
+          FLAGS=(--issue)
+          case "$JANITOR_MODE" in
+            apply-merged) FLAGS+=(--apply --only-merged) ;;
+            apply-all)    FLAGS+=(--apply) ;;
+          esac
+          echo "Running janitor in mode=$JANITOR_MODE (flags: ${FLAGS[*]})"
+          python scripts/branch_janitor.py --fetch "${FLAGS[@]}"

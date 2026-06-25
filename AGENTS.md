@@ -298,6 +298,10 @@ should be able to start working productively in under a minute.
 
 Every provider, every session, in this order:
 
+0. **Run `python scripts/session_sync_gate.py`.** Fetches with `--prune` and
+   warns if the primary checkout is off `main` or behind origin/main — the
+   "1,209 behind / stale refs" trap. Advisory; never mutates the tree. Claude
+   Code fires it automatically via the `SessionStart` hook.
 1. **Read STATUS.md.** Concerns + Work table + Next.
 2. **Run `python scripts/worktree_status.py`.** This shows dirty current
    checkouts, worktrees that need `_PURPOSE.md`, orphaned or missing paths,
@@ -520,6 +524,29 @@ them, promote/refactor the work into current project state:
 Existing worktrees are retrofit-on-next-touch: add `_PURPOSE.md` and inventory
 events when you next work there. Do not bulk rewrite another provider's active
 worktree metadata unless the STATUS row or owner asks for it.
+
+### Branch & worktree lifecycle automation
+
+The branch/worktree hygiene that prevented the "1,209 behind / 600+ branches"
+drift is automated, not a manual ritual to remember. Design note:
+`docs/design-notes/2026-06-24-branch-lifecycle-automation.md`. Four layers:
+
+- **Layer 0 — table stakes.** Repo setting `delete_branch_on_merge=true` (GitHub
+  auto-deletes a PR's head branch on merge) plus `fetch.prune`/`rerere`. Apply
+  on any machine with `python scripts/setup_git_hygiene.py`.
+- **Layer 1 — `scripts/branch_janitor.py`.** Classifies every remote branch
+  PROTECTED / ACTIVE / MERGED / STALE_FLAG / STALE_DELETE. Default mode reports
+  only; `--apply` deletes MERGED (already on main) + STALE_DELETE. Hard
+  guardrails: never deletes main/release, open-PR branches, or commits < 7d.
+  Driven by `.github/workflows/branch-janitor.yml` (daily `apply-all`,
+  self-maintaining; manual `workflow_dispatch` with `report` / `apply-merged`
+  / `apply-all`, where `report` is an on-demand dry-run).
+- **Layer 2 — `python scripts/wt.py new|done|list`.** One command for both
+  halves of the loop: `new` creates a worktree off `origin/main` + scaffolds
+  `_PURPOSE.md`; `done` verifies the branch merged before removing the worktree
+  and branch (refuses unmerged unless `--force`). Use it instead of raw
+  `git worktree add`/`remove` so teardown stops being optional.
+- **Layer 3 — `scripts/session_sync_gate.py`.** Session-start step 0 above.
 
 ### Staying unblocked
 
