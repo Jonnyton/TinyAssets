@@ -30,14 +30,21 @@ Authority model (Phase 2)
 
 A real write fires only when ALL THREE gates are open:
 
-1. **Capability token (env-sourced, daemon-side).** The host sets
-   ``WORKFLOW_GITHUB_PR_CAPABILITIES`` to a JSON map of
-   ``{"<owner>/<repo>": "<token>"}`` (round-2 fix for Codex P1.2 —
-   the round-1 ``WORKFLOW_GITHUB_PR_CAPABILITY_REPO_<OWNER>_<REPO>``
-   suffix encoding collapsed ``my.repo`` / ``my_repo`` / ``my-repo``
-   to the same env key and therefore the same token). The token is
-   read at invocation time and is never echoed into branch-visible
-   state.
+1. **Capability token (vault first, then secrets-vended env).** The
+   per-universe credential vault (``workflow.credential_vault``) is the
+   higher-priority source; a vault-bound universe never falls through to
+   the process-env tier. When no vault is bound, the shared auth provider
+   (``workflow.auth.provider.vend_github_destination_secret``) resolves a
+   destination-scoped GitHub ``push`` credential from
+   ``WORKFLOW_GITHUB_PUSH_CAPABILITIES`` (a JSON map of
+   ``{"<owner>/<repo>": "<token>"}``), accepting the older
+   ``WORKFLOW_GITHUB_PR_CAPABILITIES`` map as a legacy fallback during
+   migration. The JSON map keys by the literal ``owner/repo`` destination
+   (round-2 fix for Codex P1.2 — the round-1
+   ``WORKFLOW_GITHUB_PR_CAPABILITY_REPO_<OWNER>_<REPO>`` suffix encoding
+   collapsed ``my.repo`` / ``my_repo`` / ``my-repo`` to the same env key).
+   The token is read at invocation time and is never echoed into
+   branch-visible state.
 
 2. **Per-destination consent grant.** A row in the per-universe
    ``effector_consents`` table with ``(sink, destination, revoked_at
@@ -86,6 +93,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from workflow.auth.provider import vend_github_destination_secret
 from workflow.effectors.authority import (
     DENIED as SOUL_AUTHORITY_DENIED,
 )
@@ -110,12 +118,19 @@ _ENABLE_ENV = "WORKFLOW_EXTERNAL_WRITE_ENABLED"
 # :func:`run_github_pr_effector` checks it before any gate, including
 # Phase-1 backward-compat packets.
 _DRY_RUN_ENV = "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"
-# Round-2 P1.2 fix: capability tokens come from a single JSON-map env
-# var keyed by the literal ``owner/repo`` destination string. The
-# round-1 ``WORKFLOW_GITHUB_PR_CAPABILITY_REPO_<...>`` suffix encoding
-# collapsed distinct destinations (e.g. ``octo/my.repo`` and
-# ``octo/my_repo``) into the same env-var name; the JSON map keys by
-# the raw destination so two distinct destinations cannot collide.
+# GitHub push (write) credentials are resolved through the shared
+# auth/secrets provider (``workflow.auth.provider.vend_github_destination_secret``)
+# as a destination-keyed ``push`` capability. The canonical env map is
+# ``WORKFLOW_GITHUB_PUSH_CAPABILITIES``; the older PR-specific map
+# ``WORKFLOW_GITHUB_PR_CAPABILITIES`` is still accepted as a legacy
+# fallback (handled inside the vending helper) so existing hosts keep
+# working while they migrate. Round-2 P1.2 property preserved: the map
+# keys by the literal ``owner/repo`` destination string so distinct
+# destinations cannot collide on a suffix-encoded env-var name.
+_PUSH_CAPABILITIES_ENV = "WORKFLOW_GITHUB_PUSH_CAPABILITIES"
+# Legacy env-var name. Kept as the module-level constant the evidence
+# shape + test suite reference; the vending helper accepts it as a
+# fallback so a host that has not migrated keeps real writes working.
 _CAPABILITIES_ENV = "WORKFLOW_GITHUB_PR_CAPABILITIES"
 _GH_PR_TIMEOUT_S = 60.0
 _GITHUB_API = "https://api.github.com"
@@ -159,60 +174,37 @@ def _parse_packet(value: Any) -> dict[str, Any] | None:
     return packet
 
 
-def _load_capability_map() -> dict[str, str]:
-    """Parse ``WORKFLOW_GITHUB_PR_CAPABILITIES`` as a JSON object.
+def _vend_push_token(destination: str) -> str:
+    """Return the env-vended GitHub push token for ``destination``.
 
-    Returns an empty dict when the env is unset, empty, or malformed.
-    Malformed JSON is logged loudly so the host can spot a typo, but
-    the function never raises — a parse failure means "no capability
-    configured" which collapses to the dry-run path.
-
-    The map's keys are matched against the packet's ``destination``
-    field exactly (case-sensitive, whitespace-stripped). Two distinct
-    destinations therefore cannot share a token unless the host wires
-    both keys to the same value in the JSON map — explicit, audited
-    behavior, never silent collision.
+    Resolves through the shared auth/secrets provider as a
+    destination-scoped ``push`` capability. The helper reads the
+    canonical ``WORKFLOW_GITHUB_PUSH_CAPABILITIES`` map and falls back to
+    the legacy ``WORKFLOW_GITHUB_PR_CAPABILITIES`` map during migration.
+    Exact, whitespace-stripped destination match; never echoed into
+    branch-visible state. Empty string when no token is configured.
     """
-    raw = os.environ.get(_CAPABILITIES_ENV, "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError) as exc:
-        logger.warning(
-            "%s is set but not valid JSON: %s. No capability tokens "
-            "will be available; all destination lookups will return "
-            "missing_capability. Fix the env var to enable real writes.",
-            _CAPABILITIES_ENV, exc,
-        )
-        return {}
-    if not isinstance(parsed, dict):
-        logger.warning(
-            "%s must decode to a JSON object (mapping destination -> "
-            "token); got %s. No capability tokens available.",
-            _CAPABILITIES_ENV, type(parsed).__name__,
-        )
-        return {}
-    # Strip values; drop empties so a host with placeholder keys does
-    # not accidentally grant capability for a destination they meant
-    # to leave inert.
-    cleaned: dict[str, str] = {}
-    for key, value in parsed.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            continue
-        token = value.strip()
-        if not token:
-            continue
-        cleaned[key.strip()] = token
-    return cleaned
+    vendored = vend_github_destination_secret(
+        destination=destination,
+        capability="push",
+    )
+    token = vendored.get("token")
+    if not isinstance(token, str):
+        return ""
+    return token.strip()
 
 
 def _read_capability(destination: str, universe_dir: Path | None = None) -> str:
     """Return the capability token for ``destination`` (empty string if missing).
 
-    Looked up by exact match against the JSON-map keys. Never echoed
-    into branch-visible state. Callers must NOT include this value in
-    returned evidence.
+    Two-tier resolution, vault first: the per-universe credential vault
+    (``workflow.credential_vault``) is the higher-priority source; when a
+    universe has a vault we never fall through to the process-env tier
+    (an empty vault means "this universe is not authorized", not "look at
+    the host env"). When no vault is bound, the env-vended ``push`` token
+    from the shared auth provider is used. Never echoed into
+    branch-visible state; callers must NOT include this value in returned
+    evidence.
     """
     if not destination:
         return ""
@@ -222,7 +214,7 @@ def _read_capability(destination: str, universe_dir: Path | None = None) -> str:
         token = resolve_github_token(universe_dir, destination, purpose="write")
         if token or vault_exists(universe_dir):
             return token
-    return _load_capability_map().get(destination, "")
+    return _vend_push_token(destination)
 
 
 def _resolve_universe_dir(base_path: str | Path | None) -> Path | None:
@@ -1275,11 +1267,13 @@ def run_github_pr_effector(
             ),
         }
 
-    # ── Gate 1: capability env ─────────────────────────────────────────
-    # Round-2 P1.2: lookup is by exact destination string against the
-    # JSON map. The dry-run evidence names the destination the host
-    # needs to add to the JSON map (the literal key) — never the
-    # collision-prone uppercased suffix.
+    # ── Gate 1: capability (vault first, then env-vended push token) ───
+    # Vault is the higher-priority source. When no vault is bound, the
+    # token is vended through the shared auth provider as a ``push``
+    # capability (canonical ``WORKFLOW_GITHUB_PUSH_CAPABILITIES`` map,
+    # legacy ``WORKFLOW_GITHUB_PR_CAPABILITIES`` fallback). Lookup is by
+    # exact destination string; the dry-run evidence names the literal
+    # destination key the host must add — never a collision-prone suffix.
     capability = _read_capability(destination, universe_dir)
     if not capability:
         return {
@@ -1287,14 +1281,20 @@ def run_github_pr_effector(
             "phase": "phase_2",
             "reason": "missing_capability",
             "destination": destination,
+            # ``capability_env_var`` stays the legacy name so existing
+            # evidence consumers that branch on it keep working;
+            # ``push_capability_env_var`` advertises the canonical map.
             "capability_env_var": _CAPABILITIES_ENV,
+            "push_capability_env_var": _PUSH_CAPABILITIES_ENV,
             "capability_vault": "per-universe credential vault",
             "legacy_capability_env_var": _CAPABILITIES_ENV,
             "capability_lookup_failed_for": destination,
             "hint": (
                 "Add a vcs/github/write credential to this universe's "
                 f"per-universe credential vault keyed by destination "
-                f'"{destination}".'
+                f'"{destination}", or set the {_PUSH_CAPABILITIES_ENV} '
+                f'JSON map keyed by "{destination}" on the daemon env '
+                f"(legacy {_CAPABILITIES_ENV} still accepted)."
             ),
             "intent": packet,
             "matched_output_key": matched_key,
