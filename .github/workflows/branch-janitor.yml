@@ -52,11 +52,10 @@ jobs:
           JANITOR_MODE: ${{ github.event.inputs.mode || 'report' }}
         run: |
           set -euo pipefail
+          FLAGS=(--issue)
           case "$JANITOR_MODE" in
-            report)       FLAGS="--issue" ;;
-            apply-merged) FLAGS="--issue --apply --only-merged" ;;
-            apply-all)    FLAGS="--issue --apply" ;;
-            *)            FLAGS="--issue" ;;
+            apply-merged) FLAGS+=(--apply --only-merged) ;;
+            apply-all)    FLAGS+=(--apply) ;;
           esac
-          echo "Running janitor in mode=$JANITOR_MODE (flags: $FLAGS)"
-          python scripts/branch_janitor.py --fetch $FLAGS
+          echo "Running janitor in mode=$JANITOR_MODE (flags: ${FLAGS[*]})"
+          python scripts/branch_janitor.py --fetch "${FLAGS[@]}"
