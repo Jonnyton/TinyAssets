@@ -45,18 +45,30 @@ def _router_with_local(
     local_text: str = "content",
     threshold: int = 2,
 ) -> tuple[ProviderRouter, QuotaTracker, _FakeProvider]:
-    """Return (router, quota, local_provider) with all API providers in cooldown."""
+    """Return (router, quota, local_provider) with all API providers cooled.
+
+    The API providers are *registered and then cooled down* — a cooled provider
+    stays registered (cooldown is a quota state, not deregistration), so it
+    survives ``effective_chain`` (FEAT-006) narrowing and reaches the BUG-029
+    drain check. The earlier version registered only ollama-local while cooling
+    *unregistered* API names; effective_chain stripped those phantom names
+    before the drain check ran, so the drain never fired and these tests went
+    green for the wrong reason once FEAT-006 landed. In production a provider
+    can only be in cooldown after it was registered + attempted, so registering
+    here is the realistic condition.
+    """
     quota = QuotaTracker()
     local = _FakeProvider("ollama-local", text=local_text)
+    providers: dict[str, BaseProvider] = {"ollama-local": local}
+    api_chain = [p for p in FALLBACK_CHAINS["writer"] if p != "ollama-local"]
+    for p in api_chain:
+        providers[p] = _FakeProvider(p, text="api-content")
+        quota.cooldown(p, seconds=120)
     router = ProviderRouter(
-        providers={"ollama-local": local},
+        providers=providers,
         quota=quota,
         chain_drain_empty_threshold=threshold,
     )
-    # Put all API providers in the writer chain into cooldown.
-    api_chain = [p for p in FALLBACK_CHAINS["writer"] if p != "ollama-local"]
-    for p in api_chain:
-        quota.cooldown(p, seconds=120)
     return router, quota, local
 
 
@@ -157,12 +169,14 @@ class TestChainDrainBackoff:
                     model="fake", family="fake", latency_ms=0.0,
                 )
 
+        providers: dict[str, BaseProvider] = {"ollama-local": _AlternatingProvider()}
         api_chain = [p for p in FALLBACK_CHAINS["writer"] if p != "ollama-local"]
         for p in api_chain:
+            providers[p] = _FakeProvider(p, text="api-content")
             quota.cooldown(p, 120)
 
         router = ProviderRouter(
-            providers={"ollama-local": _AlternatingProvider()},
+            providers=providers,
             quota=quota,
             chain_drain_empty_threshold=2,
         )
@@ -175,6 +189,35 @@ class TestChainDrainBackoff:
     def test_threshold_1_raises_on_first_empty(self):
         router, _, _ = _router_with_local(local_text="", threshold=1)
         with pytest.raises(AllProvidersExhaustedError):
+            _run(router.call("writer", "p", "s"))
+
+    def test_drain_runs_on_effective_chain_unregistered_api_does_not_block(self):
+        """Drain detection runs on the EFFECTIVE (registered) chain.
+
+        An API provider name in FALLBACK_CHAINS that was never registered is
+        *absent*, not 'draining' — it must neither cause nor BLOCK drain
+        detection. Here claude-code is registered + cooled while codex is
+        unregistered (e.g. no binary on a cloud host); an empty local response
+        must still raise, because codex's absence does not veto the
+        all-API-cooled check.
+
+        This pins the correct fix for the FEAT-006 / effective_chain
+        interaction and guards against the tempting-but-wrong "use the
+        pre-effective_chain chain for the drain check": that would put the
+        never-cooled codex into the drain set and make all()-cooled return
+        False, silently disabling the BUG-029 backoff on cloud hosts.
+        """
+        quota = QuotaTracker()
+        quota.cooldown("claude-code", 120)
+        local = _FakeProvider("ollama-local", text="")
+        claude = _FakeProvider("claude-code", text="api-content")
+        # codex intentionally NOT registered.
+        router = ProviderRouter(
+            providers={"claude-code": claude, "ollama-local": local},
+            quota=quota,
+            chain_drain_empty_threshold=1,
+        )
+        with pytest.raises(AllProvidersExhaustedError, match="empty prose"):
             _run(router.call("writer", "p", "s"))
 
     def test_no_raise_when_api_provider_available(self):

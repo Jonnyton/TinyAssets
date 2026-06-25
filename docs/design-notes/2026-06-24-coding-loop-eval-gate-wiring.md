@@ -173,34 +173,43 @@ de-overlap the S2 enforce-set narrowing taught us. Two source normalizers exist:
 `coding_trajectory_from_packet` (thin, gate-time) and `coding_trajectory_from_run`
 (rich, post-run from run record + events).
 
-### Wiring plan — warn-only LANDED 2026-06-25 (Codex SHIP)
+### Wiring plan — warn + enforce LANDED 2026-06-25 (Codex SHIP)
 Same warn→enforce ladder as S2, on a separate channel:
 1. **Warn-only — LANDED.** `validate_ship_request` computes
    `evaluate_coding_trajectory(coding_trajectory_from_packet(packet))` behind
    `WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE` (default `warn`; `off` skips). It attaches
    `trajectory_warnings` to BOTH decision dicts and NEVER touches `violations`;
    one record per failing applicable check, emitted only when the eval is
-   conclusive AND verdict==`fail` (= what enforce would block, so the warn rate
-   measures the real prospective block-rate). Fail-open. There is deliberately
-   **no enforce path** — a premature `enforce` value resolves to `warn` (an env
-   typo must not create a production gate failure). Ledger: additive
+   conclusive AND verdict==`fail` (= what enforce blocks, so the warn rate
+   measures the real prospective block-rate). Fail-open. Ledger: additive
    `trajectory_warnings_json` column (forward-compat) populated by
    `attempt_from_decision`. **Zero block-behavior change** (Codex-verified).
 2. **Watched period — ready.** `summarize_trajectory_warnings(universe_path)`
    aggregates `{total_attempts, attempts_with_warnings, check_counts}` (counts by
    `check`, mirrors `summarize_rubric_warnings`) to measure the real path-failure
    rate before any gating discussion.
-3. **Host flip (future, gated):** only after the warn rate is acceptable AND
-   opposite-provider review re-confirms; adding an enforce path is its own slice.
-   **Watch item (Codex 2026-06-25):** if `child_integrity` warnings turn out to
-   be dominated by thin-packet / receipt-state artifacts rather than real bad
-   execution paths, the packet-time source is too weak — prioritize the richer
-   run-event-backed `coding_trajectory_from_run` source BEFORE any enforce talk.
+3. **Enforce PATH — LANDED 2026-06-25 (Codex SHIP, thread `019f00f9`).**
+   `WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE=enforce` promotes a CONCLUSIVE path-quality
+   FAIL to ONE blocking violation `{rule_id: trajectory_path_unsound}` on its own
+   channel (mirrors §6.4 rubric enforce; distinct axis from the output rubric, so
+   no same-rule double-report). Default `warn`; invalid → `warn`; `off` is the
+   kill switch — so **zero block-behavior change until a host flips it.** Now at
+   off/warn/enforce parity with S2.
+4. **Host FLIP (future, gated):** only after the warn rate is acceptable AND
+   opposite-provider review re-confirms. **Flip-time watch items (Codex
+   2026-06-25, thread `019f00f9`):** (a) if `child_integrity` warnings turn out
+   dominated by thin-packet / receipt-state artifacts rather than real bad
+   execution paths, the packet-time source is too weak — wire the richer
+   run-event-backed `coding_trajectory_from_run` source BEFORE flipping; (b)
+   audit the deployed env before rollout — flipping turns
+   `WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE=enforce` from a warn-alias into a real
+   blocker.
 
 ### Gate status
-Pure scorer + 31 tests SHIP'd (Codex, thread `019f0022`, after one ADAPT round:
-verdict-offset rule, `coding_trajectory_from_run` event-parsing provenance,
-receipt-gate status check). Warn-only gate wiring + ledger observability then
-SHIP'd on the same thread (zero block-behavior change verified). The remaining
-work is host/navigator-gated: the watched warn period, then an enforce-path
-slice — neither safely autonomous.
+Pure scorer + 31 tests SHIP'd (Codex, thread `019f0022`). Warn-only gate wiring +
+ledger observability SHIP'd next (zero block-behavior change). **Enforce path
+LANDED 2026-06-25** (Codex SHIP, thread `019f00f9`, no blocking findings) — S3 is
+now at full off/warn/enforce parity with S2, all behind a default-`warn` flag.
+The ONLY remaining work is the host FLIP itself (set the env to `enforce` on the
+live daemon), which is genuinely host-gated + warn-data-gated by the project's
+own producers-first → watched-warn → flip discipline — not an engineering gap.

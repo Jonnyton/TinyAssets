@@ -97,11 +97,14 @@ class TestRubricMode:
 
 
 class TestTrajectoryMode:
-    """The trajectory eval runs warn-only by default — it annotates
-    `trajectory_warnings` on a channel SEPARATE from `rubric_warnings` and NEVER
-    changes the pass/block decision. ``parent_loop_status="receipt_waiting"``
+    """The trajectory eval runs warn-only by DEFAULT — it annotates
+    `trajectory_warnings` on a channel SEPARATE from `rubric_warnings` and does
+    not change the decision. `enforce` (a host-gated + warn-data-gated flip)
+    promotes a conclusive path-quality FAIL to a blocking violation on its own
+    `trajectory_path_unsound` channel. ``parent_loop_status="receipt_waiting"``
     forces a conclusive trajectory FAIL (child_integrity is critical) without
-    touching the envelope, so it isolates the warn behavior."""
+    touching the envelope, so it isolates trajectory behavior from the envelope
+    checks."""
 
     def _fail_traj_packet(self) -> dict:
         return _valid_packet(parent_loop_status="receipt_waiting")
@@ -141,13 +144,60 @@ class TestTrajectoryMode:
         assert off["would_open_pr"] == warn["would_open_pr"]
         assert off["violations"] == warn["violations"]
 
-    def test_premature_enforce_resolves_to_warn(self, monkeypatch):
-        # There is no trajectory enforce path yet; 'enforce' must NOT block.
+    def test_enforce_blocks_conclusive_fail(self, monkeypatch):
+        # enforce promotes a conclusive path-quality FAIL to a block.
         monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
         d = validate_ship_request(self._fail_traj_packet())
+        assert d["validation_result"] == "blocked"
+        assert d["would_open_pr"] is False
+        # the block is on the trajectory's own channel, not a rubric rule
+        traj = [v for v in d["violations"] if v.get("rule_id") == "trajectory_path_unsound"]
+        assert len(traj) == 1, "expected exactly one trajectory block violation"
+        assert traj[0]["severity"] == "block"
+        assert "child_integrity" in traj[0]["message"]
+        # in enforce the finding IS the block, so the warn channel stays empty
+        # (mirrors the §6.4 rubric enforce shape)
+        assert d["trajectory_warnings"] == []
+
+    def test_enforce_does_not_block_clean_packet(self, monkeypatch):
+        # A sound-path packet passes even under enforce.
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
+        d = validate_ship_request(_valid_packet())
         assert d["validation_result"] == "passed"
         assert d["would_open_pr"] is True
-        assert d["trajectory_warnings"], "enforce behaves as warn: still annotates"
+        assert all(v.get("rule_id") != "trajectory_path_unsound" for v in d["violations"])
+
+    def test_enforce_block_is_distinct_axis_from_rubric(self, monkeypatch):
+        # The trajectory block lives on its own channel — never tagged as or
+        # double-reported through a rubric rule (separate-axis discipline).
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
+        monkeypatch.delenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", raising=False)  # rubric stays warn
+        d = validate_ship_request(self._fail_traj_packet())
+        traj = [v for v in d["violations"] if v.get("rule_id") == "trajectory_path_unsound"]
+        assert len(traj) == 1
+        assert "trajectory_path_unsound" not in str(d.get("rubric_warnings", []))
+
+    def test_invalid_trajectory_mode_falls_back_to_warn(self, monkeypatch):
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "bogus")
+        d = validate_ship_request(self._fail_traj_packet())
+        assert d["validation_result"] == "passed"
+        assert d["trajectory_warnings"], "invalid mode behaves as warn"
+
+    def test_both_enforce_flags_coexist_distinct_rule_ids(self, monkeypatch):
+        # Both rubric+trajectory enforce must coexist cleanly: the trajectory
+        # block fires on its own `trajectory_path_unsound` rule_id, never
+        # colliding with a rubric rule_id. Two findings for one root cause are an
+        # intentional two-lens report (distinct evaluators/axes), NOT the S2
+        # same-rule double-report (Codex review 2026-06-25). Both default warn,
+        # so this only applies if a host flips BOTH.
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "enforce")
+        d = validate_ship_request(self._fail_traj_packet())
+        assert d["validation_result"] == "blocked"
+        traj = [v for v in d["violations"] if v.get("rule_id") == "trajectory_path_unsound"]
+        assert len(traj) == 1
+        rubric_rule_ids = {"release_evidence_bundle_incomplete", "child_run_not_completed_for_keep"}
+        assert traj[0]["rule_id"] not in rubric_rule_ids
 
     def test_fail_open_on_eval_error(self, monkeypatch):
         # A bug in the trajectory eval must never break the live gate.

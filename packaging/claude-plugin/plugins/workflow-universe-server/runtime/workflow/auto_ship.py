@@ -150,24 +150,27 @@ def _rubric_only_violations(packet: dict) -> list:
 #: Coding-lane trajectory (path-quality) eval mode flag. "warn" (default):
 #: compute the trajectory eval and annotate the decision with
 #: `trajectory_warnings` on a channel SEPARATE from `rubric_warnings`, but NEVER
-#: block. "off": skip entirely. There is deliberately NO "enforce" in this slice
-#: — gating on path quality is a future host-gated step that would add a blocking
-#: path here (see docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md
-#: S3). Kept on its own channel so it can never double-report the output-rubric
-#: block rules (the S2 de-overlap lesson).
+#: block. "off": skip entirely. "enforce": promote a CONCLUSIVE path-quality
+#: FAIL to a blocking violation on its own `trajectory_path_unsound` channel —
+#: gating on execution-path soundness, a distinct axis from the output rubric, so
+#: it never double-reports a rubric block rule (the S2 de-overlap lesson). The
+#: enforce flip is host-gated + warn-data-gated (see
+#: docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md S3).
 TRAJECTORY_MODE_FLAG: str = "WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE"
 
 
 def _trajectory_mode() -> str:
-    """Coding-lane trajectory eval mode: 'off' | 'warn' (default).
+    """Coding-lane trajectory eval mode: 'off' | 'warn' (default) | 'enforce'.
 
-    Unknown values (including a premature 'enforce') resolve to 'warn' — this
-    slice never blocks on trajectory.
+    Unknown values resolve to 'warn'. 'enforce' promotes a CONCLUSIVE
+    path-quality failure to a blocking violation on its own channel; the flip is
+    host-gated + warn-data-gated (see the design note), so the default 'warn'
+    never blocks until someone deliberately sets enforce.
     """
     import os
 
     mode = os.environ.get(TRAJECTORY_MODE_FLAG, "warn").strip().lower()
-    return "off" if mode == "off" else "warn"
+    return mode if mode in {"off", "warn", "enforce"} else "warn"
 
 
 def _trajectory_warnings(packet: dict) -> list:
@@ -563,12 +566,32 @@ def validate_ship_request(packet: dict[str, Any]) -> dict[str, Any]:
             else:  # warn
                 rubric_warnings = _rubric_only
 
-    # §6.5 — coding-lane trajectory (path-quality) eval. Warn-only: annotates
-    # `trajectory_warnings` on a SEPARATE channel from `rubric_warnings` and
-    # NEVER blocks (no enforce path in this slice). Fail-open.
+    # §6.5 — coding-lane trajectory (path-quality) eval. Warn annotates
+    # `trajectory_warnings` on a channel SEPARATE from `rubric_warnings` and
+    # never blocks; enforce promotes a CONCLUSIVE path-quality FAIL to one
+    # blocking violation on its own `trajectory_path_unsound` channel — a
+    # distinct axis from the output rubric (execution-path soundness vs claim
+    # validity), so it never double-reports a rubric block rule. Mirrors the
+    # §6.4 warn/enforce shape. Fail-open.
     trajectory_warnings: list = []
-    if _trajectory_mode() != "off":
-        trajectory_warnings = _trajectory_warnings(packet)
+    _traj_mode = _trajectory_mode()
+    if _traj_mode != "off":
+        _traj_records = _trajectory_warnings(packet)
+        if _traj_records:
+            if _traj_mode == "enforce":
+                violations.append({
+                    "severity": "block",
+                    "rule_id": "trajectory_path_unsound",
+                    "message": (
+                        "coding trajectory eval is a conclusive path-quality FAIL: "
+                        + "; ".join(
+                            f"{r['check']}={r['score']:.2f} ({r['observation']})"
+                            for r in _traj_records
+                        )
+                    ),
+                })
+            else:  # warn
+                trajectory_warnings = _traj_records
 
     # Decision
     if violations:

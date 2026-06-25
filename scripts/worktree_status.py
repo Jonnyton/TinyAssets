@@ -17,6 +17,9 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from git_squash_merge import is_merged_into  # noqa: E402  (sibling-script import)
+
 STALE_AFTER_SECONDS = 24 * 60 * 60
 MAIN_BRANCHES = {"main", "master", "production"}
 REQUIRED_PURPOSE_FIELDS = (
@@ -342,9 +345,14 @@ def _is_fully_merged(path: Path, entry: WorktreeEntry) -> bool:
     branch = entry.branch
     if _is_main_branch(branch):
         return False
+    # Squash-aware: PRs here squash-merge, so a plain --is-ancestor check would
+    # leave clean squash-merged lanes mislabelled instead of READY_TO_REMOVE.
+    # is_merged_into prepends "git"; run_git takes args without it, so drop a[0].
+    def _run(a: list[str]) -> subprocess.CompletedProcess[str]:
+        return run_git(list(a)[1:], path)
+
     for base in _merge_base_candidates(path):
-        result = run_git(["merge-base", "--is-ancestor", entry.head, base], path)
-        if result.returncode == 0:
+        if is_merged_into(_run, entry.head, base):
             return True
     return False
 
@@ -551,7 +559,10 @@ def sweep_commands(statuses: list[WorktreeStatus]) -> list[str]:
             continue
         commands.append(f"git worktree remove {shlex.quote(status.path)}")
         if status.state == "READY_TO_REMOVE" and _branch_can_be_deleted(status.branch):
-            commands.append(f"git branch -d {shlex.quote(status.branch)}")
+            # -D, not -d: READY_TO_REMOVE means proven-merged (squash-aware), but
+            # `git branch -d` is ancestor-based and would refuse a squash-merged
+            # branch, leaving it behind when the printed commands are run.
+            commands.append(f"git branch -D {shlex.quote(status.branch)}")
     return commands
 
 
