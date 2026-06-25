@@ -35,7 +35,13 @@ logger = logging.getLogger(__name__)
 QUEUE_FILENAME = "branch_tasks.json"
 ARCHIVE_FILENAME = "branch_tasks_archive.json"
 LOCK_FILENAME = "branch_tasks.json.lock"
-DEFAULT_LEASE_SECONDS = 300
+# Lease window. INVARIANT: must comfortably exceed the worst-case time between
+# heartbeat refreshes, which happen per graph node (not on an independent
+# timer). A single writer node can run the whole provider fallback chain, each
+# attempt up to ModelConfig.timeout (300s) — so ~900s worst case. 1800s gives a
+# 2x margin so a long-but-healthy node is never wrongly reclaimed mid-flight
+# (Codex cross-family review, 2026-06-25: lease==provider-timeout was a race).
+DEFAULT_LEASE_SECONDS = 1800
 
 # Exposed for test override (invariant 10).
 ARCHIVE_AFTER_DAYS = 30
@@ -553,6 +559,7 @@ def reclaim_expired_leases(
     universe_path: Path,
     *,
     now: datetime | None = None,
+    reclaim_leaseless: bool = False,
 ) -> int:
     """Lease-aware reclaim: reset ``running`` rows whose lease expired.
 
@@ -566,6 +573,14 @@ def reclaim_expired_leases(
     dispatcher claim path, so every claim attempt sweeps first and a
     wedged claim is reaped on the next pick instead of the next daemon
     restart. Returns the count reclaimed.
+
+    ``reclaim_leaseless`` (startup-only): also reset ``running`` rows that
+    carry NO lease / an unparsable one. Since ``claim_task`` always stamps a
+    lease, a lease-less running row can only be a pre-lease-era or corrupt
+    orphan — never a live peer — so it is safe to reclaim. Without this a
+    lease-less row would stay ``running`` forever once startup stopped using
+    the blanket :func:`recover_claimed_tasks` (Codex cross-family review,
+    2026-06-25).
     """
     current = now or datetime.now(timezone.utc)
     qp = queue_path(universe_path)
@@ -578,17 +593,19 @@ def reclaim_expired_leases(
             if not isinstance(row, dict) or row.get("status") != "running":
                 continue
             lease_raw = str(row.get("lease_expires_at") or "")
-            if not lease_raw:
-                # Pre-lease-era claim: no lease to judge by; leave it
-                # for startup recovery rather than guessing.
+            lease_at = _parse_iso_utc(lease_raw) if lease_raw else None
+            if lease_at is not None and lease_at > current:
+                continue  # live lease — never touch a healthy peer
+            if lease_at is None and not reclaim_leaseless:
+                # No / unparsable lease. A current-code worker always stamps a
+                # valid one, so this is a pre-lease-era or corrupt orphan, but
+                # only the startup sweep reclaims it (no risk of racing a peer).
                 continue
-            lease_at = _parse_iso_utc(lease_raw)
-            if lease_at is None or lease_at > current:
-                continue
+            expired_for = (current - lease_at) if lease_at is not None else "no-lease"
             logger.warning(
-                "branch_tasks reclaim: lease expired %s ago on %s "
+                "branch_tasks reclaim: lease expired %s on %s "
                 "(claimed_by=%s heartbeat_at=%s) — resetting to pending",
-                current - lease_at,
+                expired_for,
                 row.get("branch_task_id"),
                 row.get("claimed_by"),
                 row.get("heartbeat_at"),

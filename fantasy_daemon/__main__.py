@@ -191,7 +191,11 @@ def _dispatcher_startup(universe_path: Path) -> None:
             reclaim_expired_leases,
         )
 
-        reclaim_expired_leases(universe_path)
+        # reclaim_leaseless=True: startup is the one safe place to also reset
+        # running rows that carry no lease (pre-lease-era / corrupt orphans),
+        # which the lease-only sweep skips and would otherwise strand forever
+        # (Codex cross-family review, 2026-06-25).
+        reclaim_expired_leases(universe_path, reclaim_leaseless=True)
         garbage_collect(universe_path)
     except Exception:  # noqa: BLE001
         logger.exception(

@@ -15,6 +15,7 @@ from workflow.branch_tasks import (
     new_task_id,
     queue_path,
     read_queue,
+    reclaim_expired_leases,
     recover_claimed_tasks,
     refresh_task_heartbeat,
 )
@@ -145,6 +146,43 @@ def test_recover_claimed_tasks_clears_active_lease_metadata(tmp_path: Path) -> N
     assert recovered.lease_expires_at == ""
     assert recovered.heartbeat_at == ""
     assert recovered.last_progress_at == "2026-05-02T12:00:00+00:00"
+
+
+def test_reclaim_leaseless_running_row_only_in_startup_mode(tmp_path: Path) -> None:
+    """A lease-less running orphan is reclaimed only in the startup sweep.
+
+    Codex cross-family review (2026-06-25): switching startup from the blanket
+    recover to lease-aware reclaim stranded pre-lease/corrupt rows forever.
+    """
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(tmp_path, task.branch_task_id, "daemon-a")  # stamps a lease
+    qp = queue_path(tmp_path)
+    data = json.loads(qp.read_text())
+    data[0]["lease_expires_at"] = ""  # simulate pre-lease-era / corrupt row
+    qp.write_text(json.dumps(data))
+
+    # Claim-path mode must NOT touch a lease-less row (could race a peer).
+    assert reclaim_expired_leases(tmp_path) == 0
+    assert read_queue(tmp_path)[0].status == "running"
+
+    # Startup mode reclaims the orphan back to pending.
+    assert reclaim_expired_leases(tmp_path, reclaim_leaseless=True) == 1
+    recovered = read_queue(tmp_path)[0]
+    assert recovered.status == "pending"
+    assert recovered.claimed_by == ""
+
+
+def test_lease_window_exceeds_worst_case_provider_node(tmp_path: Path) -> None:
+    """Regression guard: the lease must outlast a long-but-healthy node so it
+    is never reclaimed mid-flight (Codex review — lease==provider-timeout race).
+    """
+    from workflow.branch_tasks import DEFAULT_LEASE_SECONDS
+    from workflow.providers.base import ModelConfig
+
+    # Worst case single node = full fallback chain (~3 providers) x per-call
+    # timeout. The lease must clear that with margin.
+    assert DEFAULT_LEASE_SECONDS > ModelConfig().timeout * 3
 
 
 def test_mark_status_stamps_terminal_at_on_terminal_transition(tmp_path: Path) -> None:
