@@ -3106,14 +3106,34 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
 
     # Apply the field. prompt_template / source_code are mutually
     # exclusive — clear the other when setting one.
+    #
+    # SECURITY (Codex round-2, PR #1349): patch_nodes is an MCP-reachable
+    # node-mutation path. Changing executable content (source_code /
+    # prompt_template) must not leave a node ``approved=True`` for code the
+    # approver never saw. Mirror the update_node surface: reconcile approval
+    # against the *new* effective source via the round-1 helper, which
+    # clears every approval field unless the recorded hash still matches the
+    # post-patch source. This upholds the authoring-layer invariant the
+    # runtime carve-out relies on (no persisted node ever carries
+    # approved=True with an empty/stale approved_source_hash).
     for node in staging.node_defs:
         if node.node_id not in target_ids:
             continue
         setattr(node, field, value)
         if field == "prompt_template" and value:
             node.source_code = ""
-        elif field == "source_code" and value:
+            # Switched to a prompt node: no executable surface to gate, and
+            # any prior source approval no longer describes the body.
+            _clear_source_code_approval(node)
+        elif field == "source_code":
             node.prompt_template = ""
+            # Approval only survives when the recorded hash still matches the
+            # new source; otherwise demote to unapproved (blank provenance).
+            if not _approval_provenance_valid(
+                node.approved, node.source_code or "",
+                node.approved_source_hash or "",
+            ):
+                _clear_source_code_approval(node)
 
     old_version = int(source.get("version") or 1)
     new_version = old_version + 1

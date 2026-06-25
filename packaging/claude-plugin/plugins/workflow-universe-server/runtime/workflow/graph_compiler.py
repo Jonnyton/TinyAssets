@@ -1216,9 +1216,17 @@ def _validate_source_code(node: NodeDefinition) -> None:
     # the source was overridden after approval; fail closed.
     #
     # An empty hash is only reachable via trusted in-process construction
-    # (host code / tests build NodeDefinition directly). The authoring surface
-    # (_apply_node_spec) can no longer persist ``approved=True`` without a
-    # matching hash, so the node_ref-override bypass is closed at both ends.
+    # (host code / tests build NodeDefinition directly). Every MCP-reachable
+    # authoring path now upholds the invariant "no persisted node carries
+    # approved=True with an empty/stale approved_source_hash once it has
+    # executable content": _apply_node_spec (define/add/set), _apply_node_updates
+    # (update_node), _reconcile_copied_approval (node_ref copy), and — closing
+    # the Codex round-2 gap — _ext_branch_patch_nodes (patch_nodes) all clear
+    # approval on any unmatched content change. The standalone registry only
+    # mints approval through _ext_manage, which always records a matching hash.
+    # So a runtime empty hash means trusted construction, never an MCP write,
+    # and the carve-out cannot authorize MCP-injected code. The node_ref-override
+    # and patch_nodes bypasses are closed at both ends.
     approved_hash = (node.approved_source_hash or "").strip()
     if approved_hash:
         actual_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()

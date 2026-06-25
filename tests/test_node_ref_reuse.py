@@ -633,3 +633,134 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
         ]
         with pytest.raises(UnapprovedNodeError):
             compile_branch(b)
+
+
+class TestPatchNodesSourceOverrideCannotForgeApproval:
+    """Codex round-2: ``patch_nodes`` was the surviving MCP bypass. It set
+    ``source_code``/``prompt_template`` directly without clearing approval, so
+    an approved node could be re-pointed at unreviewed code while keeping
+    ``approved=True``. Changing executable content via patch_nodes must demote
+    the node to unapproved (blank provenance) and the compiler must refuse it.
+    """
+
+    APPROVED_SRC = "def run(state): return {'manifest': 'approved'}\n"
+    MALICIOUS_SRC = "def run(state): return {'manifest': 'forged-by-pwned'}\n"
+
+    def _approved_branch(self, us):
+        """Build a branch with one approved source_code node; return its id."""
+        spec = {
+            "name": "patch-nodes-approval",
+            "entry_point": "recipe",
+            "node_defs": [{
+                "node_id": "recipe",
+                "display_name": "Recipe",
+                "input_keys": "manifest",
+                "output_keys": "manifest",
+                "source_code": self.APPROVED_SRC,
+            }],
+            "edges": [
+                {"from": "START", "to": "recipe"},
+                {"from": "recipe", "to": "END"},
+            ],
+            "state_schema": [{"name": "manifest", "type": "str"}],
+        }
+        built = _call(us, "extensions", "build_branch",
+                      spec_json=json.dumps(spec))
+        assert built["status"] == "built", built
+        bid = built["branch_def_id"]
+        approved = _call(
+            us, "extensions", "approve_source_code",
+            branch_def_id=bid, node_id="recipe",
+        )
+        assert approved["status"] == "approved", approved
+        assert approved["approved_source_hash"], approved
+        return bid
+
+    def _persisted_node(self, base, bid):
+        from workflow.daemon_server import get_branch_definition
+
+        branch = get_branch_definition(base, branch_def_id=bid)
+        return next(
+            n for n in branch["node_defs"] if n["node_id"] == "recipe"
+        )
+
+    def test_patch_nodes_source_override_comes_out_unapproved(self, ext_env):
+        us, base = ext_env
+        bid = self._approved_branch(us)
+        # Sanity: starts approved.
+        before = self._persisted_node(base, bid)
+        assert before["approved"] is True, before
+
+        patched = _call(
+            us, "extensions", "patch_nodes",
+            branch_def_id=bid, field="source_code", value=self.MALICIOUS_SRC,
+        )
+        assert patched["status"] == "patched", patched
+
+        after = self._persisted_node(base, bid)
+        # Override landed, but approval did NOT carry over.
+        assert "forged-by-pwned" in after["source_code"]
+        assert after["approved"] is False, after
+        assert not after.get("approved_source_hash"), after
+        assert not after.get("approved_by"), after
+
+    def test_patch_nodes_source_override_fails_execution_gate(self, ext_env):
+        us, base = ext_env
+        bid = self._approved_branch(us)
+        _call(
+            us, "extensions", "patch_nodes",
+            branch_def_id=bid, field="source_code", value=self.MALICIOUS_SRC,
+        )
+
+        from workflow.branches import BranchDefinition
+        from workflow.daemon_server import get_branch_definition
+        from workflow.graph_compiler import UnapprovedNodeError, compile_branch
+
+        branch = get_branch_definition(base, branch_def_id=bid)
+        bdef = BranchDefinition.from_dict(branch)
+        with pytest.raises(UnapprovedNodeError):
+            compile_branch(bdef)
+
+    def test_patch_nodes_non_content_field_keeps_approval(self, ext_env):
+        """Patching a non-executable field (display_name) must NOT disturb a
+        valid approval — the gate only fires on executable-content change.
+        """
+        us, base = ext_env
+        bid = self._approved_branch(us)
+        patched = _call(
+            us, "extensions", "patch_nodes",
+            branch_def_id=bid, field="display_name", value="Renamed Recipe",
+        )
+        assert patched["status"] == "patched", patched
+
+        after = self._persisted_node(base, bid)
+        assert after["display_name"] == "Renamed Recipe", after
+        assert after["approved"] is True, after
+        assert after["approved_source_hash"], after
+
+        # Still compiles cleanly — provenance hash still matches the source.
+        from workflow.branches import BranchDefinition
+        from workflow.daemon_server import get_branch_definition
+        from workflow.graph_compiler import compile_branch
+
+        branch = get_branch_definition(base, branch_def_id=bid)
+        compile_branch(BranchDefinition.from_dict(branch))
+
+    def test_patch_nodes_switch_to_prompt_template_clears_approval(self, ext_env):
+        """Switching an approved source_code node to a prompt_template clears
+        the source approval — the executable surface it gated is gone.
+        """
+        us, base = ext_env
+        bid = self._approved_branch(us)
+        patched = _call(
+            us, "extensions", "patch_nodes",
+            branch_def_id=bid, field="prompt_template",
+            value="summarize: {manifest}",
+        )
+        assert patched["status"] == "patched", patched
+
+        after = self._persisted_node(base, bid)
+        assert after["prompt_template"] == "summarize: {manifest}", after
+        assert not after["source_code"], after
+        assert after["approved"] is False, after
+        assert not after.get("approved_source_hash"), after
