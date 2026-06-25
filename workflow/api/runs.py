@@ -539,7 +539,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     # Real provider — lazy import so test envs without providers work.
     provider_call: Any = None
     try:
-        from domains.fantasy_daemon.phases._provider_stub import (
+        from workflow.providers.call import (
             call_provider as provider_call,
         )
     except ImportError:
@@ -1107,7 +1107,7 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
 
     provider_call: Any = None
     try:
-        from domains.fantasy_daemon.phases._provider_stub import (
+        from workflow.providers.call import (
             call_provider as provider_call,
         )
     except ImportError:
@@ -1517,7 +1517,7 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     # Real provider — lazy import so test envs without providers work.
     provider_call: Any = None
     try:
-        from domains.fantasy_daemon.phases._provider_stub import (
+        from workflow.providers.call import (
             call_provider as provider_call,
         )
     except ImportError:

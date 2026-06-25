@@ -15,9 +15,9 @@ from typing import Any
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-import domains.fantasy_daemon.phases._provider_stub as _provider_stub  # noqa: E402
+from workflow.providers import call as _provider_stub  # noqa: E402
 
-_provider_stub._FORCE_MOCK = True
+_provider_stub.set_force_mock(True)
 
 from domains.fantasy_daemon.graphs.scene import build_scene_graph  # noqa: E402
 from domains.fantasy_daemon.phases.book_close import book_close  # noqa: E402

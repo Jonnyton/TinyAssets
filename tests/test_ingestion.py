@@ -394,7 +394,7 @@ class TestSynthesizeSource:
         })
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             return_value=mock_response,
         ):
             result = synthesize_source(
@@ -429,7 +429,7 @@ class TestSynthesizeSource:
         })
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             return_value=mock_response,
         ):
             result = synthesize_source(
@@ -453,7 +453,7 @@ class TestSynthesizeSource:
         canon_dir.mkdir()
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             return_value="# Worldbuilding\n\nSome content here.",
         ):
             result = synthesize_source(
@@ -592,7 +592,7 @@ class TestSynthesisWithVerification:
                 })
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             side_effect=mock_provider,
         ):
             result = synthesize_source(
@@ -729,7 +729,7 @@ class TestSynthesizeBiteByBite:
             return '{"gaps": []}'
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             side_effect=mock_provider,
         ):
             result = synthesize_source(large_source, "big_world.md", canon_dir)
@@ -755,7 +755,7 @@ class TestSynthesizeBiteByBite:
             return '{"gaps": []}'
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             side_effect=mock_provider,
         ):
             result = synthesize_source(
@@ -796,7 +796,7 @@ class TestSynthesizeBiteByBite:
             return '{"gaps": []}'
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             side_effect=mock_provider,
         ):
             result = synthesize_source(large_source, "partial.md", canon_dir)
@@ -869,7 +869,7 @@ class TestWorldbuildSynthesisSignal:
         })
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             return_value=mock_response,
         ):
             acted, consumed = _act_on_signals_incremental(signals, state)
@@ -887,7 +887,7 @@ class TestWorldbuildSynthesisSignal:
         })
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             return_value=mock_response,
         ):
             generated = synthesize_source(
@@ -932,7 +932,7 @@ class TestWorldbuildSynthesisSignal:
 
         # Provider returns empty string -> synthesis fails
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "workflow.providers.call.call_provider",
             return_value="",
         ):
             acted, consumed = _act_on_signals_incremental(signals, state)
