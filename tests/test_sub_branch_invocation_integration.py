@@ -46,8 +46,7 @@ def _make_child_branch(*, author: str = "child-author") -> BranchDefinition:
         node_id="cn1",
         display_name="ChildNode",
         source_code="state['child_out'] = 'child-success'\nreturn state",
-        approved=True,
-    )
+    ).mark_approved()
     return BranchDefinition(
         branch_def_id="child-bdef",
         name="child-branch",

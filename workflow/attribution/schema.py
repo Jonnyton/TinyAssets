@@ -59,6 +59,10 @@ CREATE TABLE IF NOT EXISTS attribution_credit (
     artifact_kind   TEXT NOT NULL DEFAULT 'branch'
                         CHECK (artifact_kind IN ('branch', 'node')),
     actor_id        TEXT NOT NULL,
+    owner_user_id   TEXT NOT NULL DEFAULT '',
+    daemon_id       TEXT NOT NULL DEFAULT '',
+    runtime_instance_id TEXT NOT NULL DEFAULT '',
+    worker_id       TEXT NOT NULL DEFAULT '',
     credit_share    REAL NOT NULL CHECK (credit_share >= 0.0 AND credit_share <= 1.0),
     royalty_share   REAL NOT NULL DEFAULT 0.0
                         CHECK (royalty_share >= 0.0 AND royalty_share <= 1.0),
@@ -135,6 +139,10 @@ class AttributionCredit:
     generation_depth: int
     contribution_kind: ContributionKind
     recorded_at: str
+    owner_user_id: str = ""
+    daemon_id: str = ""
+    runtime_instance_id: str = ""
+    worker_id: str = ""
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.credit_share <= 1.0:
@@ -170,6 +178,10 @@ class AttributionCredit:
             generation_depth=int(row.get("generation_depth") or 0),
             contribution_kind=row.get("contribution_kind") or "original",
             recorded_at=row["recorded_at"],
+            owner_user_id=row.get("owner_user_id") or "",
+            daemon_id=row.get("daemon_id") or "",
+            runtime_instance_id=row.get("runtime_instance_id") or "",
+            worker_id=row.get("worker_id") or "",
         )
 
 
@@ -212,3 +224,15 @@ class RemixProvenance:
 def migrate_attribution_schema(conn) -> None:  # type: ignore[no-untyped-def]
     """Create attribution tables if absent. Idempotent."""
     conn.executescript(ATTRIBUTION_SCHEMA)
+    existing_credit_cols = {
+        row["name"] if hasattr(row, "keys") else row[1]
+        for row in conn.execute("PRAGMA table_info(attribution_credit)")
+    }
+    for col, ddl in (
+        ("owner_user_id", "TEXT NOT NULL DEFAULT ''"),
+        ("daemon_id", "TEXT NOT NULL DEFAULT ''"),
+        ("runtime_instance_id", "TEXT NOT NULL DEFAULT ''"),
+        ("worker_id", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if col not in existing_credit_cols:
+            conn.execute(f"ALTER TABLE attribution_credit ADD COLUMN {col} {ddl}")

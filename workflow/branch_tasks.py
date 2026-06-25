@@ -100,6 +100,8 @@ class BranchTask:
     request_type: str = "branch_run"
     deadline: str = ""
     worker_owner_id: str = ""
+    executor_worker_id: str = ""
+    executor_runtime_id: str = ""
     lease_expires_at: str = ""
     heartbeat_at: str = ""
     last_progress_at: str = ""
@@ -324,7 +326,12 @@ def append_task_capped(
 
 
 def claim_task(
-    universe_path: Path, task_id: str, claimer: str,
+    universe_path: Path,
+    task_id: str,
+    claimer: str,
+    *,
+    executor_worker_id: str | None = None,
+    executor_runtime_id: str | None = None,
 ) -> BranchTask | None:
     """File-locked claim. Returns claimed task, or None if already
     claimed / missing / not pending.
@@ -343,6 +350,8 @@ def claim_task(
             row["status"] = "running"
             row["claimed_by"] = claimer
             row["worker_owner_id"] = claimer
+            row["executor_worker_id"] = executor_worker_id or ""
+            row["executor_runtime_id"] = executor_runtime_id or ""
             row["heartbeat_at"] = heartbeat_at
             row["lease_expires_at"] = lease_expires_at
             _write_raw(qp, raw)

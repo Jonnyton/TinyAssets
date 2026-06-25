@@ -414,7 +414,17 @@ def _try_dispatcher_pick(
         picked = select_next_task(universe_path, config=cfg)
         if picked is None:
             return None, {}
-        claimed = claim_task(universe_path, picked.branch_task_id, daemon_id)
+        executor_worker_id = os.environ.get("WORKFLOW_WORKER_ID", "").strip()
+        executor_runtime_id = os.environ.get(
+            "WORKFLOW_RUNTIME_INSTANCE_ID", "",
+        ).strip()
+        claimed = claim_task(
+            universe_path,
+            picked.branch_task_id,
+            daemon_id,
+            executor_worker_id=executor_worker_id,
+            executor_runtime_id=executor_runtime_id,
+        )
         if claimed is None:
             logger.info(
                 "dispatcher_pick: claim_lost_to_cancel %s",
@@ -630,11 +640,32 @@ def _try_execute_claimed_node_bid(
         except RuntimeError as exc:
             return False, f"repo_root_not_resolvable: {exc}"
 
+        runtime_instance_id = os.environ.get(
+            "WORKFLOW_RUNTIME_INSTANCE_ID", "",
+        ).strip()
+        worker_id = os.environ.get("WORKFLOW_WORKER_ID", "").strip()
+        owner_user_id = ""
+        try:
+            from workflow.daemon_registry import get_daemon
+            from workflow.storage import data_dir
+
+            daemon = get_daemon(data_dir(), daemon_id=daemon_id)
+            owner_user_id = str(daemon.get("owner_user_id") or "")
+        except Exception:  # noqa: BLE001
+            owner_user_id = ""
+
         # Preflight §4.1 #1: atomic claim via git-rename + push BEFORE
         # execution. claim_node_bid returns None on race loss; we
         # fall through to "claim_race_lost" so the BranchTask is
         # marked failed and the next cycle proceeds.
-        claimed_bid = claim_node_bid(repo_root, node_bid_id, daemon_id)
+        claimed_bid = claim_node_bid(
+            repo_root,
+            node_bid_id,
+            daemon_id,
+            owner_user_id=owner_user_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+        )
         if claimed_bid is None:
             # Bid YAML may have been deleted between producer emit
             # and claim attempt (or race was lost, or status != open).
@@ -671,7 +702,13 @@ def _try_execute_claimed_node_bid(
         completed_at = datetime.now(timezone.utc).isoformat()
         try:
             record_settlement_event(
-                repo_root, bid, result, daemon_id,
+                repo_root,
+                bid,
+                result,
+                daemon_id,
+                owner_user_id=owner_user_id,
+                runtime_instance_id=runtime_instance_id,
+                worker_id=worker_id,
             )
         except SettlementExistsError:
             # Already recorded — idempotent finalize path (e.g.
@@ -890,12 +927,21 @@ def _try_execute_claimed_branch_task(
             provider_call = None
 
         actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous") or "anonymous"
+        executor_worker_id = str(
+            getattr(claimed_task, "executor_worker_id", "") or "",
+        )
+        executor_runtime_id = str(
+            getattr(claimed_task, "executor_runtime_id", "") or "",
+        )
         outcome = execute_branch(
             base_path,
             branch=branch,
             inputs=_branch_task_inputs_for_execution(claimed_task),
             run_name=run_name,
             actor=actor,
+            daemon_id=daemon_id,
+            runtime_instance_id=executor_runtime_id,
+            worker_id=executor_worker_id,
             provider_call=provider_call,
             on_node_status=on_node_status,
             # Carry spawn depth across the queue boundary so an in-node enqueue

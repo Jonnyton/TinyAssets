@@ -42,6 +42,10 @@ CONTRIBUTION_EVENTS_SCHEMA = """
         event_type            TEXT NOT NULL,
         actor_id              TEXT NOT NULL,
         actor_handle          TEXT NOT NULL DEFAULT '',
+        owner_user_id         TEXT NOT NULL DEFAULT '',
+        daemon_id             TEXT NOT NULL DEFAULT '',
+        runtime_instance_id   TEXT NOT NULL DEFAULT '',
+        worker_id             TEXT NOT NULL DEFAULT '',
         source_run_id         TEXT,
         source_artifact_id    TEXT,
         source_artifact_kind  TEXT NOT NULL DEFAULT '',
@@ -60,6 +64,24 @@ CONTRIBUTION_EVENTS_SCHEMA = """
     CREATE INDEX IF NOT EXISTS idx_contribution_events_run
         ON contribution_events(source_run_id);
 """
+
+CONTRIBUTION_EVENT_IDENTITY_COLUMNS = (
+    ("owner_user_id", "TEXT NOT NULL DEFAULT ''"),
+    ("daemon_id", "TEXT NOT NULL DEFAULT ''"),
+    ("runtime_instance_id", "TEXT NOT NULL DEFAULT ''"),
+    ("worker_id", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def migrate_contribution_events_schema(conn: sqlite3.Connection) -> None:
+    """Additive migrations for existing contribution_events tables."""
+    existing = {
+        row["name"] if hasattr(row, "keys") else row[1]
+        for row in conn.execute("PRAGMA table_info(contribution_events)")
+    }
+    for col, ddl in CONTRIBUTION_EVENT_IDENTITY_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE contribution_events ADD COLUMN {col} {ddl}")
 
 
 def _connect(base_path: str | Path) -> sqlite3.Connection:
@@ -85,6 +107,7 @@ def initialize_contribution_events_db(base_path: str | Path) -> None:
     runs_db_path(base_path)  # ensure parent runs DB path exists
     with _connect(base_path) as conn:
         conn.executescript(CONTRIBUTION_EVENTS_SCHEMA)
+        migrate_contribution_events_schema(conn)
 
 
 def record_contribution_event(
@@ -94,6 +117,10 @@ def record_contribution_event(
     event_type: str,
     actor_id: str,
     actor_handle: str = "",
+    owner_user_id: str = "",
+    daemon_id: str = "",
+    runtime_instance_id: str = "",
+    worker_id: str = "",
     source_run_id: str | None = None,
     source_artifact_id: str | None = None,
     source_artifact_kind: str = "",
@@ -122,15 +149,17 @@ def record_contribution_event(
 
     sql = (
         "INSERT OR IGNORE INTO contribution_events "
-        "(event_id, event_type, actor_id, actor_handle, source_run_id, "
+        "(event_id, event_type, actor_id, actor_handle, owner_user_id, "
+        " daemon_id, runtime_instance_id, worker_id, source_run_id, "
         " source_artifact_id, source_artifact_kind, weight, occurred_at, "
         " metadata_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     params = (
-        event_id, event_type, actor_id, actor_handle, source_run_id,
-        source_artifact_id, source_artifact_kind, weight, occurred_at,
-        metadata_json,
+        event_id, event_type, actor_id, actor_handle, owner_user_id or "",
+        daemon_id or "", runtime_instance_id or "", worker_id or "",
+        source_run_id, source_artifact_id, source_artifact_kind, weight,
+        occurred_at, metadata_json,
     )
 
     if conn is not None:

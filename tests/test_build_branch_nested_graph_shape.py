@@ -50,7 +50,15 @@ def _two_node_spec_nested_graph() -> dict:
     return {
         "name": "pr-037-regression-nested",
         "tags": ["test"],
-        "state_schema": [{"name": "x", "type": "str"}],
+        # ``y`` is declared alongside ``x`` because node ``classify`` writes
+        # output_key ``y`` and ``end_marker`` reads input_key ``y``. Per
+        # BUG-091 (#924) every node input_key / output_key must be a declared
+        # state_schema field when a non-empty schema exists, otherwise the key
+        # is silently dropped from LangGraph's synthesized TypedDict at runtime.
+        "state_schema": [
+            {"name": "x", "type": "str"},
+            {"name": "y", "type": "str"},
+        ],
         "graph": {
             "entry_point": "classify",
             "nodes": [

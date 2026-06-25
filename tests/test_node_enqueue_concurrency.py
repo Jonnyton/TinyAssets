@@ -58,8 +58,7 @@ def _branch() -> BranchDefinition:
         input_keys=["run"],
         output_keys=["status"],
         tools_allowed=["enqueue_branch_run"],
-        approved=True,
-    )]
+    ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.edges = [
         EdgeDefinition(from_node="START", to_node="only"),

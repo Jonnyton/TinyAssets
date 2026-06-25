@@ -93,6 +93,19 @@ def _node(branch: dict, nid: str) -> dict:
     raise AssertionError(f"node '{nid}' not on branch")
 
 
+def _key_atoms(raw) -> list:
+    """Normalize a raw input_keys/output_keys value the same way the API does.
+
+    Used by the test scaffolding to declare every key in state_schema so the
+    BUG-091 (#924) validator accepts the spec. Returns the coerced key list, or
+    an empty list when the value is None / unparseable.
+    """
+    if raw is None:
+        return []
+    keys, err = _coerce_node_keys(raw, "input_keys")
+    return [] if err else keys
+
+
 def test_patch_branch_normalizes_string_key_fields_in_persisted_and_preview_paths(
     ext_env,
 ):
@@ -213,12 +226,19 @@ class TestPatchBranchUpdateNodeKeys:
     def test_update_node_accepts_list(self, ext_env):
         us, base = ext_env
         bid = _build(us)
-        res = _patch(us, bid, [{
-            "op": "update_node",
-            "node_id": "capture",
-            "input_keys": ["alpha", "beta"],
-            "output_keys": ["gamma"],
-        }])
+        # Declare the fields the node will read/write: per BUG-091 (#924) every
+        # node input_key / output_key must be a declared state_schema field.
+        res = _patch(us, bid, [
+            {"op": "add_state_field", "field_name": "alpha", "field_type": "str"},
+            {"op": "add_state_field", "field_name": "beta", "field_type": "str"},
+            {"op": "add_state_field", "field_name": "gamma", "field_type": "str"},
+            {
+                "op": "update_node",
+                "node_id": "capture",
+                "input_keys": ["alpha", "beta"],
+                "output_keys": ["gamma"],
+            },
+        ])
         assert res.get("status") != "rejected", res
         node = _node(_load(us, base, bid), "capture")
         assert node["input_keys"] == ["alpha", "beta"]
@@ -228,11 +248,16 @@ class TestPatchBranchUpdateNodeKeys:
         """Regression: 'node.output' used to become ['n','o','d','e',...]."""
         us, base = ext_env
         bid = _build(us)
-        res = _patch(us, bid, [{
-            "op": "update_node",
-            "node_id": "capture",
-            "input_keys": "node.output",
-        }])
+        # Declare the field the bare-string key resolves to (BUG-091 / #924).
+        res = _patch(us, bid, [
+            {"op": "add_state_field", "field_name": "node.output",
+             "field_type": "str"},
+            {
+                "op": "update_node",
+                "node_id": "capture",
+                "input_keys": "node.output",
+            },
+        ])
         assert res.get("status") != "rejected", res
         node = _node(_load(us, base, bid), "capture")
         assert node["input_keys"] == ["node.output"], (
@@ -242,11 +267,17 @@ class TestPatchBranchUpdateNodeKeys:
     def test_update_node_csv_string(self, ext_env):
         us, base = ext_env
         bid = _build(us)
-        res = _patch(us, bid, [{
-            "op": "update_node",
-            "node_id": "capture",
-            "input_keys": "a, b, c",
-        }])
+        # Declare the CSV-derived fields (BUG-091 / #924).
+        res = _patch(us, bid, [
+            {"op": "add_state_field", "field_name": "a", "field_type": "str"},
+            {"op": "add_state_field", "field_name": "b", "field_type": "str"},
+            {"op": "add_state_field", "field_name": "c", "field_type": "str"},
+            {
+                "op": "update_node",
+                "node_id": "capture",
+                "input_keys": "a, b, c",
+            },
+        ])
         assert res.get("status") != "rejected", res
         node = _node(_load(us, base, bid), "capture")
         assert node["input_keys"] == ["a", "b", "c"]
@@ -254,11 +285,16 @@ class TestPatchBranchUpdateNodeKeys:
     def test_update_node_json_encoded_list(self, ext_env):
         us, base = ext_env
         bid = _build(us)
-        res = _patch(us, bid, [{
-            "op": "update_node",
-            "node_id": "capture",
-            "input_keys": '["alpha","beta"]',
-        }])
+        # Declare the JSON-list-derived fields (BUG-091 / #924).
+        res = _patch(us, bid, [
+            {"op": "add_state_field", "field_name": "alpha", "field_type": "str"},
+            {"op": "add_state_field", "field_name": "beta", "field_type": "str"},
+            {
+                "op": "update_node",
+                "node_id": "capture",
+                "input_keys": '["alpha","beta"]',
+            },
+        ])
         assert res.get("status") != "rejected", res
         node = _node(_load(us, base, bid), "capture")
         assert node["input_keys"] == ["alpha", "beta"]
@@ -332,9 +368,24 @@ class TestAddNodeSpecKeys:
         }
         if output_keys is not None:
             add_op["output_keys"] = output_keys
+        # Per BUG-091 (#924) every node input_key / output_key must be a
+        # declared state_schema field. ``x`` is declared by ``_build``; declare
+        # any other key the scribe node introduces so the branch validates.
+        declared = {"x"}
+        decl_ops = []
+        for raw in (input_keys, output_keys):
+            for key in _key_atoms(raw):
+                if key and key not in declared:
+                    declared.add(key)
+                    decl_ops.append({
+                        "op": "add_state_field",
+                        "field_name": key,
+                        "field_type": "str",
+                    })
         # Wire scribe reachable: remove capture->END, add capture->scribe,
         # add scribe->END so branch validates.
         return [
+            *decl_ops,
             add_op,
             {"op": "remove_edge", "from": "capture", "to": "END"},
             {"op": "add_edge", "from": "capture", "to": "scribe"},
@@ -443,7 +494,8 @@ class TestAddNodeSpecKeys:
         us, _ = ext_env
         bid = _build(us)
         ops = self._add_scribe_ops(input_keys=["x"], output_keys=["draft"])
-        ops[0]["llm_policy"] = {"preferred": {}}
+        add_op = next(o for o in ops if o["op"] == "add_node")
+        add_op["llm_policy"] = {"preferred": {}}
 
         res = _patch(us, bid, ops)
 

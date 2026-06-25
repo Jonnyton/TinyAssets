@@ -21,6 +21,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from workflow.ingestion.canon_names import resolve_within_canon
+
 logger = logging.getLogger(__name__)
 
 # Files at or below this size go directly to canon/.
@@ -164,7 +166,16 @@ class SourceManifest:
 
     def save(self, canon_dir: Path) -> None:
         """Write the manifest to canon/.manifest.json."""
-        manifest_path = canon_dir / ".manifest.json"
+        # Containment before write: a symlinked ``.manifest.json`` pointing
+        # outside canon_dir would let the clobbering write escape. Resolve and
+        # reject escapes before any I/O.
+        try:
+            manifest_path = resolve_within_canon(
+                canon_dir, ".manifest.json", kind="manifest"
+            )
+        except ValueError:
+            logger.warning("Manifest escapes canon dir, refusing to write")
+            return
         data = {
             name: asdict(entry) for name, entry in self.entries.items()
         }
@@ -178,8 +189,17 @@ class SourceManifest:
     @classmethod
     def load(cls, canon_dir: Path) -> SourceManifest:
         """Load the manifest from canon/.manifest.json."""
-        manifest_path = canon_dir / ".manifest.json"
         manifest = cls()
+        # Containment before read: ``read_text`` follows symlinks, so a
+        # symlinked manifest pointing outside canon_dir would leak external
+        # content. Resolve and reject escapes before any read.
+        try:
+            manifest_path = resolve_within_canon(
+                canon_dir, ".manifest.json", kind="manifest"
+            )
+        except ValueError:
+            logger.warning("Manifest escapes canon dir, refusing to read")
+            return manifest
         if not manifest_path.exists():
             return manifest
         try:
@@ -411,9 +431,21 @@ def ingest_file(
     signal_emitted = False
     if user_upload:
         # ALL user uploads -> sources/
+        # Containment before write: ``filename`` is documented as
+        # caller-sanitized, but a symlinked ``canon/sources`` (or sources
+        # entry) or a ``../`` traversal would let the write escape canon_dir.
+        # Resolve under canon_dir and reject escapes before any I/O — the
+        # ``sources/`` subdir is legitimate and still resolves inside.
+        try:
+            source_path = resolve_within_canon(
+                canon_dir, f"sources/{filename}", kind="source file"
+            )
+        except ValueError as exc:
+            logger.warning("Refusing to write source escaping canon dir: %s", exc)
+            raise
         sources_dir = canon_dir / "sources"
         sources_dir.mkdir(parents=True, exist_ok=True)
-        (sources_dir / filename).write_bytes(data)
+        source_path.write_bytes(data)
         routed_to = "sources"
 
         # Emit synthesis signal (always for user uploads)
@@ -429,8 +461,17 @@ def ingest_file(
         )
     else:
         # Daemon-generated -> canon/ directly
+        # Containment before write: a symlinked canon entry or a ``../``
+        # traversal in ``filename`` would let the write escape canon_dir.
+        try:
+            canon_path = resolve_within_canon(
+                canon_dir, filename, kind="filename"
+            )
+        except ValueError as exc:
+            logger.warning("Refusing to write canon escaping canon dir: %s", exc)
+            raise
         canon_dir.mkdir(parents=True, exist_ok=True)
-        (canon_dir / filename).write_bytes(data)
+        canon_path.write_bytes(data)
         routed_to = "canon"
 
         logger.info(

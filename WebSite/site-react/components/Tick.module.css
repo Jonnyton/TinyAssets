@@ -1,0 +1,18 @@
+.tick {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--fg-3);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--border-2);
+  padding-bottom: 1px;
+  white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
+}
+a.tick:hover { color: var(--live-700); border-color: var(--live-600); text-decoration: none; }
+.flat { border-bottom-style: none; }
+.glyph { color: var(--live-600); font-size: 10px; }
+.ext { font-size: 9px; color: var(--fg-4); }

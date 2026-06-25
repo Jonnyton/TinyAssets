@@ -124,9 +124,8 @@ class TestValidateAwaitRunSpec:
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
             source_code="x = 1",
-            approved=True,
             await_run_spec={"run_id_field": "child_run_id"},
-        )
+        ).mark_approved()
         b = _simple_branch(nd)
         errs = b.validate()
         assert any("mutually exclusive" in e for e in errs)

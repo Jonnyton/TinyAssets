@@ -93,6 +93,22 @@ def _now() -> float:
     return time.time()
 
 
+def _resolve_owner_user_id(
+    base_path: str | Path,
+    daemon_id: str | None,
+) -> str:
+    clean_daemon_id = str(daemon_id or "").strip()
+    if not clean_daemon_id:
+        return ""
+    try:
+        from workflow.daemon_registry import get_daemon
+
+        daemon = get_daemon(base_path, daemon_id=clean_daemon_id)
+    except Exception:
+        return ""
+    return str(daemon.get("owner_user_id") or "")
+
+
 def _orphaned_run_grace_seconds() -> float | None:
     """Return the read-time orphan recovery grace window.
 
@@ -233,6 +249,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         thread_id      TEXT NOT NULL,
         status         TEXT NOT NULL DEFAULT 'queued',
         actor          TEXT NOT NULL DEFAULT 'anonymous',
+        owner_user_id  TEXT NOT NULL DEFAULT '',
         inputs_json    TEXT NOT NULL DEFAULT '{}',
         output_json    TEXT NOT NULL DEFAULT '{}',
         error          TEXT NOT NULL DEFAULT '',
@@ -241,7 +258,10 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         finished_at    REAL,
         provider_used  TEXT,
         model          TEXT,
-        token_count    INTEGER
+        token_count    INTEGER,
+        daemon_id      TEXT,
+        runtime_instance_id TEXT,
+        worker_id      TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_runs_branch ON runs(branch_def_id);
@@ -366,7 +386,10 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         ON run_receipts(subject_id);
     """
     from workflow.branch_versions import BRANCH_VERSIONS_SCHEMA
-    from workflow.contribution_events import CONTRIBUTION_EVENTS_SCHEMA
+    from workflow.contribution_events import (
+        CONTRIBUTION_EVENTS_SCHEMA,
+        migrate_contribution_events_schema,
+    )
     from workflow.gate_events.schema import GATE_EVENT_SCHEMA
     from workflow.scheduler import SCHEDULER_SCHEMA
     schema = (
@@ -394,7 +417,8 @@ def initialize_runs_db(base_path: str | Path) -> Path:
                 conn.execute(
                     f"ALTER TABLE node_edit_audit ADD COLUMN {col} {ddl}"
                 )
-        # Migration: add provider telemetry columns to runs (added 2026-04-25).
+        # Migration: add run instrumentation columns. Provider telemetry
+        # landed first; executor identity fields are nullable observability.
         existing_runs = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(runs)")
@@ -403,9 +427,14 @@ def initialize_runs_db(base_path: str | Path) -> Path:
             ("provider_used", "TEXT"),
             ("model",         "TEXT"),
             ("token_count",   "INTEGER"),
+            ("owner_user_id", "TEXT NOT NULL DEFAULT ''"),
+            ("daemon_id",     "TEXT"),
+            ("runtime_instance_id", "TEXT"),
+            ("worker_id",     "TEXT"),
         ):
             if col not in existing_runs:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
+        migrate_contribution_events_schema(conn)
         # Phase A item 6 (Task #65a) — branch_version_id on runs. NULL for
         # def-based runs (the existing path); populated only by
         # execute_branch_version_async for version-based runs. Required by
@@ -457,6 +486,9 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
         "thread_id": row["thread_id"],
         "status": row["status"],
         "actor": row["actor"],
+        "owner_user_id": (
+            row["owner_user_id"] if "owner_user_id" in col_names else ""
+        ),
         "inputs": json.loads(row["inputs_json"] or "{}"),
         "output": json.loads(row["output_json"] or "{}"),
         "error": row["error"],
@@ -466,6 +498,13 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
         "provider_used": row["provider_used"] if "provider_used" in col_names else None,
         "model": row["model"] if "model" in col_names else None,
         "token_count": row["token_count"] if "token_count" in col_names else None,
+        "daemon_id": row["daemon_id"] if "daemon_id" in col_names else None,
+        "runtime_instance_id": (
+            row["runtime_instance_id"]
+            if "runtime_instance_id" in col_names
+            else None
+        ),
+        "worker_id": row["worker_id"] if "worker_id" in col_names else None,
     }
 
 
@@ -708,23 +747,36 @@ def create_run(
     run_name: str = "",
     actor: str = "anonymous",
     branch_version_id: str | None = None,
+    owner_user_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
 ) -> str:
     initialize_runs_db(base_path)
     run_id = uuid.uuid4().hex[:16]
+    resolved_owner_user_id = (
+        str(owner_user_id or "")
+        if owner_user_id is not None
+        else _resolve_owner_user_id(base_path, daemon_id)
+    )
     with _connect(base_path) as conn:
         conn.execute(
             """
             INSERT INTO runs (
                 run_id, branch_def_id, run_name, thread_id,
-                status, actor, inputs_json, started_at,
-                branch_version_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, actor, owner_user_id, inputs_json, started_at,
+                branch_version_id, daemon_id, runtime_instance_id,
+                worker_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, branch_def_id, run_name, thread_id,
-                RUN_STATUS_QUEUED, actor,
+                RUN_STATUS_QUEUED, actor, resolved_owner_user_id,
                 json.dumps(inputs, default=str), _now(),
                 branch_version_id,
+                daemon_id,
+                runtime_instance_id,
+                worker_id,
             ),
         )
     return run_id
@@ -786,7 +838,9 @@ def update_run_status(
         if status in _TERMINAL_STATUSES:
             try:
                 row = conn.execute(
-                    "SELECT actor, branch_def_id, branch_version_id "
+                    "SELECT actor, owner_user_id, daemon_id, "
+                    "runtime_instance_id, worker_id, branch_def_id, "
+                    "branch_version_id "
                     "FROM runs WHERE run_id = ?", (run_id,),
                 ).fetchone()
                 if row is not None:
@@ -806,6 +860,10 @@ def update_run_status(
                             event_id=f"execute_step:{run_id}:{status}",
                             event_type="execute_step",
                             actor_id=row["actor"] or "anonymous",
+                            owner_user_id=row["owner_user_id"] or "",
+                            daemon_id=row["daemon_id"] or "",
+                            runtime_instance_id=row["runtime_instance_id"] or "",
+                            worker_id=row["worker_id"] or "",
                             source_run_id=run_id,
                             source_artifact_id=artifact_id,
                             source_artifact_kind=artifact_kind,
@@ -1954,6 +2012,9 @@ def _prepare_run(
     run_name: str,
     actor: str,
     branch_version_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
 ) -> str:
     """Write the run row + pending-node events + lineage synchronously.
 
@@ -1972,6 +2033,9 @@ def _prepare_run(
         run_name=run_name,
         actor=actor,
         branch_version_id=branch_version_id,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
     )
     thread_id = run_id
     with _connect(base_path) as conn:
@@ -2062,6 +2126,27 @@ def _invoke_graph(
     # per-run ``provider_calls`` system event (one entry per provider-served
     # node: provider, model, latency, attempts).
     provider_tracker: dict[str, Any] = {"last": None, "model": None, "calls": []}
+    run_identity = {
+        "owner_user_id": "",
+        "daemon_id": "",
+        "runtime_instance_id": "",
+        "worker_id": "",
+    }
+    with _connect(base_path) as conn:
+        identity_row = conn.execute(
+            """
+            SELECT owner_user_id, daemon_id, runtime_instance_id, worker_id
+            FROM runs WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+    if identity_row is not None:
+        run_identity = {
+            "owner_user_id": identity_row["owner_user_id"] or "",
+            "daemon_id": identity_row["daemon_id"] or "",
+            "runtime_instance_id": identity_row["runtime_instance_id"] or "",
+            "worker_id": identity_row["worker_id"] or "",
+        }
 
     def _emit_node_status(node_id: str, status: str) -> None:
         if on_node_status is None:
@@ -2177,6 +2262,10 @@ def _invoke_graph(
                 event_id=f"design_used:{run_id}:{step}:{node_def_id}",
                 event_type="design_used",
                 actor_id=author,
+                owner_user_id=run_identity["owner_user_id"],
+                daemon_id=run_identity["daemon_id"],
+                runtime_instance_id=run_identity["runtime_instance_id"],
+                worker_id=run_identity["worker_id"],
                 source_run_id=run_id,
                 source_artifact_id=node_def_id,
                 source_artifact_kind="node_def",
@@ -2694,6 +2783,9 @@ def execute_branch(
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     _parent_branch_task_id: str = "",
@@ -2718,6 +2810,9 @@ def execute_branch(
         base_path,
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
     )
     enqueue_context = NodeEnqueueContext(
         universe_id=_enqueue_universe_id,
@@ -2875,6 +2970,9 @@ def _execute_branch_core(
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     branch_version_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
     _invocation_depth: int = 0,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
@@ -2899,6 +2997,9 @@ def _execute_branch_core(
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
         branch_version_id=branch_version_id,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
     )
 
     executor = _get_executor(invocation_depth=_invocation_depth)

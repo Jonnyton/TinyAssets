@@ -7,11 +7,23 @@ from unittest.mock import patch  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def _make_node(node_id="n1", display_name="My Node", source_code="", approved=False):
+    import hashlib
+
+    # PR #1349 fail-closed: a genuine approval records the source hash. The
+    # describe/validate/get_branch runnability surfaces now provenance-check
+    # approval (matching the runtime gate), so an approved fixture node must
+    # carry the matching hash to be reported runnable.
+    approved_source_hash = ""
+    if approved and source_code:
+        approved_source_hash = hashlib.sha256(
+            source_code.encode("utf-8")
+        ).hexdigest()
     return {
         "node_id": node_id,
         "display_name": display_name,
         "source_code": source_code,
         "approved": approved,
+        "approved_source_hash": approved_source_hash,
         "phase": "custom",
         "input_keys": [],
         "output_keys": [],

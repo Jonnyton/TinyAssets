@@ -1,0 +1,218 @@
+/* Base reset, semantic element styles, and the site-wide vocabulary classes
+   (.voice / .ev / .eyebrow / .readout / .stat ...). Ported verbatim from the
+   canonical Field Notes stylesheet. Imports the token :root so a single
+   `@import "styles.css"` gives a design the full look. */
+
+@import "./tokens.css";
+
+/* ---------- BASE RESET + SEMANTIC ELEMENT STYLES ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--fg-1);
+  background: var(--bg-0);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---------- ATMOSPHERE ---------- */
+body {
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.32  0 0 0 0 0.30  0 0 0 0 0.24  0 0 0 0.045 0'/></filter><rect width='180' height='180' filter='url(%23n)'/></svg>"),
+    var(--bg-0);
+  background-size: 180px 180px, auto;
+  background-attachment: scroll, scroll;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: var(--ls-tight);
+  line-height: var(--lh-tight);
+  margin: 0 0 var(--s-4);
+  color: var(--fg-1);
+  text-wrap: balance;
+}
+
+h1 { font-size: var(--fs-5xl); font-variation-settings: "opsz" 72; }
+h2 { font-size: var(--fs-3xl); }
+h3 { font-size: var(--fs-2xl); letter-spacing: -0.01em; }
+
+h4, h5, h6 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  letter-spacing: 0;
+  margin: 0 0 var(--s-3);
+  color: var(--fg-1);
+}
+h4 { font-size: var(--fs-lg); }
+h5 { font-size: var(--fs-md); }
+h6 {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+  color: var(--fg-3);
+  font-weight: 600;
+}
+
+p {
+  margin: 0 0 var(--s-4);
+  color: var(--fg-2);
+  line-height: var(--lh-loose);
+  text-wrap: pretty;
+  max-width: 64ch;
+}
+
+a {
+  color: var(--ember-700);
+  text-decoration: none;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+a:hover { color: var(--ember-900); text-decoration: underline; }
+
+code, pre, kbd, samp {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+code {
+  background: var(--paper-200);
+  border: 1px solid var(--border-1);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  color: var(--ink-text-700);
+}
+pre {
+  background: var(--bg-inset);
+  border: 1px solid var(--border-1);
+  padding: var(--s-4);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  line-height: var(--lh-normal);
+}
+pre code { background: none; border: none; padding: 0; color: var(--fg-1); }
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--border-1);
+  margin: var(--s-8) 0;
+}
+
+::selection { background: rgba(233, 69, 96, 0.16); color: var(--fg-1); }
+
+/* ---------- SITE-WIDE VOCABULARY ---------- */
+
+/* Tiny's first-person voice — used wherever he narrates. */
+.voice {
+  font-family: var(--font-voice);
+  font-size: clamp(17px, 1.9vw, 20px);
+  line-height: 1.62;
+  color: var(--fg-1);
+  text-wrap: pretty;
+  max-width: 62ch;
+}
+.voice em { font-style: italic; color: var(--ember-700); }
+
+/* Evidence — live values, ids, timestamps. Always mono. */
+.ev {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  letter-spacing: 0.01em;
+  color: var(--fg-2);
+  font-style: normal;
+  font-feature-settings: "tnum";
+}
+
+/* Field-note section label. */
+.eyebrow,
+.ritual-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+  color: var(--fg-3);
+  font-weight: 500;
+}
+
+/* Liveness dot — green ONLY when genuinely live; amber when asleep. */
+.dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--fg-4);
+  flex: none;
+}
+.dot.live { background: var(--signal-live); box-shadow: 0 0 0 3px var(--live-100); }
+.dot.idle { background: var(--signal-idle); box-shadow: 0 0 0 3px rgba(176, 138, 46, 0.15); }
+.dot.error { background: var(--signal-error); box-shadow: 0 0 0 3px var(--ember-100); }
+
+/* Legacy display pull. */
+.display-pull {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: var(--fs-6xl);
+  line-height: 0.95;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+.display-pull em {
+  font-style: italic;
+  color: var(--ember-600);
+}
+
+[data-theme="light"] {
+  --bg-0: var(--ground-0);
+  --bg-1: var(--paper-50);
+  --bg-2: var(--paper-100);
+  --bg-3: var(--paper-200);
+}
+
+/* ---------- READOUT SURFACE ---------- */
+.readout {
+  background-color: var(--panel);
+  background-image:
+    linear-gradient(var(--panel-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--panel-line) 1px, transparent 1px);
+  background-size: 28px 28px;
+  color: var(--on-panel);
+  border-radius: var(--radius-sm);
+  padding: var(--s-6);
+  border: 1px solid #2c2a1d;
+}
+.readout h1, .readout h2, .readout h3 { color: var(--on-panel); }
+.readout p { color: var(--on-panel-soft); }
+.readout .eyebrow, .readout .ritual-label { color: var(--on-panel-soft); }
+.readout .ev { color: var(--on-panel-soft); }
+.readout a { color: var(--ember-300); }
+.readout a:hover { color: #ffd7df; }
+.readout .voice em { color: var(--live-bright); }
+.readout .dot.live { background: var(--live-bright); box-shadow: 0 0 0 3px rgba(70, 180, 131, 0.22); }
+
+/* A single live reading. */
+.stat { display: grid; gap: 4px; }
+.stat__num {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: var(--fs-3xl);
+  line-height: 1.05;
+  color: var(--on-panel);
+  font-feature-settings: "tnum";
+  letter-spacing: -0.01em;
+}
+.stat__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+  color: var(--on-panel-soft);
+}
+.readout-cell {
+  background: var(--panel-raised);
+  border-radius: var(--radius-xs);
+  padding: var(--s-3) var(--s-4);
+}

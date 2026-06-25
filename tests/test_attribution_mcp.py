@@ -11,6 +11,8 @@ import pytest
 
 from workflow.runs import initialize_runs_db
 from workflow.universe_server import extensions
+
+
 @pytest.fixture(autouse=True)
 def _set_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
@@ -98,6 +100,40 @@ class TestRecordRemix:
         ))
         assert result["status"] == "recorded"
         assert abs(result["credit_share"] - 0.3) < 1e-9
+
+    def test_record_credit_persists_identity_tuple(self, tmp_path):
+        from workflow.api.market import _action_record_remix
+
+        result = json.loads(_action_record_remix({
+            "parent_branch_def_id": "branch-A",
+            "child_branch_def_id": "branch-B",
+            "actor_id": "actor-daemon",
+            "owner_user_id": "owner-user",
+            "daemon_id": "daemon::actor",
+            "runtime_instance_id": "runtime-1",
+            "worker_id": "worker-1",
+            "credit_share": 0.3,
+        }))
+        assert result["status"] == "recorded"
+
+        from workflow.runs import _connect
+
+        with _connect(tmp_path) as conn:
+            row = conn.execute(
+                """
+                SELECT actor_id, owner_user_id, daemon_id,
+                       runtime_instance_id, worker_id, credit_share
+                FROM attribution_credit
+                WHERE artifact_id = ? AND artifact_kind = 'branch'
+                """,
+                ("branch-B",),
+            ).fetchone()
+        assert row["actor_id"] == "actor-daemon"
+        assert row["owner_user_id"] == "owner-user"
+        assert row["daemon_id"] == "daemon::actor"
+        assert row["runtime_instance_id"] == "runtime-1"
+        assert row["worker_id"] == "worker-1"
+        assert row["credit_share"] == pytest.approx(0.3)
 
     def test_cycle_rejected_direct(self):
         extensions(

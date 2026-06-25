@@ -1,0 +1,99 @@
+# Live-data preview of the React site as a Cloudflare WORKER (not Pages), so it
+# deploys with the EXISTING Workers-scoped CLOUDFLARE_API_TOKEN — no Pages
+# permission needed. Serves out/ via the ASSETS binding and proxies /mcp
+# same-origin → real live data (TinyBot etc.). Publishes to a *.workers.dev URL.
+name: preview-worker
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'WebSite/site-react/**'
+      - 'WebSite/design-system/**'
+      - '.github/workflows/preview-worker.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build design system
+        working-directory: WebSite/design-system
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build site (root, same-origin /mcp)
+        working-directory: WebSite/site-react
+        env:
+          NEXT_PUBLIC_MCP_PATH: '/mcp'
+        run: |
+          npm ci
+          npm run build
+          rm -f out/CNAME
+
+      - name: Resolve Cloudflare account id
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT_ID_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN secret is not set."
+            exit 1
+          fi
+          account_id="${ACCOUNT_ID_SECRET}"
+          if [ -z "${account_id}" ]; then
+            response="$(curl -s -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/zones?name=tinyassets.io")"
+            account_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or []; print(((r[0].get("account") or {}).get("id") or "") if r else "")' <<< "${response}")"
+          fi
+          if [ -z "${account_id}" ]; then
+            echo "::error::Could not resolve Cloudflare account id."
+            exit 1
+          fi
+          echo "CLOUDFLARE_ACCOUNT_ID=${account_id}" >> "${GITHUB_ENV}"
+
+      - name: Deploy preview Worker
+        id: deploy
+        working-directory: WebSite/site-react
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set +e
+          out="$(npx --yes wrangler@latest deploy --config wrangler.preview.toml 2>&1)"
+          status=$?
+          echo "${out}"
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::wrangler deploy failed (exit ${status})."
+            exit "${status}"
+          fi
+          url="$(echo "${out}" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)"
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "### React site preview (Worker, live data)"
+            echo "Preview URL: ${url}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Comment preview URL on PR
+        if: github.event_name == 'pull_request' && steps.deploy.outputs.url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          gh pr comment "${PR_NUMBER}" --body "🤖 **Live React preview (Worker):** ${PREVIEW_URL}
+
+          Serves the static export + proxies /mcp same-origin, so TinyBot and the live numbers show real data. Updates on every push to this PR. Not the live tinyassets.io."

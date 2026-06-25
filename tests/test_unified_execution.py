@@ -83,7 +83,14 @@ def _minimal_branch(
     }
     if node_body:
         node_kwargs.update(node_body)
+    # PR #1349 fail-closed gate: a genuine in-process approval must record the
+    # source hash. Route ``approved: True`` through mark_approved() so the
+    # fixture binds the hash to the source actually being approved, instead of
+    # a bare flag the runtime now refuses.
+    want_approved = bool(node_kwargs.pop("approved", False))
     node = NodeDefinition(**node_kwargs)
+    if want_approved:
+        node.mark_approved()
     return BranchDefinition(
         name="T",
         domain_id=domain_id,

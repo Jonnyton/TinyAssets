@@ -1,0 +1,26 @@
+/* Site-level glue (ported from WebSite/site/src/app.css). Design tokens + base
+   + vocabulary come from @tiny/design-system/styles.css, imported first in
+   layout.tsx. This file only adds app-layout utilities. */
+
+main {
+  min-height: 100vh;
+}
+
+/* Long URLs / addresses break cleanly. */
+.address {
+  font-family: var(--font-mono);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+/* Section vertical rhythm. */
+section {
+  padding-block: var(--s-12);
+}
+
+/* Page container. */
+.container {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding-inline: clamp(16px, 4vw, 32px);
+}

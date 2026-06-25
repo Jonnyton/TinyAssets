@@ -1,0 +1,43 @@
+{
+  "name": "@tiny/design-system",
+  "version": "0.1.0",
+  "description": "Tiny — React design system. The AI-facing component library (Field Notes design language) consumed by claude.ai/design and shipped to the product UI.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./tokens": "./tokens/tiny.tokens.json"
+  },
+  "files": ["dist", "tokens", "DESIGN.md"],
+  "sideEffects": ["*.css"],
+  "scripts": {
+    "tokens": "node tokens/extract-dtcg.mjs",
+    "build:bundle": "node build.mjs",
+    "build": "npm run tokens && npm run build:bundle && npm run schemas",
+    "schemas": "node scripts/gen-schemas.mjs",
+    "storybook": "storybook dev -p 6007",
+    "build-storybook": "storybook build",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "devDependencies": {
+    "@storybook/react-vite": "^10.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "esbuild": "^0.28.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "storybook": "^10.0.0",
+    "typescript": "^5.5.0"
+  }
+}

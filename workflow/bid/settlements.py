@@ -16,7 +16,10 @@ Schema v1 fields:
 
     schema_version: "1"
     bid_id: <str>
+    owner_user_id: <str>
     daemon_id: <str>
+    runtime_instance_id: <str>
+    worker_id: <str>
     requester_id: <str>       # from bid.submitted_by
     bid_amount: <float>
     evidence_url: <str>       # "" on failure
@@ -70,6 +73,10 @@ def record_settlement_event(
     bid: "NodeBid",
     result: "NodeBidResult",
     daemon_id: str,
+    *,
+    owner_user_id: str = "",
+    runtime_instance_id: str = "",
+    worker_id: str = "",
 ) -> Path:
     """Write an immutable settlement record for a completed bid.
 
@@ -101,7 +108,14 @@ def record_settlement_event(
     payload = {
         "schema_version": SCHEMA_VERSION,
         "bid_id": bid.node_bid_id,
+        "owner_user_id": owner_user_id or getattr(bid, "owner_user_id", "") or "",
         "daemon_id": daemon_id,
+        "runtime_instance_id": (
+            runtime_instance_id
+            or getattr(bid, "runtime_instance_id", "")
+            or ""
+        ),
+        "worker_id": worker_id or getattr(bid, "worker_id", "") or "",
         "requester_id": getattr(bid, "submitted_by", "") or "",
         "bid_amount": float(getattr(bid, "bid", 0.0) or 0.0),
         "evidence_url": getattr(result, "evidence_url", "") or "",

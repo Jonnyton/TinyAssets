@@ -1,0 +1,129 @@
+.page { }
+
+.page :global(.container) { max-width: 1160px; margin: 0 auto; padding-inline: clamp(18px, 4vw, 32px); }
+  .page :global(.sr-only) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+
+  /* ── Cover ── */
+  .page :global(.cover) { padding: clamp(48px, 8vw, 96px) 0 clamp(32px, 5vw, 56px); border-bottom: 1px solid var(--border-1); }
+  .page :global(.cover__title) {
+    font-size: clamp(40px, 7vw, 84px);
+    font-weight: 400;
+    line-height: 1.0;
+    letter-spacing: -0.03em;
+    margin: 14px 0 18px;
+  }
+  .page :global(.cover__lede) { margin: 0 0 16px; }
+  .page :global(.cover__lede em) { font-style: italic; color: var(--ember-700); }
+  .page :global(.cover__naming) { font-size: 13.5px; color: var(--fg-3); margin: 0; max-width: 60ch; }
+  .page :global(.cover__naming strong) { color: var(--fg-2); font-weight: 600; }
+
+  /* ── Shared section chrome ── */
+  .page :global(.ch) { padding: clamp(48px, 7vw, 84px) 0; border-bottom: 1px solid var(--border-1); }
+  .page :global(.ch__inner) { max-width: 760px; }
+  .page :global(.ch h2) {
+    font-size: clamp(28px, 4.4vw, 44px);
+    font-weight: 500;
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    margin: 12px 0 18px;
+  }
+  .page :global(.ch .eyebrow) { display: block; }
+  .page :global(.door__lede) { margin: 0 0 24px; }
+
+  /* ── Door one · numbered steps ── */
+  .page :global(.steps) { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+  .page :global(.step) {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 18px;
+    padding: 18px 0;
+    border-top: 1px solid var(--border-1);
+  }
+  .page :global(.step:last-child) { border-bottom: 1px solid var(--border-1); }
+  @media (max-width: 640px) { .page :global(.step) { grid-template-columns: 1fr; gap: 6px; } }
+  .page :global(.step__n) { font-family: var(--font-mono); font-size: 12px; color: var(--ember-700); letter-spacing: 0.14em; padding-top: 4px; }
+  .page :global(.step__body) { display: grid; gap: 6px; justify-items: start; }
+  .page :global(.step__h) { font-family: var(--font-voice); font-size: 20px; font-weight: 500; margin: 0; line-height: 1.2; }
+  .page :global(.step__p) { font-size: 14.5px; line-height: 1.6; color: var(--fg-2); margin: 0; }
+  .page :global(.step__p code) { font-size: 13px; }
+  .page :global(.step__cta) { font-family: var(--font-sans); font-size: 13.5px; font-weight: 600; color: var(--ember-700); width: fit-content; }
+  .page :global(.door__note) { margin: 24px 0 0; font-size: 15px; }
+  .page :global(.door__note em) { font-style: italic; color: var(--ember-700); }
+
+  /* ── Door two · repo steps ── */
+  .page :global(.repo-steps) {
+    list-style: none; margin: 0; padding: 0;
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;
+  }
+  @media (max-width: 760px) { .page :global(.repo-steps) { grid-template-columns: 1fr; } }
+  .page :global(.repo-step) {
+    display: grid; gap: 8px; align-content: start;
+    padding: 18px 20px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-lg);
+  }
+  .page :global(.repo-step__cmd) {
+    background: var(--bg-inset);
+    border: 1px solid var(--border-1);
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    color: var(--ink-text-900);
+    font-size: 12.5px;
+    width: fit-content;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .page :global(.repo-step__note) { font-size: 13.5px; line-height: 1.55; color: var(--fg-2); margin: 0; }
+
+  /* ── Live repo pulse ── */
+  .page :global(.pulse) { margin-top: 24px; }
+  .page :global(.pulse__state) { font-size: 13px; margin: 0 0 12px; }
+  .page :global(.pulse__state--err) { color: var(--signal-error); max-width: 60ch; line-height: 1.55; }
+  .page :global(.pulse__grid) {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+    margin: 0; padding: 0;
+  }
+  @media (max-width: 640px) { .page :global(.pulse__grid) { grid-template-columns: 1fr; } }
+  .page :global(.pulse__cell) {
+    padding: 16px 18px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md);
+    display: grid; gap: 6px;
+  }
+  .page :global(.pulse__k) { font-family: var(--font-sans); font-size: 12px; font-weight: 500; color: var(--fg-3); margin: 0; }
+  .page :global(.pulse__v) { font-size: 17px; color: var(--fg-1); margin: 0; }
+  .page :global(.pulse__stamp) { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; font-size: 11px; }
+  .page :global(.pulse__refresh) {
+    background: transparent; border: 1px solid var(--border-2); border-radius: var(--radius-pill);
+    color: var(--live-700); cursor: pointer;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 3px 10px;
+  }
+  .page :global(.pulse__refresh:hover:not(:disabled)) { border-color: var(--live-600); background: var(--live-100); }
+  .page :global(.pulse__refresh:disabled) { opacity: 0.6; cursor: default; }
+
+  /* ── What contribution earns ── */
+  .page :global(.ch--earns .voice em) { font-style: italic; color: var(--ember-700); }
+
+  /* ── Close ── */
+  .page :global(.ch--close) { border-bottom: none; padding-bottom: clamp(72px, 10vw, 120px); }
+  .page :global(.close__row) {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;
+  }
+  @media (max-width: 760px) { .page :global(.close__row) { grid-template-columns: 1fr; } }
+  .page :global(.close__card) {
+    display: grid; gap: 6px;
+    padding: 24px 26px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius-lg);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard);
+  }
+  .page :global(.close__card:hover) { border-color: var(--ink-text-900); box-shadow: var(--shadow-md); text-decoration: none; }
+  .page :global(.close__card strong) { font-family: var(--font-display); font-size: clamp(20px, 2.8vw, 28px); font-weight: 500; letter-spacing: -0.015em; line-height: 1.14; color: var(--fg-1); }
+  .page :global(.close__sub) { font-size: 13.5px; color: var(--fg-2); line-height: 1.5; }

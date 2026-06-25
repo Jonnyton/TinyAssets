@@ -197,6 +197,91 @@ def _clear_source_code_approval(node: Any) -> None:
     node.approval_reason = ""
 
 
+def _approval_provenance_valid(
+    approved: Any, source_code: str, approved_source_hash: str,
+) -> bool:
+    """True only when an ``approved`` flag is backed by hash provenance.
+
+    A source_code node is genuinely approved iff the recorded
+    ``approved_source_hash`` equals the hash of the *current* source_code.
+    A bare ``approved=True`` with no/stale hash is forged or stale and must
+    not authorize execution. Prompt-template (non-source) nodes carry no
+    executable surface to gate, so an empty source_code is treated as
+    matching an empty hash only when no hash was recorded.
+    """
+    if not approved:
+        return False
+    if not source_code:
+        # No executable content to gate. Approval is meaningless here but
+        # also harmless — the compiler only gates source_code nodes.
+        return True
+    return bool(approved_source_hash) and (
+        approved_source_hash == _source_code_hash(source_code)
+    )
+
+
+def _reconcile_copied_approval(merged: dict[str, Any]) -> None:
+    """Strip approval metadata from a copied/merged node body unless the
+    effective source hash still matches the recorded approved hash.
+
+    Used by the ``node_ref`` copy path: a caller can inherit an approved
+    body and then override ``source_code``/other executable content. The
+    inherited ``approved=True`` must not survive a content change the
+    approver never reviewed. See Codex ADAPT review on PR #1349.
+    """
+    if not _approval_provenance_valid(
+        merged.get("approved"),
+        merged.get("source_code") or "",
+        merged.get("approved_source_hash") or "",
+    ):
+        merged["approved"] = False
+        merged["approved_by"] = ""
+        merged["approved_at"] = ""
+        merged["approved_source_hash"] = ""
+        merged["approval_reason"] = ""
+
+
+def _node_source_code_unrunnable(nd: dict[str, Any]) -> bool:
+    """True when a node dict has executable source_code but is NOT genuinely
+    approved (provenance-checked), so the fail-closed runtime gate would refuse
+    it. Used by the describe/validate/get_branch runnability surfaces so what
+    they report matches what ``_validate_source_code`` will actually accept: a
+    bare ``approved=True`` with a missing/stale ``approved_source_hash`` is
+    reported as unrunnable, not runnable. PR #1349.
+    """
+    if not nd.get("source_code"):
+        return False
+    return not _approval_provenance_valid(
+        nd.get("approved", False),
+        nd.get("source_code") or "",
+        nd.get("approved_source_hash") or "",
+    )
+
+
+def _reconcile_node_approval(node: Any) -> Any:
+    """Object-level twin of :func:`_reconcile_copied_approval`.
+
+    Re-validates a carried/restored ``NodeDefinition`` object's approval
+    against its current source hash and clears the approval metadata when the
+    provenance does not match. Used by paths that carry node bodies forward as
+    NodeDefinition objects rather than dicts: ``build_branch`` fork-copy
+    (inherits the parent's ``node_defs`` wholesale) and ``rollback_node``
+    (restores a raw audit body). A trusted/legacy snapshot carrying
+    ``source_code`` + ``approved=True`` + empty/stale ``approved_source_hash``
+    must not survive the copy as still-approved. Closes the Codex final
+    residual on PR #1349 (carried-snapshot bypass).
+
+    Returns the node for chaining.
+    """
+    if not _approval_provenance_valid(
+        getattr(node, "approved", False),
+        getattr(node, "source_code", "") or "",
+        getattr(node, "approved_source_hash", "") or "",
+    ):
+        _clear_source_code_approval(node)
+    return node
+
+
 def _ensure_workflow_db() -> None:
     """Ensure the shared SQLite schema exists before any branch action runs.
 
@@ -378,7 +463,7 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
         for nd in branch.get("node_defs", [])
-        if nd.get("source_code") and not nd.get("approved", False)
+        if _node_source_code_unrunnable(nd)
     ]
     branch["unapproved_source_code_nodes"] = unapproved_sc
     branch["runnable"] = not unapproved_sc
@@ -799,7 +884,7 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
         for nd in source_dict.get("node_defs", [])
-        if nd.get("source_code") and not nd.get("approved", False)
+        if _node_source_code_unrunnable(nd)
     ]
 
     # sandbox-compat warning: list any requires_sandbox=True nodes when
@@ -1015,7 +1100,7 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
         for nd in source_dict.get("node_defs", [])
-        if nd.get("source_code") and not nd.get("approved", False)
+        if _node_source_code_unrunnable(nd)
     ]
 
     node_lines = [
@@ -1146,7 +1231,13 @@ def _branch_authoring_batch_receipt(
         if not getattr(node, "source_code", ""):
             continue
         source_code_node_count += 1
-        if bool(getattr(node, "approved", False)):
+        # PR #1349 fail-closed: count as approved only when the approval is
+        # backed by matching hash provenance, mirroring the runtime gate.
+        if _approval_provenance_valid(
+            getattr(node, "approved", False),
+            getattr(node, "source_code", "") or "",
+            getattr(node, "approved_source_hash", "") or "",
+        ):
             approved_source_code_node_count += 1
         else:
             unapproved_nodes.append({
@@ -1378,6 +1469,14 @@ def _resolve_node_spec(
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
+        # SECURITY (Codex ADAPT, PR #1349): approval provenance must follow
+        # the *executable content*, never the inherited boolean. A caller can
+        # node_ref an approved node and then override ``source_code`` — that
+        # forges/staleifies approval for code the approver never saw. Approval
+        # only survives when the effective source hash still matches the
+        # approved hash; otherwise strip every approval field so this copy is
+        # treated as unapproved and re-runs the approve gate.
+        _reconcile_copied_approval(merged)
         return merged, ""
 
     # No explicit ref — fall back to raw. If the node_id shadows a
@@ -1444,6 +1543,10 @@ def _lookup_node_body(
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
             "approved": bool(hit.get("approved", False)),
+            "approved_by": hit.get("approved_by", ""),
+            "approved_at": hit.get("approved_at", ""),
+            "approved_source_hash": hit.get("approved_source_hash", ""),
+            "approval_reason": hit.get("approval_reason", ""),
         }, ""
 
     # Otherwise treat `source` as a branch_def_id.
@@ -1475,6 +1578,10 @@ def _lookup_node_body(
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
                 "approved": bool(nd.get("approved", False)),
+                "approved_by": nd.get("approved_by", ""),
+                "approved_at": nd.get("approved_at", ""),
+                "approved_source_hash": nd.get("approved_source_hash", ""),
+                "approval_reason": nd.get("approval_reason", ""),
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
@@ -1569,6 +1676,29 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         return (
             f"node '{nid}' effects must be a JSON array of strings"
         )
+    # SECURITY (Codex ADAPT, PR #1349): a node is only approved when the
+    # recorded approval hash matches the *effective* source_code being stored.
+    # This is the authoring-time half of the provenance gate; the compiler
+    # enforces the same check at run time (_validate_source_code). Without
+    # this, a caller could pass a bare ``approved=True`` (or inherit one via
+    # an inline override) for code no approver ever reviewed. We only carry
+    # the approval boolean + provenance forward when the hash matches; any
+    # mismatch demotes the node to unapproved with blank provenance.
+    approved_source_hash = (raw.get("approved_source_hash") or "").strip()
+    if _approval_provenance_valid(
+        raw.get("approved"), source_code, approved_source_hash,
+    ):
+        approved_arg = bool(raw.get("approved"))
+        approved_by_arg = raw.get("approved_by") or ""
+        approved_at_arg = raw.get("approved_at") or ""
+        approved_hash_arg = approved_source_hash if source_code else ""
+        approval_reason_arg = raw.get("approval_reason") or ""
+    else:
+        approved_arg = False
+        approved_by_arg = ""
+        approved_at_arg = ""
+        approved_hash_arg = ""
+        approval_reason_arg = ""
     try:
         node = NodeDefinition(
             node_id=nid,
@@ -1585,7 +1715,11 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             llm_policy=llm_policy,
             timeout_seconds=timeout_seconds,
             author=raw.get("author") or _current_actor(),
-            approved=bool(raw.get("approved", False)),
+            approved=approved_arg,
+            approved_by=approved_by_arg,
+            approved_at=approved_at_arg,
+            approved_source_hash=approved_hash_arg,
+            approval_reason=approval_reason_arg,
             invoke_branch_spec=invoke_branch_arg,
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
@@ -1995,7 +2129,17 @@ def _staged_branch_from_spec(
             if "skills" not in spec:
                 branch.skills = parent_skills
             if "node_defs" not in spec and "nodes" not in spec:
-                branch.node_defs = parent_copy.node_defs
+                # SECURITY (Codex final residual, PR #1349): the parent's
+                # node_defs are inherited wholesale. A carried node whose
+                # source no longer matches its recorded approval hash — or
+                # which carries approved=True with an empty/legacy hash — must
+                # not survive the fork as still-approved. Re-validate each
+                # carried node against its source hash; the fail-closed runtime
+                # gate is the backstop, this keeps the persisted snapshot
+                # honest at authoring time.
+                branch.node_defs = [
+                    _reconcile_node_approval(n) for n in parent_copy.node_defs
+                ]
                 branch.graph_nodes = parent_copy.graph_nodes
             if not _spec_has_graph_key("edges"):
                 branch.edges = parent_copy.edges
@@ -3019,14 +3163,34 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
 
     # Apply the field. prompt_template / source_code are mutually
     # exclusive — clear the other when setting one.
+    #
+    # SECURITY (Codex round-2, PR #1349): patch_nodes is an MCP-reachable
+    # node-mutation path. Changing executable content (source_code /
+    # prompt_template) must not leave a node ``approved=True`` for code the
+    # approver never saw. Mirror the update_node surface: reconcile approval
+    # against the *new* effective source via the round-1 helper, which
+    # clears every approval field unless the recorded hash still matches the
+    # post-patch source. This upholds the authoring-layer invariant the
+    # runtime carve-out relies on (no persisted node ever carries
+    # approved=True with an empty/stale approved_source_hash).
     for node in staging.node_defs:
         if node.node_id not in target_ids:
             continue
         setattr(node, field, value)
         if field == "prompt_template" and value:
             node.source_code = ""
-        elif field == "source_code" and value:
+            # Switched to a prompt node: no executable surface to gate, and
+            # any prior source approval no longer describes the body.
+            _clear_source_code_approval(node)
+        elif field == "source_code":
             node.prompt_template = ""
+            # Approval only survives when the recorded hash still matches the
+            # new source; otherwise demote to unapproved (blank provenance).
+            if not _approval_provenance_valid(
+                node.approved, node.source_code or "",
+                node.approved_source_hash or "",
+            ):
+                _clear_source_code_approval(node)
 
     old_version = int(source.get("version") or 1)
     new_version = old_version + 1

@@ -1,0 +1,12 @@
+# Preview-only Worker that serves the React static export + proxies /mcp.
+# Deployed by .github/workflows/preview-worker.yml with the existing
+# Workers-scoped CLOUDFLARE_API_TOKEN. Separate from the production MCP worker.
+name = "tiny-site-react-preview"
+main = "cf-worker/worker.js"
+compatibility_date = "2025-06-01"
+
+[assets]
+directory = "./out"
+binding = "ASSETS"
+# Serve out/404.html for unmatched paths so the SPA fallback (deep-linked goals) works.
+not_found_handling = "404-page"

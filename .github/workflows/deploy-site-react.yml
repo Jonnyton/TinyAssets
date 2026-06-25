@@ -1,0 +1,85 @@
+# Deploy WebSite/site-react (Next.js static export) to GitHub Pages.
+#
+# MANUAL ONLY — workflow_dispatch. This is the React migration of the site and
+# is NOT yet the live surface. Running this REPLACES the live tinyassets.io
+# Pages deployment with the React build. Do not run it until the cutover is
+# approved; see docs/runbooks/2026-06-24-site-react-cutover.md.
+#
+# Cutover steps (host-gated): (1) merge the React site to main, (2) run this
+# workflow once to verify it deploys cleanly, (3) disable deploy-site.yml's
+# push/schedule triggers (or delete it) so the two don't fight over the `pages`
+# concurrency group, (4) verify https://tinyassets.io + /mcp via the public
+# canary (AGENTS.md hard rule #11).
+name: deploy-site-react
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm replacing the live Pages site with the React build'
+        required: true
+        default: 'no'
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require explicit confirmation
+        if: ${{ github.event.inputs.confirm != 'deploy' }}
+        run: |
+          echo "Refusing to deploy: type 'deploy' in the confirm input to proceed."
+          exit 1
+
+  build:
+    needs: guard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: WebSite/site-react
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: WebSite/site-react/package-lock.json
+
+      - name: Build design system (workspace dependency)
+        working-directory: WebSite/design-system
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install site deps
+        run: npm ci
+
+      - name: Build (static export)
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: WebSite/site-react/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

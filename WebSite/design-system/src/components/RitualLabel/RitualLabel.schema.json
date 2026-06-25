@@ -1,0 +1,10 @@
+{
+  "name": "RitualLabel",
+  "import": "import { RitualLabel } from \"@tiny/design-system\";",
+  "description": "Small-caps mono kicker / eyebrow used above section headings and on metadata. Equivalent to the global `.eyebrow` class.",
+  "props": {
+    "children": { "type": "ReactNode", "required": false, "description": "Short label — a kicker, not a sentence." },
+    "color": { "type": "string", "required": false, "description": "Optional colour override, e.g. var(--ember-700)." }
+  },
+  "rules": ["Keep it short (a few words).", "Use above a heading to label the section."]
+}

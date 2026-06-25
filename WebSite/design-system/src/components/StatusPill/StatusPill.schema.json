@@ -1,0 +1,15 @@
+{
+  "name": "StatusPill",
+  "import": "import { StatusPill } from \"@tiny/design-system\";",
+  "description": "A daemon-status capsule. Dot colour is load-bearing: green=genuine liveness only, amber=asleep (first-class state), ember=error.",
+  "props": {
+    "children": { "type": "ReactNode", "required": false, "description": "Short state word." },
+    "kind": { "type": "enum", "values": ["live", "idle", "paid", "self", "error"], "default": "live" },
+    "pulse": { "type": "boolean", "default": false, "description": "Animate the dot — use ONLY when the state is truly live." }
+  },
+  "rules": [
+    "Use kind=live + pulse only for genuine real-time liveness.",
+    "kind=idle (amber) means asleep — a normal state, not a failure.",
+    "Keep the label to one word."
+  ]
+}

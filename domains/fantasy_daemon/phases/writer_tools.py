@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from workflow.ingestion.canon_io import iter_canon_files
 from workflow.notes import (
     format_notes_for_context,
     get_unread_notes_for_orient,
@@ -504,9 +505,10 @@ def _render_canon_files(state: dict[str, Any]) -> str:
     max_per_file = 1200
     max_total = 4000
 
-    for path in sorted(canon_dir.iterdir()):
-        if not path.is_file() or path.suffix != ".md" or path.name.startswith("."):
-            continue
+    # Enumeration is routed through ``iter_canon_files`` so each entry is
+    # resolved + contained before stat/read; a symlinked ``.md`` escaping
+    # canon_dir is skipped, not read.
+    for path in iter_canon_files(canon_dir, suffix=".md", include_hidden=False):
         try:
             content = path.read_text(encoding="utf-8")[:max_per_file].strip()
         except OSError:

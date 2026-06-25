@@ -464,6 +464,10 @@ def _compute_supervisor_liveness(
         # Lease metadata (PR #212). Defensive getattr so pre-#212 tasks
         # surface as empty strings rather than AttributeError.
         worker_owner_id = getattr(task, "worker_owner_id", "") or ""
+        claimed_by = getattr(task, "claimed_by", "") or ""
+        daemon_id = worker_owner_id or claimed_by
+        executor_worker_id = getattr(task, "executor_worker_id", "") or ""
+        executor_runtime_id = getattr(task, "executor_runtime_id", "") or ""
         lease_expires_at = getattr(task, "lease_expires_at", "") or ""
         heartbeat_at = getattr(task, "heartbeat_at", "") or ""
         last_progress_at = getattr(task, "last_progress_at", "") or ""
@@ -496,7 +500,10 @@ def _compute_supervisor_liveness(
 
         record = {
             "branch_task_id": getattr(task, "branch_task_id", ""),
+            "daemon_id": daemon_id,
             "worker_owner_id": worker_owner_id,
+            "executor_worker_id": executor_worker_id,
+            "executor_runtime_id": executor_runtime_id,
             "lease_expires_at": lease_expires_at,
             "lease_remaining_s": lease_remaining_s,
             "heartbeat_at": heartbeat_at,

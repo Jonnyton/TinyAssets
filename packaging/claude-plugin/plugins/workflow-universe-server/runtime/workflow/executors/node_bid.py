@@ -20,6 +20,7 @@ entry point are supported; prompt_template-only nodes return
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import traceback
@@ -115,6 +116,30 @@ def execute_node_bid(
 
     source = getattr(node, "source_code", "") or ""
     prompt_template = getattr(node, "prompt_template", "") or ""
+
+    # SECURITY (PR #1349, Codex final residual): FAIL-CLOSED hash provenance.
+    # This is a second runtime code-execution gate (it ``exec()``s the source
+    # directly, bypassing graph_compiler._validate_source_code). The same
+    # invariant must hold: a source_code node executes only when
+    # ``approved=True`` AND ``approved_source_hash`` is present AND equals
+    # sha256(effective source). A bare ``approved=True`` with an empty/stale
+    # hash is forged, carried-from-elsewhere, or pre-provenance and must be
+    # refused. Checked here (before the dangerous-pattern scan and exec) so a
+    # carried snapshot can never reach exec() on the bid path either.
+    if source:
+        approved_hash = (getattr(node, "approved_source_hash", "") or "").strip()
+        actual_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        if not approved_hash or approved_hash != actual_hash:
+            return NodeBidResult(
+                node_bid_id=node_bid_id,
+                status="failed",
+                error=(
+                    f"approval_provenance_invalid: {bid.node_def_id} is marked "
+                    "approved but its approved_source_hash is missing or does "
+                    "not match the current source (approval is forged, stale, "
+                    "or pre-provenance). Re-approve against the current source."
+                ),
+            )
 
     if not source and prompt_template:
         return NodeBidResult(

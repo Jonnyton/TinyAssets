@@ -272,14 +272,21 @@ def _read_canon_paragraphs(canon_dir: str) -> list[str]:
 
     Returns a flat list of non-trivial paragraphs suitable for RAPTOR
     leaf nodes.
+
+    Enumeration is routed through :func:`iter_canon_files`, which resolves +
+    contains each entry before read; a symlinked ``.md`` whose target lives
+    outside ``canon_dir`` is skipped, so a poisoned canon entry cannot pull
+    external content into the RAPTOR tree.
     """
     from pathlib import Path
+
+    from workflow.ingestion.canon_io import iter_canon_files
 
     paragraphs: list[str] = []
     canon = Path(canon_dir)
     if not canon.exists():
         return paragraphs
-    for md_file in sorted(canon.glob("*.md")):
+    for md_file in iter_canon_files(canon, suffix=".md"):
         try:
             text = md_file.read_text(encoding="utf-8")
         except OSError:

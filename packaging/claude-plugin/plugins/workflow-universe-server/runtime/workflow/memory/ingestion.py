@@ -109,13 +109,22 @@ class ProgressiveIngestor:
         return self.state
 
     def _find_canon_files(self) -> list[Path]:
-        """Find markdown and text files in the canon directory."""
-        extensions = {".md", ".txt", ".markdown"}
-        files = []
-        for entry in self._canon_dir.rglob("*"):
-            if entry.is_file() and entry.suffix.lower() in extensions:
-                files.append(entry)
-        return sorted(files)
+        """Find markdown and text files in the canon directory.
+
+        Enumeration is routed through :func:`iter_canon_files` with
+        ``recursive=True`` so each entry — including descendants surfaced by
+        the recursive walk — is resolved + contained before any stat/read.
+        A symlinked subdirectory or file whose target escapes ``canon_dir`` is
+        skipped, so the recursive walk cannot ingest external content.
+        """
+        from workflow.ingestion.canon_io import iter_canon_files
+
+        extensions = (".md", ".txt", ".markdown")
+        return list(
+            iter_canon_files(
+                self._canon_dir, suffix=extensions, recursive=True
+            )
+        )
 
     @staticmethod
     def _split_into_sections(file_path: Path) -> list[SourceSection]:

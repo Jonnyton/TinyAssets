@@ -551,22 +551,27 @@ def _try_constraint_synthesis(state: dict[str, Any]) -> Any | None:
     """
     from pathlib import Path
 
+    from workflow.ingestion.canon_io import iter_canon_files
+
     premise = state.get("workflow_instructions", {}).get("premise", "")
     if not premise:
         return None
 
-    # Read canon docs as source documents
+    # Read canon docs as source documents. Enumeration is routed through
+    # ``iter_canon_files`` so each entry is resolved + contained before
+    # ``read_text``; a symlinked ``.md`` escaping canon_dir is skipped.
     universe_path = state.get("_universe_path", "")
     source_docs: list[str] = []
     if universe_path:
         canon_dir = Path(universe_path) / "canon"
         if canon_dir.is_dir():
             try:
-                for f in sorted(canon_dir.iterdir()):
-                    if f.is_file() and f.suffix == ".md" and not f.name.startswith("."):
-                        text = f.read_text(encoding="utf-8")
-                        if text.strip():
-                            source_docs.append(text)
+                for f in iter_canon_files(
+                    canon_dir, suffix=".md", include_hidden=False
+                ):
+                    text = f.read_text(encoding="utf-8")
+                    if text.strip():
+                        source_docs.append(text)
             except OSError:
                 pass
 

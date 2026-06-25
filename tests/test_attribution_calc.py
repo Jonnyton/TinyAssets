@@ -37,6 +37,24 @@ def _credit(actor: str, artifact: str, gen_depth: int = 0) -> AttributionCredit:
     )
 
 
+def _credit_with_identity(actor: str, artifact: str) -> AttributionCredit:
+    return AttributionCredit(
+        credit_id=f"{actor}-{artifact}",
+        artifact_id=artifact,
+        artifact_kind="branch",
+        actor_id=actor,
+        owner_user_id=f"owner-{actor}",
+        daemon_id=f"daemon::{actor}",
+        runtime_instance_id=f"runtime-{actor}",
+        worker_id=f"worker-{actor}",
+        credit_share=1.0,
+        royalty_share=0.0,
+        generation_depth=0,
+        contribution_kind="original",
+        recorded_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
 # ── helper assertions ────────────────────────────────────────────────────────
 
 
@@ -62,6 +80,17 @@ class TestComputeCreditSharesFromCredits:
         credits = [
             _credit("alice", "art-1", gen_depth=0),
             _credit("bob", "art-1", gen_depth=0),
+        ]
+        shares = compute_credit_shares(edges=[], credits=credits)
+        assert shares["alice"] == pytest.approx(0.5)
+        assert shares["bob"] == pytest.approx(0.5)
+        _assert_sums_to_one(shares)
+
+    def test_identity_fields_do_not_change_credit_split(self):
+        from workflow.attribution.calc import compute_credit_shares
+        credits = [
+            _credit_with_identity("alice", "art-1"),
+            _credit_with_identity("bob", "art-1"),
         ]
         shares = compute_credit_shares(edges=[], credits=credits)
         assert shares["alice"] == pytest.approx(0.5)

@@ -1,0 +1,66 @@
+.vitals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+  padding: 10px 16px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+  width: fit-content;
+  max-width: 100%;
+}
+.cell { display: inline-flex; align-items: baseline; gap: 8px; }
+.cell :global(.dot) { align-self: center; }
+.k {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-1);
+  white-space: nowrap;
+}
+.ev {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-3);
+  letter-spacing: 0.01em;
+}
+.refresh {
+  background: transparent;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-pill);
+  color: var(--live-700);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+}
+.refresh:hover:not(:disabled) { border-color: var(--live-600); background: var(--live-100); }
+.refresh:disabled { opacity: 0.6; cursor: default; }
+
+/* hero variant = a dark READOUT panel (Tiny SHOWS its pulse) */
+.vitals.hero {
+  display: grid;
+  gap: 11px;
+  width: 100%;
+  padding: 18px 18px;
+  background-color: var(--panel);
+  background-image:
+    linear-gradient(var(--panel-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--panel-line) 1px, transparent 1px);
+  background-size: 26px 26px;
+  border: 1px solid #2c2a1d;
+  border-radius: var(--radius-sm);
+}
+.vitals.hero .cell { display: flex; align-items: baseline; }
+.vitals.hero .k { color: var(--on-panel); }
+.vitals.hero .ev { color: var(--on-panel-soft); font-size: 12px; }
+.vitals.hero .cell.quiet .k { color: var(--on-panel-soft); }
+.vitals.hero :global(a) { color: var(--ember-300); }
+.vitals.hero :global(a:hover) { color: #ffd7df; }
+.vitals.hero :global(.dot.live) { background: var(--live-bright); box-shadow: 0 0 0 3px rgba(70, 180, 131, 0.22); }
+.vitals.hero .refresh { color: var(--live-bright); border-color: #3c4a40; }
+.vitals.hero .refresh:hover:not(:disabled) { border-color: var(--live-bright); background: rgba(70, 180, 131, 0.12); }

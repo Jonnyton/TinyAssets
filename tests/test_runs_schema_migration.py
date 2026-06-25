@@ -126,6 +126,41 @@ class TestNewColumnsExist:
             ).fetchone()
         assert row["branch_version_id"] == "b1@abc12345"
 
+    def test_create_run_resolves_owner_user_id_from_daemon_registry(
+        self, tmp_path: Path,
+    ) -> None:
+        from workflow.daemon_registry import create_daemon
+
+        daemon = create_daemon(
+            tmp_path,
+            display_name="Owner Resolved Runner",
+            created_by="owner-user",
+            soul_mode="soulless",
+        )
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            inputs={},
+            run_name="identity",
+            actor="actor-user",
+            daemon_id=daemon["daemon_id"],
+            runtime_instance_id="runtime-1",
+            worker_id="worker-1",
+        )
+        with _connect(tmp_path) as conn:
+            row = conn.execute(
+                """
+                SELECT owner_user_id, daemon_id, runtime_instance_id, worker_id
+                FROM runs WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        assert row["owner_user_id"] == "owner-user"
+        assert row["daemon_id"] == daemon["daemon_id"]
+        assert row["runtime_instance_id"] == "runtime-1"
+        assert row["worker_id"] == "worker-1"
+
 
 class TestMigrationExistingDb:
     def _old_schema_db(self, base: Path) -> None:

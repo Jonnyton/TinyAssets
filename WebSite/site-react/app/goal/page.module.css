@@ -1,0 +1,118 @@
+.page { }
+
+.page :global(.container) { max-width: 1160px; margin: 0 auto; padding-inline: clamp(18px, 4vw, 32px); }
+  .page :global(.detail) { padding: clamp(40px, 7vw, 84px) 0 clamp(64px, 9vw, 110px); }
+  .page :global(.eyebrow) { display: block; }
+  .page :global(.back) { color: var(--fg-3); text-decoration: none; }
+  .page :global(.back:hover) { color: var(--live-700); }
+
+  .page :global(.detail__title) {
+    font-family: var(--font-display);
+    font-size: clamp(34px, 5.6vw, 60px);
+    font-weight: 400;
+    line-height: 1.04;
+    letter-spacing: -0.025em;
+    margin: 12px 0 16px;
+    max-width: 24ch;
+    color: var(--fg-1);
+  }
+  .page :global(.detail__title--quiet) { color: var(--fg-3); }
+
+  .page :global(.detail__meta) {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+    margin: 0 0 22px; font-size: 11.5px; color: var(--fg-3);
+  }
+  .page :global(.detail__stamp) { display: inline-flex; align-items: center; gap: 8px; }
+
+  .page :global(.detail__state) {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin: 8px 0 22px; padding: 14px 16px;
+    background: var(--bg-inset); border: 1px dashed var(--border-2); border-radius: var(--radius-md);
+    font-size: 13.5px; line-height: 1.6; color: var(--fg-2); max-width: 64ch;
+  }
+  .page :global(.detail__state code), .page :global(.detail__err code), .page :global(.detail__private code) {
+    font-family: var(--font-mono); font-size: 12px; color: var(--fg-1);
+    background: var(--bg-1); padding: 1px 5px; border-radius: 3px;
+  }
+
+  .page :global(.detail__private) {
+    margin: 0 0 22px; padding: 14px 16px;
+    background: var(--bg-inset); border: 1px solid var(--border-2); border-radius: var(--radius-md);
+    font-size: 14px; line-height: 1.62; color: var(--fg-2); max-width: 64ch;
+  }
+  .page :global(.detail__err) {
+    margin: 0 0 20px; padding: 12px 14px;
+    background: var(--ember-100); border: 1px solid rgba(182, 39, 68, 0.32);
+    border-radius: var(--radius-md);
+    font-size: 12.5px; line-height: 1.55; color: var(--ember-900); overflow-wrap: anywhere; max-width: 64ch;
+  }
+
+  .page :global(.detail__body) { margin: 0 0 24px; max-width: 70ch; }
+  .page :global(.detail__body p) { font-size: 15.5px; line-height: 1.7; color: var(--fg-2); margin: 0 0 14px; }
+  .page :global(.detail__body p:last-child) { margin-bottom: 0; }
+
+  .page :global(.detail__tags) { list-style: none; margin: 0 0 22px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .page :global(.detail__tags li) {
+    font-family: var(--font-mono);
+    border: 1px solid var(--border-1); border-radius: var(--radius-sm);
+    color: var(--fg-3); font-size: 10.5px; letter-spacing: 0.01em;
+    padding: 3px 9px; background: var(--bg-1);
+  }
+
+  .page :global(.detail__dates) {
+    display: flex; flex-wrap: wrap; gap: 22px; margin: 0 0 30px;
+    padding: 14px 0; border-top: 1px solid var(--border-1); border-bottom: 1px solid var(--border-1);
+  }
+  .page :global(.detail__dates div) { display: grid; gap: 2px; }
+  .page :global(.detail__dates dt) { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-4); }
+  .page :global(.detail__dates dd) { margin: 0; font-size: 13px; color: var(--fg-2); }
+
+  .page :global(.detail__h2) {
+    font-family: var(--font-display);
+    font-size: clamp(22px, 3.4vw, 32px); font-weight: 500;
+    letter-spacing: -0.015em; line-height: 1.1;
+    margin: 0 0 16px; color: var(--fg-1);
+  }
+  .page :global(.detail__ladder) { margin: 0 0 40px; }
+  .page :global(.detail__honest) { margin: 14px 0 0; font-size: 12px; line-height: 1.55; color: var(--fg-3); max-width: 64ch; }
+
+  /* ── Bridge ── */
+  .page :global(.bridge) {
+    margin-top: 8px; padding: 26px;
+    background: var(--bg-2); border: 1px solid var(--border-2); border-radius: var(--radius-lg);
+  }
+  .page :global(.bridge .eyebrow) { margin-bottom: 6px; }
+  .page :global(.bridge__lede) { font-size: 14.5px; line-height: 1.6; color: var(--fg-2); margin: 0 0 14px; max-width: 62ch; }
+  .page :global(.bridge__prompt) {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+    width: 100%; text-align: left; margin: 0 0 12px;
+    padding: 14px 16px;
+    background: var(--bg-inset); border: 1px solid var(--border-1); border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+  }
+  .page :global(.bridge__prompt:hover) { border-color: var(--live-600); background: var(--live-100); }
+  .page :global(.bridge__prompt code) { background: none; border: none; padding: 0; color: var(--fg-1); font-size: 13.5px; line-height: 1.5; white-space: normal; }
+  .page :global(.bridge__copy) { flex: none; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--live-700); padding-top: 2px; }
+  .page :global(.bridge__note) { font-size: 13px; color: var(--fg-3); margin: 0; }
+  .page :global(.bridge__note a) { color: var(--ember-700); font-weight: 600; }
+
+  .page :global(.detail__back-cta) { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 18px 0 0; }
+  .page :global(.cta) { color: var(--ember-700); font-weight: 600; font-size: 14px; text-decoration: none; }
+  .page :global(.cta:hover) { text-decoration: underline; }
+
+  .page :global(.retry) {
+    background: transparent; border: 1px solid var(--border-2); border-radius: var(--radius-pill);
+    color: var(--live-700); cursor: pointer;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 4px 12px;
+    transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+  }
+  .page :global(.retry:hover:not(:disabled)) { border-color: var(--live-600); background: var(--live-100); }
+  .page :global(.retry:disabled) { opacity: 0.6; cursor: default; }
+
+  .page :global(.dot) {
+    width: 7px; height: 7px; border-radius: 50%; flex: none;
+    background: var(--fg-4); display: inline-block;
+  }
+  .page :global(.dot.live) { background: var(--live-600); box-shadow: 0 0 0 3px var(--live-100); }

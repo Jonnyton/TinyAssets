@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# The repo-root `build/` ignore (for build artifacts) also matches the
+# app/build/ ROUTE directory — re-include it so the /build page is tracked.
+!app/build/
+!app/build/**

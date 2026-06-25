@@ -36,6 +36,7 @@ from domains.fantasy_daemon.phases.world_state_db import (
 from workflow.evaluation.editorial import EditorialNotes, read_editorial
 from workflow.evaluation.process import ProcessEvaluation, evaluate_scene_process
 from workflow.evaluation.structural import StructuralEvaluator, StructuralResult
+from workflow.ingestion.canon_io import iter_canon_files
 
 logger = logging.getLogger(__name__)
 
@@ -944,13 +945,16 @@ def _generate_worldbuild_signals(
 
 
 def _read_canon_excerpts(canon_dir: Path, max_chars: int = 3000) -> str:
-    """Read canon files and return a truncated summary for prompting."""
+    """Read canon files and return a truncated summary for prompting.
+
+    Enumeration is routed through :func:`iter_canon_files`, which resolves and
+    contains every entry before ``is_file`` / ``read_text`` so a symlinked
+    ``.md`` whose target lives outside ``canon_dir`` is skipped, not read.
+    """
     excerpts: list[str] = []
     total = 0
     try:
-        for f in sorted(canon_dir.iterdir()):
-            if not f.is_file() or f.suffix != ".md":
-                continue
+        for f in iter_canon_files(canon_dir, suffix=".md"):
             try:
                 content = f.read_text(encoding="utf-8")
                 # Truncate individual files

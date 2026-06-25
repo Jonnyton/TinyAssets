@@ -236,6 +236,14 @@ def test_grant_and_revoke_visible_to_effector(us_env, monkeypatch):
             "head_branch": "auto/x",
             "base_branch": "main",
             "draft": True,
+            # BUG-111 (commit 28b12b99): a real write materializes a
+            # head branch from the packet's change set BEFORE
+            # ``gh pr create``; an empty change set fails closed with
+            # ``missing_changes`` rather than opening an empty PR. This
+            # test exercises consent visibility, not the materialize
+            # path, so it carries a minimal change set and mocks
+            # ``_materialize_branch`` below.
+            "changes_json": {"PROBE.md": "probe\n"},
         },
         "idempotency_hint": "h-1",
     }
@@ -269,6 +277,9 @@ def test_grant_and_revoke_visible_to_effector(us_env, monkeypatch):
         stderr="",
     )
     with patch(
+        "workflow.effectors.github_pr._materialize_branch",
+        return_value={"materialized": True, "head_branch": "auto/x"},
+    ), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fake,
     ):
