@@ -311,6 +311,37 @@ class TestReleaseBonus:
         # Refund returns to the RECORDED staker (claimed_by), never the caller.
         assert result["recipient"] == "test_user"
 
+    def test_release_after_reclaim_refunds_immutable_staker(self, tmp_path, monkeypatch):
+        """A gate re-claim rewrites claimed_by, but the legitimate owner/host
+        release must still succeed and refund the IMMUTABLE original staker —
+        a re-claimer can neither strand nor redirect the bonus (round-6)."""
+        from workflow.storage import _connect
+        _, _, claim_id = _seed_goal_and_claim(
+            tmp_path, claimed_by="alice", goal_owner="goal_owner"
+        )
+        staked = _gates(monkeypatch, tmp_path, user="alice",
+                        action="stake_bonus", claim_id=claim_id,
+                        bonus_stake=900, node_id="n1")
+        assert staked["status"] == "ok"
+        assert staked["bonus_staker_id"] == "alice"
+
+        # Mallory re-claims the same (branch, rung): claim_gate overwrites
+        # claimed_by while preserving bonus_stake + the immutable bonus_staker_id.
+        with _connect(tmp_path) as conn:
+            conn.execute(
+                "UPDATE gate_claims SET claimed_by = ? WHERE claim_id = ?",
+                ("mallory", claim_id),
+            )
+
+        # The goal owner releases on fail: must succeed and refund ALICE, not
+        # mallory, and must NOT be stranded by a stale claimed_by assertion.
+        result = _gates(monkeypatch, tmp_path, user="goal_owner",
+                        action="release_bonus", claim_id=claim_id,
+                        eval_verdict="fail", node_last_claimer="daemon_holder")
+        assert result["status"] == "ok"
+        assert result["disposition"] == "refunded"
+        assert result["recipient"] == "alice"
+
     def test_release_by_host_succeeds(self, tmp_path, monkeypatch):
         """The configured host is a legitimate gate-outcome authority."""
         _, _, claim_id = _seed_goal_and_claim(tmp_path, goal_owner="goal_owner")

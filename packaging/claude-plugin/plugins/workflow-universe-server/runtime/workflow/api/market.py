@@ -3610,14 +3610,19 @@ def _action_gates_release_bonus(kwargs: dict[str, Any]) -> str:
                 ),
             })
 
-        # The refund recipient is always the recorded staker — pass it as an
-        # assertion so release_bonus rejects any mismatch (defense in depth).
+        # The refund recipient is always the IMMUTABLE recorded staker — pass it
+        # as an assertion so release_bonus rejects any mismatch (defense in
+        # depth). It must be bonus_staker_id, NOT claimed_by: a gate re-claim
+        # rewrites claimed_by, so asserting claimed_by would make the legitimate
+        # owner/host release fail against the immutable staker and strand the
+        # bonus (round-6 finding). Falls back to claimed_by for pre-migration rows.
+        assertion_staker = (claim.bonus_staker_id or claim.claimed_by or "").strip()
         result = release_bonus(
             conn,
             claim_id=claim_id,
             eval_verdict=eval_verdict,
             node_last_claimer=node_last_claimer,
-            staker=claim.claimed_by,
+            staker=assertion_staker,
         )
     return json.dumps(result, default=str)
 
