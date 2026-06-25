@@ -238,6 +238,7 @@ def release_bonus(
 
     stake = claim.bonus_stake
     net, treasury = compute_bonus_payout(stake)
+    resolved_at = _now_iso()
 
     if eval_verdict == "pass":
         recipient = node_last_claimer
@@ -252,7 +253,7 @@ def release_bonus(
         (claim_id,),
     )
 
-    return {
+    result: dict[str, Any] = {
         "status": "ok",
         "claim_id": claim_id,
         "disposition": disposition,
@@ -261,5 +262,46 @@ def release_bonus(
         "net_disbursed": net,
         "treasury_take": treasury,
         "recipient": recipient,
-        "resolved_at": _now_iso(),
+        "resolved_at": resolved_at,
     }
+
+    # Record the disbursement in the canonical settlement ledger so the 1% take
+    # actually credits the treasury + bounty pool and the treasury_status read
+    # surface reflects real money flow. A "pass" is a value-moving settlement
+    # (net to recipient, 1% to treasury); a "fail"/"skip" is a no-fee refund.
+    if stake > 0:
+        node_ref = getattr(claim, "node_id", None) or claim_id
+        if eval_verdict == "pass":
+            from workflow.payments.identifiers import SettlementKey
+            from workflow.payments.settlement_ledger import record_settlement
+
+            settlement_key = str(
+                SettlementKey.build(claim_id, node_ref, recipient, "gate_bonus_release")
+            )
+            settlement = record_settlement(
+                conn,
+                settlement_key=settlement_key,
+                recipient_id=recipient,
+                gross_amount=stake,
+                event_type="gate_bonus_release",
+                now_iso=resolved_at,
+                source_label=claim_id,
+            )
+            result["settlement_id"] = settlement["settlement_id"]
+            result["bounty_share"] = settlement["bounty_share"]
+            result["treasury_retained"] = settlement["treasury_retained"]
+            result["ledger_recorded"] = True
+        else:
+            from workflow.payments.settlement_ledger import record_refund
+
+            record_refund(
+                conn,
+                staker_id=recipient,
+                amount=stake,
+                now_iso=resolved_at,
+                source_label=claim_id,
+                event_type="gate_bonus_refund",
+            )
+            result["ledger_recorded"] = True
+
+    return result

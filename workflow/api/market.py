@@ -507,11 +507,145 @@ def _action_escrow_inspect(kwargs: dict[str, Any]) -> str:
     return json.dumps(result)
 
 
+def _action_escrow_fund(kwargs: dict[str, Any]) -> str:
+    """Credit a staker's escrow budget (off-chain / testnet faucet).
+
+    Requires WORKFLOW_PAID_MARKET=on. Defaults to funding the calling user's
+    own budget; pass staker_id to fund another.
+    """
+    from workflow.payments.actions import action_escrow_fund
+    from workflow.producers.node_bid import paid_market_enabled
+    from workflow.storage import _connect
+
+    if not paid_market_enabled():
+        return json.dumps({
+            "status": "not_available",
+            "error": "Escrow actions require WORKFLOW_PAID_MARKET=on.",
+        })
+
+    staker_id = (
+        kwargs.get("staker_id") or os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    ).strip()
+    currency = (kwargs.get("currency") or "MicroToken").strip()
+    raw_amount = kwargs.get("amount", 0)
+    try:
+        amount = int(raw_amount)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "status": "rejected",
+            "error": f"amount must be an integer, got {raw_amount!r}.",
+        })
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_fund(
+            conn, staker_id=staker_id, amount=amount, currency=currency
+        )
+    return json.dumps(result)
+
+
+def _action_escrow_balance(kwargs: dict[str, Any]) -> str:
+    """Read-only — a staker's escrow budget (total / reserved / spendable)."""
+    from workflow.payments.actions import action_escrow_balance
+    from workflow.storage import _connect
+
+    staker_id = (
+        kwargs.get("staker_id") or os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    ).strip()
+    currency = (kwargs.get("currency") or "MicroToken").strip()
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_balance(conn, staker_id=staker_id, currency=currency)
+    return json.dumps(result)
+
+
+def _action_escrow_set_wallet(kwargs: dict[str, Any]) -> str:
+    """Register an actor's on-chain payout address (where withdrawals land).
+
+    Requires WORKFLOW_PAID_MARKET=on. Defaults to the calling user.
+    """
+    from workflow.payments.actions import action_escrow_set_wallet
+    from workflow.payments.settlement_backend import BASE_SEPOLIA_CHAIN_ID
+    from workflow.producers.node_bid import paid_market_enabled
+    from workflow.storage import _connect
+
+    if not paid_market_enabled():
+        return json.dumps({
+            "status": "not_available",
+            "error": "Escrow actions require WORKFLOW_PAID_MARKET=on.",
+        })
+
+    actor_id = (
+        kwargs.get("staker_id") or os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    ).strip()
+    address = (kwargs.get("wallet_address") or "").strip()
+    raw_chain = kwargs.get("chain_id") or BASE_SEPOLIA_CHAIN_ID
+    try:
+        chain_id = int(raw_chain)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "status": "rejected",
+            "error": f"chain_id must be an integer, got {raw_chain!r}.",
+        })
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_set_wallet(
+            conn, actor_id=actor_id, address=address, chain_id=chain_id
+        )
+    return json.dumps(result)
+
+
+def _action_escrow_withdraw(kwargs: dict[str, Any]) -> str:
+    """Withdraw spendable balance to the actor's payout wallet via the
+    configured settlement backend. Requires WORKFLOW_PAID_MARKET=on."""
+    from workflow.payments.actions import action_escrow_withdraw
+    from workflow.payments.settlement_backend import BASE_SEPOLIA_CHAIN_ID
+    from workflow.producers.node_bid import paid_market_enabled
+    from workflow.storage import _connect
+
+    if not paid_market_enabled():
+        return json.dumps({
+            "status": "not_available",
+            "error": "Escrow actions require WORKFLOW_PAID_MARKET=on.",
+        })
+
+    actor_id = (
+        kwargs.get("staker_id") or os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    ).strip()
+    currency = (kwargs.get("currency") or "MicroToken").strip()
+    raw_amount = kwargs.get("amount", 0)
+    raw_chain = kwargs.get("chain_id") or BASE_SEPOLIA_CHAIN_ID
+    try:
+        amount = int(raw_amount)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "status": "rejected",
+            "error": f"amount must be an integer, got {raw_amount!r}.",
+        })
+    try:
+        chain_id = int(raw_chain)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "status": "rejected",
+            "error": f"chain_id must be an integer, got {raw_chain!r}.",
+        })
+
+    with _connect(_base_path()) as conn:
+        result = action_escrow_withdraw(
+            conn, actor_id=actor_id, amount=amount, currency=currency,
+            chain_id=chain_id,
+        )
+    return json.dumps(result)
+
+
 _ESCROW_ACTIONS: dict[str, Any] = {
     "escrow_lock": _action_escrow_lock,
     "escrow_release": _action_escrow_release,
     "escrow_refund": _action_escrow_refund,
     "escrow_inspect": _action_escrow_inspect,
+    "escrow_fund": _action_escrow_fund,
+    "escrow_balance": _action_escrow_balance,
+    "escrow_set_wallet": _action_escrow_set_wallet,
+    "escrow_withdraw": _action_escrow_withdraw,
 }
 
 # ── Outcome event MCP actions ─────────────────────────────────────────────

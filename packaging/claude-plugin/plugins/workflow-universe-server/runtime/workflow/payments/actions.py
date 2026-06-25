@@ -26,6 +26,30 @@ from workflow.payments.escrow import (
     refund_bonus,
     release_bonus,
 )
+from workflow.payments.funding import (
+    FundingError,
+    InsufficientFundsError,
+    canonical_currency,
+    credit_balance,
+    debit_reserved,
+    get_balance,
+    release_reservation,
+    reserve,
+    withdraw_balance,
+)
+from workflow.payments.identifiers import SettlementKey
+from workflow.payments.settlement_backend import (
+    BASE_SEPOLIA_CHAIN_ID,
+    SettlementBackendError,
+    get_settlement_backend,
+    new_idempotency_key,
+)
+from workflow.payments.settlement_ledger import record_settlement
+from workflow.payments.wallets import (
+    WalletError,
+    get_payout_wallet,
+    set_payout_wallet,
+)
 
 
 def _now_iso() -> str:
@@ -75,6 +99,20 @@ def action_escrow_lock(
 
     lock_id = _generate_lock_id()
     locked_at = _now_iso()
+    cur = canonical_currency(currency)
+
+    # Reserve funded budget before creating the lock — escrow cannot be minted
+    # from nothing. Insufficient spendable funds reject without a lock.
+    try:
+        reserve(
+            conn,
+            staker_id=claimer,
+            amount=amount,
+            now_iso=locked_at,
+            currency=cur,
+        )
+    except InsufficientFundsError as exc:
+        return {"status": "rejected", "error": str(exc)}
 
     try:
         lock = lock_bonus(
@@ -84,8 +122,17 @@ def action_escrow_lock(
             staker_id=claimer,
             amount=amount,
             locked_at=locked_at,
+            currency=cur,
         )
     except DuplicateLockError:
+        # Undo the reservation we just made so it is not orphaned.
+        release_reservation(
+            conn,
+            staker_id=claimer,
+            amount=amount,
+            now_iso=locked_at,
+            currency=cur,
+        )
         existing = get_lock_for_claim(conn, gate_claim_id=node_id, staker_id=claimer)
         return {
             "status": "rejected",
@@ -101,7 +148,7 @@ def action_escrow_lock(
         "lock_id": lock.lock_id,
         "node_id": node_id,
         "amount": lock.amount,
-        "currency": currency,
+        "currency": lock.currency,
         "claimer": claimer,
         "locked_at": lock.locked_at,
     }
@@ -142,13 +189,53 @@ def action_escrow_release(
     except LockAlreadyResolvedError as exc:
         return {"status": "rejected", "error": str(exc)}
 
+    # Money loop: the staker's reservation becomes a permanent debit, the gross
+    # is settled (net to recipient, 1% to treasury via record_settlement), and
+    # the recipient's spendable budget is credited the net so earnings can be
+    # re-staked.
+    cur = canonical_currency(lock.currency)
+    resolved_at = lock.resolved_at or _now_iso()
+    debit_reserved(
+        conn,
+        staker_id=lock.staker_id,
+        amount=lock.amount,
+        now_iso=resolved_at,
+        currency=cur,
+    )
+    settlement = record_settlement(
+        conn,
+        settlement_key=str(
+            SettlementKey.build(
+                lock.lock_id, lock.gate_claim_id, recipient_id, "escrow_release"
+            )
+        ),
+        recipient_id=recipient_id,
+        gross_amount=lock.amount,
+        event_type="escrow_release",
+        now_iso=resolved_at,
+        source_label=lock.lock_id,
+    )
+    credit_balance(
+        conn,
+        staker_id=recipient_id,
+        amount=settlement["net_amount"],
+        now_iso=resolved_at,
+        currency=cur,
+    )
+
     result: dict[str, Any] = {
         "status": "ok",
         "lock_id": lock.lock_id,
         "disposition": "released",
         "amount": lock.amount,
+        "currency": cur,
         "recipient_id": lock.recipient_id,
         "resolved_at": lock.resolved_at,
+        "net_amount": settlement["net_amount"],
+        "treasury_fee": settlement["treasury_fee"],
+        "bounty_share": settlement["bounty_share"],
+        "treasury_retained": settlement["treasury_retained"],
+        "settlement_id": settlement["settlement_id"],
     }
     if evidence:
         result["evidence"] = evidence
@@ -182,11 +269,23 @@ def action_escrow_refund(
     except LockAlreadyResolvedError as exc:
         return {"status": "rejected", "error": str(exc)}
 
+    # Money loop: refund releases the staker's reservation back to spendable;
+    # no value moves to the platform, so no settlement and no treasury fee.
+    cur = canonical_currency(lock.currency)
+    release_reservation(
+        conn,
+        staker_id=lock.staker_id,
+        amount=lock.amount,
+        now_iso=lock.resolved_at or _now_iso(),
+        currency=cur,
+    )
+
     result: dict[str, Any] = {
         "status": "ok",
         "lock_id": lock.lock_id,
         "disposition": "refunded",
         "amount": lock.amount,
+        "currency": cur,
         "refunded_to": lock.staker_id,
         "resolved_at": lock.resolved_at,
     }
@@ -252,4 +351,196 @@ def action_escrow_inspect(
         "node_id": node_id,
         "locks": [_lock_to_dict(lk) for lk in locks],
         "total": len(locks),
+    }
+
+
+# ── escrow_fund ───────────────────────────────────────────────────────────────
+
+def action_escrow_fund(
+    conn: sqlite3.Connection,
+    *,
+    staker_id: str,
+    amount: int,
+    currency: str = "MicroToken",
+) -> dict[str, Any]:
+    """Credit a staker's escrow budget — the "money in" side of the loop.
+
+    Off-chain / testnet this is the faucet that funds budgets so escrow can be
+    locked. On mainnet the credit source becomes an on-chain deposit (Slice 1).
+    PAID_MARKET gate enforced by callers.
+    """
+    if not staker_id:
+        return {"status": "rejected", "error": "staker_id is required."}
+    if amount <= 0:
+        return {
+            "status": "rejected",
+            "error": f"amount must be > 0, got {amount!r}.",
+        }
+    cur = canonical_currency(currency)
+    try:
+        bal = credit_balance(
+            conn, staker_id=staker_id, amount=amount, now_iso=_now_iso(), currency=cur
+        )
+    except FundingError as exc:
+        return {"status": "rejected", "error": str(exc)}
+    return {
+        "status": "ok",
+        "staker_id": staker_id,
+        "currency": cur,
+        "credited": amount,
+        "total": int(bal.total_amount),
+        "reserved": int(bal.reserved_amount),
+        "spendable": bal.spendable_amount,
+    }
+
+
+# ── escrow_balance ────────────────────────────────────────────────────────────
+
+def action_escrow_balance(
+    conn: sqlite3.Connection,
+    *,
+    staker_id: str,
+    currency: str = "MicroToken",
+) -> dict[str, Any]:
+    """Read-only — a staker's escrow budget (total / reserved / spendable)."""
+    if not staker_id:
+        return {"status": "rejected", "error": "staker_id is required."}
+    cur = canonical_currency(currency)
+    bal = get_balance(conn, staker_id=staker_id, currency=cur)
+    if bal is None:
+        return {
+            "status": "ok",
+            "staker_id": staker_id,
+            "currency": cur,
+            "total": 0,
+            "reserved": 0,
+            "spendable": 0,
+        }
+    return {
+        "status": "ok",
+        "staker_id": staker_id,
+        "currency": cur,
+        "total": int(bal.total_amount),
+        "reserved": int(bal.reserved_amount),
+        "spendable": bal.spendable_amount,
+    }
+
+
+# ── escrow_set_wallet ─────────────────────────────────────────────────────────
+
+def action_escrow_set_wallet(
+    conn: sqlite3.Connection,
+    *,
+    actor_id: str,
+    address: str,
+    chain_id: int = BASE_SEPOLIA_CHAIN_ID,
+) -> dict[str, Any]:
+    """Register the actor's on-chain payout address (where withdrawals land)."""
+    if not actor_id:
+        return {"status": "rejected", "error": "actor_id is required."}
+    try:
+        wallet = set_payout_wallet(
+            conn, actor_id=actor_id, address=address, now_iso=_now_iso(),
+            chain_id=chain_id,
+        )
+    except WalletError as exc:
+        return {"status": "rejected", "error": str(exc)}
+    return {
+        "status": "ok",
+        "actor_id": wallet.actor_id,
+        "chain_id": wallet.chain_id,
+        "address": wallet.address,
+    }
+
+
+# ── escrow_withdraw ───────────────────────────────────────────────────────────
+
+def action_escrow_withdraw(
+    conn: sqlite3.Connection,
+    *,
+    actor_id: str,
+    amount: int,
+    currency: str = "MicroToken",
+    chain_id: int = BASE_SEPOLIA_CHAIN_ID,
+) -> dict[str, Any]:
+    """Withdraw spendable off-chain balance to the actor's payout wallet.
+
+    The off-chain ledger is the source of truth; this settles balance OUT via
+    the configured settlement backend (internal marker, or base_sepolia USDC).
+    Debits spendable balance, then settles; on backend failure the debit is
+    refunded so no funds are lost.
+    """
+    if not actor_id:
+        return {"status": "rejected", "error": "actor_id is required."}
+    if amount <= 0:
+        return {"status": "rejected", "error": f"amount must be > 0, got {amount!r}."}
+    cur = canonical_currency(currency)
+
+    wallet = get_payout_wallet(conn, actor_id=actor_id, chain_id=chain_id)
+    if wallet is None:
+        return {
+            "status": "rejected",
+            "error": (
+                f"No payout wallet registered for actor={actor_id!r} "
+                f"chain_id={chain_id}. Use escrow_set_wallet first."
+            ),
+        }
+
+    # Debit spendable balance first; refund if the backend settlement fails.
+    try:
+        new_bal = withdraw_balance(
+            conn, staker_id=actor_id, amount=amount, now_iso=_now_iso(), currency=cur
+        )
+    except InsufficientFundsError as exc:
+        return {"status": "rejected", "error": str(exc)}
+
+    backend = get_settlement_backend()
+    idempotency_key = new_idempotency_key()
+    try:
+        settlement = backend.settle(
+            recipient_wallet=wallet.address,
+            amount_base_units=amount,
+            currency=cur,
+            idempotency_key=idempotency_key,
+        )
+    except SettlementBackendError as exc:
+        # Settlement failed — restore the debited balance so nothing is lost.
+        credit_balance(
+            conn, staker_id=actor_id, amount=amount, now_iso=_now_iso(), currency=cur
+        )
+        return {"status": "rejected", "error": str(exc)}
+
+    now = _now_iso()
+    tx_ref = settlement["tx_ref"]
+    conn.execute(
+        """
+        INSERT INTO settlement_batch
+            (batch_id, recipient_id, total_amount, total_fee, item_count,
+             status, opened_at, flushed_at)
+        VALUES (?, ?, ?, 0, 1, 'flushed', ?, ?)
+        """,
+        (idempotency_key, actor_id, amount, now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO transaction_log
+            (kind, escrow_id, settlement_id, batch_id, actor_id, amount,
+             recorded_at, note)
+        VALUES ('batch_flush', NULL, NULL, ?, ?, ?, ?, ?)
+        """,
+        (idempotency_key, actor_id, amount, now, f"{settlement['backend']}:{tx_ref}"),
+    )
+
+    return {
+        "status": "ok",
+        "actor_id": actor_id,
+        "currency": cur,
+        "amount": amount,
+        "chain_id": chain_id,
+        "recipient_wallet": wallet.address,
+        "backend": settlement["backend"],
+        "settlement_status": settlement["status"],
+        "tx_ref": tx_ref,
+        "batch_id": idempotency_key,
+        "remaining_spendable": new_bal.spendable_amount,
     }
