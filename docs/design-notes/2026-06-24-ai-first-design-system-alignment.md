@@ -134,14 +134,27 @@ All 23 routes migrated Svelte→React/Next; final integrated `next build` green
   legal/fine-print/build/alliance/soul/host/start/commons/goals/goals[id];
   graph (d3-force) + loop (patch-loop feed).
 
-**Remaining before cutover (host-gated):**
-- TinyBot (1466-line chat widget) still stubbed — port it.
-- Visual diff each React route against the live Svelte site (fidelity gate).
-- goals/[id] static-export: only the 3 home-page ids are prerendered shells;
-  arbitrary ids rely on SPA-fallback (same as the original ssr=false page).
-- Dedupe any co-located `_components` that duplicate shared components.
-- Decide GH Pages deploy swap (site/ → site-react/) — production-impacting,
-  needs host approval + public-surface canary.
+**Completion pass (2026-06-24, commits fc874694 / e8032e09 / e0a4d1a1):**
+- TinyBot fully ported (replaces stub) — the floating assistant widget.
+- Visual fidelity sweep via Playwright screenshots (home, soul, graph, goals,
+  loop, fine-print, catalog-redirect, +): all render faithfully in the Field
+  Notes language. **Caught + fixed a real bug** — the home `page.tsx` was a
+  top-level `"use client"` page and 404'd on hydration under `output:export`;
+  refactored to server-page + `HomeClient` (the pattern every other route uses).
+  All `page.tsx` confirmed server components.
+- Dedupe: N/A — the co-located `_components` are legitimate route-specific
+  client wrappers, not duplicates of shared components.
+- Cutover PREPARED (host-gated, not activated): `deploy-site-react.yml`
+  (workflow_dispatch-only, `confirm:deploy` guard), `public/CNAME` + `.nojekyll`,
+  and `docs/runbooks/2026-06-24-site-react-cutover.md`.
+
+**Still host-gated / optional:**
+- Run the cutover (swap GH Pages site/ → site-react/) — needs host approval +
+  public-surface canary; live Svelte site untouched until then.
+- goals/[id] static export prerenders only the 3 home-page ids (SPA-fallback for
+  others, same as the original ssr=false page) — acceptable; documented.
+- Optional: run the now-unblocked `/design-sync` to push `@tiny/design-system`
+  to claude.ai/design (external publish — explicit action).
 
 ## Phase B — original site migration plan (superseded by DONE above)
 
