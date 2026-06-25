@@ -5,7 +5,7 @@ name: branch-janitor
 #
 # The daily scheduled run sweeps in `apply-all` mode: it deletes MERGED
 # branches (already on main) and STALE_DELETE branches (unmerged, no open PR,
-# no commit in 45d), and updates the rolling tracking issue. Hard guardrails
+# no commit in 14d), and updates the rolling tracking issue. Hard guardrails
 # always protect main/release, open-PR branches, and commits < 7d.
 # For an on-demand dry-run, trigger it manually with mode `report`.
 
