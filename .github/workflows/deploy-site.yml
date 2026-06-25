@@ -1,26 +1,22 @@
 # Deploy WebSite/site (SvelteKit static) to GitHub Pages.
-# Triggers: push to main (touching site files), workflow_dispatch, daily cron.
 # Custom domain: tinyassets.io (via static/CNAME). Cloudflare fronts.
+#
+# AUTO-DEPLOY DISABLED at the React cutover (2026-06-24): the live site is now
+# the React build (WebSite/site-react via deploy-site-react.yml). The push and
+# 6h-cron triggers are removed so the Svelte build can never redeploy over React
+# (both share the `pages` concurrency group / github-pages environment).
+# Kept dispatch-only for ROLLBACK: run this manually to put the Svelte site back.
 name: deploy-site
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'WebSite/site/**'
-      - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
     inputs:
       refresh_snapshot:
-        description: 'Force re-bake the MCP snapshot before build (also runs automatically on the 6h cron)'
+        description: 'Force re-bake the MCP snapshot before build'
         required: false
         default: 'false'
         type: choice
         options: ['false', 'true']
-  schedule:
-    # Every 6h: re-bake the MCP snapshot (reads are public, no secret needed),
-    # then redeploy — so /graph and /commons auto-refresh with zero intervention.
-    - cron: '0 */6 * * *'
 
 permissions:
   contents: read
