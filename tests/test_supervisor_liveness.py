@@ -17,7 +17,7 @@ from workflow.api.status import (
     _compute_supervisor_liveness,
     _parse_iso_to_epoch,
 )
-from workflow.branch_tasks import BranchTask, append_task
+from workflow.branch_tasks import BranchTask, append_task, claim_task
 
 # ── _parse_iso_to_epoch unit ───────────────────────────────────────────────
 
@@ -315,6 +315,36 @@ def test_running_task_with_fresh_lease_not_stale(tmp_path):
     assert record["lease_remaining_s"] > 0
     assert out["stale_running_tasks"] == []
     assert out["lease_data_available"] is True
+
+
+def test_running_task_lease_surfaces_executor_identity(tmp_path):
+    task = BranchTask(
+        branch_task_id="bt-executor-id",
+        branch_def_id="branch-1",
+        universe_id="u",
+        status="pending",
+    )
+    append_task(tmp_path, task)
+
+    claimed = claim_task(
+        tmp_path,
+        task.branch_task_id,
+        "daemon::owner",
+        executor_worker_id="codex-1",
+        executor_runtime_id="runtime-123",
+    )
+
+    assert claimed is not None
+    assert claimed.claimed_by == "daemon::owner"
+    assert claimed.worker_owner_id == "daemon::owner"
+    assert claimed.executor_worker_id == "codex-1"
+    assert claimed.executor_runtime_id == "runtime-123"
+
+    out = _compute_supervisor_liveness(tmp_path)
+    record = out["running_tasks_lease"][0]
+    assert record["daemon_id"] == "daemon::owner"
+    assert record["executor_worker_id"] == "codex-1"
+    assert record["executor_runtime_id"] == "runtime-123"
 
 
 def test_stale_heartbeat_flagged_as_stale(tmp_path):

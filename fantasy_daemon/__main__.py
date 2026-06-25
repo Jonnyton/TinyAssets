@@ -414,7 +414,17 @@ def _try_dispatcher_pick(
         picked = select_next_task(universe_path, config=cfg)
         if picked is None:
             return None, {}
-        claimed = claim_task(universe_path, picked.branch_task_id, daemon_id)
+        executor_worker_id = os.environ.get("WORKFLOW_WORKER_ID", "").strip()
+        executor_runtime_id = os.environ.get(
+            "WORKFLOW_RUNTIME_INSTANCE_ID", "",
+        ).strip()
+        claimed = claim_task(
+            universe_path,
+            picked.branch_task_id,
+            daemon_id,
+            executor_worker_id=executor_worker_id,
+            executor_runtime_id=executor_runtime_id,
+        )
         if claimed is None:
             logger.info(
                 "dispatcher_pick: claim_lost_to_cancel %s",
@@ -890,12 +900,21 @@ def _try_execute_claimed_branch_task(
             provider_call = None
 
         actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous") or "anonymous"
+        executor_worker_id = str(
+            getattr(claimed_task, "executor_worker_id", "") or "",
+        )
+        executor_runtime_id = str(
+            getattr(claimed_task, "executor_runtime_id", "") or "",
+        )
         outcome = execute_branch(
             base_path,
             branch=branch,
             inputs=_branch_task_inputs_for_execution(claimed_task),
             run_name=run_name,
             actor=actor,
+            daemon_id=daemon_id,
+            runtime_instance_id=executor_runtime_id,
+            worker_id=executor_worker_id,
             provider_call=provider_call,
             on_node_status=on_node_status,
             # Carry spawn depth across the queue boundary so an in-node enqueue

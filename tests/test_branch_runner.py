@@ -560,6 +560,41 @@ def test_execute_branch_end_to_end(tmp_path):
     assert any(e["status"] == "ran" for e in events)
 
 
+def test_execute_branch_records_executor_identity_without_changing_actor(tmp_path):
+    from workflow.runs import execute_branch, get_run
+
+    b = BranchDefinition(name="test", entry_point="n1")
+    b.node_defs = [NodeDefinition(
+        node_id="n1", display_name="N1", approved=True,
+        source_code="def run(state): return {'out': state.get('x', 0) + 1}",
+    )]
+    b.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
+    b.edges = [
+        EdgeDefinition(from_node="START", to_node="n1"),
+        EdgeDefinition(from_node="n1", to_node="END"),
+    ]
+    b.state_schema = [
+        {"name": "x", "type": "int"}, {"name": "out", "type": "int"},
+    ]
+
+    outcome = execute_branch(
+        tmp_path,
+        branch=b,
+        inputs={"x": 1},
+        actor="requester-user",
+        daemon_id="daemon::owner",
+        runtime_instance_id="runtime-123",
+        worker_id="codex-1",
+    )
+
+    record = get_run(tmp_path, outcome.run_id)
+    assert record is not None
+    assert record["actor"] == "requester-user"
+    assert record["daemon_id"] == "daemon::owner"
+    assert record["runtime_instance_id"] == "runtime-123"
+    assert record["worker_id"] == "codex-1"
+
+
 def test_execute_branch_reports_node_status_callback(tmp_path):
     from workflow.runs import (
         NODE_STATUS_RAN,

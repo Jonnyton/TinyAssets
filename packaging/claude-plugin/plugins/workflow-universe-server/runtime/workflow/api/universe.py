@@ -993,27 +993,48 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     }
 
 
-def _worker_liveness(udir: Path) -> dict[str, Any]:
-    """Supervisor-heartbeat liveness, distinct from content activity.
+_WORKER_SUPERVISOR_FILENAME = ".worker_supervisor.json"
+_WORKER_SUPERVISOR_PREFIX = ".worker_supervisor."
+_WORKER_SUPERVISOR_SUFFIX = ".json"
 
-    ``last_activity_at`` answers "when did the daemon last DO something"
-    (activity.log / .runtime_status.json mtimes) — it goes stale both
-    when the worker is wedged AND when there is simply nothing to do.
-    This field answers "is the worker process alive right now" from the
-    ``.worker_supervisor.json`` beat the cloud_worker supervisor writes
-    (docs/specs/daemon-liveness-watchdog.md). Consumers (the activity
-    canary) use it to page on wedge and stay quiet on idle.
-    """
-    beat_path = udir / ".worker_supervisor.json"
-    if not beat_path.exists():
-        return {"present": False}
+
+def _worker_id_from_heartbeat_path(path: Path) -> str:
+    name = path.name
+    if (
+        name.startswith(_WORKER_SUPERVISOR_PREFIX)
+        and name.endswith(_WORKER_SUPERVISOR_SUFFIX)
+    ):
+        return name[
+            len(_WORKER_SUPERVISOR_PREFIX):-len(_WORKER_SUPERVISOR_SUFFIX)
+        ]
+    return ""
+
+
+def _read_worker_liveness_entry(beat_path: Path) -> dict[str, Any]:
+    worker_id = _worker_id_from_heartbeat_path(beat_path)
     try:
         beat = json.loads(beat_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):  # noqa: BLE001 — probe, not gate
+        return {
+            "present": True,
+            "parse_error": True,
+            "worker_id": worker_id,
+            "runtime_instance_id": "",
+        }
+
+    worker_id = str(beat.get("worker_id") or worker_id)
+    runtime_instance_id = str(beat.get("runtime_instance_id") or "")
+    try:
         ts = datetime.strptime(
             str(beat.get("ts", "")), "%Y-%m-%dT%H:%M:%SZ",
         ).replace(tzinfo=timezone.utc)
-    except (OSError, ValueError, TypeError):  # noqa: BLE001 — probe, not gate
-        return {"present": True, "parse_error": True}
+    except (ValueError, TypeError):  # noqa: BLE001 — probe, not gate
+        return {
+            "present": True,
+            "parse_error": True,
+            "worker_id": worker_id,
+            "runtime_instance_id": runtime_instance_id,
+        }
     age_s = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
     planned_sleep = float(beat.get("planned_sleep_s") or 0.0)
     allowed = max(300.0, planned_sleep + 120.0)
@@ -1026,7 +1047,51 @@ def _worker_liveness(udir: Path) -> dict[str, Any]:
         "consec_crashes": beat.get("consec_crashes", 0),
         "total_spawns": beat.get("total_spawns", 0),
         "last_exit_rc": beat.get("last_exit_rc"),
+        "worker_id": worker_id,
+        "runtime_instance_id": runtime_instance_id,
     }
+
+
+def _worker_liveness(udir: Path) -> dict[str, Any]:
+    """Supervisor-heartbeat liveness, distinct from content activity.
+
+    ``last_activity_at`` answers "when did the daemon last DO something"
+    (activity.log / .runtime_status.json mtimes) — it goes stale both
+    when the worker is wedged AND when there is simply nothing to do.
+    This field answers "is the worker process alive right now" from the
+    ``.worker_supervisor.json`` beat the cloud_worker supervisor writes
+    (docs/specs/daemon-liveness-watchdog.md). Consumers (the activity
+    canary) use it to page on wedge and stay quiet on idle.
+    """
+    legacy_path = udir / _WORKER_SUPERVISOR_FILENAME
+    worker_paths = sorted(
+        path for path in udir.glob(
+            f"{_WORKER_SUPERVISOR_PREFIX}*{_WORKER_SUPERVISOR_SUFFIX}"
+        )
+        if path.name != _WORKER_SUPERVISOR_FILENAME
+    )
+    if not worker_paths and legacy_path.exists():
+        worker_paths = [legacy_path]
+    if not worker_paths:
+        return {"present": False}
+
+    workers = [_read_worker_liveness_entry(path) for path in worker_paths]
+    if legacy_path.exists():
+        summary = _read_worker_liveness_entry(legacy_path)
+    else:
+        summary = min(
+            workers,
+            key=lambda entry: float(entry.get("beat_age_s", float("inf"))),
+        )
+    out = dict(summary)
+    out["workers"] = workers
+    out["worker_count"] = len(workers)
+    out["runtime_instance_count"] = len({
+        str(worker.get("runtime_instance_id") or "")
+        for worker in workers
+        if worker.get("runtime_instance_id")
+    })
+    return out
 
 
 _TOP_LEVEL_OPERATIONAL_DATA_DIRS = frozenset({

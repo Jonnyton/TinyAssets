@@ -241,7 +241,10 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         finished_at    REAL,
         provider_used  TEXT,
         model          TEXT,
-        token_count    INTEGER
+        token_count    INTEGER,
+        daemon_id      TEXT,
+        runtime_instance_id TEXT,
+        worker_id      TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_runs_branch ON runs(branch_def_id);
@@ -394,7 +397,8 @@ def initialize_runs_db(base_path: str | Path) -> Path:
                 conn.execute(
                     f"ALTER TABLE node_edit_audit ADD COLUMN {col} {ddl}"
                 )
-        # Migration: add provider telemetry columns to runs (added 2026-04-25).
+        # Migration: add run instrumentation columns. Provider telemetry
+        # landed first; executor identity fields are nullable observability.
         existing_runs = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(runs)")
@@ -403,6 +407,9 @@ def initialize_runs_db(base_path: str | Path) -> Path:
             ("provider_used", "TEXT"),
             ("model",         "TEXT"),
             ("token_count",   "INTEGER"),
+            ("daemon_id",     "TEXT"),
+            ("runtime_instance_id", "TEXT"),
+            ("worker_id",     "TEXT"),
         ):
             if col not in existing_runs:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
@@ -466,6 +473,13 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
         "provider_used": row["provider_used"] if "provider_used" in col_names else None,
         "model": row["model"] if "model" in col_names else None,
         "token_count": row["token_count"] if "token_count" in col_names else None,
+        "daemon_id": row["daemon_id"] if "daemon_id" in col_names else None,
+        "runtime_instance_id": (
+            row["runtime_instance_id"]
+            if "runtime_instance_id" in col_names
+            else None
+        ),
+        "worker_id": row["worker_id"] if "worker_id" in col_names else None,
     }
 
 
@@ -708,6 +722,9 @@ def create_run(
     run_name: str = "",
     actor: str = "anonymous",
     branch_version_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
 ) -> str:
     initialize_runs_db(base_path)
     run_id = uuid.uuid4().hex[:16]
@@ -717,14 +734,18 @@ def create_run(
             INSERT INTO runs (
                 run_id, branch_def_id, run_name, thread_id,
                 status, actor, inputs_json, started_at,
-                branch_version_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                branch_version_id, daemon_id, runtime_instance_id,
+                worker_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, branch_def_id, run_name, thread_id,
                 RUN_STATUS_QUEUED, actor,
                 json.dumps(inputs, default=str), _now(),
                 branch_version_id,
+                daemon_id,
+                runtime_instance_id,
+                worker_id,
             ),
         )
     return run_id
@@ -1954,6 +1975,9 @@ def _prepare_run(
     run_name: str,
     actor: str,
     branch_version_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
 ) -> str:
     """Write the run row + pending-node events + lineage synchronously.
 
@@ -1972,6 +1996,9 @@ def _prepare_run(
         run_name=run_name,
         actor=actor,
         branch_version_id=branch_version_id,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
     )
     thread_id = run_id
     with _connect(base_path) as conn:
@@ -2694,6 +2721,9 @@ def execute_branch(
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     _parent_branch_task_id: str = "",
@@ -2718,6 +2748,9 @@ def execute_branch(
         base_path,
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
     )
     enqueue_context = NodeEnqueueContext(
         universe_id=_enqueue_universe_id,
@@ -2875,6 +2908,9 @@ def _execute_branch_core(
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     branch_version_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
     _invocation_depth: int = 0,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
@@ -2899,6 +2935,9 @@ def _execute_branch_core(
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
         branch_version_id=branch_version_id,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
     )
 
     executor = _get_executor(invocation_depth=_invocation_depth)

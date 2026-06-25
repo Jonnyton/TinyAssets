@@ -1843,6 +1843,7 @@ def open_brain_status_surface(
             "schema_version": SCHEMA_VERSION,
             "read_only": True,
             "daemon_count": 0,
+            "runtime_instance_count": 0,
             "daemons": [],
             "warnings": ["daemon_registry_db_missing"],
         }
@@ -1853,6 +1854,7 @@ def open_brain_status_surface(
         uri=True,
     )
     conn.row_factory = sqlite3.Row
+    runtime_instance_count = 0
     try:
         rows = conn.execute(
             """
@@ -1861,6 +1863,14 @@ def open_brain_status_surface(
             ORDER BY created_at, author_id
             """
         ).fetchall()
+        try:
+            runtime_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM author_runtime_instances"
+            ).fetchone()
+            if runtime_row is not None:
+                runtime_instance_count = int(runtime_row["count"] or 0)
+        except sqlite3.Error:
+            runtime_instance_count = 0
     finally:
         conn.close()
     daemons: list[dict[str, Any]] = []
@@ -1900,6 +1910,7 @@ def open_brain_status_surface(
         "schema_version": SCHEMA_VERSION,
         "read_only": True,
         "daemon_count": len(daemons),
+        "runtime_instance_count": runtime_instance_count,
         "returned_daemon_count": len(out_daemons),
         "daemons": out_daemons,
         "warnings": [],

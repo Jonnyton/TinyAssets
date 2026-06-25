@@ -200,7 +200,10 @@ def _worker_model_for_provider(provider_name: str) -> str:
     if provider_name == "codex":
         return os.environ.get("WORKFLOW_CODEX_MODEL", "").strip() or DEFAULT_WORKER_MODELS["codex"]
     if provider_name == "claude-code":
-        return os.environ.get("WORKFLOW_CLAUDE_MODEL", "").strip() or DEFAULT_WORKER_MODELS["claude-code"]
+        return (
+            os.environ.get("WORKFLOW_CLAUDE_MODEL", "").strip()
+            or DEFAULT_WORKER_MODELS["claude-code"]
+        )
     return provider_name
 
 
@@ -219,17 +222,17 @@ def _subscription_auth_available(provider_name: str) -> bool:
     return True
 
 
-def _register_worker_runtime(universe: Path, provider_name: str) -> None:
+def _register_worker_runtime(universe: Path, provider_name: str) -> str | None:
     """Best-effort runtime registry visibility for a supervised worker."""
     if not provider_name:
-        return
+        return None
     if not _subscription_auth_available(provider_name):
         logger.warning(
             "cloud_worker: %s subscription auth not available; "
             "runtime registration will retry on next spawn",
             provider_name,
         )
-        return
+        return None
     try:
         from workflow.daemon_registry import (
             ensure_daemon_runtime,
@@ -262,11 +265,13 @@ def _register_worker_runtime(universe: Path, provider_name: str) -> None:
             "cloud_worker: runtime registered worker_id=%s provider=%s runtime=%s",
             _worker_id(), provider_name, runtime["runtime_instance_id"],
         )
+        return str(runtime["runtime_instance_id"])
     except Exception:  # noqa: BLE001
         logger.exception(
             "cloud_worker: runtime registration failed for provider=%s",
             provider_name,
         )
+    return None
 
 
 def _truthy_env(name: str) -> bool:
@@ -374,8 +379,20 @@ def _spawn_fantasy_daemon(
     ]
     if extra_args:
         args.extend(extra_args)
-    _register_worker_runtime(universe, _provider_from_daemon_args(extra_args))
+    runtime_instance_id = _register_worker_runtime(
+        universe,
+        _provider_from_daemon_args(extra_args),
+    )
+    if runtime_instance_id:
+        os.environ["WORKFLOW_RUNTIME_INSTANCE_ID"] = runtime_instance_id
+    else:
+        os.environ.pop("WORKFLOW_RUNTIME_INSTANCE_ID", None)
     env = _build_subprocess_env(universe)
+    env["WORKFLOW_WORKER_ID"] = _worker_id()
+    if runtime_instance_id:
+        env["WORKFLOW_RUNTIME_INSTANCE_ID"] = runtime_instance_id
+    else:
+        env.pop("WORKFLOW_RUNTIME_INSTANCE_ID", None)
     logger.info(
         "spawning fantasy_daemon: universe=%s host_user=%s",
         universe, env.get("UNIVERSE_SERVER_HOST_USER"),
@@ -482,6 +499,9 @@ def write_supervisor_heartbeat(
         "subprocess_alive": subprocess_alive,
         "planned_sleep_s": planned_sleep_s,
         "worker_id": _worker_id(),
+        "runtime_instance_id": os.environ.get(
+            "WORKFLOW_RUNTIME_INSTANCE_ID", "",
+        ).strip(),
     }
     filenames = [supervisor_heartbeat_filename(_worker_id())]
     if filenames[0] != SUPERVISOR_HEARTBEAT_FILENAME:
