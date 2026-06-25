@@ -99,6 +99,53 @@ KEEP_SCORE_MIN: float = 9.0
 #: Tight bound on purpose — canary patches should be a few lines, not a refactor.
 DIFF_SIZE_BYTES_MAX: int = 8 * 1024  # 8 KB
 
+#: Auto-ship rubric mode flag. "warn" (default): compute the coding-packet
+#: rubric and annotate the decision with `rubric_warnings`, but NEVER block.
+#: "enforce": promote rubric-only violations to blocking. "off": skip entirely.
+#: Producers + tests must populate the rubric fields BEFORE flipping to enforce
+#: (see docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md S2).
+RUBRIC_MODE_FLAG: str = "WORKFLOW_AUTO_SHIP_RUBRIC_MODE"
+
+#: Rubric rule IDs that validate_ship_request does NOT already enforce. Scoped
+#: deliberately narrow so checks the envelope already covers are NOT
+#: double-reported in enforce mode (Codex review 2026-06-25). Excluded for now:
+#: `child_output_evidence_missing` (overlaps the envelope `stable_evidence_handle`
+#: check — only its `child_candidate_patch_packet` half is genuinely new) and
+#: `contradictory_child_claim` (overlaps `automation_claim_status_not_allowed`).
+#: Both can rejoin once they carry de-overlap logic. The set can widen as
+#: producers populate the corresponding fields.
+_RUBRIC_ONLY_RULE_IDS: frozenset[str] = frozenset({
+    "release_evidence_bundle_incomplete",
+    "child_run_not_completed_for_keep",
+})
+
+
+def _rubric_mode() -> str:
+    """Auto-ship rubric mode: 'off' | 'warn' (default) | 'enforce'."""
+    import os
+
+    mode = os.environ.get(RUBRIC_MODE_FLAG, "warn").strip().lower()
+    return mode if mode in {"off", "warn", "enforce"} else "warn"
+
+
+def _rubric_only_violations(packet: dict) -> list:
+    """Rubric-only violations not already covered by the envelope checks.
+
+    Fail-open by design: a rubric bug must NEVER break the live gate, so any
+    exception yields an empty list (the envelope checks still stand on their own).
+    """
+    try:
+        from workflow.coding_packet_rubric import validate_coding_packet_rubric
+
+        rubric = validate_coding_packet_rubric(packet)
+        return [
+            v
+            for v in rubric.get("violations", [])
+            if v.get("rule_id") in _RUBRIC_ONLY_RULE_IDS
+        ]
+    except Exception:  # noqa: BLE001 — fail-open: never break the gate on a rubric bug
+        return []
+
 #: Heuristic regex patterns flagging probable secrets in diff content.
 #: Conservative — false positives are tolerable; false negatives ship secrets.
 SECRET_REGEX_PATTERNS: tuple[str, ...] = (
@@ -445,6 +492,19 @@ def validate_ship_request(packet: dict[str, Any]) -> dict[str, Any]:
     # §6.3 — diff-content checks
     violations.extend(_diff_violations(packet.get("diff", "")))
 
+    # §6.4 — coding-packet rubric (warn-only by default; enforce via
+    # WORKFLOW_AUTO_SHIP_RUBRIC_MODE). Warn annotates `rubric_warnings` without
+    # blocking; enforce promotes rubric-only violations to blocking. Fail-open.
+    rubric_warnings: list = []
+    _mode = _rubric_mode()
+    if _mode != "off":
+        _rubric_only = _rubric_only_violations(packet)
+        if _rubric_only:
+            if _mode == "enforce":
+                violations.extend(_rubric_only)
+            else:  # warn
+                rubric_warnings = _rubric_only
+
     # Decision
     if violations:
         return {
@@ -454,6 +514,7 @@ def validate_ship_request(packet: dict[str, Any]) -> dict[str, Any]:
             "violations": violations,
             "rollback_handle": None,
             "dry_run": True,
+            "rubric_warnings": rubric_warnings,
         }
 
     # Passed — compute rollback handle from packet
@@ -470,4 +531,5 @@ def validate_ship_request(packet: dict[str, Any]) -> dict[str, Any]:
         "violations": [],
         "rollback_handle": f"revert:{handle_target}",
         "dry_run": True,
+        "rubric_warnings": rubric_warnings,
     }

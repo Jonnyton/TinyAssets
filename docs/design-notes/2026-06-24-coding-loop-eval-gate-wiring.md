@@ -67,3 +67,37 @@ Independent opposite-provider review dispatched via `mcp__codex__codex` (read-on
 3. **S3 can't reuse the scene evaluator** — define a coding-specific trajectory schema + thresholds before gating.
 
 Gate status: build remains blocked pending navigator design that incorporates these three adaptations.
+
+## S2 — warn-only mode landed (2026-06-25)
+
+The safe half of S2 is on main: the coding-packet rubric is wired into
+`validate_ship_request` (`workflow/auto_ship.py`) behind
+`WORKFLOW_AUTO_SHIP_RUBRIC_MODE` (default **`warn`**). Warn mode computes the
+rubric and attaches `rubric_warnings` to the decision dict but **never changes
+pass/block behavior**, and the call is **fail-open** (a rubric exception yields
+no warnings and never breaks the envelope gate). The enforce set is scoped to
+the two genuinely-new, non-overlapping checks: `release_evidence_bundle_incomplete`
++ `child_run_not_completed_for_keep`. Tested warn/off/enforce (75 passed) +
+Codex-reviewed **SHIP** — the FIX-NEEDED double-reporting of
+`child_output_evidence_missing` / `contradictory_child_claim` was resolved by
+narrowing the enforce set (those two need de-overlap logic before rejoining).
+Plugin mirror rebuilt. **Zero production block-behavior change.**
+
+### Turnkey enforce-flip (host-gated watched rollout)
+1. **Producers first** (so valid packets don't flip to blocked under enforce):
+   add `release_evidence_bundle_complete=True` + `child_run_status="completed"`
+   to the parent-output writer (`workflow/runs.py:~1330` + receipt/return
+   mirrors) and the loop-content `release_safety_gate` prompt (out-of-repo —
+   coordinate via the loop-content lane). Mirror to the plugin.
+2. **Tests**: once producers populate the fields, update `_valid_packet` in
+   `tests/test_auto_ship.py` to carry them so enforce-mode tests reflect the
+   new floor.
+3. **Watched warn period**: leave the flag unset (`warn`); query the auto-ship
+   ledger for decisions carrying `rubric_warnings` to measure the real failure
+   rate (reuse `WORKFLOW_AUTO_SHIP_OBSERVATION_WINDOW_SECONDS`).
+4. **Host flip**: once the warn rate is acceptable and opposite-provider review
+   re-confirms, set `WORKFLOW_AUTO_SHIP_RUBRIC_MODE=enforce`. `off` is the
+   instant kill-switch.
+5. **Widen later**: re-add `child_output_evidence_missing` (the
+   `child_candidate_patch_packet` half only) + `contradictory_child_claim`
+   with envelope-overlap suppression.

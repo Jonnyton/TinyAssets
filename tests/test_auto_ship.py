@@ -44,6 +44,55 @@ def _valid_packet(**overrides) -> dict:
     return base
 
 
+# ── §6.4 coding-packet rubric (warn-only → enforce) ───────────────────────
+
+
+class TestRubricMode:
+    """The rubric runs warn-only by default (annotates `rubric_warnings`, never
+    blocks); `enforce` promotes rubric-only violations to blocking. `_valid_packet`
+    lacks the rubric fields, so it is the natural warn/enforce probe."""
+
+    def test_warn_is_default_and_never_blocks(self, monkeypatch):
+        monkeypatch.delenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", raising=False)
+        d = validate_ship_request(_valid_packet())
+        assert d["validation_result"] == "passed"
+        assert d["would_open_pr"] is True
+        assert d["violations"] == []
+        assert d["rubric_warnings"], "expected warnings for a packet missing rubric fields"
+        ids = {v.get("rule_id") for v in d["rubric_warnings"]}
+        assert "release_evidence_bundle_incomplete" in ids
+
+    def test_off_mode_skips_rubric(self, monkeypatch):
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "off")
+        d = validate_ship_request(_valid_packet())
+        assert d["validation_result"] == "passed"
+        assert d["rubric_warnings"] == []
+
+    def test_enforce_blocks_packet_missing_rubric_fields(self, monkeypatch):
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "enforce")
+        d = validate_ship_request(_valid_packet())
+        assert d["validation_result"] == "blocked"
+        assert d["would_open_pr"] is False
+        ids = {v.get("rule_id") for v in d["violations"]}
+        assert "release_evidence_bundle_incomplete" in ids
+
+    def test_enforce_passes_fully_populated_packet(self, monkeypatch):
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "enforce")
+        d = validate_ship_request(_valid_packet(
+            child_candidate_patch_packet={"diff": "+ x"},
+            release_evidence_bundle_complete=True,
+            child_run_status="completed",
+        ))
+        assert d["validation_result"] == "passed", d["violations"]
+        assert d["would_open_pr"] is True
+        assert d["rubric_warnings"] == []
+
+    def test_invalid_mode_falls_back_to_warn(self, monkeypatch):
+        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "bogus")
+        d = validate_ship_request(_valid_packet())
+        assert d["validation_result"] == "passed"
+
+
 # ── Phase-1 dry-run shape contract ────────────────────────────────────────
 
 
