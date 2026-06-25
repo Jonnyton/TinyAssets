@@ -25,8 +25,8 @@ from domains.fantasy_daemon.phases.reflect import reflect
 from domains.fantasy_daemon.phases.universe_cycle import universe_cycle
 from domains.fantasy_daemon.phases.worldbuild import worldbuild
 from domains.fantasy_daemon.state.universe_state import UniverseState
-from workflow.enrichment_signals import load_enrichment_signals
 from domains.fantasy_daemon.work_kinds import infer_fantasy_execution_scope
+from workflow.enrichment_signals import load_enrichment_signals
 from workflow.work_targets import get_target
 
 

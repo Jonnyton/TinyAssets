@@ -19,7 +19,6 @@ import logging
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 from workflow.enrichment_signals import append_enrichment_signals
 from workflow.ingestion.canon_names import resolve_within_canon

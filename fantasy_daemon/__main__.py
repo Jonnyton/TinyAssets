@@ -1563,7 +1563,8 @@ class DaemonController:
                 "task_queue": ["write"],
                 "universal_style_rules": [],
                 "cross_series_facts": [],
-                "worldbuild_signals": [],
+                "enrichment_signals": [],
+                "worldbuild_signals": [],  # deprecated alias; kept for the window
                 "premise_kernel": premise,
                 "workflow_instructions": workflow,
                 # Internal config (serializable scalars only)

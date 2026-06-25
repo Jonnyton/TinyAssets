@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from workflow.api.extensions import (
     VALID_PHASES as EXTENSION_VALID_PHASES,
+)
+from workflow.api.extensions import (
     NodeRegistration,
 )
 from workflow.branches import VALID_PHASES as BRANCH_VALID_PHASES
