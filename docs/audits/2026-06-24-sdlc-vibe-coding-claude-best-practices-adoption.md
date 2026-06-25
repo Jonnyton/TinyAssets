@@ -67,6 +67,7 @@ All landed on branch `worktree-sdlc-best-practices-adoption`, ruff-clean, verifi
 2. **Context-budget guard** — `scripts/check_context_budget.py` measures the always-loaded set (CLAUDE.md+AGENTS.md+STATUS.md): HARD budget for STATUS.md (its own declared 4 KB/60 ln) exits 2 under `--strict`; soft advisory targets for AGENTS.md/CLAUDE.md warn only. Wired as the committed **`context-budget` invariant** (`scripts/invariants/context_budget.py`, propose-only, not commit-blocking — same stance as `concerns-staleness`) so the "AGENTS.md tripled unaudited" drift class is now caught automatically. This is the durable home (committed) vs the gitignored settings.json.
 3. **provider_context_feed timing** — widened the hook's inner subprocess timeout 8→9 s and switched to `sys.executable`, so a slow feed fails safe instead of timing out the whole hook. (Deeper fix — caching the git porcelain/merge-base calls — routed below.)
 4. **Skill residue** — rewrote infra-ops references that named the deleted `godaddy-ops`/`cloudflare-ops` skills to point within infra-ops; skills still validate.
+5. **Wove Codex-via-MCP into Claude behavior** — `CLAUDE.md §"Calling Codex via MCP"` documents that `mcp__codex__codex` is a second model family in the harness (opposite-provider review, adversarial/second-opinion, diverse judging, fresh-eyes-when-stuck) with discipline. Demonstrated it by running the **R1 opposite-provider review through Codex** — which caught a real factual error in the design note (wrong wiring point) and returned ADAPT. That is the SDLC research's harness/orchestration + diverse-verification practice, live.
 
 ---
 
@@ -76,7 +77,7 @@ Tracker for the remaining items. None are autonomous-only; each names its blocke
 
 | ID | Item | Owner | Note |
 |---|---|---|---|
-| R1 | **Coding-loop eval gate** (output + trajectory) — register 1 AcceptanceScenario in CI, wire `coding_packet_rubric`→`release_safety_gate`, enforce trajectory failures | navigator + opposite-provider review | Design note: `docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md`. Highest leverage. |
+| R1 | **Coding-loop eval gate** (output + trajectory). Codex opposite-provider review DONE — **ADAPT** (2026-06-24, via `mcp__codex__codex`): 3 adaptations gate the build (S2 wiring is `auto_ship.validate_ship_request`, not a `release_safety_gate`; S1 must stay CI-local; S3 needs its own trajectory schema) | navigator (incorporate the 3 adaptations) | Design note + §Codex review: `docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md`. Highest leverage. |
 | R2 | **STATUS.md** — correct the 2 false claims + trim to ≤60 ln/4 KB | host (STATUS is host-managed) | Not edited from this branch (fast-moving coordination file). |
 | R3 | **AGENTS.md lean/layer** — move the ~248-ln worktree manual into `git-workflow-and-versioning`; delete the duplicate "Where new conventions live" block; set a byte budget | navigator (cross-provider canonical) | Budget number = host call; mechanical move = autonomous once approved. |
 | R4 | **Static/dynamic context ADR** — declare the always-loaded vs on-demand boundary as a reviewed decision; tune `check_context_budget.py` CONFIG numbers | navigator + host (the numbers) | Guard now exists; the ceiling is the host's to set. |

@@ -22,6 +22,46 @@ the persistent verifier teammate is the independent verification path, and
 the live user-sim route is the final proof path for chatbot-facing MCP
 behavior. Other providers may implement the same invariants differently.
 
+### Calling Codex via MCP [Claude Code only]
+
+Codex CLI is wired into Claude Code as an MCP tool: `mcp__codex__codex` starts a
+Codex session, `mcp__codex__codex-reply` continues a thread. Treat Codex as a
+**second model family already in the harness** — not something only a human can
+start in a separate session. This is the SDLC research's "harness =
+orchestration + routing between models" and "diverse-perspective verification /
+judge with a different model than the writer" applied directly (basis:
+`docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md`). The
+codebase already routes its prose-loop editorial judge to Codex, so the pattern
+has precedent.
+
+Reach for it whenever a different model or an independent perspective raises
+confidence:
+- **Opposite-provider review gate.** AGENTS.md §"Project Skills" requires
+  research-derived findings to get opposite-provider review before build / push
+  / live rollout. When Claude makes the finding, dispatch the review to Codex
+  via MCP and log the verdict (`approve` / `adapt` / `reject`) — don't wait for a
+  human to open a Codex session.
+- **Adversarial / second opinion** on a risky change, a surprising result, or a
+  finding you're about to act on — ask Codex to *refute* it.
+- **Diverse-perspective judging** (LLM-as-judge with a different model than the
+  writer); cross-checking before an evidence-before-completion claim.
+- **Fresh eyes when stuck** 3+ iterations on the same error (the stuck-loop
+  reflection rule in AGENTS.md).
+
+Discipline:
+- Reviews must be substantive — Codex re-checks sources + actual code, never
+  rubber-stamps. Host may delegate cross-family checker keys
+  (`feedback_host_can_delegate_cross_family_keys`), but the substance review
+  still happens.
+- Default `sandbox: read-only` + `approval-policy: never` for reviews / second
+  opinions. Grant `workspace-write` only when you deliberately want Codex to
+  make changes, and keep it in its own worktree/branch (no destructive git ops).
+- Calling Codex is an *additional* independent path — it does NOT bypass
+  host/navigator gates or the live user-sim proof, and the result is logged like
+  any other review (STATUS row / design note / activity log).
+- Mind cost: a Codex session is a real agent run. Use it where independence
+  matters, not for routine lookups.
+
 ### Skills [Claude Code only]
 
 Project workflow skills live in `.claude/skills/`. When the right skill is not obvious, read `.claude/skills/using-agent-skills/SKILL.md` first, then open the matching skill.

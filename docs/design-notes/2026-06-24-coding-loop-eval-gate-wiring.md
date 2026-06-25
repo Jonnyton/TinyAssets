@@ -1,6 +1,6 @@
 # Design note: wire the coding-loop eval gate (output + trajectory)
 
-**Filed:** 2026-06-24 · **Status:** PROPOSAL — needs navigator design + opposite-provider review before any build (research-gate per AGENTS.md §"Project Skills"). **Do not implement from this note as-is.**
+**Filed:** 2026-06-24 · **Status:** PROPOSAL — Codex opposite-provider review returned **ADAPT** (2026-06-24, via `mcp__codex__codex`; see §"Codex review" at the end). Inline corrections folded in below. Still needs navigator design before build. **Do not implement as-is — apply the adaptations.**
 **Basis:** `docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md` (G1); verification sweep 2026-06-24.
 
 ## The precise gap (verified, not assumed)
@@ -22,15 +22,17 @@ So: the machinery is built and unit-tested; it is the **Phase-2 connections** th
 Three connections, each independently shippable, smallest first:
 
 **S1 — Register one runnable AcceptanceScenario in CI (output-eval).**
-- Register `scenario_dispatchers.mcp_call` at universe startup (the dispatcher already exists; nothing reads it).
+- **CORRECTED by review:** keep dispatcher registration **CI / suite-local**, NOT at universe startup — startup registration mutates runtime registry state and is therefore *not* the zero-behavior-change beachhead it was billed as. The dispatcher (`scenario_dispatchers/mcp_call.py:217` `register()`) also needs an injected `action_handler` + callable evaluators (`mcp_call.py:39-45`), so scenario *data* alone is insufficient.
 - Author 3–5 `AcceptanceScenario` instances as data (`evals/scenarios/*.json` or a registry module), e.g. `target_surface="mcp_call"`, `candidate_ref="goals.propose"`, with `pass_threshold={"min_score":0.9,"score_aggregation":"min"}` and an `evaluator_chain` asserting: response `status != error`, the Goal record exists, the binding handle is present.
-- Add a `run_acceptance_suite()` entrypoint (mirror `scripts/proofs/daemon_memory_quality_eval.py`) and run it in CI. This is the "bar at the eval" beachhead.
+- Add a `run_acceptance_suite()` entrypoint (mirror `scripts/proofs/daemon_memory_quality_eval.py`) run in CI with a temp data dir. This is the "bar at the eval" beachhead.
 
-**S2 — Wire `coding_packet_rubric` into `release_safety_gate` (output-eval, Phase 2).**
-- `release_safety_gate` lives in `workflow/api/auto_ship_actions.py` (+ `extensions.py`). Feed `validate_coding_packet_rubric` into it so a patch with KEEP < 9.0 / missing child-output evidence / overclaim contradiction cannot auto-ship. This is the rubric doc's own unrealized Phase 2.
+**S2 — Wire `coding_packet_rubric` into the auto-ship gate (output-eval, Phase 2).**
+- **CORRECTED by review:** there is no `release_safety_gate` function (the first-pass audit's grep matched prose, not a def). The real structural gate is `workflow.auto_ship.validate_ship_request` (`workflow/auto_ship.py:271`), reached via `_action_validate_ship_packet` (`workflow/api/auto_ship_actions.py:110` → `:165`). It **already** enforces child score < 9 (`auto_ship.py:377-392`) and required fields incl. `stable_evidence_handle` (`:71-78`). Only the rubric-**only** checks are missing — `child_candidate_patch_packet`, `release_evidence_bundle_complete`, contradictory-child-claim detection (`coding_packet_rubric.py:181,209,239`).
+- Add just those missing checks, and update the **plugin mirror** copy (`packaging/claude-plugin/.../coding_packet_rubric.py:116`, per the mirror-parity rule). **Update packet producers + `tests/test_auto_ship.py:26-41` FIRST** — today's passing packets lack the rubric-only fields, so naive composition would flip valid packets to blocked.
 
 **S3 — Feed trajectory failures into the coding verdict (trajectory-eval enforcement).**
 - The prose loop's `process.py` pattern, ported to the coding lane: a `tool_use` / `grounding_quality` trajectory failure should be able to force a re-draft or block, instead of only being written to audit notes.
+- **CORRECTED by review:** do NOT reuse `workflow/evaluation/process.py` directly — it is scene-loop specific (scene IDs, beats, `story_search`, `canon_breach`: `process.py:142-158,195-205,285`). Define a **coding-specific trajectory schema + thresholds + false-positive behavior** first, then gate. Lowest-confidence slice; do it last.
 
 ## Why this is gated, not done here
 
@@ -49,3 +51,13 @@ Three connections, each independently shippable, smallest first:
 - No new eval *framework* — the framework exists; this only connects it.
 - No change to the prose lane (already correct).
 - No model-routing / cost-tiering (separate, host-gated, conflicts with the always-latest norm).
+
+## Codex review (2026-06-24) — verdict: ADAPT
+
+Independent opposite-provider review dispatched via `mcp__codex__codex` (read-only). Thread `019efd40-e343-7970-9c14-b3ca3e3803ff`. The diagnosis held up; the wiring details did not. Confirmed accurate: `validate_coding_packet_rubric` imported only by its test; `run_scenario` returns `no_dispatcher_registered`; zero `AcceptanceScenario` data instances; `process.py` trajectory eval computed-but-not-gating (`commit.py:162` verdict precedes `:222` eval). Corrected (folded into S1–S3 above):
+
+1. **S2 wiring point was wrong** — no `release_safety_gate`; use `auto_ship.validate_ship_request` (`auto_ship.py:271`), which already covers part of the rubric. Add only the rubric-only checks + the plugin mirror; update producers/tests first or valid packets flip to blocked.
+2. **S1 is not zero-behavior-change** if the dispatcher registers at startup — keep it CI/suite-local; it also needs an injected action-handler + evaluators, not just data.
+3. **S3 can't reuse the scene evaluator** — define a coding-specific trajectory schema + thresholds before gating.
+
+Gate status: build remains blocked pending navigator design that incorporates these three adaptations.
