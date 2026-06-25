@@ -1,0 +1,20 @@
+{
+  "_comment": "Shared Claude Code config baseline for this repo. .claude/settings.json is gitignored (machine-local + OS-specific hook commands), so deny-lists and standard env can't propagate to fresh clones. This committed template carries the OS-agnostic, clearly-shareable parts; `python scripts/setup_claude_settings.py --apply` merges them into your local .claude/settings.json without clobbering local keys (allow-list, defaultMode, OS-specific hooks). Basis: docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md (R5). Hooks-registration propagation is intentionally NOT here — the hook commands are PowerShell-shaped and a cross-platform strategy is a host/DRI call.",
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_TEAMMATE_MODE": "in-process"
+  },
+  "permissions": {
+    "deny": [
+      "Read(**/__pycache__/**)",
+      "Read(**/*.pyc)",
+      "Read(**/.pytest_cache/**)",
+      "Read(**/.ruff_cache/**)",
+      "Read(**/.mypy_cache/**)",
+      "Read(**/node_modules/**)",
+      "Read(**/.svelte-kit/**)",
+      "Read(**/.wrangler/**)",
+      "Read(**/lancedb/**)"
+    ]
+  }
+}
