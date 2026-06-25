@@ -4,10 +4,13 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from workflow.branch_tasks import (
     BranchTask,
     append_task,
     claim_task,
+    mark_status,
     mark_task_progress,
     new_task_id,
     queue_path,
@@ -142,3 +145,71 @@ def test_recover_claimed_tasks_clears_active_lease_metadata(tmp_path: Path) -> N
     assert recovered.lease_expires_at == ""
     assert recovered.heartbeat_at == ""
     assert recovered.last_progress_at == "2026-05-02T12:00:00+00:00"
+
+
+def test_mark_status_terminal_finalize_is_idempotent(tmp_path: Path) -> None:
+    """A duplicate finalize on an already-terminal task is a no-op.
+
+    Multi-worker duplicate-claim races (and lease reclaims) can finalize
+    the same task twice. The second call must not raise (which would
+    crash the daemon mid-finalize) and must not flip the first result.
+    """
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(tmp_path, task.branch_task_id, "daemon-a")  # -> running
+
+    mark_status(tmp_path, task.branch_task_id, status="succeeded")
+    # A conflicting late finalize from a duplicate worker: no raise, no flip.
+    mark_status(tmp_path, task.branch_task_id, status="failed", error="late dup")
+    assert read_queue(tmp_path)[0].status == "succeeded"
+    # Same-status duplicate is also a clean no-op.
+    mark_status(tmp_path, task.branch_task_id, status="succeeded")
+    assert read_queue(tmp_path)[0].status == "succeeded"
+
+
+def test_mark_status_still_raises_on_nonterminal_invalid(tmp_path: Path) -> None:
+    """Genuinely invalid non-terminal transitions still raise loudly."""
+    task = _task()
+    append_task(tmp_path, task)  # pending
+    with pytest.raises(ValueError):
+        # pending -> succeeded skips running; a real anomaly, keep surfacing it.
+        mark_status(tmp_path, task.branch_task_id, status="succeeded")
+
+
+def test_dispatcher_startup_preserves_live_peer_running_task(tmp_path: Path) -> None:
+    """Startup recovery must NOT reset a peer's fresh-lease running task.
+
+    The blanket reset (recover_claimed_tasks) stole live peers' tasks on
+    every worker restart, causing double-claim + Invalid-transition wedge
+    (2026-06-25). Startup now uses lease-aware reclaim.
+    """
+    from fantasy_daemon.__main__ import _dispatcher_startup
+
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(tmp_path, task.branch_task_id, "live-peer")  # stamps a fresh 300s lease
+
+    _dispatcher_startup(tmp_path)
+
+    row = read_queue(tmp_path)[0]
+    assert row.status == "running"  # untouched; blanket reset would make it pending
+    assert row.claimed_by == "live-peer"
+
+
+def test_dispatcher_startup_reclaims_expired_lease(tmp_path: Path) -> None:
+    """A wedged/dead worker's expired-lease task is still reclaimed."""
+    from fantasy_daemon.__main__ import _dispatcher_startup
+
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(tmp_path, task.branch_task_id, "dead-worker")
+    qp = queue_path(tmp_path)
+    data = json.loads(qp.read_text())
+    data[0]["lease_expires_at"] = "2000-01-01T00:00:00+00:00"  # long expired
+    qp.write_text(json.dumps(data))
+
+    _dispatcher_startup(tmp_path)
+
+    row = read_queue(tmp_path)[0]
+    assert row.status == "pending"
+    assert row.claimed_by == ""
