@@ -84,11 +84,24 @@ narrowing the enforce set (those two need de-overlap logic before rejoining).
 Plugin mirror rebuilt. **Zero production block-behavior change.**
 
 ### Turnkey enforce-flip (host-gated watched rollout)
-1. **Producers first** (so valid packets don't flip to blocked under enforce):
-   add `release_evidence_bundle_complete=True` + `child_run_status="completed"`
-   to the parent-output writer (`workflow/runs.py:~1330` + receipt/return
-   mirrors) and the loop-content `release_safety_gate` prompt (out-of-repo —
-   coordinate via the loop-content lane). Mirror to the plugin.
+1. **Producers first** (so valid packets don't flip to blocked under enforce) —
+   and set each field **only where it is truthfully determinable**, never blindly
+   (code-read 2026-06-25):
+   - `child_run_status="completed"` IS truthful at the child-attachment producer
+     `attach_existing_child_run` (`workflow/runs.py:~1330`, which already sets
+     `selected_child_status="attached_completed"`). Add it there (+ receipt/return
+     mirrors + plugin mirror), and verify it actually flows into the assembled
+     ship packet the gate sees.
+   - `release_evidence_bundle_complete` is a **release-assembly** claim (the
+     bundle = diff + rollback + gate result + attached child evidence), NOT a
+     child-attachment fact. It must be set by the ship-packet builder — the
+     out-of-repo loop-content `release_safety_gate` prompt — and only once the
+     full bundle is assembled. **Do NOT hardcode it `True` at child-attachment**:
+     that asserts completeness before the bundle exists, the exact "fluent-but-
+     wrong" claim the rubric guards against. Coordinate via the loop-content lane.
+   This is why the producer migration is **navigator + loop-content design, not a
+   mechanical field-add** — and why warn-only (already landed) is the safe state
+   until that design lands.
 2. **Tests**: once producers populate the fields, update `_valid_packet` in
    `tests/test_auto_ship.py` to carry them so enforce-mode tests reflect the
    new floor.
