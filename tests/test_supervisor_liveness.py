@@ -169,6 +169,90 @@ def test_recent_pending_no_warning(tmp_path):
     assert not any("stuck_pending" in w for w in out["warnings"])
 
 
+# ── loop-stall signal (2026-06-25 wedge detector) ──────────────────────────
+
+
+def test_loop_stalled_warns_on_fail_only_backlog(tmp_path):
+    """The real wedge: failures stamp terminal_at but zero successes."""
+    from workflow.api.status import _LOOP_STALL_WINDOW_S
+
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(seconds=_LOOP_STALL_WINDOW_S + 600)).isoformat()
+    append_task(tmp_path, BranchTask(
+        branch_task_id="bt-stalled",
+        branch_def_id="branch-1",
+        universe_id="u",
+        status="pending",
+        queued_at=old,
+    ))
+    # A recently FAILED task: opens the any_terminal_at gate but is not a success.
+    append_task(tmp_path, BranchTask(
+        branch_task_id="bt-failed",
+        branch_def_id="branch-1",
+        universe_id="u",
+        status="failed",
+        queued_at=old,
+        terminal_at=now.isoformat(),
+    ))
+    out = _compute_supervisor_liveness(tmp_path)
+    assert out["queue_state"]["recent_succeeded_count"] == 0
+    assert out["queue_state"]["stuck_pending_max_age_s"] > _LOOP_STALL_WINDOW_S
+    assert any("loop_stalled" in w for w in out["warnings"])
+
+
+def test_no_loop_stalled_when_a_recent_success_exists(tmp_path):
+    from workflow.api.status import _LOOP_STALL_WINDOW_S
+
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(seconds=_LOOP_STALL_WINDOW_S + 600)).isoformat()
+    append_task(tmp_path, BranchTask(
+        branch_task_id="bt-pending",
+        branch_def_id="branch-1",
+        universe_id="u",
+        status="pending",
+        queued_at=old,
+    ))
+    append_task(tmp_path, BranchTask(
+        branch_task_id="bt-done",
+        branch_def_id="branch-1",
+        universe_id="u",
+        status="succeeded",
+        queued_at=old,
+        terminal_at=now.isoformat(),
+    ))
+    out = _compute_supervisor_liveness(tmp_path)
+    assert out["queue_state"]["recent_succeeded_count"] == 1
+    assert not any("loop_stalled" in w for w in out["warnings"])
+
+
+def test_no_loop_stalled_on_fresh_queue_without_terminal_at(tmp_path):
+    """Old rows predating terminal_at must not false-fire the stall warning."""
+    from workflow.api.status import _LOOP_STALL_WINDOW_S
+
+    old = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=_LOOP_STALL_WINDOW_S + 600)
+    ).isoformat()
+    # Backlog + a succeeded row that predates the field (no terminal_at).
+    append_task(tmp_path, BranchTask(
+        branch_task_id="bt-pending",
+        branch_def_id="branch-1",
+        universe_id="u",
+        status="pending",
+        queued_at=old,
+    ))
+    append_task(tmp_path, BranchTask(
+        branch_task_id="bt-legacy-done",
+        branch_def_id="branch-1",
+        universe_id="u",
+        status="succeeded",
+        queued_at=old,
+        terminal_at="",  # pre-field row
+    ))
+    out = _compute_supervisor_liveness(tmp_path)
+    assert not any("loop_stalled" in w for w in out["warnings"])
+
+
 # ── lease metadata path (post-#212) ────────────────────────────────────────
 
 

@@ -49,6 +49,12 @@ _HEARTBEAT_STALE_THRESHOLD_S = _HEARTBEAT_REFRESH_INTERVAL_S * 2
 # BUG-009 class).
 _STUCK_PENDING_THRESHOLD_S = 120
 
+# Loop-stall window: if a backlog (pending tasks older than this) has produced
+# ZERO terminal transitions within the same window, the loop is stalled even
+# though workers may look busy — the 2026-06-25 wedge ran ~3 weeks because no
+# signal distinguished "claiming but never completing" from healthy operation.
+_LOOP_STALL_WINDOW_S = int(os.environ.get("WORKFLOW_LOOP_STALL_WINDOW_S", "1800"))
+
 # Auto-ship observation window surfaced in get_status.auto_ship_health.
 _AUTO_SHIP_OBSERVATION_WINDOW_S = 24 * 60 * 60
 _AUTO_SHIP_RECENT_ATTEMPT_LIMIT = 10
@@ -381,6 +387,7 @@ def _compute_supervisor_liveness(
             "stuck_pending_max_age_s": 0,
             "policy_parked_pending_max_age_s": 0,
             "stuck_running_max_age_s": 0,
+            "recent_succeeded_count": 0,
         },
         "running_tasks_lease": [],
         "stale_running_tasks": [],
@@ -410,11 +417,30 @@ def _compute_supervisor_liveness(
     pending_ages: list[float] = []
     policy_parked_pending_ages: list[float] = []
     running_ages: list[float] = []
+    recent_succeeded_count = 0
+    any_terminal_at_seen = False
 
     for task in queue:
         status = getattr(task, "status", "") or ""
         if status in out["queue_state"]:
             out["queue_state"][status] = out["queue_state"].get(status, 0) + 1
+
+        # Completion-health signal. We count recent SUCCESSES (not all
+        # terminals): a loop that only produces failures is still wedged.
+        # ``any_terminal_at_seen`` gates the stall warning so a freshly
+        # deployed queue (terminal_at not yet stamped on any row) cannot
+        # false-fire — during a real wedge the fail-fast tasks stamp
+        # terminal_at, so the gate opens while successes stay at zero.
+        terminal_at = getattr(task, "terminal_at", "") or ""
+        if terminal_at:
+            any_terminal_at_seen = True
+            terminal_ts = _parse_iso_to_epoch(terminal_at)
+            if (
+                status == "succeeded"
+                and terminal_ts is not None
+                and (now_ts - terminal_ts) <= _LOOP_STALL_WINDOW_S
+            ):
+                recent_succeeded_count += 1
 
         # Pending-task age (queued_at -> now). Detects dispatcher pickup
         # gaps even before a task gets claimed (today's BUG-009 pattern).
@@ -520,6 +546,8 @@ def _compute_supervisor_liveness(
     # warning. Today's BUG-009 RCA: a pending task that sits >2min
     # without claim means the supervisor restart logic isn't reaching
     # the queue (the exact pattern PR #205 fixed).
+    out["queue_state"]["recent_succeeded_count"] = recent_succeeded_count
+
     if (
         out["queue_state"]["stuck_pending_max_age_s"]
         > _STUCK_PENDING_THRESHOLD_S
@@ -530,6 +558,30 @@ def _compute_supervisor_liveness(
             f"(threshold {_STUCK_PENDING_THRESHOLD_S}s). Likely "
             "supervisor restart loop, dispatcher disabled, or daemon "
             "subprocess wedged. See PR #206 spec for incident pattern."
+        )
+
+    # Loop-stall: a backlog older than the window with ZERO successful
+    # completions in that window means the loop is claiming but never
+    # succeeding — the durable 2026-06-25 wedge signature (which ran ~3 weeks
+    # undetected). Distinct from stuck_pending (pickup latency): this is the
+    # completion-rate dimension, and counts successes only so a fail-only loop
+    # still trips it. ``any_terminal_at_seen`` suppresses the false-positive on
+    # a freshly deployed queue whose rows predate the terminal_at field.
+    if (
+        recent_succeeded_count == 0
+        and any_terminal_at_seen
+        and out["queue_state"]["pending"] > 0
+        and out["queue_state"]["stuck_pending_max_age_s"] > _LOOP_STALL_WINDOW_S
+    ):
+        out["warnings"].append(
+            f"loop_stalled: 0 successful completions in the last "
+            f"{_LOOP_STALL_WINDOW_S}s despite "
+            f"{out['queue_state']['pending']} pending "
+            f"(oldest {out['queue_state']['stuck_pending_max_age_s']}s) and "
+            f"{out['queue_state']['failed']} failed total. The loop is claiming "
+            "but not succeeding — provider auth, double-claim, or finalize crash "
+            "(2026-06-25 loop-wedge signature). Check worker logs for provider "
+            "'exhausted' / 'Invalid transition'."
         )
 
     if out["queue_state"]["running"] > 0 and not any_lease_field_seen:

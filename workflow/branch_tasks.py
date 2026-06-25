@@ -97,6 +97,11 @@ class BranchTask:
     lease_expires_at: str = ""
     heartbeat_at: str = ""
     last_progress_at: str = ""
+    # When the task reached a terminal status (succeeded/failed/cancelled).
+    # Powers the loop-stall signal in get_status: a backlog with zero terminal
+    # transitions over a window is the 2026-06-25 wedge signature. Empty for
+    # pre-field rows; stamped by mark_status on terminal transition.
+    terminal_at: str = ""
     rung_claim_recommendations: list[dict] = field(default_factory=list)
     # Spawn depth. 0 for user/forward-triggered tasks. A task enqueued from
     # inside a running branch (via the in-node enqueue verb) carries
@@ -451,6 +456,8 @@ def mark_status(
                     f"for task {task_id}"
                 )
             row["status"] = status
+            if status in TERMINAL_STATUSES:
+                row["terminal_at"] = _now_iso()
             if error:
                 row["error"] = error
             _write_raw(qp, raw)

@@ -147,6 +147,19 @@ def test_recover_claimed_tasks_clears_active_lease_metadata(tmp_path: Path) -> N
     assert recovered.last_progress_at == "2026-05-02T12:00:00+00:00"
 
 
+def test_mark_status_stamps_terminal_at_on_terminal_transition(tmp_path: Path) -> None:
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(tmp_path, task.branch_task_id, "daemon-a")  # -> running
+    assert read_queue(tmp_path)[0].terminal_at == ""
+
+    mark_status(tmp_path, task.branch_task_id, status="succeeded")
+
+    row = read_queue(tmp_path)[0]
+    assert row.status == "succeeded"
+    assert row.terminal_at, "terminal_at must be stamped on terminal transition"
+
+
 def test_mark_status_terminal_finalize_is_idempotent(tmp_path: Path) -> None:
     """A duplicate finalize on an already-terminal task is a no-op.
 
