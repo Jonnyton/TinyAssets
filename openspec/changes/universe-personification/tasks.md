@@ -1,8 +1,8 @@
 ## 1. Ratified-spec amendments (`docs/specs/2026-06-10-tiny-first-principles-spec.md`) — NOT applied in this draft
 
-- [ ] 1.1 §9 (voice): embody / first-person invariant, **compact trigger-language** (no role-play sprawl), Workflow-surface-scoped guardrail
-- [ ] 1.2 §3 (mind anatomy): personification = the **named interaction projection of the WHOLE mind** (voice expresses, soul governs, brain informs; goals/skills/hands/senses remain) — invariant, not an organ
-- [ ] 1.3 §7 (soul & org-chart): visitor-governance floor enforced in **brain assembly + authorization BEFORE voice**; persona behavior = `[composable]` default
+- [x] 1.1 §9 (voice): embody / first-person invariant, **compact trigger-language** (no role-play sprawl), Workflow-surface-scoped guardrail + anti-collision + honest fallback + authorization-precedes-voice
+- [x] 1.2 §3 (mind anatomy): personification = the **named interaction projection of the WHOLE mind** (voice expresses, soul governs, brain informs; goals/skills/hands/senses remain) — invariant, not an organ
+- [x] 1.3 §7 (soul & org-chart): visitor-governance floor enforced in **brain assembly + authorization BEFORE voice**; persona behavior = `[composable]` default; T0/T1/T2 visitor binding
 
 ## 2. Connector behavioral surface (future build — behind verification gates + the Codex adaptations)
 
