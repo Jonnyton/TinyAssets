@@ -70,6 +70,14 @@ def _make_packet(
             "head_branch": head_branch,
             "labels": ["writer:loop-2"],
             "draft": True,
+            # BUG-111 (commit 28b12b99): a real write materializes the
+            # change set into the head branch before `gh pr create`, and
+            # fails closed with error_kind=missing_changes when the packet
+            # carries neither changes_json nor edits_json. Real-write tests
+            # therefore supply a minimal change set; they mock
+            # _materialize_branch so the test stays focused on its actual
+            # subject (gate orchestration / idempotency / failure release).
+            "changes_json": {"README_PROBE.md": "probe\n"},
         },
         "expected_evidence_keys": ["pr_number", "pr_url"],
     }
@@ -102,6 +110,25 @@ def _clean_capability_env(monkeypatch):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
     monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+
+
+def _patch_materialize(head_branch: str = _HEAD_BRANCH):
+    """Patch _materialize_branch to succeed without hitting the Git Data API.
+
+    BUG-111 made a real write build the head branch before `gh pr create`.
+    Real-write tests aren't testing the materialize path itself (that lives in
+    test_external_write_phase_2_atomicity.py and test_github_pr_edits_json.py),
+    so they mock it to a success record and stay focused on their real subject.
+    """
+    return patch(
+        "workflow.effectors.github_pr._materialize_branch",
+        return_value={
+            "materialized": True,
+            "head_branch": head_branch,
+            "commit_sha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            "tree_sha": "feedfacefeedfacefeedfacefeedfacefeedface",
+        },
+    )
 
 
 def _set_capability(monkeypatch, destination: str, token: str) -> None:
@@ -252,10 +279,15 @@ def test_destination_present_capability_missing_returns_dry_run(universe_dir):
     assert result["destination"] == _DESTINATION
     # Round-2 fix — evidence names the JSON-map env var and the literal
     # destination key the host needs to add, never a collision-prone
-    # uppercased suffix.
+    # uppercased suffix. The structured evidence keys still carry the
+    # legacy env-var name + the failed destination so existing consumers
+    # that branch on them keep working.
     assert result["capability_env_var"] == _CAPABILITIES_ENV
     assert result["capability_lookup_failed_for"] == _DESTINATION
-    assert _CAPABILITIES_ENV in result["hint"]
+    # #1330 (credential-vault) re-pointed the human-readable hint at the
+    # per-universe credential vault keyed by destination; the literal
+    # destination is still named so the host knows which key to add.
+    assert "credential vault" in result["hint"]
     assert _DESTINATION in result["hint"]
 
 
@@ -396,7 +428,7 @@ def test_idempotency_miss_when_hint_omitted(universe_dir, monkeypatch):
         stdout="https://github.com/Jonnyton/Workflow/pull/777\n",
         stderr="",
     )
-    with patch(
+    with _patch_materialize(), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:
@@ -446,7 +478,7 @@ def test_all_gates_open_invokes_gh_and_records_receipt(
         ),
         stderr="",
     )
-    with patch(
+    with _patch_materialize(), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:
@@ -500,7 +532,7 @@ def test_second_run_with_same_hint_is_dedup_hit(universe_dir, monkeypatch):
         stdout="https://github.com/Jonnyton/Workflow/pull/42\n",
         stderr="",
     )
-    with patch(
+    with _patch_materialize(), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:
@@ -540,7 +572,7 @@ def test_gh_nonzero_exit_releases_reservation_to_failed(
         stdout="",
         stderr="gh: GraphQL: Branch already has an open pull request\n",
     )
-    with patch(
+    with _patch_materialize(), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fake,
     ):
@@ -571,6 +603,7 @@ def test_gh_not_installed_and_api_unavailable_returns_structured_error(
     _open_all_gates(universe_dir, monkeypatch)
     packet = _make_packet()
     with (
+        _patch_materialize(),
         patch(
             "workflow.effectors.github_pr.subprocess.run",
             side_effect=FileNotFoundError("gh"),
@@ -634,6 +667,7 @@ def test_gh_not_installed_falls_back_to_github_api(
         raise AssertionError(f"unexpected URL {req.full_url}")
 
     with (
+        _patch_materialize(),
         patch(
             "workflow.effectors.github_pr.subprocess.run",
             side_effect=FileNotFoundError("gh"),
@@ -669,7 +703,7 @@ def test_gh_not_installed_falls_back_to_github_api(
 def test_gh_timeout_returns_structured_error(universe_dir, monkeypatch):
     _open_all_gates(universe_dir, monkeypatch)
     packet = _make_packet()
-    with patch(
+    with _patch_materialize(), patch(
         "workflow.effectors.github_pr.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=60),
     ):
@@ -696,7 +730,7 @@ def test_gh_returns_zero_but_no_pr_url_returns_error(
         stdout="ok\n",  # no URL
         stderr="",
     )
-    with patch(
+    with _patch_materialize(), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fake,
     ):
@@ -743,7 +777,7 @@ def test_run_effects_for_branch_passes_base_path_and_run_id(
         stdout="https://github.com/Jonnyton/Workflow/pull/9\n",
         stderr="",
     )
-    with patch(
+    with _patch_materialize(), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fake,
     ):
@@ -982,7 +1016,7 @@ def test_kill_switch_falsy_variants_do_not_override(
         stdout="https://github.com/Jonnyton/Workflow/pull/4242\n",
         stderr="",
     )
-    with patch(
+    with _patch_materialize(), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:
@@ -1011,7 +1045,7 @@ def test_kill_switch_unset_does_not_override(universe_dir, monkeypatch):
         stdout="https://github.com/Jonnyton/Workflow/pull/4242\n",
         stderr="",
     )
-    with patch(
+    with _patch_materialize(), patch(
         "workflow.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:

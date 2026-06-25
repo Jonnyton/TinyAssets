@@ -101,12 +101,26 @@ def test_windows_packet_on_non_windows_returns_no_host_before_receipt(tmp_path):
         granted_by="tester",
     )
     runner = Mock()
+    # Inject a non-Windows runtime attestation explicitly so the test is
+    # deterministic on every host. Without it the effector calls
+    # attest_windows_desktop_runtime() and reads the real environment — on a
+    # Windows dev box that attests os_name='nt', the no_host_available guard
+    # never fires, and the Mock runner is invoked (then its non-serializable
+    # result blows up receipt finalization). The subject under test is the
+    # "wrong runtime refuses before any side effect" contract, not the
+    # host-detection heuristic, so a posix attestation is the right fixture.
     result = run_windows_desktop_effector(
         node_id="emit",
         output_keys=["effect_packet"],
         run_state={"effect_packet": _packet()},
         base_path=tmp_path,
         run_id="run-posix",
+        runtime_attestation={
+            "os_name": "posix",
+            "desktop_user_profile_present": False,
+            "interactive_session": False,
+            "container": False,
+        },
         action_runner=runner,
     )
 
