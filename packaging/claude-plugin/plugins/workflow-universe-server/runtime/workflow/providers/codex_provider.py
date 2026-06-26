@@ -49,6 +49,22 @@ def _resolve_codex_cmd() -> tuple[list[str], bool]:
     return ["codex"], False
 
 
+_VALID_CODEX_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
+
+
+def _reasoning_effort_args(effort: str | None) -> list[str]:
+    """Map a generic ModelConfig.reasoning_effort to Codex's CLI override.
+
+    Codex honors ``-c model_reasoning_effort=<minimal|low|medium|high|xhigh>``.
+    Empty / unknown values yield no flag (provider default), so the knob is a
+    pure opt-in and never breaks a call.
+    """
+    normalized = (effort or "").strip().lower()
+    if normalized in _VALID_CODEX_EFFORTS:
+        return ["-c", f"model_reasoning_effort={normalized}"]
+    return []
+
+
 def _codex_model() -> str:
     """Return the Codex CLI model to request for provider calls."""
     return os.environ.get("WORKFLOW_CODEX_MODEL", "gpt-5.4").strip() or "gpt-5.4"
@@ -93,11 +109,19 @@ class CodexProvider(BaseProvider):
         # Prefer Codex's sandboxed auto mode when bwrap is actually usable;
         # bwrap-less hosts fall back to the hosted subscription mode already
         # used by auto-fix, with API keys stripped.
+        # Per-node effort (real Codex setting, not a prompt hint): when the
+        # branch node declares config.reasoning_effort, override Codex's
+        # model_reasoning_effort so a light node (e.g. localize) runs minimal/
+        # low and finishes fast+cheap instead of deep-reasoning a trivial task.
+        effort_args = _reasoning_effort_args(
+            getattr(config, "reasoning_effort", "")
+        )
         cmd = [
             *base_cmd,
             "exec",
             "-m",
             model,
+            *effort_args,
             *sandbox_args,
             "--skip-git-repo-check",
             "--ephemeral",

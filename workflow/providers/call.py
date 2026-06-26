@@ -24,7 +24,7 @@ an empty string).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from tenacity import (
     retry,
@@ -171,7 +171,9 @@ _real_router = _build_fallback_router()
 # ---------------------------------------------------------------------------
 
 
-def _call_router_with_retry(role: str, prompt: str, system: str) -> str:
+def _call_router_with_retry(
+    role: str, prompt: str, system: str, config: Any = None,
+) -> str:
     """Call the installed router with tenacity retry on transient exhaustion.
 
     Retries up to 3 times with exponential backoff (2s, 4s, 8s) when all
@@ -188,7 +190,12 @@ def _call_router_with_retry(role: str, prompt: str, system: str) -> str:
     )
     def _attempt() -> str:
         global _last_provider
-        result = _real_router.call_sync(role, prompt, system)
+        # Only forward config when set, so existing routers/stubs with the
+        # 3-arg call_sync signature keep working (backward-compat).
+        if config is not None:
+            result = _real_router.call_sync(role, prompt, system, config)
+        else:
+            result = _real_router.call_sync(role, prompt, system)
         _last_provider = result.provider
         return result.text
 
@@ -201,6 +208,7 @@ def call_provider(
     *,
     role: str = "writer",
     fallback_response: str | None = None,
+    config: Any = None,
 ) -> str:
     """Call an LLM provider with automatic fallback.
 
@@ -232,7 +240,7 @@ def call_provider(
 
     if _real_router is not None:
         try:
-            return _call_router_with_retry(role, prompt, system)
+            return _call_router_with_retry(role, prompt, system, config)
         except Exception as e:
             provider_error = e
             logger.error(
