@@ -96,3 +96,47 @@ def test_read_graph_branch_falls_back_to_graph_id(server_env):
     bid = built["branch_def_id"]
     branch = json.loads(us.read_graph(target="branch", graph_id=bid))
     assert branch.get("branch_def_id") == bid
+
+
+# ── Visibility model (commons-first) — Codex review of #1404 required proof ──
+# Public BranchDefinitions are a global remix commons (readable cross-user);
+# private branches are author-gated with a not-found envelope. These two tests
+# pin that boundary so the cross-universe read is a deliberate decision, not a
+# silent leak.
+
+def test_public_branch_is_commons_readable_cross_user(server_env, monkeypatch):
+    """A PUBLIC branch is readable by a different user (commons / remix model)."""
+    us = server_env
+    built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_BASIC_SPEC)))
+    bid = built["branch_def_id"]
+
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "stranger")
+    importlib.reload(us)
+    branch = json.loads(us.read_graph(target="branch", branch_id=bid))
+    assert "error" not in branch, branch
+    assert branch.get("branch_def_id") == bid
+
+
+def test_private_branch_hidden_from_non_author(server_env, monkeypatch):
+    """A PRIVATE branch is author-gated: the author reads it, a stranger gets
+    the same not-found envelope (existence is not leaked)."""
+    us = server_env
+    built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_BASIC_SPEC)))
+    bid = built["branch_def_id"]
+    # Make it private via the patch_branch primitive (set_visibility op).
+    patched = json.loads(us.write_graph(
+        target="branch",
+        branch_id=bid,
+        changes_json=json.dumps([{"op": "set_visibility", "visibility": "private"}]),
+    ))
+    assert "error" not in patched, patched
+
+    # Author can read their own private branch.
+    own = json.loads(us.read_graph(target="branch", branch_id=bid))
+    assert own.get("branch_def_id") == bid, own
+
+    # A different user cannot — and cannot even confirm it exists.
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "stranger")
+    importlib.reload(us)
+    blocked = json.loads(us.read_graph(target="branch", branch_id=bid))
+    assert "not found" in blocked.get("error", "").lower(), blocked

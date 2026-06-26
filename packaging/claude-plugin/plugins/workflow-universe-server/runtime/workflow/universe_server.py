@@ -453,6 +453,14 @@ def read_graph(
         # configs (timeout_seconds, model_hint, prompt_template, edges, state
         # schema) so an edit via write_graph target=branch is informed, not
         # blind. Completes the read/edit symmetry with PR-180.
+        #
+        # Visibility model (commons-first, deliberate — Codex review of #1404):
+        # public BranchDefinitions are a GLOBAL remix commons, readable cross
+        # universe by anyone (you remix what you can read). The confidentiality
+        # boundary is private branches, which get_branch already author-gates
+        # with a "not found" envelope (branches.py:443) so a non-author cannot
+        # even confirm existence. get_branch was already callable here via the
+        # deprecated 'extensions' tool; this only makes it first-class.
         return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
     return _unknown_target(
         "read_graph",
