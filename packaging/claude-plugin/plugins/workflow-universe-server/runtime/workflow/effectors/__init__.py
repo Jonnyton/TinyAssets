@@ -40,6 +40,10 @@ from workflow.effectors.twitter_post import (
     EXTERNAL_WRITE_SINK_TWITTER_POST,
     run_twitter_post_effector,
 )
+from workflow.effectors.validate_patch import (
+    register_validate_patch,
+    validate_patch,
+)
 from workflow.effectors.wiki_write_back import (
     EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
     run_wiki_write_back_effector,
@@ -53,6 +57,7 @@ from workflow.effectors.windows_desktop import (
 # them resolves a body at compile time (read + search side of the loop).
 register_read_repo_files()
 register_search_repo_files()
+register_validate_patch()
 
 
 def _branch_without_github_merge(branch):
@@ -126,6 +131,8 @@ __all__ = [
     "register_read_repo_files",
     "search_repo_files",
     "register_search_repo_files",
+    "validate_patch",
+    "register_validate_patch",
     "run_github_merge_effector",
     "run_github_pr_effector",
     "run_twitter_post_effector",
