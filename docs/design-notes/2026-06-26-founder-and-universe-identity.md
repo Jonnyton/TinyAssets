@@ -86,11 +86,22 @@ server validates it against WorkOS's JWKS. **`sub` = the founder key.**
   so reads would be rejected too. *Optional* mode: it returns early and enforces
   **nothing**. We need a **third mode**: *resolve the bearer when present, allow
   anonymous READS, enforce named scopes only on writes/costly/admin.*
-- **Scopes are underspecified (Codex):** `create_universe` is classified `costly`, not
-  ordinary write; action checks require *exact named scopes* (`required_scope in
-  presented_grants`); the OAuth defaults grant coarse `"read write"`, which won't
-  satisfy `workflow.universe.write` / `.costly`. New scopes + a read/write/costly
-  taxonomy are required.
+- **Scopes — the taxonomy ALREADY EXISTS (verified 2026-06-26); do NOT rebuild it.**
+  `workflow/auth/provider.py` `build_action_scope_registry()` already maps every
+  `{tool}.{action}` → a read/write/costly/admin effect with
+  `oauth_scope = workflow.{tool}.{effect}`, incl. `_UNIVERSE_COSTLY_ACTIONS`
+  (create_universe, post_to_goal_pool, submit_node_bid, daemon_create/summon,
+  daemon_memory_promote) and `_UNIVERSE_ADMIN_ACTIONS` (control_daemon, set_tier_config,
+  daemon_banish/pause/resume/restart/update_behavior). Slice 2 **consumes** this via
+  `action_scope_for(tool, action)` — it must NOT author a parallel table. (A 2026-06-26
+  scaffold that rebuilt a universe-only taxonomy was discarded once this primitive was
+  found — a cohit; the existing registry is richer, e.g. it marks `control_daemon`/
+  `set_tier_config` admin, not plain write.) So the genuinely-new work is NOT the
+  taxonomy but: **(a)** the anonymous-read consumption policy (reads pass with no/invalid
+  token; enforce the existing scope only on write/costly/admin effects), **(b)** making
+  OAuth **grants actually carry** `workflow.universe.write/costly/admin` — the defaults
+  grant coarse `"read write"`, which is the real gap, and **(c)** the **resolve-always**
+  auth mode.
 
 ### 3.2 Founder by construction — no claim flow (net-new ACL)
 - **Creating a universe requires OAuth → every universe has a founder by construction**
@@ -166,7 +177,9 @@ flag, then founder metadata, then routing.
    Live proof: an authenticated claude.ai session yields a non-anonymous `account_user`.
    *(Blocks everything. AS-provider decision made; integration is the build.)*
 2. **New capability mode.** Resolve-always + anonymous-reads + enforce named scopes on
-   writes/costly/admin; add the scope taxonomy. Behind a flag.
+   writes/costly/admin by **consuming the existing `provider.py` registry**
+   (`action_scope_for`) — do NOT rebuild the taxonomy (§3.1) — plus make OAuth grants
+   carry `workflow.universe.write/costly/admin`. Behind a flag.
 3. **Founder metadata + founder-write ACL.** `create_universe` (OAuth-gated) records a
    serial id + `founder`; founder-only writes; migration for founderless universes.
 4. **Identity→main-universe storage** + default routing to it.
