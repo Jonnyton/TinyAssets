@@ -48,6 +48,28 @@ def _invalid(detail: str) -> dict:
     return {"patch_validity": "INVALID", "patch_validity_detail": detail}
 
 
+def _syntax_error(path: str, content: str) -> str:
+    """Return a syntax-error description for a known language, else ''. Pure
+    (no import/exec): ``compile(..., 'exec')`` only PARSES, and json.loads only
+    parses — catches a patch that applies cleanly but breaks the file (the SWE
+    "lint-guard"). Unknown extensions are skipped (no false positives)."""
+    lower = path.lower()
+    if lower.endswith(".py") or lower.endswith(".pyi"):
+        try:
+            compile(content, path, "exec")
+        except SyntaxError as exc:
+            where = f" (line {exc.lineno})" if exc.lineno else ""
+            return f"Python SyntaxError: {exc.msg}{where}"
+        except (ValueError, TypeError) as exc:  # e.g. null bytes
+            return f"Python source not compilable: {exc}"
+    elif lower.endswith(".json"):
+        try:
+            json.loads(content)
+        except (ValueError, TypeError) as exc:
+            return f"invalid JSON: {exc}"
+    return ""
+
+
 def validate_patch(state: dict) -> dict:
     """Opaque-node body: a deterministic pre-flight. No LLM, no network. Never
     raises.
@@ -96,6 +118,12 @@ def validate_patch(state: dict) -> dict:
                 return _invalid(
                     f"changes_json[{pk!r}] must be a string (new contents) or null (delete)."
                 )
+            if isinstance(cv, str):
+                syn = _syntax_error(pk, cv)
+                if syn:
+                    return _invalid(
+                        f"new-file {pk!r} would not parse — {syn}. Fix the file content."
+                    )
             change_paths.add(pk)
 
     try:
@@ -123,11 +151,15 @@ def validate_patch(state: dict) -> dict:
                     "create a new file, or fix the path)"
                 )
                 continue
-            _new, err = _apply_edit_blocks(current, blocks)
+            new_content, err = _apply_edit_blocks(current, blocks)
             if err is not None:
                 errors[path] = err.get("detail") or err.get("error_kind") or "edit did not apply"
             else:
-                checked += 1
+                syn = _syntax_error(path, new_content or "")
+                if syn:
+                    errors[path] = f"edit applies but the patched file no longer parses — {syn}"
+                else:
+                    checked += 1
 
     if not edit_paths and not change_paths:
         return _invalid(

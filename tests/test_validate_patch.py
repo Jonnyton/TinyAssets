@@ -108,8 +108,8 @@ def test_bad_changes_json_shape_is_invalid():
 
 def test_duplicate_path_in_edits_and_changes_is_invalid():
     packet = json.dumps({"sink": "github_pull_request", "payload": {
-        "edits_json": {"m.py": [{"search": "return a - b", "replace": "x"}]},
-        "changes_json": {"m.py": "whole new file\n"},
+        "edits_json": {"m.py": [{"search": "return a - b", "replace": "return b - a"}]},
+        "changes_json": {"m.py": "y = 2\n"},
     }})
     out = validate_patch(_state(packet, {"m.py": _FILE}))
     assert out["patch_validity"] == "INVALID"
@@ -126,4 +126,42 @@ def test_registered_as_opaque_domain_callable():
 
 def test_never_raises_on_empty_state():
     out = validate_patch({})
+    assert out["patch_validity"] == "INVALID"
+
+
+# ── Syntax lint-guard: an edit can APPLY yet break the file (SWE-agent pattern) ──
+
+def test_edit_that_breaks_python_syntax_is_invalid():
+    edits = {"m.py": [{"search": "return a + b", "replace": "return a +"}]}
+    out = validate_patch(_state(_packet(edits), {"m.py": _FILE}))
+    assert out["patch_validity"] == "INVALID"
+    detail = out["patch_validity_detail"].lower()
+    assert "pars" in detail or "syntax" in detail
+
+
+def test_valid_python_edit_passes_syntax_check():
+    edits = {"m.py": [{"search": "return a + b", "replace": "return (a + b)"}]}
+    out = validate_patch(_state(_packet(edits), {"m.py": _FILE}))
+    assert out["patch_validity"] == "VALID", out
+
+
+def test_new_python_file_with_bad_syntax_is_invalid():
+    packet = json.dumps({"sink": "github_pull_request",
+                         "payload": {"changes_json": {"n.py": "def f(:\n    pass\n"}}})
+    out = validate_patch(_state(packet, {}))
+    assert out["patch_validity"] == "INVALID"
+
+
+def test_non_python_file_edit_skips_syntax_check():
+    # A markdown edit applies; we must NOT false-INVALID on non-code prose.
+    md = "# Title\n\nsome text here\n"
+    edits = {"doc.md": [{"search": "some text here", "replace": "x {{ not python"}]}
+    out = validate_patch(_state(_packet(edits), {"doc.md": md}))
+    assert out["patch_validity"] == "VALID", out
+
+
+def test_new_json_file_invalid_json_is_invalid():
+    packet = json.dumps({"sink": "github_pull_request",
+                         "payload": {"changes_json": {"c.json": "{not valid json"}}})
+    out = validate_patch(_state(packet, {}))
     assert out["patch_validity"] == "INVALID"
