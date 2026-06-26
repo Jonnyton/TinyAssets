@@ -52,7 +52,14 @@ def _syntax_error(path: str, content: str) -> str:
     """Return a syntax-error description for a known language, else ''. Pure
     (no import/exec): ``compile(..., 'exec')`` only PARSES, and json.loads only
     parses — catches a patch that applies cleanly but breaks the file (the SWE
-    "lint-guard"). Unknown extensions are skipped (no false positives)."""
+    "lint-guard"). Unknown extensions are skipped (no false positives).
+
+    Scope (Codex review of #1410): the Python check uses the DAEMON's grammar,
+    which is accurate when the target repo's Python <= the daemon's runtime
+    (the patch-loop targets Jonnyton/Workflow on the same 3.11+ runtime). A repo
+    using newer-than-daemon syntax could see a false INVALID on those constructs;
+    Python's strong back-compat keeps that surface tiny. JSON parsing is
+    version-independent."""
     lower = path.lower()
     if lower.endswith(".py") or lower.endswith(".pyi"):
         try:
