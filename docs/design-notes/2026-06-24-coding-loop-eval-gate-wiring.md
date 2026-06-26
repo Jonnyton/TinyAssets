@@ -195,15 +195,18 @@ Same warn→enforce ladder as S2, on a separate channel:
    no same-rule double-report). Default `warn`; invalid → `warn`; `off` is the
    kill switch — so **zero block-behavior change until a host flips it.** Now at
    off/warn/enforce parity with S2.
-4. **Host FLIP (future, gated):** only after the warn rate is acceptable AND
-   opposite-provider review re-confirms. **Flip-time watch items (Codex
-   2026-06-25, thread `019f00f9`):** (a) if `child_integrity` warnings turn out
-   dominated by thin-packet / receipt-state artifacts rather than real bad
-   execution paths, the packet-time source is too weak — wire the richer
-   run-event-backed `coding_trajectory_from_run` source BEFORE flipping; (b)
-   audit the deployed env before rollout — flipping turns
-   `WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE=enforce` from a warn-alias into a real
-   blocker.
+4. **Host FLIP — DONE 2026-06-25 (host-approved).** `enforce` is live + durable
+   on the droplet (verified; see Gate status). Env audited; the gate is the
+   on-demand `validate_ship_packet` MCP action — **not exercised by the
+   autonomous loop** (no `.ship_attempts` ledger on the droplet, confirmed
+   2026-06-26), so enforce currently blocks nothing and accumulates no warn data.
+   **Post-flip monitoring (still open, but gated on the gate being exercised):**
+   if/when `validate_ship_packet` starts being called and `summarize_trajectory_warnings`
+   shows `child_integrity` is dominated by thin-packet / receipt artifacts rather
+   than real bad paths, wire the richer run-event-backed `coding_trajectory_from_run`
+   source (already built + tested in `coding_process.py`, just unwired). Wiring it
+   now would be speculative — no data, no current effect — so it stays ready, not
+   built into the gate path.
 
 ### Gate status
 Pure scorer + 31 tests SHIP'd (Codex, thread `019f0022`). Warn-only gate wiring +
