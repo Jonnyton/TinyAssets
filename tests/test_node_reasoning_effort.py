@@ -75,6 +75,45 @@ def test_compiled_node_threads_effort_into_provider_call():
     assert cfg.timeout == 45
 
 
+def test_subsecond_node_timeout_floors_provider_timeout_to_one():
+    """Codex review fix: a sub-second node timeout must not become provider
+    timeout 0 (int(0.5)==0 → instant provider timeout)."""
+    from workflow.graph_compiler import _build_prompt_template_node
+
+    captured: dict = {}
+
+    def fake_provider_call(prompt, system, *, role="writer", config=None):
+        captured["config"] = config
+        return json.dumps({"out": "ok"})
+
+    node = NodeDefinition(
+        node_id="fast", display_name="Fast",
+        prompt_template="Go {x}.", input_keys=["x"], output_keys=["out"],
+        timeout_seconds=0.5,
+    )
+    fn = _build_prompt_template_node(node, provider_call=fake_provider_call, event_sink=None)
+    fn({"x": "now"})
+    assert captured["config"].timeout >= 1
+
+
+def test_policy_path_skips_config_for_legacy_4arg_router():
+    """Codex review fix: a router whose call_with_policy_sync takes only
+    (role, prompt, system, policy) must NOT receive a 5th config arg."""
+    from workflow.graph_compiler import _call_policy_router_with_retry
+
+    class _LegacyRouter:
+        def call_with_policy_sync(self, role, prompt, system, policy):
+            return ("text", "legacy", {})
+
+    from workflow.providers.base import ModelConfig
+    # Should not raise TypeError despite a non-None config.
+    out = _call_policy_router_with_retry(
+        _LegacyRouter(), role="writer", prompt="p", system="",
+        policy={"preferred": {}}, config=ModelConfig(reasoning_effort="low"),
+    )
+    assert out == ("text", "legacy", {})
+
+
 @pytest.fixture
 def server_env(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
@@ -106,9 +145,10 @@ def test_update_node_sets_and_validates_reasoning_effort(server_env):
     bid = built["branch_def_id"]
 
     # Valid: set the node to low effort.
+    low_op = [{"op": "update_node", "node_id": "ready", "reasoning_effort": "low"}]
     ok = json.loads(us.extensions(
         action="patch_branch", branch_def_id=bid,
-        changes_json=json.dumps([{"op": "update_node", "node_id": "ready", "reasoning_effort": "low"}]),
+        changes_json=json.dumps(low_op),
     ))
     assert ok.get("status") != "rejected", ok
     got = json.loads(us.extensions(action="get_branch", branch_def_id=bid))
@@ -116,8 +156,9 @@ def test_update_node_sets_and_validates_reasoning_effort(server_env):
     assert ready["reasoning_effort"] == "low"
 
     # Invalid: rejected with a clear error.
+    bad_op = [{"op": "update_node", "node_id": "ready", "reasoning_effort": "turbo"}]
     bad = json.loads(us.extensions(
         action="patch_branch", branch_def_id=bid,
-        changes_json=json.dumps([{"op": "update_node", "node_id": "ready", "reasoning_effort": "turbo"}]),
+        changes_json=json.dumps(bad_op),
     ))
     assert bad.get("status") == "rejected" or "error" in bad, bad

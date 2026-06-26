@@ -225,11 +225,23 @@ def _call_policy_router_with_retry(
     config: Any = None,
 ) -> tuple[str, str, dict]:
     """Retry policy-aware provider dispatch on transient chain exhaustion."""
+    # Only forward config when set AND the router's call_with_policy_sync
+    # actually accepts it — protects 4-arg routers/stubs (backward-compat),
+    # mirroring the injected provider_call bridge guard.
+    pass_config = config is not None
+    if pass_config:
+        try:
+            import inspect as _inspect
+            _params = _inspect.signature(router.call_with_policy_sync).parameters
+            pass_config = ("config" in _params) or any(
+                p.kind == p.VAR_KEYWORD for p in _params.values()
+            )
+        except (ValueError, TypeError):
+            pass_config = False
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
     for attempt_index in range(attempts):
         try:
-            # Only forward config when set (backward-compat with 4-arg stubs).
-            if config is not None:
+            if pass_config:
                 return router.call_with_policy_sync(
                     role, prompt, system, policy, config,
                 )
@@ -923,7 +935,9 @@ def _build_prompt_template_node(
     try:
         from workflow.providers.base import ModelConfig as _ModelConfig
         _node_cfg: Any = _ModelConfig(
-            timeout=int(timeout_s),
+            # Floor at 1s: a sub-second node timeout (e.g. 0.5) must not become
+            # a provider timeout of 0 (int(0.5)==0 → instant provider timeout).
+            timeout=max(1, int(timeout_s)),
             reasoning_effort=_node_reasoning_effort,
         )
     except Exception:  # pragma: no cover - defensive; provider import is optional
