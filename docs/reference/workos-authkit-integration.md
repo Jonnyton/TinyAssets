@@ -4,9 +4,33 @@ Pointer-loaded reference (ADR-002) for the founder-identity build. Design + deci
 live in `docs/design-notes/2026-06-26-founder-and-universe-identity.md` §3.0; this doc
 is the *how* for slice 1. Synthesized from WorkOS's own 2026 docs (sources at bottom).
 
-> **Status:** research synthesis (Claude, 2026-06-26). The four **VERIFY-flags** below must
-> be confirmed against a live token + AuthKit AS metadata before shipping. Slice-1
+> **Status:** research synthesis (Claude, 2026-06-26); **live values + AS metadata resolved
+> against the TinyAssets staging tenant 2026-06-26** (see *Live staging values*). Slice-1
 > implementation gets opposite-provider (Codex) review per AGENTS.md.
+
+## Live staging values (resolved 2026-06-26, TinyAssets WorkOS tenant)
+Non-secret config (the secret key is **vault-only, not here**). Production gets its own
+values + its own upstream Google/GitHub OAuth apps.
+
+| Var | Staging value |
+|---|---|
+| `WORKOS_CLIENT_ID` | `client_01KW15P07QYSMF9CY4XXXJN520` |
+| `WORKOS_AUTHKIT_DOMAIN` | `inventive-van-62-staging.authkit.app` |
+| `WORKOS_MCP_RESOURCE` | `https://tinyassets.io/mcp` (register as Resource Indicator — pending) |
+| issuer (`iss`) | `https://inventive-van-62-staging.authkit.app` |
+| `jwks_uri` | `https://inventive-van-62-staging.authkit.app/oauth2/jwks` |
+| authorize / token | `…/oauth2/authorize` · `…/oauth2/token` |
+| PKCE | `S256` (required) |
+| `scopes_supported` | `openid profile email offline_access` |
+| environment | `environment_01KW15NZV1H9T2Z1J12E9FNJG1` (Staging) |
+
+**Validate against `iss` + `jwks_uri` from the AuthKit domain — NOT the legacy
+`https://api.workos.com/sso/jwks/<client_id>` (it also 200s but is the SSO product's JWKS).**
+
+**Dashboard state (verified live 2026-06-26):** social providers **Google / GitHub /
+Microsoft = Enabled**; Email+Password enabled; Passkeys / Magic Auth disabled.
+**Remaining config:** register the **Resource Indicator** (`https://tinyassets.io/mcp`) for
+`aud` binding, and allowlist the connector **redirect URI** when wiring the claude.ai OAuth flow.
 
 ## Architecture
 **AuthKit = the OAuth 2.1 Authorization Server. Our MCP server = the Resource Server.**
@@ -105,11 +129,11 @@ not need them. Vault these via `scripts/load_secrets.sh` (add keys to `secrets_k
 - [ ] Serve PRM at `/.well-known/oauth-protected-resource`.
 - [ ] **VERIFY** against live AS metadata: exact `issuer` + `jwks_uri`, then validate accordingly.
 
-## VERIFY-flags (confirm against a real token/metadata before shipping)
-1. **Exact `iss`** for our AuthKit-domain config (`https://api.workos.com/` vs the AuthKit domain) — read from AS metadata, don't hardcode.
-2. **`email` in token** — authoritative claim list omits it; treat as custom-claim-only; decode a real token to confirm.
-3. **No one-call SDK RS-validator** — SDK is sealed-session-oriented; `get_jwks_url()` + PyJWT is the path. Re-check the SDK changelog in case a newer RS helper shipped.
-4. **`aud` literal format** for MCP (full URL vs registered identifier) — confirm once the Resource Indicator is registered.
+## VERIFY-flags — status (checked vs live staging metadata 2026-06-26)
+1. **Exact `iss`** — ✅ **RESOLVED:** `https://inventive-van-62-staging.authkit.app` (the AuthKit domain, not `api.workos.com/`). Read from AS metadata.
+2. **`email` in token** — ⚠️ **STILL VERIFY** by decoding a real access token. `scopes_supported` includes `email`/`profile`, so email *should* appear when requested — but the authoritative claim list omitted it, so confirm on a real token.
+3. **JWKS source** — ✅ **RESOLVED:** use `…authkit.app/oauth2/jwks` (from AS metadata). The legacy `api.workos.com/sso/jwks/<client_id>` also 200s but is the SSO JWKS — don't use it.
+4. **`aud` literal format** — ⏳ **PENDING:** register `https://tinyassets.io/mcp` as a Resource Indicator, then decode a token to confirm the exact `aud` string.
 
 ## Sources
 WorkOS docs: AuthKit MCP, AuthKit Sessions, Session tokens/JWKS API ref, Connect/OAuth,
