@@ -564,6 +564,70 @@ def recover_claimed_tasks(universe_path: Path) -> int:
     return count
 
 
+def reclaim_predecessor_tasks(
+    universe_path: Path,
+    *,
+    worker_id: str,
+) -> int:
+    """Startup-only: reset ``running`` rows claimed by a PRIOR incarnation of
+    *this same* ``worker_id`` back to ``pending``. Returns the count.
+
+    A ``worker_id`` (``WORKFLOW_WORKER_ID`` — e.g. ``claude-1``/``codex-2`` in
+    the compose fleet) belongs to exactly one live worker process at a time, and
+    at THIS worker's startup it has not claimed anything yet. So any ``running``
+    task carrying our own ``executor_worker_id`` must be an orphan our previous
+    incarnation left behind — typically a redeploy that SIGKILLed the old child
+    mid-node, stranding a still-valid lease for the full ~30min TTL (the
+    redeploy-churn / lease≫heartbeat gap). Clearing it at startup recovers in
+    seconds instead of waiting out the TTL.
+
+    Why this is safe where the blanket :func:`recover_claimed_tasks` was not:
+    that reset EVERY ``running`` row and so stole *live peers'* tasks on every
+    restart, causing the 2026-06-25 double-claim / Invalid-transition wedge.
+    This touches ONLY rows whose ``executor_worker_id`` equals our own id — a
+    live peer has a different id and is never affected; our own previous
+    incarnation is provably dead (we are its container replacement). No heartbeat
+    or lease inference is needed.
+
+    No-op when ``worker_id`` is blank: a blank id can't be scoped to "ours"
+    without risking a peer's lease, so the lease TTL remains the fallback. The
+    CALLER must pass a uniquely-assigned id — a shared fallback id (e.g. the
+    ``cloud-droplet`` host-user default) could be held by multiple live
+    supervisors, so the caller excludes it (see ``_dispatcher_startup``).
+    """
+    clean = (worker_id or "").strip()
+    if not clean:
+        return 0
+    qp = queue_path(universe_path)
+    if not qp.exists():
+        return 0
+    count = 0
+    with _file_lock(universe_path):
+        raw = _read_raw(qp)
+        for row in raw:
+            if not isinstance(row, dict) or row.get("status") != "running":
+                continue
+            if str(row.get("executor_worker_id") or "").strip() != clean:
+                continue
+            logger.warning(
+                "branch_tasks reclaim: predecessor orphan %s held by our own "
+                "worker_id=%s (prior incarnation, lease_expires_at=%s) — "
+                "resetting to pending",
+                row.get("branch_task_id"),
+                clean,
+                row.get("lease_expires_at"),
+            )
+            row["status"] = "pending"
+            row["claimed_by"] = ""
+            row["worker_owner_id"] = ""
+            row["lease_expires_at"] = ""
+            row["heartbeat_at"] = ""
+            count += 1
+        if count:
+            _write_raw(qp, raw)
+    return count
+
+
 def reclaim_expired_leases(
     universe_path: Path,
     *,
@@ -590,6 +654,12 @@ def reclaim_expired_leases(
     lease-less row would stay ``running`` forever once startup stopped using
     the blanket :func:`recover_claimed_tasks` (Codex cross-family review,
     2026-06-25).
+
+    A redeploy that SIGKILLs a worker mid-node strands a still-valid lease for
+    the full TTL; that orphan is recovered in seconds at the replacement
+    worker's startup by :func:`reclaim_predecessor_tasks`, so this lease-only
+    sweep deliberately never tries to infer worker liveness from heartbeats
+    (which would risk false-reaping a healthy long-node peer).
     """
     current = now or datetime.now(timezone.utc)
     qp = queue_path(universe_path)

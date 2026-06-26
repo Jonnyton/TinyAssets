@@ -194,8 +194,26 @@ def _dispatcher_startup(universe_path: Path) -> None:
         from workflow.branch_tasks import (
             garbage_collect,
             reclaim_expired_leases,
+            reclaim_predecessor_tasks,
         )
 
+        # Redeploy-churn recovery: a SIGKILLed predecessor of THIS worker_id
+        # left its running tasks orphaned with a still-valid (~30min) lease. At
+        # our startup we have not claimed anything yet, so any running row under
+        # our own worker_id is that predecessor's orphan — reclaim it in seconds
+        # instead of waiting out the TTL. Scoped to our own id, so unlike the
+        # old blanket reset it never steals a live peer's task (2026-06-25 wedge).
+        # Require a genuinely UNIQUE worker id: when WORKFLOW_WORKER_ID is unset,
+        # cloud_worker materializes the shared DEFAULT_HOST_USER ("cloud-droplet")
+        # into the child env, which several manually-started supervisors could
+        # share — and reclaiming "our own" non-unique id would steal a live
+        # twin's task (Codex review). The compose fleet assigns unique ids
+        # (claude-1/codex-2/...), so this only excludes the un-configured default.
+        from workflow.cloud_worker import DEFAULT_HOST_USER
+
+        worker_id = os.environ.get("WORKFLOW_WORKER_ID", "").strip()
+        if worker_id and worker_id != DEFAULT_HOST_USER:
+            reclaim_predecessor_tasks(universe_path, worker_id=worker_id)
         # reclaim_leaseless=True: startup is the one safe place to also reset
         # running rows that carry no lease (pre-lease-era / corrupt orphans),
         # which the lease-only sweep skips and would otherwise strand forever
