@@ -403,6 +403,7 @@ def read_graph(
     target: str = "status",
     graph_id: str = "",
     goal_id: str = "",
+    run_id: str = "",
     query: str = "",
     tags: str = "",
     author: str = "",
@@ -412,9 +413,11 @@ def read_graph(
     """Read Workflow graph state without changing it.
 
     Args:
-        target: What to read: status, graphs, graph, goals, goal, or runs.
+        target: What to read: status, graphs, graph, goals, goal, runs, or run.
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
+        run_id: Run identifier for target=run (the single-run result read).
+            Falls back to graph_id when omitted.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
         author: Optional goal author filter.
@@ -436,10 +439,15 @@ def read_graph(
         return _goals_impl(action="get", goal_id=goal_id)
     if normalized == "runs":
         return _extensions_impl(action="list_runs", status=run_status, limit=limit)
+    if normalized == "run":
+        # PR-180 SEE half: a founder reads their own run's terminal result +
+        # structured failure reason (status, output/external_write_results,
+        # error, failure_class/suggested_action/actionable_by/error_detail).
+        return _extensions_impl(action="get_run", run_id=(run_id or graph_id))
     return _unknown_target(
         "read_graph",
         target,
-        ("status", "graphs", "graph", "goals", "goal", "runs"),
+        ("status", "graphs", "graph", "goals", "goal", "runs", "run"),
     )
 
 
@@ -468,11 +476,12 @@ def write_graph(
     graph_id: str = "",
     request_type: str = "general",
     branch_id: str = "",
+    changes_json: str = "",
 ) -> str:
     """Create or queue Workflow graph state.
 
     Args:
-        target: What to write: goal, request, or persona.
+        target: What to write: goal, request, persona, or branch.
         name: Human-readable shared-goal name; with target=persona, the name
             the universe's persona is given (e.g. "Tiny"). The chatbot embodies
             it in the first person on the next get_status persona block.
@@ -483,7 +492,11 @@ def write_graph(
         graph_id: Optional target graph/universe identifier; with target=persona
             it is the universe whose persona is being named.
         request_type: Workflow request type.
-        branch_id: Optional target branch identifier.
+        branch_id: Target branch identifier; with target=branch it is the
+            branch_def_id to patch.
+        changes_json: With target=branch, an ordered JSON list of patch ops
+            (transactional — all ops land or none). The patch is author-gated:
+            only the branch's author can edit it.
     """
     normalized = target.strip().lower()
     if normalized == "goal":
@@ -508,7 +521,17 @@ def write_graph(
             universe_id=graph_id,
             text=name,
         )
-    return _unknown_target("write_graph", target, ("goal", "request", "persona"))
+    if normalized == "branch":
+        # PR-180 EDIT half: a founder patches their own branch graph via the
+        # existing transactional patch_branch handler (author-gated: BUG-081).
+        return _extensions_impl(
+            action="patch_branch",
+            branch_def_id=branch_id,
+            changes_json=changes_json,
+        )
+    return _unknown_target(
+        "write_graph", target, ("goal", "request", "persona", "branch")
+    )
 
 
 _mcp_write_graph = _register_structured_tool(
