@@ -24,6 +24,13 @@ class ModelConfig:
 
     temperature: float = 0.7
 
+    reasoning_effort: str = ""
+    """Generic per-call reasoning/effort level (e.g. ``minimal`` / ``low`` /
+    ``medium`` / ``high``). Empty = provider default. Each provider maps this to
+    its own real setting — e.g. Codex ``-c model_reasoning_effort=<v>`` — so a
+    branch can run a light node (localize) cheap+fast and a hard node
+    (propose_changes) deep. Not a prompt hint; a real subprocess setting."""
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderResponse:

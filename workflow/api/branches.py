@@ -1634,6 +1634,12 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     )
     if err:
         return err
+    reasoning_effort = str(raw.get("reasoning_effort", "") or "").strip().lower()
+    if reasoning_effort and reasoning_effort not in _VALID_REASONING_EFFORTS:
+        return (
+            f"node '{nid}' reasoning_effort must be empty or one of: "
+            f"{', '.join(sorted(_VALID_REASONING_EFFORTS))}"
+        )
     llm_policy, err = _coerce_llm_policy_update(
         raw.get("llm_policy"), f"node '{nid}' llm_policy",
     )
@@ -1712,6 +1718,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             source_code=source_code,
             prompt_template=prompt_template,
             model_hint=model_hint,
+            reasoning_effort=reasoning_effort,
             llm_policy=llm_policy,
             timeout_seconds=timeout_seconds,
             author=raw.get("author") or _current_actor(),
@@ -1860,6 +1867,7 @@ def _coerce_llm_policy_update(
 
 
 _NODE_UPDATE_PATCH_META_FIELDS = frozenset({"op", "node_id"})
+_VALID_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
 _NODE_UPDATE_FIELDS = frozenset({
     "display_name",
     "description",
@@ -1867,6 +1875,7 @@ _NODE_UPDATE_FIELDS = frozenset({
     "prompt_template",
     "source_code",
     "model_hint",
+    "reasoning_effort",
     "llm_policy",
     "input_keys",
     "output_keys",
@@ -1997,6 +2006,14 @@ def _apply_node_updates(
         if err:
             return err
         node.model_hint = model_hint
+    if "reasoning_effort" in editable_updates:
+        effort = str(editable_updates["reasoning_effort"] or "").strip().lower()
+        if effort and effort not in _VALID_REASONING_EFFORTS:
+            return (
+                f"Invalid reasoning_effort '{effort}'. Must be empty (provider "
+                f"default) or one of: {', '.join(sorted(_VALID_REASONING_EFFORTS))}"
+            )
+        node.reasoning_effort = effort
     if "llm_policy" in editable_updates:
         llm_policy, err = _coerce_llm_policy_update(
             editable_updates["llm_policy"],

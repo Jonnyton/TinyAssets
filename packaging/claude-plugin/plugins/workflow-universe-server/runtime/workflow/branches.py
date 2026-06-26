@@ -298,6 +298,12 @@ class NodeDefinition:
     source_code: str = ""
     prompt_template: str = ""
     model_hint: str = ""
+    # Per-node reasoning/effort level — a REAL provider setting (e.g. Codex
+    # ``model_reasoning_effort``), not a prompt hint. Empty = provider default.
+    # Lets a branch run a light node (localize) at ``minimal``/``low`` for
+    # speed+cost and a hard node (propose_changes) at ``high``. Like model_hint,
+    # this is a per-node knob the branch builder controls.
+    reasoning_effort: str = ""
     tools_allowed: list[str] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
     # #61: dense LLM calls (legal research, long summaries) regularly

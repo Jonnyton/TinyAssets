@@ -222,11 +222,29 @@ def _call_policy_router_with_retry(
     prompt: str,
     system: str,
     policy: dict[str, Any],
+    config: Any = None,
 ) -> tuple[str, str, dict]:
     """Retry policy-aware provider dispatch on transient chain exhaustion."""
+    # Only forward config when set AND the router's call_with_policy_sync
+    # actually accepts it — protects 4-arg routers/stubs (backward-compat),
+    # mirroring the injected provider_call bridge guard.
+    pass_config = config is not None
+    if pass_config:
+        try:
+            import inspect as _inspect
+            _params = _inspect.signature(router.call_with_policy_sync).parameters
+            pass_config = ("config" in _params) or any(
+                p.kind == p.VAR_KEYWORD for p in _params.values()
+            )
+        except (ValueError, TypeError):
+            pass_config = False
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
     for attempt_index in range(attempts):
         try:
+            if pass_config:
+                return router.call_with_policy_sync(
+                    role, prompt, system, policy, config,
+                )
             return router.call_with_policy_sync(role, prompt, system, policy)
         except AllProvidersExhaustedError:
             if attempt_index == attempts - 1:
@@ -909,6 +927,36 @@ def _build_prompt_template_node(
     json_suffix = _json_contract_suffix(node, state_types) if needs_json else ""
     effective_policy: dict[str, Any] | None = llm_policy
 
+    # Per-node provider config — REAL settings threaded to the subprocess, not
+    # prompt hints: reasoning_effort (e.g. localize=minimal so a light task is
+    # fast+cheap) + the node's own timeout. Built once per node. ModelConfig is
+    # imported lazily so graph_compiler keeps no hard provider import.
+    _node_reasoning_effort = (getattr(node, "reasoning_effort", "") or "").strip()
+    try:
+        from workflow.providers.base import ModelConfig as _ModelConfig
+        _node_cfg: Any = _ModelConfig(
+            # Floor at 1s: a sub-second node timeout (e.g. 0.5) must not become
+            # a provider timeout of 0 (int(0.5)==0 → instant provider timeout).
+            timeout=max(1, int(timeout_s)),
+            reasoning_effort=_node_reasoning_effort,
+        )
+    except Exception:  # pragma: no cover - defensive; provider import is optional
+        _node_cfg = None
+    # Only pass config to the injected provider bridge when its signature
+    # accepts it (protects test stubs / older bridges).
+    try:
+        import inspect as _inspect
+        _bridge_takes_config = bool(provider_call) and (
+            "config" in _inspect.signature(provider_call).parameters
+        )
+    except (ValueError, TypeError):
+        _bridge_takes_config = False
+
+    def _bridge(_p: str, _s: str) -> str:
+        if _bridge_takes_config and _node_cfg is not None:
+            return provider_call(_p, _s, role=role, config=_node_cfg)
+        return provider_call(_p, _s, role=role)
+
     # Lazy import so graph_compiler doesn't hard-depend on providers at import
     # time. Aliased so the except-clauses below can reference it by name without
     # re-importing inside every invocation.
@@ -1077,6 +1125,7 @@ def _build_prompt_template_node(
                                 prompt=prompt,
                                 system="",
                                 policy=effective_policy,
+                                config=_node_cfg,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,
@@ -1088,7 +1137,7 @@ def _build_prompt_template_node(
                         # Router unavailable or empty — fall through to the
                         # run_branch-injected provider bridge.
                         response = _run_with_timeout(
-                            lambda: provider_call(prompt, "", role=role),
+                            lambda: _bridge(prompt, ""),
                             timeout_s=timeout_s,
                             node_id=node.node_id,
                         )
@@ -1103,7 +1152,7 @@ def _build_prompt_template_node(
             else:
                 try:
                     response = _run_with_timeout(
-                        lambda: provider_call(prompt, "", role=role),
+                        lambda: _bridge(prompt, ""),
                         timeout_s=timeout_s,
                         node_id=node.node_id,
                     )
