@@ -16,6 +16,7 @@ from workflow.branch_tasks import (
     queue_path,
     read_queue,
     reclaim_expired_leases,
+    reclaim_predecessor_tasks,
     recover_claimed_tasks,
     refresh_task_heartbeat,
 )
@@ -264,3 +265,125 @@ def test_dispatcher_startup_reclaims_expired_lease(tmp_path: Path) -> None:
     row = read_queue(tmp_path)[0]
     assert row.status == "pending"
     assert row.claimed_by == ""
+
+
+# --- redeploy-churn: startup predecessor-orphan reclaim ----------------------
+
+
+def _claim_running(tmp_path: Path, *, worker: str, runtime: str = "r1") -> BranchTask:
+    """Append + claim a task so it is 'running' under *worker* with a fresh lease."""
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(
+        tmp_path, task.branch_task_id, "daemon-a",
+        executor_worker_id=worker, executor_runtime_id=runtime,
+    )
+    return task
+
+
+def test_reclaim_predecessor_resets_own_worker_id_task(tmp_path: Path) -> None:
+    """A running task under our own worker_id (prior incarnation) is reclaimed."""
+    _claim_running(tmp_path, worker="claude-1")
+    assert reclaim_predecessor_tasks(tmp_path, worker_id="claude-1") == 1
+    row = read_queue(tmp_path)[0]
+    assert row.status == "pending"
+    assert row.claimed_by == ""
+    assert row.lease_expires_at == ""
+
+
+def test_reclaim_predecessor_ignores_valid_lease(tmp_path: Path) -> None:
+    """Reclaim does NOT depend on lease expiry — a fresh ~30min lease on our own
+    worker_id is still our predecessor's orphan and is reclaimed (the whole
+    point: the redeploy orphan's lease is still valid)."""
+    _claim_running(tmp_path, worker="claude-1")
+    row = read_queue(tmp_path)[0]
+    assert row.lease_expires_at and _dt(row.lease_expires_at) > datetime.now(
+        timezone.utc,
+    )
+    assert reclaim_predecessor_tasks(tmp_path, worker_id="claude-1") == 1
+    assert read_queue(tmp_path)[0].status == "pending"
+
+
+def test_reclaim_predecessor_preserves_live_peer(tmp_path: Path) -> None:
+    """A different worker_id is a live peer — never reclaimed."""
+    _claim_running(tmp_path, worker="claude-2")
+    assert reclaim_predecessor_tasks(tmp_path, worker_id="claude-1") == 0
+    assert read_queue(tmp_path)[0].status == "running"
+
+
+def test_reclaim_predecessor_noop_on_blank_worker_id(tmp_path: Path) -> None:
+    """Blank worker_id can't be scoped to 'ours' → no-op (TTL fallback)."""
+    _claim_running(tmp_path, worker="claude-1")
+    assert reclaim_predecessor_tasks(tmp_path, worker_id="") == 0
+    assert read_queue(tmp_path)[0].status == "running"
+
+
+def test_reclaim_predecessor_ignores_non_running_rows(tmp_path: Path) -> None:
+    """Only 'running' rows are touched; a pending row is left alone."""
+    task = _task()
+    append_task(tmp_path, task)  # pending, never claimed
+    assert reclaim_predecessor_tasks(tmp_path, worker_id="claude-1") == 0
+    assert read_queue(tmp_path)[0].status == "pending"
+
+
+def test_dispatcher_startup_reclaims_own_predecessor_orphan(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """End-to-end: a replacement worker clears its predecessor's orphan at boot,
+    even with a still-valid lease (redeploy-churn recovery)."""
+    from fantasy_daemon.__main__ import _dispatcher_startup
+
+    monkeypatch.setenv("WORKFLOW_WORKER_ID", "claude-1")
+    _claim_running(tmp_path, worker="claude-1")  # fresh ~30min lease
+
+    _dispatcher_startup(tmp_path)
+
+    assert read_queue(tmp_path)[0].status == "pending"
+
+
+def test_dispatcher_startup_preserves_peer_under_other_worker_id(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Startup as claude-1 must NOT reclaim claude-2's live running task."""
+    from fantasy_daemon.__main__ import _dispatcher_startup
+
+    monkeypatch.setenv("WORKFLOW_WORKER_ID", "claude-1")
+    _claim_running(tmp_path, worker="claude-2")  # peer's fresh lease
+
+    _dispatcher_startup(tmp_path)
+
+    assert read_queue(tmp_path)[0].status == "running"
+
+
+def test_dispatcher_startup_no_predecessor_reclaim_without_worker_id(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """With WORKFLOW_WORKER_ID unset, predecessor reclaim is skipped (a fresh
+    lease survives — only TTL applies)."""
+    from fantasy_daemon.__main__ import _dispatcher_startup
+
+    monkeypatch.delenv("WORKFLOW_WORKER_ID", raising=False)
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(tmp_path, task.branch_task_id, "daemon-a")  # fresh lease, blank executor
+
+    _dispatcher_startup(tmp_path)
+
+    assert read_queue(tmp_path)[0].status == "running"
+
+
+def test_dispatcher_startup_skips_shared_default_worker_id(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The shared 'cloud-droplet' fallback id is NOT predecessor-reclaimed —
+    several manually-started supervisors could share it, so reclaiming it would
+    risk stealing a live twin's task (Codex review). Falls back to TTL."""
+    from fantasy_daemon.__main__ import _dispatcher_startup
+    from workflow.cloud_worker import DEFAULT_HOST_USER
+
+    monkeypatch.setenv("WORKFLOW_WORKER_ID", DEFAULT_HOST_USER)
+    _claim_running(tmp_path, worker=DEFAULT_HOST_USER)  # fresh lease under default id
+
+    _dispatcher_startup(tmp_path)
+
+    assert read_queue(tmp_path)[0].status == "running"
