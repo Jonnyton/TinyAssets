@@ -9,6 +9,7 @@ without touching the OS process table.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -716,3 +717,100 @@ def test_main_exits_zero_after_max_iterations(tmp_path, monkeypatch):
         "--crash-backoff", "0",
     ])
     assert rc == 0
+
+
+# ---- _release_own_orphaned_leases (graceful-drain on shutdown) ------------
+
+
+def _running_task(tmp_path, *, worker: str) -> None:
+    """Append + claim a 'running' task (fresh lease) under *worker*."""
+    from workflow.branch_tasks import BranchTask, append_task, claim_task
+
+    append_task(tmp_path, BranchTask(
+        branch_task_id=f"bt-{worker}", branch_def_id="b", universe_id="u",
+    ))
+    claim_task(tmp_path, f"bt-{worker}", "daemon-a", executor_worker_id=worker)
+
+
+def test_release_own_orphaned_leases_releases_own(tmp_path, monkeypatch):
+    """A still-valid lease under our own worker_id is released on shutdown."""
+    from workflow.branch_tasks import read_queue
+
+    monkeypatch.setenv("WORKFLOW_WORKER_ID", "claude-1")
+    _running_task(tmp_path, worker="claude-1")
+
+    assert cw._release_own_orphaned_leases(tmp_path) == 1
+    assert read_queue(tmp_path)[0].status == "pending"
+
+
+def test_release_own_orphaned_leases_preserves_peer(tmp_path, monkeypatch):
+    """A live peer's running task (different worker_id) is never released."""
+    from workflow.branch_tasks import read_queue
+
+    monkeypatch.setenv("WORKFLOW_WORKER_ID", "claude-1")
+    _running_task(tmp_path, worker="claude-2")
+
+    assert cw._release_own_orphaned_leases(tmp_path) == 0
+    assert read_queue(tmp_path)[0].status == "running"
+
+
+def test_release_own_orphaned_leases_skips_default_id(tmp_path, monkeypatch):
+    """The shared cloud-droplet fallback id is not released (could be shared)."""
+    from workflow.branch_tasks import read_queue
+
+    monkeypatch.delenv("WORKFLOW_WORKER_ID", raising=False)
+    monkeypatch.delenv("UNIVERSE_SERVER_HOST_USER", raising=False)
+    assert cw._worker_id() == cw.DEFAULT_HOST_USER  # precondition
+    _running_task(tmp_path, worker=cw.DEFAULT_HOST_USER)
+
+    assert cw._release_own_orphaned_leases(tmp_path) == 0
+    assert read_queue(tmp_path)[0].status == "running"
+
+
+# ---- _terminate_child_for_stop (confirm-before-release) -------------------
+
+
+class _StopProc:
+    """Popen stand-in scripting wait() outcomes for the stop sequence."""
+
+    def __init__(self, wait_results):
+        # wait_results: sequence of "exit" (returns rc) or "timeout" (raises).
+        self._results = list(wait_results)
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        outcome = self._results.pop(0)
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(cmd="daemon", timeout=timeout)
+        self.returncode = -15
+        return self.returncode
+
+
+def test_terminate_child_for_stop_clean_exit_confirms():
+    """Child exits on SIGTERM within the drain wait → confirmed (no kill)."""
+    proc = _StopProc(["exit"])
+    assert cw._terminate_child_for_stop(proc) is True
+    assert proc.killed is False
+
+
+def test_terminate_child_for_stop_kill_then_confirm():
+    """Child ignores SIGTERM, gets SIGKILLed, then confirmed dead → True."""
+    proc = _StopProc(["timeout", "exit"])  # drain times out, confirm succeeds
+    assert cw._terminate_child_for_stop(proc) is True
+    assert proc.killed is True
+
+
+def test_terminate_child_for_stop_unconfirmed_returns_false():
+    """Child still alive after kill (confirm times out) → False (skip release)."""
+    proc = _StopProc(["timeout", "timeout"])
+    assert cw._terminate_child_for_stop(proc) is False
+    assert proc.killed is True

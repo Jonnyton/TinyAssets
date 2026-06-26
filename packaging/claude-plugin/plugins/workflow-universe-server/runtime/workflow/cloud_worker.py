@@ -588,6 +588,91 @@ def write_supervisor_heartbeat(
             logger.exception("cloud_worker: heartbeat write failed at %s", target)
 
 
+# Stop-path child-termination budget. Docker's default stop_grace_period is 10s:
+# on redeploy the container gets SIGTERM then SIGKILL 10s later. The supervisor
+# must terminate the child, CONFIRM its death, AND release its orphaned lease
+# within that window, so these are intentionally short. The old 30s wait never
+# completed — docker killed the container mid-wait, so neither the child's
+# graceful finalize nor the lease release ran. A child between nodes exits in <1s
+# (and finalizes its own lease); a child mid-LLM node won't exit in 5s OR 30s, so
+# the shorter wait loses nothing and leaves room for the kill-confirm + release
+# before SIGKILL (5 + 2 + release < 10s). The producer restart path (container
+# stays up) keeps the longer 30s wait.
+_STOP_CHILD_DRAIN_S = 5.0
+# After SIGKILL, confirm the child is actually gone before releasing its lease.
+_STOP_KILL_CONFIRM_S = 2.0
+
+
+def _terminate_child_for_stop(proc) -> bool:
+    """Terminate the subprocess on shutdown; return True iff its exit is CONFIRMED.
+
+    SIGTERM first (lets a between-nodes child finalize its own lease), then a
+    bounded wait; on timeout SIGKILL and a short confirm wait. The caller must
+    release the child's orphaned lease ONLY when this returns True — releasing
+    while the child can still run risks it ``mark_status()``-ing a row a peer has
+    since re-claimed (``mark_status`` has no owner guard), prematurely
+    terminalizing the peer's work. If death can't be confirmed, the startup
+    reclaim (PR #1401) and the lease TTL remain the backstop. Codex review.
+    """
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=_STOP_CHILD_DRAIN_S)
+        return True
+    except subprocess.TimeoutExpired:
+        logger.warning("cloud_worker: subprocess did not exit; killing")
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=_STOP_KILL_CONFIRM_S)
+        return True
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "cloud_worker: subprocess still alive after kill; skipping shutdown "
+            "lease release (startup/TTL reclaim will recover)",
+        )
+        return False
+
+
+def _release_own_orphaned_leases(universe: Path) -> int:
+    """Release branch-task leases orphaned by this worker's dead subprocess.
+
+    Graceful-drain complement to the startup reclaim (PR #1401): reuses
+    ``reclaim_predecessor_tasks`` at SHUTDOWN. By the time the supervisor loop
+    exits the subprocess is dead, so any ``running`` row under our own
+    ``worker_id`` is an orphan it left (a SIGKILL mid-node on redeploy skips the
+    child's finalize). Releasing here frees the work for a live PEER immediately
+    instead of waiting for our replacement container to boot (whose startup
+    reclaim is the backstop). Best-effort — cleanup must never crash shutdown.
+
+    Scoped to our own unique ``worker_id``; the shared ``DEFAULT_HOST_USER``
+    fallback is excluded for the same reason as ``_dispatcher_startup`` — several
+    un-configured supervisors could share it, and reclaiming it could steal a
+    live twin's task.
+    """
+    worker_id = _worker_id()
+    if not worker_id or worker_id == DEFAULT_HOST_USER:
+        return 0
+    try:
+        from workflow.branch_tasks import reclaim_predecessor_tasks
+
+        released = reclaim_predecessor_tasks(universe, worker_id=worker_id)
+        if released:
+            logger.info(
+                "cloud_worker: released %d orphaned lease(s) for worker_id=%s "
+                "on shutdown (graceful drain)",
+                released, worker_id,
+            )
+        return released
+    except Exception:  # noqa: BLE001 — shutdown cleanup must not raise
+        logger.exception("cloud_worker: shutdown lease release failed")
+        return 0
+
+
 def run_supervisor(
     universe: Path,
     *,
@@ -634,6 +719,9 @@ def run_supervisor(
 
     state = SupervisorState()
     iteration = 0
+    # True only when a shutdown terminated the child AND confirmed its exit —
+    # gates the graceful-drain lease release (see _terminate_child_for_stop).
+    child_confirmed_dead = False
 
     # SIGTERM handling: clean exit on compose stop / systemctl stop.
     # Sets a flag the loop checks between iterations.
@@ -728,18 +816,7 @@ def run_supervisor(
                 )
             if stopping["flag"]:
                 logger.info("cloud_worker: terminating subprocess on stop signal")
-                try:
-                    proc.terminate()
-                except OSError:
-                    pass
-                try:
-                    proc.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    logger.warning("cloud_worker: subprocess did not exit; killing")
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
+                child_confirmed_dead = _terminate_child_for_stop(proc)
                 returncode = proc.returncode if proc.returncode is not None else -1
                 break
             rc = proc.poll()
@@ -818,6 +895,14 @@ def run_supervisor(
         )
         sleep_fn(delay)
 
+    # Graceful drain: on shutdown (SIGTERM/compose stop), the just-killed child
+    # may have orphaned a still-valid lease mid-node. Release it now so a live
+    # peer can pick the work up immediately, rather than stranding it until the
+    # ~30min TTL or our replacement's startup reclaim (PR #1401 backstop). Only
+    # when the child's exit is CONFIRMED — releasing while it can still run could
+    # terminalize a peer's re-claimed row (mark_status has no owner guard).
+    if stopping["flag"] and child_confirmed_dead:
+        _release_own_orphaned_leases(universe)
     write_supervisor_heartbeat(
         universe, state, iteration=iteration, phase="stopped",
     )
