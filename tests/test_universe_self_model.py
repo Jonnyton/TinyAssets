@@ -161,3 +161,41 @@ def test_seed_question_is_a_named_tuple_like(tmp_path: Path) -> None:
     q = SEED_QUESTIONS[0]
     assert isinstance(q, SeedQuestion)
     assert q.slug and q.question
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Robustness (Codex review 2026-06-25)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_ensure_restores_missing_index_without_clobbering_log(tmp_path: Path) -> None:
+    """A partial bundle (interrupted create — log.md present, index.md missing)
+    is COMPLETED, not overwritten: index restored, existing log preserved."""
+    bundle = ensure_self_model(tmp_path)
+    (bundle / "log.md").write_text(
+        "# Self-Model Log\n\n## 2026-06-25\n* my own log\n", encoding="utf-8"
+    )
+    (bundle / "index.md").unlink()
+    ensure_self_model(tmp_path)
+    assert (bundle / "index.md").is_file()  # restored
+    assert "* my own log" in (bundle / "log.md").read_text(encoding="utf-8")  # preserved
+
+
+def test_read_finds_nested_concepts(tmp_path: Path) -> None:
+    """Concepts the brain nests are discovered (OKF concept IDs are path-based)."""
+    bundle = ensure_self_model(tmp_path)
+    (bundle / "traits").mkdir()
+    (bundle / "traits" / "voice.md").write_text(
+        "---\ntype: self/trait\n---\n\nI am terse.\n", encoding="utf-8"
+    )
+    assert "traits/voice" in {c["slug"] for c in read_self_model(tmp_path)["known"]}
+
+
+def test_read_reports_actual_okf_version_not_constant(tmp_path: Path) -> None:
+    """The read view reports the version actually stored in index.md, so a
+    preserved/upgraded bundle reports truthfully."""
+    bundle = ensure_self_model(tmp_path)
+    (bundle / "index.md").write_text(
+        '---\nokf_version: "0.2"\n---\n\n# What I Know\n', encoding="utf-8"
+    )
+    assert read_self_model(tmp_path)["okf_version"] == "0.2"
