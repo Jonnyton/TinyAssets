@@ -404,6 +404,7 @@ def read_graph(
     graph_id: str = "",
     goal_id: str = "",
     run_id: str = "",
+    branch_id: str = "",
     query: str = "",
     tags: str = "",
     author: str = "",
@@ -413,11 +414,14 @@ def read_graph(
     """Read Workflow graph state without changing it.
 
     Args:
-        target: What to read: status, graphs, graph, goals, goal, runs, or run.
+        target: What to read: status, graphs, graph, goals, goal, runs, run,
+            or branch.
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
             Falls back to graph_id when omitted.
+        branch_id: Branch definition identifier for target=branch (read a
+            branch's full graph + node configs). Falls back to graph_id.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
         author: Optional goal author filter.
@@ -444,10 +448,16 @@ def read_graph(
         # structured failure reason (status, output/external_write_results,
         # error, failure_class/suggested_action/actionable_by/error_detail).
         return _extensions_impl(action="get_run", run_id=(run_id or graph_id))
+    if normalized == "branch":
+        # SEE-for-branches: a founder reads their branch's full graph + node
+        # configs (timeout_seconds, model_hint, prompt_template, edges, state
+        # schema) so an edit via write_graph target=branch is informed, not
+        # blind. Completes the read/edit symmetry with PR-180.
+        return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
     return _unknown_target(
         "read_graph",
         target,
-        ("status", "graphs", "graph", "goals", "goal", "runs", "run"),
+        ("status", "graphs", "graph", "goals", "goal", "runs", "run", "branch"),
     )
 
 
