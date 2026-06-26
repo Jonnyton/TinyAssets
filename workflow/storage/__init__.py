@@ -425,7 +425,10 @@ def probe_env_readability(
 # the probe surface it rides on.
 _SUBSYSTEM_PATHS: tuple[tuple[str, str, bool], ...] = (
     # (name, relative path, is_directory)
-    ("run_transcripts", "runs", True),
+    # NOTE: `run_transcripts` is NOT in this table — run state/records are
+    # per-universe SQLite stores (<universe>/.langgraph_runs.db + .runs.db),
+    # not a `runs/` dir, so it is measured separately below. See
+    # inspect_storage_utilization().
     ("knowledge_db",   "knowledge.db", False),
     ("story_db",       "story.db", False),
     ("lance_indexes",  "lance", True),
@@ -528,6 +531,32 @@ def inspect_storage_utilization() -> dict[str, Any]:
             "bytes": path_size_bytes(abs_path),
             "path": str(abs_path),
         }
+
+    # run_transcripts: run state + records live in per-universe SQLite stores
+    # (<universe>/.langgraph_runs.db = run state/messages, + .runs.db = metadata),
+    # NOT a `runs/` directory. The old `("run_transcripts", "runs", True)` entry
+    # therefore always reported 0, which once read as "run transcripts aren't
+    # persisting" (2026-06-25 false alarm; ~3 GB of run data was persisting fine).
+    # Measure the real stores: root-level (single-/active-universe layout) + one
+    # level of per-universe dirs, INCLUDING the SQLite WAL/SHM sidecars — live
+    # WAL-mode DBs hold uncheckpointed bytes in <db>-wal / <db>-shm.
+    #
+    # Caps note: caps.py maps run_transcripts -> `run_artifacts`
+    # (WORKFLOW_CAP_RUN_ARTIFACTS_BYTES). That cap is OFF by default and only logs
+    # (never deletes). It historically tracked the rotatable `runs/` dir
+    # (rotation.py); this metric now reflects the non-rotated SQLite stores, so if
+    # that cap is ever enabled it bounds the DBs, not a rotatable dir — size it
+    # accordingly (or leave unset).
+    run_store_bytes = 0
+    for _db in (".langgraph_runs.db", ".runs.db"):
+        for _suffix in ("", "-wal", "-shm"):
+            run_store_bytes += path_size_bytes(root / f"{_db}{_suffix}")
+            for _child in root.glob(f"*/{_db}{_suffix}"):
+                run_store_bytes += path_size_bytes(_child)
+    per_subsystem["run_transcripts"] = {
+        "bytes": run_store_bytes,
+        "path": f"{root} (.langgraph_runs.db + .runs.db incl. WAL, root + per-universe)",
+    }
 
     # Phase-3 subsystem cap snapshot — consumers (uptime canary, alert
     # rules) can see which caps are configured + where each subsystem

@@ -96,6 +96,31 @@ class TestMissingPathsReturnZero:
         assert result["per_subsystem"]["story_db"]["bytes"] == 0
         assert result["per_subsystem"]["checkpoint_db"]["bytes"] == 0
 
+    def test_run_transcripts_measures_sqlite_stores_not_a_runs_dir(
+        self, isolated_data_dir: Path
+    ):
+        """run_transcripts reflects the real run stores (root + per-universe
+        .langgraph_runs.db + .runs.db), NOT a `runs/` dir that is never created on
+        the live system. Regression for the 2026-06-25 '/data/runs=0 → transcripts
+        not persisting' false alarm (run data was persisting fine in SQLite)."""
+        (isolated_data_dir / ".langgraph_runs.db").write_bytes(b"x" * 1000)
+        (isolated_data_dir / ".langgraph_runs.db-wal").write_bytes(b"w" * 50)
+        (isolated_data_dir / ".langgraph_runs.db-shm").write_bytes(b"s" * 25)
+        (isolated_data_dir / ".runs.db").write_bytes(b"y" * 500)
+        uni = isolated_data_dir / "concordance"
+        uni.mkdir()
+        (uni / ".langgraph_runs.db").write_bytes(b"z" * 300)
+        (uni / ".runs.db").write_bytes(b"w" * 200)
+        (uni / ".runs.db-wal").write_bytes(b"v" * 40)
+        # a stray runs/ dir must NOT be what gets measured
+        (isolated_data_dir / "runs").mkdir()
+        (isolated_data_dir / "runs" / "junk").write_bytes(b"q" * 9999)
+
+        result = inspect_storage_utilization()
+
+        # 1000 + 50 + 25 (wal/shm) + 500 + 300 + 200 + 40 = 2115; runs/ dir ignored.
+        assert result["per_subsystem"]["run_transcripts"]["bytes"] == 2115
+
 
 class TestDirectoryRecursion:
     def test_wiki_dir_sums_nested_file_sizes(self, isolated_data_dir: Path):
