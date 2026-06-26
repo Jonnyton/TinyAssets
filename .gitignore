@@ -9,6 +9,17 @@ build/
 .ruff_cache/
 .venv/
 
+# Agent-sandbox test temp dirs. Some sandboxes (notably Codex; also some
+# Cursor/Cowork runs) redirect pytest's basetemp INTO the checkout and create
+# these under a restricted sandbox token — on Windows the resulting dirs carry
+# ACLs the normal user can't read or delete, so they survive `git worktree
+# remove` and need an elevated takeown+rmdir. Prevention: point the sandbox's
+# --basetemp/TMPDIR OUTSIDE the repo. See AGENTS.md "Sandbox test-temp hygiene"
+# (diagnosed 2026-06-25 during de-fantasy worktree cleanup).
+.pytest-tmp/
+.codex-test-tmp/
+.workflow-test-data/
+
 # Databases (local state)
 *.db
 *.db-wal
