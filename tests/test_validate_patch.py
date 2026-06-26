@@ -38,7 +38,7 @@ def test_valid_patch_applies_cleanly():
     edits = {"m.py": [{"search": "return a - b", "replace": "return a - b  # fixed"}]}
     out = validate_patch(_state(_packet(edits), {"m.py": _FILE}))
     assert out["patch_validity"] == "VALID", out
-    assert "apply cleanly" in out["patch_validity_detail"]
+    assert "apply to the fetched" in out["patch_validity_detail"]
 
 
 def test_invalid_search_not_found():
@@ -69,18 +69,51 @@ def test_malformed_packet_is_invalid_not_crash():
     assert "json" in out["patch_validity_detail"].lower()
 
 
-def test_new_file_only_packet_defers_to_review():
-    # changes_json with a string = new file; no edits_json to verify deterministically.
-    packet = json.dumps({"payload": {"changes_json": {"new.py": "print('hi')\n"}}})
+def test_no_sink_packet_is_invalid():
+    # The effector's _parse_packet requires a sink; mirror it (no false VALID).
+    packet = json.dumps({"payload": {"changes_json": {"new.py": "x\n"}}})
     out = validate_patch(_state(packet, {}))
-    assert out["patch_validity"] == "VALID"
+    assert out["patch_validity"] == "INVALID"
 
 
-def test_code_fence_wrapped_packet_tolerated():
+def test_new_file_only_packet_defers_to_review():
+    # changes_json string = new file; no edits to verify, but packet is well-formed.
+    packet = json.dumps({"sink": "github_pull_request",
+                         "payload": {"changes_json": {"new.py": "print('hi')\n"}}})
+    out = validate_patch(_state(packet, {}))
+    assert out["patch_validity"] == "VALID", out
+
+
+def test_code_fence_wrapped_packet_is_invalid():
+    # The effector rejects non-'{'-leading strings; we must too (else false VALID).
     edits = {"m.py": [{"search": "return a - b", "replace": "return b - a"}]}
     fenced = "```json\n" + _packet(edits) + "\n```"
     out = validate_patch(_state(fenced, {"m.py": _FILE}))
-    assert out["patch_validity"] == "VALID", out
+    assert out["patch_validity"] == "INVALID", out
+
+
+def test_empty_change_set_is_invalid():
+    packet = json.dumps({"sink": "github_pull_request", "payload": {"title": "t"}})
+    out = validate_patch(_state(packet, {}))
+    assert out["patch_validity"] == "INVALID"
+    assert "no effective change set" in out["patch_validity_detail"]
+
+
+def test_bad_changes_json_shape_is_invalid():
+    packet = json.dumps({"sink": "github_pull_request",
+                         "payload": {"changes_json": {"p.py": 123}}})
+    out = validate_patch(_state(packet, {}))
+    assert out["patch_validity"] == "INVALID"
+
+
+def test_duplicate_path_in_edits_and_changes_is_invalid():
+    packet = json.dumps({"sink": "github_pull_request", "payload": {
+        "edits_json": {"m.py": [{"search": "return a - b", "replace": "x"}]},
+        "changes_json": {"m.py": "whole new file\n"},
+    }})
+    out = validate_patch(_state(packet, {"m.py": _FILE}))
+    assert out["patch_validity"] == "INVALID"
+    assert "both" in out["patch_validity_detail"].lower()
 
 
 def test_registered_as_opaque_domain_callable():

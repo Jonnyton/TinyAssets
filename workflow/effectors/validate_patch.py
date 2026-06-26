@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -45,38 +44,59 @@ DOMAIN_ID = "workflow"
 NODE_ID = "validate_patch"
 
 
-def _coerce_packet(raw: Any) -> tuple[dict | None, str]:
-    """Return (packet_dict, error). Accepts a dict or a JSON string."""
-    if isinstance(raw, dict):
-        return raw, ""
-    text = str(raw or "").strip()
-    if not text:
-        return None, "pr_packet_draft is empty; nothing to validate."
-    # Tolerate a stray code fence the model may have added.
-    if text.startswith("```"):
-        text = text.strip("`")
-        nl = text.find("\n")
-        if nl != -1:
-            text = text[nl + 1:]
-    try:
-        parsed = json.loads(text)
-    except (TypeError, ValueError) as exc:
-        return None, f"pr_packet_draft is not valid JSON ({exc}); cannot verify the patch."
-    if not isinstance(parsed, dict):
-        return None, "pr_packet_draft did not decode to a JSON object."
-    return parsed, ""
+def _invalid(detail: str) -> dict:
+    return {"patch_validity": "INVALID", "patch_validity_detail": detail}
 
 
 def validate_patch(state: dict) -> dict:
-    """Opaque-node body: deterministically check the packet's edits apply to the
-    fetched current contents. No LLM, no network. Never raises."""
-    # _apply_edit_blocks is a pure (search must occur exactly once) apply; reuse
-    # the SAME logic the effector uses so validation matches real apply behavior.
-    from workflow.effectors.github_pr import _apply_edit_blocks
+    """Opaque-node body: a deterministic pre-flight. No LLM, no network. Never
+    raises.
 
-    packet, perr = _coerce_packet(state.get("pr_packet_draft"))
+    Scope (honest — Codex review of #1409): this verifies the packet is a
+    well-formed external_write_packet (reusing github_pr._parse_packet, the SAME
+    shape gate the effector uses) and that its ``edits_json`` applies to the
+    ALREADY-FETCHED ``current_contents_json`` — the same basis propose_changes
+    edited against. It is NOT a full effector simulation: the github_pull_request
+    effector re-fetches each path at ``payload.base_branch`` before applying, so
+    base_branch divergence (and deletion-target presence) remain the effector's
+    authority. What this reliably catches early is the dominant failure: a search
+    string that isn't verbatim-and-unique in the fetched file, plus malformed
+    packets / empty or conflicting change sets — feeding a concrete reason back
+    for a propose retry instead of burning a review + a failed PR attempt.
+    """
+    if not isinstance(state, dict):
+        return _invalid("no run state to validate.")
+    # Reuse the effector's own pure helpers so verdicts match real behavior.
+    from workflow.effectors.github_pr import _apply_edit_blocks, _parse_packet
+
+    packet = _parse_packet(state.get("pr_packet_draft"))
     if packet is None:
-        return {"patch_validity": "INVALID", "patch_validity_detail": perr}
+        return _invalid(
+            "pr_packet_draft is not a valid external_write_packet — it must be a "
+            "JSON object starting with '{', carrying a 'sink', with no code fences "
+            "or prose. Re-emit ONLY the raw JSON object."
+        )
+    payload = packet.get("payload")
+    if not isinstance(payload, dict):
+        return _invalid("packet.payload is missing or not a JSON object.")
+
+    edits = payload.get("edits_json")
+    changes = payload.get("changes_json")
+    edit_paths: set[str] = set()
+    change_paths: set[str] = set()
+
+    # changes_json shape — mirror github_pr._materialize_branch's offline checks.
+    if changes is not None:
+        if not isinstance(changes, dict):
+            return _invalid("packet.payload.changes_json must be an object or omitted.")
+        for pk, cv in changes.items():
+            if not isinstance(pk, str) or not pk.strip():
+                return _invalid("changes_json keys must be non-empty repo-relative path strings.")
+            if cv is not None and not isinstance(cv, str):
+                return _invalid(
+                    f"changes_json[{pk!r}] must be a string (new contents) or null (delete)."
+                )
+            change_paths.add(pk)
 
     try:
         contents = json.loads(state.get("current_contents_json") or "{}")
@@ -85,15 +105,16 @@ def validate_patch(state: dict) -> dict:
     except (TypeError, ValueError):
         contents = {}
 
-    payload = packet.get("payload")
-    if not isinstance(payload, dict):
-        payload = packet
-    edits = payload.get("edits_json")
-
     errors: dict[str, str] = {}
     checked = 0
-    if isinstance(edits, dict):
+    if edits is not None:
+        if not isinstance(edits, dict) or not edits:
+            return _invalid(
+                "packet.payload.edits_json must be a non-empty object of "
+                "{path: [search/replace blocks]} (or omitted)."
+            )
         for path, blocks in edits.items():
+            edit_paths.add(path)
             current = contents.get(path)
             if not isinstance(current, str):
                 errors[path] = (
@@ -108,24 +129,29 @@ def validate_patch(state: dict) -> dict:
             else:
                 checked += 1
 
-    # changes_json (string=new-file create, null=deletion) carries no search
-    # anchors, so there is nothing deterministic to verify here — left to review.
+    if not edit_paths and not change_paths:
+        return _invalid(
+            "packet has no effective change set (no edits_json or changes_json entries)."
+        )
+    overlap = edit_paths & change_paths
+    if overlap:
+        return _invalid(
+            "a path appears in BOTH edits_json and changes_json (use exactly one "
+            f"per path): {', '.join(sorted(overlap))}."
+        )
 
     if errors:
         detail = "; ".join(f"{p}: {e}" for p, e in sorted(errors.items()))
-        return {
-            "patch_validity": "INVALID",
-            "patch_validity_detail": (
-                "Patch does NOT apply to the current file contents — fix these and "
-                f"re-propose: {detail}"
-            ),
-        }
+        return _invalid(
+            "Patch does NOT apply to the fetched current contents — fix these and "
+            f"re-propose: {detail}"
+        )
     return {
         "patch_validity": "VALID",
         "patch_validity_detail": (
-            f"All {checked} in-place-edited file(s) apply cleanly to current contents."
+            f"All {checked} in-place-edited file(s) apply to the fetched current contents."
             if checked else
-            "No in-place edits to verify (new-file/deletion packet); deferred to review."
+            "Change set is new-file/deletion only; apply deferred to the effector."
         ),
     }
 
