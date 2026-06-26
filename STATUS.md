@@ -10,10 +10,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-04-18 verified:2026-04-28] `add_canon_from_path` sensitivity: 3 host-Qs REFRAMED by commons-first audit F3 (self-auditing-tools structured caveats).
 - [filed:2026-04-24] Task #9 host Qs: GROQ/GEMINI/XAI GH Actions secrets present + rotation e2e validated after deploy step ships.
 - **[P1 filed:2026-04-30]** Castles II live run `28479d8ddfb44488` failed `provider_exhausted` at `candidate_discovery` (see BUG-038); blocks branch-run proof. Companion: BUG-039 (Echoes intake same root cause).
-- [filed:2026-04-30 reframed:2026-05-19] Classic-game v0 desktop shortcut concern: now PR-131 in dispatcher queue (`bc6ed9df-e764-495a-b466-c5c86d7e0e2e`); user-canary packet `tiberian_sun_host_local_effect_packet_v1` built with correct idempotency_key + asset policy. First consumer of #914 external-write design.
-- [filed:2026-06-10] Droplet `/opt/workflow` checkout is stale (c1380fa) + dirty (compose.yml, vector-entrypoint.sh local edits); systemd units run scripts from it. Needs deliberate sync strategy — NOT `git pull` (would drag local edits live).
 - [filed:2026-05-19] Wiki has shifted toward multi-agent shared scratch space — 81% of post-2026-05-01 notes (495 of 614) are Codex/Cowork/Claude agent-coordination. Volume risks drowning out chatbot discovery/remix. Worth a host conversation on whether to split coordination off the knowledge wiki.
-- [verified:2026-06-25] `/data/runs`=0 was a FALSE ALARM — run data persists fine (droplet `.runs.db` 1.09GB + `.langgraph_runs.db` 1.85GB, live-written; error trail IS in langgraph state). Minor residual nit: get_status `run_transcripts` measures a nonexistent `runs/` dir (storage/__init__.py:428), so it cosmetically under-reports 0.
 
 ## Approved Specs
 
@@ -24,10 +21,6 @@ Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never
 | [deferred] Daemon roster + node/gate soul policy + ledger/attribution/royalty/outcome/bounty/fair-distribution items | needs-scoping; soul-guided dispatch READ landed via open-brain v2 slice B (#900); host corrected 2026-05-01: many-daemon fleets + warning-only same-provider capacity estimates |
 
 ## Work
-
-universe_server.py: 14012 → 1927 LOC live in main. PLAN.md restructured 30→11 modules (#915, 41569b5) — Brain Module + skills tie-in + plan_module_audit script LANDED 2026-05-19. External-write authority design locked + on main (#914, e2c20f4).
-
-**Multi-provider note:** any provider runs `python scripts/claim_check.py --provider <yourname>` to discover what's safe to claim. AGENTS.md §"Parallel Dispatch" has the full ritual.
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
@@ -49,17 +42,9 @@ universe_server.py: 14012 → 1927 LOC live in main. PLAN.md restructured 30→1
 | Host-action: re-register `Workflow DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 | Memory-scope Stage 2c flag | - | 30d clean | monitoring |
 
-## Live brain notes (informational; not work rows)
+## Live brain notes
 
-Substantive work flowing through the live MCP brain — not duplicated here. **[Snapshot last swept 2026-05-19 — STALE; verify in the live brain (read_page) before relying.]**
-
-- **PR-129** (filed 2026-05-19) — Goal-bound branch protocols / ordered branch family runbook with typed artifact handoffs. Real community-build case (chatbot already composed manually via wiki prose; needs first-class durability). Dispatcher `ec15c952-aefa-42ab-b50b-eee1524d3ef9` queued.
-- **PR-131** (filed 2026-05-19) — Host-local Windows desktop effect adapter; closes BUG-043 generalized. First consumer of #914 external-write design. Dispatcher `bc6ed9df-e764-495a-b466-c5c86d7e0e2e` queued.
-- **PR-130** (Markovic) — peer-reviewed simulation-biology publication strategy.
-- **PR-139 / GH #1090** — souled-universe consolidation; all 10 slices merged + deployed 2026-05-28.
-- **New universes in flight:** Meridian Ashes (fantasy prose-lab), Etsy Printify v2 (commerce via effect packets), Markovic (scientific publication).
-
-For full live-brain enumeration see `.claude/agent-memory/navigator/wiki_sweep_cursor.md` (refreshed 2026-05-19: 890 promoted + 134 drafts + theme distribution).
+Substantive work flows through the live MCP brain (wiki `PR-###`/`BUG-###` + dispatcher + auto-change loop), not duplicated here. Full enumeration + theme distribution: `.claude/agent-memory/navigator/wiki_sweep_cursor.md` (refresh before relying). In flight: PR-129 (branch protocols), PR-131 (Windows effect adapter), PR-139 (souled-universe, deployed); universes Meridian Ashes / Etsy Printify v2 / Markovic.
 
 ## Next
 

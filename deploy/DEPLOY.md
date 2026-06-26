@@ -375,44 +375,49 @@ python scripts/droplet.py ssh -- <cmd>   # one-off remote command
 | **New image** (code merged to `main`) | Automatic: `build-image.yml` → `deploy-prod.yml` (Row M) pins the tag, pulls, restarts, canaries, auto-rolls-back. |
 | **Config / env flag** (eval-gate flip, feature flag) | **Manual** — a config commit does NOT trigger a deploy. Apply on the droplet (below). |
 
-### Drift trap — read before editing compose on the droplet
+### Compose layout (reconciled 2026-06-26 — the old drift trap is fixed)
 
-systemd runs `ExecStart=docker compose -f `**`/opt/workflow/compose.yml`**` up` —
-the **repo-root** compose file, which is **hand-maintained on the droplet and
-drifts from the repo's `deploy/compose.yml`** (the `/opt/workflow` checkout is
-stale + dirty; 2026-06-10 STATUS concern). Therefore:
+systemd runs `ExecStart=docker compose -f `**`/opt/workflow/compose.yml`**` up`.
+That path is now a **symlink → `deploy/compose.yml`** (the tracked file), so the
+old "root copy hand-maintained + drifts from `deploy/`" trap is gone — landing a
+`deploy/compose.yml` change on the droplet updates what systemd runs. The
+`/opt/workflow` checkout was reconciled to clean `origin/main` (was 1608 behind +
+dirty; 2026-06-10 STATUS concern, **now resolved**). So:
 
-- Editing the repo's `deploy/compose.yml` and merging does **not** change the
-  live daemon. The live source of truth is the droplet's
-  `/opt/workflow/compose.yml` + `/etc/workflow/env`. Keep them in sync by hand.
-- Do **not** `git pull` in `/opt/workflow` to "sync" — it drags local edits
-  live. Reconciling the drift is a deliberate host task.
+- A `git pull` in `/opt/workflow` is now **safe** — the checkout is clean, no
+  local edits to clobber. (The old "never git pull" warning is obsolete.)
+- A config commit still does **not** auto-deploy — only image builds trigger Row M.
+  Landing a compose/env change is the manual step below.
+- Droplet-only values (image digest pin, secrets, tunnel token) live in
+  `/etc/workflow/env`, never in the repo. `environment:` in `deploy/compose.yml`
+  overrides `env_file` for the same key.
 
 ### Applying a config/env change to the live daemon
 
-`environment:` in `/opt/workflow/compose.yml` overrides `env_file`
-(`/etc/workflow/env`) for the same key; pick whichever already carries similar
-config.
-
 ```bash
-ssh workflow-droplet   # (or the -i form above)
-# Option A — env file (flags shared by daemon + workers):
-printf '\nWORKFLOW_SOME_FLAG=value\n' >> /etc/workflow/env
-# Option B — daemon-only: edit services.daemon.environment in /opt/workflow/compose.yml
+ssh workflow-droplet                       # or: python scripts/droplet.py ssh
 
-# Recreate ONLY the daemon so it re-reads env (brief MCP-surface blip):
+# A — a compose change already committed (e.g. a daemon env flag in
+#     deploy/compose.yml): pull it onto the now-clean checkout; the symlink means
+#     /opt/workflow/compose.yml reflects it immediately.
+cd /opt/workflow && git pull --ff-only origin main
+
+# B — a host-only env value (image pin, secret, quick flag): edit the env file.
+printf '\nWORKFLOW_SOME_FLAG=value\n' >> /etc/workflow/env
+
+# Recreate ONLY the daemon so it re-reads config (brief MCP-surface blip):
 systemctl restart workflow-daemon
 docker exec workflow-daemon printenv | grep WORKFLOW_SOME_FLAG   # confirm it took
 ```
 
-Then, from the operator box, confirm the public surface is green (Hard Rule #11):
+Then confirm the public surface is green (Hard Rule #11):
 `python scripts/droplet.py canary` (loopback) **and**
 `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp`.
 Rollback: revert the edit + `systemctl restart workflow-daemon`.
 
 Worked example — the 2026-06-25 auto-ship enforce flip set
-`WORKFLOW_AUTO_SHIP_{RUBRIC,TRAJECTORY}_MODE=enforce` exactly this way (durable
-in `/opt/workflow/compose.yml`, verified across a restart).
+`WORKFLOW_AUTO_SHIP_{RUBRIC,TRAJECTORY}_MODE=enforce` in `deploy/compose.yml`,
+now live + durable via the symlink (verified across a daemon restart).
 
 ## Row M — CI deploy pipeline (GitHub Actions)
 
