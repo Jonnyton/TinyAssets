@@ -1071,6 +1071,14 @@ class OptionalOAuthProvider(OAuthProvider):
 def create_provider() -> AuthProvider:
     """Create the appropriate auth provider based on configuration."""
     auth_mode = os.environ.get("UNIVERSE_SERVER_AUTH", "false").strip().lower()
+    if auth_mode == "workos":
+        # WorkOS AuthKit is the Authorization Server; we are a Resource Server
+        # validating its bearer JWTs. Lazy import so non-WorkOS deployments
+        # don't load PyJWT. See docs/reference/workos-authkit-integration.md.
+        from workflow.auth.workos_provider import WorkOSAuthProvider
+
+        logger.info("WorkOS AuthKit auth provider enabled (Resource Server)")
+        return WorkOSAuthProvider.from_env()
     if auth_mode in ("true", "1", "yes", "oauth"):
         logger.info("OAuth auth provider enabled")
         return OAuthProvider()

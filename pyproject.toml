@@ -42,6 +42,10 @@ dependencies = [
     # MCP/server entry points and Tier-3 structural smoke imports
     "fastmcp>=3.0",
     "uvicorn[standard]>=0.30",
+
+    # OAuth 2.1 Resource Server: validate WorkOS AuthKit bearer JWTs (PyJWT + JWKS).
+    # The [crypto] extra pulls cryptography for RS256 signature verification.
+    "pyjwt[crypto]>=2.8,<3.0",
 ]
 
 [project.scripts]
