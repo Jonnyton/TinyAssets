@@ -2,7 +2,7 @@
 
 ## Goal
 
-Move Workflow from artifact-rich but weakly typed fiction memory toward a
+Move TinyAssets from artifact-rich but weakly typed fiction memory toward a
 runtime memory model that can support long-running complex fantasy through
 scene packets, typed entity records, temporal ledgers, epistemic state, and
 narrative debt tracking.

@@ -126,7 +126,7 @@ These were previously concern-list entries waiting on host. Promoting to first-c
 **Choices:**
 - **(a) Honest operator + breach risk.** Most realistic; allows current §7 redactor design.
 - **(b) Adversarial Anthropic.** Drives a much heavier design — local-only providers strictly enforced, no fallback, paranoid metadata aliasing.
-- **(c) Arbitrary log observers.** Drives strict end-to-end encryption requirements before Workflow can serve the use case.
+- **(c) Arbitrary log observers.** Drives strict end-to-end encryption requirements before TinyAssets can serve the use case.
 
 **Recommendation: (a).** Matches the most plausible threat model for tier-2 hosts. (b) is over-design for the user base we have; (c) is out of scope without a security audit.
 

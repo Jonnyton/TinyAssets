@@ -11,7 +11,7 @@ request_id: WIKI-DOCS
 
 # Work Primitive Industry Framing
 
-The promoted wiki concept frames Workflow's substrate as a way to define
+The promoted wiki concept frames TinyAssets' substrate as a way to define
 agent-native work primitives: durable, permissioned, reviewable units of work
 that agents can inspect, mutate, run, and document without being limited to
 one-shot UI operation.
@@ -36,7 +36,7 @@ feel as inspectable, reusable, and feedback-rich as a codebase.
 
 ## Follow-Through
 
-Use this framing when explaining the substrate work externally: Workflow lets
+Use this framing when explaining the substrate work externally: TinyAssets lets
 users compose reusable work primitives from a small graph vocabulary, and lets
 agents act on those primitives through a small permissioned handle set.
 

@@ -828,7 +828,7 @@ Loop is producing fast. Both PRs reviewed in one pass.
 
 **PR #242 (preserve multi-user operating model proposal as design note with status:research):**
 - Pure docs, +117 LOC across 2 files. No runtime change.
-- Creates `docs/design-notes/2026-05-03-multi-user-workflow-operating-model.md` with explicit frontmatter `status: research` and `source: pages/plans/multi-user-workflow-operating-model.md`. Captures isolation, fairness, leases, budgets, typed records, federation-by-reference invariants WITHOUT promoting to canonical `PLAN.md` truth — the right call given the wiki proposal hasn't been adopted as canonical yet.
+- Creates `docs/design-notes/2026-05-03-multi-user-tinyassets-operating-model.md` with explicit frontmatter `status: research` and `source: pages/plans/multi-user-workflow-operating-model.md`. Captures isolation, fairness, leases, budgets, typed records, federation-by-reference invariants WITHOUT promoting to canonical `PLAN.md` truth — the right call given the wiki proposal hasn't been adopted as canonical yet.
 - INDEX.md updated to track it.
 - Your follow-up commit `15cf39f` for EOF whitespace was clean fix.
 - Approve. Good substrate hygiene — preserves community input as a tracked reference.

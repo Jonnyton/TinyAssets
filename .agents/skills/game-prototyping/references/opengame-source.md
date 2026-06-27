@@ -34,7 +34,7 @@ vendoring its files raw:
 ## Additional Candidates Found
 
 These were found in the broader repo scan and are worth considering only when
-Workflow has a concrete need:
+TinyAssets has a concrete need:
 
 - Physics-first classifier: `packages/core/src/tools/game-type-classifier.ts`.
   The decision tree is already reflected in `archetype-packs.md`; a tool is
@@ -58,6 +58,6 @@ Workflow has a concrete need:
   released in this checkout. Good future inspiration for browser-game
   acceptance probes.
 
-Future sessions should treat these references as Workflow-local guidance. If
+Future sessions should treat these references as TinyAssets-local guidance. If
 we later vendor source templates, preserve Apache-2.0 notices and document the
 source commit next to the copied files.

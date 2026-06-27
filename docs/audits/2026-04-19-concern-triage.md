@@ -60,7 +60,7 @@
   - Concern 5 (add_canon_from_path 3 asks)
   - Concern 6 (#15 status confirmation — still blocked or superseded?)
   - Concern 8's smallest unblocking subset: Q1 (Postgres-canonical) + Q7 (Fly) + Q10 (load-test). These three answers alone unlock breaking full-platform tracks A-P into Work rows.
-  - Layer-3 design note's §5 Qs (5 Qs from `docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md`).
+  - Layer-3 design note's §5 Qs (5 Qs from `docs/design-notes/2026-04-19-universe-to-tinyassets-server-rename.md`).
 
 **For navigator (this session):**
 - No additional curation needed on concern 9 until Phase 5 lands.

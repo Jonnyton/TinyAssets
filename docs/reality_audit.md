@@ -87,7 +87,7 @@ Observed directly during this audit:
 
 | Claim | Strongest evidence | Status | Confidence | Notes |
 |------|---------------------|--------|------------|-------|
-| Workflow extraction exists | `tinyassets/`, `domains/fantasy_author/`, `domains/research_probe/` present and compile | implemented | High | Structural extraction is real |
+| TinyAssets extraction exists | `tinyassets/`, `domains/fantasy_author/`, `domains/research_probe/` present and compile | implemented | High | Structural extraction is real |
 | TinyAssets MCP server exists and is being used | `fantasy_author/universe_server.py`, `logs/mcp_server.log` | runtime-proven | High | This is not just planned; it is live |
 | Multiplayer HTTP/API wiring exists | `fantasy_author/api.py` routes into `author_server` | implemented | High | Current code exposes session/author/branch/runtime/ledger endpoints |
 | Engine/runtime extraction is complete and independent | `tinyassets/__main__.py`, `tinyassets/api/__init__.py` still delegate/re-export `fantasy_author.*` | contradicted | High | Engine split exists, but execution and API are still bridge-mode |

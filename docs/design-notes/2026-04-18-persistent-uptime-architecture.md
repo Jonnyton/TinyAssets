@@ -23,7 +23,7 @@ superseded_by: docs/design-notes/2026-04-18-full-platform-architecture.md
 - *Distribution horizon: weeks, not months* (project memory). Recommend the minimum viable always-on piece for v1; defer the rest.
 - *Paid-request bid model exists* (project memory: requester sets node+LLM+price; daemons prefer higher bids). Integrate, don't duplicate.
 - *Daemon is the user-facing brand* (project memory). Design copy keeps daemon vocabulary.
-- *Rebrand in-flight: Universe Server → TinyAssets Server.* This note uses "TinyAssets Server" and "Workflow control plane."
+- *Rebrand in-flight: Universe Server → TinyAssets Server.* This note uses "TinyAssets Server" and "TinyAssets control plane."
 
 **Prior research this supersedes / builds on:**
 - `docs/research/always_on_hosting_and_federation.md` — hosting-option and federation patterns (hosting matrix, multi-tenant MCP patterns, Cloudflare-only path).
@@ -68,7 +68,7 @@ This is the problem statement. The fix is a durable always-on service that owns 
 
 **Principle.** Separate what *must never be down* from what *can degrade gracefully.* Put the first in a boring, cheap, always-on service. Leave the second on hosts.
 
-### §2.1 What must be always-on (Workflow control plane)
+### §2.1 What must be always-on (TinyAssets control plane)
 
 - **MCP entrypoint.** `https://tinyassets.io/mcp` must respond 24/7, even if no host is up. When no host serves a needed capability, it returns a structured "no daemon available" response (not HTTP 530). This is the difference between "the product is offline" and "the product is awake and waiting."
 - **Node / Goal / Branch catalog reads.** Browse, search, fetch-by-slug. These are already GitHub-native per the GitHub-as-catalog research — they can be served directly from a CDN cache of the repo. The control plane is a thin read-through over the catalog repo.
@@ -89,7 +89,7 @@ This is the problem statement. The fix is a durable always-on service that owns 
 
 ```
                       ┌───────────────────────────────────────┐
-                      │         Workflow Control Plane        │
+                      │         TinyAssets Control Plane        │
                       │          (always-on, ~$5-15/mo)       │
                       │                                       │
 Users (Claude.ai ─────┼──► MCP gateway (FastMCP or proxy)     │
@@ -150,7 +150,7 @@ Inherits the matrix from `always_on_hosting_and_federation.md` §1. 2026 updates
 
 **What GoDaddy sells (2026 public-plan survey):**
 
-| GoDaddy tier | What it supports | Fit for Workflow control plane |
+| GoDaddy tier | What it supports | Fit for TinyAssets control plane |
 |---|---|---|
 | **Economy / Deluxe / Ultimate shared hosting** | PHP 7/8, MySQL/MariaDB, cPanel, .htaccess, static files. No long-running daemons, no arbitrary ports, no WebSockets / SSE beyond what Apache+PHP allows. | **Static catalog + landing page: YES.** Dynamic MCP control plane: **NO.** FastMCP streamable-HTTP needs persistent Python 3.11+ with long-lived connections; shared PHP tiers can't host it. |
 | **Managed WordPress** | PHP + MySQL + WP runtime, CDN. | Landing page only. Not a control plane. |
@@ -378,7 +378,7 @@ This is the "thin control plane, fat hosts" shape. It matches the GitHub-as-cata
 Today: chatbot identity is tied via Claude.ai's MCP connector — the user is "whoever Claude.ai says is connected to `tinyassets.io/mcp` right now." This is implicit and works because there is one origin.
 
 When the control plane is a separate service in front of many hosts, identity must survive:
-- User opens Claude.ai → MCP connector to Workflow control plane → control plane dispatches to Host B.
+- User opens Claude.ai → MCP connector to TinyAssets control plane → control plane dispatches to Host B.
 - Host B must know "this request comes from user `jonathan` with session `...`" and enforce sensitivity / ACL accordingly.
 - Requests placed today must still be the same user tomorrow on a different client.
 

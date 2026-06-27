@@ -153,7 +153,7 @@ Before extraction, confirm each domain handler's imports. Key shared helpers use
 | Rename Phase 1 Part 2 commit | See STATUS.md | `domains/fantasy_daemon/` must be the real domain package, not just a shim, before adding `api/` inside it |
 | Rename Phases 2–4 | Not started | Identifier renames inside domain handlers should not happen twice — wait for Phase 2 to clean identifiers before moving the handlers |
 | universe_server.py decomposition (#29 / companion audit) | Audit pending | The universe_server decomposition must align seam boundaries with this classification — shared helpers extracted to `tinyassets/api/universe_helpers.py` before domain handlers can safely import them |
-| Universe-to-Workflow-Server rename (`docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md`) | Blocked on host §5 answers | If the file moves to `tinyassets/workflow_server.py`, do the extraction against the new path. No-op if extracted first, but two renames on the same handlers in quick succession adds noise. |
+| Universe-to-Workflow-Server rename (`docs/design-notes/2026-04-19-universe-to-tinyassets-server-rename.md`) | Blocked on host §5 answers | If the file moves to `tinyassets/workflow_server.py`, do the extraction against the new path. No-op if extracted first, but two renames on the same handlers in quick succession adds noise. |
 
 **Recommended order:**
 1. Land decomposition audit (#29) and agree on extraction boundaries → this shapes which helpers move vs stay.

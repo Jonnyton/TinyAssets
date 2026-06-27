@@ -134,7 +134,7 @@ After reviewing the code and the PLAN.md design decisions, the cleanest model is
 | Axis | Asks | Scope | Persistence |
 |---|---|---|---|
 | **Goal** | *Why?* Intent / pursuit / outcome | Public, shared across users | `goals/<slug>.yaml` |
-| **Branch** | *How?* Workflow topology / graph design | Public, forkable, Goal-bound | `branches/<slug>.yaml` |
+| **Branch** | *How?* TinyAssets topology / graph design | Public, forkable, Goal-bound | `branches/<slug>.yaml` |
 | **Universe** | *Where?* Reality scope — isolated canon, facts, state, memory | Private to the host (usually) | `<universe>/` subtree |
 
 **Key claim:** these three axes are each complete design primitives. They do not subsume each other. A Branch is not "inside" a Universe; it is a design artifact that CAN be instantiated into one or more Universes. A Goal is not "above" a Branch in containment terms; it is the intent layer Branches BIND to.

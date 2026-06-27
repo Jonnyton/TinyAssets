@@ -1,6 +1,6 @@
 # Knowledge Schema
 
-Workflow uses two complementary knowledge surfaces:
+TinyAssets uses two complementary knowledge surfaces:
 
 - `knowledge.db` for machine-facing retrieval and runtime state
 - `knowledge/` markdown for human-readable compiled understanding

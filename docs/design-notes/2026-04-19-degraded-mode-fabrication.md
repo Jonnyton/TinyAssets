@@ -46,7 +46,7 @@ Three arguments for structural treatment.
 - **Chatbot** swallowed the error and filled the gap with cross-session context + domain-voice fabrication.
 - **User** received output indistinguishable from a valid tool response.
 
-The chain broke at the middle layer — not because the chatbot lacked information, but because the chatbot's aggressive-assumption prior (`project_chatbot_assumes_workflow_ux`) has no explicit pause condition for "tool failed." The same aggressive-assumption that makes Workflow feel effortless when things work becomes aggressive-fabrication when they don't.
+The chain broke at the middle layer — not because the chatbot lacked information, but because the chatbot's aggressive-assumption prior (`project_chatbot_assumes_workflow_ux`) has no explicit pause condition for "tool failed." The same aggressive-assumption that makes TinyAssets feel effortless when things work becomes aggressive-fabrication when they don't.
 
 **§2.3 Trust is recoverable once; it is not recoverable twice.** Devin Session 1 established that tier-2 users who discover unverifiable claims bounce. Devin Session 2 proved `get_status` + honest disclosure could recover that trust. A single fabrication incident on a recovered-trust user is worse than a thousand "can't reach the tool" messages. The fabrication mode is the exact failure that maximally erodes the trust the self-auditing-tools pattern is designed to build.
 
@@ -74,7 +74,7 @@ The `control_station` prompt is the entry point for tier-1/2 chatbot conversatio
 |---|---|---|---|
 | **`control_station` system prompt** | Chatbot fabricates tool output when MCP fails | Dev directive in flight | SHIP (tactical fix) |
 | **All `@mcp.prompt` return values** (`extension_guide`, future orientation prompts) | Prompt return contains instructions to the chatbot; if the prompt itself hallucinates, cascading effect | Per-prompt — no cross-cutting guard | **Add a shared preamble to every @mcp.prompt return** stating the no-fabricate rule. Small sweep; ~0.25 dev-day. |
-| **Local Workflow tools that return structured data** (`get_status`, `get_recent_events`, future `get_dispatch_evidence`) | Tool error handling returns a structured-but-sparse error; chatbot must not compensate for sparse error with fabrication | No explicit guidance today | **Structured error contract** — every self-auditing tool returns `{"status": "error", "reason": str, "caveats": [...]}` with no user-facing narrative. Chatbot composes narrative from structured evidence only. See §6 architectural option 2. |
+| **Local TinyAssets tools that return structured data** (`get_status`, `get_recent_events`, future `get_dispatch_evidence`) | Tool error handling returns a structured-but-sparse error; chatbot must not compensate for sparse error with fabrication | No explicit guidance today | **Structured error contract** — every self-auditing tool returns `{"status": "error", "reason": str, "caveats": [...]}` with no user-facing narrative. Chatbot composes narrative from structured evidence only. See §6 architectural option 2. |
 | **Future paid-market tools** (`submit_request`, `claim_request`, `list_my_bids`) | Market-side failure (daemon offline, payment rejected) — critical to not fabricate a successful transaction | Not shipped yet | **Contract-before-ship** — require structured-error response shape in the tool's specification, not after-the-fact patched. Pre-empt the pattern. |
 | **Future autoresearch tools** | Long-running probe — partial results in progress; fabrication risk is "claim completion before it completed" | Not shipped yet | Same as paid-market: structured-error + progress-state-shape contract-before-ship. |
 | **Any future `@mcp.tool` added to the server** | Same shape | Governed by whatever pattern we set here | **Codify in a contributor-facing spec** — `docs/specs/tool-response-contract.md` covering the no-fabricate rule + structured-error shape. Part of the Tool Surface Contract. |
@@ -111,7 +111,7 @@ The dev directive is a tactical fix. Longer-term, three layers can host the real
 The `control_station` directive tells the chatbot what to do when tools fail. Relies on the chatbot correctly following the directive.
 
 - **Pro:** zero platform cost, ships in ~0.5 dev-day.
-- **Pro:** composable with other directives (assume-Workflow, vocabulary-hygiene, etc.).
+- **Pro:** composable with other directives (assume-TinyAssets, vocabulary-hygiene, etc.).
 - **Con:** prompt adherence is probabilistic. Under load, under long context, under pressure to be helpful, the chatbot might still fall back to fabrication — we've seen prompt directives erode in other surfaces.
 - **Con:** every new MCP tool needs to re-affirm the directive somewhere (or inherit from `control_station`).
 

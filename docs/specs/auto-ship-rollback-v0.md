@@ -1,7 +1,7 @@
 # Auto-ship rollback primitive v0
 
 Status: proposal
-Owner: Workflow community patch loop (Slice C of option-2 lane)
+Owner: TinyAssets community patch loop (Slice C of option-2 lane)
 Pairs with:
 - `docs/milestones/auto-ship-canary-v0.md` (PR #198 §5.2 + §10 Phase 4)
 - `docs/specs/loop-outcome-rubric-v0.md` (rubric §2 `rollback` evidence class)

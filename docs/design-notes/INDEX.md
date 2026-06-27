@@ -2,7 +2,7 @@
 
 ## 2026-05-03
 
-- [Multi-User Workflow Operating Model](2026-05-03-multi-user-workflow-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-workflow-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
+- [Multi-User TinyAssets Operating Model](2026-05-03-multi-user-tinyassets-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-tinyassets-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.
 
 ## 2026-04-18
 
@@ -29,7 +29,7 @@
 
 ## 2026-04-09
 
-- [Seed Retrofit Overlay](2026-04-09-seed-retrofit-overlay.md) - Additive overlay that backfills the newer seed-era repo hubs, idea pipeline, execution-plan surfaces, and human-readable knowledge docs without moving current Workflow artifacts.
+- [Seed Retrofit Overlay](2026-04-09-seed-retrofit-overlay.md) - Additive overlay that backfills the newer seed-era repo hubs, idea pipeline, execution-plan surfaces, and human-readable knowledge docs without moving current TinyAssets artifacts.
 - [Runtime Fiction Memory Graph](2026-04-09-runtime-fiction-memory-graph.md) - Target design for turning long-run fiction memory from loose notes and prose leaves into typed world truth, event, epistemic, and narrative-debt ledgers with generated human-readable views.
 
 ## 2026-03-31

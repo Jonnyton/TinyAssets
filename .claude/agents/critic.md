@@ -27,7 +27,7 @@ For each new output artifact:
 5. **Previous output** — for consistency across the run
 6. **status.json** / **activity.log** — daemon state and recent events
 
-Universe data is at: `C:/Users/Jonathan/Documents/Workflow/{universe-name}/` (or the domain's configured data path) (for the fantasy domain)
+Universe data is at: `C:/Users/Jonathan/Documents/TinyAssets/{universe-name}/` (or the domain's configured data path) (for the fantasy domain)
 
 You can also query: `curl -s http://localhost:8321/v1/universes/{uid}/overview`
 

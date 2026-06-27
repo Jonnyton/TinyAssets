@@ -38,7 +38,7 @@ Task arrives
     |   |-- UI work? --------------------------------> frontend-ui-engineering
     |   |-- Game or interactive prototype? ----------> game-prototyping
     |   |-- Restore/emulate/prove an OLD game? ------> classic-game-design-test
-    |   |-- Workflow website edit? ------------------> website-editing
+    |   |-- TinyAssets website edit? ------------------> website-editing
     |   |-- API / interface work? -------------------> api-and-interface-design
     |   `-- Mostly simplification / least code? -----> code-simplification
     |-- Need better context loaded? -----------------> context-engineering
@@ -102,7 +102,7 @@ code-review-and-quality`.
 | Phase | Skill | One-line summary |
 |-------|-------|------------------|
 | Orient | improve-codebase-architecture | Map an area, then audit module boundaries and coupling |
-| Orient | external-research-implications | Turn outside repos/papers into Workflow implications |
+| Orient | external-research-implications | Turn outside repos/papers into TinyAssets implications |
 | Define | idea-refine | Refine an idea into an approved design before building |
 | Define | domain-model | Stress-test concepts/invariants and harden terminology |
 | Define | spec-driven-development | Write requirements and acceptance criteria before code |

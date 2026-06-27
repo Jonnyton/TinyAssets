@@ -65,7 +65,7 @@ The comment block above the tuple (lines 9051-9055) mentions mirroring
 ## (b) Add `"bugs"` to wiki-mcp/server.js category taxonomy
 
 **File:** `C:/Users/Jonathan/Projects/wiki-mcp/server.js` (a sibling
-repo at `C:/Users/Jonathan/Projects/wiki-mcp/`, not inside Workflow).
+repo at `C:/Users/Jonathan/Projects/wiki-mcp/`, not inside TinyAssets).
 Dev needs to clone/open the sibling repo to land this patch.
 
 Five edits required in that file:
@@ -103,7 +103,7 @@ Five edits required in that file:
      people: "## People",
      research: "## Research",
      recipes: "## Recipes",
-     workflows: "## Workflows",
+    workflows: "## Workflows",
      notes: "## Notes",
      references: "## References",
 -    plans: "## Plans"
@@ -510,7 +510,7 @@ def _render_bug_markdown(
   and monkey-patch `_wiki_pages_dir` / `_wiki_drafts_dir`.
 - **No `wiki-mcp/server.js` mirror for `file_bug`.** That server is
   the read-only-wiki bridge for Claude Code sessions; chatbots on the
-  TinyAssets connector file bugs through the Workflow server directly.
+  TinyAssets connector file bugs through the TinyAssets server directly.
   The `bugs` category entry in (b) is enough for wiki-mcp to render
   + search bug pages; writing is routed through the TinyAssets MCP.
 

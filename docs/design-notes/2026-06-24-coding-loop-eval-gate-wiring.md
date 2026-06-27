@@ -44,7 +44,7 @@ Three connections, each independently shippable, smallest first:
 
 - It changes **accept/auto-ship behavior** — owner sign-off territory (`Hard Rule 4`, autonomous defaults; storage/public-surface verification invariant).
 - Defining the **pass bar** (min_score, which checks block vs warn) is a host/owner call, not an engineering default.
-- Per the project's research-gate rule, a finding like this needs **opposite-provider review** (Codex/Cursor) re-checking sources + Workflow context before build, push, or rollout.
+- Per the project's research-gate rule, a finding like this needs **opposite-provider review** (Codex/Cursor) re-checking sources + TinyAssets context before build, push, or rollout.
 
 ## Routing
 

@@ -3,7 +3,7 @@
 Date: 2026-05-01
 Host: LibreChat
 Host version: `v0.8.5`
-Proof scope: local Docker Compose LibreChat instance using the public Workflow
+Proof scope: local Docker Compose LibreChat instance using the public TinyAssets
 MCP directory endpoint.
 
 ## Environment
@@ -18,14 +18,14 @@ MCP directory endpoint.
 | Mongo image | `mongo:8.0.20` |
 | Local URL | `http://127.0.0.1:32181` |
 | Auth shape | local LibreChat proof account; no Claude/ChatGPT login |
-| Workflow endpoint | `https://tinyassets.io/mcp-directory` |
+| TinyAssets endpoint | `https://tinyassets.io/mcp-directory` |
 | MCP transport | Streamable HTTP |
-| Workflow auth mode | None |
+| TinyAssets auth mode | None |
 | Model used for chat proof | `gpt-oss:20b` through LibreChat/Ollama |
 
 ## Config Proof
 
-The proof `librechat.yaml` configured Workflow as:
+The proof `librechat.yaml` configured TinyAssets as:
 
 ```yaml
 mcpSettings:
@@ -34,14 +34,14 @@ mcpSettings:
 
 mcpServers:
   workflow:
-    title: "Workflow"
+    title: "TinyAssets"
     description: "Directory-safe TinyAssets MCP endpoint"
     type: "streamable-http"
     url: "https://tinyassets.io/mcp-directory"
     timeout: 30000
     initTimeout: 30000
     serverInstructions: |
-      Use Workflow for read-only daemon status, goals, wiki, universe, and run inspection.
+      Use TinyAssets for read-only daemon status, goals, wiki, universe, and run inspection.
       Only use proposal/write tools when the user explicitly asks for a proposal.
 ```
 
@@ -77,7 +77,7 @@ LibreChat connection status:
 workflow authenticated=true authConfig=[]
 ```
 
-The server exposed the 11 directory-safe Workflow tool keys:
+The server exposed the 11 directory-safe TinyAssets tool keys:
 
 ```text
 get_workflow_status_mcp_workflow
@@ -151,9 +151,9 @@ Result:
 
 Verified claim:
 
-- LibreChat `v0.8.5` can connect to Workflow's public Streamable HTTP
-  directory endpoint with Workflow auth mode `None`.
-- A local LibreChat chat can invoke `get_workflow_status` through the Workflow
+- LibreChat `v0.8.5` can connect to TinyAssets' public Streamable HTTP
+  directory endpoint with TinyAssets auth mode `None`.
+- A local LibreChat chat can invoke `get_workflow_status` through the TinyAssets
   MCP server and return a grounded visible answer.
 - This path does not require Claude or ChatGPT login.
 
@@ -162,6 +162,6 @@ Not yet generalized:
 - Other LibreChat versions.
 - Hosted or managed LibreChat deployments.
 - No-auth LibreChat deployments; this proof used a local LibreChat account.
-- OAuth/Bearer-secured Workflow endpoints.
+- OAuth/Bearer-secured TinyAssets endpoints.
 - Write/proposal flows through LibreChat tool-call UX.
 - Models without reliable function/tool-call support.

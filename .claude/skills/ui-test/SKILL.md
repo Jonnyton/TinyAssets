@@ -74,7 +74,7 @@ Codex is mechanically good at browser operation, but must not massage the chatbo
 - Do not name internal actions, schemas, tool parameters, branch IDs, or implementation details unless the bot surfaced them first.
 - Do not over-specify a request just to force the right MCP call.
 - Do not coach the bot around a UX failure; log the failure.
-- Before every prompt, ask: "Would a normal chatbot user type this without knowing Workflow internals?" If no, rewrite it.
+- Before every prompt, ask: "Would a normal chatbot user type this without knowing TinyAssets internals?" If no, rewrite it.
 
 ## Claude Code CDP setup
 
@@ -157,13 +157,13 @@ Pulses, routine results, and questions go in the log only.
 
 ## CRITICAL — test domains must be complex-output workflows
 
-Workflow is for multi-step, stateful, memory-heavy, evaluation-bound work producing substantive output — a paper, a book, a screenplay, a meta-analysis, an investigative series. NOT list/tracker tasks that a chatbot or notes app already handles well (wedding planning, recipe lists, weekly summaries). Those don't stress anything the architecture was built for.
+TinyAssets is for multi-step, stateful, memory-heavy, evaluation-bound work producing substantive output — a paper, a book, a screenplay, a meta-analysis, an investigative series. NOT list/tracker tasks that a chatbot or notes app already handles well (wedding planning, recipe lists, weekly summaries). Those don't stress anything the architecture was built for.
 
 Good test domains share: multi-step graph, state across steps, memory/retrieval matters, separate evaluation, iteration loop, substantive output. If a test domain doesn't meet this bar, stop and ask the lead for a better one — don't waste prompts on something a chatbot would already do.
 
 ## CRITICAL — Anchor every chat in the connector
 
-If your opening prompt doesn't pull the chatbot into the TinyAssets connector context, the bot will answer as a general assistant and never touch our MCP. That tests the base chatbot, not Workflow — worthless.
+If your opening prompt doesn't pull the chatbot into the TinyAssets connector context, the bot will answer as a general assistant and never touch our MCP. That tests the base chatbot, not TinyAssets — worthless.
 
 **Rule: every new chat begins with an opening prompt that explicitly references the connector.** Examples:
 

@@ -107,7 +107,7 @@ Per `project_privacy_via_community_composition`: "Platform owns enforcement prim
 | Concern | Owner | Mechanism |
 |---|---|---|
 | **Fallback chain enforcement** (router refuses non-allowlisted providers) | **PLATFORM** | Option A — `allowed_providers` field on `UniverseConfig`; router-level filter. |
-| Sensitivity classification (which workflows are private) | Community / chatbot | Chatbot reads workflow context, decides per-call whether to invoke Workflow on a sensitive universe; sets `allowed_providers` at universe-create time. |
+| Sensitivity classification (which workflows are private) | Community / chatbot | Chatbot reads workflow context, decides per-call whether to invoke TinyAssets on a sensitive universe; sets `allowed_providers` at universe-create time. |
 | Threat-model definition (what counts as sensitive) | Community / chatbot | Per-domain rubrics (AP, medical, legal). Lives in user's chatbot memory or a community-published rubric. Chatbot reads rubric → decides allowlist. |
 | Redaction taxonomy (what gets redacted, how) | Community / chatbot | Chatbot redacts at MCP-call time before tool-call body lands in Anthropic-side relay. Out of scope for the router. |
 | Metadata scrubbing | Accepted residual | Per parent note §4. Platform doesn't enforce; chatbot can choose universe ID aliasing if metadata sensitivity is high. |

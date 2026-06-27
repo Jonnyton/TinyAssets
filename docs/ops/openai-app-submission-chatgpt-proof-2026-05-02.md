@@ -6,7 +6,7 @@ OpenAI submission prep packet.
 ## Environment
 
 - Surface: ChatGPT web Developer Mode.
-- App shown as: `Workflow Dev`.
+- App shown as: `TinyAssets Dev`.
 - Historical expectation: `https://tinyassets.io/mcp-directory`.
 - Current verified setting, 2026-05-02T15:37-07:00: the enabled ChatGPT
   `TinyAssets DEV` app is still connected to `https://tinyassets.io/mcp`, not
@@ -22,31 +22,31 @@ fresh chat.
 
 Earlier 2026-05-02 Developer Mode checks showed these read flows working:
 
-1. Prompt: `Use Workflow to check the current daemon status and tell me any caveats before I start.`
-   - Result: Workflow status tool invoked and ChatGPT returned daemon status
+1. Prompt: `Use TinyAssets to check the current daemon status and tell me any caveats before I start.`
+   - Result: TinyAssets status tool invoked and ChatGPT returned daemon status
      plus caveats.
-2. Prompt: `Use Workflow to search for goals related to onboarding and show the best matches.`
+2. Prompt: `Use TinyAssets to search for goals related to onboarding and show the best matches.`
    - Result: `search_workflow_goals` invoked. No onboarding matches were
      returned; the OpenAI form and JSON expected output were corrected to allow
      a clear empty state.
-3. Prompt: `Use Workflow to list available universes, then inspect the active one.`
+3. Prompt: `Use TinyAssets to list available universes, then inspect the active one.`
    - Result: universe list and active-universe inspection returned
      successfully.
-4. Prompt: `Use Workflow to search the wiki for current launch risks, then read the most relevant page.`
+4. Prompt: `Use TinyAssets to search the wiki for current launch risks, then read the most relevant page.`
    - Result: wiki search/read tools invoked and response summarized launch
      risks while preserving the truncation caveat.
 
 Negative prompt checked:
 
 - Prompt: `What is the weather in San Francisco tomorrow?`
-- Result: ChatGPT used the native weather surface; no new Workflow tool call
+- Result: ChatGPT used the native weather surface; no new TinyAssets tool call
   was observed between prompt and response.
 
 ## Write-Path History
 
 Initial write prompt:
 
-`Use Workflow to propose a public goal named "Onboard new MCP hosts" with tags discovery,onboarding, then submit a request asking the daemon to summarize today's discoverability blockers.`
+`Use TinyAssets to propose a public goal named "Onboard new MCP hosts" with tags discovery,onboarding, then submit a request asking the daemon to summarize today's discoverability blockers.`
 
 Observed result before backend fixes:
 
@@ -60,7 +60,7 @@ After PR #149 deployment (`2a1651f`, deploy run `25245035290`):
 - Direct `/mcp-directory` `propose_workflow_goal` succeeded and created goal
   `35f70887461e` (`Onboard new MCP hosts`).
 - Direct `/mcp` `goals action=propose` succeeded and created goal
-  `975e8fbdead0` (`Workflow legacy propose probe 2026-05-02`).
+  `975e8fbdead0` (`TinyAssets legacy propose probe 2026-05-02`).
 - ChatGPT Developer Mode read proof found `35f70887461e` by exact title.
 - ChatGPT Developer Mode `submit_workflow_request` returned
   `req_1777701087_d215c1fa` in `echoes-of-the-cosmos`.
@@ -75,15 +75,15 @@ After Platform MCP Server `Scan Tools` and `Continue` on 2026-05-02:
   appeared there.
 - Fresh ChatGPT Developer Mode before clicking Platform `Continue` rendered a
   `propose_workflow_goal` approval card, but the opened call detail showed
-  Workflow -> `Goals` with request `{ action: "propose_workflow_goal", ... }`.
+  TinyAssets -> `Goals` with request `{ action: "propose_workflow_goal", ... }`.
 - Response returned `Unknown action 'propose_workflow_goal'` with available
   legacy actions `bind`, `common_nodes`, `get`, `leaderboard`, `list`,
   `propose`, `search`, `set_canonical`, and `update`.
 - After clicking Platform `Continue` into Testing, a second fresh Developer
   Mode chat again rendered the `propose_workflow_goal` approval card. After
-  approval, the tool detail still showed Workflow -> `Goals` with
+  approval, the tool detail still showed TinyAssets -> `Goals` with
   `action: "propose_workflow_goal"` and remained stuck at `Access granted for
-  Workflow` / `Thinking`; no response body appeared before browser automation
+  TinyAssets` / `Thinking`; no response body appeared before browser automation
   timeout.
 
 ## PR #161 Follow-Up
@@ -102,7 +102,7 @@ wrapper proof showed:
   `name is required for propose`, not `Unknown action`.
 - `goals action=search_workflow_goals query="Onboard new MCP hosts"` worked.
 
-Later ChatGPT approval-card proof reached Workflow but returned a tool 502
+Later ChatGPT approval-card proof reached TinyAssets but returned a tool 502
 while the public endpoint was temporarily unhealthy.
 
 2026-05-02T12:34-07:00 refresh:
@@ -119,17 +119,17 @@ while the public endpoint was temporarily unhealthy.
 
 Read-only prompt:
 
-`Use Workflow to check the current daemon status and tell me any caveats before I start.`
+`Use TinyAssets to check the current daemon status and tell me any caveats before I start.`
 
 Observed result:
 
-- ChatGPT invoked Workflow and completed normally.
+- ChatGPT invoked TinyAssets and completed normally.
 - No `Unknown action`, hang, or 5xx occurred.
 - Response summarized daemon status and caveats.
 
 Approved public write prompt:
 
-`Use Workflow to propose a public workflow goal named "Workflow directory post-redaction approval 2026-05-02T13-18" with tags "submission,smoke". After the tool result, reply with the exact goal id and whether the called tool was propose_workflow_goal. Do not call any other tool.`
+`Use TinyAssets to propose a public workflow goal named "TinyAssets directory post-redaction approval 2026-05-02T13-18" with tags "submission,smoke". After the tool result, reply with the exact goal id and whether the called tool was propose_workflow_goal. Do not call any other tool.`
 
 Observed result:
 
@@ -141,7 +141,7 @@ Observed result:
 
 Direct public MCP verification:
 
-- `python scripts/mcp_probe.py --url https://tinyassets.io/mcp-directory --tool search_workflow_goals --args '{"query":"Workflow directory post-redaction approval 2026-05-02T13-18","limit":5}' --raw`
+- `python scripts/mcp_probe.py --url https://tinyassets.io/mcp-directory --tool search_workflow_goals --args '{"query":"TinyAssets directory post-redaction approval 2026-05-02T13-18","limit":5}' --raw`
   returned `20e2339c82e3` as a public goal with tags `submission, smoke`.
 - `python scripts/mcp_probe.py --url https://tinyassets.io/mcp-directory --tool get_workflow_goal --args '{"goal_id":"20e2339c82e3"}' --raw`
   returned goal `20e2339c82e3`, visibility `public`, tags

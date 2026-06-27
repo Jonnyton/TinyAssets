@@ -6,7 +6,7 @@ row: K (self-host uptime migration)
 
 # Log Aggregation Runbook
 
-Workflow uses a two-layer logging strategy on the self-hosted Droplet:
+TinyAssets uses a two-layer logging strategy on the self-hosted Droplet:
 
 | Layer | Tool | What it does |
 |-------|------|--------------|

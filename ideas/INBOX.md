@@ -15,7 +15,7 @@ half-formed experiments.
 
 - [2026-05-05] (source: host, owner: unassigned, status: capture, priority: uptime-loop, size: large) **Loop self-stewardship: trend manual checker intervention to zero.** Long-term target is users plus the loop, without Codex/Cowork manually brokering PR notes, ordering, refactors, or acceptance decisions. Every manual PR comment, requested change, merge-order correction, duplicate-lane catch, or checker-key refusal is a "medical attention" signal: the loop should learn to surface the same critique, revise the branch, reorder/supersede alternatives, and produce cleaner code before human/operator review. The loop has access to the same LLM families as the operators; the advantage should come from evolving state, review memory, lean context, tests, and explicit stewardship feedback. Next triage should convert this into measurable observability: manual-intervention ledger, intervention classes, loop self-correction rate, and promotion rules that turn repeated checker objections into substrate improvements rather than permanent operator labor.
 
-- [2026-05-02] (source: host, owner: unassigned, status: capture, priority: uptime-loop, size: small) **Review open-source Claude Code / agent-team implementations for persistence lessons.** User flagged `https://github.com/SafeRL-Lab/nano-claude-code` (redirects to `SafeRL-Lab/cheetahclaws`), `https://github.com/SafeRL-Lab/cheetahclaws`, and `https://github.com/instructkr/claw-code` (redirects to `ultraworkers/claw-code`) as possible inspiration. Evaluate against Workflow's target advantages: 24/7 persistence without humans online, truthful daemon identity, connector-driven public loop, and multi-provider durable coordination.
+- [2026-05-02] (source: host, owner: unassigned, status: capture, priority: uptime-loop, size: small) **Review open-source Claude Code / agent-team implementations for persistence lessons.** User flagged `https://github.com/SafeRL-Lab/nano-claude-code` (redirects to `SafeRL-Lab/cheetahclaws`), `https://github.com/SafeRL-Lab/cheetahclaws`, and `https://github.com/instructkr/claw-code` (redirects to `ultraworkers/claw-code`) as possible inspiration. Evaluate against TinyAssets' target advantages: 24/7 persistence without humans online, truthful daemon identity, connector-driven public loop, and multi-provider durable coordination.
 
 - [2026-05-02] (source: host, owner: unassigned, status: promoted, priority: post-#18, size: medium) **Daemon mini OpenBrain per soul-bearing daemon.** Research Nate B. Jones / Open Brain and adapt the pattern so each daemon controls an atomic, searchable memory backend that works with its existing daemon wiki. Direction captured in `docs/design-notes/2026-05-02-daemon-mini-openbrain.md`: wiki stays the curated face; mini brain is daemon-scoped capture/search/review/promote storage; observable memory traces query/retrieve/inject/write/promote/compact; no one flat pool, no soul copying, no Supabase/OpenRouter dependency by default.
 - [2026-05-01] (source: host, owner: unassigned, status: promoted, priority: uptime-loop, size: medium) **Patch-request incentives + requester-directed daemon work.** Users may attach optional incentives to patch/feature requests to make independent daemons more likely to pick them up earlier than other queued requests, but incentives must not influence whether a patch is accepted, released, or merged. Users may also direct their own daemons to work on a specific patch request to speed up their own iteration. This can produce faster proposals/evidence, not a landing guarantee. Promoted immediately to `PLAN.md` Multi-User Evolutionary Design and `STATUS.md` loop work because the live community patch loop is uptime-related.
@@ -28,7 +28,7 @@ half-formed experiments.
   Historical fixture pack + implementation cards remain at `docs/specs/2026-04-27-recency-continue-fixture-pack.md` and `docs/exec-plans/active/2026-04-27-post-18-recency-continue-implementation-cards.md`; do not treat the recency portions as pending engine work.
   Links: navigator's 2026-04-27 chain-break review (chat record); persona memory `priya_ramaswamy/`; `ideas/PIPELINE.md` "Recency primitives" row; `docs/specs/2026-04-27-recency-and-continue-branch-primitives.md`; `docs/specs/2026-04-27-recency-continue-fixture-pack.md`; `docs/exec-plans/active/2026-04-27-post-18-recency-continue-implementation-cards.md`.
 
-- [2026-04-27] (source: navigator-userim-review, owner: dev post-#18, status: dev-ready-after-18, priority: post-uptime, size: medium) **`run_branch resume_from=<run_id>` — explicit "extend prior run" parameter.** Priya signal #6 + Devin Session 2 echoed. "Extend the sweep" / "continue branch" has no clean Workflow path — chatbot has to semantically infer "clone this branch, add nodes, re-run with extended inputs." Same root concern as INBOX 2026-04-24 entry but with concrete API shape proposal.
+- [2026-04-27] (source: navigator-userim-review, owner: dev post-#18, status: dev-ready-after-18, priority: post-uptime, size: medium) **`run_branch resume_from=<run_id>` — explicit "extend prior run" parameter.** Priya signal #6 + Devin Session 2 echoed. "Extend the sweep" / "continue branch" has no clean TinyAssets path — chatbot has to semantically infer "clone this branch, add nodes, re-run with extended inputs." Same root concern as INBOX 2026-04-24 entry but with concrete API shape proposal.
   Files (when scoped): `tinyassets/api/runs.py` (add `resume_from=<run_id>` to existing `run_branch`); tests.
   Depends: #18 lock clears.
   Verification: persona replay plus live MCP `run_branch` call with `resume_from` proves chatbot routes to the existing run surface instead of re-scaffolding.
@@ -63,12 +63,12 @@ half-formed experiments.
 
 - [2026-04-20] (source: host, owner: navigator-followup, status: triaged,
   priority: post-uptime, size: large)
-  **Agent-teams-on-Workflow: open-source-Claude-Code-analog as a user
+  **Agent-teams-on-TinyAssets: open-source-Claude-Code-analog as a user
   project, backed by our primitives.**
   Host framing: the Claude Code system prompt leaked; a Python open-source
   analog is growing fast on GitHub and trending toward one of the fastest-
   growing repos. Opportunity — build "Claude Code agent teams" where each
-  teammate is another Workflow node invoked via a daemon-request, and the
+  teammate is another TinyAssets node invoked via a daemon-request, and the
   teammates live in another branch of the workflow. **This is a USER
   project, not ours to build.** Our job is to make sure the primitives
   exist on the platform so the user's chatbot can compose this — daemon
@@ -78,7 +78,7 @@ half-formed experiments.
   Why this matters: validates the "daemon economy + convergent commons"
   thesis with a concrete, viral-shaped use case that isn't fantasy-
   authoring. If the OSS Claude-Code-analog audience can compose their
-  agent teams on Workflow, the platform rides that wave.
+  agent teams on TinyAssets, the platform rides that wave.
   Required primitives (load-bearing, to check against existing roadmap):
   (a) node → daemon-request invocation with typed inputs/outputs,
   (b) cross-branch teammate spawning without per-teammate auth friction,
@@ -97,8 +97,8 @@ half-formed experiments.
   Dependencies: uptime-track (all 14 self-host rows) lands first;
   daemon-economy first-draft (Track A + bid + settlement) lands first;
   then this becomes a scoping exercise.
-  Triaged 2026-04-27: PIPELINE row "Agent-teams-on-Workflow" — research-note
-  landed at `docs/notes/2026-04-20-agent-teams-on-workflow-research.md`
+  Triaged 2026-04-27: PIPELINE row "Agent-teams-on-TinyAssets" — research-note
+  landed at `docs/notes/2026-04-20-agent-teams-on-tinyassets-research.md`
   (11-seam gap analysis, foundation/UX/commons rankings, nano-claude-code
   as recommended Python reference base — ~40K LoC, ~85 files, architectural
   seams map cleanly onto our primitives — claw-code now Rust-primary, less
@@ -106,7 +106,7 @@ half-formed experiments.
   Scoping exercise opens after both unblock.
   Promoted 2026-04-27: post-unblock execution checklist landed at `docs/notes/2026-04-27-agent-teams-post-uptime-scoping-checklist.md` (entry gates + phase checks + escalation criteria).
   Links:
-  - **`docs/notes/2026-04-20-agent-teams-on-workflow-research.md` —
+  - **`docs/notes/2026-04-20-agent-teams-on-tinyassets-research.md` —
     navigator research + thinking note. 11-seam gap analysis, viral-
     moment considerations, foundation/UX/commons work item ranking.**
   - `docs/notes/2026-04-27-agent-teams-post-uptime-scoping-checklist.md`
@@ -122,7 +122,7 @@ half-formed experiments.
   priority: post-uptime, size: medium)
   **"Extend run" / "continue branch" as a first-class primitive.**
   User-sim signal: Priya Session 2 ask "add BIOCLIM + RF for comparison on the same 14 species"
-  has no clean Workflow verb. "New branch" implies fresh scaffolding. "New run" implies same
+  has no clean TinyAssets verb. "New branch" implies fresh scaffolding. "New run" implies same
   algo-set. Chatbot must semantically infer "clone this branch, add algorithm nodes, re-run
   same species set." No existing primitive surfaces this as an intent. Chain-break: Interface 1
   primitive gap — chatbot improvises where it should have a clear tool.
@@ -144,7 +144,7 @@ half-formed experiments.
   priority: domain-skill, size: small)
   **`hyperparameter_importance` evaluator node for scientific/ML domain.**
   W&B Sweeps computes hyperparameter importance (which knobs matter most across a sweep)
-  automatically. Workflow has no equivalent. User-sim rates it "cheap to add, high-value
+  automatically. TinyAssets has no equivalent. User-sim rates it "cheap to add, high-value
   for scientific users." Domain-specific — belongs in the scientific-computing skill module,
   not the engine. CV-as-first-class-primitive is the structural moat; this is a parity win.
   Triaged 2026-04-27: PIPELINE row "hyperparameter_importance evaluator node" — waitlist
@@ -174,4 +174,4 @@ half-formed experiments.
   Links: -
 - [2026-06-27] (source: user-chat, owner: codex-gpt5-desktop, status: promoted) **Tiny/TinyAssets naming and Workflow retirement.**
   Host decision: Tiny is the personified intelligence users and developers interact with; TinyAssets is the website, platform, GitHub/repository, distribution, and app/listing brand; Workflow/workflow is only a migration compatibility name and retires after staged replacement.
-  Promoted to: `PLAN.md` Canonical Naming Boundary; `docs/design-notes/2026-06-27-tinyassets-rename-migration.md`; `docs/exec-plans/active/2026-06-27-tinyassets-rename-migration.md`; STATUS.md Work row "TinyAssets rename migration plan".
+  Promoted to: `PLAN.md` Canonical Naming Boundary; `docs/design-notes/2026-06-27-tinyassets-hard-rename.md`; `docs/exec-plans/active/2026-06-27-tinyassets-hard-rename.md`; STATUS.md Work row "TinyAssets hard rename plan".

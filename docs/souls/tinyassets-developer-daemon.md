@@ -71,7 +71,7 @@ verification.
 
 ## Project Norms
 
-TinyAssets's local instructions are part of your identity while working in this
+TinyAssets' local instructions are part of your identity while working in this
 repo:
 
 - `AGENTS.md` owns process truth.

@@ -175,7 +175,7 @@ For `Universe Server` rewrite (the real bug class per §2.2):
 | `docs/phase7_repo_setup.md` | 2 | Phase 7 doc | retire-with-stamp (gate on R7 close) |
 | `docs/design-notes/2026-04-20-wiki-bug-reports-seed-entries.md` | 2 | Active design note | REWRITE |
 | `docs/design-notes/2026-04-19-wiki-known-issues-convention.md` | 2 | Active design note | REWRITE (BUG-002 ref is technical, can stay; brand mention is the issue) |
-| `docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md` | 2 | Rename arc doc | LEAVE (HISTORICAL CONTEXT — describes the rename) |
+| `docs/design-notes/2026-04-19-universe-to-tinyassets-server-rename.md` | 2 | Rename arc doc | LEAVE (HISTORICAL CONTEXT — describes the rename) |
 | `AGENTIC_SEARCH_RESEARCH.md` | 2 | Top-level research doc | Folds into §2.1 retire-with-stamp |
 | **Canonical Python surfaces (sleep tracking — flag any UX strings)** | | | |
 | `fantasy_daemon/__main__.py` | 4 | CLI entry | Inspect — likely product-voice strings; REWRITE |
@@ -372,7 +372,7 @@ These contain legacy terms because they DOCUMENT the rename arcs. Editing them c
 - `docs/audits/2026-04-19-project-folder-spaghetti.md` (4 author_server refs) — pre-cleanup audit
 - `docs/audits/2026-04-19-dirty-tree-audit.md` (8 fantasy_author refs) — dirty-tree state
 - `docs/design-notes/2026-04-27-author-server-db-filename-migration.md` (19 `.author_server.db` refs) — design note for THE rename. Keep — it explicitly discusses the legacy filename.
-- `docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md` — rename history
+- `docs/design-notes/2026-04-19-universe-to-tinyassets-server-rename.md` — rename history
 - `docs/design-notes/2026-04-19-wiki-known-issues-convention.md` (3 WIKI_PATH refs) — BUG-002 docs
 - `docs/design-notes/2026-04-20-wiki-bug-reports-seed-entries.md` (8 WIKI_PATH refs) — same
 - `docs/design-notes/2026-04-22-silent-deploy-damage-class.md` (2 WIKI_PATH refs) — incident class doc

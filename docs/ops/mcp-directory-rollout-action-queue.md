@@ -12,7 +12,7 @@ This queue starts after the implementation slice shipped. The live state is:
 - Directory tool-list: 11 narrow tools from `/mcp-directory`
 - MCP Registry listing: live as `io.github.Jonnyton/tinyassets-universe-server`
 
-The rollout is not complete until Workflow is accepted into host-native
+The rollout is not complete until TinyAssets is accepted into host-native
 directories or registries, normal eligible users can find/add it without
 Developer Mode or custom URL friction, and first-use evidence is recorded.
 
@@ -20,9 +20,9 @@ Developer Mode or custom URL friction, and first-use evidence is recorded.
 
 Done means all of these are true:
 
-- MCP Registry lists Workflow and points clients at `https://tinyassets.io/mcp-directory`.
-- Claude lists Workflow in the Connectors Directory, not only as a custom MCP URL.
-- ChatGPT lists Workflow in the App Directory for eligible logged-in users, not
+- MCP Registry lists TinyAssets and points clients at `https://tinyassets.io/mcp-directory`.
+- Claude lists TinyAssets in the Connectors Directory, not only as a custom MCP URL.
+- ChatGPT lists TinyAssets in the App Directory for eligible logged-in users, not
   only in Developer Mode.
 - The public site tells each customer which path fits them: directory listing,
   custom URL fallback, no-chatbot-login local/self-hosted path, or planned host.
@@ -57,7 +57,7 @@ Artifact: `docs/ops/mcp-directory-submission-packet.md`
 
 Submit:
 
-- Name: Workflow
+- Name: TinyAssets
 - Endpoint: `https://tinyassets.io/mcp-directory`
 - Website: `https://tinyassets.io/connect`
 - Support: `ops@tinyassets.io`
@@ -66,7 +66,7 @@ Submit:
 Acceptance proof:
 
 - TinyAssets appears in the Claude Connectors Directory.
-- A normal logged-in Claude user adds Workflow without pasting a custom URL.
+- A normal logged-in Claude user adds TinyAssets without pasting a custom URL.
 - Claude invokes `get_workflow_status` or `list_workflow_goals`.
 - Trace goes to `output/claude_chat_trace.md` and summary to
   `output/user_sim_session.md`.
@@ -88,7 +88,7 @@ Known blockers:
 
 - 2026-05-02 in-app browser reached the OpenAI Platform login screen.
 - 2026-05-02 after host login, in-app browser reached
-  `https://platform.openai.com/apps-manage`, created a `Workflow` app draft,
+  `https://platform.openai.com/apps-manage`, created a `TinyAssets` app draft,
   and stopped at the submission form before uploading
   `chatgpt-app-submission.json`, logo assets, or entering developer/support,
   privacy/TOS, demo recording, commerce, and final review fields.
@@ -101,7 +101,7 @@ Known blockers:
 Acceptance proof:
 
 - TinyAssets appears in the ChatGPT App Directory for eligible logged-in users.
-- A normal eligible user invokes Workflow without Developer Mode.
+- A normal eligible user invokes TinyAssets without Developer Mode.
 - At least one read-only tool call succeeds and is logged in the proof registry.
 
 ## Website Freshness
@@ -167,7 +167,7 @@ Progress:
 - Codex CLI 0.104.0 verified on 2026-05-02:
   `docs/ops/mcp-codex-registration-proof-2026-05-02.md` and
   `docs/ops/mcp-codex-runtime-proof-2026-05-02.md`. Runtime proof listed
-  Workflow tools and called `get_workflow_status`, returning
+  TinyAssets tools and called `get_workflow_status`, returning
   `"schema_version": 1`.
 - Cursor 3.2.16 registration path verified on 2026-05-01:
   `docs/ops/mcp-cursor-registration-proof-2026-05-01.md`. Tool-list/read-call

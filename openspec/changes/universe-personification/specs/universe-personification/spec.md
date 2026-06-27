@@ -24,7 +24,7 @@ Identity-tier, org-chart, and privacy-tier filtering SHALL be enforced in **brai
 - **THEN** the substrate floor has already excluded that content upstream, so the script cannot exfiltrate it
 
 ### Requirement: The founder's chatbot embodies the persona in first person — compact and testable
-When a chatbot is bound to a universe by the founder's OAuth identity, it SHALL embody that universe's personification and speak in FIRST PERSON ("I'm Tiny; I'm working on X"), never relaying it in the third person. The `control_station` prompt + MCP `instructions` SHALL express this as **compact trigger-language + view metadata, NOT a large role-play block**, and SHALL NOT expand the frozen (<5K-token) tool schema. Embodiment SHALL be Workflow-surface-scoped and SHALL NOT override the chatbot's general-assistant identity outside Workflow interactions; this boundary SHALL be covered by Claude/ChatGPT tool-selection regression tests.
+When a chatbot is bound to a universe by the founder's OAuth identity, it SHALL embody that universe's personification and speak in FIRST PERSON ("I'm Tiny; I'm working on X"), never relaying it in the third person. The `control_station` prompt + MCP `instructions` SHALL express this as **compact trigger-language + view metadata, NOT a large role-play block**, and SHALL NOT expand the frozen (<5K-token) tool schema. Embodiment SHALL be TinyAssets-surface-scoped and SHALL NOT override the chatbot's general-assistant identity outside TinyAssets interactions; this boundary SHALL be covered by Claude/ChatGPT tool-selection regression tests.
 
 #### Scenario: founder connection embodies in first person
 - **WHEN** the founder's OAuth-bound chatbot interacts with their universe
@@ -35,7 +35,7 @@ When a chatbot is bound to a universe by the founder's OAuth identity, it SHALL 
 - **THEN** the already-authorized view is styled as the persona's first-person words
 
 #### Scenario: embodiment does not hijack the general assistant
-- **WHEN** the same chatbot is used outside any Workflow interaction in the same chat
+- **WHEN** the same chatbot is used outside any TinyAssets interaction in the same chat
 - **THEN** it remains the user's general assistant and does not continue speaking as the persona
 
 #### Scenario: embodiment does not degrade tool selection
@@ -54,7 +54,7 @@ The MCP `instructions` field, tool descriptions, and every assembled view SHALL 
 - **THEN** the write is rejected (with a redirect), keeping the persona out of host memory dossiers
 
 ### Requirement: OAuth binds the user, the embodied persona, and the identity tier
-A user's OAuth identity SHALL determine which universe(s) they own and therefore which personification their chatbot embodies; each universe SHALL have exactly one personification. Actor binding for tier gating SHALL be: **no Workflow OAuth to the universe → T0 (anonymous session); a durable host/OAuth subject → T1; a verified owner OAuth → T2 / founder authority.**
+A user's OAuth identity SHALL determine which universe(s) they own and therefore which personification their chatbot embodies; each universe SHALL have exactly one personification. Actor binding for tier gating SHALL be: **no TinyAssets OAuth to the universe → T0 (anonymous session); a durable host/OAuth subject → T1; a verified owner OAuth → T2 / founder authority.**
 
 #### Scenario: ownership selects the embodied persona
 - **WHEN** a user authenticates via OAuth as the owner of universe X
@@ -65,7 +65,7 @@ A user's OAuth identity SHALL determine which universe(s) they own and therefore
 - **THEN** the embodied personification is the one for the universe currently in context
 
 #### Scenario: an unauthenticated visitor defaults to T0
-- **WHEN** a Claude/ChatGPT user with no Workflow OAuth to the universe interacts with its persona
+- **WHEN** a Claude/ChatGPT user with no TinyAssets OAuth to the universe interacts with its persona
 - **THEN** they are treated as T0 (anonymous) for tier gating
 
 ### Requirement: Visitors interact WITH the persona, bounded by the pre-rendering floor

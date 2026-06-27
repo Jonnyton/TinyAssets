@@ -1,23 +1,23 @@
 ---
 name: external-research-implications
-description: Research an external project, repository, paper, article, or codebase and derive Workflow implications, plans, and integration slices. Use when the user points an agent at outside work and asks what we should learn, copy, avoid, integrate, or build from it.
+description: Research an external project, repository, paper, article, or codebase and derive TinyAssets implications, plans, and integration slices. Use when the user points an agent at outside work and asks what we should learn, copy, avoid, integrate, or build from it.
 ---
 
 # External Research Implications
 
 ## Overview
 
-Turn outside work into durable Workflow learning. Use this when the user points
+Turn outside work into durable TinyAssets learning. Use this when the user points
 at a project, repo, research paper, article, architecture, product, benchmark,
 or competitor and asks for implications, integration, comparison, or a plan.
 
 The output is not a generic summary. The job is to understand the outside work,
-map it against Workflow, decide what matters for our users, and leave behind a
+map it against TinyAssets, decide what matters for our users, and leave behind a
 reusable plan or artifact that future sessions can act on.
 
 ## Trigger Examples
 
-- "Study this repo and tell us what it means for Workflow."
+- "Study this repo and tell us what it means for TinyAssets."
 - "Read this paper and build an implementation plan."
 - "Compare our architecture to this project."
 - "What should we learn from this?"
@@ -28,21 +28,21 @@ reusable plan or artifact that future sessions can act on.
 
 ## Core Stance
 
-Workflow users are people with MCP-connected chatbots. They should be able to
+TinyAssets users are people with MCP-connected chatbots. They should be able to
 steer, redesign, fork, evolve, and improve branches through conversation. The
 project should become more community-evolvable and self-improving, not more
 dependent on maintainers or local research harnesses.
 
 When importing outside ideas:
 
-- adapt them into Workflow primitives;
+- adapt them into TinyAssets primitives;
 - preserve MCP/chatbot-first user surfaces;
 - preserve community remix, lineage, attribution, and branch evolution;
 - preserve uptime with zero hosts online where applicable;
-- reject sidecars that bypass Workflow's control plane, privacy model,
+- reject sidecars that bypass TinyAssets' control plane, privacy model,
   evaluator evidence, host pool, or provenance chain.
 
-## Workflow
+## TinyAssets
 
 ### 1. Orient And Claim
 
@@ -91,11 +91,11 @@ Map the outside system module by module:
 - artifacts and provenance;
 - tests, demos, and operational gaps.
 
-Map the relevant Workflow modules the same way:
+Map the relevant TinyAssets modules the same way:
 
 - use `rg --files`, AST summaries, tests, and targeted `docview.py`;
 - connect claims to `PLAN.md`, design notes, and current code;
-- note where Workflow already has a stronger primitive;
+- note where TinyAssets already has a stronger primitive;
 - note where the outside system exposes a real gap.
 
 ### 4. Research Adjacent Work
@@ -128,13 +128,13 @@ repos, and reputable technical writeups. Do not optimize for launch noise,
 stars, funding, or flashy demos. Rank candidates by:
 
 - paradigm shift: does it change the unit of design or improvement?
-- Workflow fit: does it map to MCP users, branches, evaluators, host capacity,
+- TinyAssets fit: does it map to MCP users, branches, evaluators, host capacity,
   provenance, privacy, and community evolution?
 - implementation gravity: is the industry likely to rediscover this direction
   within 6 months to 3 years?
 - evidence quality: primary paper/repo, benchmark signal, reproducibility,
   and visible limitations;
-- integration leverage: can Workflow adopt the underlying primitive without
+- integration leverage: can TinyAssets adopt the underlying primitive without
   copying a sidecar platform?
 - anti-hype discipline: penalize projects that are only wrappers, demos,
   ungrounded agent claims, or local-only workflows with no durable state.
@@ -145,15 +145,15 @@ Expected output:
 - one chosen frontier bet;
 - why it beats the runner-up choices;
 - what to adopt, adapt, avoid, defer, and watch;
-- first Workflow-native integration slice;
+- first TinyAssets-native integration slice;
 - what this should change in this skill or project docs.
 
-### 6. Derive Workflow Implications
+### 6. Derive TinyAssets Implications
 
 Classify each implication:
 
-- `Adopt`: fits Workflow and should become a native primitive.
-- `Adapt`: useful idea, but needs Workflow-specific shape.
+- `Adopt`: fits TinyAssets and should become a native primitive.
+- `Adapt`: useful idea, but needs TinyAssets-specific shape.
 - `Avoid`: tempting but conflicts with users, uptime, privacy, or architecture.
 - `Defer`: good idea, wrong time or blocked by other work.
 - `Watch`: promising but too unproven or unstable.
@@ -161,7 +161,7 @@ Classify each implication:
 For each material implication, include:
 
 - why it matters for MCP-chatbot users;
-- which Workflow primitive it maps to;
+- which TinyAssets primitive it maps to;
 - smallest credible integration slice;
 - risks and failure modes;
 - verification needed;
@@ -260,7 +260,7 @@ before build work starts.
 - If another provider made the initial finding, name a different reviewer
   provider explicitly in `STATUS.md`; prefer the Codex/Claude pair when
   available.
-- The reviewer must re-check primary sources, inspect the relevant Workflow
+- The reviewer must re-check primary sources, inspect the relevant TinyAssets
   context, and leave a durable review artifact with a verdict:
   `approve`, `adapt`, `defer`, or `reject`.
 - Any build/push/live/test work row must depend on the review artifact.
@@ -338,7 +338,7 @@ For a substantial study, produce:
 1. executive judgment;
 2. source freshness stamp;
 3. module-by-module outside-system map;
-4. module-by-module Workflow comparison;
+4. module-by-module TinyAssets comparison;
 5. adjacent research summary;
 6. adopted/adapted/avoided/deferred implications;
 7. recommended implementation roadmap;

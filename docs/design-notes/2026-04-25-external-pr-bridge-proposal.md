@@ -116,7 +116,7 @@ Carve-out matches return 200 OK with `{"status": "skipped_carve_out", "reason": 
 
 ## 5. Author identification — explicit opt-in via new verb
 
-GitHub `pull_request.user.login` does NOT auto-thread to a Workflow `actor_id`. Per Q1 recommendation (explicit opt-in matches `project_user_builds_we_enable`):
+GitHub `pull_request.user.login` does NOT auto-thread to a TinyAssets `actor_id`. Per Q1 recommendation (explicit opt-in matches `project_user_builds_we_enable`):
 
 ### New verb: `wiki action=link_github_handle`
 

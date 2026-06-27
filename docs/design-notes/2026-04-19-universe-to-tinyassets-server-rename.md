@@ -155,7 +155,7 @@ Compat helpers + aliases deleted
 
 1. **Module name pick.** Confirm `tinyassets/workflow_server.py` vs `tinyassets/server.py` vs other. Navigator recommends `workflow_server.py`.
 2. **Env-var compat helper home.** Add to existing `tinyassets/config.py`, or new `tinyassets/env_compat.py`? Navigator leans `config.py` (one less file).
-3. **Compat flag scheme.** Single shared `TINYASSETS_RENAME_COMPAT` flag controlling both Author→Daemon and Universe→Workflow shims, OR two independent flags? Navigator recommends two — independent flip cadence.
+3. **Compat flag scheme.** Single shared `TINYASSETS_RENAME_COMPAT` flag controlling both Author→Daemon and Universe→TinyAssets shims, OR two independent flags? Navigator recommends two — independent flip cadence.
 4. **Plugin dir migration option (A vs B).** Hard cutover OR parallel-name bridge? Navigator recommends A.
 5. **Sequencing relative to STATUS #3 Author→Daemon Phase 1.** Strict serial (recommended), or accept the merge churn risk and parallelize?
 
@@ -180,7 +180,7 @@ For host approval. Each task is independently claimable once its `Depends` are `
 
 - **Risk:** Test suite breakage during #29 sweep if alias isn't actually working. **Mitigation:** add explicit pytest at `tests/test_rename_compat.py` (extend existing if present) that asserts both `import workflow.universe_server` and `import workflow.workflow_server` resolve to the same module object before the sweep starts.
 - **Risk:** Existing daemon hosts wake up after #30 and find their plugin "uninstalled." **Mitigation:** release-note callout + a one-line migration script `scripts/migrate_to_workflow_server_plugin.py` that copies their `~/.claude/plugins/tinyassets-universe-server/config.json` → `~/.claude/plugins/workflow-server/config.json`.
-- **Risk:** Two rename clocks (Author→Daemon + Universe→Workflow) confuse a future reader. **Mitigation:** distinct env-var flags + clear comments in `_rename_compat.py` documenting which alias belongs to which sweep.
+- **Risk:** Two rename clocks (Author→Daemon + Universe→TinyAssets) confuse a future reader. **Mitigation:** distinct env-var flags + clear comments in `_rename_compat.py` documenting which alias belongs to which sweep.
 - **Risk:** `UNIVERSE_SERVER_BASE` is referenced in user-written `output/` configs. **Mitigation:** the compat helper handles silently. Document the deprecation in user-facing docs but no breaking change.
 
 ---

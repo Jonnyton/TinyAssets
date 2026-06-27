@@ -13,7 +13,7 @@ Cross-references:
 
 ## Why this document exists
 
-The Workflow community patch loop is supposed to be community-built, not platform-team-built. The success condition — measured against — is that any improving iteration a hardcore developer would ever want is doable through the loop as a user, so nobody bothers to download the repo. The loop's primitives become reusable building blocks. Users who don't care about loop mechanics just see their vision realized + GitHub-credit on the patch that landed it. The "developer downloads and edits the repo" workflow becomes the legacy thing nobody does because the loop-as-user path is strictly faster than any alternative.
+The TinyAssets community patch loop is supposed to be community-built, not platform-team-built. The success condition — measured against — is that any improving iteration a hardcore developer would ever want is doable through the loop as a user, so nobody bothers to download the repo. The loop's primitives become reusable building blocks. Users who don't care about loop mechanics just see their vision realized + GitHub-credit on the patch that landed it. The "developer downloads and edits the repo" workflow becomes the legacy thing nobody does because the loop-as-user path is strictly faster than any alternative.
 
 We are not at that success condition yet. We intervene to make it reality, but we always work on the edge of that reality being the case. Every intervention should buy more future intervention-reduction than its own cost. The thing we optimize is our own intervention rate going down, asymptotically toward zero, while the platform keeps evolving because users are using it.
 

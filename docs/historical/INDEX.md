@@ -1,4 +1,4 @@
-# Workflow Index
+# TinyAssets Index
 
 Top-level map for the repo and the Obsidian graph.
 

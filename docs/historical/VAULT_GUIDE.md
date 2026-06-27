@@ -1,4 +1,4 @@
-# Workflow Vault Guide
+# TinyAssets Vault Guide
 
 Quick orientation note for the Obsidian vault.
 

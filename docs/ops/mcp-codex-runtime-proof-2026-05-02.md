@@ -7,7 +7,7 @@ Status: verified for Codex CLI tool listing plus one read-only call
 
 ## What This Proves
 
-Codex CLI can load Workflow as a Streamable HTTP MCP server, expose the
+Codex CLI can load TinyAssets as a Streamable HTTP MCP server, expose the
 directory-surface tools to a Codex agent, and complete a read-only
 `get_workflow_status` call.
 
@@ -40,7 +40,7 @@ compatibility caveat, not an MCP endpoint failure.
 
 ## Tool List Evidence
 
-Codex reported these Workflow directory-surface tools:
+Codex reported these TinyAssets directory-surface tools:
 
 ```text
 mcp__workflow__get_workflow_goal

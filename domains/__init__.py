@@ -1,1 +1,1 @@
-"""Domain implementations for the Workflow Engine."""
+"""Domain implementations for the TinyAssets Engine."""

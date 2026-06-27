@@ -82,7 +82,7 @@ recall storage, and archival storage.
 Graphiti/Zep reinforces provenance and time: derived facts should point back to
 episodes, and changing facts should be superseded rather than silently erased.
 
-MemMachine and MemX reinforce two implementation choices that fit Workflow:
+MemMachine and MemX reinforce two implementation choices that fit TinyAssets:
 preserve enough raw ground truth to audit derived memory, and combine vector
 retrieval with keyword/structured filters plus low-confidence rejection.
 
@@ -90,7 +90,7 @@ Memory Sandbox and observable-memory products reinforce the user/host control
 requirement: memory needs to be inspectable, editable, and replayable. Bad
 memory is worse than no memory.
 
-## Workflow-Native Architecture
+## TinyAssets-Native Architecture
 
 ### Layer 0: Run Scratch
 
@@ -234,7 +234,7 @@ Recommended metrics:
 - compaction removals and unresolved over-cap count.
 
 OpenTelemetry GenAI span conventions can be used for provider/model/run spans,
-but Workflow should add local custom attributes for daemon memory IDs, pressure,
+but TinyAssets should add local custom attributes for daemon memory IDs, pressure,
 packet size, and redaction status.
 
 ## Write Policy
@@ -362,7 +362,7 @@ The first implementation adds:
 - No one flat memory pool.
 - No prompt preload of the whole wiki or brain.
 - No direct OB1 dependency without license and architecture review.
-- No Supabase/OpenRouter requirement for default Workflow memory.
+- No Supabase/OpenRouter requirement for default TinyAssets memory.
 - No LanceDB connection churn; use the singleton.
 - No automatic soul rewrite from memory.
 - No silent soul copying.

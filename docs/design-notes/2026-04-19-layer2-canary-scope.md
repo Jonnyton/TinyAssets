@@ -21,7 +21,7 @@ Layer 2 exercises what Layer 1 structurally cannot:
 - Claude.ai connector-auth renewal path.
 - Session-TTL expiry on the Claude.ai side.
 - `control_station` prompt directive regressions that break chatbot tool-selection without breaking MCP protocol.
-- Tool description drift that confuses the chatbot into not invoking Workflow even when asked directly.
+- Tool description drift that confuses the chatbot into not invoking TinyAssets even when asked directly.
 
 ---
 
@@ -215,7 +215,7 @@ Four files:
 |---|---|---|
 | `scripts/uptime_canary_layer2.py` | Driver: acquire lock, navigate to claude.ai, send probe, parse response, log. Extends `uptime_canary.py` log format. | ~150 |
 | `.claude/agent-memory/user/personas/uptime_canary/identity.md` | Minimal persona file (shape in §2.1 above). | ~30 |
-| `scripts/install_canary_task.ps1` | Append `Workflow-Canary-L2` hourly scheduled task to existing installer. | +~25 |
+| `scripts/install_canary_task.ps1` | Append `TinyAssets-Canary-L2` hourly scheduled task to existing installer. | +~25 |
 | `tests/test_uptime_canary_layer2.py` | Mock-browser tests — verify log format + exit-code table + skip-on-lock-held behavior. | ~100 |
 
 No changes to `uptime_alarm.py` shape if the Layer-2 line format matches Layer-1 (same grammar, just `layer=2` tag + extended exit codes). Alarm's `_parse_line` already handles arbitrary `key=value` tokens, so adding `tool_called=get_status` is zero-cost.
@@ -271,7 +271,7 @@ After `python scripts/uptime_canary_layer2.py --once` returns 0 (GREEN) or 14 (S
 ```powershell
 # Run as Administrator from C:\Users\Jonathan\Projects\TinyAssets
 schtasks /Create `
-  /TN "Workflow-Canary-L2" `
+  /TN "TinyAssets-Canary-L2" `
   /TR "python C:\Users\Jonathan\Projects\TinyAssets\scripts\uptime_canary_layer2.py" `
   /SC HOURLY `
   /ST 00:30 `
@@ -281,7 +281,7 @@ schtasks /Create `
 Verify firing:
 
 ```powershell
-schtasks /Query /TN "Workflow-Canary-L2" /V /FO LIST
+schtasks /Query /TN "TinyAssets-Canary-L2" /V /FO LIST
 # Tail .agents/uptime.log for `layer=2` entries
 ```
 

@@ -14,7 +14,7 @@
 Phase 1a is the **fastest shippable piece** of the persistent-uptime work: a read-only surface at `tinyassets.io` that stays up 24/7 regardless of whether any daemon host is online. Days to ship, not weeks.
 
 **In scope for Phase 1a:**
-- **`tinyassets.io/`** — static marketing landing page. Keeps the "summon the daemon" brand voice (project memory). Explains what Workflow is, links to "connect your Claude.ai" instructions, shows a live status badge.
+- **`tinyassets.io/`** — static marketing landing page. Keeps the "summon the daemon" brand voice (project memory). Explains what TinyAssets is, links to "connect your Claude.ai" instructions, shows a live status badge.
 - **`tinyassets.io/catalog/`** — read-only HTML browser over the flat-YAML catalog already in the repo (`goals/*.yaml`, `branches/*.yaml`, `nodes/*/`). Lists goals, drills into branches and nodes. Uses the GitHub-as-catalog direction as its source of truth.
 - **`tinyassets.io/status.json`** — small JSON blob: last-seen timestamp, git SHA of the catalog snapshot, `hosts_online: 0` placeholder (populated by Phase 1b; in 1a it's always 0 and that's fine). Gives clients a 24/7 "awake" signal.
 - **`tinyassets.io/catalog/index.json`** — single JSON index of all goals/branches/nodes for Phase 1b consumers (control plane reads it on cold start, Cloudflare caches it).
@@ -37,7 +37,7 @@ This is a deliberately narrow win. It's worth shipping on its own because "users
 
 ## §2. Catalog source + build pipeline
 
-**Canonical source:** this repo (`Workflow`). The `goals/`, `branches/`, `nodes/` trees are already flat YAML per the GitHub-as-catalog research. No separate catalog repo needed for v1. If splitting becomes desirable later (scale, private forks, author repos), that migration happens in v2+.
+**Canonical source:** this repo (`TinyAssets`). The `goals/`, `branches/`, `nodes/` trees are already flat YAML per the GitHub-as-catalog research. No separate catalog repo needed for v1. If splitting becomes desirable later (scale, private forks, author repos), that migration happens in v2+.
 
 **Build pipeline (new):**
 
@@ -122,7 +122,7 @@ Minimum templates required. Dev has latitude on HTML/CSS; copy below is the auth
 ### §4.1 Landing page (`site/index.html`)
 
 One-page pitch with daemon-vocabulary brand voice. Required sections:
-- **Hero:** headline "Summon the daemon." Sub-headline: one-sentence explanation of Workflow as a goals-and-daemons platform.
+- **Hero:** headline "Summon the daemon." Sub-headline: one-sentence explanation of TinyAssets as a goals-and-daemons platform.
 - **How it works (3 cards):** (a) Pick a goal, (b) Summon a daemon, (c) Fork and remix branches.
 - **Connect your Claude.ai:** step-by-step for adding the MCP connector at `tinyassets.io/mcp` (current endpoint; Phase 1b migrates to `tinyassets.io/mcp`).
 - **Status badge:** pulls from `/status.json`, shows green ("catalog live, <N> goals, <M> branches") or yellow ("no daemons currently online — you can still browse"). Never red: if `/status.json` itself is unreachable, Pages is down and the badge is invisible anyway.
@@ -179,7 +179,7 @@ Machine-readable flat manifest — arrays of `{slug, name, href, tags}` for each
 - Users' MCP connectors at `tinyassets.io/mcp` still go HTTP 530 when the laptop is off. That's fixed in Phase 1b when `tinyassets.io/mcp` comes online with a queued-response path.
 
 **User-facing messaging in the transitional window:**
-- Landing page's "Connect your Claude.ai" section includes a clear note: *"Workflow is in Phase 1 — MCP dynamic tools require a running daemon host. You can browse the catalog anytime; creation and daemon summoning resume when a host is online. We'll announce always-on MCP (Phase 1b) shortly."*
+- Landing page's "Connect your Claude.ai" section includes a clear note: *"TinyAssets is in Phase 1 — MCP dynamic tools require a running daemon host. You can browse the catalog anytime; creation and daemon summoning resume when a host is online. We'll announce always-on MCP (Phase 1b) shortly."*
 - The status badge explicitly reads "no daemons currently online — browse-only mode" when `hosts_online == 0`.
 
 This is honest, short, and gives users a reason to come back. Avoids the worst outcome (user adds connector, gets 530 once, never tries again) by giving a working non-MCP surface that explains the state.

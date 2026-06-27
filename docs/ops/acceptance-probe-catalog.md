@@ -39,7 +39,7 @@ paper on deep space population — can you walk me through it?
 | System | MCP endpoint reachable via browser chatbot → Cloudflare Worker → tunnel → daemon |
 | System | Apex site `/` returns HTTP 200 alongside the `/mcp` endpoint |
 | Chatbot | `control_station` Hard Rule 10 (anti-fabrication): assume → tool-call → correct-if-wrong |
-| Chatbot | Chatbot-assumes-Workflow directive (rule 7): no disambiguation picker |
+| Chatbot | Chatbot-assumes-TinyAssets directive (rule 7): no disambiguation picker |
 | Chatbot | User-vocabulary discipline (rule 9): no engine-vocab in first response |
 | User | Full pipeline recommendation grounded in real tool output, not fabrication |
 
@@ -90,7 +90,7 @@ paper on deep space population — can you walk me through it?
 
 ## PROBE-002 — Layer-2 liveness (minimal)
 
-**Validated:** code-fix landed 2026-04-28 (`_real_browser_probe` reimplemented as `claude_chat ask` subprocess + trace-block parser); still awaits host `--once` smoke + Task Scheduler `Workflow-Canary-L2` activation for live status. Freshness check 2026-05-01: `Get-ScheduledTask -TaskName Workflow-Canary-L2` returned no task. Original implementation (`lead_browser.navigate` + `claude_chat.send_and_wait`) referenced symbols that never existed — see `docs/design-notes/2026-04-19-layer2-canary-scope.md §Wiring runbook` for the recovery + API contract.
+**Validated:** code-fix landed 2026-04-28 (`_real_browser_probe` reimplemented as `claude_chat ask` subprocess + trace-block parser); still awaits host `--once` smoke + Task Scheduler `TinyAssets-Canary-L2` activation for live status. Freshness check 2026-05-01: `Get-ScheduledTask -TaskName TinyAssets-Canary-L2` returned no task. Original implementation (`lead_browser.navigate` + `claude_chat.send_and_wait`) referenced symbols that never existed — see `docs/design-notes/2026-04-19-layer2-canary-scope.md §Wiring runbook` for the recovery + API contract.
 **Source script:** `scripts/uptime_canary_layer2.py` (canary) + `scripts/claude_chat.py` (subprocess driver — `cmd_ask` is the canonical entry point).
 **Persona:** `uptime_canary` (dedicated automated persona; CDP profile at `C:\Users\Jonathan\.claude-ai-profile`).
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -122,7 +122,7 @@ Are you there? Call get_status and tell me the llm_endpoint_bound value.
 
 ### When to use
 
-- Automated hourly Layer-2 canary (Windows Task Scheduler entry `Workflow-Canary-L2` invokes `python scripts/uptime_canary_layer2.py`). Currently UNWIRED on host as of 2026-05-01; host activates after `--once` GREEN smoke.
+- Automated hourly Layer-2 canary (Windows Task Scheduler entry `TinyAssets-Canary-L2` invokes `python scripts/uptime_canary_layer2.py`). Currently UNWIRED on host as of 2026-05-01; host activates after `--once` GREEN smoke.
 - Quick manual liveness check when Layer-1 is green but something feels wrong.
 
 ### Cross-host caveat
@@ -350,12 +350,12 @@ Runs automatically on the `*/15 * * * *` cron schedule + manual `workflow_dispat
 ### Green criteria
 
 - Both `tinyassets.io` and `mcp.tinyassets.io` resolve to an IP from the GHA runner.
-- Workflow exits 0; `overall=green` in step output.
+- TinyAssets exits 0; `overall=green` in step output.
 
 ### Red signals
 
 - Either hostname fails to resolve (`socket.gaierror` or other exception).
-- Workflow exits non-zero; `overall=red`.
+- TinyAssets exits non-zero; `overall=red`.
 - Two consecutive reds → opens GitHub Issue labeled `dns-red`.
 - GREEN after open issue → comments RECOVERED + closes the issue.
 
@@ -393,7 +393,7 @@ Runs automatically on the `0 */6 * * *` cron + manual `workflow_dispatch`.
 ### Green criteria
 
 - Exit code 0 — `verify_llm_binding.py` confirms `llm_endpoint_bound != "unset"`.
-- Workflow exits 0; `overall=green`.
+- TinyAssets exits 0; `overall=green`.
 
 ### Red signals
 
@@ -438,7 +438,7 @@ Runs automatically on the `17 7 * * *` cron (07:17 UTC daily) + manual `workflow
 ### Green criteria
 
 - All 6 workflow steps (clone, venv, install, top-level import, structural smoke, import-graph smoke, smoke pytest) exit 0.
-- Workflow conclusion = success.
+- TinyAssets conclusion = success.
 
 ### Red signals
 

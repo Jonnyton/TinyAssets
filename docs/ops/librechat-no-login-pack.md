@@ -5,7 +5,7 @@ Status: verified local Docker proof on 2026-05-01
 Owner: lead + available provider
 
 This pack is for users who do not want a Claude or ChatGPT account in the
-Workflow path, but can run or access a LibreChat instance. LibreChat may still
+TinyAssets path, but can run or access a LibreChat instance. LibreChat may still
 require its own local account depending on how the deployment is configured;
 the claim here is no hosted chatbot login.
 
@@ -13,14 +13,14 @@ the claim here is no hosted chatbot login.
 
 - LibreChat supports MCP servers in `librechat.yaml` and through its UI.
 - LibreChat supports `streamable-http` MCP servers by URL.
-- Workflow exposes a public Streamable HTTP MCP endpoint at
+- TinyAssets exposes a public Streamable HTTP MCP endpoint at
   `https://tinyassets.io/mcp-directory`.
 - The full custom-connector endpoint remains `https://tinyassets.io/mcp`, but
   the directory endpoint is the safer first proof surface because it exposes
   only 11 narrow tools.
 
 Public claim scope: LibreChat `v0.8.5` local Docker proof is verified against
-Workflow's directory endpoint. Do not generalize that claim to every LibreChat
+TinyAssets' directory endpoint. Do not generalize that claim to every LibreChat
 version, hosted deployment, auth mode, model, or write/proposal flow without a
 host-specific proof update.
 
@@ -35,14 +35,14 @@ mcpSettings:
 
 mcpServers:
   workflow:
-    title: "Workflow"
+    title: "TinyAssets"
     description: "Directory-safe TinyAssets MCP endpoint"
     type: "streamable-http"
     url: "https://tinyassets.io/mcp-directory"
     timeout: 30000
     initTimeout: 30000
     serverInstructions: |
-      Use Workflow for read-only daemon status, goals, wiki, universe, and run inspection.
+      Use TinyAssets for read-only daemon status, goals, wiki, universe, and run inspection.
       Only use proposal/write tools when the user explicitly asks for a proposal.
 ```
 
@@ -53,15 +53,15 @@ Restart LibreChat after changing `librechat.yaml`.
 Use read-only prompts first:
 
 ```text
-Use Workflow to check the daemon status and tell me any caveats.
+Use TinyAssets to check the daemon status and tell me any caveats.
 ```
 
 ```text
-Use Workflow to list available goals.
+Use TinyAssets to list available goals.
 ```
 
 ```text
-Use Workflow to search the Workflow wiki for launch risks and summarize the best match.
+Use TinyAssets to search the TinyAssets wiki for launch risks and summarize the best match.
 ```
 
 Only test write/propose flows after read-only invocation is visible in the chat
@@ -77,9 +77,9 @@ Record all values before claiming support:
 | Deployment shape | local Docker Compose from LibreChat `v0.8.5` checkout |
 | LibreChat API image | `registry.librechat.ai/danny-avila/librechat:latest` |
 | Image digest | `sha256:a46254938507971e0d4f7ed3f9d116bd9b118f4810b5b75eb716baf575645068` |
-| Workflow endpoint | `https://tinyassets.io/mcp-directory` |
+| TinyAssets endpoint | `https://tinyassets.io/mcp-directory` |
 | MCP transport | Streamable HTTP |
-| Workflow auth mode | None |
+| TinyAssets auth mode | None |
 | Model used | `gpt-oss:20b` through LibreChat/Ollama |
 | Tool attachment path | `ephemeralAgent.mcp = ["workflow"]` |
 | Visible tool result | Assistant message included `get_workflow_status_mcp_workflow` tool call output and answered `reachable=true` with `active_host.host_id: host` |
@@ -91,8 +91,8 @@ Acceptance criteria:
 - LibreChat starts with the TinyAssets MCP server configured.
 - LibreChat reports the TinyAssets MCP server as connected and not requiring
   OAuth.
-- LibreChat exposes all 11 directory-safe Workflow tools.
-- A chat/agent run invokes at least one read-only Workflow tool.
+- LibreChat exposes all 11 directory-safe TinyAssets tools.
+- A chat/agent run invokes at least one read-only TinyAssets tool.
 - The visible response matches the tool result enough for a user to trust it.
 - Any console/server error is recorded.
 - `docs/ops/mcp-host-proof-registry.md` is updated to `verified` with the
@@ -144,5 +144,5 @@ Expected directory tools:
 Fresh docs checked on 2026-05-01:
 
 - LibreChat MCP docs: `https://www.librechat.ai/docs/features/mcp`
-- Workflow proof registry: `docs/ops/mcp-host-proof-registry.md`
-- Workflow directory queue: `docs/ops/mcp-directory-rollout-action-queue.md`
+- TinyAssets proof registry: `docs/ops/mcp-host-proof-registry.md`
+- TinyAssets directory queue: `docs/ops/mcp-directory-rollout-action-queue.md`

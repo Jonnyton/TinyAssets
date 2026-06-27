@@ -4,8 +4,8 @@ Status: distribution planning artifact; not a support-claim source.
 Date: 2026-05-01
 Last checked: 2026-05-01 against selected public vendor docs.
 
-This matrix keeps Workflow customer planning broader than Claude and OpenAI.
-A Workflow customer is anyone operating an MCP-capable host: a hosted chatbot,
+This matrix keeps TinyAssets customer planning broader than Claude and OpenAI.
+A TinyAssets customer is anyone operating an MCP-capable host: a hosted chatbot,
 IDE agent, local model shell, enterprise agent builder, self-hosted chat UI, or
 custom app that can connect to a TinyAssets MCP server.
 
@@ -21,12 +21,12 @@ self-hosted chat UI. The MCP client is the protocol component that connects
 that host to one server. Product planning should use "host" for the user-facing
 surface and "client" only for protocol behavior.
 
-Workflow also distinguishes the human account from the host surface. Claude.ai,
+TinyAssets also distinguishes the human account from the host surface. Claude.ai,
 ChatGPT, Claude Code, Codex desktop, local tray, CLI, and future MCP hosts are
-connected apps for the same possible Workflow user. The same request, daemon,
+connected apps for the same possible TinyAssets user. The same request, daemon,
 approval, or user-owned universe may be inspectable from another host only when
-that host has an explicit authority binding to the same Workflow account.
-Public UX should avoid provider jargon and describe this as "same Workflow
+that host has an explicit authority binding to the same TinyAssets account.
+Public UX should avoid provider jargon and describe this as "same TinyAssets
 account, different connected apps."
 
 ## Priority Tiers
@@ -39,7 +39,7 @@ account, different connected apps."
 
 ## Current Matrix
 
-| Host surface | User shape | Likely Workflow path | Discovery/install path | Status | Minimum proof |
+| Host surface | User shape | Likely TinyAssets path | Discovery/install path | Status | Minimum proof |
 |---|---|---|---|---|---|
 | Official MCP Registry | Any registry-aware MCP host | `https://tinyassets.io/mcp-directory` | Published `server.json` | published-live | 2026-05-01 API search returned `io.github.Jonnyton/tinyassets-universe-server` active/latest |
 | Claude Connectors Directory | Logged-in Claude users/admins | `https://tinyassets.io/mcp-directory` | Anthropic directory review | packet-ready; submission-needed | Directory install plus live Claude tool call |
@@ -50,16 +50,16 @@ account, different connected apps."
 | OpenAI API/Agents | Developer/API agent | Remote MCP tool | API configuration | planned | Responses/Agents smoke list + read call |
 | Codex CLI/IDE | Local developer agent | MCP config | Codex config | verified: Codex CLI 0.104.0 | 2026-05-02 proofs: isolated `codex mcp add --url` wrote Streamable HTTP config; `codex exec -m gpt-5.2` listed tools and called `get_workflow_status` |
 | Gemini CLI | Local developer agent | MCP server config | Gemini CLI settings | planned | Gemini CLI tool list + read call |
-| VS Code/GitHub Copilot | Local IDE user | `.vscode/mcp.json` or user MCP config | MCP gallery/config/command palette | planned | Copilot Agent mode calls Workflow |
+| VS Code/GitHub Copilot | Local IDE user | `.vscode/mcp.json` or user MCP config | MCP gallery/config/command palette | planned | Copilot Agent mode calls TinyAssets |
 | Cursor | Local IDE user | Cursor MCP config | Cursor settings/add path | registration-path verified; tool-call pending | 2026-05-01 CLI added isolated Streamable HTTP config; Cursor tool-list/read call still required |
 | Cline/Roo/Continue/Windsurf | Local IDE agent user | MCP config or marketplace | Host-specific settings | planned | Tool list plus safe read call |
-| Replit Agent | Cloud developer agent | Replit MCP integration | Replit MCP path | planned | Replit Agent invokes Workflow |
+| Replit Agent | Cloud developer agent | Replit MCP integration | Replit MCP path | planned | Replit Agent invokes TinyAssets |
 | Open WebUI | Self-hosted/no-hosted-chat-login user | Native Streamable HTTP to `/mcp-directory` or `/mcp` | Admin Settings -> External Tools | verified: local Docker 0.9.2 | 2026-05-01 proof: chat invoked `workflow_get_workflow_status` |
 | LibreChat | Self-hosted/no-hosted-chat-login user | `streamable-http` MCP server config | `librechat.yaml` or UI-created server | verified: local Docker v0.8.5 | 2026-05-01 proof: chat invoked `get_workflow_status_mcp_workflow` |
 | LM Studio | Local model user | Local or remote MCP in `mcp.json` | LM Studio Program tab or add button | planned | Local model invokes read-only tool |
 | Jan | Local model user | MCP support/path to verify | App settings or bridge | watch | Do not claim until direct proof |
 | OpenClaw/channel gateway | Channel user | Direct MCP support/path to verify | TBD | watch | Do not claim until direct proof |
-| Microsoft Copilot Studio | Enterprise maker/admin | Remote MCP server or OpenAPI fallback | Tenant/admin tool setup | planned | Agent invokes Workflow under tenant policy |
+| Microsoft Copilot Studio | Enterprise maker/admin | Remote MCP server or OpenAPI fallback | Tenant/admin tool setup | planned | Agent invokes TinyAssets under tenant policy |
 | Custom customer host | Enterprise/custom builder | Host's supported MCP transport | Integration guide | compatible by spec | Contract test plus real user flow |
 
 ## Product Rules
@@ -75,7 +75,7 @@ account, different connected apps."
    proof, not from rumor or marketplace presence.
 7. Cross-host continuity is account-bound, not thread-bound. A request started
    in Claude can continue in ChatGPT only when both surfaces are linked to the
-   same Workflow account and have sufficient authority.
+   same TinyAssets account and have sufficient authority.
 8. Daemon identity is stable across hosts. Summoning from a new connected app
    resolves existing user-owned daemons before creating another daemon.
 9. Security-sensitive actions may require per-host re-authentication, stronger
@@ -85,7 +85,7 @@ account, different connected apps."
 
 The `/connect` page should present a chooser by customer situation:
 
-- "Find Workflow in your app/connector directory" for accepted hosts.
+- "Find TinyAssets in your app/connector directory" for accepted hosts.
 - "Use custom connector URL today" for hosts that support remote MCP by URL.
 - "Use a no-login local/self-hosted host" for Open WebUI, LibreChat, LM Studio,
   Jan, OpenClaw, or a custom host after proof.
@@ -95,9 +95,9 @@ The `/connect` page should present a chooser by customer situation:
 Each path should show whether it is live, pending submission, planned, or
 verified in `docs/ops/mcp-host-proof-registry.md`.
 
-Account-linking copy should use product language: "same Workflow account,
+Account-linking copy should use product language: "same TinyAssets account,
 different connected apps." Do not imply that being logged into ChatGPT, Claude,
-or another provider alone grants Workflow account authority.
+or another provider alone grants TinyAssets account authority.
 
 ## Sources Checked
 

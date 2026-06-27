@@ -11,7 +11,7 @@
 A universe's **soul** is a continuity-of-intent engine: it preserves, grows, and keeps-aligned
 its founder's will, even when the founder is not actively present. A universe acts on the world
 through **branches with real-world gates** (its hands). For the platform's own universe ("Tiny",
-whose product happens to be Workflow itself), one of those hands is the patch-request loop, and
+whose product happens to be TinyAssets itself), one of those hands is the patch-request loop, and
 its real-world gate is *opening PRs against the TinyAssets repo*.
 
 Today that hand's **authority** comes from a global daemon env map, decoupled from the soul. This
@@ -67,7 +67,7 @@ destination — is read from a **global daemon env map** `TINYASSETS_GITHUB_PR_C
 `effector_consents` row gates *consent*, but the *capability/authority itself* is global and has
 no relationship to the running universe's soul.
 
-Consequence: "Tiny is the sole PR-effector for Workflow" is currently enforced only by *which
+Consequence: "Tiny is the sole PR-effector for TinyAssets" is currently enforced only by *which
 env tokens the host sets on the daemon*, not by anything intrinsic to Tiny's universe. Any
 universe whose run reaches the effector and clears consent could, in principle, use a globally
 configured capability. The authority is in the wrong place.
@@ -91,7 +91,7 @@ boundary:
    hand; consent is the per-destination active grant. Both must hold. Kill-switch
    (`TINYASSETS_EXTERNAL_WRITE_ENABLED`) and dry-run defaults are unchanged.
 
-Result: Tiny is the sole PR-effector for Workflow **because its soul is the only soul that
+Result: Tiny is the sole PR-effector for TinyAssets **because its soul is the only soul that
 declares `github_pr:Jonnyton/TinyAssets` as an authorized hand** — architecture, not env config.
 A game universe declares its own destinations. The mechanism is identical for all.
 

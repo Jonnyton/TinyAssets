@@ -9,12 +9,12 @@ Owner: lead + codex-gpt5-desktop
 The host reframed today's work around discoverability and easy use across all
 customer surfaces, not only Claude and OpenAI. The pasted ChatGPT Apps
 conversation promoted one specific implication: ChatGPT Apps are a first-class
-host and widget surface for Workflow live state, but they must not become the
+host and widget surface for TinyAssets live state, but they must not become the
 source of truth.
 
 ## North Star
 
-A Workflow customer is anyone using a chatbot, local model shell, IDE agent,
+A TinyAssets customer is anyone using a chatbot, local model shell, IDE agent,
 enterprise agent builder, self-hosted chat UI, channel gateway, or custom app
 that can connect to a TinyAssets MCP server.
 
@@ -58,13 +58,13 @@ native discovery where the host supports it:
 
 ## Design Decisions
 
-1. ChatGPT Apps are a host/UI wrapper over the same Workflow backend, not a
+1. ChatGPT Apps are a host/UI wrapper over the same TinyAssets backend, not a
    replacement architecture.
-2. Workflow backend owns authoritative state: nodes, branches, artifacts,
+2. TinyAssets backend owns authoritative state: nodes, branches, artifacts,
    goals, bids, permissions, collaboration rows, and visibility decisions.
 3. Host widget state is ephemeral: selected node, active tab, zoom, filters,
    expanded panels, and temporary form state.
-4. Cross-session preferences only persist when explicitly written to Workflow
+4. Cross-session preferences only persist when explicitly written to TinyAssets
    storage through a grounded tool/RPC.
 5. Directory/app metadata is product UX. Tool names, descriptions, annotations,
    scopes, and examples are part of the public interface.
@@ -75,22 +75,22 @@ native discovery where the host supports it:
    "compatible by spec, not verified yet."
 8. A host-directory rollout is not complete at "docs live" or "custom URL
    works." Completion means the host listing is accepted, a normal user can
-   add/use Workflow without Developer Mode or custom URL friction, and at
+   add/use TinyAssets without Developer Mode or custom URL friction, and at
    least one real or user-sim first-use trace exists.
 
 ## Ecosystem Default Strategy
 
 The broad goal is not just "users can paste an MCP URL." The goal is that when
 a user, chatbot, workspace admin, or agent host looks for a way to create,
-browse, collaborate on, remix, or run Workflow nodes, Workflow is already the
+browse, collaborate on, remix, or run TinyAssets nodes, TinyAssets is already the
 obvious, trusted, verified option in the surface they are using.
 
 Important reality check: hosted chatbots should not silently connect arbitrary
 third-party tools without user or admin consent. The maximal win is therefore:
 
 - TinyAssets appears in the host's native app/connector directory or MCP registry.
-- The host can understand from metadata what Workflow is for.
-- The host can recommend Workflow when user intent matches.
+- The host can understand from metadata what TinyAssets is for.
+- The host can recommend TinyAssets when user intent matches.
 - The user or admin can connect it in one or two steps.
 - The first successful tool call creates visible value immediately.
 - The host and user can trust that the endpoint is stable, scoped, and safe.
@@ -100,20 +100,20 @@ third-party tools without user or admin consent. The maximal win is therefore:
 | Rail | Who discovers us | What must exist | Success signal |
 |---|---|---|---|
 | Official MCP Registry | MCP clients, aggregators, IDE agents, future host search | Valid `server.json`, verified namespace, remote endpoint metadata, CI publish | TinyAssets appears via registry API/search and can be installed from registry metadata |
-| ChatGPT App Directory | ChatGPT users and workspace admins | Apps SDK submission, app manifest, widget, OAuth/safety docs, test cases | Workflow listed/discoverable in ChatGPT and invokable from chat |
+| ChatGPT App Directory | ChatGPT users and workspace admins | Apps SDK submission, app manifest, widget, OAuth/safety docs, test cases | TinyAssets listed/discoverable in ChatGPT and invokable from chat |
 | Claude Connectors Directory | Claude users/admins | Directory review package, metadata, icon/favicon, examples, privacy/safety docs | TinyAssets appears as a trusted Claude connector path, not only custom URL |
-| Mistral Le Chat connector directory | Le Chat users/admins | MCP connector listing/submission path, verified remote URL, scoped auth docs | Workflow can be selected from preconfigured connectors or added with clear proof |
-| Microsoft Copilot Studio | Enterprise builders/admins | Custom MCP connector/Power Platform package, OpenAPI fallback if needed | A maker can add Workflow to an agent without hand-translating tool semantics |
-| IDE host rails | Developers and OSS contributors | `.mcp.json`, `.vscode/mcp.json`, Cursor add button, Gemini CLI config, README badges | A repo/IDE can suggest or add Workflow with one command/click |
-| Local/self-hosted chat rails | No-chatbot-login users | Open WebUI, LibreChat, LM Studio, Jan, OpenClaw examples; Streamable HTTP/OpenAPI bridge where needed | User can use Workflow without logging into a hosted chatbot |
-| Web/search/LLM docs rail | Chatbots and search systems reading public docs | `llms.txt`/AI-readable docs, stable landing pages, schema/meta tags, canonical examples | A model answering "what MCP should I use for X?" can correctly pick Workflow |
+| Mistral Le Chat connector directory | Le Chat users/admins | MCP connector listing/submission path, verified remote URL, scoped auth docs | TinyAssets can be selected from preconfigured connectors or added with clear proof |
+| Microsoft Copilot Studio | Enterprise builders/admins | Custom MCP connector/Power Platform package, OpenAPI fallback if needed | A maker can add TinyAssets to an agent without hand-translating tool semantics |
+| IDE host rails | Developers and OSS contributors | `.mcp.json`, `.vscode/mcp.json`, Cursor add button, Gemini CLI config, README badges | A repo/IDE can suggest or add TinyAssets with one command/click |
+| Local/self-hosted chat rails | No-chatbot-login users | Open WebUI, LibreChat, LM Studio, Jan, OpenClaw examples; Streamable HTTP/OpenAPI bridge where needed | User can use TinyAssets without logging into a hosted chatbot |
+| Web/search/LLM docs rail | Chatbots and search systems reading public docs | `llms.txt`/AI-readable docs, stable landing pages, schema/meta tags, canonical examples | A model answering "what MCP should I use for X?" can correctly pick TinyAssets |
 | Partner/maintainer rail | Host platform teams | Submission kits, compliance pack, stability proof, responsive issue/PR workflow | Host maintainers are willing to list, recommend, or fix integration bugs with us |
 
 ### What "Default Choice" Means
 
-Workflow becomes the default choice when it wins all four layers below:
+TinyAssets becomes the default choice when it wins all four layers below:
 
-1. Category language: hosts and users know what bucket Workflow owns.
+1. Category language: hosts and users know what bucket TinyAssets owns.
    Working label: "live collaborative tinyassets/node daemon for AI agents."
 2. Metadata match: tool/app descriptions are short, action-oriented, and
    aligned with the intents hosts route on: create, browse, remix, collaborate,
@@ -124,19 +124,19 @@ Workflow becomes the default choice when it wins all four layers below:
    node, browse result, branch run, or collaboration artifact without reading
    developer docs.
 
-Do not position Workflow as "an MCP server." Position it as the thing a chatbot
+Do not position TinyAssets as "an MCP server." Position it as the thing a chatbot
 uses when the user wants durable AI work that persists beyond the current chat.
 
 ### Full Customer Rollout Shape
 
 | Customer | What they should experience | Primary path |
 |---|---|---|
-| Claude Free/Pro user | Claude can find/add Workflow as a connector; Free limitation is clear | Claude directory + custom connector fallback |
-| ChatGPT Free user | If app access is available for their plan/region, Workflow is in Apps; otherwise no-login alternatives are shown | ChatGPT App Directory + local/self-hosted fallback |
+| Claude Free/Pro user | Claude can find/add TinyAssets as a connector; Free limitation is clear | Claude directory + custom connector fallback |
+| ChatGPT Free user | If app access is available for their plan/region, TinyAssets is in Apps; otherwise no-login alternatives are shown | ChatGPT App Directory + local/self-hosted fallback |
 | ChatGPT guest user | Clear explanation that guest chat cannot connect apps/MCP; offer no-chatbot-login path | `/connect` guest route |
-| Workspace admin | Approve Workflow once for team use, with scopes, tests, safety docs, and support link | ChatGPT/Claude/Mistral/Copilot admin submission kits |
+| Workspace admin | Approve TinyAssets once for team use, with scopes, tests, safety docs, and support link | ChatGPT/Claude/Mistral/Copilot admin submission kits |
 | Local/privacy user | Install/use through Open WebUI/LM Studio/Jan/OpenClaw without hosted chatbot login | Local pack + Streamable HTTP/OpenAPI bridge |
-| Developer/IDE user | IDE finds Workflow from registry/config and can add it with one command/click | MCP Registry + `.mcp.json`/IDE buttons |
+| Developer/IDE user | IDE finds TinyAssets from registry/config and can add it with one command/click | MCP Registry + `.mcp.json`/IDE buttons |
 | Custom host builder | Copy a minimal integration contract and smoke test endpoint | Host builder kit + canary/proof registry |
 | Chatbot vendor | See a stable, safe, popular, well-documented MCP server worth listing | Partner packet + public proof + support process |
 
@@ -145,7 +145,7 @@ uses when the user wants durable AI work that persists beyond the current chat.
 Every public surface should answer these questions without requiring the user to
 understand MCP:
 
-- What can I do with Workflow from this chatbot?
+- What can I do with TinyAssets from this chatbot?
 - Do I need to log into this chatbot?
 - Do I need a paid plan, developer mode, or workspace admin?
 - What data/actions am I granting?
@@ -155,7 +155,7 @@ understand MCP:
 
 ### Machine-Readable Requirements
 
-To let chatbots, IDEs, registries, and app directories route to Workflow
+To let chatbots, IDEs, registries, and app directories route to TinyAssets
 automatically, maintain these machine-readable artifacts:
 
 - MCP `server.json` for the official registry.
@@ -166,7 +166,7 @@ automatically, maintain these machine-readable artifacts:
   - `https://tinyassets.io/mcp-directory` for reviewed host directories and
     registry metadata.
 - `/.well-known` metadata where supported by host requirements.
-- `llms.txt` and concise AI-readable docs for "when to use Workflow."
+- `llms.txt` and concise AI-readable docs for "when to use TinyAssets."
 - Host-specific config snippets for `.mcp.json`, `.vscode/mcp.json`, Cursor,
   Gemini CLI, Open WebUI, and local/self-hosted hosts.
 - A proof registry mapping host -> verified date -> command/UI trace.
@@ -176,12 +176,12 @@ automatically, maintain these machine-readable artifacts:
 The rollout should create a compounding loop:
 
 1. Publish stable metadata in registries/directories.
-2. Hosts and chatbots discover Workflow as a candidate tool.
+2. Hosts and chatbots discover TinyAssets as a candidate tool.
 3. Users connect with minimal friction.
 4. First-use prompts create visible durable value.
 5. Proof traces, examples, and public artifacts improve trust.
-6. More hosts list Workflow because it is verified and already used.
-7. More chatbot answers recommend Workflow because the public docs and registry
+6. More hosts list TinyAssets because it is verified and already used.
+7. More chatbot answers recommend TinyAssets because the public docs and registry
    data make the category fit obvious.
 
 ## Rollout Phases
@@ -226,7 +226,7 @@ Turn `/connect` from one generic copy-paste page into a chooser:
 - "I am building a custom MCP host"
 
 Each path should state login requirements, plan/admin requirements, setup
-steps, what Workflow controls work there, and what proof exists.
+steps, what TinyAssets controls work there, and what proof exists.
 
 Acceptance:
 
@@ -282,7 +282,7 @@ Targets:
 - Open WebUI: Streamable HTTP MCP setup, including the no-auth fresh-install
   caveat.
 - OpenClaw: channel-gateway playbook for Telegram/WhatsApp/Slack/Discord-style
-  users and smoke proof for Workflow tools.
+  users and smoke proof for TinyAssets tools.
 - Custom host: minimal MCP contract test and setup snippet.
 
 Acceptance:
@@ -322,7 +322,7 @@ Add a host smoke harness where automation is possible.
 Minimum proof levels:
 
 - Protocol proof: `initialize`, `tools/list`, and one read-only call.
-- Host proof: host UI lists Workflow tools and invokes a read action.
+- Host proof: host UI lists TinyAssets tools and invokes a read action.
 - Action proof: host invokes a write/approval flow safely.
 - User proof: real user or user-sim completes the intended onboarding path.
 
@@ -346,7 +346,7 @@ Progress snapshot, 2026-05-01:
 - Machine-readable discovery live-artifact: `packaging/registry/server.json`
   validates against the official schema and points at
   `https://tinyassets.io/mcp-directory`;
-  `WebSite/site/static/llms.txt` tells chatbots when to recommend Workflow and
+  `WebSite/site/static/llms.txt` tells chatbots when to recommend TinyAssets and
   when to caveat host support.
 - Directory endpoint live slice: `tinyassets/directory_server.py` exposes 11
   narrow tools with explicit read/open/destructive annotations and no catch-all
@@ -389,7 +389,7 @@ Acceptance:
   ready.
 - Claude submission uses `https://tinyassets.io/mcp-directory`.
 - The accepted listing appears in Claude's Connectors Directory.
-- A normal Claude user can add Workflow from the directory without a custom URL.
+- A normal Claude user can add TinyAssets from the directory without a custom URL.
 - Live Claude.ai proof is refreshed after the copy lands.
 
 Dependency: Gate 0 green.

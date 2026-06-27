@@ -208,7 +208,7 @@ Six test surfaces:
 3. **Integration test** with synthetic activity log + canary → exit code.
    Reuse the `last_activity_canary.py` test scaffolding pattern.
 
-4. **Workflow dispatch dry-run.** Fire `p0-outage-triage.yml` with a mock
+4. **TinyAssets dispatch dry-run.** Fire `p0-outage-triage.yml` with a mock
    `provider_exhaustion` issue label and verify repair step runs without
    actually SSHing (use repo-level `DRY_RUN=1` env check, similar pattern
    to dr-drill).

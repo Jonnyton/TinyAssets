@@ -46,7 +46,7 @@ class BookState(TypedDict):
     """Total words written in this book across all chapters."""
 
     # ------------------------------------------------------------------
-    # Workflow coordination
+    # TinyAssets coordination
     # ------------------------------------------------------------------
     workflow_instructions: dict
     """Premise and higher-level workflow context passed down from universe level."""
@@ -59,7 +59,7 @@ class BookState(TypedDict):
     _kg_path: str
 
     # ==================================================================
-    # DOMAIN: Workflow (narrative-specific)
+    # DOMAIN: TinyAssets (narrative-specific)
     # ==================================================================
 
     # ------------------------------------------------------------------

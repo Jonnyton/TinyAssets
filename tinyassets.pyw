@@ -1,4 +1,4 @@
-"""Workflow -- double-click to launch (tray mode).
+"""TinyAssets -- double-click to launch (tray mode).
 
 Runs via pythonw.exe (no console window).  Starts the API server,
 daemon, and Cloudflare tunnel with a system tray icon for control.
@@ -26,7 +26,7 @@ except ImportError as e:
     try:
         import tkinter.messagebox
         tkinter.messagebox.showerror(
-            "Workflow",
+            "TinyAssets",
             f"Missing dependencies. Run: pip install -e .[desktop]\n\n{e}",
         )
     except Exception:
@@ -35,7 +35,7 @@ except Exception as e:
     try:
         import tkinter.messagebox
         tkinter.messagebox.showerror(
-            "Workflow",
+            "TinyAssets",
             f"Startup failed:\n\n{e}",
         )
     except Exception:

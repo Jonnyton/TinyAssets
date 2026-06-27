@@ -83,7 +83,7 @@ Each entry implements the §1 anatomy for a specific integration. These are the 
 **Rate-limit posture:** Drive API is generous — ~1000 req/100sec/user. Batch list + batch get minimize requests.
 **Error handling:** retry on 429/5xx; hard-fail on 403 (file not shared with app) or 404 (file deleted).
 **Idempotency:** read operations are naturally idempotent.
-**Consent UX:** per-folder consent (user clicks "share this folder with Workflow" in Drive UI; OAuth scope is `drive.file` so we only see files the user explicitly shares).
+**Consent UX:** per-folder consent (user clicks "share this folder with TinyAssets" in Drive UI; OAuth scope is `drive.file` so we only see files the user explicitly shares).
 **Dry-run support:** N/A for pull operations (reads are side-effect-free by definition).
 **Category:** retriever (node-type §2.6); privacy-sensitive because read data may be T4 regulated content depending on folder.
 

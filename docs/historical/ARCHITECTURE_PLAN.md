@@ -1,6 +1,6 @@
 > **HISTORICAL — superseded.** This doc captured architecture intent as of 2026-04-02 (reframed 2026-04-11). Current architecture lives in PLAN.md. Kept for git/decision history. Do not edit, do not extend, do not cite as live.
 
-# Workflow — Architecture (As-Built)
+# TinyAssets — Architecture (As-Built)
 
 **Last updated:** 2026-04-02 (reframed 2026-04-11)
 **Status:** Living reference — reflects what exists today, not aspirations
@@ -9,7 +9,7 @@
 
 ## 1. System Overview
 
-Workflow is a goal-agnostic daemon engine. The daemon drives autonomous long-horizon tasks using LLM providers, with knowledge retrieval, constraint checking, multi-tier evaluation, and hierarchical memory keeping output coherent. Fantasy authoring is the first domain — the daemon writes a novel scene by scene. A FastAPI server exposes the daemon as an HTTP API. The Universe Server MCP is the primary user interface.
+TinyAssets is a goal-agnostic daemon engine. The daemon drives autonomous long-horizon tasks using LLM providers, with knowledge retrieval, constraint checking, multi-tier evaluation, and hierarchical memory keeping output coherent. Fantasy authoring is the first domain — the daemon writes a novel scene by scene. A FastAPI server exposes the daemon as an HTTP API. The Universe Server MCP is the primary user interface.
 
 ```
 User <-> Custom GPT <-> FastAPI (30 endpoints) <-> Daemon (LangGraph)

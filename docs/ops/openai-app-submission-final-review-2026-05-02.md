@@ -1,6 +1,6 @@
 # OpenAI App Submission Final Review Packet - 2026-05-02
 
-Purpose: one current review packet for deciding when Workflow is ready to
+Purpose: one current review packet for deciding when TinyAssets is ready to
 submit to OpenAI Apps review.
 
 ## Current Verdict
@@ -72,7 +72,7 @@ Post-rebase freshness check 2026-05-02T15:46-07:00:
 
 2026-05-02T15:35-07:00 in-app browser audit:
 
-- App Info populated: `Workflow`, `Build durable workflows`, `Productivity`,
+- App Info populated: `TinyAssets`, `Build durable workflows`, `Productivity`,
   developer `TinyAssets`, website/support/privacy/terms URLs.
 - Logo upload control still visible; no logo uploaded.
 - MCP Server populated: `https://tinyassets.io/mcp-directory`, `No Auth`, 11
@@ -100,13 +100,13 @@ Do not use current ChatGPT web output as final directory-safe proof.
 
 Recommended release notes:
 
-`Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+`Initial public alpha of TinyAssets. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 
 Recommended final choices, pending host review:
 
 - Publisher selector: `Business` only if TinyAssets publisher verification is
   confirmed.
-- Mature/adult content: `No` only if host confirms Workflow is suitable for
+- Mature/adult content: `No` only if host confirms TinyAssets is suitable for
   users under 18 and has no mature/adult content.
 - Screenshots: leave blank unless host wants optional evidence uploaded.
 - Legal checkboxes: check only after host confirms each assertion.

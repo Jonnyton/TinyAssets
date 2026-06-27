@@ -305,7 +305,7 @@ All 18 ratified primitives in §4 except the three already implemented (variant 
 
 What v3 likely adds (not designed yet; placeholder):
 
-- **Federation primitives.** Multi-instance Workflow installations federate. A primitive authored on instance A consumed by users on instance B. Registry shape needs to support distributed identity + cross-instance attribution. Architecturally load-bearing — affects `actor_id` opacity decisions and ContributionEvent ledger sharding.
+- **Federation primitives.** Multi-instance TinyAssets installations federate. A primitive authored on instance A consumed by users on instance B. Registry shape needs to support distributed identity + cross-instance attribution. Architecturally load-bearing — affects `actor_id` opacity decisions and ContributionEvent ledger sharding.
 - **DAO governance evolution timing.** When does host-veto-only convert to DAO-weighted? Memory `project_dao_evolution_weighted_votes` outlines weighted-votes + permanent-minimum-leverage + gradual-handoff. v3 picks activation criteria.
 - **Sandbox tech selection.** BUG-017 resolution is the gating decision for any user-authored code primitive running daemon-side.
 - **Primitive-economics maturity.** Today's bounty distribution is conceptually clean but unproven at volume. v3 ratifies pool-replenishment cadence, payout batching, dispute escalation thresholds based on observed volume.

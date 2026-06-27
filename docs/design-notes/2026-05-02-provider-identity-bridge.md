@@ -6,14 +6,14 @@ Status: accepted design direction from 2026-05-02 host direction; folded into
 
 ## Problem
 
-The same human may reach Workflow through Claude, ChatGPT, Codex, OpenClaw,
+The same human may reach TinyAssets through Claude, ChatGPT, Codex, OpenClaw,
 local IDE hosts, and future MCP clients. The product goal is that the user can
 control their own daemons, capacity grants, money-adjacent balances, and
 connected account assets from whichever logged-in chatbot they are using.
 
-The unsafe shortcut is treating "the chatbot session is logged in" as Workflow
+The unsafe shortcut is treating "the chatbot session is logged in" as TinyAssets
 account authority by itself. Provider login proves that the user is logged into
-that provider account. It does not prove which Workflow account it should bind
+that provider account. It does not prove which TinyAssets account it should bind
 to, which daemon/runtime/capacity scopes it controls, or whether money,
 credential, or account-access authority has been delegated.
 
@@ -21,7 +21,7 @@ credential, or account-access authority has been delegated.
 
 Use a provider identity bridge:
 
-1. **Person identity:** the Workflow account / real owner. Launch design
+1. **Person identity:** the TinyAssets account / real owner. Launch design
    currently names GitHub OAuth as the first identity primitive, with native
    accounts later if needed.
 2. **Client identity:** Claude.ai session, ChatGPT session, Claude Code, Codex
@@ -32,12 +32,12 @@ Use a provider identity bridge:
 4. **Runtime identity:** a temporary execution instance bound to provider,
    model, executor backend, budget, and lease.
 5. **Authority binding:** the durable record of what a given client is allowed
-   to do on behalf of a given Workflow user.
+   to do on behalf of a given TinyAssets user.
 6. Each chatbot/provider identity becomes a verified external identity binding
-   on the Workflow account: `provider`, `provider_subject`, verification time,
+   on the TinyAssets account: `provider`, `provider_subject`, verification time,
    assurance level, scopes, revocation status, and last proof.
 7. Binding a provider requires an explicit linking ceremony: OAuth/PKCE where
-   available, or a signed one-time nonce shown in Workflow and returned through
+   available, or a signed one-time nonce shown in TinyAssets and returned through
    the provider client. A provider session cannot self-assert ownership.
 8. Once linked, low-risk reads and reversible controls may feel automatic from
    that provider, but every operation still checks tenant, owner, grant,
@@ -45,7 +45,7 @@ Use a provider identity bridge:
 9. High-risk classes stay gated even for linked sessions: irreversible actions,
    credential custody, external account writes, financial/crypto transfers,
    regulated submissions, and final publish/submit boundaries.
-10. For crypto or money-like flows, Workflow may prepare, validate, simulate,
+10. For crypto or money-like flows, TinyAssets may prepare, validate, simulate,
     queue, explain, and hand off. It must not execute prohibited transfers on
     the user's behalf. Reversible internal ledger proposals can be batched only
     when the reversal semantics are real and tested.
@@ -53,19 +53,19 @@ Use a provider identity bridge:
 ## Rollout Implications
 
 1. A request started in Claude should be inspectable or continuable from ChatGPT
-   if both are bound to the same Workflow user and the ChatGPT client has
+   if both are bound to the same TinyAssets user and the ChatGPT client has
    authority for the requested action.
 2. A daemon summoned from ChatGPT must not create a duplicate of the
-   Claude-side daemon. Resolve by Workflow account, user-owned universe,
+   Claude-side daemon. Resolve by TinyAssets account, user-owned universe,
    daemon identity, and soul/version before creating a new daemon.
-3. Approvals and ownership bind to the Workflow user/account and audited
+3. Approvals and ownership bind to the TinyAssets user/account and audited
    authority grant, not just a chat thread.
 4. Daemon memory attaches to the daemon and user-owned universe, not the
    chatbot surface that triggered it. Client/provider metadata is audit and
    routing context.
 5. Security-sensitive actions may still require per-client re-authentication or
    stronger evidence, even when the client is already linked.
-6. Public UX should avoid provider jargon: "same Workflow account, different
+6. Public UX should avoid provider jargon: "same TinyAssets account, different
    connected apps."
 
 ## Relationship To Existing Plan
@@ -76,7 +76,7 @@ This follows existing constraints rather than replacing them:
   sessions are scoped per user.
 - `PLAN.md` says human control belongs at irreversible boundaries and
   reversibility earns batched autonomy.
-- `PLAN.md` says provider compliance is a product boundary: Workflow can
+- `PLAN.md` says provider compliance is a product boundary: TinyAssets can
   prepare, explain, validate, simulate, or hand off provider-forbidden actions,
   but cannot disguise the final prohibited action as daemon work.
 - `docs/design-notes/2026-05-01-hostless-byok-cloud-daemon-capacity.md`
@@ -119,7 +119,7 @@ authority_grants
 
 - Which provider bindings are acceptable for launch besides GitHub OAuth?
 - Does ChatGPT/OpenAI app identity expose a stable subject suitable for account
-  linking, or must first launch use a Workflow-side nonce?
+  linking, or must first launch use a TinyAssets-side nonce?
 - Which actions can be made genuinely reversible enough for checkpoint/batched
   approval, and which must stay final-step handoff?
 - What is the minimum simulated multi-user test proving that Claude, ChatGPT,

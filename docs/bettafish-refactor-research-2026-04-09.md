@@ -1,4 +1,4 @@
-# BettaFish Deep Dive For Workflow
+# BettaFish Deep Dive For TinyAssets
 
 Date: 2026-04-09
 
@@ -40,7 +40,7 @@ The system is not a frontier orchestration runtime. It is closer to:
 3. a structured report compiler that turns the outputs into validated HTML and export artifacts
 4. an optional crawler stack that populates the private-data side
 
-For Workflow, the direct opportunity is not "build BettaFish for fiction." The real opportunity is:
+For TinyAssets, the direct opportunity is not "build BettaFish for fiction." The real opportunity is:
 
 1. replace lightweight text-only generation paths with an IR-first authoring pipeline
 2. make deliberation and drafting durable, inspectable, and resumable
@@ -182,7 +182,7 @@ Usefulness for us:
 - the exact crawler system is mostly irrelevant to this fiction project
 - compliance and operational risk are too high to treat as a simple transplant
 
-## Highest-Value Patterns To Bring Into Workflow
+## Highest-Value Patterns To Bring Into TinyAssets
 
 ## Pattern A: IR-first authoring
 
@@ -190,7 +190,7 @@ Usefulness for us:
 
 BettaFish refuses to treat markdown as the source of truth. That is the real upgrade.
 
-For Workflow, the equivalent move is:
+For TinyAssets, the equivalent move is:
 
 - stop treating raw model prose as the only meaningful artifact
 - represent authored output as structured narrative IR
@@ -293,7 +293,7 @@ If a future builder proposes a system that only stores the final markdown or doc
 
 BettaFish separates template selection, layout design, word budget, chapter generation, composition, and rendering. That discipline is worth importing directly.
 
-For Workflow, the analogous stages should be:
+For TinyAssets, the analogous stages should be:
 
 1. canon pack assembly
 2. book architecture selection
@@ -412,7 +412,7 @@ This project's primary writer cannot use direct API SDKs. The writer and rescue 
 
 BettaFish has both schema-level validation and artifact validators for tables and charts. Our equivalent should be even stricter because fiction continuity failure is harder to detect visually than broken analytics formatting.
 
-### Required validator families for Workflow
+### Required validator families for TinyAssets
 
 1. schema validator
 2. continuity validator
@@ -466,7 +466,7 @@ The event stream may be UI-facing, CLI-facing, or both, but the source of truth 
 
 BettaFish routes different engines to different model families. That idea is right even if the exact vendor mix is incidental.
 
-For Workflow, specialization should be based on stage role, not provider fandom:
+For TinyAssets, specialization should be based on stage role, not provider fandom:
 
 - planning model
 - continuity or critical review model
@@ -508,7 +508,7 @@ This project explicitly forbids API SDKs for the primary writer. Any imported pa
 
 Widgets, SWOT tables, and KPI grids are not directly useful. The transferable principle is typed renderable blocks, not those particular block types.
 
-## Concrete Refactor Program For Workflow
+## Concrete Refactor Program For TinyAssets
 
 If we use this research seriously, the path should look like this.
 
@@ -616,6 +616,6 @@ BettaFish is worth studying because it demonstrates seriousness about output str
 
 structured generation beats loose generation
 
-For Workflow, the win is to build a narrative compiler, not a chatty demo.
+For TinyAssets, the win is to build a narrative compiler, not a chatty demo.
 
 If we import the right ideas and reject the weak ones, this project can move from "AI writes text" to "AI produces inspectable, continuity-safe, refactorable authored artifacts." That is the step that actually changes how credible the system looks.

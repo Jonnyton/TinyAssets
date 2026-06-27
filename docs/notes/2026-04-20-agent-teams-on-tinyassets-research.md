@@ -1,8 +1,8 @@
-# Agent-Teams-on-Workflow — Research + Thinking Notes
+# Agent-Teams-on-TinyAssets — Research + Thinking Notes
 
 **Date:** 2026-04-20
 **Author:** navigator
-**Status:** Strategic research note. Not a dispatch. Inbox entry: `ideas/INBOX.md` [2026-04-20] "Agent-teams-on-Workflow." Pre-reading for future triage when uptime-track closes.
+**Status:** Strategic research note. Not a dispatch. Inbox entry: `ideas/INBOX.md` [2026-04-20] "Agent-teams-on-TinyAssets." Pre-reading for future triage when uptime-track closes.
 **Lens:** 3-layer. Does this make the user's chatbot better at serving the user's real goals? The user's "real goal" here is: compose multi-agent workflows for themselves, on Claude.ai, WITHOUT installing anything beyond the MCP connector. We provide the primitives; user authors the team.
 
 ---
@@ -36,10 +36,10 @@ Two candidate repos emerged from the March 31, 2026 Claude Code npm `.npmignore`
 | **claw-code** (`github.com/instructkr/claw-code`) | Sigrid Jin (@instructkr) | Python v1 → now Rust-primary 96.4% | Single-session harness; 40+ tools; subagent spawn; worktree isolation | Record-holder repo (100K stars in ~hours). Originally Python, rewritten to Rust for perf. The "fastest-growing repo in GitHub history" the user referenced. |
 | **nano-claude-code** (`github.com/SafeRL-Lab/nano-claude-code`) | SafeRL-Lab | Pure Python, ~40K LoC, ~85 files | Typed-event-generator loop, pluggable LLM providers (8+), runtime tool registration, multi-agent orchestration via `Agent` tool, memory persistence, background-daemon bridges | More Python-idiomatic + more readable architecture study. Better "source to work from" candidate than claw-code's now-Rust codebase. |
 
-**Recommendation: treat `nano-claude-code` as the primary architecture reference for user-built Workflow-on-top projects.** Reasons:
-- **Python alignment with our Workflow engine.** Our daemon is Python; interop is native. Claw-code's Rust majority requires FFI or IPC — more moving parts for user projects.
+**Recommendation: treat `nano-claude-code` as the primary architecture reference for user-built TinyAssets-on-top projects.** Reasons:
+- **Python alignment with our TinyAssets engine.** Our daemon is Python; interop is native. Claw-code's Rust majority requires FFI or IPC — more moving parts for user projects.
 - **Read-ability + hackability.** ~40K LoC / ~85 files vs. Claude Code's opaque TS (~283K LoC). Users can understand + modify.
-- **Explicit architectural seams** (see below §3) that map cleanly onto Workflow's daemon-request + node primitives.
+- **Explicit architectural seams** (see below §3) that map cleanly onto TinyAssets' daemon-request + node primitives.
 - **Runtime tool registration + MCP auto-wiring.** Our tools are MCP verbs; slots in with zero glue.
 
 Claw-code remains worth tracking as the cultural-moment repo, but nano-claude-code is the *technical* base. User's framing "use it as a base to build something like Claude Code agent teams" → we document nano-claude-code as the anchor; user can swap if they prefer claw-code's runtime when they start building.
@@ -61,7 +61,7 @@ Reading host's message through the 3-layer lens:
 - Inter-teammate messaging = **additional daemon-request with `target_teammate_id`** field, OR a free-queue fan-out via the paid-market bid surface.
 - Lead's orchestration role = **the user's chatbot itself.** Not a daemon; the chatbot IS the lead.
 
-The last bullet is the load-bearing insight. **Lead = the chatbot.** Teammates = daemon-executed nodes on branches. This maps cleanly onto existing Workflow primitives; no new orchestration layer is needed.
+The last bullet is the load-bearing insight. **Lead = the chatbot.** Teammates = daemon-executed nodes on branches. This maps cleanly onto existing TinyAssets primitives; no new orchestration layer is needed.
 
 **Critical observation:** Claude Code's agent-teams is "one lead session + N teammate sessions all running in the user's terminal." Ours is "one chatbot + N teammate-node daemon-invocations." Same abstract shape; different execution surface. The user's chatbot composes the team over MCP; each teammate-invocation is a node-execution daemon-request; the task list lives in branch state the chatbot reads/writes via existing verbs.
 
@@ -73,7 +73,7 @@ The last bullet is the load-bearing insight. **Lead = the chatbot.** Teammates =
 
 These are the places where user's project-on-top and our platform meet. Each is a potential contract to design carefully at triage-time.
 
-| Seam | Claude-Code/nano shape | Workflow primitive we offer | Gap check |
+| Seam | Claude-Code/nano shape | TinyAssets primitive we offer | Gap check |
 |---|---|---|---|
 | **Agent loop** | Typed event generator (`TextChunk` / `ToolStart` / `ToolEnd` / `TurnDone`) | MCP streamable-http responses; chatbot IS the loop | None — chatbot does the loop. |
 | **Subagent/teammate spawn** | `Agent` tool with isolated worktree | `submit_request` against a teammate-typed node; branch = worktree analog | None — primitive exists post-Track-E. |
@@ -85,9 +85,9 @@ These are the places where user's project-on-top and our platform meet. Each is 
 | **Tool registration** | nano-claude-code: `register_tool(ToolDef(...))` at runtime, MCP auto-wired | Our tools ARE MCP verbs; user's teammates can discover + call any verb we expose | None — best-in-class alignment already. |
 | **Memory backend** | nano-claude-code: dual-scope (user/project) JSON, recency-weighted | Our memory-scope is tiered (node/branch/goal/user/universe) per `project_memory_scope_mental_model.md`. Different shape, compatible goals. | Need a memory-scope-to-teammate-scope mapping at triage; likely additive. |
 | **Background daemons + bridges** | nano-claude-code: Telegram/WeChat/Slack bridges; remote-control job queues | Our daemon-economy IS this; paid-market + free-queue IS the job queue | None. |
-| **Worktree isolation** | Git worktree per teammate | Workflow branch per teammate | Map is clean. |
+| **Worktree isolation** | Git worktree per teammate | TinyAssets branch per teammate | Map is clean. |
 
-**Summary: out of 11 seams, only 2 are clear gaps** (inter-teammate messaging; partially, plan-approval). Everything else is native-or-adjacent to existing Workflow primitives. This is the strong form of the thesis: **the agent-teams shape is already 80% composable from our primitive set once daemon-economy Wave 2+3 lands.**
+**Summary: out of 11 seams, only 2 are clear gaps** (inter-teammate messaging; partially, plan-approval). Everything else is native-or-adjacent to existing TinyAssets primitives. This is the strong form of the thesis: **the agent-teams shape is already 80% composable from our primitive set once daemon-economy Wave 2+3 lands.**
 
 ---
 
@@ -95,7 +95,7 @@ These are the places where user's project-on-top and our platform meet. Each is 
 
 Ranked by load-bearing:
 
-### 4.1 Foundation (required before user can compose agent-teams on Workflow)
+### 4.1 Foundation (required before user can compose agent-teams on TinyAssets)
 
 - **Daemon-economy Wave 2+3** — claim + settle + tray UX. Without these, teammate invocation isn't end-to-end.
 - **Inter-teammate messaging primitive.** Per §3 gap. Recommend a typed `teammate_message` node-type + a poll/subscribe verb on the MCP side. ~2-3 dev-days for spec + ship.
@@ -111,7 +111,7 @@ Ranked by load-bearing:
 
 Per `project_convergent_design_commons.md`: teammate definitions (role + tools + prompt) are exactly the kind of artifact that wants wiki-shared + forkable + autoresearch-optimizable. Hook teammate-node-types into the convergent-commons discovery surface. User defines a "senior-reviewer teammate" once; everyone else can fork it.
 
-This is the **feature that makes Workflow-for-agent-teams compounding** rather than one-user-one-team. Without it, every user reinvents teammate-roles. With it, the commons carries the growth.
+This is the **feature that makes TinyAssets-for-agent-teams compounding** rather than one-user-one-team. Without it, every user reinvents teammate-roles. With it, the commons carries the growth.
 
 ---
 
@@ -135,7 +135,7 @@ This is the **feature that makes Workflow-for-agent-teams compounding** rather t
 3. Self-auditing-tools exec plan (currently drafted at `docs/design-notes/2026-04-19-self-auditing-tools.md`) — ships `dry_inspect_node` which plan-approval would build on.
 4. **Triage this idea** (promote from `ideas/INBOX.md` to `ideas/PIPELINE.md` + draft an exec plan for the 3 foundation items in §4.1).
 5. **Dispatch the 3 foundation items** (inter-teammate messaging, node-type teammate bundles, possibly plan-approval hook).
-6. **Announce to the user community** that Workflow now composes agent-teams. Pair with a reference tutorial using nano-claude-code as the recognizable base.
+6. **Announce to the user community** that TinyAssets now composes agent-teams. Pair with a reference tutorial using nano-claude-code as the recognizable base.
 
 **Realistic timing:** 2-4 weeks post-uptime acceptance. The pieces are mostly already on the roadmap; this project reframes + sequences them around a concrete user story.
 
@@ -146,11 +146,11 @@ This is the **feature that makes Workflow-for-agent-teams compounding** rather t
 The user framed this as "could ride the OSS-Claude-Code wave." Worth taking seriously:
 
 - **Claw-code hit 100K stars in hours because the audience exists and is urgent.** Users want Claude-Code-style orchestration without the cost / vendor-lock / local-install friction.
-- **Workflow positions as the zero-install team orchestrator.** Claude.ai connector + our primitives = agent-teams via chat, no install, no terminal, no tmux. This is a real wedge.
+- **TinyAssets positions as the zero-install team orchestrator.** Claude.ai connector + our primitives = agent-teams via chat, no install, no terminal, no tmux. This is a real wedge.
 - **The viral moment has a half-life.** If we triage this in 2-4 weeks the audience is still hot; in 6 months the moment has cooled and we're competing on features rather than novelty. Host + lead should calibrate.
-- **Don't over-promise at platform level.** Platform provides primitives; user builds their team. If we say "we do Claude-Code agent-teams," we own the bug surface. If we say "Workflow primitives let you compose agent-teams, like this reference project does," we ride the wave without owning the UX debt.
+- **Don't over-promise at platform level.** Platform provides primitives; user builds their team. If we say "we do Claude-Code agent-teams," we own the bug surface. If we say "TinyAssets primitives let you compose agent-teams, like this reference project does," we ride the wave without owning the UX debt.
 
-**Recommendation:** frame any future public announcement as reference-project-driven, not feature-driven. "User X built a Claude-Code-style team on Workflow in N hours" is stronger than "Workflow has agent-teams." The former scales; the latter makes us the single support vendor.
+**Recommendation:** frame any future public announcement as reference-project-driven, not feature-driven. "User X built a Claude-Code-style team on TinyAssets in N hours" is stronger than "TinyAssets has agent-teams." The former scales; the latter makes us the single support vendor.
 
 ---
 

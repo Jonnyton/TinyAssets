@@ -38,7 +38,7 @@ strings.
 **Take option 3 (GitHub-style noreply composite). Format:**
 
 ```
-Workflow User <{slug}@users.noreply.workflow.local>
+TinyAssets User <{slug}@users.noreply.tinyassets.local>
 ```
 
 where `{slug}` = `slugify(_current_actor())` with a hard fallback
@@ -48,10 +48,10 @@ to `anonymous` when the actor is empty, "anonymous", or unsafe.
 
 | Actor | Commit author |
 |-------|---------------|
-| `alice` (env var) | `Workflow User <alice@users.noreply.workflow.local>` |
-| `"Alice Smith"` | `Workflow User <alice-smith@users.noreply.workflow.local>` |
-| (empty / unset) | `Workflow User <anonymous@users.noreply.workflow.local>` |
-| `"anonymous"` | `Workflow User <anonymous@users.noreply.workflow.local>` |
+| `alice` (env var) | `TinyAssets User <alice@users.noreply.tinyassets.local>` |
+| `"Alice Smith"` | `TinyAssets User <alice-smith@users.noreply.tinyassets.local>` |
+| (empty / unset) | `TinyAssets User <anonymous@users.noreply.tinyassets.local>` |
+| `"anonymous"` | `TinyAssets User <anonymous@users.noreply.tinyassets.local>` |
 
 **Why this over options 1 and 2:**
 
@@ -63,14 +63,14 @@ to `anonymous` when the actor is empty, "anonymous", or unsafe.
   identity), `git log --author=alice` still works and `git blame`
   still tells the truth about who did what.
 - **Never claims GitHub identity it can't prove.** The
-  `users.noreply.workflow.local` TLD cannot resolve and cannot be a
+  `users.noreply.tinyassets.local` TLD cannot resolve and cannot be a
   real GitHub account. On public repos this is important — we
   don't want the daemon to accidentally emit `alice@example.com`
   and attribute a commit to someone who hasn't authorized it. If
   a user wants their real GitHub identity on commits, they pass it
   via the explicit config knob (§5).
 
-**Non-email display name** ("Workflow User") is deliberate: it
+**Non-email display name** ("TinyAssets User") is deliberate: it
 makes "this commit came from the TinyAssets daemon on behalf of an
 actor" legible in `git log --oneline`'s author column without the
 user having to read the email. The daemon is a participating
@@ -84,7 +84,7 @@ entirely and accepts a raw `"Alice <alice@real.email>"` string.
 
 When the actor slug resolves to `"anonymous"`, `""`, or any value
 that fails the slug validator, the author becomes
-`Workflow User <anonymous@users.noreply.workflow.local>`.
+`TinyAssets User <anonymous@users.noreply.tinyassets.local>`.
 
 Important: this is still attributed — just to "anonymous" as a
 first-class actor identity. `git log --author=anonymous` correctly
@@ -96,13 +96,13 @@ anonymous, which is correct.
 
 Alice's local clone: `UNIVERSE_SERVER_USER=alice`. Alice creates
 a branch. Commit lands with
-`Workflow User <alice@users.noreply.workflow.local>` as author.
+`TinyAssets User <alice@users.noreply.tinyassets.local>` as author.
 Alice pushes. Bob pulls. Bob's local repo's `git log` shows the
 commit with Alice's author — **not Bob's**. Good: authorship is
 about who did the work, not who has the file now.
 
 Bob then creates his own branch on his clone. His commit is
-attributed to `Workflow User <bob@users.noreply.workflow.local>`.
+attributed to `TinyAssets User <bob@users.noreply.tinyassets.local>`.
 Bob pushes back. Alice pulls. Now both clones show both authors
 correctly on their respective commits.
 
@@ -148,8 +148,8 @@ def test_git_author_attribution_for_create_branch(tmp_repo):
     commit_sha = git_log_latest(tmp_repo)
     author = git_show_author(commit_sha)
     assert author == (
-        "Workflow User "
-        "<alice@users.noreply.workflow.local>"
+        "TinyAssets User "
+        "<alice@users.noreply.tinyassets.local>"
     )
     # git blame on the written line
     blame = git_blame(tmp_repo / "branches/test.yaml", line=1)
@@ -192,14 +192,14 @@ prefers.
 
 ## 8. Design tradeoffs flagged, not locked
 
-- **Noreply TLD choice.** Used `users.noreply.workflow.local`.
+- **Noreply TLD choice.** Used `users.noreply.tinyassets.local`.
   `.local` is IANA-reserved for mDNS and is safe-by-design. An
   alternative is the GitHub-style `users.noreply.github.com`
   which is universally understood — but we are NOT GitHub, and
   emitting `@users.noreply.github.com` would be misleading. Sticking
   with `.local`.
-- **Display name "Workflow User".** Could be "Workflow Daemon" or
-  plain `{actor}`. "Workflow User" reads best in `git log
+- **Display name "TinyAssets User".** Could be "TinyAssets Daemon" or
+  plain `{actor}`. "TinyAssets User" reads best in `git log
   --pretty=format:'%an'` where only the display name shows —
   makes it obvious these commits are daemon-produced.
 - **One env var for override vs per-universe config.** Stuck with

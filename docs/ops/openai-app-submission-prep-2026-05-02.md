@@ -2,7 +2,7 @@
 
 ## Current Decision Boundary
 
-OpenAI app draft: `Workflow`.
+OpenAI app draft: `TinyAssets`.
 
 Submission target: ChatGPT Apps Directory public/global review using
 `https://tinyassets.io/mcp-directory`, not the full custom connector surface at
@@ -38,7 +38,7 @@ Historical ChatGPT Developer Mode proof is preserved in
 
 ## App Info
 
-- App name: `Workflow`
+- App name: `TinyAssets`
 - Subtitle: `Build durable workflows` (23 chars; under OpenAI's 30-char
   guidance from the submission skill)
 - Category: `PRODUCTIVITY`
@@ -51,7 +51,7 @@ Historical ChatGPT Developer Mode proof is preserved in
 
 Description:
 
-`Workflow connects ChatGPT to a durable open-source work graph. Users can check daemon status, browse shared goals and project wiki knowledge, and submit bounded requests that continue through the Workflow loop beyond a single chat.`
+`TinyAssets connects ChatGPT to a durable open-source work graph. Users can check daemon status, browse shared goals and project wiki knowledge, and submit bounded requests that continue through the TinyAssets loop beyond a single chat.`
 
 Final operator runbook:
 `docs/ops/openai-app-submission-final-submit-runbook-2026-05-02.md`.
@@ -93,7 +93,7 @@ Failure history remains documented in
 - `submit_workflow_request`
 
 The packet contains 10 positive test cases and 4 negative test cases. The
-positive set covers direct Workflow prompts plus two outcome-oriented prompts
+positive set covers direct TinyAssets prompts plus two outcome-oriented prompts
 for durable workflow goal discovery/creation, matching OpenAI's metadata
 testing guidance to exercise direct, indirect, and negative prompts.
 
@@ -227,7 +227,7 @@ Not yet complete:
 
 OpenAI Submit-section approval bundle ready for host review:
 
-- Release notes: `Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+- Release notes: `Initial public alpha of TinyAssets. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 - Publisher selector: recommend `Business` only if the host confirms the
   TinyAssets publisher/business assertion.
 - Mature/adult-content answer: recommend `No`.
@@ -241,7 +241,7 @@ OpenAI Submit-section approval bundle ready for host review:
 
 Suggested release notes:
 
-`Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+`Initial public alpha of TinyAssets. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 
 ## Current Verification Snapshot
 
@@ -279,7 +279,7 @@ Suggested release notes:
 
 2026-05-02T13:23-07:00 from ChatGPT web Developer Mode:
 
-- Read-only Workflow status prompt completed with no `Unknown action`, hang, or
+- Read-only TinyAssets status prompt completed with no `Unknown action`, hang, or
   5xx.
 - Approved public write prompt completed after the `Propose a public workflow
   goal?` card.
@@ -348,7 +348,7 @@ Suggested release notes:
 
 2026-05-02T14:44-07:00 Claude.ai in-app browser proof:
 
-- Claude.ai chat `3959f3de-0244-4488-aa24-87a396e465c2` used the Workflow
+- Claude.ai chat `3959f3de-0244-4488-aa24-87a396e465c2` used the TinyAssets
   connector from a naive read-only prompt and returned daemon status.
 - Screenshot:
   `output/openai-submission-assets/claude-ai-workflow-connector-status-2026-05-02.png`.
@@ -366,7 +366,7 @@ Suggested release notes:
 - `python -m json.tool chatgpt-app-submission.json > $null` passed.
 - `python -m pytest tests/test_directory_server.py -q` passed: 8 tests.
 - New test coverage proves `submit_workflow_request` queues a request in a
-  temporary Workflow data directory without mutating production.
+  temporary TinyAssets data directory without mutating production.
 - Public and tool canaries passed for both `https://tinyassets.io/mcp` and
   `https://tinyassets.io/mcp-directory`.
 - Live `/mcp-directory` descriptor listing showed all 11 directory tools with

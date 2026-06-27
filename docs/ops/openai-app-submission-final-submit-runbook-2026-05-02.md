@@ -1,7 +1,7 @@
 # OpenAI App Final Submit Runbook - 2026-05-02
 
 Purpose: give the final dashboard operator one truthful packet for submitting
-Workflow to OpenAI review, without mixing repo-side evidence with host-only
+TinyAssets to OpenAI review, without mixing repo-side evidence with host-only
 legal/publisher assertions.
 
 ## Action-Time Boundary
@@ -50,7 +50,7 @@ Submission implications:
 
 ## Dashboard Values
 
-- Display name: `Workflow`
+- Display name: `TinyAssets`
 - Subtitle: `Build durable workflows`
 - Category: `PRODUCTIVITY`
 - Developer/publisher: `TinyAssets` (host must confirm verified publisher)
@@ -68,11 +68,11 @@ Submission implications:
 
 Description:
 
-`Workflow connects ChatGPT to a durable open-source work graph. Users can check daemon status, browse shared goals and project wiki knowledge, and submit bounded requests that continue through the Workflow loop beyond a single chat.`
+`TinyAssets connects ChatGPT to a durable open-source work graph. Users can check daemon status, browse shared goals and project wiki knowledge, and submit bounded requests that continue through the TinyAssets loop beyond a single chat.`
 
 Release notes:
 
-`Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+`Initial public alpha of TinyAssets. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 
 ## Submission Packet
 
@@ -91,10 +91,10 @@ Use `chatgpt-app-submission.json`.
 
 Review-facing write boundaries:
 
-- `propose_workflow_goal`: creates a Workflow goal proposal and can create
-  public Workflow state after ChatGPT approval. It is non-destructive but
+- `propose_workflow_goal`: creates a TinyAssets goal proposal and can create
+  public TinyAssets state after ChatGPT approval. It is non-destructive but
   open-world.
-- `submit_workflow_request`: queues a bounded Workflow request inside Workflow
+- `submit_workflow_request`: queues a bounded TinyAssets request inside TinyAssets
   after ChatGPT approval. It is non-destructive and not open-world by itself.
 
 ## Asset Pack
@@ -177,5 +177,5 @@ Suggested mature/adult-content answer if the host confirms it: `No`.
 Suggested sensitive-data disclosure if the host confirms it: the public
 directory connector does not request passwords, API keys, MFA codes, payment
 card data, government IDs, biometrics, SSNs, PHI, or PCI data. It receives only
-tool inputs needed for Workflow actions and returns redacted Workflow
+tool inputs needed for TinyAssets actions and returns redacted TinyAssets
 status/goal/wiki/run/request metadata.

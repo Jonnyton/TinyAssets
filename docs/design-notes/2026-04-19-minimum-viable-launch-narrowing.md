@@ -35,7 +35,7 @@ Every proposed cut is evaluated against four concrete scenarios from host direct
 
 | # | Scenario (short form) | What it tests |
 |---|---|---|
-| **A** | `Workflow: payables` → CSV into Voyager + named PDFs | Invocation + attachment I/O + connector push |
+| **A** | `TinyAssets: payables` → CSV into Voyager + named PDFs | Invocation + attachment I/O + connector push |
 | **B** | Vibe-code a max-super-nerd node via chatbot | §27 authoring surface, primitive-level access |
 | **C1** | Told chatbot about job → autonomous scope-extension to company-wide distribution | Chatbot scope-extension from catalog + connector-push to org tools |
 | **C4** | Book → top-10 fan-out → overnight → 10 alternative next-books | Parallel fan-out, top-N ranking, self-hosted-zero-fee execution |
@@ -88,7 +88,7 @@ For each track, three things: **required for MVP?** (Y/N/Partial), **minimum-via
 | Feature | Ships at MVP? | Notes |
 |---|---|---|
 | Claude.ai MCP connector (self-discovery catalog listing) | Yes | A-follow launch gate; Q21-nav ops track |
-| `Workflow: X` invocation with attachment I/O | Yes | Scenario A |
+| `TinyAssets: X` invocation with attachment I/O | Yes | Scenario A |
 | `discover_nodes` RPC + top-N + semantic + structural match | Yes | Full §15.1 response block |
 | Vibe-code a node via chatbot (T1 authoring + T2-lite inline code-view) | Yes | Scenario B, B-follow |
 | `remix_node` (N-parent lineage) | Yes | Scenario B co-design |

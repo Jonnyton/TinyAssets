@@ -29,9 +29,9 @@ The MSR '26 paper *"Early-Stage Prediction of Review Effort in AI-Generated Pull
 
 Their **Circuit Breaker** classifier achieves **AUC 0.96** using only static file/patch features, captures **69% of high-effort PRs at a 20% review budget**, and enables maintainers to fast-fail costly low-quality contributions while fast-tracking simple fixes.
 
-> **Implementation note from follow-up #912:** The MSR Circuit-Breaker paper motivates the category framing here (`merge-instant`, `standard`, `ghost-risk`). PR #898 shipped a Python heuristic keyword tagger, not the paper's feature-based learned classifier. Follow-up #911 / recommended follow-up #3, "Structural features," is the gap-closing path if Workflow later pursues cross-ref count, observed/expected length, and tag-cluster overlap features.
+> **Implementation note from follow-up #912:** The MSR Circuit-Breaker paper motivates the category framing here (`merge-instant`, `standard`, `ghost-risk`). PR #898 shipped a Python heuristic keyword tagger, not the paper's feature-based learned classifier. Follow-up #911 / recommended follow-up #3, "Structural features," is the gap-closing path if TinyAssets later pursues cross-ref count, observed/expected length, and tag-cluster overlap features.
 
-This directly maps to Workflow's filing space: a Jaccard-style cheap classifier at file_bug time would route a small heuristic fix like PR-111 (supervisor stuck_pending) into a low-friction merge lane, while flagging a bundled filing like the original PR-049 as high-iteration-risk *at filing time* rather than after a 10-day stall.
+This directly maps to TinyAssets' filing space: a Jaccard-style cheap classifier at file_bug time would route a small heuristic fix like PR-111 (supervisor stuck_pending) into a low-friction merge lane, while flagging a bundled filing like the original PR-049 as high-iteration-risk *at filing time* rather than after a 10-day stall.
 
 **Companion to PR-116.** PR-116 fixes the carrier-gap (verdicts have no carrier). This filing fixes the *predictive* version of the same problem - flag the filings that are *likely* to need carrier attention before they sit. The two filings compose: this one identifies ghost-risk early; PR-116 prevents stalling once a verdict lands.
 

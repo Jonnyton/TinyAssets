@@ -69,7 +69,7 @@ For each event_type defined in #47 §1.1, this section pins: trigger condition, 
 **Required metadata:**
 | Field | Source | Notes |
 |---|---|---|
-| `actor_id` | PR author's Workflow id (looked up via CONTRIBUTORS.md handle linkage) | If no linkage exists, emit with `actor_id` = synthetic `github:<handle>`; retroactive linkage primitive (per E17) backfills later. |
+| `actor_id` | PR author's TinyAssets id (looked up via CONTRIBUTORS.md handle linkage) | If no linkage exists, emit with `actor_id` = synthetic `github:<handle>`; retroactive linkage primitive (per E17) backfills later. |
 | `actor_handle` | GitHub handle | Stored verbatim. |
 | `source_artifact_id` | PR URL | e.g. `https://github.com/jfarn/tinyassets/pull/142` |
 | `source_artifact_kind` | `'github_pr'` | |

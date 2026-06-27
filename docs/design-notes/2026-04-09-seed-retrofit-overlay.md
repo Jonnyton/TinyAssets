@@ -7,7 +7,7 @@ shipped_date: 2026-04-09
 
 ## Problem
 
-Workflow grew substantial architecture and implementation before the newer seed
+TinyAssets grew substantial architecture and implementation before the newer seed
 surfaces existed. As a result, the repo had strong core truth files but weak
 navigation, weak idea intake, and a sparse Obsidian graph outside the largest
 planning documents.

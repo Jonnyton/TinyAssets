@@ -30,7 +30,7 @@ Related artifacts (same package):
 
 ## Problem
 
-When a chatbot (Claude.ai, future clients) hits a defect in the Workflow
+When a chatbot (Claude.ai, future clients) hits a defect in the TinyAssets
 MCP server mid-conversation, the current options are all bad:
 
 - Silently work around it and move on (most common) — the bug dies in chat
@@ -254,7 +254,7 @@ Three mechanisms, strongest first:
 
 For user-typed bugs, the discoverability path is: `wiki` tool's
 `action=write` doc-string lists `bugs` as a category; CLAUDE-style
-chatbots adopting Workflow already pattern-match "I want to report a
+chatbots adopting TinyAssets already pattern-match "I want to report a
 bug" → `wiki action=write category=bugs`.
 
 ## Decision 8 — cross-repo parity

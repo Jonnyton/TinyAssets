@@ -323,13 +323,13 @@ Aggregates across active daemons, comma-separated in menu order:
 
 ```
 Single default (fresh tray launch):
-  Workflow | Active: ollama-local | MCP: OK | Tunnel: OK
+  TinyAssets | Active: ollama-local | MCP: OK | Tunnel: OK
 
 Operator added claude-code on top of the default:
-  Workflow | Active: ollama-local, claude-code | MCP: OK | Tunnel: OK
+  TinyAssets | Active: ollama-local, claude-code | MCP: OK | Tunnel: OK
 
 No daemons running:
-  Workflow | Idle | MCP: OK | Tunnel: OK
+  TinyAssets | Idle | MCP: OK | Tunnel: OK
 ```
 
 Icon color rules unchanged except: **green** now means MCP + tunnel OK AND at

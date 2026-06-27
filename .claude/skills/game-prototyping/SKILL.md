@@ -9,7 +9,7 @@ description: Builds playable browser games and game-like interactive prototypes 
 
 Build playable browser games and game-like interactive prototypes without
 letting the agent improvise a whole engine from scratch. This skill adapts the
-useful parts of OpenGame's Game Skill into Workflow conventions: staged
+useful parts of OpenGame's Game Skill into TinyAssets conventions: staged
 context, template-first implementation, explicit asset contracts, archetype
 packs, and systematic runtime debugging.
 
@@ -31,7 +31,7 @@ tool is unavailable, state that plainly and pick a reversible fallback.
 Do not use this for ordinary dashboard/product UI unless it has real game-loop
 or game-asset behavior.
 
-## Workflow
+## TinyAssets
 
 ### 1. Classify The Archetype
 

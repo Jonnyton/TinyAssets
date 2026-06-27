@@ -1,4 +1,4 @@
-"""Report git worktree pickup state for multi-provider Workflow sessions.
+"""Report git worktree pickup state for multi-provider TinyAssets sessions.
 
 This complements scripts/claim_check.py. claim_check owns STATUS.md file
 collisions; this script owns persistent local directories created by

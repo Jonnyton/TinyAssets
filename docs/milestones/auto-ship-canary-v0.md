@@ -1,7 +1,7 @@
 # Milestone: Auto-Ship Canary v0
 
 Status: proposal
-Owner: Workflow community patch loop
+Owner: TinyAssets community patch loop
 Primary branch: `change_loop_v1` (`fd5c66b1d87d`)
 Proposed variant: `change_loop_v1_auto_keep_canary`
 Goal: land the first autonomously shipped patch through the community-driven patch loop, under a narrow, allowlisted, reversible canary envelope.
@@ -393,7 +393,7 @@ Expected patch content:
 ```markdown
 # First Loop Auto-Ship Canary
 
-This file is maintained by the Workflow community patch loop auto-ship canary lane.
+This file is maintained by the TinyAssets community patch loop auto-ship canary lane.
 
 Last successful canary:
 - request_id: <id>
@@ -576,7 +576,7 @@ The release gate may recommend auto-ship, but the shipper is the final enforceme
 
 ## 15. Open design questions
 
-- Should `auto_ship_packet_v0` live under Workflow runtime, scripts, or GitHub Actions?
+- Should `auto_ship_packet_v0` live under TinyAssets runtime, scripts, or GitHub Actions?
 - Should the first version open PRs only, with auto-merge delayed?
 - Should auto-ship evidence live in sqlite, committed JSON, wiki, or all three?
 - Should `change_loop_v1_auto_keep_canary` be a forked branch or a release-gate mode on the existing branch?

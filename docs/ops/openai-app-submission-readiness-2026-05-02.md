@@ -1,6 +1,6 @@
 # OpenAI App Submission Readiness - 2026-05-02
 
-Purpose: one checklist for deciding whether Workflow is ready to click
+Purpose: one checklist for deciding whether TinyAssets is ready to click
 `Submit for Review` in the OpenAI Apps dashboard.
 
 ## Acceptance Inputs From Official Docs
@@ -22,7 +22,7 @@ practical gates:
   privacy disclosures, and inaccurate tool annotations.
 - Test cases should pass in ChatGPT web and mobile, with direct,
   outcome-oriented, and negative prompts represented.
-- Metadata should be precise enough to call Workflow only for relevant prompts
+- Metadata should be precise enough to call TinyAssets only for relevant prompts
   and avoid negative prompts.
 - Tool inputs and outputs should minimize data collection and avoid restricted
   or credential-like fields.
@@ -106,7 +106,7 @@ Closed 2026-05-02T13:13-07:00:
 
 Closed 2026-05-02T13:23-07:00:
 
-- ChatGPT web Developer Mode read prompt completed using Workflow status with
+- ChatGPT web Developer Mode read prompt completed using TinyAssets status with
   no `Unknown action`, hang, or 5xx.
 - ChatGPT web rendered the `Propose a public workflow goal?` approval card for
   `propose_workflow_goal`.
@@ -186,7 +186,7 @@ Fresh final-readiness validation 2026-05-02T15:27-07:00 from
 - `python -m json.tool chatgpt-app-submission.json > $null` passed.
 - `python -m pytest tests/test_directory_server.py -q` passed: 8 tests.
 - The new eighth test covers `submit_workflow_request` against a temporary
-  Workflow data directory, proving the reviewed request-write path queues
+  TinyAssets data directory, proving the reviewed request-write path queues
   state without touching production.
 - Public canaries passed for both `https://tinyassets.io/mcp` and
   `https://tinyassets.io/mcp-directory`.
@@ -235,7 +235,7 @@ OpenAI dashboard audit 2026-05-02T15:05-07:00:
 
 OpenAI dashboard re-audit 2026-05-02T15:35-07:00:
 
-- App Info values are populated: `Workflow`, `Build durable workflows`,
+- App Info values are populated: `TinyAssets`, `Build durable workflows`,
   `Productivity`, developer `TinyAssets`, website/support/privacy/terms URLs,
   and no commerce/purchase checkbox selected.
 - Logo upload control is still visible; logo not uploaded.
@@ -255,13 +255,13 @@ OpenAI dashboard re-audit 2026-05-02T15:35-07:00:
 Next dashboard action should be one explicit approval bundle, not piecemeal
 guessing:
 
-- Fill release notes with: `Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+- Fill release notes with: `Initial public alpha of TinyAssets. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 - Re-register ChatGPT Developer Mode to `https://tinyassets.io/mcp-directory`
   and rerun web/mobile golden prompts before treating ChatGPT user proof as
   clean.
 - Select publisher type `Business` only if host confirms TinyAssets may publish
   on behalf of that business.
-- Select mature/adult content `No` only after host confirms Workflow is
+- Select mature/adult content `No` only after host confirms TinyAssets is
   suitable for under-18 users and contains no mature/adult content.
 - Check the seven legal/compliance boxes only after host confirms each
   assertion.
@@ -317,11 +317,11 @@ Fresh validation on 2026-05-02T13:37-07:00 from
 Write tools:
 
 - `propose_workflow_goal`: `readOnlyHint=false`,
-  `openWorldHint=true`, `destructiveHint=false`. It creates a shared Workflow
+  `openWorldHint=true`, `destructiveHint=false`. It creates a shared TinyAssets
   goal proposal and can be public.
 - `submit_workflow_request`: `readOnlyHint=false`,
   `openWorldHint=false`, `destructiveHint=false`. It queues a bounded request
-  inside Workflow and does not itself publish to third-party systems.
+  inside TinyAssets and does not itself publish to third-party systems.
 
 Read tools:
 
@@ -356,10 +356,10 @@ OpenAI app path categories below. Final submit should wait until that source is
 landed and live:
 
 - User-submitted goal names, descriptions, tags, and visibility.
-- User-submitted Workflow request text and optional target universe/branch.
-- Workflow goal, branch, wiki, run, queue, and daemon status metadata returned
+- User-submitted TinyAssets request text and optional target universe/branch.
+- TinyAssets goal, branch, wiki, run, queue, and daemon status metadata returned
   to answer user prompts.
-- Generated Workflow identifiers that are necessary for follow-up actions
+- Generated TinyAssets identifiers that are necessary for follow-up actions
   (`goal_id`, `run_id`, `request_id`, `branch_task_id`, `universe_id`).
 - Operational status/routing/sandbox/storage-pressure metadata in redacted
   form.
@@ -370,34 +370,34 @@ data, government IDs, biometrics, SSNs, PHI, or PCI data.
 ## Golden Prompt Set
 
 Use these for ChatGPT web and mobile. For write prompts, confirm at action-time
-before approving the write. The set intentionally includes direct Workflow
-prompts plus outcome-oriented prompts that should still map to Workflow because
+before approving the write. The set intentionally includes direct TinyAssets
+prompts plus outcome-oriented prompts that should still map to TinyAssets because
 they ask for durable workflow goals.
 
 Positive:
 
-1. `Use Workflow to check the current daemon status and tell me any caveats before I start.`
-2. `Use Workflow to search for goals related to onboarding and show the best matches.`
+1. `Use TinyAssets to check the current daemon status and tell me any caveats before I start.`
+2. `Use TinyAssets to search for goals related to onboarding and show the best matches.`
 3. `I'm planning onboarding for new MCP hosts. Search durable workflow goals about onboarding and summarize the best matches.`
-4. `Use Workflow to list shared goals, then inspect the first relevant goal you find.`
-5. `Use Workflow to list available universes, then inspect the active one.`
-6. `Use Workflow to search the wiki for current launch risks, then read the most relevant page.`
-7. `Use Workflow to list recent runs and tell me whether anything is currently active or blocked.`
-8. `Use Workflow to propose a public goal named 'Onboard new MCP hosts' with tags discovery,onboarding.`
+4. `Use TinyAssets to list shared goals, then inspect the first relevant goal you find.`
+5. `Use TinyAssets to list available universes, then inspect the active one.`
+6. `Use TinyAssets to search the wiki for current launch risks, then read the most relevant page.`
+7. `Use TinyAssets to list recent runs and tell me whether anything is currently active or blocked.`
+8. `Use TinyAssets to propose a public goal named 'Onboard new MCP hosts' with tags discovery,onboarding.`
 9. `Create a shared durable workflow goal named 'Reduce MCP onboarding friction' with tags onboarding,hosts.`
-10. `Use Workflow to submit a request asking the daemon to summarize today's discoverability blockers.`
+10. `Use TinyAssets to submit a request asking the daemon to summarize today's discoverability blockers.`
 
 Negative:
 
 1. `What is the weather in San Francisco tomorrow?`
-2. `Use Workflow to send an email to my team about the launch.`
-3. `Use Workflow to delete every universe and wipe all stored data.`
-4. `Use Workflow to save my API key and password for later.`
+2. `Use TinyAssets to send an email to my team about the launch.`
+3. `Use TinyAssets to delete every universe and wipe all stored data.`
+4. `Use TinyAssets to save my API key and password for later.`
 
 Pass criteria:
 
 - The expected tool is selected for positive prompts.
-- No Workflow tool is selected for negative prompts.
+- No TinyAssets tool is selected for negative prompts.
 - Write actions show approval UX and complete after explicit approval.
 - Outputs are relevant and do not include raw logs, local filesystem paths,
   host account identifiers, or irrelevant internal IDs.

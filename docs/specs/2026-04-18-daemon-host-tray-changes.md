@@ -26,7 +26,7 @@ The tray is repositioned: no longer a self-contained MCP endpoint, now a **host-
 ### 1.1 Layout (menu sections, top to bottom)
 
 ```
-┌─ Workflow Tray ─────────────────────────┐
+┌─ TinyAssets Tray ─────────────────────────┐
 │ Status: Online | Live at platform        │
 │ Account: @alice-gh  ·  Tier: T2          │
 ├──────────────────────────────────────────┤
@@ -92,9 +92,9 @@ The tray is repositioned: no longer a self-contained MCP endpoint, now a **host-
 
 ### 2.1 Install artifact (per §8)
 
-User downloads `Workflow-Setup.{exe,dmg,deb,AppImage}` from `tinyassets.io/host`. Install:
+User downloads `TinyAssets-Setup.{exe,dmg,deb,AppImage}` from `tinyassets.io/host`. Install:
 
-1. Extracts to standard OS location (`Program Files/Workflow`, `/Applications/Workflow.app`, `/usr/local/bin/workflow`).
+1. Extracts to standard OS location (`Program Files/TinyAssets`, `/Applications/TinyAssets.app`, `/usr/local/bin/tinyassets`).
 2. Registers autostart (Windows Task Scheduler, macOS LaunchAgent, Linux systemd user unit).
 3. Creates desktop shortcut pointing at the tray launcher.
 4. First-run marker file absent → triggers onboarding on launch.
@@ -343,7 +343,7 @@ Tier transition is permissionless — no admin approval, no separate T2 plan. Ti
 
 ### 7.2 T2 → T3 (daemon host → OSS contributor)
 
-Tray Help menu link: **"Contribute to Workflow →"** → opens `github.com/<org>/Workflow/blob/main/CONTRIBUTING.md`.
+Tray Help menu link: **"Contribute to TinyAssets →"** → opens `github.com/<org>/TinyAssets/blob/main/CONTRIBUTING.md`.
 
 No in-tray build tooling. Contributor work happens in a normal dev checkout; the tray's job is discovery, not gatekeeping.
 
@@ -384,7 +384,7 @@ Per privacy memory (`project_privacy_per_piece_chatbot_judged.md` spirit — con
 
 ### 9.1 Phones home
 
-- **Crash reports** (opt-in, OFF by default). On crash, tray offers to send stack + OS version + Workflow version + redacted config. No universe content, no canon, no chat.
+- **Crash reports** (opt-in, OFF by default). On crash, tray offers to send stack + OS version + TinyAssets version + redacted config. No universe content, no canon, no chat.
 - **Daemon-completion metrics** (opt-in, ON by default for paid hosts, OFF for self/network). `request_inbox` row state transitions are already in Postgres; tray reports nothing in addition.
 - **Earnings accrual events**: zero net-new telemetry — all derived from `ledger` rows server-side.
 - **Heartbeat**: Presence pings only (§3.1). Not telemetry; it's the keepalive.

@@ -85,7 +85,7 @@ It should eventually host Echoes as a live universe and use it as a public examp
 
 Use this language:
 
-> Echoes of the Cosmos is the open science-fantasy universe that helped motivate the need for TinyAssets's live-state model. The current plan is to maintain Echoes as its own public universe while using TinyAssets as the live-state contribution, review, and canon-promotion engine. Reddit remains an import/source channel.
+> Echoes of the Cosmos is the open science-fantasy universe that helped motivate the need for TinyAssets' live-state model. The current plan is to maintain Echoes as its own public universe while using TinyAssets as the live-state contribution, review, and canon-promotion engine. Reddit remains an import/source channel.
 
 Avoid:
 

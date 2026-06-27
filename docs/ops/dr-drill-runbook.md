@@ -35,13 +35,13 @@ Inputs:
 
 **Pass:** `mcp_probe.py status` exits 0 (MCP initialize + session + `get_status` tool call succeeds).
 
-Workflow on pass:
+TinyAssets on pass:
 - Appends a timestamped entry to `docs/ops/dr-drill-log.md` + commits.
 - Destroys the drill Droplet.
 
 **Fail:** `mcp_probe.py` exits non-zero.
 
-Workflow on fail:
+TinyAssets on fail:
 - Opens a `dr-failed` GitHub issue with the probe output + Droplet IP.
 - Leaves the drill Droplet **running** for inspection (SSH directly with the deploy key).
 - Does NOT destroy unless `destroy_on_failure=true`.

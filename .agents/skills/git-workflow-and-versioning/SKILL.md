@@ -58,7 +58,7 @@ prefer native tools, then fall back to git. Never fight the harness.**
    pip install / go mod download), then run the test suite to confirm a clean
    baseline. Tests fail → report and ask before proceeding.
 
-### Workflow Project Worktree Discipline
+### TinyAssets Project Worktree Discipline
 
 Canonical full procedure: `docs/reference/worktree-discipline.md` (`AGENTS.md`
 keeps the inline invariants + a pointer). This section is the on-demand summary.

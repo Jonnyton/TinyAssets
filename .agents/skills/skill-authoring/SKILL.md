@@ -1,6 +1,6 @@
 ---
 name: skill-authoring
-description: Creates or updates project-local agent skills with Workflow conventions. Use when adding a new skill, merging overlapping skills, tuning trigger descriptions, optimizing a skill for discovery, testing a skill, or updating provider mirrors.
+description: Creates or updates project-local agent skills with TinyAssets conventions. Use when adding a new skill, merging overlapping skills, tuning trigger descriptions, optimizing a skill for discovery, testing a skill, or updating provider mirrors.
 ---
 
 # Skill Authoring
@@ -25,7 +25,7 @@ adapt the ideas, not the file layouts.
   license, and what was intentionally not imported.
 - Don't add `README.md`/`CHANGELOG.md`/`CONTEXT.md` unless the repo adopts them.
 
-## Workflow
+## TinyAssets
 
 1. **Audit overlap first.** Decide: new specialist skill, extension to an
    existing one, or a router concern for `using-agent-skills`. Keep routers thin.

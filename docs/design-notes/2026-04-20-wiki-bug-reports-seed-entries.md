@@ -20,7 +20,7 @@ search for and learn from them.
 
 **Usage.** After the patches in
 `2026-04-20-wiki-bug-reports-patches.md` land, dev (or a chatbot
-connected to the Workflow server) runs the two tool invocations
+connected to the TinyAssets server) runs the two tool invocations
 below. The server assigns the BUG-NNN ids in invocation order, so run
 BUG-001 first, then BUG-002. The expected full-file output is shown
 for each so the landing is verifiable byte-for-byte.
