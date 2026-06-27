@@ -1726,7 +1726,7 @@ engine is domain-agnostic.</p>
     → URL: this page's URL</li>
 <li><strong>ChatGPT (Apps SDK)</strong>: Connector URL: this page's URL</li>
 <li><strong>Cursor</strong>: <code>settings.json</code> →
-    <code>mcpServers</code> → <code>workflow</code> → <code>url</code></li>
+    <code>mcpServers</code> → <code>tinyassets</code> → <code>url</code></li>
 <li><strong>Cowork</strong>: Connectors → URL: this page's URL</li>
 </ul>
 

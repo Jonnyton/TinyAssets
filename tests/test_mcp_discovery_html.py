@@ -34,6 +34,11 @@ def test_browser_get_mcp_returns_discovery_html(client):
     body = response.text
     assert "TinyAssets MCP Server" in body
     assert "MCP" in body  # at least mentions MCP
+    assert "https://github.com/Jonnyton/TinyAssets" in body
+    assert "<code>tinyassets</code>" in body
+    assert "Workflow MCP Server" not in body
+    assert "https://github.com/Jonnyton/Workflow" not in body
+    assert "<code>workflow</code>" not in body
 
 
 def test_browser_get_mcp_directory_returns_discovery_html(client):
@@ -50,8 +55,10 @@ def test_default_get_mcp_returns_discovery_json(client):
     assert response.status_code == 200
     assert "application/json" in response.headers["content-type"]
     payload = response.json()
+    assert payload["name"] == "tinyassets"
     assert payload["type"] == "mcp_server_endpoint"
     assert payload["transport"] == "streamable-http"
+    assert payload["related"]["source"] == "https://github.com/Jonnyton/TinyAssets"
     assert "text/event-stream" in payload["how_to_connect"]["client_accept_header"]
 
 
@@ -62,7 +69,11 @@ def test_json_get_mcp_directory_returns_discovery_json(client):
         headers={"Accept": "application/json"},
     )
     assert response.status_code == 200
-    assert response.json()["related"]["directory_endpoint"].endswith("/mcp-directory")
+    payload = response.json()
+    assert payload["name"] == "tinyassets"
+    assert payload["related"]["source"] == "https://github.com/Jonnyton/TinyAssets"
+    assert payload["related"]["mcp_endpoint"] == "https://tinyassets.io/mcp"
+    assert payload["connect"]["catalog_path"].startswith("/mcp-directory")
 
 
 def test_head_mcp_returns_discovery_headers(client):

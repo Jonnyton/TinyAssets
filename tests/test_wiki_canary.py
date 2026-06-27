@@ -55,7 +55,7 @@ def _init_resp(sid: str = "sess-wiki") -> tuple[dict, str]:
     return (
         {"jsonrpc": "2.0", "id": 1, "result": {
             "protocolVersion": "2024-11-05",
-            "serverInfo": {"name": "workflow", "version": "1.0"},
+            "serverInfo": {"name": "tinyassets", "version": "1.0"},
             "capabilities": {},
         }},
         sid,

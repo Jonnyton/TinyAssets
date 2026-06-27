@@ -206,7 +206,7 @@ export default function HostClient() {
           <p className="run__lede">
             Python 3.11+. Clone, install in editable mode, and you have a local
             daemon to summon. These commands are the repo&apos;s own quick-start — the
-            <code>workflow</code> tray and <code>tinyassets-mcp</code> server are the
+            <code>tinyassets</code> tray and <code>tinyassets-mcp</code> server are the
             documented entry points, not invented for this page.
           </p>
 
@@ -237,7 +237,7 @@ export default function HostClient() {
             <div className="run__note">
               <strong>The Windows tray app ships from source today.</strong>
               There&apos;s no packaged installer in releases yet, so the honest path is
-              the clone above — running <code>workflow</code> opens the same tray an
+              the clone above — running <code>tinyassets</code> opens the same tray an
               installer eventually would. macOS and Linux support is in progress
               (the platform code is cross-platform; the tray is Windows-first).
               <a href={GH_REPO} target="_blank" rel="noreferrer">Read the source on GitHub ↗</a>
