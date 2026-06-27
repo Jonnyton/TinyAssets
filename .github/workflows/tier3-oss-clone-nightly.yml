@@ -43,7 +43,7 @@ jobs:
         working-directory: /tmp/tinyassets-fresh
         run: |
           source .venv/bin/activate
-          python -c "import tinyassets; print('workflow imported from', tinyassets.__file__ if hasattr(workflow, '__file__') else '<namespace>')"
+          python -c "import tinyassets; print('tinyassets imported from', tinyassets.__file__ if hasattr(tinyassets, '__file__') else '<namespace>')"
 
       - name: Structural smoke script
         working-directory: /tmp/tinyassets-fresh

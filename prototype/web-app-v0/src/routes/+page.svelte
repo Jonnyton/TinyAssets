@@ -4,7 +4,7 @@
 </script>
 
 <svelte:head>
-  <title>Workflow — Summon the daemon</title>
+  <title>TinyAssets — Summon the daemon</title>
   <meta name="description" content="{t.hero_subtitle}" />
   <meta property="og:title" content="{t.hero_title}" />
   <meta property="og:description" content="{t.hero_subtitle}" />

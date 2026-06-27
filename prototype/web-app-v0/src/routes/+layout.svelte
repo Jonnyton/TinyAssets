@@ -4,7 +4,7 @@
 
 <header>
   <nav>
-    <a href="/">Workflow</a>
+    <a href="/">TinyAssets</a>
     <a href="/catalog">Catalog</a>
     <a href="/connect">Connect</a>
     <a href="/host">Host</a>

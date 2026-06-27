@@ -106,7 +106,7 @@ The `ta` token is multi-chain — three live deploys.
 - "Market Cap vs NAV" — explanation of net asset value
 - "How price is kept inline with NAV" — arbitrage explanation
 
-→ Most of this gets compressed into a single paragraph in the new `/economy` page + linked to a Workflow Economy Paper if/when it lands.
+→ Most of this gets compressed into a single paragraph in the new `/economy` page + linked to a TinyAssets Economy Paper if/when it lands.
 
 ## Marketing surfaces (carry over)
 - **Subscribe** form (email signup, free)
@@ -114,7 +114,7 @@ The `ta` token is multi-chain — three live deploys.
 - **Contact form**: Name · Email* · Message
 - **Tiny Assets chat widget** (GoDaddy bot — replace with our own contact + social links)
 - **TrustedSite** badge (low priority — security trust seal)
-- **Bookings** / **My Account** chrome (GoDaddy commerce features — drop entirely, not relevant to Workflow)
+- **Bookings** / **My Account** chrome (GoDaddy commerce features — drop entirely, not relevant to TinyAssets)
 
 ## Drop entirely from new site
 - "Sign In / Create Account / Bookings / My Account / Signed in as: filler@godaddy.com" — leftover GoDaddy chrome from a Bookings setup that was never used

@@ -1,6 +1,6 @@
 <!--
   Button — primary / secondary / ghost / link variants.
-  Ported from design-source/ui_kits/workflow-web/Primitives.jsx
+  Ported from design-source/ui_kits/tinyassets-web/Primitives.jsx
 -->
 <script lang="ts">
   type Variant = 'primary' | 'secondary' | 'ghost' | 'link';

@@ -1,6 +1,6 @@
 # Legacy Branch Plan
 
-Purpose: publish Fantasy Writer and Fantasy Author as older versions / ancestor systems of Workflow without polluting `Workflow/main`.
+Purpose: publish Fantasy Writer and Fantasy Author as older versions / ancestor systems of TinyAssets without polluting `TinyAssets/main`.
 
 ## Target Branches
 
@@ -9,15 +9,15 @@ Purpose: publish Fantasy Writer and Fantasy Author as older versions / ancestor 
 
 Each branch should have a root README that starts with:
 
-> This branch preserves an archived ancestor of Workflow. It is not the current product. Workflow evolved from this system after the orchestration, memory, evaluation, and agent-workflow pieces became more general than fiction writing.
+> This branch preserves an archived ancestor of TinyAssets. It is not the current product. TinyAssets evolved from this system after the orchestration, memory, evaluation, and agent-workflow pieces became more general than fiction writing.
 
 ## Why Branches Instead Of Main
 
-Branches make the relationship visible inside the `Workflow` GitHub repo while keeping the default branch focused.
+Branches make the relationship visible inside the `TinyAssets` GitHub repo while keeping the default branch focused.
 
 This gives recruiters two levels:
 
-- quick path: inspect `Workflow/main`
+- quick path: inspect `TinyAssets/main`
 - deeper path: follow `docs/project-lineage.md` into legacy branches and see the real evolution
 
 ## Required Cleanup Before Pushing
@@ -72,4 +72,4 @@ For preserving full history safely, prefer a temporary clone plus a proper secre
 
 ## Fallback
 
-If history cleanup is too risky, create a separate `fantasy-agent-workflow-lab` repo with curated snapshots and link it from `Workflow/docs/project-lineage.md`.
+If history cleanup is too risky, create a separate `fantasy-agent-workflow-lab` repo with curated snapshots and link it from `TinyAssets/docs/project-lineage.md`.

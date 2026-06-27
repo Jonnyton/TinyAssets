@@ -1,12 +1,12 @@
 # Project Lineage
 
-Workflow is the current project. It grew out of a sequence of earlier systems that started with AI-assisted long-form fiction and gradually became a general engine for inspectable, branchable AI work.
+TinyAssets is the current project. It grew out of a sequence of earlier systems that started with AI-assisted long-form fiction and gradually became a general engine for inspectable, branchable AI work.
 
 ## Short Version
 
-Fantasy Author and Fantasy Writer were the first hard testbed. They used story generation because long-form fiction forces an AI system to deal with continuity, memory, evaluation, revision, source truth, and long-running state. As those pieces became more general than fiction, they were extracted into Workflow.
+Fantasy Author and Fantasy Writer were the first hard testbed. They used story generation because long-form fiction forces an AI system to deal with continuity, memory, evaluation, revision, source truth, and long-running state. As those pieces became more general than fiction, they were extracted into TinyAssets.
 
-Workflow is the generalized system: live MCP tooling, branchable workflows, wiki/community feedback, gates, patch planning, and agent-team execution patterns.
+TinyAssets is the generalized system: live MCP tooling, branchable workflows, wiki/community feedback, gates, patch planning, and agent-team execution patterns.
 
 ## Timeline
 
@@ -29,7 +29,7 @@ Recommended public form:
 
 ### 0.5. Echoes Of The Cosmos
 
-Echoes of the Cosmos is an open science-fantasy universe project. It has an early Reddit surface and local canon material, and it should eventually become a Workflow-hosted community universe.
+Echoes of the Cosmos is an open science-fantasy universe project. It has an early Reddit surface and local canon material, and it should eventually become a TinyAssets-hosted community universe.
 
 What carried forward:
 
@@ -43,7 +43,7 @@ Recommended public form:
 
 - standalone public universe repo
 - domain-world entry in the portfolio graph
-- future clean Workflow universe, not attached to an old test universe
+- future clean TinyAssets universe, not attached to an old test universe
 - honest wording that the current community surface is early/thin and being refactored
 
 ### 1. Recursive Science Fantasy
@@ -79,7 +79,7 @@ Local evidence:
 
 Recommended public form:
 
-- sanitized `Workflow` branch: `legacy/fantasy-writer`
+- sanitized `TinyAssets` branch: `legacy/fantasy-writer`
 - branch README should mark it as an archived ancestor, not the current product
 
 ### 3. Fantasy Author
@@ -105,10 +105,10 @@ Local evidence:
 Recommended public form:
 
 - cleaned snapshot branch: `legacy/fantasy-author`
-- branch README should state that Workflow was extracted/generalized from this system
+- branch README should state that TinyAssets was extracted/generalized from this system
 - full raw history should not be published unless history cleanup passes, because local scan found credential material in historical status commits
 
-### 4. Workflow
+### 4. TinyAssets
 
 Current generalized project.
 
@@ -129,7 +129,7 @@ What is still under construction:
 
 ## Recommended GitHub Shape
 
-Keep `Workflow/main` focused on the current product.
+Keep `TinyAssets/main` focused on the current product.
 
 Add lineage links:
 
@@ -143,10 +143,10 @@ Avoid merging old project folders directly into `main`. The old systems are valu
 
 Use:
 
-> Workflow evolved from earlier Fantasy Author and Fantasy Writer systems. Those projects began as long-form AI writing daemons and became experiments in durable state, retrieval, branchable agent workflows, evaluation gates, and write-back learning. Workflow is the generalized engine extracted from that work.
+> TinyAssets evolved from earlier Fantasy Author and Fantasy Writer systems. Those projects began as long-form AI writing daemons and became experiments in durable state, retrieval, branchable agent workflows, evaluation gates, and write-back learning. TinyAssets is the generalized engine extracted from that work.
 
 Avoid:
 
-> Workflow has always been one continuous codebase.
+> TinyAssets has always been one continuous codebase.
 
 The relationship is real, but it is a lineage/extraction relationship, not one uninterrupted repository from day one.

@@ -20,9 +20,9 @@ def test_loop_identity_prefers_project_default_soul_daemon(
     universe_path.mkdir()
     daemon = daemon_registry.create_daemon(
         tmp_path,
-        display_name="Workflow Developer Daemon",
+        display_name="TinyAssets Developer Daemon",
         created_by="host",
-        soul_text="Work hard on Workflow uptime and verify every change.",
+        soul_text="Work hard on TinyAssets uptime and verify every change.",
         domain_claims=["developer", "workflow-platform", "loop-runner"],
         metadata={"project_loop_default": True},
     )
@@ -37,7 +37,7 @@ def test_loop_identity_prefers_project_default_soul_daemon(
         "workflow-platform",
         "loop-runner",
     ]
-    assert "Work hard on Workflow uptime" in context["soul_text"]
+    assert "Work hard on TinyAssets uptime" in context["soul_text"]
     assert "Daemon Wiki Schema" in context["daemon_wiki_context"]
 
 
@@ -63,7 +63,7 @@ def test_loop_signal_records_into_soul_daemon_wiki(
     universe_path.mkdir()
     daemon = daemon_registry.create_daemon(
         tmp_path,
-        display_name="Workflow Developer Daemon",
+        display_name="TinyAssets Developer Daemon",
         created_by="host",
         soul_text="Learn from loop outcomes without changing the soul casually.",
         metadata={"project_loop_default": True},

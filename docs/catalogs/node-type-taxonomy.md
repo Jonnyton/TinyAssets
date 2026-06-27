@@ -196,7 +196,7 @@ Does the node compose multiple other nodes?
 
 ## 5. Example classifications (v0 sample nodes applied)
 
-Cross-ref to `prototype/workflow-catalog-v0/catalog/nodes/`:
+Cross-ref to `prototype/tinyassets-catalog-v0/catalog/nodes/`:
 
 | Sample node | Type | Effect class | Resource profile | Reliability tier |
 |---|---|---|---|---|
@@ -269,5 +269,5 @@ CREATE INDEX nodes_type_domain ON public.nodes (node_type, domain);
 
 - Schema spec #25 §1.2 — `nodes` table this extends.
 - Privacy catalog — `docs/catalogs/privacy-principles-and-data-leak-taxonomy.md` complementary catalog.
-- Sample nodes — `prototype/workflow-catalog-v0/catalog/nodes/` for worked examples.
+- Sample nodes — `prototype/tinyassets-catalog-v0/catalog/nodes/` for worked examples.
 - Memory — `project_convergent_design_commons.md` for Wikipedia-scale framing.

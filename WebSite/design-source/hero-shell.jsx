@@ -1,8 +1,8 @@
 // hero-shell.jsx — Top chrome: dark ink nav bar + parchment-page hero.
-// The page is structured as a "community handbook" — chrome is dark Workflow-brand,
+// The page is structured as a "community handbook" — chrome is dark TinyAssets-brand,
 // the body is the parchment notebook of real workflows.
 
-function HeroShell({ activeWorkflow, onWorkflowChange }) {
+function HeroShell({ activeTinyAssets, onTinyAssetsChange }) {
   return (
     <header style={{
       background: "var(--ink-900)",
@@ -24,7 +24,7 @@ function HeroShell({ activeWorkflow, onWorkflowChange }) {
             fontFamily: "var(--font-display)", fontSize: 18,
             fontWeight: 500, color: "var(--fg-1)",
             letterSpacing: "-0.01em",
-          }}>Workflow</span>
+          }}>TinyAssets</span>
           <span style={{
             fontFamily: "var(--font-mono)", fontSize: 10,
             color: "var(--fg-3)", marginLeft: 4,
@@ -87,7 +87,7 @@ function HeroShell({ activeWorkflow, onWorkflowChange }) {
           </div>
         </div>
 
-        {/* Workflow switcher card — the "table of contents" */}
+        {/* TinyAssets switcher card — the "table of contents" */}
         <div style={{
           background: "rgba(255,255,255,0.03)",
           border: "1px solid var(--border-1)",
@@ -104,20 +104,20 @@ function HeroShell({ activeWorkflow, onWorkflowChange }) {
             { id: "book", label: "Book publishing pipeline", meta: "Plan → Draft → Publish · @scribe-collective" },
           ].map(w => (
             <button key={w.id}
-                    onClick={() => onWorkflowChange(w.id)}
+                    onClick={() => onTinyAssetsChange(w.id)}
                     style={{
                       display: "block", width: "100%",
                       textAlign: "left", padding: "14px 16px", marginBottom: 8,
-                      background: activeWorkflow === w.id ? "rgba(233,69,96,0.12)" : "transparent",
-                      border: `1px solid ${activeWorkflow === w.id ? "rgba(233,69,96,0.4)" : "var(--border-1)"}`,
+                      background: activeTinyAssets === w.id ? "rgba(233,69,96,0.12)" : "transparent",
+                      border: `1px solid ${activeTinyAssets === w.id ? "rgba(233,69,96,0.4)" : "var(--border-1)"}`,
                       borderRadius: 6,
                       cursor: "pointer",
                       transition: "all 200ms cubic-bezier(0.22,1,0.36,1)",
-                      boxShadow: activeWorkflow === w.id ? "var(--glow-ember)" : "none",
+                      boxShadow: activeTinyAssets === w.id ? "var(--glow-ember)" : "none",
                     }}>
               <div style={{
                 fontFamily: "var(--font-sans)", fontSize: 15, fontWeight: 500,
-                color: activeWorkflow === w.id ? "var(--ember-600)" : "var(--fg-1)",
+                color: activeTinyAssets === w.id ? "var(--ember-600)" : "var(--fg-1)",
                 marginBottom: 3,
               }}>{w.label}</div>
               <div style={{

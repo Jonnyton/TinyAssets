@@ -28,7 +28,7 @@ Every BranchDefinition maps to one primary integration pattern. Secondary patter
 
 The simplest composition: N → N+1 → N+2 → ... → end. No branching, no loops.
 
-**Sample from `prototype/workflow-catalog-v0/catalog/branches/`:** `research-paper-pipeline.yaml` — literature_gap_mapper → hypothesis_generator → methodology_selector → citation_formatter → END.
+**Sample from `prototype/tinyassets-catalog-v0/catalog/branches/`:** `research-paper-pipeline.yaml` — literature_gap_mapper → hypothesis_generator → methodology_selector → citation_formatter → END.
 
 **When to use:** every step strictly depends on the previous one's output; no need for parallelism; no conditional routing.
 
@@ -264,7 +264,7 @@ Branch-level `discover_branches` (dual of `discover_nodes` for composite definit
 
 ## 5. Example classifications (v0 sample branches applied)
 
-From `prototype/workflow-catalog-v0/catalog/branches/`:
+From `prototype/tinyassets-catalog-v0/catalog/branches/`:
 
 | Branch | Primary pattern | Secondary | Why |
 |---|---|---|---|
@@ -292,5 +292,5 @@ From `prototype/workflow-catalog-v0/catalog/branches/`:
 - Node-taxonomy catalog — `docs/catalogs/node-type-taxonomy.md` (§2 types consumed by patterns here).
 - Privacy catalog — `docs/catalogs/privacy-principles-and-data-leak-taxonomy.md` §7 (system-point taxonomy includes daemon execution + connector-push which most patterns touch).
 - Spec #25 `nodes` + `branches` schema — the basis for the `primary_pattern` ALTER.
-- Sample branches — `prototype/workflow-catalog-v0/catalog/branches/` for worked examples.
+- Sample branches — `prototype/tinyassets-catalog-v0/catalog/branches/` for worked examples.
 - Memory `project_convergent_design_commons.md` — cross-domain structural-match framing.

@@ -26,9 +26,9 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **Co-maintainer has verified access to `Workflow-Prod` vault**.
 - [ ] **Succession lead + alternate named** (`SUCCESSION.md §2.2`).
 - [ ] **Bills-paying party + fallback documented** (`SUCCESSION.md §2.3`).
-- [ ] **GitHub org created** + `Workflow/` + `Workflow-catalog/` transferred + ≥2 org admins.
+- [ ] **GitHub org created** + `TinyAssets/` + `TinyAssets-catalog/` transferred + ≥2 org admins.
 - [ ] **GitHub OAuth app registered** + client ID/secret in vault.
-- [ ] **`workflow-catalog-bot` GitHub App installed** with scoped permissions per spec #32 §7.
+- [ ] **`tinyassets-catalog-bot` GitHub App installed** with scoped permissions per spec #32 §7.
 - [ ] **`ops@tinyassets.io` + `security@tinyassets.io` aliases routed** to admin-pool (ForwardEmail.net or Google Workspace — §5.3 flag).
 - [ ] **GitHub branch protection on `main`** for both repos: PR + ≥1 admin approval.
 
@@ -62,7 +62,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 
 ## F. Moderation
 
-- [ ] **`docs/moderation_rubric.md` v1.0 merged** into `Workflow/` main branch.
+- [ ] **`docs/moderation_rubric.md` v1.0 merged** into `TinyAssets/` main branch.
 - [ ] **Admin pool includes ≥2 `host_admin` mod_role rows** in production Supabase (not just in runbook — in the database).
 - [ ] **≥1 tier-3 volunteer mod recruited** + accepted rubric + granted `volunteer` mod_role.
 - [ ] **All 4 moderation tables** (flags/decisions/appeals + users ALTER) migrated.
@@ -71,9 +71,9 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 
 ## G. Content + SEO
 
-- [ ] **`Workflow-catalog/` repo** has LICENSE (CC0-1.0) + CONTRIBUTING.md (DCO) + README.
+- [ ] **`TinyAssets-catalog/` repo** has LICENSE (CC0-1.0) + CONTRIBUTING.md (DCO) + README.
 - [ ] **≥10 seed nodes** live in catalog across ≥3 domains (research, fantasy, accounting, or similar) — not just example scaffolds.
-- [ ] **Export sync pipeline** verified end-to-end: edit public node in Postgres → within 10 min commit appears in `Workflow-catalog/` by bot.
+- [ ] **Export sync pipeline** verified end-to-end: edit public node in Postgres → within 10 min commit appears in `TinyAssets-catalog/` by bot.
 - [ ] **PR-ingest round-trip verified**: fork catalog → edit YAML → PR → validator green → merge → Postgres reflects change.
 - [ ] **Sitemap.xml regenerates** on catalog-export deploy.
 - [ ] **Landing page LCP ≤2.5s on mobile 3G** (Lighthouse pass).
@@ -84,7 +84,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **Windows EV code-signing cert procured** (~$300/yr).
 - [ ] **macOS Developer ID procured** ($99/yr, Apple Developer Program).
 - [ ] **Linux GPG signing key + .deb repo** set up.
-- [ ] **Installers for all 3 OSes build green in CI** on every `Workflow/` merge to main.
+- [ ] **Installers for all 3 OSes build green in CI** on every `TinyAssets/` merge to main.
 - [ ] **Installer links on `tinyassets.io/host` OS-detect correctly**.
 - [ ] **First-run wizard completes in <5 min cold** (measured on at least 1 platform).
 - [ ] **Tray singleton holds** — double-click shortcut 3× → exactly 1 tray process.

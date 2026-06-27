@@ -4,12 +4,12 @@
 - **Stack:** SvelteKit per spec (`docs/specs/2026-04-18-web-app-landing-and-catalog.md` §1)
 - **Adapter:** `adapter-static` for Phase 1 (just landing), upgrade to dual `adapter-static + adapter-node` in Phase 2
 - **Hosting target:** Cloudflare → GitHub Pages (primary) + GoDaddy cPanel SFTP (fast fallback). Both per spec §3.1.
-- **Lead positioning:** Workflow product (per host); token/Tiny Assets mentioned as the contributor reward layer, not the headline.
+- **Lead positioning:** TinyAssets product (per host); token/Tiny Assets mentioned as the contributor reward layer, not the headline.
 - **Legacy crypto pages:** Drop from main nav. Contract address + supply + token mechanics get a home (see § Contract Address Home below).
 
 ## Phase 1 scope (this push)
 Ship just three SSG surfaces:
-- **`/`** — Hero ("Summon the daemon"), 3-CTA (Connect / Host / Contribute), Live Workflow Surface section, How-it-works, Token & Rewards strip, Contact, Footer
+- **`/`** — Hero ("Summon the daemon"), 3-CTA (Connect / Host / Contribute), Live TinyAssets Surface section, How-it-works, Token & Rewards strip, Contact, Footer
 - **`/connect`** — copy-MCP-URL widget, optional GitHub OAuth (deferred to Phase 2)
 - **`/legal`** — placeholder page with license info (CC0 content / MIT platform), ToS + privacy stubs
 
@@ -60,7 +60,7 @@ WebSite/
     │   │   ├── components/
     │   │   │   ├── Hero.svelte
     │   │   │   ├── TierCTAs.svelte
-    │   │   │   ├── WorkflowShowcase.svelte
+    │   │   │   ├── TinyAssetsShowcase.svelte
     │   │   │   ├── HowItWorks.svelte
     │   │   │   ├── TokenStrip.svelte
     │   │   │   ├── ContactForm.svelte
@@ -100,7 +100,7 @@ I can check #1 and #2 via shell. #3 requires you.
 - [ ] SvelteKit project scaffolded in `site/`
 - [ ] Hero adapted from Claude design
 - [ ] 3-CTA tier flow built
-- [ ] Workflow showcase ported (parchment diagrams, at least 1 workflow)
+- [ ] TinyAssets showcase ported (parchment diagrams, at least 1 workflow)
 - [ ] Token strip with contract pill
 - [ ] Contact form (mailto fallback for Phase 1; real backend Phase 2)
 - [ ] /connect page with copy-URL widget

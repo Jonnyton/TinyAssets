@@ -15,7 +15,7 @@ physical hex board game idea
   -> Hex / HexConquest digital prototypes
   -> Echoes of the Cosmos mythology and world systems
   -> Fantasy Writer / Fantasy Author source-canon and writing systems
-  -> Workflow live-state universe/workflow engine
+  -> TinyAssets live-state universe/workflow engine
 ```
 
 ## Hex
@@ -49,15 +49,15 @@ Original public surface:
 Future public role:
 
 - its own public universe repo
-- a clean universe that lives inside Workflow as the current best contribution/live-state path
-- example of how community worldbuilding can happen through both Reddit and Workflow live state
+- a clean universe that lives inside TinyAssets as the current best contribution/live-state path
+- example of how community worldbuilding can happen through both Reddit and TinyAssets live state
 - concrete demonstration of community engagement, canon updates, bug/patch-style feedback, and contributor participation
 
 Important framing:
 
 - Current Reddit/community surface is thin and early.
 - Do not overclaim current participation.
-- Present it as an older community-world project being refactored into its own public canon repo plus a Workflow-hosted live universe.
+- Present it as an older community-world project being refactored into its own public canon repo plus a TinyAssets-hosted live universe.
 
 ## Fantasy Writer / Fantasy Author
 
@@ -68,9 +68,9 @@ Portfolio role:
 - ancestor systems that forced the architecture to handle source truth, canon, retrieval, evaluation, and long-running state
 - bridge between creative universe management and general AI workflow orchestration
 
-## Workflow
+## TinyAssets
 
-Workflow is the current generalized engine.
+TinyAssets is the current generalized engine.
 
 It should eventually host Echoes as a live universe and use it as a public example of:
 
@@ -85,10 +85,10 @@ It should eventually host Echoes as a live universe and use it as a public examp
 
 Use this language:
 
-> Echoes of the Cosmos is the open science-fantasy universe that helped motivate the need for Workflow's live-state model. The current plan is to maintain Echoes as its own public universe while using Workflow as the live-state contribution, review, and canon-promotion engine. Reddit remains an import/source channel.
+> Echoes of the Cosmos is the open science-fantasy universe that helped motivate the need for TinyAssets's live-state model. The current plan is to maintain Echoes as its own public universe while using TinyAssets as the live-state contribution, review, and canon-promotion engine. Reddit remains an import/source channel.
 
 Avoid:
 
 > Echoes already has a large active community.
 
-The accurate claim is that the concept and early surfaces exist, and that the community loop is being consolidated into Workflow.
+The accurate claim is that the concept and early surfaces exist, and that the community loop is being consolidated into TinyAssets.

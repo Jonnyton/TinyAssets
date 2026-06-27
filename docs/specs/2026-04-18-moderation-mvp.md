@@ -21,7 +21,7 @@ Track F is the commons' immune system. Community-flagged, volunteer-triaged, hos
 
 1. **Users flag. Volunteer mods triage. Admin-pool backstops.** No platform-driven takedowns of legal content.
 2. **Auto-soft-hide at threshold, not at single report.** A single bad actor can't take anything down.
-3. **Rubric is contributor-owned.** Lives in `Workflow/` repo at `docs/moderation_rubric.md`. Editable via PR. Not hardcoded.
+3. **Rubric is contributor-owned.** Lives in `TinyAssets/` repo at `docs/moderation_rubric.md`. Editable via PR. Not hardcoded.
 4. **Economic disincentive first, human labor second.** Paid-market 1% fee + min-bid + account-age gates absorb most spam without human review.
 5. **Appeal is a right, not a favor.** Artifact owner can always escalate to the admin pool.
 6. **Mod bias is real.** Two separate mods must independently concur before hard-delete. Soft-hide needs one.
@@ -335,7 +335,7 @@ Anyone with `account_age_days >= 2`. Prevents drive-by sybil flags.
 |---|---|---|
 | T1 chatbot | `none` | Upgrade to T2 then earn rep (see below). |
 | T2 daemon host | `none` until earned | **Threshold metric (see §5.3)**. |
-| T3 contributor | `volunteer` by default | One-time acceptance of CONTRIBUTING.md + `moderation_rubric.md`. Signals via PR comment or the `/account` UI. Tier-3 status comes from having a merged PR to `Workflow/`. |
+| T3 contributor | `volunteer` by default | One-time acceptance of CONTRIBUTING.md + `moderation_rubric.md`. Signals via PR comment or the `/account` UI. Tier-3 status comes from having a merged PR to `TinyAssets/`. |
 | Admin pool (≥2 operators) | `host_admin` | Launch seed: host (Jonathan) + at least one tier-3 co-maintainer recruited pre-launch (per succession memory). New admins added via existing-admin-pool 2-of-N approval. Not permanent; can be rotated. |
 
 ### 5.3 Tier-2 → volunteer mod earn threshold (pick one)
@@ -373,7 +373,7 @@ Rolling metric: `(upheld flags filed by this user) / (resolved flags filed by th
 
 ## 6. Rubric first-draft
 
-`docs/moderation_rubric.md` lives in `Workflow/` repo, editable via PR. First-draft content:
+`docs/moderation_rubric.md` lives in `TinyAssets/` repo, editable via PR. First-draft content:
 
 ```markdown
 # Moderation Rubric v1.0
@@ -528,7 +528,7 @@ Track F is done when:
 
 1. 4 tables (flags/decisions/appeals + users ALTER + nodes status CHECK) migrate cleanly.
 2. 6 RPCs land + ruff-clean + test-covered.
-3. `docs/moderation_rubric.md` merged into `Workflow/` repo with CONTRIBUTING note pointing at the PR-review-for-updates process.
+3. `docs/moderation_rubric.md` merged into `TinyAssets/` repo with CONTRIBUTING note pointing at the PR-review-for-updates process.
 4. Smoke test: flag → auto-hide at N=3 → mod dismisses → artifact un-hidden. Round-trip green.
 5. Smoke test: flag → mod upheld_hard_delete → 2nd mod concurs → artifact deleted. Owner appeal routes to host-admin queue.
 6. Mod-recusal test: mod cannot resolve flag on their own artifact (RPC returns exception).

@@ -24,7 +24,7 @@ def _packet(**overrides):
         "sink": EXTERNAL_WRITE_SINK_TWITTER_POST,
         "destination": "x:self",
         "payload": {
-            "text": "Workflow substrate can now post through twitter_post.",
+            "text": "TinyAssets substrate can now post through twitter_post.",
             "reply_to_tweet_id": "",
             "quote_tweet_id": "",
         },
@@ -69,7 +69,7 @@ def test_twitter_post_dry_run_env_returns_would_post_before_network(
     post.assert_not_called()
     assert result["dry_run"] is True
     assert result["reason"] == "operator_kill_switch_active"
-    assert result["would_post"]["text"].startswith("Workflow substrate")
+    assert result["would_post"]["text"].startswith("TinyAssets substrate")
     assert result["sink_handle"] == "@kwisatzh4derach"
 
 
@@ -132,7 +132,7 @@ def test_twitter_post_success_records_post_evidence(tmp_path, monkeypatch):
     )
 
     def fake_post(*, text, reply_to_tweet_id, quote_tweet_id, credentials):
-        assert text.startswith("Workflow substrate")
+        assert text.startswith("TinyAssets substrate")
         assert reply_to_tweet_id == ""
         assert quote_tweet_id == ""
         assert credentials.api_key == "api-key"

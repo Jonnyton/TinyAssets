@@ -1,4 +1,4 @@
-// landing-page.jsx — The actual Workflow marketing site, rethought.
+// landing-page.jsx — The actual TinyAssets marketing site, rethought.
 // Thesis: the website looks like the artifacts its users produce.
 // Parchment paper. Dusty-rose execution bands. Sage active nodes. Hand-drawn diagrams.
 // Dark ink only as the navigation strip — the page IS a community notebook page.
@@ -23,7 +23,7 @@ function LandingPage({ onSection }) {
   const closeDrawer = () => { setDrawerOpen(false); setTimeout(() => setSelectedNode(null), 360); };
 
   return (
-    <div data-screen-label="Workflow · landing" style={{ background: WF_PALETTE.paper }}>
+    <div data-screen-label="TinyAssets · landing" style={{ background: WF_PALETTE.paper }}>
       <ParchmentTexture />
       <TopNavStrip />
 
@@ -189,7 +189,7 @@ function LandingPage({ onSection }) {
               Zero install. Paste one URL.
             </h2>
             <p style={{ fontFamily: "var(--font-sans)", fontSize: 16, lineHeight: 1.6, color: WF_PALETTE.inkSoft, margin: "0 0 24px", maxWidth: "52ch" }}>
-              Workflow speaks MCP. Drop the URL into your chatbot's connectors and your chat picks up a new set of tools — nodes, workflows, daemons.
+              TinyAssets speaks MCP. Drop the URL into your chatbot's connectors and your chat picks up a new set of tools — nodes, workflows, daemons.
             </p>
             <ol style={{ paddingLeft: 0, listStyle: "none", margin: "0 0 28px" }}>
               {[
@@ -312,7 +312,7 @@ function TopNavStrip() {
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <SigilMark size={22} />
-          <span style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 500, color: "var(--fg-1)", letterSpacing: "-0.01em" }}>Workflow</span>
+          <span style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 500, color: "var(--fg-1)", letterSpacing: "-0.01em" }}>TinyAssets</span>
         </div>
         <div style={{ display: "flex", gap: 28, alignItems: "center" }}>
           {["Patterns", "Catalog", "Connect", "Host", "Docs"].map((t) => (
@@ -469,7 +469,7 @@ function PatternDev({ onNodeClick, selectedNode }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32, alignItems: "start" }}>
       <div>
-        <DiagHeader num={1} title="3-node, fully annotated" sub="The atom of any Workflow team. Lead → dev → checker → gate. Solid arrows are state-write triggers; dashed arrows are interpreted by the outer runner." />
+        <DiagHeader num={1} title="3-node, fully annotated" sub="The atom of any TinyAssets team. Lead → dev → checker → gate. Solid arrows are state-write triggers; dashed arrows are interpreted by the outer runner." />
         <Diagram2_ThreeNode onNodeClick={onNodeClick} selectedNode={selectedNode} />
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
@@ -554,7 +554,7 @@ function ExampleCard({ cat, inv, out }) {
         background: "#fef9ec", border: `1px dashed ${WF_PALETTE.creamStroke}`,
         borderRadius: 3, marginBottom: 10,
       }}>
-        <span style={{ color: WF_PALETTE.highlight, fontWeight: 600 }}>Workflow:</span> {inv}
+        <span style={{ color: WF_PALETTE.highlight, fontWeight: 600 }}>TinyAssets:</span> {inv}
       </div>
       <p style={{
         fontFamily: "var(--font-sans)", fontSize: 13.5, lineHeight: 1.55,
@@ -625,7 +625,7 @@ function FooterParchment() {
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
               <SigilMark size={22} />
-              <span style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 500, color: WF_PALETTE.ink }}>Workflow</span>
+              <span style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 500, color: WF_PALETTE.ink }}>TinyAssets</span>
             </div>
             <p style={{ fontFamily: "var(--font-sans)", fontSize: 13.5, lineHeight: 1.55, color: WF_PALETTE.inkSoft, margin: 0, maxWidth: "32ch" }}>
               An open commons of multi-step AI workflows. Daemons that actually run them.

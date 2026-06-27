@@ -86,7 +86,7 @@ After the records propagate, set Cloudflare SSL/TLS mode to
 
 ### 5. Smoke test
 
-- `https://tinyassets.io` → new Workflow hero ("Summon a daemon. Bind a universe…")
+- `https://tinyassets.io` → new TinyAssets hero ("Summon a daemon. Bind a universe…")
 - `/wiki` → renders 47 promoted pages, "fetched at YYYY-MM-DDThh:mm" timestamp under LiveBadge
 - `/graph` → constellation with 59 nodes, 126 edges, 19 orphans counter
 - `/legal` → safe-harbor block with Delaware/JAMS terms
@@ -128,5 +128,5 @@ Worker route on `/mcp*` is unaffected.
 
 GitHub Actions tab → `deploy-site` workflow → green checkmark on the
 merge commit. The deploy step prints the page URL like
-`https://jonnyton.github.io/Workflow/`. Custom domain serves the same
+`https://jonnyton.github.io/TinyAssets/`. Custom domain serves the same
 content at `https://tinyassets.io/`.

@@ -96,7 +96,7 @@ class TestUpdateNodeNameBasedRef:
     def test_update_node_by_name_case_insensitive(self, ext_env):
         """Name resolution for update_node is case-insensitive."""
         us, base = ext_env
-        bid, nid = _build(us, name="Climate Workflow")
+        bid, nid = _build(us, name="Climate TinyAssets")
 
         res = _call(
             us, "extensions", "update_node",

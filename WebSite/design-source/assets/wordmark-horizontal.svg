@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 80" width="360" height="80" role="img" aria-label="Workflow">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 80" width="360" height="80" role="img" aria-label="TinyAssets">
   <rect width="360" height="80" fill="none"/>
   <image href="logo-mark.png" x="8" y="8" width="64" height="64" preserveAspectRatio="xMidYMid slice"/>
-  <text x="86" y="52" font-family="Fraunces, Georgia, serif" font-size="36" font-weight="500" fill="#f2eee6" letter-spacing="-0.8">Workflow</text>
+  <text x="86" y="52" font-family="Fraunces, Georgia, serif" font-size="36" font-weight="500" fill="#f2eee6" letter-spacing="-0.8">TinyAssets</text>
 </svg>

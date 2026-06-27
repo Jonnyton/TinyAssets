@@ -170,7 +170,7 @@ def test_directory_status_redacts_operator_diagnostics() -> None:
             "per_subsystem": {
                 "wiki": {
                     "bytes": 10,
-                    "path": "C:/Users/Jonathan/AppData/Roaming/Workflow/wiki",
+                    "path": "C:/Users/Jonathan/AppData/Roaming/TinyAssets/wiki",
                 },
             },
         },

@@ -1,7 +1,7 @@
 # Design-Note vs Specs Coherence Audit
 
 **Date:** 2026-04-19
-**Scope:** `docs/design-notes/2026-04-18-full-platform-architecture.md` (§1–§31) against 11 specs in `docs/specs/`, 2 catalogs in `docs/catalogs/`, and the 3 prototype scaffolds (`prototype/full-platform-v0/`, `prototype/web-app-v0/`, `prototype/workflow-catalog-v0/`).
+**Scope:** `docs/design-notes/2026-04-18-full-platform-architecture.md` (§1–§31) against 11 specs in `docs/specs/`, 2 catalogs in `docs/catalogs/`, and the 3 prototype scaffolds (`prototype/full-platform-v0/`, `prototype/web-app-v0/`, `prototype/tinyassets-catalog-v0/`).
 **Method:** section-by-section scan. Each cross-section labeled **MATCH / DRIFT / GAP / SURPLUS**. Drift items rank-ordered by load-bearing risk (schema + RPC names first).
 **Constraint:** read-only audit. No design-note edits in this pass.
 
@@ -12,7 +12,7 @@
 **Design note:** §1–§31, ~2330 lines.
 **Specs (11):** `#25 schema`, `#26 load-test`, `#27 gateway`, `#29 paid-market`, `#30 tray`, `#32 export-sync`, `#35 web app`, `#36 moderation`, `#53 remix+converge`, `#57 plan-B selfhost`, `#15 text-edits (injection-hallucination)`.
 **Catalogs (2):** `node-type-taxonomy.md`, `privacy-principles-and-data-leak-taxonomy.md`.
-**Prototypes:** `full-platform-v0` (schema + RLS + gateway + 10 e2e tests), `web-app-v0` (SvelteKit shell), `workflow-catalog-v0` (Workflow-catalog repo scaffold + sample BranchDefinitions).
+**Prototypes:** `full-platform-v0` (schema + RLS + gateway + 10 e2e tests), `web-app-v0` (SvelteKit shell), `tinyassets-catalog-v0` (TinyAssets-catalog repo scaffold + sample BranchDefinitions).
 **Runbooks + ops:** `SUCCESSION.md`, `launch-readiness-checklist.md`, Anthropic-catalog-submission plan, `moderation_rubric.md`.
 
 ---
@@ -153,7 +153,7 @@ Scaffolds schema + RLS + `discover_nodes` RPC + FastMCP gateway + 10 e2e tests. 
 
 SvelteKit shell scaffolded per spec #35. i18n `en.json` onboarding copy expanded in commit `ba18129`. Three-state A-follow onboarding language (State 1 catalog-self-connect) not explicitly verified in the copy — recommended sampling.
 
-### 5.3 `prototype/workflow-catalog-v0/` — **SURPLUS, needs design-note absorption**
+### 5.3 `prototype/tinyassets-catalog-v0/` — **SURPLUS, needs design-note absorption**
 
 Scaffold includes `catalog/branches/` directory with 3 sample BranchDefinitions (`fantasy-scene-chapter-loop.yaml`, `invoice-batch-processor.yaml`, `research-paper-pipeline.yaml`). **BranchDefinition is a real shipped concept — composite multi-node workflow definitions — but design note §2/§15 schema does not define a `branches` or `branch_definitions` table.**
 
@@ -163,7 +163,7 @@ PLAN.md §"Project Thesis" references branches extensively ("Goal + Branch" pair
 
 **Likely dev-day impact:** ~0.5 day — table + RLS + discover_branches RPC or extended `discover_nodes` to cover branches.
 
-### 5.4 Sample nodes in `prototype/workflow-catalog-v0/catalog/nodes/` — **MATCH**
+### 5.4 Sample nodes in `prototype/tinyassets-catalog-v0/catalog/nodes/` — **MATCH**
 
 Four domain-realistic samples (commits `3e6e3c9`) look aligned with the `node` schema. Spot-check recommended to verify `concept`/`instance_ref` split respected.
 
@@ -185,7 +185,7 @@ Spec #36 requires `admin_pool >= 2 for bus-factor` at real-currency cutover (com
 
 ### 6.4 `#32 export sync` ↔ `#4 two-repo` (design §16.4) — **MATCH**
 
-Spec #32 is built for the two-repo (`Workflow/` + `Workflow-catalog/`) split. Export Action + PR-ingest path both present. Aligns.
+Spec #32 is built for the two-repo (`TinyAssets/` + `TinyAssets-catalog/`) split. Export Action + PR-ingest path both present. Aligns.
 
 ### 6.5 `#26 load-test S-scenarios` ↔ design §14.8 + §25.6 + §27.5 — **DRIFT**
 

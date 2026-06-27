@@ -184,8 +184,8 @@ def test_extract_labels_non_mermaid_code_blocks(claude_chat) -> None:
 
 def test_extract_collects_artifact_with_title(claude_chat) -> None:
     art = _artifact_node(
-        title="My Workflow Diagram",
-        body="My Workflow Diagram\nStep 1\nStep 2\nStep 3",
+        title="My TinyAssets Diagram",
+        body="My TinyAssets Diagram\nStep 1\nStep 2\nStep 3",
     )
     page = _assistant_with({
         '[data-testid*="artifact" i]': [art],
@@ -193,7 +193,7 @@ def test_extract_collects_artifact_with_title(claude_chat) -> None:
     items = claude_chat._extract_rich_content(page)
     assert len(items) == 1
     assert items[0]["kind"] == "artifact"
-    assert items[0]["title"] == "My Workflow Diagram"
+    assert items[0]["title"] == "My TinyAssets Diagram"
     assert "Step 1" in items[0]["text"]
 
 

@@ -60,7 +60,7 @@ The original "multi-week structural arc" framing was based on the 122-file count
 | File | LOC | Role | Callers |
 |---|---|---|---|
 | `fantasy_daemon/__main__.py` | 2295 | Daemon CLI + orchestrator (DaemonController, tunnel helpers, signal handling, tray launch). The Phase 5 BRIDGE source — `tinyassets/__main__.py` re-imports `DaemonController` from here. | `tinyassets/__main__.py`, `tinyassets/cloud_worker.py`, `tests/test_cloud_worker.py`, `tests/test_unified_execution.py`, `tests/test_integration.py` |
-| `fantasy_daemon/api.py` | 2625 | FastAPI HTTP layer — multi-universe file-based adapter, session/author/branch/runtime/ledger endpoints | `tests/test_api.py`, `tests/test_api_edge_cases.py`, `tests/test_author_server_api.py`, `tests/test_rest_votes_behavior.py`, `tests/test_work_targets.py`, `tests/test_workflow_runtime.py`, `tinyassets/api/__init__.py` |
+| `fantasy_daemon/api.py` | 2625 | FastAPI HTTP layer — multi-universe file-based adapter, session/author/branch/runtime/ledger endpoints | `tests/test_api.py`, `tests/test_api_edge_cases.py`, `tests/test_author_server_api.py`, `tests/test_rest_votes_behavior.py`, `tests/test_work_targets.py`, `tests/test_tinyassets_runtime.py`, `tinyassets/api/__init__.py` |
 | `fantasy_daemon/branch_registrations.py` | 113 | Phase D node-registration helper — registers fantasy-author domain-trusted opaque nodes | `tests/test_unified_execution.py` |
 | `fantasy_daemon/testing/__main__.py` | 3 | Error-stub: `raise SystemExit("GPT testing harness removed — use MCP client testing instead.")` | none — vestigial |
 
@@ -135,7 +135,7 @@ After unpack:
 1. `git mv fantasy_daemon/api.py tinyassets/http_api.py` (or `tinyassets/api/http.py` — name pick is a host decision per §7).
 2. Update 7 caller import paths (6 tests + `tinyassets/api/__init__.py`).
 3. Verify FastAPI app launches: `python -m tinyassets --domain fantasy_daemon --api --port 8000` (path through `tinyassets/__main__.py:--api`).
-4. `pytest tests/test_api.py tests/test_api_edge_cases.py tests/test_author_server_api.py tests/test_rest_votes_behavior.py tests/test_work_targets.py tests/test_workflow_runtime.py -q` green.
+4. `pytest tests/test_api.py tests/test_api_edge_cases.py tests/test_author_server_api.py tests/test_rest_votes_behavior.py tests/test_work_targets.py tests/test_tinyassets_runtime.py -q` green.
 5. Remove `from fantasy_daemon.api import ...` re-export if `tinyassets/api/__init__.py` had one.
 
 **Effort:** ~2-3h. **Risk:** LOW (mechanical move + import retarget; tests verify behavior unchanged).

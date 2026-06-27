@@ -4,7 +4,7 @@
 </script>
 
 <svelte:head>
-  <title>Catalog — Workflow</title>
+  <title>Catalog — TinyAssets</title>
 </svelte:head>
 
 <h1>{t.title}</h1>

@@ -1,6 +1,6 @@
 ---
-name: workflow-design
-description: Use this skill to generate well-branded interfaces and assets for Workflow, either for production or throwaway prototypes/mocks/etc. Contains essential design guidelines, colors, type, fonts, assets, and UI kit components for prototyping.
+name: tinyassets-design
+description: Use this skill to generate well-branded interfaces and assets for TinyAssets, either for production or throwaway prototypes/mocks/etc. Contains essential design guidelines, colors, type, fonts, assets, and UI kit components for prototyping.
 user-invocable: true
 ---
 
@@ -10,7 +10,7 @@ If creating visual artifacts (slides, mocks, throwaway prototypes, etc), copy as
 
 If the user invokes this skill without any other guidance, ask them what they want to build or design, ask some questions, and act as an expert designer who outputs HTML artifacts _or_ production code, depending on the need.
 
-## Key facts about Workflow
+## Key facts about TinyAssets
 
 - **Product in one line:** an open-source platform where users design multi-step AI workflows inside their chatbot (Claude.ai, etc.) and a **daemon** actually runs them. Real execution, not simulation.
 - **Brand voice:** nerdy, slightly mythic, self-aware. Load-bearing verbs: **summon, bind, entrust, dismiss, roam, return.** Never: "create," "configure," "unleash," or marketing puffery.
@@ -23,9 +23,9 @@ If the user invokes this skill without any other guidance, ask them what they wa
 - `assets/logo-mark.png` — the brand mark; `assets/logo-mark.svg` is only a compatibility wrapper.
 - `source_copy/en.json` — verbatim product copy for tone-accurate mocks.
 - `preview/` — individual cards showing each token cluster (use as visual reference).
-- `ui_kits/workflow-web/` — React/JSX recreation of the landing, connect, catalog, and host surfaces. Read components before writing new ones; reuse `Button`, `StatusPill`, `DaemonTile`, `SigilMark`, `RitualLabel`.
+- `ui_kits/tinyassets-web/` — React/JSX recreation of the landing, connect, catalog, and host surfaces. Read components before writing new ones; reuse `Button`, `StatusPill`, `DaemonTile`, `SigilMark`, `RitualLabel`.
 
-## Workflow for common tasks
+## TinyAssets for common tasks
 
 **Making a marketing page or hero:**
 1. Link `colors_and_type.css`.
@@ -36,7 +36,7 @@ If the user invokes this skill without any other guidance, ask them what they wa
 
 **Making an app surface:**
 1. Link `colors_and_type.css`.
-2. Copy / adapt from `ui_kits/workflow-web/`.
+2. Copy / adapt from `ui_kits/tinyassets-web/`.
 3. Use hairline borders (`--border-1`), never 2px. Use the graph glow (`--glow-graph`) for hover / focus, not shadow.
 4. Daemon-status indicators use the filled-dot pill pattern from `Primitives.jsx` (`StatusPill`).
 5. No emoji. No icons without substituting Lucide CDN and flagging it.
@@ -46,7 +46,7 @@ This brand has no existing slide template. If asked to make slides, ask the user
 
 ## Things to double-check
 
-- "Daemon" is lowercase in running text. "Workflow" is always capital W.
+- "Daemon" is lowercase in running text. "TinyAssets" is always capital W.
 - Ember is primary accent; one ember mark per view, max two. Violet is ring energy, secondary.
 - Hover = graph glow, not shadow. Press = 1px translate, not scale.
 - Never invent new iconography. Use Lucide via CDN and flag the substitution.

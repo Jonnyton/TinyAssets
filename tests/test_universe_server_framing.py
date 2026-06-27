@@ -30,7 +30,7 @@ def test_server_instructions_lead_with_workflow_builder_not_fiction() -> None:
     platform, not "primarily for fiction". Fantasy is a benchmark.
     """
     text = (mcp.instructions or "").lower()
-    # Workflow builder framing must appear — and appear before the word
+    # TinyAssets builder framing must appear — and appear before the word
     # "fiction" (which is allowed as an example, not the lead).
     assert "workflow builder" in text
     # At least one non-fiction example domain must appear so the bot
@@ -45,7 +45,7 @@ def test_server_instructions_lead_with_workflow_builder_not_fiction() -> None:
     # General-purpose framing must remain explicit even if the copy no longer
     # phrases that as a negation of fantasy/fiction.
     assert "domain-agnostic" in text, (
-        "instructions must explicitly frame Workflow as domain-agnostic"
+        "instructions must explicitly frame TinyAssets as domain-agnostic"
     )
 
 
@@ -389,7 +389,7 @@ def test_control_station_prompt_has_intent_disambiguation() -> None:
 
 
 def test_control_station_prompt_has_rule_7_assume_workflow() -> None:
-    """LIVE-F1 (Maya): chatbot must assume Workflow on plausible intent
+    """LIVE-F1 (Maya): chatbot must assume TinyAssets on plausible intent
     rather than present a disambiguation picker. Rule 7 in control_station
     hard rules.
     """

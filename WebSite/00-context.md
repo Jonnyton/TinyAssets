@@ -1,4 +1,4 @@
-# Tiny Assets → Workflow Site Merge — Context
+# Tiny Assets → TinyAssets Site Merge — Context
 
 ## What we have
 
@@ -12,17 +12,17 @@
 
 ### 2. GoDaddy editor draft (unpublished): same site, mid-rebrand
 - Same theme/imagery, same logo, same purple buttons
-- New hero: **"Workflow for AI work that can be inspected, improved, and rewarded"**
+- New hero: **"TinyAssets for AI work that can be inspected, improved, and rewarded"**
 - Subhead: "Live MCP tools for branchable AI workflows, community bug reports, gates, and future utility-token rewards"
 - New CTAs: CONNECT TO MCP · VIEW GITHUB
-- New section: "Live Workflow Surface"
+- New section: "Live TinyAssets Surface"
 - Nav: Home · White Paper/Github · Blog · Contract Add · Tiny Alliance · Market Price · Portfolio
 - Editor URL: https://websites.godaddy.com/en-US/editor/66e3611c-f5f8-497f-8b57-e3cde096e743/61e91cb9-0d09-4237-b050-af83588fc4eb/edit
 
-### 3. Claude Designs project: "Workflow Design System"
+### 3. Claude Designs project: "TinyAssets Design System"
 - URL: https://claude.ai/design/p/48072c27-c3d6-488c-8c6d-be873636e652
 - Structure: two HTML files
-  - `ui_kits/workflow-web/index.html` — older dark-themed marketing mock
+  - `ui_kits/tinyassets-web/index.html` — older dark-themed marketing mock
   - `/index.html` — newer parchment / dusty-rose / sage rebuild (the one Claude wants you to use)
 - Rebuild aesthetic: cream parchment hero, "Summon the daemon" in serif (Fraunces), dusty-rose execution bands, sage-green active nodes, indigo lead nodes — visual language pulled from real user-made workflow diagrams
 - Content: showcase workflows
@@ -30,10 +30,10 @@
   - Book publishing pipeline (Scribe critique loop, canon retrieval router)
 - Interactivity: clickable nodes open right-side detail drawer, lifecycle animations, toggle annotations
 - Brand chrome: kept dark ink + ember (navbar/hero), but diagrams render in parchment palette
-- Nothing about Tiny Assets the token, contract address, market price, portfolio, etc. — pure Workflow product marketing
+- Nothing about Tiny Assets the token, contract address, market price, portfolio, etc. — pure TinyAssets product marketing
 
 ## The user's goal
-- **Lead with Workflow** as the primary product (matches the GoDaddy draft direction)
+- **Lead with TinyAssets** as the primary product (matches the GoDaddy draft direction)
 - **Token (Tiny Assets) is secondary** — future reward mechanism, small section on the site, not the headline
 - Build as **custom HTML/JS** to host on the GoDaddy domain (likely static hosting, not the GoDaddy site builder)
 - Project lives at `C:\Users\Jonathan\Projects\TinyAssets\WebSite`

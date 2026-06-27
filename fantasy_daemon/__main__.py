@@ -875,7 +875,7 @@ def _try_execute_claimed_branch_task(
 
     The default universe wrapper remains the long-running creative loop.
     Community goal-pool tasks, however, carry an explicit branch_def_id
-    and must produce a durable Workflow run for that branch before the
+    and must produce a durable TinyAssets run for that branch before the
     queue row is marked terminal.
     """
     try:
@@ -1565,7 +1565,7 @@ class DaemonController:
                     or premise_from_soul(output_dir).strip()
                 )
 
-            # Workflow configuration
+            # TinyAssets configuration
             workflow = {"premise": premise}
 
             # Seed initial counters from dashboard metrics (already

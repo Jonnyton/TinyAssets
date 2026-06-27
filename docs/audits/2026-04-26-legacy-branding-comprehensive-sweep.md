@@ -594,7 +594,7 @@ Recommendation: dev-2 rewrites each docstring to:
 
 #### B2. `from X import *` patterns
 
-**Canonical tree: ZERO matches.** Workflow/ + domains/ are clean of grab-bag glob imports. Excellent.
+**Canonical tree: ZERO matches.** TinyAssets/ + domains/ are clean of grab-bag glob imports. Excellent.
 
 #### B3. util/helpers/common modules
 

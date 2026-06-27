@@ -171,7 +171,7 @@ Users promote themselves between tiers without losing state. Design-time constra
 | `nodes.primary_language` (ISO 639-1) | §15.7 (Q13 multilingual) | spec #25 §1.2 — add column |
 | `nodes.domain_ids uuid[]` + `domains(...)` table | §15.8 (Q14 permissionless domains) | spec #25 §1.2 + new §1.2b |
 | `nodes.node_type` + `node-type-taxonomy` catalog alignment | §2.6 this note + `docs/catalogs/node-type-taxonomy.md` | spec #25 §1.2 — add column |
-| `branches` / `branch_definitions` table | §2.6 this note (surplus from `prototype/workflow-catalog-v0/`) | spec #25 new §1.x |
+| `branches` / `branch_definitions` table | §2.6 this note (surplus from `prototype/tinyassets-catalog-v0/`) | spec #25 new §1.x |
 | `ledger.settlement_mode enum('immediate','batched')` | §18.6 (Q4-follow hybrid settlement) | spec #25 §1.7 |
 | `request_inbox.bid_amount_usd_cached numeric` | §18.6 (threshold routing) | spec #25 §1.6 |
 | `request_inbox.fan_out jsonb` | §27.5 (parallel fan-out) | spec #25 §1.6 |
@@ -183,7 +183,7 @@ Spec #25 edits are queued via the drift audit's §7.2 dev-dispatch list. No migr
 
 **`node_type` as first-class axis** (from `docs/catalogs/node-type-taxonomy.md` v1). Every node carries a `node_type` — *generator / transformer / validator / extractor / composer / router / gate / ingester / emitter / aggregator* — orthogonal to `domain`. Chatbot uses both axes when reasoning: `domain=research-paper, node_type=validator` finds citation-checkers structurally similar to invoice-number-validators in a different domain. Cross-domain structural matches emerge naturally. `discover_nodes` accepts `node_type_hint` parallel to `domain_hint`.
 
-**Branches as first-class composite-workflow artifacts** (from `prototype/workflow-catalog-v0/catalog/branches/` — 3 sample BranchDefinition YAMLs shipped: `research-paper-pipeline`, `fantasy-scene-chapter-loop`, `invoice-batch-processor`). A branch is a composite workflow — multiple nodes wired into a pipeline with shared state, fork/join, eval-loop, or router-split integration patterns (see `docs/specs/integration-pattern-catalog` when landed, task #63). `artifact_field_visibility.artifact_kind` already lists `'branch'`, so §17 privacy handles branches; §18 monetization treats branch invocation as a composite bid; §15 discovery ranks branches alongside nodes. Schema table is the gap (see §2.6).
+**Branches as first-class composite-workflow artifacts** (from `prototype/tinyassets-catalog-v0/catalog/branches/` — 3 sample BranchDefinition YAMLs shipped: `research-paper-pipeline`, `fantasy-scene-chapter-loop`, `invoice-batch-processor`). A branch is a composite workflow — multiple nodes wired into a pipeline with shared state, fork/join, eval-loop, or router-split integration patterns (see `docs/specs/integration-pattern-catalog` when landed, task #63). `artifact_field_visibility.artifact_kind` already lists `'branch'`, so §17 privacy handles branches; §18 monetization treats branch invocation as a composite bid; §15 discovery ranks branches alongside nodes. Schema table is the gap (see §2.6).
 
 ---
 
@@ -442,7 +442,7 @@ At thousands of concurrent users, day-one work. Cheapest-viable.
 **Mechanics:**
 - **Per-account rate limits.** Supabase Edge Functions or Postgres triggers enforce: N writes / minute, M bid posts / minute, K node creations / hour. Defaults tuned from launch traffic.
 - **Community flag + auto-soft-hide.** Reported artifacts auto-soft-hide after N flags from distinct accounts (default N=3, tunable). Hidden means discovery surfaces mark as `under_review`; content still visible to artifact owner + mods.
-- **Volunteer mod review.** Review queue triaged by tier-3 OSS contributors (default role, sign CONTRIBUTING acceptance) and reputation-earned tier-2 daemon hosts. Rubric lives in `moderation_rubric.md` in the `Workflow/` repo — contributor-editable, PR-reviewed. Not hardcoded in code.
+- **Volunteer mod review.** Review queue triaged by tier-3 OSS contributors (default role, sign CONTRIBUTING acceptance) and reputation-earned tier-2 daemon hosts. Rubric lives in `moderation_rubric.md` in the `TinyAssets/` repo — contributor-editable, PR-reviewed. Not hardcoded in code.
 - **Host-admin backstop.** Appeals + "no consensus among mods after N reviews" both escalate to the host-admin queue. One-person (host) triage at launch.
 - **Paid-market as signal.** Spammer accounts get no bids (cooperative trust memory); spam goals never elevate on popularity leaderboards. Economic disincentive is free moderation labor. 1% fee (§18) further soft-rate-limits paid spam.
 - **No CAPTCHA at launch.** Add only when account signup spam is observed.
@@ -563,7 +563,7 @@ This is an ordering of work within a single-build delivery, not a phased rollout
 |---|---|---|---|
 | **J — Load test harness** | dev | 3.5–4 | **Revised per dev #26 spec (2026-04-18).** k6 scripts against gateway + REST + Realtime; synthetic daemon fleet (Python, ~200 processes per box); Supabase test project; six scenarios S1–S6 (subscriber fan-out, bid storm, cascade read storm, heartbeat steady-state, write-contention on hot node, cold-start end-to-end). Reasonable-defer cuts available if host elects smaller MVP: S1–S5 only = 2 dev-days; skip S6 = 3 dev-days. Parallel with G after A lands. |
 | **K — Discovery + remix + convergence** | dev | 1–1.5 | pgvector extension + HNSW index; `discover_nodes` RPC + MCP tool per §15.1; `remix_node` + `converge_nodes` RPCs per §15.3; `similar_subscriptions_index` KV + Edge Function worker; `nodes_hot` materialized view. Depends on A (schema); parallel with B/C/D. Shares the §14.4 `public_demand_ranked` view (no double-build). |
-| **L — Dual-layer content + per-piece privacy** | dev | 1 | `concept` / `instance_ref` columns on `nodes`; `artifact_field_visibility` table; concept-layer-only Postgres role + analytics pipeline routing; owner-RLS on instance reads; separate `Workflow-catalog/` repo scaffolding + export-Action pointed at it. Depends on A (schema) + G (export sync exists). Parallel with K. |
+| **L — Dual-layer content + per-piece privacy** | dev | 1 | `concept` / `instance_ref` columns on `nodes`; `artifact_field_visibility` table; concept-layer-only Postgres role + analytics pipeline routing; owner-RLS on instance reads; separate `TinyAssets-catalog/` repo scaffolding + export-Action pointed at it. Depends on A (schema) + G (export sync exists). Parallel with K. |
 | **M — Monetization + cold-start + license** | dev | 1 | Base Sepolia test-token contract + treasury address config + 1% fee-split in settlement path (§18); 4-path `submit_request` RPC + `fulfillment_path` enum (§20.4); `content_license` column with default + export-metadata injection (§19); wallet-connect flow (Base Sepolia). Depends on A (schema) + E (paid-market exists). Parallel with K + L. |
 
 **If two devs: land A as a joint push, then dev-1 owns B+E+F, dev-2 owns C+D+G. I and H interleave.**
@@ -1249,12 +1249,12 @@ Ambiguity in §4: when GitHub was demoted to "export sink," it was unclear wheth
 **Resolution:** both, but they live in different repos.
 
 - **Workflow/ main repo (platform code):** canonical GitHub source for the fork-and-PR model. Clone-and-run ships the engine + a dev-friendly empty-catalog quickstart. This repo never contains canonical live workflow content — only fixtures for testing and a seed/demo set.
-- **Separate `Workflow-catalog/` repo (workflow content export):** generated by the §4 export-sync Action from Postgres public-concept rows. Updated ≤12 commits/h (§14.6). Users who want to browse / clone / PR workflow content can do so here. PR-ingest on this repo round-trips back into Postgres.
+- **Separate `TinyAssets-catalog/` repo (workflow content export):** generated by the §4 export-sync Action from Postgres public-concept rows. Updated ≤12 commits/h (§14.6). Users who want to browse / clone / PR workflow content can do so here. PR-ingest on this repo round-trips back into Postgres.
 - **Private-instance data never exports to either.** Instance layer (§17) is host-local or private-Supabase-storage only.
 
 **Why two repos:** the platform-code repo has a small fast-moving codebase with a small contributor pool; the catalog has a huge slow-churning content corpus with a massive contributor pool. Co-hosting them would noise the git history of the platform and slow clone times for developers.
 
-**§4 cross-ref updated:** export sink scope is now "*workflow content* → `Workflow-catalog/` repo. Platform code stays in the main repo as the canonical fork-and-PR surface." Two-repo shape is explicit.
+**§4 cross-ref updated:** export sink scope is now "*workflow content* → `TinyAssets-catalog/` repo. Platform code stays in the main repo as the canonical fork-and-PR surface." Two-repo shape is explicit.
 
 ---
 
@@ -1470,8 +1470,8 @@ Batched-lane gas amortizes across all sub-threshold bids between flushes; at typ
 
 | Surface | License intent | Specific pick |
 |---|---|---|
-| Platform code (`Workflow/` main repo) | Permissive OSS — MIT-style. Tier-3 contributors need frictionless clone + fork + PR. | **MIT** (open flag for host; `apache-2.0` is the alternative if patent grant matters) |
-| Workflow content (`Workflow-catalog/` + Postgres canonical store) | Maximum-spread permissive — encourage mirrors + external reuse | **CC0 1.0** (host-pinned 2026-04-18) |
+| Platform code (`TinyAssets/` main repo) | Permissive OSS — MIT-style. Tier-3 contributors need frictionless clone + fork + PR. | **MIT** (open flag for host; `apache-2.0` is the alternative if patent grant matters) |
+| Workflow content (`TinyAssets-catalog/` + Postgres canonical store) | Maximum-spread permissive — encourage mirrors + external reuse | **CC0 1.0** (host-pinned 2026-04-18) |
 
 ### §19.2 Attribution as social norm, not legal hammer
 
@@ -1489,7 +1489,7 @@ Schema stores `content_license` per-node so the platform can later support user-
 
 ### §19.4 Schema + export metadata
 
-Every exported node (to `Workflow-catalog/` or via API) carries license metadata:
+Every exported node (to `TinyAssets-catalog/` or via API) carries license metadata:
 
 ```
 nodes(
@@ -1634,7 +1634,7 @@ Host (Jonathan) commits to running their own daemon 24/7 as a practical matter o
 
 RPC: `export_my_data(user_id, formats=['json','yaml'])` → signed download URL to a JSON (or YAML) bundle containing **everything the user owns or produced**:
 
-- **Concept contributions** — all public nodes / goals / branches / comments authored by the user, in canonical YAML form (same shape as `Workflow-catalog/` export).
+- **Concept contributions** — all public nodes / goals / branches / comments authored by the user, in canonical YAML form (same shape as `TinyAssets-catalog/` export).
 - **Instance data** — all `instance_ref`-pointed blobs owned by the user (pulled from private Supabase Storage + host-local instance stores where applicable).
 - **Preferences** — whatever platform-side prefs exist (mostly none per §20.4 — chatbot-native prefs live with the chatbot provider, not with Workflow). Wallet address, notification settings, registered hosts list.
 - **Wallet history** — all ledger rows (immediate + batched settlements), flag history (flags issued, flags received), moderation decisions (if mod).
@@ -1752,7 +1752,7 @@ Per §18.7 (reframed): real-currency treasury must be a minimum 2-of-3 multisig 
 
 Testnet treasury stays host-controlled because test tokens have no real value; no succession risk. The moment a contract holding real value deploys, the signer set is 3, threshold is 2.
 
-### §22.3 The `SUCCESSION.md` runbook — lives in `Workflow/` repo root
+### §22.3 The `SUCCESSION.md` runbook — lives in `TinyAssets/` repo root
 
 Always current. PR'd like any other file. Contents:
 
@@ -1822,14 +1822,14 @@ Fold into revised §10 totals below. Note: co-maintainer *recruitment* is a host
 
 ### §23.1 Three channels, priority-ordered
 
-**A — GitHub Issues (primary).** The `Workflow/` repo's Issues tab is the canonical public bug/feature-request/broken-workflow surface from day one. OSS-native, free, discoverable, indexable by search engines. Labeled templates:
+**A — GitHub Issues (primary).** The `TinyAssets/` repo's Issues tab is the canonical public bug/feature-request/broken-workflow surface from day one. OSS-native, free, discoverable, indexable by search engines. Labeled templates:
 - `bug` — platform defect.
 - `feature-request` — net-new surface or capability.
 - `broken-workflow` — a specific node/branch/goal behaving wrong.
 - `docs` — documentation gap.
 - `question` — user support (typically triaged to an appropriate channel).
 
-**B — In-chatbot `/feedback` MCP tool (secondary).** User says to their chatbot: *"This was confusing — can you report it?"* or *"This broke, something about X."* The chatbot invokes the `/feedback` MCP tool, which opens a GitHub Issue on the `Workflow/` repo with attribution (with user consent). Pre-filtered by the chatbot into actionable form: labeled, titled, categorized, with context from the chat.
+**B — In-chatbot `/feedback` MCP tool (secondary).** User says to their chatbot: *"This was confusing — can you report it?"* or *"This broke, something about X."* The chatbot invokes the `/feedback` MCP tool, which opens a GitHub Issue on the `TinyAssets/` repo with attribution (with user consent). Pre-filtered by the chatbot into actionable form: labeled, titled, categorized, with context from the chat.
 
 **C — External channels (tertiary).** Discord + subreddit + `contact@tinyassets.io` (or equivalent). For community discussion, casual feedback, social-adjacent reach — not the primary bug-capture surface. All external-channel inputs route to a GitHub Issue via a manual triage process; GitHub remains the canonical queue.
 
@@ -1936,7 +1936,7 @@ Metrics the platform **does not optimize for**: DAU, session time, message count
 - **§5.2 cascade step-3 ranking** — add `real_world_outcome_weight` as a ranking signal the daemon can read. Nodes with real-artifact badges weight heavier in public-demand matching. Preserves the "anything else the daemon reasons" latitude; this is one more signal available.
 - **§15.1 `discover_nodes` response** — add `real_world_outcomes` block (see §24.4).
 - **§2.4 tier matrix** — tier-2 daemon-host UI gets an **Impact Dashboard** alongside Earnings Dashboard (§5.1.1), showing real-world outcomes the daemon helped fulfill for others. Not just earnings — *what got made*.
-- **§4 `Workflow-catalog/` export** — becomes a load-bearing source of real-world-outcome self-reports. Badges that land on nodes are sourced from `Workflow-catalog/outcomes/<node-slug>.yaml` entries users PR in. PR-ingest path validates + commits to Postgres. Commons-owned outcome history.
+- **§4 `TinyAssets-catalog/` export** — becomes a load-bearing source of real-world-outcome self-reports. Badges that land on nodes are sourced from `TinyAssets-catalog/outcomes/<node-slug>.yaml` entries users PR in. PR-ingest path validates + commits to Postgres. Commons-owned outcome history.
 - **§13 onboarding copy** — re-examine every tier's onboarding text against the "finishing real work" frame.
 - **§19 license** — unchanged (CC0 correctly enables real-world commercial reuse of outcomes).
 
@@ -2009,7 +2009,7 @@ Not host-paged. Public by default.
 
 - **Public status dashboard** at `status.tinyassets.io` — up/down per service, incident history, recent deploy log, treasury-balance sparkline.
 - **Community-accessible logs** (redacted per §17 privacy) — any contributor can see error rates, failed-request reasons, common user friction points.
-- **Open incident history** — post-mortems PR'd to `Workflow/` repo's `docs/incidents/`.
+- **Open incident history** — post-mortems PR'd to `TinyAssets/` repo's `docs/incidents/`.
 - **Alerts route to a shared Discord channel + GitHub Issues**, not just host's email.
 
 ### §25.4 Treasury wallet auto-pays bills (hard requirement post-mainnet-cutover)
@@ -2204,7 +2204,7 @@ Scale implications (§14 amendment): one request × N fan-out means `bids:<capab
 ### §27.6 Sandboxed dev environment — "full dev env when you want that power"
 
 For tier-2 daemon hosts and tier-3 contributors who want to author nodes with low-level control:
-- Tier-3: clone repo, author node as Python package, submit PR to `Workflow-catalog/` via export-sync path (§4 + §16).
+- Tier-3: clone repo, author node as Python package, submit PR to `TinyAssets-catalog/` via export-sync path (§4 + §16).
 - Tier-2: tray surface exposes a local node-authoring REPL that runs on their own daemon hardware. No platform quota.
 - Tier-1 (the general case): chatbot-mediated authoring via §27.3 MCP tools. Sandboxed test runs. Platform-side publish.
 
@@ -2260,12 +2260,12 @@ Tier-2 (post-MVP but early):
 - **Webhook generic** — POST to arbitrary URL (fallback for anything not yet supported).
 
 Tier-3 (community-contributed):
-- Accounting software (Voyager, QuickBooks, Xero, etc.) — connectors built by users who need them, contributed via PR to `Workflow/` platform.
+- Accounting software (Voyager, QuickBooks, Xero, etc.) — connectors built by users who need them, contributed via PR to `TinyAssets/` platform.
 - Vertical-specific (journal-submission APIs, FDA-submission, publisher APIs, specialized tools).
 
 ### §28.3 Third-party connector pattern
 
-Contributors add connectors via PR to `Workflow/connectors/<name>/` directory:
+Contributors add connectors via PR to `TinyAssets/connectors/<name>/` directory:
 - Python module implementing `ConnectorProtocol`.
 - Declares auth shape (OAuth app metadata, API key names, scopes).
 - Tests against a mock/sandbox of the target service.
@@ -2285,7 +2285,7 @@ Connectors respect the privacy model (§17):
 
 - **§26.2 outputs:** `connector-push` output kind routes through §28.
 - **§17 privacy:** connectors operate on concept-layer data by default; instance data requires explicit consent + `authorized: true` flag.
-- **§19 license:** connectors are platform code (MIT) — part of `Workflow/` repo.
+- **§19 license:** connectors are platform code (MIT) — part of `TinyAssets/` repo.
 
 ### §28.6 Dev-day impact
 
@@ -2381,7 +2381,7 @@ outputs:
 
 ### §30.3 Catalog + third-party handoffs
 
-Launch handoffs (in `Workflow/connectors/` per §28):
+Launch handoffs (in `TinyAssets/connectors/` per §28):
 - arXiv, CrossRef (DOI), GitHub Releases, ISBN-US registration.
 
 Community-contributed handoffs (post-launch, via PR):
@@ -2410,7 +2410,7 @@ Community-contributed handoffs (post-launch, via PR):
 
 ### §31.1 Shape of the catalog
 
-Lives in the `Workflow/` repo at `docs/privacy/principles.yaml` (or equivalent). Living document, PR-reviewed like any other platform code (§16). Each entry is a structured record:
+Lives in the `TinyAssets/` repo at `docs/privacy/principles.yaml` (or equivalent). Living document, PR-reviewed like any other platform code (§16). Each entry is a structured record:
 
 ```
 - id: ingest-mcp-tool-call
@@ -2481,7 +2481,7 @@ Recommend ~8–12 entries covering the load-bearing system points at MVP:
 7. Daemon-execution subprocess / host-software invocation.
 8. Realtime broadcast / presence channel.
 9. Paid-bid announcement (broadcast to potential claimers).
-10. Catalog export (`Workflow-catalog/` public repo snapshot).
+10. Catalog export (`TinyAssets-catalog/` public repo snapshot).
 11. Data export (`export_my_data`).
 12. Account deletion (wiki-orphan + instance hard-delete).
 
@@ -2499,7 +2499,7 @@ Each entry ~20–60 lines in the YAML. Host Q23-nav below: confirm scope + prior
 - **§17 privacy-per-piece:** concept/instance schema is the mechanism; §31 is the reference material.
 - **§29 chatbot behavioral patterns:** `get_privacy_principles` + `inspect_leak_risk` are the tools §29.1 specifies.
 - **§28 connectors + §30 handoffs:** each connector should have a corresponding catalog entry describing what leaks at its boundary.
-- **§16 collab model:** catalog lives in `Workflow/` main repo (platform code + docs), PR-reviewed per the tier-3 fork-and-PR model.
+- **§16 collab model:** catalog lives in `TinyAssets/` main repo (platform code + docs), PR-reviewed per the tier-3 fork-and-PR model.
 - **§11:** Q23-nav below — confirm launch-scope catalog entries.
 
 ### §31.6 Dev-day impact

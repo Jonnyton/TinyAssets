@@ -206,7 +206,7 @@ def test_directive_names_rules_it_overrides():
     )
     assert rule_10_match
     rule_10 = rule_10_match.group(0)
-    # Rule 2 is "Always use tools"; rule 7 is "Assume Workflow on plausible intent."
+    # Rule 2 is "Always use tools"; rule 7 is "Assume TinyAssets on plausible intent."
     # Rule 10 must call those out by number so the precedence is unambiguous.
     assert "rule 2" in rule_10.lower(), "rule 10 must override rule 2 explicitly"
     assert "rule 7" in rule_10.lower(), "rule 10 must override rule 7 explicitly"
@@ -313,7 +313,7 @@ def test_shared_account_rule_uses_user_vocabulary():
 def test_shared_account_rule_covers_silent_action_case():
     """Rule 11 must allow SILENT ACTION when current prompt is self-contained.
 
-    Over-asking is the failure mode for households using Workflow weekly.
+    Over-asking is the failure mode for households using TinyAssets weekly.
     The rule must say when NOT to ask (zero-friction path) as well as when to ask.
     """
     rule = _rule_11_block(_prompt_text())

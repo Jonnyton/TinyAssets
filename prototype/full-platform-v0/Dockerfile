@@ -1,4 +1,4 @@
-# Workflow gateway (prototype v0) — FastMCP-over-HTTP on top of the
+# TinyAssets gateway (prototype v0) — FastMCP-over-HTTP on top of the
 # shared Postgres + pgvector migrations in this prototype.
 #
 # Build:   docker build -t workflow-v0-gateway .

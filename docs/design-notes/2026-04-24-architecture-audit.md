@@ -80,7 +80,7 @@ Evidence:
 - `tinyassets/api/__init__.py:31`: `from fantasy_author.api import *  # noqa: F401,F403`
 - Lines 32–38: explicit re-imports of private names (`_extract_username`, `_load_provider_keys`, `_slugify`) from `fantasy_author.api`
 - `fantasy_author` is a compat shim → `fantasy_daemon` → `fantasy_daemon/api.py` (2,625 lines, FastAPI REST app)
-- 6 test files import `app` and `configure` from `workflow.api`: `test_api.py`, `test_api_edge_cases.py`, `test_author_server_api.py`, `test_rest_votes_behavior.py`, `test_work_targets.py`, `test_workflow_runtime.py`
+- 6 test files import `app` and `configure` from `workflow.api`: `test_api.py`, `test_api_edge_cases.py`, `test_author_server_api.py`, `test_rest_votes_behavior.py`, `test_work_targets.py`, `test_tinyassets_runtime.py`
 
 PLAN.md principle: "Engine = `tinyassets/`. Domains = `domains/<name>/`." The engine's API namespace is currently a wildcard re-export of a domain's 2,625-line FastAPI REST app. Any change to `fantasy_daemon/api.py` silently becomes part of `workflow.api`.
 
@@ -93,7 +93,7 @@ Proposed fix:
 - `tinyassets/api/__init__.py` becomes empty (or a minimal stub) until MCP submodules are built into it per PLAN.md.
 - This is the prerequisite before any `tinyassets/api/` MCP submodule work makes sense.
 
-Files: `tinyassets/api/__init__.py`, `tests/test_api.py`, `tests/test_api_edge_cases.py`, `tests/test_author_server_api.py`, `tests/test_rest_votes_behavior.py`, `tests/test_work_targets.py`, `tests/test_workflow_runtime.py`.
+Files: `tinyassets/api/__init__.py`, `tests/test_api.py`, `tests/test_api_edge_cases.py`, `tests/test_author_server_api.py`, `tests/test_rest_votes_behavior.py`, `tests/test_work_targets.py`, `tests/test_tinyassets_runtime.py`.
 
 Effort: **1–2 days**.
 

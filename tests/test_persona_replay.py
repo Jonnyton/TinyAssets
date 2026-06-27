@@ -117,7 +117,7 @@ def test_priya_session_1_replay_baseline(persona_session_dir: Path) -> None:
 
     Once `replay_persona_step` is wired to the live platform, this test
     will assert that the chatbot's first response to priya's MaxEnt
-    sweep ask (a) invokes Workflow without disambiguation, and (b)
+    sweep ask (a) invokes TinyAssets without disambiguation, and (b)
     surfaces the recorded `expected_tool_calls` in the same order.
     Regression here means a chain-break versus the recorded baseline.
     """

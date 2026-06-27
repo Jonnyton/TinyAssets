@@ -1,6 +1,6 @@
 <!--
   StatusPill — daemon-status capsule. Live / idle / paid / self / error.
-  Ported from design-source/ui_kits/workflow-web/Primitives.jsx
+  Ported from design-source/ui_kits/tinyassets-web/Primitives.jsx
 -->
 <script lang="ts">
   type Kind = 'live' | 'idle' | 'paid' | 'self' | 'error';

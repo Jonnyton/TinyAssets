@@ -2,21 +2,21 @@
 
 Echoes of the Cosmos is an open science-fantasy universe intended for public contribution.
 
-It should stand as its own public universe project. Workflow is the current best contribution and live-state engine for it, but Echoes is not merely a subproject of Workflow. The universe should remain independently understandable and contributor-facing.
+It should stand as its own public universe project. TinyAssets is the current best contribution and live-state engine for it, but Echoes is not merely a subproject of TinyAssets. The universe should remain independently understandable and contributor-facing.
 
 ## Current Status
 
-Echoes is now wired as a public Workflow universe and source-intake example.
+Echoes is now wired as a public TinyAssets universe and source-intake example.
 
 Live pieces:
 
 - canon reference guide
 - Resonance magic-system reference
-- live Workflow universe: `echoes-of-the-cosmos`
+- live TinyAssets universe: `echoes-of-the-cosmos`
 - Reddit source channel: https://www.reddit.com/r/EchoesoftheCosmos/
 - Reddit RSS source channel: https://www.reddit.com/r/EchoesoftheCosmos/.rss
-- Workflow public-source goal: `dd187997039b`
-- Workflow intake branch: `f8053c7ae22a`
+- TinyAssets public-source goal: `dd187997039b`
+- TinyAssets intake branch: `f8053c7ae22a`
 - canonical branch version: `f8053c7ae22a@aa8ee9e6`
 - prior use as source material for Fantasy Writer / Fantasy Author testing
 
@@ -26,9 +26,9 @@ Still in progress:
 - public contributor guide
 - long-running daemon/provider execution for recurring imports
 
-## Relationship To Workflow
+## Relationship To TinyAssets
 
-Workflow is the live-state layer:
+TinyAssets is the live-state layer:
 
 - source ingestion
 - branchable canon updates
@@ -37,7 +37,7 @@ Workflow is the live-state layer:
 - public/community feedback loop
 - future contributor rewards where appropriate
 
-Echoes remains the public universe. Workflow is the engine that can host and maintain it.
+Echoes remains the public universe. TinyAssets is the engine that can host and maintain it.
 
 ## Relationship To Hex
 
@@ -59,7 +59,7 @@ Current staged canon:
 
 Primary surface:
 
-- Workflow-hosted live universe
+- TinyAssets-hosted live universe
 
 Secondary/import sources:
 
@@ -72,17 +72,17 @@ Reddit should be treated as an import/source channel into the canon workflow, no
 The current MCP pattern is:
 
 1. A user or chatbot fetches a public source, such as the subreddit RSS feed.
-2. Workflow stores that snapshot in the `echoes-of-the-cosmos` universe as imported source material.
+2. TinyAssets stores that snapshot in the `echoes-of-the-cosmos` universe as imported source material.
 3. The source-intake branch produces a manifest, contribution packet, and canon-gate decision.
 4. Reviewed material can become canon or a GitHub PR.
 
-The branch is live and runnable, but generated output depends on a connected Workflow LLM host. The first smoke run reached the first LLM node and exposed a provider empty-response issue, so the wiring is live while daemon execution remains a runtime follow-up.
+The branch is live and runnable, but generated output depends on a connected TinyAssets LLM host. The first smoke run reached the first LLM node and exposed a provider empty-response issue, so the wiring is live while daemon execution remains a runtime follow-up.
 
 ## Honest Public Framing
 
 Use:
 
-> Echoes of the Cosmos is an open science-fantasy universe wired into Workflow as a public canon/source-intake system. Reddit is the first public source channel; imported material is reviewed through Workflow gates before it becomes canon.
+> Echoes of the Cosmos is an open science-fantasy universe wired into TinyAssets as a public canon/source-intake system. Reddit is the first public source channel; imported material is reviewed through TinyAssets gates before it becomes canon.
 
 Avoid:
 

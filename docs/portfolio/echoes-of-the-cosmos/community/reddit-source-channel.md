@@ -8,7 +8,7 @@ Live source URLs:
 - RSS: https://www.reddit.com/r/EchoesoftheCosmos/.rss
 - JSON listing: https://www.reddit.com/r/EchoesoftheCosmos/.json?limit=25
 
-Live Workflow wiring:
+Live TinyAssets wiring:
 
 - Universe: `echoes-of-the-cosmos`
 - Goal: `dd187997039b`
@@ -27,7 +27,7 @@ The subreddit is a public contribution and discussion surface:
 - debate around canon direction
 - lightweight onboarding
 
-Workflow should become the live-state and promotion surface:
+TinyAssets should become the live-state and promotion surface:
 
 - ingest relevant Reddit material
 - summarize proposals
@@ -51,7 +51,7 @@ Suggested states:
 
 ## Contributor Attribution
 
-When importing Reddit ideas into Workflow, preserve attribution where possible:
+When importing Reddit ideas into TinyAssets, preserve attribution where possible:
 
 - Reddit username
 - source URL
@@ -59,7 +59,7 @@ When importing Reddit ideas into Workflow, preserve attribution where possible:
 - short summary
 - canon decision
 
-## Near-Term Workflow
+## Near-Term TinyAssets
 
 1. A user or chatbot fetches the subreddit, RSS, or JSON listing.
 2. The fetched snapshot is submitted to TinyAssets MCP as imported source material.
@@ -69,6 +69,6 @@ When importing Reddit ideas into Workflow, preserve attribution where possible:
 
 ## Current Boundary
 
-Workflow stores, reviews, and gates imported source snapshots. The branch does not yet fetch the web by itself; the caller's browser or chatbot web tool supplies the source snapshot. This is intentional for now because public publishing should stay gated.
+TinyAssets stores, reviews, and gates imported source snapshots. The branch does not yet fetch the web by itself; the caller's browser or chatbot web tool supplies the source snapshot. This is intentional for now because public publishing should stay gated.
 
-The live smoke run for the intake branch reached the first LLM node but failed with an empty-provider response. That is a Workflow host/provider follow-up, not an Echoes source-wiring issue.
+The live smoke run for the intake branch reached the first LLM node but failed with an empty-provider response. That is a TinyAssets host/provider follow-up, not an Echoes source-wiring issue.

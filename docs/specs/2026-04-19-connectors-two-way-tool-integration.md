@@ -49,7 +49,7 @@ status: active
 
 ## 2. `ConnectorProtocol` interface
 
-Every connector is a Python module under `Workflow/connectors/<name>/` that exposes a class matching this interface:
+Every connector is a Python module under `TinyAssets/connectors/<name>/` that exposes a class matching this interface:
 
 ```python
 class ConnectorProtocol(Protocol):
@@ -407,7 +407,7 @@ Cross-ref spec #29 paid-market settlement — connector invocations within paid 
 ### 9.1 Directory + file layout
 
 ```
-Workflow/connectors/<name>/
+TinyAssets/connectors/<name>/
 ├── __init__.py              # exports class matching ConnectorProtocol
 ├── connector.py             # main implementation
 ├── oauth_config.py          # if auth_kind == "oauth2"
@@ -528,10 +528,10 @@ Navigator's §28.6 estimate was ~1.5d. Revising based on spec scope:
 
 | # | Question |
 |---|---|
-| Q1 | **OAuth app registration posture.** Every OAuth provider needs a registered app; platform operator registers each one. Who owns the app (Workflow LLC? personal?)? Recommend platform-operator entity; revisit when legal entity exists. |
+| Q1 | **OAuth app registration posture.** Every OAuth provider needs a registered app; platform operator registers each one. Who owns the app (TinyAssets LLC? personal?)? Recommend platform-operator entity; revisit when legal entity exists. |
 | Q2 | **Incremental vs grant-all OAuth scopes.** MVP uses grant-all (simpler UX, more friction-upfront). Providers like Google support incremental grants. Should we move to incremental post-MVP? Recommend yes — lower upfront friction. |
 | Q3 | **Vault choice at MVP.** Supabase Vault is assumed; self-host playbook (#57) would need HashiCorp Vault integration. Cross-ref §8 pluggable-vault abstraction. |
-| Q4 | **Webhook HMAC algorithm default.** Recommend `HMAC-SHA256` with `X-Workflow-Signature` header. Host confirm or propose alternate. |
+| Q4 | **Webhook HMAC algorithm default.** Recommend `HMAC-SHA256` with `X-TinyAssets-Signature` header. Host confirm or propose alternate. |
 | Q5 | **Destination-key granularity.** Gmail at `domain:` level, not per-recipient. For B2B workflows where every email is the same domain (internal), this effectively grants consent to all internal mail. Acceptable? Recommend yes at MVP — reduces re-ask noise; can tighten if abuse observed. |
 | Q6 | **Connector version pinning.** When a connector v1.0 → v1.1 introduces schema changes, what happens to in-flight workflows? Recommend: semver; connectors ship under `/connectors/<name>@<major>/`, breaking changes bump major and coexist. Not MVP but bake-in the URL structure. |
 | Q7 | **Rate-limit reporting.** Should `connector_status()` report the user's current quota usage per provider? Useful for chatbot narration but requires per-provider quota-query endpoints (Gmail has one, GitHub has one, others don't). Recommend: expose where available, omit where not. |

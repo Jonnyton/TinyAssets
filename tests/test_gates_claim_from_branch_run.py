@@ -17,7 +17,7 @@ Happy path covered:
   * Branch supplies only recommended_rung_claim; caller supplies evidence_url
     -> claimed.
   * Branch supplies only recommended_rung_claim; action falls back to an
-    internal Workflow run evidence handle -> claimed.
+    internal TinyAssets run evidence handle -> claimed.
   * Caller's evidence_url overrides branch-supplied URL.
   * Re-running the action with the same (branch, rung) is idempotent
     (no duplicate claim, no error) — matches `gates.claim` semantics.

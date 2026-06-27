@@ -14,7 +14,7 @@ For people getting real work done — jobs, projects, real artifacts. Success me
 
 | | Scenario | What it proves |
 |---|---|---|
-| **A** | `Workflow: payables` → CSV into Voyager + named PDFs | Invocation + attachment I/O + connector push |
+| **A** | `TinyAssets: payables` → CSV into Voyager + named PDFs | Invocation + attachment I/O + connector push |
 | **B** | Vibe-code a max-super-nerd node via chatbot | Authoring surface, primitive-level access |
 | **C1** | Told chatbot about job → autonomous scope-extension to company-wide distribution | Chatbot scope-extension + connector push to org tools |
 | **C4** | Book → top-10 fan-out → overnight → 10 alternative next-books | Parallel fan-out, top-N ranking, self-hosted-zero-fee execution |
@@ -44,7 +44,7 @@ tinyassets.io
         └─ uploads metadata
    │
    ├─→ Daemon hosts (opt-in) — tray app, LangGraph runtime, polls bids
-   └─→ GitHub (export sink only — Workflow-catalog/ repo)
+   └─→ GitHub (export sink only — TinyAssets-catalog/ repo)
 ```
 
 → **Site implication:** the site is the front door for the whole control plane. Not a brochure. `/catalog`, `/connect`, `/host`, `/contribute`, `/status`, `/editor`, `/earnings`, `/admin`, `/account` are all real surfaces with real backend bindings. Phase 1 ships landing-only chrome, Phase 2+ wires up surfaces against the backend as it lights up.
@@ -86,7 +86,7 @@ Tracks ship as a single push (no phased rollout — that was rejected). Letter c
 
 → **Site implication:** the website (Track B) is one of 16 tracks. Landing-first is the right Phase 1 (matches the §10 dev-day estimate). Don't pretend the site is the product — it's the front door.
 
-## Self-evolving loop (the unique-to-Workflow story)
+## Self-evolving loop (the unique-to-TinyAssets story)
 
 ```
 user chatbot
@@ -110,7 +110,7 @@ bisect-on-canary + atomic surgical rollback if regression
 
 **Lead/host endgame:** true emergencies + meta-evolution only. Auto-heal + community evolution drive the loop.
 
-→ **Site implication:** this is genuinely novel. A "How it heals itself" or "How the platform evolves" section makes the Workflow product concretely different from any static MCP server. It's also evidence behind the "real world effect engine" framing.
+→ **Site implication:** this is genuinely novel. A "How it heals itself" or "How the platform evolves" section makes the TinyAssets product concretely different from any static MCP server. It's also evidence behind the "real world effect engine" framing.
 
 ## Project principles (load-bearing — these constrain product copy)
 
@@ -120,7 +120,7 @@ bisect-on-canary + atomic surgical rollback if regression
 4. **commons-first-architecture** — public concept layer is the canon; instance layer stays with the user; never training data.
 5. **user-capability-axis** — capabilities are tier-mapped (T1/T2/T3), not feature-mapped.
 
-→ **Site implication:** every claim on the site has to honor the "we don't ship things the community can compose" principle. No bullet points like "with Workflow you can…" — instead "you and your chatbot can compose…".
+→ **Site implication:** every claim on the site has to honor the "we don't ship things the community can compose" principle. No bullet points like "with TinyAssets you can…" — instead "you and your chatbot can compose…".
 
 ## Packaging / distribution story
 
@@ -167,7 +167,7 @@ Plus negative events: `caused_regression` (-10 P0 / -3 P1 / -1 P2) when post-mer
 | 3-CTA: Connect / Host / Contribute (generic) | 3-CTA labeled by tier: "Try in Claude.ai (zero-install)" / "Host a daemon (one-click)" / "Contribute to the OSS core" |
 | Token strip mentions "earn" generically | Token strip names the 5 contribution event types; links to a future `/earnings` page |
 | Contract address in footer pill | Same — but with brief "ledger settles to tinyassets.io economic layer" framing |
-| Workflow showcase (parchment diagrams) | Pulled from `ui_kits/workflow-web/Diagrams.jsx` + `BranchDAG.jsx` (already exist) |
+| TinyAssets showcase (parchment diagrams) | Pulled from `ui_kits/tinyassets-web/Diagrams.jsx` + `BranchDAG.jsx` (already exist) |
 | /connect = single copy-URL widget | Three paths: URL / MCPB / Claude plugin (all in `connect.json`) |
 | /legal = ToS placeholder | Same; nothing changes |
 | Skipped self-evolving loop | Add a "How it evolves" section between hero and 3-CTA — this is the unique product story |

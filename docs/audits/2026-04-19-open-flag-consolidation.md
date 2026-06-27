@@ -136,11 +136,11 @@
 | Q2 | Per-node license override column | **LATER** | Post-MVP. |
 | Q3 | Bot-key storage — Supabase Vault vs env var | **LATER** | Vault recommended. |
 | Q4 | Human-review bottleneck on catalog PRs | **HOST** | Cross-refs §14.7; reviewer recruitment is a launch-readiness task. |
-| Q5 | Two-repo vs single-repo-with-branches | **RESOLVED** | Memory `project_collab_model_split.md` + host task-description `workflow-catalog-v0/README.md` confirms two-repo. |
+| Q5 | Two-repo vs single-repo-with-branches | **RESOLVED** | Memory `project_collab_model_split.md` + host task-description `tinyassets-catalog-v0/README.md` confirms two-repo. |
 | Q6 | Structural-hash UX in PR body | **LATER** | Build-time UX polish. |
 | Q7 | Bulk-import collision | **LATER** | Build-time tuning. |
 | Q8 | DCO vs CLA | **RESOLVED** | Memory `project_license_fully_open_commons.md` + moderation_rubric v1 + #32 spec all converge on DCO. |
-| Q9 | `Workflow-catalog/` repo owner — same org vs separate | **HOST** | Host decides GitHub org structure. |
+| Q9 | `TinyAssets-catalog/` repo owner — same org vs separate | **HOST** | Host decides GitHub org structure. |
 | Q10 | Search-engine indexing on catalog repo | **RESOLVED** | Memory: commons-adoption goal; index-friendly. |
 
 ### `docs/specs/2026-04-18-web-app-landing-and-catalog.md` §9 (10 flags)
@@ -262,7 +262,7 @@ Amendment (task #54): cite the specific memory directive text for each RESOLVED 
 3. **Foundation/LLC setup timing** (legal/financial decision).
 4. **Succession-lead + co-maintainer recruitment strategy** (host's style call).
 5. **Code-signing cert procurement** (~$400/yr, Windows EV + macOS Developer ID).
-6. **GitHub org structure** (single org vs separate for Workflow/ + Workflow-catalog/).
+6. **GitHub org structure** (single org vs separate for TinyAssets/ + TinyAssets-catalog/).
 7. **MCPB vs standalone tray distribution primary** (host product preference).
 8. **Accessibility target pick** (full AA vs partial-with-plan).
 9. **DMCA counter-notice process** (legal; host + counsel).

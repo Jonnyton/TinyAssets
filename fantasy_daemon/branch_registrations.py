@@ -79,7 +79,7 @@ def universe_cycle_wrapper(state: dict[str, Any]) -> dict[str, Any]:
     initial: dict[str, Any] = {
         field: state[field] for field in _BOUNDARY_FIELDS if field in state
     }
-    # Workflow instructions can be reconstructed from premise_kernel.
+    # TinyAssets instructions can be reconstructed from premise_kernel.
     if state.get("premise_kernel"):
         initial.setdefault("premise_kernel", state["premise_kernel"])
         initial.setdefault(

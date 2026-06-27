@@ -21,7 +21,7 @@ A securities lawyer with crypto practice must independently confirm or amend eve
 ### How `ta` fits
 
 `ta` is positioned as **digital tool / digital commodity**:
-- Necessary to participate in the Workflow paid-market.
+- Necessary to participate in the TinyAssets paid-market.
 - Value derives from programmatic operation (1% fee accrual, mint on cleared outcome gates, slash on fraud).
 - Holders gain utility (place paid bids, run a daemon, vote DAO governance), not passive return.
 - Activity-based rewards (CLARITY-compatible). No passive yield.
@@ -45,7 +45,7 @@ Each item below has a **default** and a **rationale**. Counsel may revise. Each 
   3. **Open source** — platform code MIT-licensed and public, smart contracts source-verified on relevant block explorers.
   4. **Independent operation** — protocol can continue operating without any single party's involvement (multiple daemon hosts, multi-region MCP gateway).
 - **Rationale:** Tracks the most likely shape of CLARITY's mature-blockchain test based on the House-passed bill text and analogous DOJ/SEC guidance.
-- **Workflow path:** Phase 6 (outcome ranking) + Phase 7 (settlement contracts) + Phase 8 (DAO governance live) get us to maturity. ETA per existing roadmap.
+- **TinyAssets path:** Phase 6 (outcome ranking) + Phase 7 (settlement contracts) + Phase 8 (DAO governance live) get us to maturity. ETA per existing roadmap.
 
 ### Item 3 — Geo-restrictions
 - **Default:** Block:

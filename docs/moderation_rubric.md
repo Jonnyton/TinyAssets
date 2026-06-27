@@ -2,8 +2,8 @@
 
 **Version:** 1.0
 **Last updated:** 2026-04-19
-**Status:** v1 first-draft. Changes land via PR to `Workflow/`; 2 admin-pool members must approve per `SUCCESSION.md` bus-factor rule + `docs/specs/2026-04-18-moderation-mvp.md` §6.
-**Canonical home:** this file in `Workflow/` repo (platform-code side of the two-repo split).
+**Status:** v1 first-draft. Changes land via PR to `TinyAssets/`; 2 admin-pool members must approve per `SUCCESSION.md` bus-factor rule + `docs/specs/2026-04-18-moderation-mvp.md` §6.
+**Canonical home:** this file in `TinyAssets/` repo (platform-code side of the two-repo split).
 
 ---
 

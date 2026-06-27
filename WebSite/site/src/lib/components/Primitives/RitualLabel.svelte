@@ -1,6 +1,6 @@
 <!--
   RitualLabel — small-caps mono label for kickers, metadata, "inscribed" text.
-  Ported from design-source/ui_kits/workflow-web/Primitives.jsx
+  Ported from design-source/ui_kits/tinyassets-web/Primitives.jsx
 -->
 <script lang="ts">
   let {

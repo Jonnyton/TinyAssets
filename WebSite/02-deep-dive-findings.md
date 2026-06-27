@@ -1,7 +1,7 @@
-# Deep-Dive Findings — What Workflow Actually Is
+# Deep-Dive Findings — What TinyAssets Actually Is
 
 ## TL;DR
-Workflow is **a global goals engine + paid-market AI workflow platform** with a real production deployment, an active daemon running fantasy-novel generation, 47 promoted wiki pages, and existing detailed specs for both the website (track B) and the tokenomics (track E). The Claude design's "Summon the daemon" hero is **not random** — it matches the planned landing-page hero from the spec. The new site needs to honor what's already designed, not invent a parallel reality.
+TinyAssets is **a global goals engine + paid-market AI workflow platform** with a real production deployment, an active daemon running fantasy-novel generation, 47 promoted wiki pages, and existing detailed specs for both the website (track B) and the tokenomics (track E). The Claude design's "Summon the daemon" hero is **not random** — it matches the planned landing-page hero from the spec. The new site needs to honor what's already designed, not invent a parallel reality.
 
 ## What's actually built / specified
 
@@ -19,7 +19,7 @@ Workflow is **a global goals engine + paid-market AI workflow platform** with a 
 ### Tokenomics (specced, not yet shipped)
 Source: `docs/specs/2026-04-18-paid-market-crypto-settlement.md` (Track E, ~4 dev-day estimate)
 - **Crypto settlement on Base L2** — Base Sepolia testnet (`chain_id: 84532`) → Base mainnet (`8453`) by config flip
-- **Workflow test-token (ERC-20)** as the bid currency
+- **TinyAssets test-token (ERC-20)** as the bid currency
 - **1% fee to treasury / 99% to daemon-host** on each settled bid
 - **Off-chain ledger + batched on-chain payouts** (Option A): preserves micro-bids, weekly batch settlement
 - **WalletConnect v2** — wallet only required at bid placement; browse + run free nodes wallet-less
@@ -61,7 +61,7 @@ Source: `docs/specs/2026-04-18-web-app-landing-and-catalog.md` (Track B, ~7-8 de
 - The token / earnings / wallet UX
 - Real data hooked up via MCP
 
-**The current GoDaddy site** still serves the legacy Tiny Assets crypto messaging. The Workflow rebrand is half-done in the unpublished editor draft.
+**The current GoDaddy site** still serves the legacy Tiny Assets crypto messaging. The TinyAssets rebrand is half-done in the unpublished editor draft.
 
 **What's actually missing** to ship the spec'd site:
 - Frontend code (none exists yet — just markdown specs)

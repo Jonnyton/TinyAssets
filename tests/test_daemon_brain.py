@@ -389,7 +389,7 @@ def test_tiny_daemon_external_write_packet_uses_daemonbrain_facade(
         content=(
             "Tiny daemon external-write packets for twitter_post must check "
             "the Brain for consent, idempotency, and voice policy before any "
-            "sink adapter writes outside Workflow."
+            "sink adapter writes outside TinyAssets."
         ),
         source_type="patch_request",
         source_id="WIKI-PATCH-908",

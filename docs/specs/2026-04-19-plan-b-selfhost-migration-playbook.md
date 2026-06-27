@@ -38,7 +38,7 @@ Partial triggers → stay + monitor. Full triggers → execute this playbook.
 | Auth | Supabase Auth (GitHub OAuth) | Same Hetzner box: [supabase/auth OSS](https://github.com/supabase/auth) (formerly GoTrue) |
 | Storage | Supabase Storage (S3-compat) | Cloudflare R2 (cheap S3-compat) OR Hetzner Object Storage |
 | Edge Functions | Supabase Edge | Fly.io if still available; else Hetzner as Deno Deploy workers OR systemd-managed Python processes |
-| Gateway | Fly.io Machines (workflow-gateway + workflow-web) | Hetzner CX11 boxes (1-2 per region) running same Docker images behind Cloudflare |
+| Gateway | Fly.io Machines (tinyassets-gateway + tinyassets-web) | Hetzner CX11 boxes (1-2 per region) running same Docker images behind Cloudflare |
 | CDN / Cache | Cloudflare (Free tier) | Unchanged — Cloudflare isn't part of the migration |
 | Domain | GoDaddy (host-owned per memory) | Unchanged |
 
@@ -86,11 +86,11 @@ Don't wait for a crisis. Each of these keeps the migration path warm:
    - **db-primary** (CX31, 8 GB RAM): Postgres 15 + PgBouncer + supabase/realtime + supabase/auth + pg_cron + weekly pg_dump to R2.
    - **gateway-1** (CX11, 2 GB RAM): Docker Compose with FastMCP gateway + SvelteKit web-app Node adapter.
    - **gateway-2** (CX11, 2 GB RAM): same, different region if budget allows (Hetzner Helsinki + Falkenstein = diverse).
-3. **Install via automation.** Maintain `infra/selfhost/` in the `Workflow/` repo with:
+3. **Install via automation.** Maintain `infra/selfhost/` in the `TinyAssets/` repo with:
    - `terraform/` or `docker-compose.yml` + `systemd/` unit files for the box configs.
    - `migrations/` — same SQL migrations as the Supabase stack.
    - `scripts/provision.sh` — one-command bootstrap.
-4. **Secrets** — copy from vault (`Workflow-Prod` per SUCCESSION.md §3.2) to Hetzner-boxes' `.env` files. JWT secret + S3-API key + any remaining service creds.
+4. **Secrets** — copy from vault (`TinyAssets-Prod` per SUCCESSION.md §3.2) to Hetzner-boxes' `.env` files. JWT secret + S3-API key + any remaining service creds.
 
 ### Phase 2: Restore data (4-8 hours, depending on DB size)
 
@@ -139,9 +139,9 @@ The full playbook above migrates the whole stack. Cheaper partial migrations han
 
 ### 5.3 GitHub itself — most extreme
 
-- Trigger: GitHub down or hostile to project; `Workflow/` + `Workflow-catalog/` repos become unreliable.
+- Trigger: GitHub down or hostile to project; `TinyAssets/` + `TinyAssets-catalog/` repos become unreliable.
 - Migration target: GitLab or self-hosted Gitea (Hetzner box, 1 GB RAM is enough).
-- Workflow-catalog bot reconfigured for target VCS API.
+- TinyAssets-catalog bot reconfigured for target VCS API.
 - Contributors have the mirror URL; PR-ingest Action ported to target CI.
 - **Highest-friction migration** — contributor community disruption is real cost.
 - Mitigation: weekly full mirror to alternate VCS even pre-trigger. Per uptime note §14.9.

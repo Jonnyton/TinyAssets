@@ -66,4 +66,4 @@ npm run build     # dual-adapter build — static to build-static/, node to buil
 
 - Adapter-static vs Cloudflare Pages native adapter — spec #35 §9 Q1 unresolved. v0 uses adapter-static.
 - OG image generation library — not included in v0 (spec #35 §9 Q2).
-- Full `/catalog/nodes/<slug>` SSG from the `Workflow-catalog/` repo — out of scope for v0 scaffold; content source is real in the prod build.
+- Full `/catalog/nodes/<slug>` SSG from the `TinyAssets-catalog/` repo — out of scope for v0 scaffold; content source is real in the prod build.

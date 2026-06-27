@@ -4,8 +4,8 @@
 </script>
 
 <svelte:head>
-  <title>{n.name} — Workflow Catalog</title>
-  <meta name="description" content="{n.concept?.purpose ?? 'Workflow node'}" />
+  <title>{n.name} — TinyAssets Catalog</title>
+  <meta name="description" content="{n.concept?.purpose ?? 'TinyAssets node'}" />
   <meta property="og:title" content="{n.name}" />
   <meta property="og:description" content="{n.concept?.purpose ?? ''}" />
   <link rel="canonical" href="https://tinyassets.io/catalog/{n.node_id}" />

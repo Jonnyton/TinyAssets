@@ -77,7 +77,7 @@ def test_server_instructions_drop_universe_server_jargon() -> None:
     assert "Universe Server" not in text, (
         "Server instructions must not teach 'Universe Server' vocabulary; "
         "it's the literal phrase that leaked via Claude memory to Devin "
-        "(LIVE-F7). Use 'Workflow' (product name) instead."
+        "(LIVE-F7). Use 'TinyAssets' (product name) instead."
     )
 
 

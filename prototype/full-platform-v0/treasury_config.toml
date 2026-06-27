@@ -1,4 +1,4 @@
-# Treasury configuration for the Workflow paid-market.
+# Treasury configuration for the TinyAssets paid-market.
 #
 # This file carries ONLY public addresses + configuration. Never seed phrases,
 # never private keys. See .secrets/ (gitignored) for the host-local seed/key

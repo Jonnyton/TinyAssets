@@ -74,7 +74,7 @@ Lower risk: shim transparently resolves to `workflow.*` / `fantasy_daemon.*`. Mi
 | `tests/test_runtime_status_bridge.py` | 31, 387 | `from fantasy_author.__main__ import DaemonController` / `from fantasy_author.providers import router` | `from workflow.__main__ import ...` |
 | `tests/test_task_producers.py` | 62 | `from domains import fantasy_author` | `from domains import fantasy_daemon` |
 | `tests/test_work_targets.py` | 19 | `from fantasy_daemon.api import app, configure` | `from workflow.api import app, configure` |
-| `tests/test_workflow_runtime.py` | 166, 174 | `from fantasy_daemon.api import app` / `from fantasy_daemon.api import configure` | `from workflow.api import ...` |
+| `tests/test_tinyassets_runtime.py` | 166, 174 | `from fantasy_daemon.api import app` / `from fantasy_daemon.api import configure` | `from workflow.api import ...` |
 
 ---
 

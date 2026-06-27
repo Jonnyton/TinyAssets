@@ -4,7 +4,7 @@
 </script>
 
 <svelte:head>
-  <title>Legal — Workflow</title>
+  <title>Legal — TinyAssets</title>
 </svelte:head>
 
 <h1>{t.title}</h1>

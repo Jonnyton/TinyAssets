@@ -222,7 +222,7 @@ Every point in the system where data moves. For each: what flows, what can leak,
 - **Defenses by default:** daemons run owner-scoped — only the owner's own instance data ever enters a run that the owner authorized; LLM provider selection respects `confidentiality_tier` (per the privacy memory + `project_privacy_per_piece_chatbot_judged.md`) — ollama-local for T4/T5 content, provider APIs for public-concept work; run transcripts persisted with owner-only RLS.
 - **Escalation:** chatbot-judged per-piece visibility is re-consulted when a daemon run is about to emit output back to a non-owner.
 
-### 7.5 Export — `Workflow-catalog/` GitHub export
+### 7.5 Export — `TinyAssets-catalog/` GitHub export
 
 - **What flows:** allowlisted fields from `nodes.concept` + quality signals + provenance chain → YAML files in the public GitHub repo.
 - **What can leak:** new schema columns accidentally exported (allowlist prevents); fields marked public at concept-level but containing private instance values (field-visibility stripping catches); bulk-import batch exposing data the user intended to privatize mid-batch (public→private flip emits DELETE diff per #32 §2.4).

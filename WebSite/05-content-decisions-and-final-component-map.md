@@ -6,7 +6,7 @@ After reading the UI kit (TopNav, Connect, Host, Contribute, Catalog, ChatDemo, 
 
 | # | Decision | Source-confirmed answer |
 |---|---|---|
-| 1 | **Logo source** | `assets/logo-mark.svg` (sigil) + `assets/wordmark-horizontal.svg` (sigil + "Workflow" wordmark) — both already in `WebSite/design-source/assets/` |
+| 1 | **Logo source** | `assets/logo-mark.svg` (sigil) + `assets/wordmark-horizontal.svg` (sigil + "TinyAssets" wordmark) — both already in `WebSite/design-source/assets/` |
 | 2 | **GitHub repo URL** | `https://github.com/Jonnyton/TinyAssets` — confirmed via Contribute.jsx + design README |
 | 3 | **Contact email** | `security@tinyassets.io` (per CONTRIBUTING.md — routes to admin pool / maintainers; doubles as security inbox) |
 | 4 | **MCP target page** | Just the URL `https://tinyassets.io/mcp` — Connect page is intentionally radical-simplicity (paste URL, 2 steps, done) — NOT a docs page |
@@ -33,7 +33,7 @@ For Phase 1 a slimmer nav makes sense: **Home · Connect · Host · Contribute**
 | `Primitives.jsx` | `lib/components/Primitives/{Button,StatusPill,RitualLabel,SigilAvatar,DaemonTile}.svelte` | **1** | All small. Convert React inline-style + `onMouseEnter` → Svelte `style:` + `on:mouseenter`. |
 | `SigilMark.jsx` | `lib/components/SigilMark.svelte` | **1** | Or just `<img src="/logo-mark.svg">` — both work. |
 | `TopNav.jsx` | `routes/+layout.svelte` (replace placeholder) | **1** | Sticky-translucent + ember underline + 2 CTAs. |
-| `Landing.jsx` | `routes/+page.svelte` (replace placeholder) | **1** | Big port — 8 sections + uses ChatDemo, BranchDAG, OutcomeGateLadder. Phase 1 ships at least Hero + 3-CTA + ThreeLayer (Goal/Branch/Daemon) + WhyWorkflow + Footer. Defer AgentTeams + ProductInOneFrame + OutcomeGates + EconomyTease to Phase 1.5. |
+| `Landing.jsx` | `routes/+page.svelte` (replace placeholder) | **1** | Big port — 8 sections + uses ChatDemo, BranchDAG, OutcomeGateLadder. Phase 1 ships at least Hero + 3-CTA + ThreeLayer (Goal/Branch/Daemon) + WhyTinyAssets + Footer. Defer AgentTeams + ProductInOneFrame + OutcomeGates + EconomyTease to Phase 1.5. |
 | `Connect.jsx` | `routes/connect/+page.svelte` (replace placeholder) | **1** | Tiny — just the URL paste card + 2-step grid. |
 | `ChatDemo.jsx` | `lib/components/ChatDemo.svelte` | **1** (in landing) | Faux Claude.ai transcript with user/thought/tool/assistant messages. Pure JSX → Svelte conversion. |
 
@@ -68,7 +68,7 @@ For Phase 1 a slimmer nav makes sense: **Home · Connect · Host · Contribute**
 ## Updated Phase 1 ship scope (final)
 
 **Polish for ship:**
-- `/` — Hero (copy + ChatDemo) + Three-Layer + Why Workflow + Token/Economy tease + Footer
+- `/` — Hero (copy + ChatDemo) + Three-Layer + Why TinyAssets + Token/Economy tease + Footer
 - `/connect` — Connect.jsx ported as-is
 - `/legal` — placeholder ToS + privacy + license
 
@@ -83,7 +83,7 @@ For Phase 1 a slimmer nav makes sense: **Home · Connect · Host · Contribute**
 - `Button`, `StatusPill`, `RitualLabel`, `SigilAvatar` (Primitives)
 - `SigilMark` (logo SVG, can be `<img>` or inline)
 - `Nav` (TopNav port)
-- `Hero` + `ChatDemo` + `ThreeLayer` + `WhyWorkflow` + `TokenStrip` + `Footer` (landing sections)
+- `Hero` + `ChatDemo` + `ThreeLayer` + `WhyTinyAssets` + `TokenStrip` + `Footer` (landing sections)
 - `ConnectURLCard` (the copy-URL card in Connect)
 
 **Open content TODOs (host action):**

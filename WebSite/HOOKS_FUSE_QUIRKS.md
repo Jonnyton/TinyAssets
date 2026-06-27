@@ -64,7 +64,7 @@ would clash with delimiter).
 
 The rule is repeated in:
 
-- `Workflow/CLAUDE.md` (under "FUSE truncation rule")
+- `TinyAssets/CLAUDE.md` (under "FUSE truncation rule")
 - `WebSite/HOOKS_FUSE_QUIRKS.md` (this file)
 - `.agents/skills/auto-iterate/SKILL.md` (canonical example)
 - agent memory: `feedback_fuse_truncation.md`

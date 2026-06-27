@@ -48,7 +48,7 @@ These are load-bearing for refactor dispatch (hotspots #1-#3 in `docs/audits/202
 **Framing.** This is the one-way-door decision in §4 of the full-platform note. Picking this unblocks the schema, RLS policies, and the entire realtime collaboration layer — without it, the design rebuilds around a different core.
 
 **Choices:**
-- **(a) Postgres canonical, GitHub mirror** — Supabase Postgres holds the live state; an hourly Action exports public rows as flat YAML to a `Workflow-catalog/` repo; PR ingestion round-trips back. Real-time collab works natively via Supabase Realtime. **One-way door:** reverting to GitHub-canonical post-launch means data migration.
+- **(a) Postgres canonical, GitHub mirror** — Supabase Postgres holds the live state; an hourly Action exports public rows as flat YAML to a `TinyAssets-catalog/` repo; PR ingestion round-trips back. Real-time collab works natively via Supabase Realtime. **One-way door:** reverting to GitHub-canonical post-launch means data migration.
 - **(b) GitHub canonical (status quo)** — every state change is a commit; live collab requires custom build-on-top. Realtime presence + concurrent edits are not natively available; we'd build them ourselves.
 
 **Recommendation: (a).** Only shape that satisfies the full-platform requirements (live collab + RLS + presence) without a custom realtime layer. The one-way-door risk is real but cheaper than building Supabase Realtime ourselves.

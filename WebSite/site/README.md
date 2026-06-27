@@ -99,7 +99,7 @@ Brand palette, typography, motion, voice, vocab kit all live in:
 - `../../assets/brand/` (reusable SVG/PNG logo exports)
 - `WebSite/design-source/README.md` (design-system bible — voice, palette derivation, icon rules)
 - `WebSite/design-source/colors_and_type.css` (canonical source — kept identical to tokens.css)
-- `WebSite/design-source/workflow-landing-standalone.html` (single-file bundled React preview of the full design)
+- `WebSite/design-source/tinyassets-landing-standalone.html` (single-file bundled React preview of the full design)
 
 The vocab kit is load-bearing: **summon** a daemon (not "create"), **bind** to a universe (not "configure"), **entrust** with a task (not "assign"), **dismiss** (not "stop"), **roam** (not "search"), **return** (not "complete"). The README has the calibration examples.
 

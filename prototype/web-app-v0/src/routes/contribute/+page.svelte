@@ -8,4 +8,4 @@
 
 <pre><code>{t.clone_cmd}</code></pre>
 
-<p><a href="https://github.com/Workflow/Workflow/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a></p>
+<p><a href="https://github.com/Jonnyton/TinyAssets/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a></p>

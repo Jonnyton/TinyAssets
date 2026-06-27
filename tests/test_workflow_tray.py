@@ -120,7 +120,7 @@ def test_start_refuses_unknown_provider(mgr: tinyassets_tray.UniverseServerManag
 def test_start_allows_duplicate_subscription_provider_with_warning(mgr) -> None:
     assert mgr.start_daemon_for("claude-code") is True
     # Product behavior: same-provider daemons are allowed. The tray warns
-    # about provider capacity but does not enforce a Workflow cap.
+    # about provider capacity but does not enforce a TinyAssets cap.
     assert mgr.start_daemon_for("claude-code") is True
     assert list(mgr.daemon_procs.keys()) == ["claude-code", "claude-code#2"]
     assert mgr._running_providers() == ["claude-code", "claude-code"]

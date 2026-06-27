@@ -208,7 +208,7 @@ def _worktree_purpose_paths(root: Path) -> list[Path]:
         candidates.add(worktree_path / "_PURPOSE.md")
 
     if root.parent.is_dir():
-        for pattern in ("wf-*/_PURPOSE.md", "Workflow*/_PURPOSE.md"):
+        for pattern in ("wf-*/_PURPOSE.md", "TinyAssets*/_PURPOSE.md"):
             candidates.update(root.parent.glob(pattern))
     candidates.update((root / ".claude" / "worktrees").glob("*/_PURPOSE.md"))
     candidates.update((root / "origin").glob("*/_PURPOSE.md"))

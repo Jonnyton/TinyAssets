@@ -64,7 +64,7 @@ def test_all_workflow_ymls_parse():
 
 
 # ---------------------------------------------------------------------------
-# (b) Workflow structure
+# (b) TinyAssets structure
 # ---------------------------------------------------------------------------
 
 
@@ -226,6 +226,6 @@ def test_cloudflare_account_id_secret_referenced():
 
 
 def test_wrangler_installed_in_workflow():
-    """Workflow must install wrangler before deploying."""
+    """TinyAssets must install wrangler before deploying."""
     text = _workflow_text()
     assert "wrangler" in text.lower()

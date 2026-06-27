@@ -16,7 +16,7 @@ test('connect page shows the MCP URL + copy button', async ({ page }) => {
 
 test('catalog page loads', async ({ page }) => {
   await page.goto('/catalog');
-  await expect(page.getByRole('heading', { name: 'Workflow Catalog' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'TinyAssets Catalog' })).toBeVisible();
 });
 
 test('status page renders widgets', async ({ page }) => {

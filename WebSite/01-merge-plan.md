@@ -1,7 +1,7 @@
 # Merge Plan — TinyAssets site (lead) + Tiny Assets token (secondary)
 
 ## Decisions locked in
-- **Lead product:** Workflow (the MCP tooling / branchable AI workflows product)
+- **Lead product:** TinyAssets (the MCP tooling / branchable AI workflows product)
 - **Secondary:** Tiny Assets token as a future utility-rewards mechanism — present, not centered
 - **Stack:** Plain HTML / CSS / JS, single static site (no build step). Portable to GoDaddy hosting or any static host.
 - **Project root:** `C:\Users\Jonathan\Projects\TinyAssets\WebSite\`
@@ -25,15 +25,15 @@ WebSite/
 ## Information architecture — new site
 A long-scroll homepage with these sections, in order:
 
-1. **Hero** — Workflow as the lead
-   - Headline: *"Workflow for AI work that can be inspected, improved, and rewarded"* (carry over from GoDaddy draft)
+1. **Hero** — TinyAssets as the lead
+   - Headline: *"TinyAssets for AI work that can be inspected, improved, and rewarded"* (carry over from GoDaddy draft)
    - Sub: live MCP tools, branchable workflows, community bug reports, gates, future utility-token rewards
    - CTAs: **Connect to MCP** (primary, ember/coral) · **View on GitHub** (secondary, outline)
    - Visual: dark ink background; subtle parchment accent strip
 
-2. **Live Workflow Surface** — the showcase
+2. **Live TinyAssets Surface** — the showcase
    - Embed/port the Claude design's interactive workflow diagrams (parchment cards, dusty-rose execution bands, sage active nodes)
-   - Workflow switcher: Dev-team scaling · Book publishing pipeline (carried from Claude design)
+   - TinyAssets switcher: Dev-team scaling · Book publishing pipeline (carried from Claude design)
    - Click any node → drawer with reads/writes/lifecycle state
    - Tweaks toolbar: annotations on/off, lifecycle animations on/off
 
@@ -43,7 +43,7 @@ A long-scroll homepage with these sections, in order:
    - **Reward** — Tiny token bridge (segue to next section)
 
 4. **Tiny Assets — the rewards layer** (token section, secondary)
-   - Brief: contributor work in Workflow earns Tiny Assets utility tokens
+   - Brief: contributor work in TinyAssets earns Tiny Assets utility tokens
    - Live stats row: Total Supply (12,344,744,965), Market Cap vs NAV, Verify on Chain
    - Two cards: **Market Price** · **Portfolio** (carry imagery from old site)
    - CTAs: **Buy Tiny** · **Add Liquidity** · **Valuation Calculator**
@@ -92,7 +92,7 @@ A long-scroll homepage with these sections, in order:
 1. Receive Claude design export (user) → place in `design-source/`
 2. Extract palette, typography, diagram primitives from the design source
 3. Scaffold `site/index.html` shell with sections 1–8 (empty, with comments)
-4. Build hero + Workflow Surface (lift from design source as-is, adapted)
+4. Build hero + TinyAssets Surface (lift from design source as-is, adapted)
 5. Build Tiny Assets token section (new — combining old content + new look)
 6. Build remaining sections (Resources, Subscribe, Contact, Footer)
 7. Pull image assets from old site into `site/assets/`

@@ -13,7 +13,7 @@ if str(_SCRIPTS) not in sys.path:
 import check_plan_drift as cpd  # noqa: E402
 
 
-PLAN = """# Workflow - Plan
+PLAN = """# TinyAssets - Plan
 
 ## Module Layout (target shape)
 

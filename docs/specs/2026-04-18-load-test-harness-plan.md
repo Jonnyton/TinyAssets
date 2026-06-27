@@ -307,7 +307,7 @@ Flag these before track J start; don't invent answers:
 |---|---|
 | Q1 | k6 Grafana Cloud (free tier 500 VUh/mo) vs self-hosted k6 + Prometheus — which does host prefer for metrics export? Nightly-full-run fits free tier at 200 VUh/run × 1/day = 6000 VUh/mo → over cap. Bumps to paid unless we skip Grafana Cloud and roll metrics to Postgres or Prometheus self-host. |
 | Q2 | Supabase test-project option (a) always-on $25/mo vs (b) Branching beta? Lead decision pre-launch; low-stakes to revisit post-launch. |
-| Q3 | S6 export-sink scenario requires a real GitHub Actions trigger — do we test against the real catalog repo or a dedicated `Workflow-catalog-loadtest/` repo? Host call. Recommend the latter; avoids production commit pollution. |
+| Q3 | S6 export-sink scenario requires a real GitHub Actions trigger — do we test against the real catalog repo or a dedicated `TinyAssets-catalog-loadtest/` repo? Host call. Recommend the latter; avoids production commit pollution. |
 | Q4 | S7 moderation scenario — do we need real ledger reservation logic, or is a mock-ledger acceptable? If the real ledger is load-bearing for S7's paid-request scam defense, scope creeps (~0.3 d). |
 | Q5 | On-PR subset (S1+S4+S8-small) vs on-merge full — confirm the cadence. Subset ~8 min is survivable on every PR; full on merge only. |
 | Q6 | §1 stack pick (k6) — does verifier have a blocking preference for Locust for Python-team-cohesion reasons? This spec assumes no but worth confirming. |

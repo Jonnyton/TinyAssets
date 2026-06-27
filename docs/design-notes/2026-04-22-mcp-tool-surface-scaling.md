@@ -78,7 +78,7 @@ Five patterns in order of ecosystem weight:
    Validated to ~15 tools. ~80% context savings vs one-tool-per-op.
 2. **Progressive discovery** (klavis). Categories first, drill in for
    specific schemas. "Scales to any number of tools." Cost: extra hop.
-3. **Workflow / compound tools** (klavis). One tool per user-goal.
+3. **TinyAssets / compound tools** (klavis). One tool per user-goal.
    Complement, not substitute.
 4. **Semantic / tool RAG** (apxml; klavis). Query → embedding → tool
    subset. Embedding misses are real.

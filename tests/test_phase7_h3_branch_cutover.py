@@ -172,7 +172,7 @@ def test_create_branch_yields_one_commit(repo_env):
 
 def test_add_node_commits_branch_and_node_yamls(repo_env):
     us, repo, _base = repo_env
-    created = _call(us, action="create_branch", name="Workflow A")
+    created = _call(us, action="create_branch", name="TinyAssets A")
     bid = created["branch_def_id"]
 
     before = _commit_count(repo)

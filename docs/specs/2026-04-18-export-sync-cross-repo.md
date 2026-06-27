@@ -2,7 +2,7 @@
 status: active
 ---
 
-# Cross-Repo Export Sync — `Workflow/` + `Workflow-catalog/` (Track G)
+# Cross-Repo Export Sync — `TinyAssets/` + `TinyAssets-catalog/` (Track G)
 
 **Date:** 2026-04-18
 **Author:** dev (task #32 pre-draft; unblocks track G when dispatched)
@@ -19,7 +19,7 @@ Track G is the bridge between Postgres-canonical live content and the two GitHub
 
 ## 1. Two repos — scope + responsibilities
 
-### 1.1 `Workflow/` (platform code)
+### 1.1 `TinyAssets/` (platform code)
 
 Repo root:
 ```
@@ -42,11 +42,11 @@ Workflow/
 
 **Never touched by export sync.** Postgres content never lands here. Pure OSS fork-and-PR per §16.3. Bot has zero write access.
 
-### 1.2 `Workflow-catalog/` (workflow content)
+### 1.2 `TinyAssets-catalog/` (workflow content)
 
 Repo root:
 ```
-Workflow-catalog/
+TinyAssets-catalog/
 ├── catalog/
 │   ├── nodes/
 │   │   ├── {node_id}.yaml
@@ -58,7 +58,7 @@ Workflow-catalog/
 │   │   ├── {branch_def_id}.yaml
 │   │   └── ...
 │   └── status.json            # export manifest: head_version, last_batch_id, counts
-├── README.md                  # "this is an export of the Postgres-canonical catalog; see Workflow/ for the platform"
+├── README.md                  # "this is an export of the Postgres-canonical catalog; see TinyAssets/ for the platform"
 ├── LICENSE                    # content license (CC0 working assumption — OPEN Q1)
 ├── CONTRIBUTING.md            # PR-ingest flow + validation rules
 └── .github/
@@ -67,11 +67,11 @@ Workflow-catalog/
         └── ingest-on-merge.yml  # bot runs when merged
 ```
 
-**Bot-owned repo.** `workflow-catalog-bot[bot]` is the sole writer on the main branch (branch protection). Humans PR; bot validates + merges after review.
+**Bot-owned repo.** `tinyassets-catalog-bot[bot]` is the sole writer on the main branch (branch protection). Humans PR; bot validates + merges after review.
 
 ### 1.3 Division rules
 
-| What | `Workflow/` | `Workflow-catalog/` |
+| What | `TinyAssets/` | `TinyAssets-catalog/` |
 |---|---|---|
 | Engine Python code | ✓ | — |
 | Infra (tray, MCP gateway) | ✓ | — |
@@ -82,11 +82,11 @@ Workflow-catalog/
 | License file | MIT-style | CC0 / CC-BY-SA (OPEN Q1) |
 | Issue tracker | ✓ | content-bug issues only |
 
-**Invariant:** no double-homing. A file in one repo is authoritative only for that repo. Engine-code contributions flow `Workflow/` → Postgres via config-reload-on-deploy, not via catalog. Content contributions flow `Workflow-catalog/` → Postgres via PR-ingest (§3).
+**Invariant:** no double-homing. A file in one repo is authoritative only for that repo. Engine-code contributions flow `TinyAssets/` → Postgres via config-reload-on-deploy, not via catalog. Content contributions flow `TinyAssets-catalog/` → Postgres via PR-ingest (§3).
 
 ---
 
-## 2. Postgres → `Workflow-catalog/` export pipeline
+## 2. Postgres → `TinyAssets-catalog/` export pipeline
 
 ### 2.1 Overall flow
 
@@ -117,16 +117,16 @@ Workflow-catalog/
 │     fields + excludes training_excluded rows   │
 │  3. Stage per-file diffs in memory             │
 │  4. If >0 diffs: commit batch via GitHub API   │
-│     as workflow-catalog-bot[bot]               │
+│     as tinyassets-catalog-bot[bot]               │
 │  5. On success: DELETE processed rows,         │
 │     advance status.json head_version           │
 └──────────────┬─────────────────────────────────┘
                │
                ▼
 ┌────────────────────────────────────────────────┐
-│ GitHub Workflow-catalog/ main                   │
+│ GitHub TinyAssets-catalog/ main                   │
 │  commit: "sync: <batch_id> (N artifacts)"       │
-│  author: workflow-catalog-bot[bot]              │
+│  author: tinyassets-catalog-bot[bot]              │
 └────────────────────────────────────────────────┘
 ```
 
@@ -305,7 +305,7 @@ async def export_batcher():
     message = f"sync: {batch_id[:8]} ({len(diffs)} artifacts)"
     try:
         commit_sha = await github_batch_commit(
-            repo="Workflow-catalog",
+            repo="TinyAssets-catalog",
             branch="main",
             diffs=diffs,
             message=message,
@@ -320,7 +320,7 @@ async def export_batcher():
 
     # 4. Update catalog/status.json with head_version + batch_id + timestamp.
     await github_update_file(
-        repo="Workflow-catalog",
+        repo="TinyAssets-catalog",
         branch="main",
         path="catalog/status.json",
         content=json.dumps({
@@ -354,14 +354,14 @@ Same batch re-run is safe because:
 
 ---
 
-## 3. `Workflow-catalog/` → Postgres ingest pipeline (PR-based)
+## 3. `TinyAssets-catalog/` → Postgres ingest pipeline (PR-based)
 
 ### 3.1 Contributor flow
 
 ```
-OSS contributor                   Workflow-catalog/
+OSS contributor                   TinyAssets-catalog/
       │
-      ├─ forks Workflow-catalog/
+      ├─ forks TinyAssets-catalog/
       ├─ edits catalog/nodes/<id>.yaml
       ├─ opens PR against main ──────→
       │                                 │
@@ -527,7 +527,7 @@ Every exported node YAML carries `license: <id>` (§2.5 render function). Pulls 
 
 ### 5.2 Repo-level
 
-- `LICENSE` file in `Workflow-catalog/` root — full text of whichever license host pins in Q1.
+- `LICENSE` file in `TinyAssets-catalog/` root — full text of whichever license host pins in Q1.
 - `README.md` top section: "All content in this repo is licensed under `<LICENSE>`. See individual YAML `license:` fields for per-artifact overrides (none at MVP)."
 - `CONTRIBUTING.md`: "By opening a PR, you agree your contribution is licensed under the repo LICENSE. DCO-style (Developer Certificate of Origin) — no CLA. Sign-off on each commit via `git commit --signoff`."
 
@@ -584,8 +584,8 @@ If any match: abort the batch, alert admin, keep queue intact. Manual review req
 
 ### 7.1 GitHub App (preferred)
 
-Create `workflow-catalog-bot` as a GitHub App (not a personal access token or service account). Why:
-- Scoped permissions (write to `Workflow-catalog` only; zero permission on `Workflow/`).
+Create `tinyassets-catalog-bot` as a GitHub App (not a personal access token or service account). Why:
+- Scoped permissions (write to `TinyAssets-catalog` only; zero permission on `TinyAssets/`).
 - Installation-level rate limits (5k/h).
 - Auditable action history.
 - Rotatable private key.
@@ -649,7 +649,7 @@ My build-out:
 | `catalog_config` table + license-at-export wiring | 0.1 d |
 | Edge Function `export_batcher` — queue drain, YAML render, GitHub commit, status.json update, transactional queue delete | 0.6 d |
 | GitHub App creation + permissions + Supabase Vault key storage | 0.2 d |
-| `Workflow-catalog/` repo initial scaffold (README, LICENSE, CONTRIBUTING, empty `catalog/`, `.github/` workflows) | 0.15 d |
+| `TinyAssets-catalog/` repo initial scaffold (README, LICENSE, CONTRIBUTING, empty `catalog/`, `.github/` workflows) | 0.15 d |
 | `validate-pr.yml` with 6 checks (§3.2) | 0.5 d |
 | `ingest-on-merge.yml` Action + `ingest_catalog_merge` RPC | 0.5 d |
 | Post-render paranoid scan (§6.3) + T1/T2/T3 test scenarios | 0.3 d |
@@ -678,12 +678,12 @@ My build-out:
 | Q2 | Per-node license override column (`nodes.license text DEFAULT NULL`) — post-MVP or bundled? Recommend post-MVP; config-level default covers launch. |
 | Q3 | Bot-key storage path — Supabase Vault (hosted ecosystem match) vs env var (self-host friendly). Recommend Supabase Vault as primary, env var fallback. |
 | Q4 | Human-review bottleneck on catalog PRs — at 100 PRs/day, tier-3 reviewer triage isn't free. Minimum reviewer count? Recruitment plan? Punt to §14.7 moderation backstop for now. |
-| Q5 | Two-repo vs single-repo-with-branches — alternative: one `Workflow/` repo with `main` branch for code + `catalog` branch for content. Simpler, but GitHub Actions + permissions model gets tangled. Recommend two repos per task description. |
+| Q5 | Two-repo vs single-repo-with-branches — alternative: one `TinyAssets/` repo with `main` branch for code + `catalog` branch for content. Simpler, but GitHub Actions + permissions model gets tangled. Recommend two repos per task description. |
 | Q6 | Structural-hash in PR body — how does a contributor easily read their base-version hash? Recommend: each YAML includes `base_structural_hash` in the file itself; validator compares against latest Postgres. Contributor edits + bumps version; validator catches drift. |
 | Q7 | Bulk-import collision — user-sim or migration tool imports 10k nodes at once. Does the 500-per-batch cap hold? Cron takes ~30 min to drain. Acceptable as one-off; flag if it becomes a steady state. |
 | Q8 | DCO vs CLA — DCO is lighter for contributors; CLA gives the project clearer relicense rights later. Recommend DCO for launch; revisit if relicense need arises. |
-| Q9 | `Workflow-catalog/` repo owner — same GitHub org as `Workflow/`, or separate? Separate org isolates permissions + reduces blast radius on token leak. Recommend same org for discoverability, protect via branch protection. |
-| Q10 | Search-engine indexing — should `Workflow-catalog/` be indexed by Google? Yes for commons-adoption per license memory; set robots.txt accordingly. |
+| Q9 | `TinyAssets-catalog/` repo owner — same GitHub org as `TinyAssets/`, or separate? Separate org isolates permissions + reduces blast radius on token leak. Recommend same org for discoverability, protect via branch protection. |
+| Q10 | Search-engine indexing — should `TinyAssets-catalog/` be indexed by Google? Yes for commons-adoption per license memory; set robots.txt accordingly. |
 
 ---
 
@@ -691,10 +691,10 @@ My build-out:
 
 Track G is done when:
 
-1. `Workflow-catalog/` repo exists with scaffold (README, LICENSE, CONTRIBUTING, empty `catalog/`, GitHub Actions).
-2. `workflow-catalog-bot` GitHub App installed with scoped permissions. Key in Supabase Vault.
+1. `TinyAssets-catalog/` repo exists with scaffold (README, LICENSE, CONTRIBUTING, empty `catalog/`, GitHub Actions).
+2. `tinyassets-catalog-bot` GitHub App installed with scoped permissions. Key in Supabase Vault.
 3. `pending_export` table + triggers installed on `nodes`, `goals`, `branches`.
-4. End-to-end forward sync: edit a public node in the web app → within 10 min the commit appears in `Workflow-catalog/` by `workflow-catalog-bot[bot]`.
+4. End-to-end forward sync: edit a public node in the web app → within 10 min the commit appears in `TinyAssets-catalog/` by `tinyassets-catalog-bot[bot]`.
 5. T1/T2/T3 privacy tests green (§6.1). In particular, a private field inside a public node does NOT appear in any commit.
 6. End-to-end PR ingest: fork the catalog repo → edit a node YAML → open a PR → validator green → human merges → within 30s the Postgres `nodes` row reflects the edit + `node_activity` shows the PR author as `actor_user_id`.
 7. Race test: open two PRs against the same node simultaneously; one merges first; the second's ingest-on-merge returns `race_conflict`; revert-bot opens counter-PR.

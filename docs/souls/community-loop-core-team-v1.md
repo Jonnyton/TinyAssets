@@ -22,7 +22,7 @@ corresponding role.
 ## Live Registration
 
 Registered in the host-local daemon registry on 2026-05-02 under
-`C:\Users\Jonathan\AppData\Roaming\Workflow`.
+`C:\Users\Jonathan\AppData\Roaming\TinyAssets`.
 The live daemon wikis were calibrated with the Claude/Codex family policy on
 2026-05-02 without copying souls. Host correction on 2026-05-02 changed the
 model contract from role-tiered snapshots to flagship-track execution:
@@ -88,7 +88,7 @@ Research pass: 2026-05-02. Primary sources and host directive checked:
   code, work in background cloud environments, create PRs, and review PRs.
   Source: https://developers.openai.com/codex/cloud
 - OpenAI model docs identify the flagship GPT line and Codex-capable coding
-  lane; Workflow currently treats `gpt-5.5` as the OpenAI flagship allowed for
+  lane; TinyAssets currently treats `gpt-5.5` as the OpenAI flagship allowed for
   Codex-lane loop work.
   Source: https://platform.openai.com/docs/models
 - OpenAI Codex review guidance emphasizes high-signal review for serious bugs,
@@ -97,7 +97,7 @@ Research pass: 2026-05-02. Primary sources and host directive checked:
   Sources: https://developers.openai.com/codex/integrations/github and
   https://developers.openai.com/codex/guides/build-ai-native-engineering-team
 
-As-built Workflow loop alignment:
+As-built TinyAssets loop alignment:
 
 - The compiled CI writer/checker claimant was retired by host directive on
   2026-06-25. This document remains a design record for the named core-team

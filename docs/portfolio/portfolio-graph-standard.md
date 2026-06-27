@@ -24,7 +24,7 @@ project:
   primary_repo: https://github.com/Jonnyton/hex-strategy-lab
 
 summary:
-  short: Physical and digital hex strategy game lineage that later fed Echoes and Workflow.
+  short: Physical and digital hex strategy game lineage that later fed Echoes and TinyAssets.
   current_state: Archived learning/project-iteration artifact.
   public_pitch: Shows product iteration from tabletop idea to Electron/Godot prototypes.
 
@@ -92,7 +92,7 @@ Use one:
 - `flagship`: current main project
 - `ancestor`: older project that evolved into a current project
 - `supporting-tool`: reusable tool/scaffold that supports the main work
-- `domain-world`: creative/worldbuilding domain that runs inside Workflow
+- `domain-world`: creative/worldbuilding domain that runs inside TinyAssets
 - `product-iteration`: product/game/app experiment
 - `research-bridge`: research/prototype that influenced another project
 - `archive`: public historical artifact with limited active development
@@ -126,7 +126,7 @@ When an AI agent starts work in any project, it should:
 2. If missing, create a draft from the repo/folder context.
 3. Check whether the current work changes the project's role, status, lineage, or public summary.
 4. Update the manifest when needed.
-5. If the project is connected to Workflow, update or queue a note for the central portfolio index.
+5. If the project is connected to TinyAssets, update or queue a note for the central portfolio index.
 6. Default to public-draft for ordinary project work, but mark private or blocked-sensitive for memories, credentials, private conversations, or unclear source/licensing.
 7. Never mark `safe_to_auto_publish: true` if secrets, private data, generated private content, or unclear licensing might be present.
 
@@ -141,7 +141,7 @@ portfolio-index/projects.yml
 Each project manifest can be copied or summarized there. A generator can build:
 
 - GitHub profile README
-- Workflow `docs/project-lineage.md`
+- TinyAssets `docs/project-lineage.md`
 - project index page
 - pinned repo descriptions
 - website project sections

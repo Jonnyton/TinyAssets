@@ -209,7 +209,7 @@ def test_brain_pages_are_shared_context_sources(tmp_path: Path) -> None:
 
 
 def test_absolute_worktree_purpose_directory_is_safe(tmp_path: Path) -> None:
-    root = tmp_path / "Workflow"
+    root = tmp_path / "TinyAssets"
     root.mkdir()
     worktree = tmp_path / "wf-demo"
     worktree.mkdir()
@@ -231,9 +231,9 @@ def test_absolute_worktree_purpose_directory_is_safe(tmp_path: Path) -> None:
 
 
 def test_worktree_purpose_discovery_includes_non_wf_and_claude_nested_paths(tmp_path: Path) -> None:
-    root = tmp_path / "Workflow"
+    root = tmp_path / "TinyAssets"
     root.mkdir()
-    sibling = tmp_path / "Workflow-scorched-pwa-live"
+    sibling = tmp_path / "TinyAssets-scorched-pwa-live"
     sibling.mkdir()
     (sibling / "_PURPOSE.md").write_text("Purpose: sibling branch memory.\n", encoding="utf-8")
     nested = root / ".claude" / "worktrees" / "agent-a54683e4"
@@ -247,7 +247,7 @@ def test_worktree_purpose_discovery_includes_non_wf_and_claude_nested_paths(tmp_
 
 
 def test_worktree_purpose_feed_surfaces_memory_related_and_idea_refs(tmp_path: Path) -> None:
-    root = tmp_path / "Workflow"
+    root = tmp_path / "TinyAssets"
     root.mkdir()
     worktree = tmp_path / "wf-demo"
     worktree.mkdir()

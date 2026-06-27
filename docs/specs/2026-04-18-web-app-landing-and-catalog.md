@@ -14,7 +14,7 @@ status: active
 - `docs/specs/2026-04-18-mcp-gateway-skeleton.md` — OAuth 2.1 handshake endpoints gateway exposes.
 - `docs/specs/2026-04-18-paid-market-crypto-settlement.md` — wallet-connect at bid time.
 - `docs/specs/2026-04-18-daemon-host-tray-changes.md` — tray download flow from `/host`.
-- `docs/specs/2026-04-18-export-sync-cross-repo.md` — catalog content published to `Workflow-catalog/` and rendered into `/catalog/*`.
+- `docs/specs/2026-04-18-export-sync-cross-repo.md` — catalog content published to `TinyAssets-catalog/` and rendered into `/catalog/*`.
 
 Track B is tier-1's browser surface + tier-2 + tier-3 onboarding gateway. It is the first thing a viral-loop visitor sees. Getting it wrong means losing users at the top of the funnel. Getting it right means a 60-second path from "never heard of Workflow" to "my first MCP tool call landed."
 
@@ -67,7 +67,7 @@ All under `tinyassets.io/`. SEO-relevant URLs in bold.
 | **`/account`** | Dynamic (auth-gated) | Signup landing, session status, "my exports" list (per-user data inventory), **delete account** action (full wipe + 30-day grace). Required for regulatory posture + trust. | Dynamic |
 | **`/legal`** | SSG | ToS + privacy policy + license info (CC0-1.0 content, MIT platform per host Q7). Versioned: each legal-update commits a new subpath `/legal/v<N>` + redirects from `/legal/`. | Static (GH Pages) |
 
-16 surfaces total. 8 SSG + 8 dynamic. Static ones regenerate on catalog-export commit (hourly diff-batched per #32) or on `Workflow/` repo merge (landing + legal).
+16 surfaces total. 8 SSG + 8 dynamic. Static ones regenerate on catalog-export commit (hourly diff-batched per #32) or on `TinyAssets/` repo merge (landing + legal).
 
 ---
 
@@ -76,7 +76,7 @@ All under `tinyassets.io/`. SEO-relevant URLs in bold.
 ### 3.1 Static surface (deploys to GitHub Pages — or GoDaddy shared via cPanel SFTP)
 
 - Pages: `/`, `/catalog/`, `/catalog/nodes/<slug>`, `/catalog/goals/<slug>`, `/catalog/branches/<slug>`, `/connect`, `/contribute`, `/legal`.
-- **Build source:** SvelteKit `adapter-static` consumes the `Workflow-catalog/` repo at build-time (per #32: that repo is the canonical public-content source). Generates per-artifact pages.
+- **Build source:** SvelteKit `adapter-static` consumes the `TinyAssets-catalog/` repo at build-time (per #32: that repo is the canonical public-content source). Generates per-artifact pages.
 
 **Static-host pick: GitHub Pages (primary), GoDaddy-cPanel (fallback).** Comparison:
 
@@ -93,7 +93,7 @@ All under `tinyassets.io/`. SEO-relevant URLs in bold.
 
 Go with **GitHub Pages as primary**. Run the cPanel-SFTP path as a parallel Action that fires AFTER successful Pages deploy — gives us a warm fallback that Cloudflare can re-point to in <1 minute via a DNS swap if Pages breaks.
 
-- **Deploy path:** GitHub Action on `Workflow-catalog/` merge → `npm run build` → push `build/` to `gh-pages` branch → GitHub Pages serves `tinyassets.io/*`. Cloudflare fronts with 5-min edge TTL + `stale-while-revalidate: 24h` per uptime §3.5.4. Parallel SFTP mirror to GoDaddy for fast fallback.
+- **Deploy path:** GitHub Action on `TinyAssets-catalog/` merge → `npm run build` → push `build/` to `gh-pages` branch → GitHub Pages serves `tinyassets.io/*`. Cloudflare fronts with 5-min edge TTL + `stale-while-revalidate: 24h` per uptime §3.5.4. Parallel SFTP mirror to GoDaddy for fast fallback.
 - **Cache-bust:** GitHub Action calls Cloudflare Cache Purge API for `/catalog/*` after deploy (scoped API token as secret).
 - **SEO:** per-artifact pages emit `<link rel="canonical">`, OG tags, JSON-LD `CreativeWork` structured data. `sitemap.xml` regenerated on each build.
 
@@ -200,7 +200,7 @@ Live numbers via Supabase Realtime subscriptions. Ship four widgets at MVP:
 
 1. **Host count online** — subscribes to Presence state on `host_pool:online` channel (#30 §3.1). Aggregated count (not per-user list). Updates within 90s TTL.
 2. **Inbox depth** — subscribes to `request_inbox` CDC filtered `state='pending'`. Shows queue-length delta in real time. Lets tier-2 daemon-hosts see how much pending work is out there.
-3. **Catalog freshness** — reads `status.json` from the `Workflow-catalog/` repo (via GH raw URL, Cloudflare-cached 30s). Renders "last sync: N min ago" badge. Links to the last batch commit.
+3. **Catalog freshness** — reads `status.json` from the `TinyAssets-catalog/` repo (via GH raw URL, Cloudflare-cached 30s). Renders "last sync: N min ago" badge. Links to the last batch commit.
 4. **Recent activity ticker** — subscribes to `node_activity` CDC + filters for `event_kind IN ('created', 'remixed', 'converged', 'run_succeeded')`. Client-side rate-limit (max 1 entry/sec) to prevent UI thrash at busy times.
 
 All four degrade gracefully on Realtime outage — show cached last-known values with "Live updates paused — check back in a moment" banner. Web app remains fully usable.
@@ -294,7 +294,7 @@ Catalog content (node names, descriptions, concept text) stays in the source lan
 Auth-gated at `/account`. Single-page dashboard covering:
 
 1. **Session status** — signed-in-as, GitHub handle, account_age_days, trust_tier.
-2. **My exports** — list of the user's public nodes/goals/branches currently in the `Workflow-catalog/` repo. Links to the canonical URLs. Indicates "last exported: N min ago" per artifact (reads `status.json` from the catalog repo).
+2. **My exports** — list of the user's public nodes/goals/branches currently in the `TinyAssets-catalog/` repo. Links to the canonical URLs. Indicates "last exported: N min ago" per artifact (reads `status.json` from the catalog repo).
 3. **Delete account** — the regulatory + trust posture surface. UX:
    - Button reveals a confirm dialog listing everything that gets deleted (private nodes, wallets, session, activity log attribution) vs preserved (public concepts per CC0 license — cannot be unilaterally deleted from the commons, per license memory; public-attribution gets anonymized rather than removed).
    - Confirm requires typing the user's GitHub handle as anti-accident gate.
@@ -316,7 +316,7 @@ My build-out:
 |---|---|
 | SvelteKit project scaffold + adapter-static + adapter-node dual setup | 0.3 d |
 | Landing page `/` + 3-CTA flow + OG meta + hero assets | 0.35 d |
-| `/catalog/` home — pulls from `Workflow-catalog/` repo at build time; top-N MV consumer | 0.4 d |
+| `/catalog/` home — pulls from `TinyAssets-catalog/` repo at build time; top-N MV consumer | 0.4 d |
 | Per-artifact SSG: `/catalog/nodes/<slug>`, `/catalog/goals/<slug>`, `/catalog/branches/<slug>` | 0.5 d |
 | `/catalog/search` SSR — embedding precompute + `discover_nodes` call + results UI | 0.5 d |
 | `/connect` tier-1 onboarding + copy-to-clipboard widget + optional GitHub OAuth | 0.3 d |

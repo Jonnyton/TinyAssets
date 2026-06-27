@@ -116,7 +116,7 @@ These four ship at MVP per navigator's §30 recommendation (~1.5d estimate).
 - `nature_submission` + venue-specific journal portals.
 - `ssrn` — social-science preprint.
 
-Same protocol; community contributes via PR to `Workflow/connectors/<name>/` with `outcome_kind` declared in MANIFEST.
+Same protocol; community contributes via PR to `TinyAssets/connectors/<name>/` with `outcome_kind` declared in MANIFEST.
 
 ### 3.3 ISBN-US selection rationale
 

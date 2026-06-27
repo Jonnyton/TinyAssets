@@ -1,15 +1,15 @@
-# Workflow — Design System
+# TinyAssets — Design System
 
 > **Summon the daemon.**
 > *Design custom multi-step AI workflows. Real execution, not simulation.*
 
-This is the design system for **Workflow**, an open-source platform that lets you design multi-step AI workflows inside your chatbot (Claude.ai, etc.) and have a **daemon** actually run them. The product is equal parts serious utility and a little bit occult — the vocabulary is load-bearing on the viral hook.
+This is the design system for **TinyAssets**, an open-source platform that lets you design multi-step AI workflows inside your chatbot (Claude.ai, etc.) and have a **daemon** actually run them. The product is equal parts serious utility and a little bit occult — the vocabulary is load-bearing on the viral hook.
 
 ---
 
-## What is Workflow?
+## What is TinyAssets?
 
-Workflow is three things at once:
+TinyAssets is three things at once:
 
 1. **An MCP server** — users paste one URL into Claude.ai and their chatbot gains a new set of tools: a catalog of reusable workflow nodes, the ability to compose them into multi-step pipelines, and the ability to hand off execution to a **daemon**.
 2. **A daemon runtime** — a tray app (Windows/macOS/Linux) any user can host. Daemons pick up work: your own first, then paid work they're qualified for, then public requests. Idle is a failure state.
@@ -21,18 +21,18 @@ Key brand/vocab: users **summon** daemons (not "start"), **bind** them to a univ
 
 ## Sources consumed while building this system
 
-All source material came from the user-attached Workflow codebase (`local_ls`/`local_read` against the `Workflow/` mount) and the GitHub repo **`Jonnyton/TinyAssets`**.
+All source material came from the user-attached TinyAssets codebase (`local_ls`/`local_read` against the `TinyAssets/` mount) and the GitHub repo **`Jonnyton/TinyAssets`**.
 
-- `Workflow/README.md` — top-level pitch, "summoning" voice, product positioning.
-- `Workflow/PLAN.md` — full platform plan (daemon-driven thesis, universes/canon/soul files).
-- `Workflow/prototype/web-app-v0/src/lib/i18n/en.json` — canonical copy for the marketing site, MCP connect flow, daemon hosting, FAQ, trust signals. **This is the copy bible.** Copied to `source_copy/en.json`.
-- `Workflow/prototype/web-app-v0/` — SvelteKit marketing + app prototype. Surfaces: landing, catalog, connect, host.
-- `Workflow/prototype/full-platform-v0/` — Postgres/FastAPI gateway reference. Structural only; not visual.
-- `Workflow/prototype/workflow-catalog-v0/` — CC0 catalog repo structure (nodes, branches, goals).
-- `Workflow/docs/exec-plans/active/2026-04-15-author-to-daemon-rename.md` — brand voice guide (the canonical list of verbs: *summon, bind, roam, return, dismiss, entrust*).
-- `Workflow/assets/icon.png` — the canonical project icon: the selected A2 rotated protocol-loom mark cropped from the approved chat image. Copied to `assets/logo-mark.png` for design-system previews.
+- `TinyAssets/README.md` — top-level pitch, "summoning" voice, product positioning.
+- `TinyAssets/PLAN.md` — full platform plan (daemon-driven thesis, universes/canon/soul files).
+- `TinyAssets/prototype/web-app-v0/src/lib/i18n/en.json` — canonical copy for the marketing site, MCP connect flow, daemon hosting, FAQ, trust signals. **This is the copy bible.** Copied to `source_copy/en.json`.
+- `TinyAssets/prototype/web-app-v0/` — SvelteKit marketing + app prototype. Surfaces: landing, catalog, connect, host.
+- `TinyAssets/prototype/full-platform-v0/` — Postgres/FastAPI gateway reference. Structural only; not visual.
+- `TinyAssets/prototype/tinyassets-catalog-v0/` — CC0 catalog repo structure (nodes, branches, goals).
+- `TinyAssets/docs/exec-plans/active/2026-04-15-author-to-daemon-rename.md` — brand voice guide (the canonical list of verbs: *summon, bind, roam, return, dismiss, entrust*).
+- `TinyAssets/assets/icon.png` — the canonical project icon: the selected A2 rotated protocol-loom mark cropped from the approved chat image. Copied to `assets/logo-mark.png` for design-system previews.
 
-**Nothing else was available.** No photography, no illustration library, no secondary marks, no icon font. The `Workflow/output/*.png` files are QA screenshots from a ChatGPT builder test, not brand assets — intentionally ignored.
+**Nothing else was available.** No photography, no illustration library, no secondary marks, no icon font. The `TinyAssets/output/*.png` files are QA screenshots from a ChatGPT builder test, not brand assets — intentionally ignored.
 
 ---
 
@@ -47,10 +47,10 @@ All source material came from the user-attached Workflow codebase (`local_ls`/`l
 ├── assets/
 │   ├── logo-mark.png            ← the approved cropped protocol-loom mark (USE THIS)
 │   ├── logo-mark.svg            ← compatibility wrapper for the PNG
-│   └── wordmark-horizontal.svg   ← mark + Workflow wordmark
+│   └── wordmark-horizontal.svg   ← mark + TinyAssets wordmark
 ├── preview/                     ← Design System tab cards (one HTML per token cluster)
 └── ui_kits/
-    └── workflow-web/            ← marketing + app UI kit (SvelteKit prototype, recreated as JSX)
+    └── tinyassets-web/            ← marketing + app UI kit (SvelteKit prototype, recreated as JSX)
         ├── README.md
         ├── index.html           ← interactive click-thru: landing → connect → catalog → host
         └── *.jsx                ← component factors
@@ -77,7 +77,7 @@ Nerdy, slightly mythic, self-aware. It's confident about real utility *and* wink
 ### Casing
 
 - Sentence case for titles, headers, buttons. **Not** Title Case. Not ALL CAPS except the tiny `ritual-label` small-caps utility.
-- Product name is always **Workflow** (capital W, no italics).
+- Product name is always **TinyAssets** (capital W, no italics).
 - The word **daemon** is always lowercase in running text ("summon a daemon", not "Summon a Daemon") — it's a common noun, not a proper noun.
 
 ### The verb kit (load-bearing)
@@ -104,7 +104,7 @@ Nerdy, slightly mythic, self-aware. It's confident about real utility *and* wink
 
 ### Emoji / decorative characters
 
-**None.** Workflow does not use emoji in UI copy, marketing, or docs. The brand mark carries all the visual charge; emoji would dilute it. Unicode glyphs (→, ·, —) are fine for typography. Avoid ✨, 🔮, 👻, 🪄, etc. — on-theme but cheapens the aesthetic.
+**None.** TinyAssets does not use emoji in UI copy, marketing, or docs. The brand mark carries all the visual charge; emoji would dilute it. Unicode glyphs (→, ·, —) are fine for typography. Avoid ✨, 🔮, 👻, 🪄, etc. — on-theme but cheapens the aesthetic.
 
 ### Punctuation tells
 
@@ -141,7 +141,7 @@ No blues or teals outside the ink range. No greens outside `--signal-live`. No g
 - **IBM Plex Sans** (body) — all UI, buttons, forms, metadata. Chosen for its engineering-serious character; it reads "this is a real tool" against the Fraunces theatrics.
 - **IBM Plex Mono** (monospace + labels) — code, IDs, and the `ritual-label` small-caps utility used for section kickers and metadata. The mono in a label says *"this is inscribed, not printed."*
 
-⚠️ **Font substitution flag:** Workflow's codebase does not ship its own webfonts — the SvelteKit prototype uses the default system stack. Fraunces + IBM Plex were chosen as the nearest stylistic match based on the brand voice (serious + slightly-mythic). If the team has existing licensed faces (a commissioned display face, a specific Plex alternative, etc.), please drop the TTF/WOFF2 into `fonts/` and update `--font-display` / `--font-sans` in `colors_and_type.css`.
+⚠️ **Font substitution flag:** TinyAssets's codebase does not ship its own webfonts — the SvelteKit prototype uses the default system stack. Fraunces + IBM Plex were chosen as the nearest stylistic match based on the brand voice (serious + slightly-mythic). If the team has existing licensed faces (a commissioned display face, a specific Plex alternative, etc.), please drop the TTF/WOFF2 into `fonts/` and update `--font-display` / `--font-sans` in `colors_and_type.css`.
 
 ### Spacing, shape, scale
 
@@ -161,7 +161,7 @@ Drop-shadow is muted — dark surfaces swallow it. Elevation reads via:
 
 - Full-bleed ink surfaces (`--bg-1`) are the default. No patterned backgrounds, no noise textures, no grain (tempting — resisted). The logo mark is the only ornamental graphic; it may be placed large and low-opacity (0.04–0.08) as a watermark behind hero type, bottom-right or centered.
 - Protection gradients only as hero-bottom fades from `--bg-1` to transparent, to seat a CTA bar over imagery. We don't use imagery much so this is rare.
-- **No full-bleed stock photography.** Workflow's brand is text + live protocol mark.
+- **No full-bleed stock photography.** TinyAssets's brand is text + live protocol mark.
 
 ### Animation & interaction
 
@@ -216,7 +216,7 @@ Where imagery *must* appear (team photos, screenshot mocks, OG cards), it is:
 
 ## Iconography
 
-**Workflow ships no icon set.** The codebase is a prototype; the SvelteKit app uses text labels and HTML bullet characters where other apps would use icons. This is an intentional gap — the design system has to answer it.
+**TinyAssets ships no icon set.** The codebase is a prototype; the SvelteKit app uses text labels and HTML bullet characters where other apps would use icons. This is an intentional gap — the design system has to answer it.
 
 ### What the product uses today
 
@@ -238,7 +238,7 @@ Lucide is chosen because:
 - Line icons (not filled) let them sit on the dark canvas without feeling heavy.
 - The set is comprehensive enough to cover every UI need without forcing us to invent.
 
-**🚩 Flag:** Lucide is a **substitution**, not a brand decision. When Workflow commissions or adopts an official icon set, swap the CDN reference in `ui_kits/workflow-web/index.html` and update the usage notes here.
+**🚩 Flag:** Lucide is a **substitution**, not a brand decision. When TinyAssets commissions or adopts an official icon set, swap the CDN reference in `ui_kits/tinyassets-web/index.html` and update the usage notes here.
 
 ### Icon usage rules (apply to Lucide today, to whatever replaces it tomorrow)
 
@@ -259,6 +259,6 @@ Lucide is chosen because:
 
 1. Link `colors_and_type.css` at the top of any HTML.
 2. Default to the dark theme. Add `data-theme="light"` only for docs / legal / reading surfaces.
-3. Copy/adapt from `ui_kits/workflow-web/` — don't reinvent components.
+3. Copy/adapt from `ui_kits/tinyassets-web/` — don't reinvent components.
 4. Use `source_copy/en.json` verbatim when possible. When you need new copy, re-read Content Fundamentals and match the verb kit.
 5. The logo mark goes bottom-right at 0.06 opacity when a hero feels empty. Resist putting it anywhere else.

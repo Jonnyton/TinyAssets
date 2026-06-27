@@ -127,7 +127,7 @@ Five rows. All dispatchable immediately against the current main. Zero provider-
 
 **Scope:**
 - Audit: grep for literal `C:\` and `USERPROFILE` across `tinyassets/` (exclude tests + packaging + scripts). Expect: LanceDB default path, universe_base path, any sqlite path.
-- Refactor to env-driven: `TINYASSETS_DATA_DIR` (default `~/.workflow` on Unix, `%APPDATA%\Workflow` on Windows). All on-disk state roots through this variable.
+- Refactor to env-driven: `TINYASSETS_DATA_DIR` (default `~/.workflow` on Unix, `%APPDATA%\TinyAssets` on Windows). All on-disk state roots through this variable.
 - Docstring: document the env var in `tinyassets/daemon_server.py` module docstring + `AGENTS.md` if warranted.
 
 **Acceptance:** `TINYASSETS_DATA_DIR=/tmp/test_data python -m tinyassets.daemon_server` starts cleanly on a Linux host with no `C:\` paths touched in the success path. Existing Windows-host behavior unchanged when the env var is unset (defaults resolve to the current Windows path).

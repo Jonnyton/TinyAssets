@@ -1,5 +1,5 @@
 // diagram-primitives.jsx
-// The visual vocabulary of community-rendered Workflow diagrams.
+// The visual vocabulary of community-rendered TinyAssets diagrams.
 // Cream paper, dusty rose execution bands, sage active nodes, indigo lead, brown checker.
 // All extrapolated from real screenshots so re-skins feel like the same artist drew them.
 

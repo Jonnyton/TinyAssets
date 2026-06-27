@@ -38,7 +38,7 @@ Track N is the **largest remaining design-surface** (design note §27.8 estimate
 - **Sandboxed execution isolation** to Supabase Edge Functions infrastructure (Deno runtime + platform quotas). Track N does not reinvent process-level isolation.
 - **Remix lineage tracking** to §15.3 RPCs (`remix_node`, `converge_nodes`). Track N's `fork_and_remix` is a thin bridge.
 - **Tier-2 local REPL** to tray-daemon surface (spec #30). Track N provides the *protocol*; daemon-host tray ships the *terminal adapter*.
-- **Tier-3 native-code PR flow** to `Workflow-catalog/` export-sync path (spec #32). Track N provides no tooling here — T3 users use git.
+- **Tier-3 native-code PR flow** to `TinyAssets-catalog/` export-sync path (spec #32). Track N provides no tooling here — T3 users use git.
 
 ### Not-track-concerns (explicit non-goals)
 
@@ -479,7 +479,7 @@ Daemon-host tray (spec #30) ships a "node authoring" pane that speaks the same `
 
 ### Tier-3 (native PR)
 
-Contributor clones `Workflow-catalog/` repo, authors a node as a Python module + YAML manifest matching the schema, submits PR. GitHub Actions export-sync (spec #32) publishes to `public.nodes` on merge.
+Contributor clones `TinyAssets-catalog/` repo, authors a node as a Python module + YAML manifest matching the schema, submits PR. GitHub Actions export-sync (spec #32) publishes to `public.nodes` on merge.
 
 **No track-N code needed.** Pattern is "write the node, make a PR" — git is the authoring surface.
 

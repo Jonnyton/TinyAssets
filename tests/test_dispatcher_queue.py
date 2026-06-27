@@ -267,7 +267,7 @@ def test_select_next_skips_tasks_directed_to_other_daemon(tmp_path):
         tmp_path,
         display_name="My Patch Daemon",
         created_by="host",
-        soul_text="Prefer Workflow patch requests.",
+        soul_text="Prefer TinyAssets patch requests.",
     )
     other = daemon_registry.create_daemon(
         tmp_path,
@@ -312,9 +312,9 @@ def test_soul_guided_dispatch_read_boosts_matching_open_brain_task(tmp_path):
     universe.mkdir()
     daemon = daemon_registry.create_daemon(
         tmp_path,
-        display_name="Workflow Dispatch Daemon",
+        display_name="TinyAssets Dispatch Daemon",
         created_by="host",
-        soul_text="Prefer Workflow dispatch and verified patch work.",
+        soul_text="Prefer TinyAssets dispatch and verified patch work.",
         domain_claims=["workflow-platform"],
     )
     memory = capture_daemon_memory(

@@ -190,7 +190,7 @@ def test_data_dir_rejects_windows_path_on_posix(clean_env, monkeypatch):
 
     monkeypatch.setattr(_os, "name", "posix")
 
-    clean_env.setenv("TINYASSETS_DATA_DIR", "C:\\Users\\Jonathan\\Projects\\Workflow")
+    clean_env.setenv("TINYASSETS_DATA_DIR", "C:\\Users\\Jonathan\\Projects\\TinyAssets")
     with pytest.raises(ValueError) as exc_info:
         storage.data_dir()
     assert "TINYASSETS_DATA_DIR" in str(exc_info.value)

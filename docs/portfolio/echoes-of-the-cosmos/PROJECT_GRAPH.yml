@@ -8,8 +8,8 @@ project:
 
 summary:
   short: Open science-fantasy universe intended for public contribution.
-  current_state: Public canon seed is live in Workflow as universe echoes-of-the-cosmos; Reddit/RSS is wired as the first public source channel through a gated intake branch.
-  public_pitch: A community-contributed science-fantasy universe using Workflow as its live-state contribution and canon-review engine.
+  current_state: Public canon seed is live in TinyAssets as universe echoes-of-the-cosmos; Reddit/RSS is wired as the first public source channel through a gated intake branch.
+  public_pitch: A community-contributed science-fantasy universe using TinyAssets as its live-state contribution and canon-review engine.
 
 lineage:
   preceded_by:
@@ -20,7 +20,7 @@ lineage:
     - fantasy-agent-workflow-lab
     - workflow
   related:
-    - Workflow
+    - TinyAssets
     - Hex Strategy Lab
     - Fantasy Writer
     - Fantasy Author
@@ -44,7 +44,7 @@ evidence:
 skills:
   languages: []
   systems:
-    - Workflow live-state universe
+    - TinyAssets live-state universe
     - Reddit source import
     - public canon docs
   themes:

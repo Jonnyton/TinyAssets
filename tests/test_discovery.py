@@ -8,7 +8,7 @@ Post-§3.2 `tinyassets.discovery.discover_domains()` unions two sources:
    ``tinyassets/`` package — editable-dev-install fallback.
 
 This module covers the new behaviors. Pre-existing integration tests
-in ``test_workflow_runtime.py`` continue to assert the filesystem-only
+in ``test_tinyassets_runtime.py`` continue to assert the filesystem-only
 shape so the real-install smoke stays green; those aren't retested here.
 """
 

@@ -1752,7 +1752,7 @@ class TestEdgeCaseUniverseCreation:
     def test_create_universe_declares_loop_branch_in_soul(self, client, base_dir):
         resp = client.post(
             "/v1/universes",
-            json={"name": "Workflow Lab", "branch_def_id": "workflow:review_loop"},
+            json={"name": "TinyAssets Lab", "branch_def_id": "workflow:review_loop"},
         )
         assert resp.status_code == 201
         data = resp.json()

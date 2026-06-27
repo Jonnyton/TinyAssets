@@ -224,7 +224,7 @@
     "instructions": "Clone the repo, read CONTRIBUTING.md, submit a PR.",
     "clone_cmd": "git clone https://github.com/Jonnyton/TinyAssets.git",
     "platform_code_title": "Platform code (the engine)",
-    "platform_code_description": "The daemon engine, MCP gateway, web app, tray — all in the main TinyAssets platform repo. The current GitHub path still uses Workflow during migration. Standard fork-and-PR flow. MIT-licensed.",
+    "platform_code_description": "The daemon engine, MCP gateway, web app, tray — all in the main TinyAssets platform repo. The current GitHub path still uses TinyAssets during migration. Standard fork-and-PR flow. MIT-licensed.",
     "catalog_content_title": "Public catalog (the content)",
     "catalog_content_description": "Public nodes, goals, branches. The catalog is the TinyAssets public-content surface; you can also edit directly from a chatbot (wiki-open model for content). CC0-licensed.",
     "step_by_step_title": "How to contribute",

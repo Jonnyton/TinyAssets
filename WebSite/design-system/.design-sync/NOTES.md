@@ -16,14 +16,14 @@ RitualLabel), all stories graded `match` against the reference storybook.
 
 ## Re-sync risks (what to re-verify next run)
 
-- **Target project is the re-adopted "Workflow Design System" (48072c27…)** — a
+- **Target project is the re-adopted "TinyAssets Design System" (48072c27…)** — a
   pre-existing, formerly hand-authored project. The first sync DELETED its old
   April content (JSX kit, diagrams, preview cards) and replaced it with this
   bundle. There is no `_ds_sync.json` anchor from before this sync, so the first
   run reviewed `list_files` to build the delete set; subsequent runs use the
   anchor we uploaded.
 - Project rename to "Tiny Design System" is a manual UI step (the DesignSync tool
-  can't rename) — if the project name still says "Workflow Design System", that
+  can't rename) — if the project name still says "TinyAssets Design System", that
   rename hasn't happened; it does not affect the sync.
 - Only 3 primitives are synced so far. The live site has more components
   (cards, readout panels, VitalSigns, nav, etc.) that are NOT yet in the DS

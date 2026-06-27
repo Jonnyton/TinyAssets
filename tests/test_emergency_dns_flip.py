@@ -239,7 +239,7 @@ class TestCLIDryRun:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not _YAML_AVAILABLE, reason="pyyaml not installed")
-class TestEmergencyDnsWorkflow:
+class TestEmergencyDnsTinyAssets:
     def _load(self):
         return yaml.safe_load(_EMERGENCY_DNS_WORKFLOW.read_text(encoding="utf-8"))
 

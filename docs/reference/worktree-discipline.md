@@ -7,7 +7,7 @@
 > load-bearing invariants inline + a pointer here. The `git-workflow-and-versioning`
 > skill summarizes this for on-demand git work and points here as canonical.
 
-GitHub is the integration model. A Workflow worktree is the local checkout
+GitHub is the integration model. A TinyAssets worktree is the local checkout
 for one Git branch; the branch folds back through a PR; `STATUS.md` is the
 claim surface, not a replacement for GitHub history. A branch by itself is
 not durable memory. It remembers commits, not why the branch exists, whether
@@ -55,7 +55,7 @@ When creating a worktree:
 1. Use a purpose-named branch (`codex/<slug>`, `claude/<slug>`,
    `cursor/<slug>`, `fix/<slug>`, `chore/<slug>`, etc.).
 2. Use a sibling path `../wf-<slug>` unless an existing manager names it
-   differently. Avoid `Workflow-foo`, nested `Workflow/foo`, and hash-only
+   differently. Avoid `TinyAssets-foo`, nested `TinyAssets/foo`, and hash-only
    names for new work.
 3. Create `_PURPOSE.md` at the worktree root, <=30 lines: purpose,
    provider/session, branch, base ref, STATUS row / PR / issue, relevant

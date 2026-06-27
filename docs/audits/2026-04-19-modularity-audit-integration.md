@@ -36,7 +36,7 @@ Live user traffic today: one host (Jonathan) + user-sim dogfooding via Claude.ai
 - §3 specifies a **flat FastMCP mount** with capability-sharded tool registration.
 - §3.1 tool table enumerates bounded surfaces: `discover_nodes`, `update_node`, `remix_node`, `converge_nodes`, `submit_request`, `claim_request`, `complete_request`, `add_canon_from_path`, `control_daemon`, plus design-note §23/§27/§28/§29/§30/§31 tools (per drift audit gap #4).
 - §3.3 **prompts/\*** surface isolates behavioral directives from tool descriptions — exactly the "shape is architecture" principle Codex's PLAN.md cross-reference named.
-- Design §16 formally splits engine (`Workflow/` repo) from content (`Workflow-catalog/` repo), the equivalent at a higher level of the "engine vs domain" split Codex identified.
+- Design §16 formally splits engine (`TinyAssets/` repo) from content (`TinyAssets-catalog/` repo), the equivalent at a higher level of the "engine vs domain" split Codex identified.
 - Track N (vibe-coding authoring surface, design §27) introduces `/node_authoring.*` as its own capability surface, not as actions bolted onto a mega-tool.
 
 The legacy `universe` tool with 26-action dispatch + `_BRANCH_ACTIONS` / `_RUN_ACTIONS` / `_JUDGMENT_ACTIONS` dispatch tables is **obsoleted in one piece** by the new gateway, not migrated. Every concern Codex raised is structurally solved by not rebuilding the mega-surface.
@@ -59,7 +59,7 @@ The legacy `universe` tool with 26-action dispatch + `_BRANCH_ACTIONS` / `_RUN_A
 **Already addressed by the rewrite?** **Partially — the problem shifts category.** The rewrite's world looks different:
 
 - Design §2 / spec #25: **Postgres is canonical.** Node + branch definitions are rows, not on-disk `domains/<name>/skill.py` files. There's no per-domain source-tree plugin to discover anymore.
-- Design §16 + §27 tier-3 contribution model: platform code is MIT in `Workflow/` and content is CC0 YAML in `Workflow-catalog/`. No `domains/<name>/` directories served as Python packages at runtime.
+- Design §16 + §27 tier-3 contribution model: platform code is MIT in `TinyAssets/` and content is CC0 YAML in `TinyAssets-catalog/`. No `domains/<name>/` directories served as Python packages at runtime.
 - The existing `domains/fantasy_daemon/skill.py` + peer `skill.py` pattern is **legacy**. It existed because the legacy daemon ran one domain's graph locally. The rewrite separates content (Postgres) from engine (MIT Python) and makes "domain" a `domain_ids uuid[]` tag on nodes, not a package directory.
 
 **So the Codex recommendation of entry-point discovery for `workflow.domains` is a legacy concern, not a rewrite concern — because the rewrite has no `workflow.domains` plugin contract.**
@@ -145,7 +145,7 @@ Codex's recommendations, correctly generalized, become inputs to three in-flight
 
 When dev drafts the connectors spec (§28), incorporate:
 
-- **Entry-point discovery.** Define `workflow.connectors` entry-point group per PyPA spec. Third-party connector modules advertise themselves via `pyproject.toml` `[project.entry-points."workflow.connectors"]`. Filesystem scan of `Workflow/connectors/*/` is dev-mode fallback only. Cite `https://packaging.python.org/en/latest/specifications/entry-points/`.
+- **Entry-point discovery.** Define `workflow.connectors` entry-point group per PyPA spec. Third-party connector modules advertise themselves via `pyproject.toml` `[project.entry-points."workflow.connectors"]`. Filesystem scan of `TinyAssets/connectors/*/` is dev-mode fallback only. Cite `https://packaging.python.org/en/latest/specifications/entry-points/`.
 - **Narrow exported surface per connector.** Each connector module exports exactly one `ConnectorProtocol`-implementing class. No side effects on import. Follows Codex's "bounded context with narrow exported surface" principle.
 
 ### §5.2 Task #69 Handoffs exec spec

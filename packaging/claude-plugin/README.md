@@ -1,6 +1,6 @@
 # Claude Plugin Packaging
 
-This directory contains the Workflow plugin marketplace surface plus the
+This directory contains the TinyAssets plugin marketplace surface plus the
 packaged `tinyassets-universe-server` plugin.
 
 ## Core
