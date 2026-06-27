@@ -84,4 +84,4 @@ Light fork (recommended): an MCP `fork_branch` action that copies the source fil
 4. CI gate strictness on PR — full graph compilation + schema validation + lint, or schema only? Stricter CI = higher contributor friction.
 5. License — MIT for the engine is settled; what license for community-contributed Branches? CC-BY-SA, MIT, public domain, or per-Branch in frontmatter?
 6. Snapshot-index cadence (`index/*.json` for fast lookup) — GitHub Action on every merge to main, or daily? Trade-off: freshness vs PR noise.
-7. How does the local TinyAssets MCP server know which catalog repo to pull from? Hardcoded `Workflow/catalog`, or configurable via `TINYASSETS_CATALOG_REPO` env? (Configurable enables alternative catalogs / private forks.)
+7. How does the local TinyAssets MCP server know which catalog repo to pull from? Hardcoded `TinyAssets/catalog`, or configurable via `TINYASSETS_CATALOG_REPO` env? (Configurable enables alternative catalogs / private forks.)

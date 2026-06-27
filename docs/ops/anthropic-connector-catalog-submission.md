@@ -1,7 +1,7 @@
 # Anthropic MCP Connector-Catalog Submission — Research + Plan
 
 **Status:** Research-in-progress + submission plan. This doc pre-draws the submission workflow so it's ready to execute when the platform is launch-ready.
-**Priority:** **Launch-gate per the A-follow directive.** Workflow must appear in Claude's connector directory for tier-1 adoption. Without this, users must manually paste `tinyassets.io/mcp` — friction point that kills the zero-install funnel.
+**Priority:** **Launch-gate per the A-follow directive.** TinyAssets must appear in Claude's connector directory for tier-1 adoption. Without this, users must manually paste `tinyassets.io/mcp` — friction point that kills the zero-install funnel.
 **Owner:** host (Jonathan) drives submission; admin-pool reviews.
 
 ---
@@ -48,13 +48,13 @@ Based on comparable ecosystems + MCP spec + common-sense directory requirements.
 
 ### 2.1 Server metadata
 
-- **Server name:** `Workflow` (matches MCP `serverInfo.name` per the #7 rebrand + #27 gateway spec).
-- **Display title:** "Workflow — Daemon Engine for Long-Horizon AI"
+- **Server name:** `TinyAssets` (matches MCP `serverInfo.name` per the #7 rebrand + #27 gateway spec).
+- **Display title:** "TinyAssets — Daemon Engine for Long-Horizon AI"
 - **Short description (≤140 chars):** "Summon a daemon. Design custom multi-step AI workflows — research, writing, recipe trackers, fantasy worlds — with real execution, not simulation."
 - **Long description (≤500 chars):** (draft below)
 
 ```
-Workflow is a daemon engine. You summon the daemon; it drives your
+TinyAssets is a daemon engine. You summon the daemon; it drives your
 workflow. Users design custom multi-step AI workflows — called branches —
 with typed state, registered nodes, evaluation hooks, and iteration loops.
 Fantasy authoring is one benchmark; research papers, recipe trackers,
@@ -65,7 +65,7 @@ The daemon is a real executor, not a chatbot simulation. Open commons
 
 - **Category:** "Productivity" or "Developer tools" — likely the closest fits. Flag for the real directory's category list (§4 Q2).
 - **Tags / keywords:** `workflow`, `daemon`, `ai-agents`, `graph-execution`, `open-commons`, `fantasy-writing`, `research`, `productivity`.
-- **Maintainer / organization:** Workflow — `ops@tinyassets.io`.
+- **Maintainer / organization:** TinyAssets — `ops@tinyassets.io`.
 - **Website URL:** `https://tinyassets.io/`
 - **Support URL:** `https://tinyassets.io/support` (must exist + respond per §3 launch-readiness).
 - **Privacy policy URL:** `https://tinyassets.io/legal/privacy` (per web-app spec #35 §2).
@@ -84,7 +84,7 @@ Typical directory requirements:
 
 - **Logo:** 512×512 PNG, transparent background. The "U" daemon-circle from `tinyassets_tray.py` is the current visual; needs a standalone catalog version (transparent BG, higher-contrast).
 - **Banner / card art:** 1200×630 PNG (OG-card ratio). Likely reused between this catalog + our own `/` landing page + per-node OG images.
-- **Screenshot / demo:** ≥1 screenshot showing a user in Claude.ai doing a Workflow operation. Ideally a quick GIF / video (≤30s) of "summon daemon → create universe → see daemon work."
+- **Screenshot / demo:** ≥1 screenshot showing a user in Claude.ai doing a TinyAssets operation. Ideally a quick GIF / video (≤30s) of "summon daemon → create universe → see daemon work."
 
 ### 2.4 Compliance + security
 
@@ -125,11 +125,11 @@ Before submitting, verify:
 Exact form varies by submission portal (§4 Q1). Template fields to fill:
 
 ```
-Connector name: Workflow
+Connector name: TinyAssets
 Short description: [from §2.1]
 Long description: [from §2.1]
 Category: Productivity
-Maintainer: Workflow <ops@tinyassets.io>
+Maintainer: TinyAssets <ops@tinyassets.io>
 Server URL: https://tinyassets.io/mcp
 Auth: OAuth 2.1 + PKCE
 Privacy policy: https://tinyassets.io/legal/privacy
@@ -158,7 +158,7 @@ During review, Anthropic may:
 ### Step 4: Post-approval
 
 - Connector appears in Claude.ai's directory.
-- Tier-1 users get "Add Workflow" one-click path.
+- Tier-1 users get "Add TinyAssets" one-click path.
 - Monitor inbound traffic + support channel for any spike in user questions.
 - Any significant version change (API breaking, major features) may require re-submission or notification — unclear, flag Q5.
 

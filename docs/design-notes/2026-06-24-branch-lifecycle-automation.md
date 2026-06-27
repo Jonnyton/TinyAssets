@@ -33,7 +33,7 @@ concrete gaps confirmed the diagnosis:
    agent's assumptions are wrong." Small, verified, frequent merges + a green
    `main` is the loop agents thrive in.
 3. **One task -> one branch -> one worktree -> one agent**, sibling dirs,
-   committed lifecycle scripts, a manifest. Workflow already invented this; it
+   committed lifecycle scripts, a manifest. TinyAssets already invented this; it
    just never automated the teardown half.
 4. **Stale-branch janitors run server-side on a schedule**, report-first
    (2-4 week dry run), with hard guardrails: protect `main`, never touch

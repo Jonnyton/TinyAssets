@@ -43,11 +43,11 @@ The source frames anticipation as a coupled product problem:
 Solving only some of those constraints is not enough for a mainstream
 consumer assistant because the failure mode becomes attention tax, not leverage.
 
-## Workflow Implications
+## TinyAssets Implications
 
-- Workflow should treat proactive behavior as a gated permission problem, not
+- TinyAssets should treat proactive behavior as a gated permission problem, not
   a personality trait in a chatbot prompt.
-- Coding-agent success transfers only where Workflow can define durable state,
+- Coding-agent success transfers only where TinyAssets can define durable state,
   ownership, objective or reviewable checks, and clear rollback paths.
 - Consumer-facing daemon behavior should prefer explicit trigger receipts,
   review gates, and reversible proposals before any autonomous action.
@@ -57,7 +57,7 @@ consumer assistant because the failure mode becomes attention tax, not leverage.
 - A daemon that creates more monitoring work has failed the anticipation test,
   even if each individual tool call is technically correct.
 
-## Related Workflow Concepts
+## Related TinyAssets Concepts
 
 - `PLAN.md` - User capability axis
 - `PLAN.md` - Work targets and review gates

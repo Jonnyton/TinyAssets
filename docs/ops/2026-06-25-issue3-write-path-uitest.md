@@ -37,7 +37,7 @@ Use the currently deployed connector before deploying this branch.
    i added the workflow builder connector. can you use it to submit a request to workflow? request text: issue3 baseline check - please queue a tiny request asking the daemon to confirm the write path is reachable.
    ```
 
-5. If the client shows an approval dialog for Workflow or `write_graph`, capture it before clicking anything.
+5. If the client shows an approval dialog for TinyAssets or `write_graph`, capture it before clicking anything.
 6. Try the normal user action once: approve the tool call if the client allows it.
 7. Capture the final rendered result. The baseline symptom is a bare `No approval received` with no useful server-side explanation.
 8. Copy the full transcript into the baseline artifact and add a short entry to `output/user_sim_session.md`.
@@ -56,7 +56,7 @@ Deploy only the branch that changes `write_graph.openWorldHint` to `false`. Do n
    ```
 
 5. Capture any approval dialog. If no dialog appears, capture the rendered tool-use/result transcript.
-6. Expected pass condition: the client no longer fails closed with bare `No approval received`; the request either queues successfully or returns a normal Workflow/server validation response.
+6. Expected pass condition: the client no longer fails closed with bare `No approval received`; the request either queues successfully or returns a normal TinyAssets/server validation response.
 7. Expected fail condition: the same bare `No approval received` appears before any visible server result. If that happens, treat it as connector/client-side BUG-034-class behavior and file upstream with both transcripts.
 8. Copy the full transcript into the B-run artifact and add a short entry to `output/user_sim_session.md`.
 

@@ -13,7 +13,7 @@ Three host-decision queues now sit in front of dispatch:
 1. **Full-platform architecture (3 Qs)** — Q1/Q2/Q3 from `docs/design-notes/2026-04-18-full-platform-architecture.md` §11. Unlocks breaking 16 architecture tracks (A-P) into Work rows.
 2. **PLAN.md.draft review (1 Q)** — Q4 below. Unlocks the refactor execution sequence (god-module splits + 5-subpackage layout) — every future feature lands on top of whatever shape PLAN.md.draft makes canonical.
 3. **Self-auditing-tools pattern (5 Qs)** — Q5-Q9 from `docs/design-notes/2026-04-19-self-auditing-tools.md` §5. Unlocks Track Q (~7 dev-days) for trust-critical tool primitives.
-4. **Layer-3 rename (3 Qs)** — Q10-Q12 from `docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md` §5. Unlocks tasks #26-#31 (~3-4 dev-days).
+4. **Layer-3 rename (3 Qs)** — Q10-Q12 from `docs/design-notes/2026-04-19-universe-to-tinyassets-server-rename.md` §5. Unlocks tasks #26-#31 (~3-4 dev-days).
 
 **Re-rank rationale (vs v1):** PLAN.md.draft now exists. The refactor sequencing questions matter more than they did at v1 because *the draft presupposes certain answers* — every future feature dispatched before PLAN.md.draft is approved or rejected gets potentially rebuilt. That makes Q4 (PLAN.md.draft review) the **single highest-leverage Q** in the digest, displacing Q1's prior #1 spot. Q1 stays #2 because it gates the entire MVP-build sequence.
 
@@ -130,7 +130,7 @@ From `docs/design-notes/2026-04-19-self-auditing-tools.md` §5. Each Q gates imp
 
 ## The layer-3 rename Qs (Q10-Q12 — lower leverage, fast)
 
-From `docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md` §5. Answering them unlocks tasks #26-#31.
+From `docs/design-notes/2026-04-19-universe-to-tinyassets-server-rename.md` §5. Answering them unlocks tasks #26-#31.
 
 ### Q10 — Module rename target name?
 

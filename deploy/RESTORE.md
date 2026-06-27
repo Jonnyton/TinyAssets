@@ -1,4 +1,4 @@
-# Workflow — state restore runbook
+# TinyAssets — state restore runbook
 
 Self-host migration Row J per
 `docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`.

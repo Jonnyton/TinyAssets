@@ -100,7 +100,7 @@ class UniverseState(DomainNeutralUniverseState):
     """Running chapter count across the entire universe."""
 
     # ------------------------------------------------------------------
-    # Workflow coordination
+    # TinyAssets coordination
     # ------------------------------------------------------------------
     workflow_instructions: dict
     """Per-run workflow configuration (contains ``premise`` key, etc.)."""
@@ -140,7 +140,7 @@ class UniverseState(DomainNeutralUniverseState):
     """Compatibility queue mirrored from current_task during the migration."""
 
     # ==================================================================
-    # DOMAIN: Workflow (narrative-specific)
+    # DOMAIN: TinyAssets (narrative-specific)
     # ==================================================================
 
     # ------------------------------------------------------------------

@@ -16,7 +16,7 @@ status_detail: F2 ACCEPTED by host 2026-04-28 (drop Recency, fold continue_branc
 
 From `ideas/INBOX.md` (Priya-Session2, 2026-04-24):
 
-> "Add BIOCLIM + RF for comparison on the same 14 species" has no clean Workflow verb. "New branch" implies fresh scaffolding. "New run" implies same branch. Chatbot must semantically infer "clone this branch, add algorithm nodes, re-run same species set." No existing primitive surfaces this as an intent.
+> "Add BIOCLIM + RF for comparison on the same 14 species" has no clean TinyAssets verb. "New branch" implies fresh scaffolding. "New run" implies same branch. Chatbot must semantically infer "clone this branch, add algorithm nodes, re-run same species set." No existing primitive surfaces this as an intent.
 
 From `docs/audits/user-chat-intelligence/2026-04-24-competitor-trials-sweep.md` Signal 2:
 

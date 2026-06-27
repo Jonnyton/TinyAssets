@@ -131,7 +131,7 @@ Checks:
 ### 3x3 To 7x7 Expansion
 
 OpenGame's tooling expands a simple 3x3 tileset into a fuller blob tileset for
-auto-tiling. If Workflow later builds local game tooling, this is a good
+auto-tiling. If TinyAssets later builds local game tooling, this is a good
 candidate to implement as a deterministic helper:
 
 - Input: 3x3 tiles for corners, edges, and center.

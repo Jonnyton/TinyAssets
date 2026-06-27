@@ -12,7 +12,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 
 - [ ] **Domain `tinyassets.io` pre-paid ≥2 years** (per `SUCCESSION.md` §4.1).
 - [ ] **Domain expiry monitor cron live + verified** (fires >60 days before expiry to `ops@tinyassets.io`).
-- [ ] **GoDaddy account login + GoDaddy billing card documented in vault** (ref `SUCCESSION.md §3.2 Workflow-Prod/godaddy/account`).
+- [ ] **GoDaddy account login + GoDaddy billing card documented in vault** (ref `SUCCESSION.md §3.2 TinyAssets-Prod/godaddy/account`).
 - [ ] **Cloudflare DNS + Worker configured:** `tinyassets.io` → GH Pages (landing), `tinyassets.io/mcp*` routes through the `tinyassets-mcp-proxy` Worker to the tunnel origin at `mcp.tinyassets.io` → Fly (or whatever provider hosts the daemon), `host-<slug>` reserved pattern for per-host tunnels.
 - [ ] **Cloudflare Origin CA certs installed** (Full-strict TLS on all subdomains, 15-yr validity).
 - [ ] **Fly.io Machines deployed** at `min=2, max=8`, regions `ord` primary + `fra` secondary.
@@ -23,7 +23,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 ## B. Identity + access
 
 - [ ] **Admin pool has ≥2 named members** seated (host + ≥1 co-maintainer per `SUCCESSION.md §2.1`).
-- [ ] **Co-maintainer has verified access to `Workflow-Prod` vault**.
+- [ ] **Co-maintainer has verified access to `TinyAssets-Prod` vault**.
 - [ ] **Succession lead + alternate named** (`SUCCESSION.md §2.2`).
 - [ ] **Bills-paying party + fallback documented** (`SUCCESSION.md §2.3`).
 - [ ] **GitHub org created** + `TinyAssets/` + `TinyAssets-catalog/` transferred + ≥2 org admins.
@@ -52,7 +52,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 
 ## E. Paid market + crypto
 
-- [ ] **Workflow test-token (ERC-20) deployed to Base Sepolia** + address in `treasury_config`.
+- [ ] **TinyAssets test-token (ERC-20) deployed to Base Sepolia** + address in `treasury_config`.
 - [ ] **Treasury wallet seed in vault** (testnet single-key OK; multisig REQUIRED before any mainnet value accrues).
 - [ ] **WalletConnect integration verified** end-to-end (connect → verify → top-up → bid → settle on testnet).
 - [ ] **Min-bid threshold set** per capability (default 0.01 test-token).

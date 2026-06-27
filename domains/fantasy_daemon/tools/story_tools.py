@@ -1,4 +1,4 @@
-"""Workflow domain-specific tools.
+"""TinyAssets domain-specific tools.
 
 Thin wrappers around existing writer_tools that implement the DomainTool
 protocol for use by the workflow engine.
@@ -120,7 +120,7 @@ def _create_notes_tool() -> DomainTool:
 
 
 def get_fantasy_tools() -> list[DomainTool]:
-    """Return the list of domain-specific tools for Workflow.
+    """Return the list of domain-specific tools for TinyAssets.
 
     These tools provide unified access to story context during generation
     and planning phases.

@@ -21,7 +21,7 @@ When using the Anthropic / Cowork ChatGPT route, check these before the first pr
 
 - The visible tab is `https://chatgpt.com/` or an existing `chatgpt.com/c/...` conversation.
 - Developer mode is enabled for the conversation.
-- The composer shows the `Workflow` connector/tool as available.
+- The composer shows the `TinyAssets` connector/tool as available.
 
 If any item is missing, stop the mission and ask the host to fix that exact item. Do not test through a fresh profile or a direct MCP call.
 

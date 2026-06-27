@@ -43,7 +43,7 @@ superseded_by: docs/design-notes/2026-04-25-self-evolving-platform-vision-v2.md
 └───────────────────────────────────────────────┘
     │ (accept)
     ▼
-[coding team branch — already prototype]   ←── user's "agent-teams-on-Workflow" idea
+[coding team branch — already prototype]   ←── user's "agent-teams-on-TinyAssets" idea
     │
     ▼
 [GitHub PR]

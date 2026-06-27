@@ -1,4 +1,4 @@
-"""Workflow domain-specific memory schemas.
+"""TinyAssets domain-specific memory schemas.
 
 Defines the memory tier structure (core/episodic/archival) for the narrative.
 """

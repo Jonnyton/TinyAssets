@@ -42,7 +42,7 @@ the same platform-chosen weights.
 
 ## Design Position
 
-Treat selector logic as a Workflow artifact:
+Treat selector logic as a TinyAssets artifact:
 
 - A selector is a published Branch version that reads a bounded selector input
   packet and emits an ordered list of candidate Branches with rationale.

@@ -1,7 +1,7 @@
-"""Workflow domain registration.
+"""TinyAssets domain registration.
 
 Implements the tinyassets.protocols.Domain protocol, connecting
-Workflow's graph topology and phase implementations to
+TinyAssets' graph topology and phase implementations to
 the shared workflow engine infrastructure.
 """
 
@@ -17,7 +17,7 @@ from tinyassets.protocols import DomainConfig, DomainTool, EvalCriteria, MemoryS
 
 
 class FantasyAuthorDomain:
-    """Workflow domain — implements tinyassets.protocols.Domain."""
+    """TinyAssets domain — implements tinyassets.protocols.Domain."""
 
     @property
     def config(self) -> DomainConfig:
@@ -28,11 +28,11 @@ class FantasyAuthorDomain:
         }
 
     def build_graph(self) -> Any:
-        """Return the compiled LangGraph for Workflow."""
+        """Return the compiled LangGraph for TinyAssets."""
         return build_universe_graph()
 
     def state_extensions(self) -> dict[str, type]:
-        """Return TypedDict extensions for Workflow state.
+        """Return TypedDict extensions for TinyAssets state.
 
         Fantasy-specific state fields are defined in domains/fantasy_daemon/state/
         and will be merged with the base engine state.
@@ -66,7 +66,7 @@ class FantasyAuthorDomain:
     def memory_schemas(self) -> list[MemorySchema]:
         """Return domain-specific memory schema definitions.
 
-        These schemas describe how Workflow stores and retrieves
+        These schemas describe how TinyAssets stores and retrieves
         information across episodes and long narrative horizons.
         """
         return get_fantasy_memory_schemas()

@@ -1,6 +1,6 @@
 # Repo setup — Phase 7.2
 
-Minimum git + tooling config for a new contributor cloning Workflow.
+Minimum git + tooling config for a new contributor cloning TinyAssets.
 Phase 7.2 treats the repo itself as the canonical shared state —
 `branches/`, `goals/`, and `nodes/` YAML are the public catalog; the
 SQLite DB is a local cache derived from that YAML.
@@ -38,7 +38,7 @@ providers / machines.
 
 ```bash
 git clone https://github.com/Jonnyton/TinyAssets
-cd Workflow
+cd TinyAssets
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 # Unix:    source .venv/bin/activate

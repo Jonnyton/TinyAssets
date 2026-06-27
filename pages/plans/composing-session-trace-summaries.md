@@ -16,7 +16,7 @@ This is the canonical wiki page documenting how chatbots compose the private-tra
 
 A reviewed narrative digest of one session - a branch run, a ui-test mission, a daemon cycle, a user-sim cadence. The summary lives in the Brain's memory_kinds registry; the raw evidence lives where it already lives (`EvalResult.artifacts`, `output/*`, wiki BUG pages, activity log).
 
-Three concrete examples from real Workflow sessions:
+Three concrete examples from real TinyAssets sessions:
 
 - A Markovic biology run that completed methodology checks and produced simulator snapshots.
 - A Claude review of a PR that posted an APPROVE verdict.
@@ -74,7 +74,7 @@ Common universe-side patterns (community-evolved):
 - **Personal-creator universes:** All summaries `host_private`. Never promoted. Brain remembers them for the user's own reference; commons sees nothing.
 - **Shared-fantasy-universe (Meridian Ashes prose lab):** Story-internal summaries `borrowable_role_context`; cross-universe references via `published` only when chapters are canonical.
 - **Scientific-corpus universe (Markovic biology):** Most summaries `borrowable_role_context` for in-corpus reference; promoted to `published` once the relevant paper hits the "all co-authors signed" gate rung.
-- **Project-self-voice universe (Workflow itself):** Reviewed summaries `published` so other providers + chatbots can find them via commons search.
+- **Project-self-voice universe (TinyAssets itself):** Reviewed summaries `published` so other providers + chatbots can find them via commons search.
 
 ### Why visibility enforcement is NOT a platform primitive
 

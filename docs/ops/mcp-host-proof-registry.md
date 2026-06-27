@@ -5,7 +5,7 @@ Owner: lead + codex-gpt5-desktop
 Canonical full MCP URL: `https://tinyassets.io/mcp`
 Directory/review MCP URL: `https://tinyassets.io/mcp-directory`
 
-This registry is the source for public claims about where Workflow works. If a
+This registry is the source for public claims about where TinyAssets works. If a
 host is not listed as verified here, public copy should say "compatible by
 spec" or "planned", not "works".
 
@@ -99,7 +99,7 @@ spec" or "planned", not "works".
 - Playwright production-preview smoke passed on desktop 1440x1100 and mobile
   390x900: 0 console/page errors, no horizontal overflow, 6 customer path
   cards, 3 gate rows, canonical URL value present, mobile host table stacks to
-  one column, `/llms.txt` includes Workflow and ChatGPT guest caveats.
+  one column, `/llms.txt` includes TinyAssets and ChatGPT guest caveats.
 - Screenshots: `output/connect-desktop-2026-05-01.png`,
   `output/connect-mobile-2026-05-01.png`.
 
@@ -108,7 +108,7 @@ spec" or "planned", not "works".
 | Host surface | Customer path | Status | Proof / blocker |
 |---|---|---|---|
 | Official MCP Registry | Registry-aware MCP hosts | published-live | 2026-05-01 proof: `mcp-publisher publish packaging/registry/server.json`; API search returned `io.github.Jonnyton/tinyassets-universe-server` active/latest |
-| Claude.ai custom connector | verified: read-only UI | 2026-05-02T14:44-07:00 in-app browser Claude.ai chat `3959f3de-0244-4488-aa24-87a396e465c2`: naive connector prompt loaded Workflow tools and returned daemon status; screenshot `output/openai-submission-assets/claude-ai-workflow-connector-status-2026-05-02.png` | Read-only proof only; directory form submit still separate |
+| Claude.ai custom connector | verified: read-only UI | 2026-05-02T14:44-07:00 in-app browser Claude.ai chat `3959f3de-0244-4488-aa24-87a396e465c2`: naive connector prompt loaded TinyAssets tools and returned daemon status; screenshot `output/openai-submission-assets/claude-ai-workflow-connector-status-2026-05-02.png` | Read-only proof only; directory form submit still separate |
 | Claude Connectors Directory | Logged-in Claude users/admins | form-reached; submit blocked on contact/final-submit approval | 2026-05-02: in-app browser reached Google Form page 2 from official Claude submission docs; stopped before entering required contact/org fields because submission records Google identity and transmits contact data. Closeout packet: `docs/ops/claude-directory-submission-closeout-2026-05-02.md` |
 | ChatGPT custom MCP / developer mode | Logged-in eligible ChatGPT user/workspace | stale app registration | 2026-05-02T15:37-07:00 settings audit: enabled `TinyAssets DEV` points to legacy `https://tinyassets.io/mcp`; fresh ChatGPT web prompt called legacy `get_status` and returned raw diagnostics. Re-register to `/mcp-directory` before final web/mobile proof |
 | ChatGPT App Directory | app draft; submit blocked | `chatgpt-app-submission.json` covers the 11 directory tools with 10 positive and 4 negative tests; 2026-05-02 dashboard draft uses `/mcp-directory`, `No Auth`, 11 complete justification rows, `Domain verified`, 5+3 dashboard tests, optional screenshots for non-UI app; direct `/mcp-directory` proof is green; final submit remains blocked on ChatGPT DEV re-register + web/mobile proof, legal/publisher assertions, optional uploads, and action-time host approval |
@@ -129,10 +129,10 @@ spec" or "planned", not "works".
 
 Use host-specific wording, but each host should prove at least one of these:
 
-- "Use Workflow to list available goals."
-- "Use Workflow to browse the live wiki and summarize the current launch risks."
-- "Use Workflow to inspect universes and tell me what durable state exists."
-- "Use Workflow to create or propose a node for a simple workflow." Only use
+- "Use TinyAssets to list available goals."
+- "Use TinyAssets to browse the live wiki and summarize the current launch risks."
+- "Use TinyAssets to inspect universes and tell me what durable state exists."
+- "Use TinyAssets to create or propose a node for a simple workflow." Only use
   this once write permissions and approval UX are verified in that host.
 
 ## Open Follow-Ups

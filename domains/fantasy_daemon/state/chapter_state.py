@@ -47,7 +47,7 @@ class ChapterState(TypedDict):
     REVERT-3x streak instead of drafting forever (RC-3 gate)."""
 
     # ------------------------------------------------------------------
-    # Workflow coordination
+    # TinyAssets coordination
     # ------------------------------------------------------------------
     workflow_instructions: dict
     """Premise and higher-level workflow context passed down from book/universe."""
@@ -60,7 +60,7 @@ class ChapterState(TypedDict):
     _kg_path: str
 
     # ==================================================================
-    # DOMAIN: Workflow (narrative-specific)
+    # DOMAIN: TinyAssets (narrative-specific)
     # ==================================================================
 
     # ------------------------------------------------------------------

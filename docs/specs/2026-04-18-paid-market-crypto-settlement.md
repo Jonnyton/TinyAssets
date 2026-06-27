@@ -313,7 +313,7 @@ One row per cadence run. `ledger.batch_id` FKs here.
 CREATE TABLE public.treasury_config (
   chain_id            int PRIMARY KEY,
   treasury_address    text NOT NULL,
-  token_contract_addr text NOT NULL,    -- Workflow test-token ERC-20 address on this chain
+  token_contract_addr text NOT NULL,    -- TinyAssets test-token ERC-20 address on this chain
   fee_bps             int NOT NULL DEFAULT 100,  -- 1% = 100 basis points
   min_payout_wei      numeric(40,0) NOT NULL,
   batch_cadence_hours int NOT NULL DEFAULT 168,  -- weekly default
@@ -413,7 +413,7 @@ My build-out:
 | `place_paid_request` RPC — wallet check + ledger reserve + Realtime fan-out | 0.25 d |
 | `accept_request` + `dispute_request` + `respond_to_dispute` + auto-accept cron | 0.35 d |
 | `settlement_batches` runner — reads `daemon_earnings` view, builds batch, submits tx, updates ledger with tx_hash | 0.5 d |
-| Solidity: deploy Workflow test-token (ERC-20) on Base Sepolia + treasury address + bulkTransfer contract | 0.3 d |
+| Solidity: deploy TinyAssets test-token (ERC-20) on Base Sepolia + treasury address + bulkTransfer contract | 0.3 d |
 | Daemon tray wallet-registration flow (new tray UX) | 0.3 d |
 | `earnings` dashboard view + MCP surface + tray panel | 0.2 d |
 | Min-bid threshold + account-age gate + same-user-bidding-refused (§7) | 0.15 d |
@@ -446,7 +446,7 @@ My build-out:
 | Q6 | Treasury governance — host-controlled key at MVP per memory. When to migrate to multisig / DAO? Flag when treasury balance > threshold. |
 | Q7 | Fee-on-token design — is the fee always 1%, or progressive (e.g. lower for large bids, higher for micro)? Flat 1% is the memory directive; flagged in case host wants tunability. |
 | Q8 | Refund semantics on `failed` completion — full refund (recommended) or partial (capability-dependent)? Memory's "default full refund; partial for degraded" is pointed at per-capability configurability; flag as `capabilities.refund_policy` column. |
-| Q9 | Payout currency — always the Workflow token, or settle in USDC/ETH if user requests? Multi-token settle is gas-expensive and adds conversion tracking. Recommend Workflow-token-only at MVP. |
+| Q9 | Payout currency — always the TinyAssets token, or settle in USDC/ETH if user requests? Multi-token settle is gas-expensive and adds conversion tracking. Recommend TinyAssets-token-only at MVP. |
 | Q10 | KYC/sanctions screening — needed at mainnet? On-chain tx data is public; regulatory clarity is not. Flag as "revisit before mainnet"; off-scope MVP. |
 
 ---
@@ -455,7 +455,7 @@ My build-out:
 
 Track E is done when, on Base Sepolia testnet:
 
-1. Workflow test-token (ERC-20) contract deployed + address in `treasury_config`; treasury address funded with test-tokens from faucet.
+1. TinyAssets test-token (ERC-20) contract deployed + address in `treasury_config`; treasury address funded with test-tokens from faucet.
 2. A tier-1 user can: connect wallet via `connect_wallet` → verify via `verify_wallet` → top-up ledger balance → place a paid bid → daemon claims → daemon completes → user accepts → daemon host sees pending-payout balance → weekly batch settles → tx visible on BaseScan with 99/1 split.
 3. Failure path: daemon fails → refund_request → user's ledger balance restored.
 4. Dispute path: user disputes → daemon responds with correction → user accepts → settlement routes to daemon.

@@ -217,7 +217,7 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 - Dashboard: tier toggles (accept_external, accept_goal_pool, accept_paid, allow_opportunistic). Per-Goal subscribe list. Earnings table. Accepted vs declined bid list with reasons. Active Task + recent Task history.
 - MCP inspection actions: `inspect_daemon_queue`, `inspect_tier_config`, `inspect_earnings` (gated by `TINYASSETS_PAID_MARKET`).
 - Chatbot-side affordances: "pause tier X", "promote Task Y", "subscribe to Goal Z."
-- UX-doctrine acceptance test: a user new to Workflow who runs a daemon for the first time should see the full tier ladder with explanatory text, and be able to toggle any tier in one click. No hidden state.
+- UX-doctrine acceptance test: a user new to TinyAssets who runs a daemon for the first time should see the full tier ladder with explanatory text, and be able to toggle any tier in one click. No hidden state.
 
 **Files:** dashboard surface (Qt or equivalent host-side), `tinyassets/universe_server.py` (new MCP inspect actions), tests.
 

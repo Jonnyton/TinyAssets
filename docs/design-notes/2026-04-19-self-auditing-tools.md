@@ -63,7 +63,7 @@ A self-auditing tool returns a structured payload with three parts:
 
 ## 4. The five successor surfaces
 
-Devin Session 2 closed the trust gap on confidential-tier routing via `get_status`. The same pattern collapses five other in-flight trust gaps into the same primitive. For each, the table below maps which fields belong in `evidence` vs `caveats`. Per-surface MVP cost is small (~few hundred lines per tool), but the trust property compounds — a tier-2 / tier-3 user who learns "Workflow tools are the kind that include their own caveats" generalizes that trust across the rest of the surface.
+Devin Session 2 closed the trust gap on confidential-tier routing via `get_status`. The same pattern collapses five other in-flight trust gaps into the same primitive. For each, the table below maps which fields belong in `evidence` vs `caveats`. Per-surface MVP cost is small (~few hundred lines per tool), but the trust property compounds — a tier-2 / tier-3 user who learns "TinyAssets tools are the kind that include their own caveats" generalizes that trust across the rest of the surface.
 
 ### 4.1 `get_memory_scope_status`
 

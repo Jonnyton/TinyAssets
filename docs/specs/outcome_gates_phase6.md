@@ -52,7 +52,7 @@ ALTER TABLE goals ADD COLUMN gate_ladder_json TEXT NOT NULL DEFAULT '[]';
 -- Ladder shape:
 -- [
 --   {"rung_key": "draft_complete", "name": "Draft complete",
---    "description": "Workflow produced a full draft." },
+--    "description": "TinyAssets produced a full draft." },
 --   {"rung_key": "peer_reviewed", "name": "Peer-reviewed",
 --    "description": "At least 2 external reviewers commented." },
 --   {"rung_key": "submitted", "name": "Submitted to venue",

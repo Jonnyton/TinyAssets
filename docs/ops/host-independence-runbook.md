@@ -301,11 +301,11 @@ account. Get the new user key from pushover.net → Your User Key.
 
 #### pushover-app-token
 
-**What:** Pushover application token identifying "Workflow" as the
+**What:** Pushover application token identifying "TinyAssets" as the
 source app.
 
 **Rotate:**
-1. pushover.net → Your Applications → Workflow → Edit → Generate new
+1. pushover.net → Your Applications → TinyAssets → Edit → Generate new
    token (or create replacement app if revoking the app entirely).
 2. `gh secret set PUSHOVER_APP_TOKEN --body "<new token>"`.
 3. Fire `.github/workflows/pushover-test.yml` to confirm delivery with

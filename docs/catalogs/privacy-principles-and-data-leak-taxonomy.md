@@ -171,7 +171,7 @@ Chatbot (to user): "Done — public now, noted it's a placeholder."
 ## 5. Catalog-versioning + change policy
 
 - **v1 ships with launch** — this document is the baseline.
-- **Changes via PR** to `Workflow/docs/catalogs/privacy-principles-and-data-leak-taxonomy.md`. Two admin-pool members approve per `SUCCESSION.md §1` bus-factor rule.
+- **Changes via PR** to `TinyAssets/docs/catalogs/privacy-principles-and-data-leak-taxonomy.md`. Two admin-pool members approve per `SUCCESSION.md §1` bus-factor rule.
 - **Version bump** on any substantive change (new taxonomy category, matrix default flip, principle order change). Minor wording fixes don't bump.
 - **`catalog_config.privacy_taxonomy_version`** in Postgres reflects the active version the chatbot should cite.
 - **Chatbot behavior backward-compat:** prior-version decisions are NOT auto-re-evaluated on version bump. A user's v1-made decisions stay v1-made unless the user re-authors.

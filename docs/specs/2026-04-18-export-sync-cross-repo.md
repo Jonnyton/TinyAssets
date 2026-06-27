@@ -23,7 +23,7 @@ Track G is the bridge between Postgres-canonical live content and the two GitHub
 
 Repo root:
 ```
-Workflow/
+TinyAssets/
 ├── tinyassets/                  # engine package
 ├── domains/                   # domain-specific workflow shells
 ├── fantasy_daemon/            # reference domain
@@ -124,7 +124,7 @@ TinyAssets-catalog/
                │
                ▼
 ┌────────────────────────────────────────────────┐
-│ GitHub TinyAssets-catalog/ main                   │
+│ GitHub tinyassets-catalog/ main                   │
 │  commit: "sync: <batch_id> (N artifacts)"       │
 │  author: tinyassets-catalog-bot[bot]              │
 └────────────────────────────────────────────────┘
@@ -231,7 +231,7 @@ BEGIN
 
     -- Build YAML via allowlist of known fields.
     v_yaml := format(
-      E'# Auto-exported from Workflow Postgres. Do not hand-edit in this repo;\n' ||
+      E'# Auto-exported from TinyAssets Postgres. Do not hand-edit in this repo;\n' ||
       E'# submit changes via PR — they round-trip back into Postgres on merge.\n' ||
       E'license: %s\n' ||
       E'schema_version: 1\n' ||

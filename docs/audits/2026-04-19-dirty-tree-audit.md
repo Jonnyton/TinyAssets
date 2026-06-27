@@ -129,7 +129,7 @@ All have been referenced from STATUS.md Concerns / Work rows / activity.log. Non
 | `docs/design-notes/2026-04-18-privacy-modes-for-sensitive-workflows.md` | (c) | Yes — STATUS concern cites it. |
 | `docs/design-notes/2026-04-18-scene-scoped-kg-cleanup.md` | (c) | Yes — post-#17 follow-up design. |
 | `docs/design-notes/2026-04-19-modularity-audit.md` | (c) | Yes — STATUS Concerns cites it. |
-| `docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md` | (c) | Yes — navigator's #4 layer-3 rename design note (just completed). |
+| `docs/design-notes/2026-04-19-universe-to-tinyassets-server-rename.md` | (c) | Yes — navigator's #4 layer-3 rename design note (just completed). |
 | `docs/design-notes/INDEX.md` | (c) | M — already updated to reference the new notes. Ships with them. |
 | `docs/exec-plans/INDEX.md` | (c) | M — same coherence. |
 | `docs/exec-plans/active/2026-04-15-author-to-daemon-rename.md` | (c) | Yes — the active rename exec plan that STATUS Work row #3 cites. |

@@ -112,7 +112,7 @@ Per `feedback_status_md_host_managed.md`, the STATUS Concern entry stays. **Read
 - `tinyassets/node_eval.py:240-308` (`get_stats`)
 - `tests/conftest.py:36-57` (`_isolate_storage_backend` autouse — irrelevant to node_eval, but confirmed not the cause)
 - `tests/test_data_dir_call_sites.py:47-80` (`test_node_evaluator_*` — confirmed not the polluter)
-- `%APPDATA%/Workflow/.node_eval.db` (28KB, empty `node_executions` table — confirmed not a state-leak source)
+- `%APPDATA%/TinyAssets/.node_eval.db` (28KB, empty `node_executions` table — confirmed not a state-leak source)
 
 ## Cross-references
 

@@ -50,7 +50,7 @@ Each row: target page (canonical uppercase path), write-action shape, expected b
 | Page | `pages/bugs/BUG-034-all-extensions-actions-return-no-approval-received-while-goa.md` |
 | Action | `wiki action=write category=bugs filename=BUG-034-all-extensions-actions-return-no-approval-received-while-goa content=<full-body-with-status-comment-appended>` |
 | Before | Body present; `## Related` section has `_none yet_`. No triage note. |
-| After | `## Related` section appends triage note: `Triaged 2026-04-26: ChatGPT connector approval-prompt failure, not Workflow server. Workaround: 'goals action=get goal_id=<id>' inlines bound branches with full graph + node_defs + state_schema. See [[chatbot-builder-behaviors]] §"When MCP actions return 'No approval received'".` |
+| After | `## Related` section appends triage note: `Triaged 2026-04-26: ChatGPT connector approval-prompt failure, not TinyAssets server. Workaround: 'goals action=get goal_id=<id>' inlines bound branches with full graph + node_defs + state_schema. See [[chatbot-builder-behaviors]] §"When MCP actions return 'No approval received'".` |
 | Verify | `wiki action=read page="pages/bugs/BUG-034-..."` returns body with the new triage note in Related; response is `status=updated` (in-place), not `status=drafted`. |
 
 ### §1.2 — BUG-003 status update (conditional_edges shipped, partial)

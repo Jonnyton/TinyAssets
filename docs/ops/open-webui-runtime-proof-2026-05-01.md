@@ -17,15 +17,15 @@ directory endpoint.
 | Open WebUI version | `0.9.2` |
 | Open WebUI auth | `WEBUI_AUTH=False`; local admin token used only for API proof calls |
 | Secret key | `WEBUI_SECRET_KEY` set for the proof container |
-| Workflow endpoint | `https://tinyassets.io/mcp-directory` |
+| TinyAssets endpoint | `https://tinyassets.io/mcp-directory` |
 | MCP transport | Streamable HTTP |
-| Workflow auth mode | None |
+| TinyAssets auth mode | None |
 | Function filter | Empty |
 | Model used for chat proof | `qwen3.5-nothink:latest` through Open WebUI/Ollama |
 
 ## Tool Server Proof
 
-Open WebUI's own tool-server verification endpoint accepted Workflow:
+Open WebUI's own tool-server verification endpoint accepted TinyAssets:
 
 ```text
 POST /api/v1/configs/tool_servers/verify
@@ -35,7 +35,7 @@ type: mcp
 auth_type: none
 ```
 
-The verification returned the 11 directory-safe Workflow tools:
+The verification returned the 11 directory-safe TinyAssets tools:
 
 ```text
 get_workflow_status
@@ -56,7 +56,7 @@ server as:
 
 ```text
 id: server:mcp:workflow
-name: Workflow
+name: TinyAssets
 description: Directory-safe TinyAssets MCP endpoint
 ```
 
@@ -65,7 +65,7 @@ description: Directory-safe TinyAssets MCP endpoint
 Prompt sent through Open WebUI's chat completion route:
 
 ```text
-Use the Workflow tool to call get_workflow_status. Then answer in one sentence with reachable=true or reachable=false and one field from the tool result.
+Use the TinyAssets tool to call get_workflow_status. Then answer in one sentence with reachable=true or reachable=false and one field from the tool result.
 ```
 
 Request shape:
@@ -90,9 +90,9 @@ This proves Open WebUI invoked the TinyAssets MCP server, exposed the tool resul
 as a chat source, and produced a user-visible response grounded in the
 `get_workflow_status` result.
 
-One attempted proof with `glm-5.1:cloud` failed before Workflow execution
+One attempted proof with `glm-5.1:cloud` failed before TinyAssets execution
 because the selected Ollama cloud model required a paid subscription. That was a
-model-access failure, not a Workflow or MCP connection failure.
+model-access failure, not a TinyAssets or MCP connection failure.
 
 ## Supporting Public Checks
 
@@ -110,20 +110,20 @@ Result:
 python scripts/mcp_probe.py --url https://tinyassets.io/mcp-directory tools
 ```
 
-Result: returned the same 11 directory-safe Workflow tools listed above.
+Result: returned the same 11 directory-safe TinyAssets tools listed above.
 
 ## Claim Boundary
 
 Verified claim:
 
-- Open WebUI 0.9.2 can connect to Workflow's public Streamable HTTP directory
+- Open WebUI 0.9.2 can connect to TinyAssets' public Streamable HTTP directory
   endpoint with auth mode `None`.
-- A local Open WebUI chat can invoke `get_workflow_status` through the Workflow
+- A local Open WebUI chat can invoke `get_workflow_status` through the TinyAssets
   MCP tool server and return a grounded visible answer.
 
 Not yet generalized:
 
 - Other Open WebUI versions.
 - Hosted or multi-user Open WebUI deployments.
-- OAuth/Bearer-secured Workflow endpoints.
+- OAuth/Bearer-secured TinyAssets endpoints.
 - Write/proposal flows through Open WebUI approval UX.

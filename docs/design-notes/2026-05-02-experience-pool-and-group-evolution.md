@@ -25,7 +25,7 @@ Per the audit verdict's REAFFIRMS:
 - ❌ No separate local-only self-evolution harness.
 - ❌ No optimization against one fixed validation set without holdouts.
 - ❌ No promotion of private failures into public reusable lessons without per-piece privacy review (composes with PrivateTraceCommons lane #931/#933/#935).
-- ❌ No EvoSkill `.claude`-first layout copy (Workflow is cross-provider; canonical is `.agents/skills/`).
+- ❌ No EvoSkill `.claude`-first layout copy (TinyAssets is cross-provider; canonical is `.agents/skills/`).
 - ❌ No DGM isolated-coding-agent focus.
 - ❌ No conflating benchmark progress with real-world outcome progress.
 - ❌ No GroupEvolutionRun runtime execution in Slice 1 — dormant spec only.

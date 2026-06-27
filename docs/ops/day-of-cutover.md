@@ -51,7 +51,7 @@ SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOi...
 ### 3. GitHub OAuth App — MUST (~3 min)
 
 - `https://github.com/settings/applications/new`.
-- Application name: `Workflow`.
+- Application name: `TinyAssets`.
 - Homepage URL: `https://tinyassets.io`.
 - Authorization callback URL: `https://tinyassets.io/authorize/github/callback`.
 - **Register application.** Copy the Client ID.
@@ -261,7 +261,7 @@ gh issue list --label=p0-outage --state=open
 
 I ask you once:
 
-> "All canaries green. Stop the home tray now: right-click Workflow tray icon → Exit. Confirm when done."
+> "All canaries green. Stop the home tray now: right-click TinyAssets tray icon → Exit. Confirm when done."
 
 ### 2.9 Post-cutover 10-min watch
 

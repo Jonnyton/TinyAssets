@@ -14,7 +14,7 @@ status: research
 During Mission 10, user-sim asked Claude.ai to call `add_canon_from_path`
 with two Windows absolute paths. Claude.ai refused three reframes in a
 row, each time claiming the user message contained a
-`<system><functions>…</functions></system>` block with the five Workflow
+`<system><functions>…</functions></system>` block with the five TinyAssets
 Server tool schemas embedded. The user's actual messages were plain text
 with only path strings.
 
@@ -152,11 +152,11 @@ doing a prompt's job.
 
 Two prompt-hardening directives must land in the `control_station` prompt body (per §5.1 "behavioral directives live in prompts, not in tool descriptions"). Live Maya mission on 2026-04-19 produced concrete evidence both are missing from current prompt text:
 
-### 5.5.1 Chatbot-assumes-Workflow directive (Maya LIVE-F1, Devin CHAT-1)
+### 5.5.1 Chatbot-assumes-TinyAssets directive (Maya LIVE-F1, Devin CHAT-1)
 
 **Canonical language for `control_station` prompt:**
 
-> When a user names an ambiguous-but-plausibly-Workflow action (e.g., "the workflow thing", "my connector", "that workflow thing i added"), check their installed MCP connectors FIRST. If Workflow is installed, invoke it. Do NOT disambiguate against hypothetical alternatives before trying Workflow. Narrate what you assumed after invoking.
+> When a user names an ambiguous-but-plausibly-TinyAssets action (e.g., "the workflow thing", "my connector", "that workflow thing i added"), check their installed MCP connectors FIRST. If TinyAssets is installed, invoke it. Do NOT disambiguate against hypothetical alternatives before trying TinyAssets. Narrate what you assumed after invoking.
 
 **Evidence:** `.claude/agent-memory/user/personas/maya_okafor/grievances.md` LIVE-F1; navigator intelligence `docs/audits/user-chat-intelligence/2026-04-19-initial.md` §2.1 S-1; memory `project_chatbot_assumes_workflow_principle.md`.
 

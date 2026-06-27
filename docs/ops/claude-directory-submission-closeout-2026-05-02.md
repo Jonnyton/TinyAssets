@@ -27,9 +27,9 @@ Review implications:
 - Privacy policy, support/contact, public documentation, and at least three
   working use-case examples are required.
 - MCP Apps with interactive UI need 3 to 5 PNG carousel screenshots. The
-  current Workflow directory surface is tool-only, not an MCP App UI surface.
+  current TinyAssets directory surface is tool-only, not an MCP App UI surface.
 
-## Current Workflow Packet
+## Current TinyAssets Packet
 
 - Public custom connector URL: `https://tinyassets.io/mcp`
 - Directory/review endpoint: `https://tinyassets.io/mcp-directory`
@@ -57,13 +57,13 @@ Tool annotation status:
 
 Use these as the three-plus review examples:
 
-1. `Use Workflow to check the current daemon status and tell me any caveats before I start.`
-2. `Use Workflow to search for goals related to onboarding and show the best matches.`
-3. `Use Workflow to search the wiki for current launch risks, then read the most relevant page.`
-4. `Use Workflow to propose a public goal named "Reduce MCP onboarding friction" with tags onboarding,hosts.`
+1. `Use TinyAssets to check the current daemon status and tell me any caveats before I start.`
+2. `Use TinyAssets to search for goals related to onboarding and show the best matches.`
+3. `Use TinyAssets to search the wiki for current launch risks, then read the most relevant page.`
+4. `Use TinyAssets to propose a public goal named "Reduce MCP onboarding friction" with tags onboarding,hosts.`
 
 For write examples, do not approve the write unless the current operator has
-explicit action-time approval for creating public Workflow state.
+explicit action-time approval for creating public TinyAssets state.
 
 ## Repo-Side Closeout
 
@@ -96,7 +96,7 @@ Verification from `codex/onboarding-close-gaps`,
 These are not repo-side blockers and still require action-time approval or a
 live UI surface:
 
-- Fresh rendered Claude.ai custom connector proof with the installed Workflow
+- Fresh rendered Claude.ai custom connector proof with the installed TinyAssets
   connector. The project standard for final chatbot-surface proof is the real
   Claude.ai UI, not only direct MCP probes.
 - Claude directory form contact/org fields. Earlier browser work reached page

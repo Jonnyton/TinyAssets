@@ -12,7 +12,7 @@ tags: [standards, conformance, receipts, gates, evaluation]
 
 ## Purpose
 
-Workflow should treat external standards as versioned community-remixable rule
+TinyAssets should treat external standards as versioned community-remixable rule
 packs layered above a small platform substrate, not as one core table or
 primitive per industry. The substrate stays generic: branch versions, run
 receipts, evidence handles, gates, evaluators, and artifact references. Domain
@@ -31,7 +31,7 @@ The host standards list mixes different kinds of rules:
 - interoperability, data, metadata, and terminology standards
 - reporting checklists and research-practice principles
 
-Workflow can be compatible with these patterns at the platform layer by
+TinyAssets can be compatible with these patterns at the platform layer by
 collecting controls, evidence, validator output, and audit trails. Actual
 compliance is scoped to a deployment, data class, jurisdiction, actor role,
 operating procedure, and often an outside reviewer or regulator.
@@ -41,9 +41,9 @@ operating procedure, and often an outside reviewer or regulator.
 Standards packs should not silently convert evidence into a stronger claim.
 Use explicit claim levels:
 
-- `compatible`: Workflow can store, map, validate, or export data in the
+- `compatible`: TinyAssets can store, map, validate, or export data in the
   standard's shape.
-- `control_ready`: Workflow can collect the evidence needed for a compliance
+- `control_ready`: TinyAssets can collect the evidence needed for a compliance
   program, including policies, logs, receipts, approvals, and tests.
 - `attested`: a named accountable actor or accepted review process has approved
   the evidence for a scoped environment.
@@ -141,7 +141,7 @@ truth unless the pack and accountable review path explicitly accept it.
 
 - Do not add one core table, MCP action, or evaluator kind per external
   standard.
-- Do not present Workflow as certified or compliant without scoped attestation.
+- Do not present TinyAssets as certified or compliant without scoped attestation.
 - Do not store private regulated content in the platform commons; packs may
   describe host-local evidence and policies.
 - Do not let pack updates mutate branch state opaquely. Updates must produce

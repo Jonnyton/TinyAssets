@@ -154,7 +154,7 @@ Capture evidence with date, environment, URL, and exact build/version.
 - [ ] The original/remake/fallback class is stated in the verification note.
 
 For canvas-heavy games, include a pixel or screenshot check so a blank canvas
-cannot pass. For public Workflow/MCP behavior, supporting probes are not final:
+cannot pass. For public TinyAssets/MCP behavior, supporting probes are not final:
 run the live chatbot `ui-test` when connector behavior changed.
 
 ## Failure Handling

@@ -1,6 +1,6 @@
 ---
 name: infra-ops
-description: Drives domain, DNS, SSL, and Cloudflare/GoDaddy admin for the Workflow public surfaces. Use when changing DNS records, nameservers, Cloudflare Workers/routes/tokens, GoDaddy domain or Websites+Marketing settings, or doing emergency DNS routing.
+description: Drives domain, DNS, SSL, and Cloudflare/GoDaddy admin for the TinyAssets public surfaces. Use when changing DNS records, nameservers, Cloudflare Workers/routes/tokens, GoDaddy domain or Websites+Marketing settings, or doing emergency DNS routing.
 ---
 
 # Infra Ops (Cloudflare + GoDaddy)

@@ -9,7 +9,7 @@ Status: research complete, ready for implementation session pickup
 
 ## Executive Summary
 
-The existing Workflow infrastructure is **remarkably close** to frontier research on
+The existing TinyAssets infrastructure is **remarkably close** to frontier research on
 structured memory for long-form narrative generation. The project already has
 HippoRAG, RAPTOR, LanceDB vector retrieval, a Leiden community-detection layer,
 phase-aware context routing, truth-value-typed fact extraction, and a three-tier
@@ -82,13 +82,13 @@ Memory-Enhancement" (Wang et al., 2025)
 validity, and an LLM-based conflict detector checks new generation against the
 graph before committing.
 
-**Relevance to Workflow**: The existing entity KG already has `valid_from_chapter`
+**Relevance to TinyAssets**: The existing entity KG already has `valid_from_chapter`
 and `valid_to_chapter` on edges. DOME validates that this is the right pattern,
 but pushes further — every generated scene should **update** the temporal graph
 before the next planning step, and the planning step should **query** the graph
 for contradictions.
 
-**Recommendation**: Workflow should adopt DOME's commit-then-verify cycle. The
+**Recommendation**: TinyAssets should adopt DOME's commit-then-verify cycle. The
 existing commit node already extracts facts and updates WorldStateDB; the gap is
 that the KG update and contradiction check happen post-commit rather than as a
 pre-draft gate. Phase 1 of the exec plan (scene packets) naturally becomes the
@@ -107,7 +107,7 @@ unified through a temporally-aligned RAG pipeline.
 **Results**: 23.6% higher coherence, 89.7% emotional consistency, 41.8% fewer
 hallucinations vs. baseline GPT.
 
-**Relevance**: Workflow already has component (3) via the router, and something
+**Relevance**: TinyAssets already has component (3) via the router, and something
 like (2) via episodic memory. The missing piece is **(1) — explicit symbolic state
 tracking per entity per scene**. SCORE validates that symbolic state objects
 (character location, emotional state, knowledge boundaries) that get updated after
@@ -117,7 +117,7 @@ every scene are the single biggest coherence win.
 emotional_state, and knowledge_facts. The gap is that these are updated only on
 commit and not always checked pre-draft. Making orient query the live symbolic
 state (not just notes) and making the plan node validate against it would bring
-Workflow up to SCORE-level coherence tracking.
+TinyAssets up to SCORE-level coherence tracking.
 
 ### 2c. StoryWriter (ACM CIKM 2025) — Multi-Agent + History Compression
 
@@ -127,7 +127,7 @@ Workflow up to SCORE-level coherence tracking.
 compression — the writing agent compresses story history relative to the current
 event, not generically.
 
-**Relevance**: Workflow already has orient/plan/draft/commit. The interesting
+**Relevance**: TinyAssets already has orient/plan/draft/commit. The interesting
 finding is **event-relative compression** — instead of a sliding window over
 recent scenes, compress what's relevant to the current scene's entity
 neighborhood and active promises.
@@ -162,7 +162,7 @@ it to also trigger contextual re-indexing of affected entity records.
 searchable) + archival memory (persistent). The agent self-manages what
 moves between tiers.
 
-**Relevance**: Workflow already has this exact three-tier split
+**Relevance**: TinyAssets already has this exact three-tier split
 (core/episodic/archival). What Letta adds is that the **agent itself** decides
 what to promote or evict, rather than fixed promotion thresholds.
 
@@ -183,10 +183,10 @@ incremental graph updates via union.
 **HippoRAG 2**: Improved associativity and sense-making, cheaper offline
 indexing.
 
-**Relevance**: Workflow already uses HippoRAG + Leiden communities, which
+**Relevance**: TinyAssets already uses HippoRAG + Leiden communities, which
 covers the same ground as GraphRAG's community summaries. LightRAG's
 incremental update pattern is the most interesting addition — currently
-Workflow rebuilds the graph per indexing pass; LightRAG shows that
+TinyAssets rebuilds the graph per indexing pass; LightRAG shows that
 **union-based incremental updates** cut cost by ~50%.
 
 **Recommendation**: Adopt LightRAG-style incremental graph updates for the
@@ -202,7 +202,7 @@ first-class scheduled resources with API abstraction, permission control,
 and proactive preloading ("next-scene prediction").
 
 **Relevance**: The "next-scene prediction" concept is fascinating for
-Workflow. Instead of only assembling context when orient runs, **precompute
+TinyAssets. Instead of only assembling context when orient runs, **precompute
 the likely retrieval packet for the next scene** during the commit phase.
 The commit node already knows what scene position comes next and what
 promises are active — it could pre-stage a retrieval packet.

@@ -71,7 +71,7 @@ function Landing({ onNavigate }) {
             </div>
             <div style={{ fontSize: 13.5, color: "var(--fg-3)", lineHeight: 1.65, maxWidth: 460, justifySelf: "end" }}>
               <div style={{ color: "var(--violet-200)", fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 8 }}>How it flows</div>
-              <div style={{ marginBottom: 14 }}>Your chatbot speaks MCP. TinyAssets's MCP server exposes <em>team operations</em> — summon, fork, swap, scale, kill, inspect. You chat in English. Agents appear.</div>
+              <div style={{ marginBottom: 14 }}>Your chatbot speaks MCP. TinyAssets' MCP server exposes <em>team operations</em> — summon, fork, swap, scale, kill, inspect. You chat in English. Agents appear.</div>
               <Button variant="ghost" size="sm" onClick={() => onNavigate("teams")}>
                 See all 10 diagrams →
               </Button>

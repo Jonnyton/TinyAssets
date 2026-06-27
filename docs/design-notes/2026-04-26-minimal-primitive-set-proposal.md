@@ -148,7 +148,7 @@ These are roadmap-aware additions, not current-spec primitives. When Claude.ai w
 - **MCP `resources`**: read-only browseable artifacts. Could simplify `commons.search` (the user's chat-client BROWSES wiki pages directly, no separate tool call). Doesn't add a primitive; reduces chatter on the existing 5.
 - **MCP `sampling`**: server-initiated LLM calls. Lets the platform run evaluators / prompt-template completions without going through the user's chat-client → cheaper + asynchronous. Doesn't add a user-facing primitive; makes `evaluate` more powerful internally.
 - **MCP `elicitation`**: server-initiated user prompts mid-tool-call. Lets the platform say "I need confirmation on this destructive action" or "which of these 3 vendor matches is correct?" mid-run. Doesn't add a primitive; makes `run` and `evaluate` interactive.
-- **MCP `prompts`**: user-controlled chat-template surface. Lets platform ship "Workflow design wizard" / "Bug investigation flow" as starting templates the user picks from a menu. **This is the right home for `branch_design_guide`** (which is currently a tool but should be a prompt).
+- **MCP `prompts`**: user-controlled chat-template surface. Lets platform ship "TinyAssets design wizard" / "Bug investigation flow" as starting templates the user picks from a menu. **This is the right home for `branch_design_guide`** (which is currently a tool but should be a prompt).
 
 **Conclusion:** when the spec features land, the 5-primitive set DOESN'T need to grow. Existing primitives become richer. `branch_design_guide` migrates from tool → prompt.
 
@@ -256,23 +256,23 @@ Implication: the BROWSER-only primitive design must compile to TOOL CALLS, perio
 
 **Zapier** (per `n8n.io/vs/zapier/`, `datacamp.com/blog/n8n-vs-zapier`):
 - Primitive: **trigger → action**. ~7000 integration "apps" each exposing many actions. No state, no branching as first-class. Zaps are linear.
-- User-cognitive surface: massive (7000 apps), each with N actions. Workflow design = pick app → pick action → wire fields.
-- **Lesson:** Zapier's surface is HUGE because each integration is its own primitive. Workflow's path is the opposite — fewer primitives, each does one thing across all integrations.
+- User-cognitive surface: massive (7000 apps), each with N actions. TinyAssets design = pick app → pick action → wire fields.
+- **Lesson:** Zapier's surface is HUGE because each integration is its own primitive. TinyAssets' path is the opposite — fewer primitives, each does one thing across all integrations.
 
 **n8n** (per `hatchworks.com/blog/ai-agents/n8n-vs-zapier/`):
 - Primitives: **node** (function), **edge** (data flow), **state** (workflow context), **branching/loops**, **error handling**, **sub-workflows**.
 - ~6 conceptual primitives + integration nodes. Closer to "build everything from few primitives."
-- **Lesson:** n8n proves a LangGraph-shape (node + edge + state) is a tractable user-facing primitive set. Workflow's `workflow` primitive aligns directly.
+- **Lesson:** n8n proves a LangGraph-shape (node + edge + state) is a tractable user-facing primitive set. TinyAssets' `workflow` primitive aligns directly.
 
 **Replit Agent** (per `langchain.com/breakoutagents/replit`):
 - "Tools calling agents and agents calling tools — fully composable architecture."
 - Multi-agent: tools registered dynamically; agents with assigned roles; manager + editor agents.
-- **Lesson:** dynamic tool registration is irreducible — Workflow's `workflow.register_node` does this.
+- **Lesson:** dynamic tool registration is irreducible — TinyAssets' `workflow.register_node` does this.
 
 **Cursor / Devin / Claude Code** (per `productwithshambhavi.substack.com/p/ai-agent-products-dissected-cursor`):
 - Local-app agents with file system + terminal + test-runner ownership.
 - Don't expose primitives via MCP; ARE the chat-client.
-- **Lesson:** local-app users don't need many platform primitives; the chat-client provides most. Workflow's local-app primitive count (`host`, `upload`) is intentionally small for this reason.
+- **Lesson:** local-app users don't need many platform primitives; the chat-client provides most. TinyAssets' local-app primitive count (`host`, `upload`) is intentionally small for this reason.
 
 ### §6.4 — User composition patterns from chat-traces + persona memories
 
@@ -303,7 +303,7 @@ From `output/user_sim_session.md`, persona memories, and audit chat traces:
 ### §6.5 — Real "extension is fragile" signal from Priya
 
 From persona memory `priya_ramaswamy/sessions.md` line 177:
-> "Extension-as-first-class-primitive. Workflow should have a notion of 'continue the prior sweep' that's distinct from 'scaffold a new pipeline.' ... Priya's ask in T+0:00 ('can we extend') is a natural-language signal — chatbot should recognize extension semantics and route through a different scaffold path."
+> "Extension-as-first-class-primitive. TinyAssets should have a notion of 'continue the prior sweep' that's distinct from 'scaffold a new pipeline.' ... Priya's ask in T+0:00 ('can we extend') is a natural-language signal — chatbot should recognize extension semantics and route through a different scaffold path."
 
 This was the concrete user-evidence for an explicit continuation path. Superseded 2026-05-01: do not add standalone `continue_branch`; accepted target is optional `resume_from=<run_id>` on existing `run_branch` after #18. The primitive lesson still stands: serve the intent on the run surface, not as a new top-level tool.
 
@@ -444,4 +444,4 @@ Pre-execution, host weighs in on §7's 10 decision asks. Once approved, the cons
 - [n8n vs Zapier: The Definitive 2026 Automation Face-Off | hatchworks.com](https://hatchworks.com/blog/ai-agents/n8n-vs-zapier/) — competitor primitive comparison
 - [Replit Agent Case Study: AI Agent Architecture & Build | langchain.com](https://www.langchain.com/breakoutagents/replit) — composable architecture
 - [AI Agent Products, Dissected: Cursor and Replit | productwithshambhavi.substack.com](https://productwithshambhavi.substack.com/p/ai-agent-products-dissected-cursor) — local-app agent primitives
-- [LangGraph StateGraph reference | reference.langchain.com](https://reference.langchain.com/python/langgraph/graphs) — substrate primitives that Workflow builds atop
+- [LangGraph StateGraph reference | reference.langchain.com](https://reference.langchain.com/python/langgraph/graphs) — substrate primitives that TinyAssets builds atop

@@ -64,7 +64,7 @@ Both problems live in the same file, which is why both audits exist as a pair an
 |------|------------|
 | **Merge conflicts during 5-day refactor.** Multiple devs touch `universe_server.py` regularly (#21 wiki cosign, #22 add_canon followups, recent task lineage shows constant activity). | Wait until current in-flight tasks land. Tag a quiet window. Each of the 8 commits is small + independently mergeable, so refactor can pause between commits if a hotfix needs the file. |
 | **Domain extraction premature** if rename Phases 2–4 haven't landed (handlers would be renamed twice). | Sequencing gate explicit: rename Phases 2–4 → domain extraction. Audit #28 §6 documents this. |
-| **Universe-to-Workflow-Server file rename** (per `docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md`) is blocked on host §5 answers. If file moves to `workflow_server.py`, extraction reapplies cleanly but adds one rename round-trip. | Either rename first OR extract first — both valid. Audit #29 notes "doing extraction first is fine and slightly simplifies the rename." |
+| **Universe-to-Workflow-Server file rename** (per `docs/design-notes/2026-04-19-universe-to-tinyassets-server-rename.md`) is blocked on host §5 answers. If file moves to `workflow_server.py`, extraction reapplies cleanly but adds one rename round-trip. | Either rename first OR extract first — both valid. Audit #29 notes "doing extraction first is fine and slightly simplifies the rename." |
 | **Pattern A circular-import risk** (`workflow.api → workflow.api.branches → workflow.api`). | Resolved by leaf module `workflow.mcp_setup` holding the FastMCP instance — explicitly called out in audit #29 §6. |
 
 ---

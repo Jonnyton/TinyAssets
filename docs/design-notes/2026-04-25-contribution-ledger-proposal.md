@@ -22,7 +22,7 @@ Pick the **one-table** model. Single append-only events ledger; all five contrib
 CREATE TABLE contribution_events (
     event_id              TEXT PRIMARY KEY,           -- uuid hex
     event_type            TEXT NOT NULL,              -- enum below
-    actor_id              TEXT NOT NULL,              -- internal Workflow user id
+    actor_id              TEXT NOT NULL,              -- internal TinyAssets user id
     actor_handle          TEXT NOT NULL DEFAULT '',   -- optional GitHub handle / display
     source_run_id         TEXT,                       -- runs.run_id, NULL for non-run events
     source_artifact_id    TEXT,                       -- branch_version_id, node_def_id, BUG-id, PR url
@@ -99,7 +99,7 @@ The naïve approach is to emit one event per ancestor every time a `design_used`
 |---|---|---|---|
 | 1. Daemon-host step | `update_run_status()` step-finalize path | `tinyassets/runs.py:331-377` | New sibling `record_contribution_event(event_type='execute_step', actor_id=daemon_actor_id, source_run_id=run_id, weight=1.0, ...)` call. Daemon's actor_id is captured at run claim time (today's `runs.actor` field). |
 | 2. Designer (branch / node) | Same step-finalize as #1 + `record_event()` | `tinyassets/runs.py:434-450` | At each step, after running a node referencing branch_version_id V, emit `design_used` with actor_id=branch author, source_artifact_id=V, source_artifact_kind='branch_version'. Per-node references emit per-node events with kind='node_def'. |
-| 3. Repo PR | NEW path — GitHub webhook handler | NEW file (does not exist yet). Lives alongside `tinyassets/api/` if HTTP, else `tinyassets/integrations/github_webhook.py`. | On `pull_request.closed` with `merged=true` AND label = `patch-request`, insert `code_committed` event with actor_id=PR author Workflow id, source_artifact_id=PR url, source_artifact_kind='github_pr'. |
+| 3. Repo PR | NEW path — GitHub webhook handler | NEW file (does not exist yet). Lives alongside `tinyassets/api/` if HTTP, else `tinyassets/integrations/github_webhook.py`. | On `pull_request.closed` with `merged=true` AND label = `patch-request`, insert `code_committed` event with actor_id=PR author TinyAssets id, source_artifact_id=PR url, source_artifact_kind='github_pr'. |
 | 4. Lineage (N-gen) | Derived at distribution-time, not emit-time | Bounty calculator (NEW). Reads `branch_definitions.fork_from` (`daemon_server.py:404-411`) + ancestor walk. | NO emit-site. Derived from the leaf `design_used` event by walking `fork_from` and applying decay coefficient. |
 | 5. Helpful chatbot-action | Gate-series evaluator citing wiki content | `tinyassets/universe_server.py:13102` (`_wiki_file_bug` write) is the upstream emit; the evaluator's cite-decision is the actual emit trigger. | When a gate's evaluator returns a decision payload that names a wiki page or chatbot artifact (BUG-NNN, drafts/foo) as evidence, evaluator emits `feedback_provided` with actor_id=wiki page author, source_artifact_id=page slug, kind='wiki_page'. Anti-spam: NO emit unless a gate explicitly cites. |
 

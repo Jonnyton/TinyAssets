@@ -1,15 +1,15 @@
 ---
-title: Multi-User Workflow Operating Model
+title: Multi-User TinyAssets Operating Model
 date: 2026-05-03
 status: research
-source: pages/plans/multi-user-workflow-operating-model.md
+source: pages/plans/multi-user-tinyassets-operating-model.md
 source_issue: 236
 ---
 
-# Multi-User Workflow Operating Model
+# Multi-User TinyAssets Operating Model
 
 Community wiki source:
-`pages/plans/multi-user-workflow-operating-model.md`, retrieved from the live
+`pages/plans/multi-user-tinyassets-operating-model.md`, retrieved from the live
 wiki on 2026-05-03. This repository note keeps the proposal visible to coding
 sessions without promoting it to canonical `PLAN.md` truth.
 
@@ -23,7 +23,7 @@ runtime code change is implied by this issue.
 
 ## Operating Model Summary
 
-Workflow should scale as a multi-tenant goals-and-runs substrate:
+TinyAssets should scale as a multi-tenant goals-and-runs substrate:
 
 - active user work stays isolated in personal, universe, draft-branch, run,
   transcript, temporary-file, and credential scopes;

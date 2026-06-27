@@ -44,7 +44,7 @@ Ranking: how much does untangling this make the repo *easier to reason about for
 
 **Cost.** ~3-4 dev-days for phase 1 (extraction without behavior change); phase 2 dovetails with #11 dispatch sequence.
 
-**Sequencing.** This is the *single largest* clarity uplift in the repo. But it must wait for layer-3 universe→workflow server rename (`docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md` + STATUS task #25 + the layer-3 §5 design note Qs) AND for engine/domain separation note (#11) to settle. Fragmenting the file before either of those lands creates merge-conflict pain.
+**Sequencing.** This is the *single largest* clarity uplift in the repo. But it must wait for layer-3 universe→workflow server rename (`docs/design-notes/2026-04-19-universe-to-tinyassets-server-rename.md` + STATUS task #25 + the layer-3 §5 design note Qs) AND for engine/domain separation note (#11) to settle. Fragmenting the file before either of those lands creates merge-conflict pain.
 
 ---
 

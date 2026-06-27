@@ -63,7 +63,7 @@ Also unconfirmed: citation cards from bare URLs, interactive widgets, artifact s
 - **Walls of JSON in `text`.** If it would not fit one phone screen, summarize in `text` and put the rest in `structuredContent`.
 - **Stale examples in docstrings.** When an action's return shape changes, update its docstring example the same commit. Drift erodes trust faster than missing docs.
 - **Mixed domains in one description.** Every description must speak in the domain the user is in (workflow-building, not fiction-writing) and never list examples from a different domain. Related to #28.
-- **Fiction-framing as default.** Workflow is a general workflow platform. Fantasy is one branch. New actions default to workflow language; fiction examples only inside the fantasy domain's own skill surface.
+- **Fiction-framing as default.** TinyAssets is a general workflow platform. Fantasy is one branch. New actions default to workflow language; fiction examples only inside the fantasy domain's own skill surface.
 - **Raw JSON when markdown would render.** Tables, lists, checklists — use Markdown, not JSON objects.
 - **Returning only `{"ok": true}`.** Every successful write surfaces what changed + what the user should do next.
 - **Relying on annotations to hide sensitive data.** `audience=["assistant"]` is a hint; clients may ignore it.

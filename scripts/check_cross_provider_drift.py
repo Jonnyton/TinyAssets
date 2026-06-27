@@ -372,7 +372,7 @@ def run_self_test() -> int:
         (root / ".agents" / "skills" / "website-editing").mkdir(parents=True)
         (root / ".claude" / "skills" / "website-editing").mkdir(parents=True)
         (root / ".claude" / "agents").mkdir(parents=True)
-        (root / "AGENTS.md").write_text("# Workflow\n", encoding="utf-8")
+        (root / "AGENTS.md").write_text("# TinyAssets\n", encoding="utf-8")
         skill_text = (
             "# Website editing\n\n"
             "Cross-provider drift -> scripts/check_cross_provider_drift.py -> "
@@ -393,7 +393,7 @@ def run_self_test() -> int:
             "# hook placeholder\n", encoding="utf-8"
         )
         (root / "AGENTS.md").write_text(
-            "# Workflow\n\n### Where new conventions live\n\nUse AGENTS.md first.\n",
+            "# TinyAssets\n\n### Where new conventions live\n\nUse AGENTS.md first.\n",
             encoding="utf-8",
         )
         assert not run_checks(root)

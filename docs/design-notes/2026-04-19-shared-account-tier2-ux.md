@@ -26,11 +26,11 @@ status: active
 
 Three concrete shapes the chatbot encounters at tier-2:
 
-1. **Spouse/partner share.** One Claude.ai account, two users. Person A (the account holder) has been using Workflow for a fantasy novel; Person B (the partner) wants to draft a recipe-tracker. Person B asks the chatbot "summon a daemon for my recipe tracker" — chatbot has memory of Person A's fantasy work but no signal yet that Person B is a different person with a different goal.
+1. **Spouse/partner share.** One Claude.ai account, two users. Person A (the account holder) has been using TinyAssets for a fantasy novel; Person B (the partner) wants to draft a recipe-tracker. Person B asks the chatbot "summon a daemon for my recipe tracker" — chatbot has memory of Person A's fantasy work but no signal yet that Person B is a different person with a different goal.
 
-2. **Collaboration share.** Indie-dev contractor sets up Workflow on a client's account. Contractor and client both use it. The persona switching is task-shaped, not identity-shaped: same person, two hats.
+2. **Collaboration share.** Indie-dev contractor sets up TinyAssets on a client's account. Contractor and client both use it. The persona switching is task-shaped, not identity-shaped: same person, two hats.
 
-3. **Editor/co-author share.** A novelist uses Workflow for their manuscript; their human editor occasionally drives the same account to leave editorial notes. Two people with overlapping but distinct goals.
+3. **Editor/co-author share.** A novelist uses TinyAssets for their manuscript; their human editor occasionally drives the same account to leave editorial notes. Two people with overlapping but distinct goals.
 
 What makes these *tier-2-specific* (vs tier-1): tier-2 hosts have installed the daemon, have local file access, often have privacy-critical expectations (manuscript IP, recipe-tracker private data, editorial drafts not yet public). The cost of the chatbot getting persona/account context wrong is materially higher than tier-1's "type the prompt again."
 
@@ -50,7 +50,7 @@ Three failure modes, each a different layer of leverage failure:
 | **Defensive over-disclosure** (chatbot asks "are you really {persona name}?" before every prompt) | Chatbot defaults to safety; user experiences interrogation. The user's manifested will (do the work) is buried under "verify identity first." | No primitive distinguishes "ambiguous mismatch" from "load-bearing mismatch." Everything is treated as load-bearing. |
 | **Silent wrong-persona action** (chatbot does what Person A would have wanted, not what Person B asked for) | Chatbot serves *historical* manifested will instead of *current* manifested will. | The signal that this prompt diverges from prior context exists in the prompt itself, but the chatbot has no way to surface that divergence as a checkable hypothesis. |
 
-The Devin Session 2 outcome avoided all three by *honestly disclosing the mismatch and offering a reset path*. That's the right shape for a one-off; it's not the right shape for a household using Workflow weekly. We need primitives that let the chatbot handle this gracefully without re-prompting the household every session.
+The Devin Session 2 outcome avoided all three by *honestly disclosing the mismatch and offering a reset path*. That's the right shape for a one-off; it's not the right shape for a household using TinyAssets weekly. We need primitives that let the chatbot handle this gracefully without re-prompting the household every session.
 
 **Lens-applied implication.** Every recommendation in §3-§5 should be a primitive that *increases the chatbot's leverage to interpret which user's will is currently being manifested* — not a primitive that *forces the user to declare themselves*. Declaration is friction; inference from signal is leverage.
 
@@ -68,7 +68,7 @@ Three response shapes the chatbot can take when it detects a possible shared-acc
 
 **Friction increases left-to-right.** Silent action is zero friction; narrate-and-act adds one sentence; ask-before-act blocks the user.
 
-**The shape currently dominant** (per Devin Session 2 evidence) is closer to ask-before-act-when-uncertain. That's the safe default for a one-off live mission. **For a household using Workflow weekly, the safe default should be narrate-and-act**, falling back to ask-before-act only when ambiguity is genuine.
+**The shape currently dominant** (per Devin Session 2 evidence) is closer to ask-before-act-when-uncertain. That's the safe default for a one-off live mission. **For a household using TinyAssets weekly, the safe default should be narrate-and-act**, falling back to ask-before-act only when ambiguity is genuine.
 
 **Lens-applied recommendation.** The chatbot needs a primitive that surfaces *which prior context is relevant to the current prompt* as structured evidence — same shape as the self-auditing-tools pattern (`docs/design-notes/2026-04-19-self-auditing-tools.md`). Then the chatbot can decide which response shape to use:
 
@@ -92,7 +92,7 @@ Three things the chatbot's job *is*:
 
 Three things the chatbot's job *is not*:
 
-1. **It is not identity verification.** Workflow is not authenticating users. Whether Person A or Person B is at the keyboard is the chatbot's *contextual inference*, not the platform's *security check*. (Privacy at write-time is the per-piece chatbot-judged primitive — see `project_privacy_per_piece_chatbot_judged.md` — it doesn't depend on persona attribution being right.)
+1. **It is not identity verification.** TinyAssets is not authenticating users. Whether Person A or Person B is at the keyboard is the chatbot's *contextual inference*, not the platform's *security check*. (Privacy at write-time is the per-piece chatbot-judged primitive — see `project_privacy_per_piece_chatbot_judged.md` — it doesn't depend on persona attribution being right.)
 2. **It is not session management.** The chatbot doesn't run multi-user sessions. There's one Claude.ai session; the chatbot adapts to whoever is typing at any given moment.
 3. **It is not invitation/onboarding orchestration.** If Person B is going to be a regular user, eventually they'll want their own context surface — but that's tier-1 onboarding for Person B (their own Claude.ai account, their own daemon), not a tier-2 multi-user feature.
 
@@ -108,11 +108,11 @@ When persona signals diverge enough that the chatbot decides ask-before-act is w
 
 Chatbot says: "I'm noticing this prompt looks different from your prior work — want me to start fresh, or pick up where Alex left off?" User picks; chatbot proceeds. **No platform involvement.** No session, no account, no profile.
 
-This is the shape Devin Session 2 used. It works for one-off persona mismatches. It does NOT scale to "Person B uses Workflow weekly" because Person B re-encounters the question every session.
+This is the shape Devin Session 2 used. It works for one-off persona mismatches. It does NOT scale to "Person B uses TinyAssets weekly" because Person B re-encounters the question every session.
 
 ### 5.2 Persistent persona-tag (low-friction, light platform involvement)
 
-Chatbot maintains a per-Claude.ai-session tag like `current_persona_hint: "Person B"` that *the chatbot itself sets* based on conversational signal. Workflow's API exposes a `set_session_persona_hint(name)` tool the chatbot can call when it has high confidence. Subsequent prompts in the same session route through the persona tag.
+Chatbot maintains a per-Claude.ai-session tag like `current_persona_hint: "Person B"` that *the chatbot itself sets* based on conversational signal. TinyAssets' API exposes a `set_session_persona_hint(name)` tool the chatbot can call when it has high confidence. Subsequent prompts in the same session route through the persona tag.
 
 **Platform's role:** expose the tool. Persistence is per-Claude.ai-session, not cross-session. No identity claim — just a hint the chatbot is using to organize its own context.
 
@@ -120,7 +120,7 @@ Chatbot maintains a per-Claude.ai-session tag like `current_persona_hint: "Perso
 
 ### 5.3 Cross-session collaborator surface (higher-friction, requires schema)
 
-If Person B becomes a regular user, eventually they'll want their own Workflow context — separate canon, separate daemon preferences, separate node-bid history. The right answer is **Person B opens their own Claude.ai account**. That's a tier-1 onboarding event for them.
+If Person B becomes a regular user, eventually they'll want their own TinyAssets context — separate canon, separate daemon preferences, separate node-bid history. The right answer is **Person B opens their own Claude.ai account**. That's a tier-1 onboarding event for them.
 
 If Person B *can't* (shared-household account, can't justify a second seat), the platform does NOT need to invent a multi-user-per-account primitive today. The cost (schema for "sub-personas under a single Claude.ai account") is high; the benefit is narrow (households who can't get a second account *and* care enough to need separate context); and it conflicts with the "platform doesn't know who you are" privacy posture.
 
@@ -177,7 +177,7 @@ These would each become real questions if we shipped §5.2 (the persona-hint too
 
 - Tier-2 households share accounts. Devin Session 2 surfaced this empirically and the chatbot handled it well via in-conversation reset.
 - The chatbot's job is *interpretation*, not *enforcement*. Primitives needed are *evidence surfaces*, not *gatekeeping mechanics*.
-- Three response shapes (silent / narrate-and-act / ask-before-act) map to a friction curve. Default for households using Workflow weekly should be narrate-and-act, with ask-before-act reserved for genuine ambiguity.
+- Three response shapes (silent / narrate-and-act / ask-before-act) map to a friction curve. Default for households using TinyAssets weekly should be narrate-and-act, with ask-before-act reserved for genuine ambiguity.
 - Three intervention tiers (in-conversation reset / persona-hint tool / cross-session collaborator surface). MVP uses tier 1; tier 2 is a small follow-up if signal supports it; tier 3 is post-MVP and probably not needed.
 - One §11 host-call surfaced (Q-shared-1): ship persona-hint MVP or defer? Recommend defer until empirical signal beyond Devin Session 2.
 - Cost for MVP: zero. Cost for the optional persona-hint follow-up: ~0.5 dev-day, zero schema impact, ship-anytime.

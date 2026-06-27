@@ -7,7 +7,7 @@ Status: registration path verified; Cursor tool-call proof still pending
 
 ## What This Proves
 
-Cursor's CLI accepts a Streamable HTTP MCP server definition for Workflow and
+Cursor's CLI accepts a Streamable HTTP MCP server definition for TinyAssets and
 writes the expected MCP settings shape in an isolated user-data directory:
 
 ```json
@@ -24,7 +24,7 @@ writes the expected MCP settings shape in an isolated user-data directory:
 ```
 
 This is not yet a full Cursor support claim. A full support claim still needs
-Cursor's UI or agent runtime to list Workflow tools and complete one safe
+Cursor's UI or agent runtime to list TinyAssets tools and complete one safe
 read-only call.
 
 ## Commands
@@ -83,6 +83,6 @@ Before public copy says Cursor is verified, run Cursor with this MCP server
 enabled and record:
 
 - TinyAssets appears in Cursor's MCP tools/settings surface.
-- Cursor lists Workflow tools from `https://tinyassets.io/mcp-directory`.
+- Cursor lists TinyAssets tools from `https://tinyassets.io/mcp-directory`.
 - Cursor completes one safe read-only call, preferably `get_workflow_status`.
 - The trace includes the Cursor version, transport, config, and visible result.

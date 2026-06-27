@@ -3,7 +3,7 @@
 Defines a flat 2-phase loop with revision gates:
   gather → analyze → synthesize → review → (if needs_revision → gather, else → END)
 
-This is deliberately different from Workflow's 4-level hierarchy,
+This is deliberately different from TinyAssets' 4-level hierarchy,
 proving that the workflow engine can accommodate multiple graph topologies.
 """
 

@@ -16,7 +16,7 @@ Date: 2026-05-01
 The right reframe is: users should not need to operate a machine to run
 API-backed daemons. A phone or browser should be enough to grant bounded
 capacity, set schedules, cap spend, choose state permissions, and revoke
-access. Workflow's always-on control plane can then run daemon activations
+access. TinyAssets' always-on control plane can then run daemon activations
 in a cloud worker pool.
 
 This plugs into the 2026-05-01 live PLAN direction: daemon control is
@@ -28,11 +28,11 @@ behind that ownership-scoped daemon control contract.
 This does not mean "no host exists." It means the old user-facing "host" idea
 splits into three concepts:
 
-- **Capacity grant**: a user's permission for Workflow to spend a bounded
+- **Capacity grant**: a user's permission for TinyAssets to spend a bounded
   amount of model/provider capacity on specific work.
 - **Control intent**: an ownership-scoped chatbot/web/local command such as
   summon, pause, resume, restart, banish, or update behavior.
-- **Executor backend**: where work actually runs, such as Workflow cloud
+- **Executor backend**: where work actually runs, such as TinyAssets cloud
   BYOK workers, a local tray, a future third-party host, or a platform-funded
   public pool.
 
@@ -74,10 +74,10 @@ Checked 2026-05-01 against current public documentation:
   service. Source: [OpenAI API key safety](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety).
 - OpenAI projects support project-scoped service accounts, API key permissions,
   model/rate-limit configuration, and budgets. Project budgets are monitoring
-  alerts, not hard blocking caps, so Workflow still needs its own hard caps.
+  alerts, not hard blocking caps, so TinyAssets still needs its own hard caps.
   Source: [OpenAI projects](https://help.openai.com/en/articles/9186755-managing-your-work-in-the-api-platform-with-projects/).
 - OpenAI rate limits are organization/project/model resources, not per-user
-  in the way Workflow needs. OpenAI recommends app-side user limits for
+  in the way TinyAssets needs. OpenAI recommends app-side user limits for
   bulk/programmatic access and exponential backoff for 429s. Source:
   [OpenAI rate limits](https://platform.openai.com/docs/guides/rate-limits).
 - Anthropic rate limits are organization/workspace/model resources with
@@ -108,7 +108,7 @@ Implication: phone/browser should be control surfaces, not execution surfaces.
 Cloud BYOK is the path for zero-install always-on execution. Local tray remains
 for local/private/software-bound execution.
 
-## Existing Workflow Constraints
+## Existing TinyAssets Constraints
 
 This proposal must preserve these project commitments:
 
@@ -124,7 +124,7 @@ This proposal must preserve these project commitments:
 - **Browser-only users are first-class.** A phone-only user should be able to
   get useful work done, including long-running work, through cloud mediation.
 - **No fake success.** If provider capacity, budget, or permissions are absent,
-  Workflow must say queued, blocked, revoked, over-budget, or provider-limited.
+  TinyAssets must say queued, blocked, revoked, over-budget, or provider-limited.
 - **Scale proof is part of done.** Any uptime-track runtime feature needs a
   load/concurrency proof, not just unit tests.
 - **Full v1 does not mean public v1.** The first build includes the whole
@@ -160,7 +160,7 @@ authority over the daemon. It returns explicit states such as `accepted`,
 
 ### Capacity Grant
 
-A user-owned authorization record that says what Workflow may spend and touch.
+A user-owned authorization record that says what TinyAssets may spend and touch.
 It includes provider credential reference, model allowlist, capabilities,
 visibility, schedule, active-mode policy, concurrency, spend caps, and state
 scopes.
@@ -187,7 +187,7 @@ after the reservation is revoked or exhausted.
 
 Where an activation runs:
 
-- `workflow_cloud_byok`: Workflow cloud worker uses a user-provided official
+- `workflow_cloud_byok`: TinyAssets cloud worker uses a user-provided official
   API credential under a capacity grant.
 - `local_tray`: user's machine runs the activation. Required for local LLMs,
   local files, private instance data, and local software/hardware.
@@ -197,7 +197,7 @@ Where an activation runs:
 
 ### State Scope
 
-The exact Workflow state the grant may read or write. Scopes are narrow and
+The exact TinyAssets state the grant may read or write. Scopes are narrow and
 auditable, for example `read:public_catalog`, `read:branch:<id>`,
 `write:draft_branch:<id>`, `propose:branch:<id>`, `publish:branch:<id>`.
 
@@ -264,7 +264,7 @@ Flow:
 2. No grant exists, so it offers cloud capacity setup.
 3. User connects OpenAI or Anthropic API access through official key/OAuth
    flow, sets `$10 tonight`, schedule `22:00-07:00`, max concurrency `5`.
-4. Workflow creates a grant with write scope limited to a draft branch.
+4. TinyAssets creates a grant with write scope limited to a draft branch.
 5. Scheduler enqueues activations during the allowed window.
 6. Worker pool leases tasks, uses token-bucket quota, records cost, and stops
    at budget or schedule end.
@@ -273,7 +273,7 @@ Flow:
 Design implications:
 
 - Need schedule windows on grants.
-- Need hard Workflow spend reservation, not just provider-side alerts.
+- Need hard TinyAssets spend reservation, not just provider-side alerts.
 - Need activation audit visible from chat and web.
 - Need pause/revoke to halt queued and running activations.
 - Need idempotent job retry so a worker crash does not duplicate writes.
@@ -289,7 +289,7 @@ First-build answer:
 - No copied session cookies, private OAuth tokens, or browser automation against
   consumer chat UIs.
 - If the provider has an official CLI or local app path the user may run under
-  their own account, that belongs in `local_tray`, not Workflow cloud.
+  their own account, that belongs in `local_tray`, not TinyAssets cloud.
 
 Design implications:
 
@@ -371,7 +371,7 @@ Required behavior:
 - Queued activations are canceled or paused.
 - Running activation receives cancellation; if it cannot stop instantly, it
   enters `cancel_requested` and loses permission to commit further writes.
-- Credential is disabled in Workflow and user is told how to rotate/revoke at
+- Credential is disabled in TinyAssets and user is told how to rotate/revoke at
   provider if needed.
 
 Design implications:
@@ -446,7 +446,7 @@ chatbot / web
   |
   | capacity API + submit_request
   v
-Workflow gateway
+TinyAssets gateway
   |
   | validated request, grant, scopes
   v
@@ -478,7 +478,7 @@ Provider API
   |
   | result + usage + proposed operations
   v
-Activation outbox -> scoped write proxy -> Workflow state
+Activation outbox -> scoped write proxy -> TinyAssets state
 ```
 
 ### Data Model Sketch
@@ -733,7 +733,7 @@ Scheduling rules:
 - A worker must re-check grant status, budget, schedule, and scope after lease
   and before every state write.
 - The queue is treated as at-least-once delivery. Even if a queue backend
-  promises exactly-once delivery within a visibility window, Workflow side
+  promises exactly-once delivery within a visibility window, TinyAssets side
   effects are idempotent by activation/outbox operation.
 - A provider token bucket gates requests before the provider call.
 - A grant token bucket gates per-user concurrency.
@@ -803,22 +803,22 @@ Rules:
 - Broker responses are short-lived and activation-scoped. The broker checks
   tenant, owner, grant status, activation lease, budget reservation, egress
   policy, and audit status before use.
-- On revoke, disable the Workflow credential immediately and tell user how to
+- On revoke, disable the TinyAssets credential immediately and tell user how to
   rotate at provider if needed.
 
 First-build key posture:
 
 - Accept one OpenAI project-scoped key or service-account key.
-- Require user to attest it is a key created for Workflow.
+- Require user to attest it is a key created for TinyAssets.
 - Recommend restricted key permissions where provider supports them.
 - Fixed egress / IP allowlist support is not optional architecturally. It may
   arrive after the first private alpha deploy, but v1 cannot be called
-  public-ready until provider keys can be restricted to Workflow egress where
+  public-ready until provider keys can be restricted to TinyAssets egress where
   the provider supports it.
-- Credential custody copy must be explicit: BYOK means Workflow is allowed to
-  use the key under the grant. It does not mean Workflow owns the key, can use
+- Credential custody copy must be explicit: BYOK means TinyAssets is allowed to
+  use the key under the grant. It does not mean TinyAssets owns the key, can use
   it outside scope, or can protect the user from provider-side charges after
-  the user bypasses Workflow.
+  the user bypasses TinyAssets.
 
 ### Authorization
 
@@ -868,9 +868,9 @@ Provider budgets and limits are not enough:
 
 - OpenAI project budgets are alerts, not hard caps.
 - Provider rate limits are project/org/workspace/model resources.
-- User-level fairness is Workflow's job.
+- User-level fairness is TinyAssets' job.
 
-Workflow hard-cap flow:
+TinyAssets hard-cap flow:
 
 1. Estimate max cost before activation using model, input size, max output, and
    retries.
@@ -959,7 +959,7 @@ Every user needs:
 
 Good:
 
-- "I can run this in Workflow cloud using your OpenAI API budget."
+- "I can run this in TinyAssets cloud using your OpenAI API budget."
 - "This touches private files, so it needs your local tray."
 - "Your budget is exhausted; I can queue it for tomorrow or reduce fan-out."
 
@@ -1308,7 +1308,7 @@ Approve the concept and build v1 as a full private alpha:
   revocation, audit, and simulated paid/network capacity.
 - **Yes** to host-only first exposure while remaining multi-tenant and
   fleet-ready from day one.
-- **No** to using consumer subscription sessions in Workflow cloud.
+- **No** to using consumer subscription sessions in TinyAssets cloud.
 - **No** to single-user shortcuts in storage, authorization, queues,
   scheduling, budgets, or audit.
 - **No** to private instance data in cloud BYOK v1 without separate

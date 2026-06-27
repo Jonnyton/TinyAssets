@@ -2,7 +2,7 @@
 
 **Status:** Superseded 2026-04-12 by the GitHub-as-catalog direction, and further sharpened into `multi_tenant_hosted_runtime.md` before that. Retained as historical reference. See `docs/research/github_as_catalog.md` for the shipping direction.
 
-Reference for sustaining a public Workflow surface (`tinyassets.io/mcp`) when individual user daemons are offline, and for many-host federation. Items marked **unconfirmed** need a second-pass live check.
+Reference for sustaining a public TinyAssets surface (`tinyassets.io/mcp`) when individual user daemons are offline, and for many-host federation. Items marked **unconfirmed** need a second-pass live check.
 
 ## 1. Live-surface options
 
@@ -35,7 +35,7 @@ Reference for sustaining a public Workflow surface (`tinyassets.io/mcp`) when in
 | Git-backed catalog | Hosts push to shared git repo; GitHub Pages always-readable | Low | Awesome lists, MCP registry itself |
 | CRDT sync | Hosts sync via websocket relay | High | Jazz, Liveblocks |
 
-**MCP registry (registry.modelcontextprotocol.io):** purpose is server *discovery* only. Cannot host per-universe goals/branches data. Workflow needs its own catalog layer.
+**MCP registry (registry.modelcontextprotocol.io):** purpose is server *discovery* only. Cannot host per-universe goals/branches data. TinyAssets needs its own catalog layer.
 
 **Recommendation:** git-backed catalog for v1 (cheap, always-on via GitHub Pages) + central push API on always-on host for sub-minute updates. *[Note 2026-04-12: this recommendation directly seeded the GitHub-as-catalog pivot.]*
 

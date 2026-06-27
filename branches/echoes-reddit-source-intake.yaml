@@ -17,7 +17,7 @@ entry_point: make_source_manifest
 state_schema:
 - name: universe_id
   type: str
-  description: Workflow universe receiving the imported source.
+  description: TinyAssets universe receiving the imported source.
 - name: source_url
   type: str
   description: Public web source URL.
@@ -84,6 +84,6 @@ live_evidence:
   source_snapshot_imported_at: '2026-04-29'
   latest_smoke_run_id: 431979d46a754e12
   latest_smoke_run_status: failed_empty_llm_response
-  limitation: Branch/source wiring is live; generated packets require a configured Workflow LLM host.
+  limitation: Branch/source wiring is live; generated packets require a configured TinyAssets LLM host.
 created_at: '2026-04-29T23:39:43+00:00'
 updated_at: '2026-04-29T23:42:49+00:00'

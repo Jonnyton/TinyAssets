@@ -1,6 +1,6 @@
 id: ec05b00f2026
 name: Echoes clean universe bootstrap
-description: Ingest the public Echoes canon into a clean Workflow universe, keep Reddit as an import channel, and gate canon promotion before public updates.
+description: Ingest the public Echoes canon into a clean TinyAssets universe, keep Reddit as an import channel, and gate canon promotion before public updates.
 author: Jonathan Farnsworth
 domain_id: workflow
 goal_id: ec05c05f2026

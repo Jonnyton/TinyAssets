@@ -27,7 +27,7 @@ canonical_in: PLAN.md §"Full-Platform Architecture (Canonical)"
 
 > **"This is a real world effect engine."**
 
-Workflow is for people getting real work done every day — at their jobs, on their own projects, producing real artifacts that exist in the world beyond Workflow. Success is measured in **real-world outcomes** — books published, papers peer-reviewed, tasks completed, projects shipped — not in engagement, DAU, or session time. **Fail state: if it feels gimmicky or like a toy, it's failing.** Every design decision in this note is evaluated against the question *"does this help a user finish real work, or does it make the platform feel more like a toy?"*. See §24 for the full product-soul treatment and the design implications that cascade from this framing.
+TinyAssets is for people getting real work done every day — at their jobs, on their own projects, producing real artifacts that exist in the world beyond TinyAssets. Success is measured in **real-world outcomes** — books published, papers peer-reviewed, tasks completed, projects shipped — not in engagement, DAU, or session time. **Fail state: if it feels gimmicky or like a toy, it's failing.** Every design decision in this note is evaluated against the question *"does this help a user finish real work, or does it make the platform feel more like a toy?"*. See §24 for the full product-soul treatment and the design implications that cascade from this framing.
 
 **Host directive 2026-04-18:**
 
@@ -37,7 +37,7 @@ Workflow is for people getting real work done every day — at their jobs, on th
 4. **Daemon hosting is opt-in.** Any user can host for their own use, for paid requests, for their chatbot. Not required for system function. A user can host for themselves only, without exposing capacity publicly.
 5. **Weeks not months.** Build the *final* thing fast, not a phased rollout that throws away work.
 
-**Why the phased plan was rejected:** Phase 1a (static-landing-only) + Phase 1b (thin relay) + Phase 2 (state migration) + Phase 3 (paid failover) scoped Workflow as "the daemon MCP surface" with a browse page in front. The host's actual product is "a collaborative workflow platform where daemons are an execution tier you can opt into." Phase 1a ships 0% of requirement (2) or (3). Phase 1b ships 0% of (3). Building the full collaborative backend in one push avoids three throwaway migrations (static → thin relay → state-migrated relay → write-capable platform) that each require re-teaching users + re-cutting Claude.ai connectors.
+**Why the phased plan was rejected:** Phase 1a (static-landing-only) + Phase 1b (thin relay) + Phase 2 (state migration) + Phase 3 (paid failover) scoped TinyAssets as "the daemon MCP surface" with a browse page in front. The host's actual product is "a collaborative workflow platform where daemons are an execution tier you can opt into." Phase 1a ships 0% of requirement (2) or (3). Phase 1b ships 0% of (3). Building the full collaborative backend in one push avoids three throwaway migrations (static → thin relay → state-migrated relay → write-capable platform) that each require re-teaching users + re-cutting Claude.ai connectors.
 
 **The reframe:** the control plane is not a thin relay. It is **the product** — a multi-user collaborative backend. Daemons are a hosted-execution tier that plugs into it. GitHub is an export sink, not the canonical store.
 
@@ -125,7 +125,7 @@ Users (web app, Claude.ai chatbot, future mobile / desktop MCP clients)
 | Tier | Who | Install cost | Primary surface |
 |---|---|---|---|
 | **T1 — Chatbot user** | Anyone with a Claude.ai account | **Zero-install.** Adds `tinyassets.io/mcp` as an MCP connector + visits `tinyassets.io/` in a browser. | Claude.ai chat + web app |
-| **T2 — Daemon host** | T1 user who also wants to run daemons (for self, for friends, for paid requests) | **One-click install** of the Workflow tray (MCPB bundle / platform-native installer). Authenticates against same account. | Tray app + web app + Claude.ai |
+| **T2 — Daemon host** | T1 user who also wants to run daemons (for self, for friends, for paid requests) | **One-click install** of the TinyAssets tray (MCPB bundle / platform-native installer). Authenticates against same account. | Tray app + web app + Claude.ai |
 | **T3 — OSS contributor** | Anyone who wants to extend domains, add node types, fix bugs | `git clone` + standard Python toolchain. Needs CONTRIBUTING.md pointer. | Local dev env + GitHub PR |
 
 **Capability matrix — tier × action:**
@@ -147,14 +147,14 @@ Users (web app, Claude.ai chatbot, future mobile / desktop MCP clients)
 | Submit PR to catalog (YAML round-trip via §4) | via chat | via tray | native |
 | Extend domain skills, add node types, engine changes | — | — | ✓ |
 
-**Tier-1 is the largest audience by design** — zero-install puts Workflow in every Claude.ai user's reach. Tier-2 converts from tier-1 at the user's pace (they collaborate on nodes, then want to run a daemon). Tier-3 is a small slice of technical contributors.
+**Tier-1 is the largest audience by design** — zero-install puts TinyAssets in every Claude.ai user's reach. Tier-2 converts from tier-1 at the user's pace (they collaborate on nodes, then want to run a daemon). Tier-3 is a small slice of technical contributors.
 
 ### §2.5 Tier migration as a first-class feature
 
 Users promote themselves between tiers without losing state. Design-time constraint: *same identity across tiers.*
 
 - **T1 → T2:** user is already signed in via GitHub OAuth in the web app. They click "Host a daemon," download the tray, install. First tray launch does OAuth with the *same* backend; their account lights up as a host. Their existing goals/branches/nodes are untouched.
-- **T2 → T3:** user with a tray who wants to contribute code clones the repo, reads CONTRIBUTING.md, submits PRs. GitHub identity is already their Workflow identity, so attribution lineage is unified.
+- **T2 → T3:** user with a tray who wants to contribute code clones the repo, reads CONTRIBUTING.md, submits PRs. GitHub identity is already their TinyAssets identity, so attribution lineage is unified.
 - **T1 → T3:** a chatbot-only user who decides to contribute skips the tray entirely and clones. Also fine.
 - **Downgrades:** uninstall tray → T2 reverts to T1 (host entry soft-deleted, data preserved). PRs merged stay merged regardless of tier.
 
@@ -557,7 +557,7 @@ This is an ordering of work within a single-build delivery, not a phased rollout
 - **Further defer floors:** track J S1-S5 + S7 + S11 only (skip S6): ~26.5–30d w/2 devs. Defer real-world-outcome badges to v1.1: −0.2d. Defer handoff pipeline §30 to v1.1: −1.5d, but loses Scenario C3 as a launch story. Defer diff-view in `/node_authoring.show_code` to v1.1: −0.25d.
 - **Recommendation:** ship MVP-narrowed §27 (T1 + T2-lite) + skip S6 + keep §30 handoffs. Lands around **~26–29.5d w/2 devs** — 5.5–6 weeks at the upper envelope. Host should weigh whether further narrowing is needed or whether 6 weeks is acceptable for the full product surface.
 
-**Launch readiness per §22.4 phase-split:** MVP gates (moderator primitive ≥2-in-code-path via host + user-sim, `SUCCESSION.md` current, secret vault populated, feedback channels in place, auto-healing S7 scenario passing, status dashboard live, Scenario A/B/C acceptance: `Workflow: X` invocation works, at least one vibe-coded node authored end-to-end by user-sim, at least one connector pushes to a real external service, at least one handoff lands in a real validator). Real-currency-cutover gates (human co-signer on multisig, multisig Sepolia-tested, named human moderator, named registrar successor, bill auto-pay policy live) bind at that later milestone, not at MVP launch.
+**Launch readiness per §22.4 phase-split:** MVP gates (moderator primitive ≥2-in-code-path via host + user-sim, `SUCCESSION.md` current, secret vault populated, feedback channels in place, auto-healing S7 scenario passing, status dashboard live, Scenario A/B/C acceptance: `TinyAssets: X` invocation works, at least one vibe-coded node authored end-to-end by user-sim, at least one connector pushes to a real external service, at least one handoff lands in a real validator). Real-currency-cutover gates (human co-signer on multisig, multisig Sepolia-tested, named human moderator, named registrar successor, bill auto-pay policy live) bind at that later milestone, not at MVP launch.
 
 | Track | Dev | Rough dev-days | Notes |
 |---|---|---|---|
@@ -590,7 +590,7 @@ Crisp, answerable. Target: single message back covers them all.
 
 **Q7. Fly.io deferred entirely?** Under this plan, Supabase replaces Fly. No $5/mo Fly spend. Dev-time saved ≈ a day of infra-glue. Confirm — or explicitly prefer Fly + custom realtime for control reasons.
 
-**Q8. Distribution horizon confirmation.** Estimate is ~29.5–33.5 dev-days w/2 devs at full scope (~35–37 serial); ~27.5–31d with MVP-narrowed §27 (T1 + T2-lite per B-follow); **~26–29.5d recommended** (MVP-narrowed §27 + skip S6 + keep §30). ~5.5–6 weeks at upper envelope. Reconciles dev honest-revision specs (#25/#26/#27/#29/#30/#32) with design additions through §31. Confirm, or specify smaller cuts — levers: full §27 vs MVP-narrowed (−~2d), defer §30 handoffs (−1.5d, loses Scenario C3 story), defer real-world-outcome badges (−0.2d), skip S6 or S11 (−1d each), defer wallet + 1% fee to post-launch, defer per-field privacy for per-step only, defer diff-view code primitive (−0.25d). **Process + launch gates per §22.4 + §25 + scenarios + A-follow:** `SUCCESSION.md` current, secret vault populated, feedback channels dogfooded, moderator-primitive ≥2-in-code-path (host + user-sim), auto-healing S7 passing, public status dashboard live, `Workflow: X` invocation works end-to-end for ≥1 seeded node, at least one vibe-coded node authored end-to-end by user-sim via §27 surface with code-view inspected, at least one connector push + one real-world handoff lands in external systems, **Workflow listed in Claude.ai MCP connector catalog (Q21-nav)**. **Real-currency-cutover gates** bind at cutover, not MVP.
+**Q8. Distribution horizon confirmation.** Estimate is ~29.5–33.5 dev-days w/2 devs at full scope (~35–37 serial); ~27.5–31d with MVP-narrowed §27 (T1 + T2-lite per B-follow); **~26–29.5d recommended** (MVP-narrowed §27 + skip S6 + keep §30). ~5.5–6 weeks at upper envelope. Reconciles dev honest-revision specs (#25/#26/#27/#29/#30/#32) with design additions through §31. Confirm, or specify smaller cuts — levers: full §27 vs MVP-narrowed (−~2d), defer §30 handoffs (−1.5d, loses Scenario C3 story), defer real-world-outcome badges (−0.2d), skip S6 or S11 (−1d each), defer wallet + 1% fee to post-launch, defer per-field privacy for per-step only, defer diff-view code primitive (−0.25d). **Process + launch gates per §22.4 + §25 + scenarios + A-follow:** `SUCCESSION.md` current, secret vault populated, feedback channels dogfooded, moderator-primitive ≥2-in-code-path (host + user-sim), auto-healing S7 passing, public status dashboard live, `TinyAssets: X` invocation works end-to-end for ≥1 seeded node, at least one vibe-coded node authored end-to-end by user-sim via §27 surface with code-view inspected, at least one connector push + one real-world handoff lands in external systems, **TinyAssets listed in Claude.ai MCP connector catalog (Q21-nav)**. **Real-currency-cutover gates** bind at cutover, not MVP.
 
 **Q9. §5.2 cascade step-3 ranking — daemon-judged or control-plane-suggested default?** Host's directive leaves step-3 multi-factor ranking (popular demand, dependency pressure, staleness, improvement-cycle, "anything else") explicitly to the daemon's judgment. Two options:
 - **(a) Fully daemon-judged** — control plane publishes raw signals on each request; each daemon picks its own weighting. Maximum latitude, matches host's language; different daemons may prioritize differently.
@@ -630,7 +630,7 @@ Recommend (a). Cost delta is ~0.5 dev-day to set up role + policies. The product
 
 **Q4 follow-up — RESOLVED 2026-04-18 (hybrid settlement).** Host locked hybrid threshold: bids <$1 equivalent batch, bids ≥$1 settle on-chain per-bid. Threshold is config (`settlement_threshold_usd`). §18.6 updated with full pseudocode. Track M estimate: +1.25 dev-days.
 
-**Q10-host — RESOLVED 2026-04-18 (community-flagged moderation).** Users flag, volunteer moderators (tier-3 default + rep-earned tier-2) review against rubric, host-admin backstop. Not minimal-illegal-only; not proactive-opinionated. Rubric lives in `Workflow/moderation_rubric.md` (PR-editable). §8 updated with `flag_content` / `list_review_queue` / `resolve_flag` / `appeal_decision` primitives.
+**Q10-host — RESOLVED 2026-04-18 (community-flagged moderation).** Users flag, volunteer moderators (tier-3 default + rep-earned tier-2) review against rubric, host-admin backstop. Not minimal-illegal-only; not proactive-opinionated. Rubric lives in `TinyAssets/moderation_rubric.md` (PR-editable). §8 updated with `flag_content` / `list_review_queue` / `resolve_flag` / `appeal_decision` primitives.
 
 **Q11-host — RESOLVED 2026-04-18 (no platform age-gate).** Transitive reliance on chatbot provider age-gating. No signup age field, no KYC. ToS clause added in §19.6 ("you must meet your chatbot provider's age requirements"). Direct-web-app-only fallback uses US-minimum-13 per COPPA.
 
@@ -658,9 +658,9 @@ Recommend (a) Python-sandboxed — best fit for Scenario B's "full primitive" di
 
 **Q19-nav — REVISED 2026-04-19 per B-follow (§27 MVP scope).** Prior recommendation of T1-chatbot-mediated-only is **revised**. B-follow is explicit: "real nerds can actually edit the code if they want to" — at day one, not v1.1. Revised recommendation: **T1 + T2-lite at MVP.** T2-lite = inline code-view + edit inside the chatbot window (the `/node_authoring.show_code` primitive from §27.1), not a full local REPL. Adds ~1d back to track N; full local REPL + native-code polish still defer to v1.1. Gives "real nerds drop into code" from day one without the full T2 engineering cost.
 
-**Q20-nav — REVISED 2026-04-19 per A-follow (launch connectors + connector-catalog listing).** §28.2 tier-1 launch connectors remain: GitHub, Gmail/SMTP, Google Drive / Dropbox / S3, Notion. Voyager and other vertical-specific tools are community-contributed post-launch. **The primary A-follow-added surface is Workflow's listing in Claude.ai's connector catalog (Anthropic MCP directory) — this is a separate, load-bearing launch gate** flagged as Q21-nav below. Host confirm connector list or amend.
+**Q20-nav — REVISED 2026-04-19 per A-follow (launch connectors + connector-catalog listing).** §28.2 tier-1 launch connectors remain: GitHub, Gmail/SMTP, Google Drive / Dropbox / S3, Notion. Voyager and other vertical-specific tools are community-contributed post-launch. **The primary A-follow-added surface is TinyAssets' listing in Claude.ai's connector catalog (Anthropic MCP directory) — this is a separate, load-bearing launch gate** flagged as Q21-nav below. Host confirm connector list or amend.
 
-**Q21-nav — OPEN (Claude.ai connector catalog listing — launch gate).** A-follow 2026-04-19: State-1 users (no connector yet) discover Workflow via Claude.ai's connector catalog. This makes catalog listing a launch-readiness gate, not a nice-to-have. Actionable asks:
+**Q21-nav — OPEN (Claude.ai connector catalog listing — launch gate).** A-follow 2026-04-19: State-1 users (no connector yet) discover TinyAssets via Claude.ai's connector catalog. This makes catalog listing a launch-readiness gate, not a nice-to-have. Actionable asks:
 - What's Anthropic's submission process for the MCP connector directory? Is it a form, a PR to a registry repo, a review pipeline?
 - What's the expected timeline from submission to listing?
 - What are the requirements (technical: OAuth 2.1 compliance, MCP spec version, uptime SLA; descriptive: metadata, icons, copy)?
@@ -726,7 +726,7 @@ Friction budget: < 5 minutes from "Host a daemon" click to tray-online + at leas
 
 ### §13.3 Tier-3 — OSS contributor (git clone)
 
-**Entry:** `github.com/<org>/Workflow` → README → CONTRIBUTING.md.
+**Entry:** `github.com/<org>/TinyAssets` → README → CONTRIBUTING.md.
 
 1. `git clone` + `pip install -e .[dev]`.
 2. Read `AGENTS.md`, `PLAN.md`, `STATUS.md` (standing docs).
@@ -1222,7 +1222,7 @@ nodes ADD COLUMN domain_ids uuid[] DEFAULT '{}'  -- multi-tag, GIN-indexed
 
 | Content class | What it is | Model | Target tier | Friction budget |
 |---|---|---|---|---|
-| **Workflow content** | Nodes, goals, branches, soul files, canon concepts | **Wiki-open** via chatbot | T1 (~95%) | Near-zero — chatbot mediates every edit |
+| **TinyAssets content** | Nodes, goals, branches, soul files, canon concepts | **Wiki-open** via chatbot | T1 (~95%) | Near-zero — chatbot mediates every edit |
 | **Platform code** | `tinyassets/`, `domains/`, tray, MCP gateway, schema migrations, tests | **GitHub fork-and-PR** | T3 (~1%) | Classical OSS — clone, fork, branch, PR, review, merge |
 
 Tier-2 daemon hosts sit across both — they edit workflow content like T1 (via chatbot or web app) and can optionally contribute platform code like T3 (via PR).
@@ -1248,7 +1248,7 @@ Ambiguity in §4: when GitHub was demoted to "export sink," it was unclear wheth
 
 **Resolution:** both, but they live in different repos.
 
-- **Workflow/ main repo (platform code):** canonical GitHub source for the fork-and-PR model. Clone-and-run ships the engine + a dev-friendly empty-catalog quickstart. This repo never contains canonical live workflow content — only fixtures for testing and a seed/demo set.
+- **TinyAssets/ main repo (platform code):** canonical GitHub source for the fork-and-PR model. Clone-and-run ships the engine + a dev-friendly empty-catalog quickstart. This repo never contains canonical live workflow content — only fixtures for testing and a seed/demo set.
 - **Separate `TinyAssets-catalog/` repo (workflow content export):** generated by the §4 export-sync Action from Postgres public-concept rows. Updated ≤12 commits/h (§14.6). Users who want to browse / clone / PR workflow content can do so here. PR-ingest on this repo round-trips back into Postgres.
 - **Private-instance data never exports to either.** Instance layer (§17) is host-local or private-Supabase-storage only.
 
@@ -1471,7 +1471,7 @@ Batched-lane gas amortizes across all sub-threshold bids between flushes; at typ
 | Surface | License intent | Specific pick |
 |---|---|---|
 | Platform code (`TinyAssets/` main repo) | Permissive OSS — MIT-style. Tier-3 contributors need frictionless clone + fork + PR. | **MIT** (open flag for host; `apache-2.0` is the alternative if patent grant matters) |
-| Workflow content (`TinyAssets-catalog/` + Postgres canonical store) | Maximum-spread permissive — encourage mirrors + external reuse | **CC0 1.0** (host-pinned 2026-04-18) |
+| TinyAssets content (`TinyAssets-catalog/` + Postgres canonical store) | Maximum-spread permissive — encourage mirrors + external reuse | **CC0 1.0** (host-pinned 2026-04-18) |
 
 ### §19.2 Attribution as social norm, not legal hammer
 
@@ -1509,11 +1509,11 @@ Default fills in at row-creation. Per-node override is optional — design allow
 
 ### §19.6 Age policy — transitive via chatbot provider (host-locked 2026-04-18, Q11)
 
-**Platform does NOT ask, verify, or store user age.** Any user interacting with Workflow via an MCP chatbot is assumed to have already been age-gated by that chatbot provider (Anthropic's 18+ for some tiers, OpenAI's 13+ with sub-gates, etc.). The platform inherits whatever age policy the chatbot provider enforced.
+**Platform does NOT ask, verify, or store user age.** Any user interacting with TinyAssets via an MCP chatbot is assumed to have already been age-gated by that chatbot provider (Anthropic's 18+ for some tiers, OpenAI's 13+ with sub-gates, etc.). The platform inherits whatever age policy the chatbot provider enforced.
 
 **Terms-of-Service clause (required in the tier-1/2 inline-acceptance flow):**
 
-> *"To use Workflow via a chatbot connector (Claude.ai, ChatGPT, or any other MCP client), you must meet that chatbot provider's age requirements. Workflow does not independently verify age; we rely on your chatbot provider's age-gating. For direct web-app-only use without a chatbot, minimum age is 13."*
+> *"To use TinyAssets via a chatbot connector (Claude.ai, ChatGPT, or any other MCP client), you must meet that chatbot provider's age requirements. TinyAssets does not independently verify age; we rely on your chatbot provider's age-gating. For direct web-app-only use without a chatbot, minimum age is 13."*
 
 No signup age field. No KYC. No friction added to tier-1 onboarding. This is the cheapest viable posture and matches the zero-install promise — any age-gate on our side would be pointless friction on top of a check the chatbot provider already runs.
 
@@ -1636,7 +1636,7 @@ RPC: `export_my_data(user_id, formats=['json','yaml'])` → signed download URL 
 
 - **Concept contributions** — all public nodes / goals / branches / comments authored by the user, in canonical YAML form (same shape as `TinyAssets-catalog/` export).
 - **Instance data** — all `instance_ref`-pointed blobs owned by the user (pulled from private Supabase Storage + host-local instance stores where applicable).
-- **Preferences** — whatever platform-side prefs exist (mostly none per §20.4 — chatbot-native prefs live with the chatbot provider, not with Workflow). Wallet address, notification settings, registered hosts list.
+- **Preferences** — whatever platform-side prefs exist (mostly none per §20.4 — chatbot-native prefs live with the chatbot provider, not with TinyAssets). Wallet address, notification settings, registered hosts list.
 - **Wallet history** — all ledger rows (immediate + batched settlements), flag history (flags issued, flags received), moderation decisions (if mod).
 - **Provenance + lineage** — the user's fork/remix/converge history as a directed graph snapshot.
 
@@ -1913,7 +1913,7 @@ Real-world artifacts and outcomes. Not engagement:
 - **Books published** — self-published, traditionally published, best-sellers, niche runs. Counting the artifact, not the project.
 - **Research papers peer-reviewed** — accepted by legitimate venues. Citation counts follow.
 - **Work-tasks completed** — invoices processed, contracts reviewed, code refactored, tax returns filed, reports shipped. The stuff someone was going to do anyway, done faster or at higher quality.
-- **Real projects shipped** — Workflow as load-bearing infrastructure, not as a demo.
+- **Real projects shipped** — TinyAssets as load-bearing infrastructure, not as a demo.
 
 Metrics the platform **does not optimize for**: DAU, session time, message count, "engagement," time-on-site, content-per-user.
 
@@ -2062,30 +2062,30 @@ Folds into revised §10 totals below.
 
 ---
 
-## §26. Invocation + attachment I/O — the "Workflow: X" pattern
+## §26. Invocation + attachment I/O — the "TinyAssets: X" pattern
 
-**Host directive 2026-04-19 (Scenario A).** A user opens a fresh chatbot session, types `Workflow: payables`, attaches invoice PDFs. The chatbot *just knows what to do*. Output: a CSV **pushed into** the user's accounting software + individually-named invoice PDFs. No config, no wizard, no authentication dance per invocation.
+**Host directive 2026-04-19 (Scenario A).** A user opens a fresh chatbot session, types `TinyAssets: payables`, attaches invoice PDFs. The chatbot *just knows what to do*. Output: a CSV **pushed into** the user's accounting software + individually-named invoice PDFs. No config, no wizard, no authentication dance per invocation.
 
 ### §26.1 The invocation pattern — three user states (A-follow 2026-04-19)
 
-A user encounters `Workflow: X` in one of three states. The chatbot routes differently in each:
+A user encounters `TinyAssets: X` in one of three states. The chatbot routes differently in each:
 
-**State 1 — user does not have the TinyAssets connector yet.** The chatbot discovers Workflow alongside the user's other connectors in Claude.ai's connector catalog and offers to connect it self-service, from inside the chat. *"I can connect Workflow for you — shall I?"* → user consents → OAuth 2.1 + PKCE flow completes → connector live → original request proceeds. Zero leaving the chat surface.
+**State 1 — user does not have the TinyAssets connector yet.** The chatbot discovers TinyAssets alongside the user's other connectors in Claude.ai's connector catalog and offers to connect it self-service, from inside the chat. *"I can connect TinyAssets for you — shall I?"* → user consents → OAuth 2.1 + PKCE flow completes → connector live → original request proceeds. Zero leaving the chat surface.
 
-**State 2 — connector present, first invocation this session.** `Workflow: <anything>` is assumed to be an invocation intent; chatbot routes via `discover_nodes` + the name-resolution rules below.
+**State 2 — connector present, first invocation this session.** `TinyAssets: <anything>` is assumed to be an invocation intent; chatbot routes via `discover_nodes` + the name-resolution rules below.
 
-**State 3 — user has used Workflow before.** Claude's native project memory carries context ("last time you used `invoices-to-csv` and pushed to Voyager"); chatbot *just knows what to do* from past patterns. No cold-start friction; platform surfaces aggregate signals (§20.4 `typical_fulfillment_pattern`), chatbot surfaces per-user signal.
+**State 3 — user has used TinyAssets before.** Claude's native project memory carries context ("last time you used `invoices-to-csv` and pushed to Voyager"); chatbot *just knows what to do* from past patterns. No cold-start friction; platform surfaces aggregate signals (§20.4 `typical_fulfillment_pattern`), chatbot surfaces per-user signal.
 
-**Launch gate — Workflow MUST be in Claude.ai's connector catalog (Anthropic MCP directory).** State 1 is the primary onboarding path for tier-1 users and is zero-setup self-service *only* if the connector is listed. Submission to Anthropic's directory is a launch-readiness operations task, not nice-to-have. See §11 Q21-nav.
+**Launch gate — TinyAssets MUST be in Claude.ai's connector catalog (Anthropic MCP directory).** State 1 is the primary onboarding path for tier-1 users and is zero-setup self-service *only* if the connector is listed. Submission to Anthropic's directory is a launch-readiness operations task, not nice-to-have. See §11 Q21-nav.
 
 **Name resolution rules (States 2 + 3):**
 
-**"Workflow: X"** is a natural-language convention, not a slash-command. The chatbot resolves `X` against the catalog via `discover_nodes` and invokes the best match.
+**"TinyAssets: X"** is a natural-language convention, not a slash-command. The chatbot resolves `X` against the catalog via `discover_nodes` and invokes the best match.
 
-- `Workflow: payables` → looks up node `payables-processor` (or closest match), dispatches.
-- `Workflow: edit my novel` → looks up node `manuscript-editor` (top-rated), dispatches.
-- `Workflow: cure cancer` → finds the `research-paper-pipeline` top-ranked + offers it.
-- Exact slug match wins. Prefix/semantic match surfaces top 3 candidates; chatbot picks based on context + user cues. Top-N qualifier supported: `Workflow: top 5 book-editors` → returns ranked candidates, chatbot presents choice.
+- `TinyAssets: payables` → looks up node `payables-processor` (or closest match), dispatches.
+- `TinyAssets: edit my novel` → looks up node `manuscript-editor` (top-rated), dispatches.
+- `TinyAssets: cure cancer` → finds the `research-paper-pipeline` top-ranked + offers it.
+- Exact slug match wins. Prefix/semantic match surfaces top 3 candidates; chatbot picks based on context + user cues. Top-N qualifier supported: `TinyAssets: top 5 book-editors` → returns ranked candidates, chatbot presents choice.
 
 **Zero-setup ergonomics:**
 - No per-invocation auth for the default path (chatbot's OAuth session covers it).
@@ -2518,7 +2518,7 @@ Each entry ~20–60 lines in the YAML. Host Q23-nav below: confirm scope + prior
 
 ## §32. Node autoresearch optimization
 
-**Host directive 2026-04-19.** Every workflow node can attach an optional **autoresearch optimization spec**. User sleeps; chatbot + daemons autonomously iterate the node overnight within a user-set metric + budget, parallelized across the host pool. Reference implementation: [karpathy/autoresearch](https://github.com/karpathy/autoresearch) — translated to Workflow below.
+**Host directive 2026-04-19.** Every workflow node can attach an optional **autoresearch optimization spec**. User sleeps; chatbot + daemons autonomously iterate the node overnight within a user-set metric + budget, parallelized across the host pool. Reference implementation: [karpathy/autoresearch](https://github.com/karpathy/autoresearch) — translated to TinyAssets below.
 
 **Why day-one, not v1.1.** This *is* the platform's differentiator vs competitor workflow tools. "You build for a while, post 1000 runs on each node before bed, wake up to your entire workflow optimized" is a Q21 real-world-effect moment of the same class as Scenario C4 — generalized from "run the same workflow N times" to "let the workflow improve itself N times." Ships with MVP.
 
@@ -2534,9 +2534,9 @@ All three required. System without the other two = expensive idle. Chain-complet
 
 ### §32.1 The 3-role pattern (Karpathy translation)
 
-Karpathy's autoresearch separates three concerns into three artifacts, editable by three roles. Workflow translates:
+Karpathy's autoresearch separates three concerns into three artifacts, editable by three roles. TinyAssets translates:
 
-| `karpathy/autoresearch` artifact | Workflow equivalent | Edited by |
+| `karpathy/autoresearch` artifact | TinyAssets equivalent | Edited by |
 |---|---|---|
 | `program.md` — agent instructions / skill-like | Per-node `optimization_spec.md` (markdown) — what to optimize, how, bounds, merge policy | **User** (or user's chatbot, vibe-coded per §27) |
 | `train.py` — what the agent modifies | The node's **editable surface** — explicit list of field-paths in the node's `concept` blob (prompt text, hyperparameters, few-shot examples, tool-choice thresholds) | **Agent** (daemon, per iteration) |
@@ -2822,9 +2822,9 @@ User composes the tier stack per node per use case. Simple mode = one named eval
 
 Evaluators live in the catalog **alongside nodes**. Same schema shape (concept jsonb + structural_hash + embedding + provenance + license), same discovery via `discover_nodes` extended to accept `kind=evaluator`, same tier-3 PR-contribution path, same vibe-coding authoring surface (§27 authoring tools work for evaluators too — they're just nodes with a specific output contract).
 
-**Competitor-differentiation angle.** Anyone can build a workflow engine. Fewer can build one where every surface is continuously-evaluated + improving. The evaluator loop IS the compounding advantage. User-authored evaluators + remix-from-N (§15.3) = the commons compounds at the *evaluation* layer too, not just at the workflow layer. This is the answer to "what makes Workflow different from LangChain / n8n / Zapier at year two."
+**Competitor-differentiation angle.** Anyone can build a workflow engine. Fewer can build one where every surface is continuously-evaluated + improving. The evaluator loop IS the compounding advantage. User-authored evaluators + remix-from-N (§15.3) = the commons compounds at the *evaluation* layer too, not just at the workflow layer. This is the answer to "what makes TinyAssets different from LangChain / n8n / Zapier at year two."
 
-**Recursive-application marketing hook.** *"autoresearch your evaluator"* is the product-line that closes the loop. Users who autoresearch a node soon ask "can I autoresearch the evaluator too, against a gold set?" — yes. Same §32 pattern, one layer up. §33.5 handles the cycle-detection guard. This is a compounding differentiator (most engines don't let you optimize either the workflow OR the evaluator; Workflow lets you optimize both) and taps into the same AI-forward brand recognition @karpathy's autoresearch carries — see §32 vocabulary-discipline note.
+**Recursive-application marketing hook.** *"autoresearch your evaluator"* is the product-line that closes the loop. Users who autoresearch a node soon ask "can I autoresearch the evaluator too, against a gold set?" — yes. Same §32 pattern, one layer up. §33.5 handles the cycle-detection guard. This is a compounding differentiator (most engines don't let you optimize either the workflow OR the evaluator; TinyAssets lets you optimize both) and taps into the same AI-forward brand recognition @karpathy's autoresearch carries — see §32 vocabulary-discipline note.
 
 ### §33.5 Evaluators are recursively eval-optimizable (and how to prevent infinite regress)
 

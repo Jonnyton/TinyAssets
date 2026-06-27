@@ -1,4 +1,4 @@
-# Agent-teams-on-Workflow: Post-Uptime Scoping Checklist
+# Agent-teams-on-TinyAssets: Post-Uptime Scoping Checklist
 
 Date: 2026-04-27
 Author: codex-gpt5-desktop

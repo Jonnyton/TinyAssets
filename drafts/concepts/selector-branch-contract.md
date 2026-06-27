@@ -2,7 +2,7 @@
 
 **Status:** shipped in DESIGN-008.
 
-A **selector branch** is a published Workflow branch that ranks the
+A **selector branch** is a published TinyAssets branch that ranks the
 candidate branches competing on a Goal's leaderboard. The substrate
 dispatches it whenever `quality_leaderboard goal_id=<g>` or
 `recommend_parent_for_fork goal_id=<g>` is called.
@@ -134,7 +134,7 @@ it returns `{ok: False, error_kind: "...", error: "..."}`.
 |---|---|
 | `goal_not_found` | The `goal_id` passed to `quality_leaderboard` has no row in `goals`. |
 | `selector_not_published` | `goal.selector_branch_version_id` references a `branch_version_id` that doesn't exist in `branch_versions`. |
-| `selector_snapshot_drift` | The selector's snapshot was published against a Workflow schema version the runtime can no longer reconstruct. Re-publish at current schema. |
+| `selector_snapshot_drift` | The selector's snapshot was published against a TinyAssets schema version the runtime can no longer reconstruct. Re-publish at current schema. |
 | `selector_dispatch_failed` | `execute_branch_version_async` raised before producing a `run_id` (rare; typically a malformed snapshot). |
 | `selector_timeout` | The selector's background run did not finish within `TINYASSETS_SELECTOR_TIMEOUT_S` seconds (default 60s). |
 | `selector_run_failed` | The selector run finished with `status != 'completed'`. The run row's `error` field is surfaced. |

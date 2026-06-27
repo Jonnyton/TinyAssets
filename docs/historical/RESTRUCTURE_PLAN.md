@@ -1,12 +1,12 @@
 > **HISTORICAL — superseded.** This doc captured architecture intent as of 2026-04-05. Current architecture lives in PLAN.md. Kept for git/decision history. Do not edit, do not extend, do not cite as live.
 
-# Workflow Engine Restructure Plan
+# TinyAssets Engine Restructure Plan
 
 **Date:** 2026-04-05
 **Status:** Converged plan. D1–D4 resolved in PLAN.md Debate Surface.
 Awaiting user approval before implementation begins.
 
-Detailed phase specifications for the Workflow Extraction described in
+Detailed phase specifications for the TinyAssets Extraction described in
 PLAN.md. This is the implementation reference; PLAN.md holds the
 architectural principles and Design Decisions.
 
@@ -450,7 +450,7 @@ After the shipping phase:
 
 ## Approval
 
-D1–D4 resolved. Design Decisions and Workflow Extraction section already
+D1–D4 resolved. Design Decisions and TinyAssets Extraction section already
 written into PLAN.md. STATUS.md Work table restructured around these phases.
 
 This plan requires user approval before Phase 0 implementation begins.

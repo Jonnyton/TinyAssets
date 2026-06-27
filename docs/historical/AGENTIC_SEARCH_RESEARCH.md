@@ -4,7 +4,7 @@
 
 Research compiled 2026-04-06. Intended audience: any agent working on this
 project. Covers the state of agentic search, memory systems, and context
-management as of early 2026, with implications for the Workflow Engine.
+management as of early 2026, with implications for the TinyAssets Engine.
 
 ---
 
@@ -176,7 +176,7 @@ allocation, cost-aware LLM routing. Surpasses prior systems on six
 benchmarks.
 - arxiv.org/abs/2509.11079
 
-### AFLOW: Automating Agentic Workflow Generation
+### AFLOW: Automating Agentic TinyAssets Generation
 Represents workflow nodes and edges as code to explore the full range of
 possible workflows. Uses Monte Carlo Tree Search to optimize designs.
 Demonstrates weaker models can outperform stronger ones when the workflow

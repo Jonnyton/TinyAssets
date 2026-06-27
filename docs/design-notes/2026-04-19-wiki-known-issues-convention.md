@@ -82,7 +82,7 @@ Include at the top of `known-issues.md`, right under the page title:
 
 ### control_station prompt addition
 
-One line routing Workflow-connector chatbots to `known-issues` when any
+One line routing TinyAssets-connector chatbots to `known-issues` when any
 tool response looks malformed, and to file new entries via `wiki_write`
 using the template (draft wording in §Refinement 3 below).
 
@@ -164,10 +164,10 @@ chatbot logs + applies workaround + continues.
 ### 4. "fixed-in-version" format
 
 The template's `Status: fixed-in-version` suggests a version string.
-Workflow has no formal version numbers yet (git-commit-per-release
+TinyAssets has no formal version numbers yet (git-commit-per-release
 model). Propose: use short commit SHA in that slot, e.g.
 `fixed-in-version: 5b2a282`. Human-friendly + links directly to the
-fix commit. If/when Workflow gains semver releases, the same slot can
+fix commit. If/when TinyAssets gains semver releases, the same slot can
 hold a version tag (`v0.4.0`). Zero-cost forward compatibility.
 
 ### 5. `reported_by` is not in the template — fine

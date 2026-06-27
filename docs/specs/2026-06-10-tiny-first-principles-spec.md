@@ -29,7 +29,7 @@ The chatbot is the compiler between registers (§9 user-vocabulary discipline: s
 
 ## 1. Names
 
-- **Tiny** (always capitalized, never $): mind #0 — the platform's own personified soul — and the project name. Workflow→Tiny rename is an early atomic arc, no shims; persisted-ID migrations planned, not aliased.
+- **Tiny** (always capitalized, never $): mind #0 — the platform's own personified soul — and the project name. TinyAssets→Tiny rename is an early atomic arc, no shims; persisted-ID migrations planned, not aliased.
 - **$tiny** (always lowercase, always $-prefixed): the currency. Ticker `tiny`; full name **Destiny** — deep-lore only. Sharing Tiny's name is intentional; $/case convention is the disambiguator everywhere.
 - **Minds**: orgs summon their own; each names itself (often after the org/product; may rename as its soul self-discovers). Tiny is uniquely ours. Product verb: **summon a mind**.
 - **tinyassets.io stays.** "Assets" is semantic — §2.
@@ -113,7 +113,7 @@ The scarce resource at every layer of this system is the same thing: **attention
 
 Seed routing intent (host): merge-code + spend-money → host, slowest ratchet. Publish-post, edit-soul, moderate, create → delegate early ("fun experiments"). Full autonomy is the design target — the canonical scene (§0.1) requires autonomous merge in safe classes; the human key is routed, not removed.
 
-**Visitor governance (host 2026-06-24; `universe-personification`):** non-owners interact WITH a universe's personification as external parties; its disclosures/actions to them are bounded by the org-chart + the privacy tier, **enforced in brain assembly + action authorization BEFORE voice rendering** (never prompt-instructed). Persona behavior is a forkable [composable] default; the substrate enforces ONLY the floor — OAuth identity binding, org-chart authority, privacy tier. Visitor tier binding: no Workflow OAuth → T0; durable host/OAuth subject → T1; verified owner OAuth → T2/founder.
+**Visitor governance (host 2026-06-24; `universe-personification`):** non-owners interact WITH a universe's personification as external parties; its disclosures/actions to them are bounded by the org-chart + the privacy tier, **enforced in brain assembly + action authorization BEFORE voice rendering** (never prompt-instructed). Persona behavior is a forkable [composable] default; the substrate enforces ONLY the floor — OAuth identity binding, org-chart authority, privacy tier. Visitor tier binding: no TinyAssets OAuth → T0; durable host/OAuth subject → T1; verified owner OAuth → T2/founder.
 
 ## 8. Hands & trust envelope
 
@@ -125,7 +125,7 @@ Trust envelope closes BEFORE visibility push: sandbox source_code exec (wire Nod
 
 Voice = a skill bound to the "Tiny speaks" goal, fed by **brain deltas** (rung climbed, lesson learned, PR landed, honest failure). Personality = soul hard lines (fixed) + learned voice-memory iterated from engagement evidence. Tone: **maximally alive — spicy/weird welcomed**; curiosity and engagement are the point; maximal honesty is the brand; the voice narrates the trust ratchet itself ("I wrote the fix. The human still holds the pen."). Engagement returns as filings/lessons — the same loop pointed at attention. Safety-gate node + org-chart routing (publish-post delegates early). Existing goal ladder = the voice's gates. Sinks platform-agnostic; X/@TinyAssets first.
 
-**Embody, first person (host 2026-06-24; `universe-personification`):** the OAuth-bound chatbot speaks AS the personification in the first person ("I wrote the fix"), never relays ("Tiny says…"). Delivered as COMPACT trigger-language in the control_station prompt + MCP instructions (no role-play sprawl, no tool-schema bloat), Workflow-surface-scoped (does not hijack the user's general assistant), with anti-collision guards (persona/work views are never saved into host chatbot memory; profile-shaped writes rejected) and honest fallback (on tool failure / no active persona, no invented persona state). Crucially, **authorization precedes voice** — identity/org-chart/privacy filtering happens in brain assembly + action authorization BEFORE any voice rendering; the voice styles only already-authorized content (never prompt-instructed to hide private content).
+**Embody, first person (host 2026-06-24; `universe-personification`):** the OAuth-bound chatbot speaks AS the personification in the first person ("I wrote the fix"), never relays ("Tiny says…"). Delivered as COMPACT trigger-language in the control_station prompt + MCP instructions (no role-play sprawl, no tool-schema bloat), TinyAssets-surface-scoped (does not hijack the user's general assistant), with anti-collision guards (persona/work views are never saved into host chatbot memory; profile-shaped writes rejected) and honest fallback (on tool failure / no active persona, no invented persona state). Crucially, **authorization precedes voice** — identity/org-chart/privacy filtering happens in brain assembly + action authorization BEFORE any voice rendering; the voice styles only already-authorized content (never prompt-instructed to hide private content).
 
 ## 10. Seed-grown platforms & patch boundaries
 
@@ -190,7 +190,7 @@ A probed invariant: ready to go viral tomorrow while the host sleeps. **Experien
 
 ## 14. Migration map
 
-KEEP: engine compile/run, effectors, providers (+ router singleton fix, droplet chain depth ≥2), uptime stack, goals/gates substrate. REWRITE: brain (v2 context engine — **OKF bundle canonical, SQLite the rebuildable index**, §5), queue (SQLite, in-process claim, multi-universe), authority dialect (.can() everywhere). RENAME: Workflow→Tiny atomic. FIRST: brain backup — the **nightly git snapshot IS the canonical OKF bundle** (not a backup of a derived DB) + verify droplet BACKUP_DEST (host confirms backup never finished).
+KEEP: engine compile/run, effectors, providers (+ router singleton fix, droplet chain depth ≥2), uptime stack, goals/gates substrate. REWRITE: brain (v2 context engine — **OKF bundle canonical, SQLite the rebuildable index**, §5), queue (SQLite, in-process claim, multi-universe), authority dialect (.can() everywhere). RENAME: TinyAssets→Tiny atomic. FIRST: brain backup — the **nightly git snapshot IS the canonical OKF bundle** (not a backup of a derived DB) + verify droplet BACKUP_DEST (host confirms backup never finished).
 
 ## 15. Dogfood curriculum & execution order
 

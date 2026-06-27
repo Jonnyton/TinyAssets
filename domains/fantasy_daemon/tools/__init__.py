@@ -1,4 +1,4 @@
-"""Workflow domain-specific tools.
+"""TinyAssets domain-specific tools.
 
 Provides DomainTool-compatible wrappers around the writer tool surface.
 """

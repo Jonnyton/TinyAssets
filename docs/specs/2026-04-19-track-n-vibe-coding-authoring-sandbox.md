@@ -430,7 +430,7 @@ At ~1,000 concurrent authors:
 
 **Commit-time:**
 - `commit()` validation (§2.6) + `inspect_leak_risk` gate catches obvious risks.
-- Moderation review (spec #36) — flagged nodes (high-risk tags, reported-by-user) enter admin queue before being searchable in `discover_nodes`. Does NOT block commit itself — Workflow has a published-but-not-searchable tier. See §8.4.
+- Moderation review (spec #36) — flagged nodes (high-risk tags, reported-by-user) enter admin queue before being searchable in `discover_nodes`. Does NOT block commit itself — TinyAssets has a published-but-not-searchable tier. See §8.4.
 
 **Runtime (post-commit, not this track's concern but referenced for completeness):**
 - Daemon hosts run published nodes in their own sandbox (§5). Each host declares capability acceptance.

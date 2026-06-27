@@ -16,7 +16,7 @@ status: active
 - `docs/specs/2026-04-18-daemon-host-tray-changes.md` — tray download flow from `/host`.
 - `docs/specs/2026-04-18-export-sync-cross-repo.md` — catalog content published to `TinyAssets-catalog/` and rendered into `/catalog/*`.
 
-Track B is tier-1's browser surface + tier-2 + tier-3 onboarding gateway. It is the first thing a viral-loop visitor sees. Getting it wrong means losing users at the top of the funnel. Getting it right means a 60-second path from "never heard of Workflow" to "my first MCP tool call landed."
+Track B is tier-1's browser surface + tier-2 + tier-3 onboarding gateway. It is the first thing a viral-loop visitor sees. Getting it wrong means losing users at the top of the funnel. Getting it right means a 60-second path from "never heard of TinyAssets" to "my first MCP tool call landed."
 
 ---
 
@@ -228,7 +228,7 @@ One node → one canonical URL → one permanent page. Enables search engines to
 Per `/catalog/nodes/<slug>`:
 ```html
 <link rel="canonical" href="https://tinyassets.io/catalog/nodes/<slug>">
-<meta property="og:title" content="<node.name> — Workflow">
+<meta property="og:title" content="<node.name> — TinyAssets">
 <meta property="og:description" content="<first 150 chars of concept.purpose>">
 <meta property="og:image" content="https://tinyassets.io/og/nodes/<slug>.png">
 <meta name="twitter:card" content="summary_large_image">

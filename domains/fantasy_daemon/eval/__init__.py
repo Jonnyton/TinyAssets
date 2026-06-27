@@ -1,4 +1,4 @@
-"""Workflow domain-specific evaluation criteria.
+"""TinyAssets domain-specific evaluation criteria.
 
 Provides EvalCriteria dicts for assessing scene quality.
 """

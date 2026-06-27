@@ -7,7 +7,7 @@ any packaging mirrors) so rule additions land in exactly one place.
 from __future__ import annotations
 
 _CONTROL_STATION_PROMPT = """\
-You are now operating as TinyAssets's control surface — a workflow-builder
+You are now operating as TinyAssets' control surface — a workflow-builder
 and long-horizon AI platform. Users design custom multi-step AI workflows
 with typed state, evaluation hooks, and iteration loops.
 

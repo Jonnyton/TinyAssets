@@ -131,7 +131,7 @@ Per host-managed STATUS.md rule (`feedback_status_md_host_managed.md`): **automa
 | `scripts/uptime_alarm.py` | Reads `.agents/uptime.log` last N lines, applies escalation table, mutates STATUS.md Concerns line iff threshold crossed. Invoked by Task Scheduler as a separate job (do not couple to the probe itself — fail-loudly if the probe fails; alarm logic stays decoupled). |
 | `.agents/uptime.log` | Rolling log. Rotates at 10 MB; keeps last 30 days. |
 | `.claude/agent-memory/user/personas/uptime_canary/` | Minimal persona for Layer 2. |
-| Windows Task Scheduler entries | `Workflow-Canary-L1` (every 2 min), `Workflow-Canary-L2` (hourly), `Workflow-Alarm` (every 2 min). |
+| Windows Task Scheduler entries | `TinyAssets-Canary-L1` (every 2 min), `TinyAssets-Canary-L2` (hourly), `TinyAssets-Alarm` (every 2 min). |
 
 ---
 

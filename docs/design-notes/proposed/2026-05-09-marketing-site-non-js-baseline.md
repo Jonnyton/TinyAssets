@@ -31,7 +31,7 @@ Local source evidence on 2026-05-09:
 - `WebSite/site/src/routes/+layout.ts` sets `prerender = true`.
 - `npm run build` from `WebSite/site/` produced `build/index.html`.
 - The generated root HTML body contained non-trivial homepage copy, including
-  `Workflow`, `/connect`, `/wiki`, `/graph`, and `tinyassets.io/mcp`.
+  `TinyAssets`, `/connect`, `/wiki`, `/graph`, and `tinyassets.io/mcp`.
 
 That means the current source tree can produce a non-empty static root. The
 design gap remains worth recording because the project has no explicit release
@@ -47,7 +47,7 @@ any JavaScript runs.
 
 If the HTML response only contains the Svelte shell and depends on hydration to
 render meaningful copy, those clients see an empty product. That breaks the
-same product promise the site is trying to communicate: Workflow should be
+same product promise the site is trying to communicate: TinyAssets should be
 usable and inspectable through standard surfaces, not only through one hydrated
 browser path.
 
@@ -62,7 +62,7 @@ The marketing root MUST ship a meaningful non-JS baseline.
 For `/`, "meaningful" means the built `index.html` body contains enough plain
 HTML text and links for a non-JS client to understand:
 
-1. What Workflow is.
+1. What TinyAssets is.
 2. How to connect through the MCP endpoint.
 3. Where to inspect live project/wiki/status surfaces.
 4. That client-side refreshes enhance the page but are not required for the
@@ -103,7 +103,7 @@ A runtime implementation should pass these checks before merge:
 1. `npm run build` from `WebSite/site/`.
 2. A no-JS body assertion against `WebSite/site/build/index.html`:
    - body text length is non-trivial;
-   - contains "Workflow";
+   - contains "TinyAssets";
    - contains "MCP" or the connector URL;
    - contains at least one crawlable internal link such as `/connect`,
      `/wiki`, `/status`, or `/graph`;
@@ -120,7 +120,7 @@ changes.
 ## 7. Fit With PLAN.md
 
 This follows the Distribution And Discoverability principle because `/` is a
-distribution wrapper around the same Workflow substrate. A crawler-readable
+distribution wrapper around the same TinyAssets substrate. A crawler-readable
 homepage helps standard discovery surfaces understand the product without
 changing the portable core.
 
@@ -158,7 +158,7 @@ daemon route, scheduler behavior, or storage model is needed.
 3. What exact phrase set should be required?
 
    Recommendation: require concepts, not brittle marketing copy. Use stable
-   tokens such as `Workflow`, `/connect`, and `tinyassets.io/mcp` rather than
+   tokens such as `TinyAssets`, `/connect`, and `tinyassets.io/mcp` rather than
    complete sentences.
 
 ## References

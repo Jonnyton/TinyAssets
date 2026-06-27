@@ -141,7 +141,7 @@ No blues or teals outside the ink range. No greens outside `--signal-live`. No g
 - **IBM Plex Sans** (body) — all UI, buttons, forms, metadata. Chosen for its engineering-serious character; it reads "this is a real tool" against the Fraunces theatrics.
 - **IBM Plex Mono** (monospace + labels) — code, IDs, and the `ritual-label` small-caps utility used for section kickers and metadata. The mono in a label says *"this is inscribed, not printed."*
 
-⚠️ **Font substitution flag:** TinyAssets's codebase does not ship its own webfonts — the SvelteKit prototype uses the default system stack. Fraunces + IBM Plex were chosen as the nearest stylistic match based on the brand voice (serious + slightly-mythic). If the team has existing licensed faces (a commissioned display face, a specific Plex alternative, etc.), please drop the TTF/WOFF2 into `fonts/` and update `--font-display` / `--font-sans` in `colors_and_type.css`.
+⚠️ **Font substitution flag:** TinyAssets' codebase does not ship its own webfonts — the SvelteKit prototype uses the default system stack. Fraunces + IBM Plex were chosen as the nearest stylistic match based on the brand voice (serious + slightly-mythic). If the team has existing licensed faces (a commissioned display face, a specific Plex alternative, etc.), please drop the TTF/WOFF2 into `fonts/` and update `--font-display` / `--font-sans` in `colors_and_type.css`.
 
 ### Spacing, shape, scale
 
@@ -161,7 +161,7 @@ Drop-shadow is muted — dark surfaces swallow it. Elevation reads via:
 
 - Full-bleed ink surfaces (`--bg-1`) are the default. No patterned backgrounds, no noise textures, no grain (tempting — resisted). The logo mark is the only ornamental graphic; it may be placed large and low-opacity (0.04–0.08) as a watermark behind hero type, bottom-right or centered.
 - Protection gradients only as hero-bottom fades from `--bg-1` to transparent, to seat a CTA bar over imagery. We don't use imagery much so this is rare.
-- **No full-bleed stock photography.** TinyAssets's brand is text + live protocol mark.
+- **No full-bleed stock photography.** TinyAssets' brand is text + live protocol mark.
 
 ### Animation & interaction
 

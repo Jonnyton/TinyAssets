@@ -12,7 +12,7 @@ shipped_in: c85efa1  # Community Branches Phases 2-5 + cross-universe cluster + 
 
 ## Thesis
 
-Phase 4 is where Workflow earns its product thesis. Phase 2 lets users build a graph. Phase 3 lets them run it. Neither of those matters if the user can't look at a bad output and say "that third node is wrong, let me fix it and try again." The iteration loop is the product.
+Phase 4 is where TinyAssets earns its product thesis. Phase 2 lets users build a graph. Phase 3 lets them run it. Neither of those matters if the user can't look at a bad output and say "that third node is wrong, let me fix it and try again." The iteration loop is the product.
 
 Phase 4 is not mostly new MCP actions. It is mostly **data shape + loop ergonomics**. The hard design work is: what does "judgment" look like when the judge is a non-technical user on a phone, and how does a judgment land back on the specific node that produced the weak work?
 

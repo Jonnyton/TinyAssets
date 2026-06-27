@@ -1,4 +1,4 @@
-"""Workflow — first domain implementation on the Workflow Engine.
+"""TinyAssets — first domain implementation on the TinyAssets Engine.
 
 Owns its own LangGraph graph topology (scene/chapter/book/universe).
 Imports shared infrastructure from tinyassets/.

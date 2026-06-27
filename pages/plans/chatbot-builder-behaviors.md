@@ -9,12 +9,12 @@ wiki_source_path: pages/plans/chatbot-builder-behaviors.md
 # Chatbot Builder Behaviors
 
 This page is the chatbot-facing behavior guide for sessions that build,
-review, or patch Workflow wiki and branch artifacts.
+review, or patch TinyAssets wiki and branch artifacts.
 
 ## Concurrent-session discipline
 
 Use this discipline whenever another chatbot session may be active against the
-same Workflow wiki: multi-provider setups, multiple browser tabs, agent-team
+same TinyAssets wiki: multi-provider setups, multiple browser tabs, agent-team
 siblings, or any handoff where a second session could plausibly pick up the
 same work.
 

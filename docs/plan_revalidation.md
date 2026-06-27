@@ -91,7 +91,7 @@ Assessment:
 - The section still reflects real structure.
 - It remains a valid design description.
 
-### 4. `Workflow Hierarchy`
+### 4. `TinyAssets Hierarchy`
 
 Status: `bridged`
 
@@ -230,7 +230,7 @@ Assessment:
 - It should be revised to explicitly acknowledge transitional fields that are
   still part of the current state contract.
 
-### 10. `Workflow Extraction`
+### 10. `TinyAssets Extraction`
 
 Status: `contradicted`
 
@@ -280,7 +280,7 @@ Do not apply automatically. These are proposed edits for approval later.
    implemented and still coexists with pre-assembled compatibility context.
 3. Revise `Live State Shape` to acknowledge transitional counters and
    compatibility queue fields explicitly.
-4. Rewrite `Workflow Extraction` so it distinguishes:
+4. Rewrite `TinyAssets Extraction` so it distinguishes:
    - package extraction complete
    - runtime/API independence still bridged
 5. Add a note in `API And GPT Interface` that the GPT is one control surface

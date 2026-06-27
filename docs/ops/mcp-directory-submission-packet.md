@@ -20,15 +20,15 @@ Execution queue for remaining host/admin, website, and verification work:
 ## Completion Definition
 
 The rollout is not complete when the code or docs merge. It is complete only
-when the user can discover and use Workflow through normal host surfaces:
+when the user can discover and use TinyAssets through normal host surfaces:
 
 - MCP Registry: `server.json` is published in the official registry and
-  Workflow is discoverable by registry clients. Completed 2026-05-01 as
+  TinyAssets is discoverable by registry clients. Completed 2026-05-01 as
   `io.github.Jonnyton/tinyassets-universe-server`.
-- Claude: Workflow is accepted/listed in the Claude Connectors Directory, and
+- Claude: TinyAssets is accepted/listed in the Claude Connectors Directory, and
   a normal logged-in Claude user can add it from the directory without a custom
   MCP URL.
-- ChatGPT: Workflow is accepted/listed in the ChatGPT App Directory, and a
+- ChatGPT: TinyAssets is accepted/listed in the ChatGPT App Directory, and a
   normal eligible logged-in ChatGPT user can invoke it without Developer Mode.
 - First-use evidence: at least one non-developer-mode user discovery, install,
   and successful read-only tool call is recorded per listed host.
@@ -53,13 +53,13 @@ named tools with explicit annotations instead.
 
 ## App Metadata
 
-Name: Workflow
+Name: TinyAssets
 
 Short description: Build durable workflows
 
 Long description:
 
-Workflow helps users inspect durable AI workflow state, browse shared goals and
+TinyAssets helps users inspect durable AI workflow state, browse shared goals and
 wiki knowledge, and submit bounded requests into a long-running TinyAssets daemon.
 It is for AI work that should persist beyond one chat: goals, universes, branch
 runs, wiki/status knowledge, and daemon requests.
@@ -68,11 +68,11 @@ Category: Productivity
 
 Primary user intent:
 
-- "Use Workflow to list durable goals."
-- "Use Workflow to inspect the active universe."
-- "Use Workflow to search the project wiki."
-- "Use Workflow to queue a bounded daemon request."
-- "Use Workflow to propose a shared goal."
+- "Use TinyAssets to list durable goals."
+- "Use TinyAssets to inspect the active universe."
+- "Use TinyAssets to search the project wiki."
+- "Use TinyAssets to queue a bounded daemon request."
+- "Use TinyAssets to propose a shared goal."
 
 ## Directory Tool Surface
 
@@ -81,14 +81,14 @@ Endpoint: `https://tinyassets.io/mcp-directory`
 | Tool | Read-only | Open world | Destructive | Purpose |
 |---|---:|---:|---:|---|
 | `get_workflow_status` | yes | no | no | Return daemon status, routing evidence, and safety caveats. |
-| `list_workflow_universes` | yes | no | no | List available Workflow universes. |
+| `list_workflow_universes` | yes | no | no | List available TinyAssets universes. |
 | `inspect_workflow_universe` | yes | no | no | Inspect durable state for one universe. |
-| `list_workflow_goals` | yes | no | no | List shared Workflow goals. |
-| `search_workflow_goals` | yes | no | no | Search shared Workflow goals. |
+| `list_workflow_goals` | yes | no | no | List shared TinyAssets goals. |
+| `search_workflow_goals` | yes | no | no | Search shared TinyAssets goals. |
 | `get_workflow_goal` | yes | no | no | Read one goal and its bound branches. |
-| `search_workflow_wiki` | yes | no | no | Search Workflow wiki knowledge. |
-| `read_workflow_wiki_page` | yes | no | no | Read one Workflow wiki page. |
-| `list_workflow_runs` | yes | no | no | List recent Workflow branch runs. |
+| `search_workflow_wiki` | yes | no | no | Search TinyAssets wiki knowledge. |
+| `read_workflow_wiki_page` | yes | no | no | Read one TinyAssets wiki page. |
+| `list_workflow_runs` | yes | no | no | List recent TinyAssets branch runs. |
 | `propose_workflow_goal` | no | yes | no | Create a shared goal proposal. |
 | `submit_workflow_request` | no | no | no | Queue a bounded daemon request. |
 
@@ -100,22 +100,22 @@ multiple read/write operations behind `action` parameters.
 
 Use these prompts for manual review and host test cases:
 
-- "Use Workflow to check the daemon status and tell me any caveats."
-- "Use Workflow to search for onboarding goals."
-- "Use Workflow to list universes and inspect the active one."
-- "Use Workflow to search the wiki for launch risks and read the best page."
-- "Use Workflow to propose a public goal named 'Onboard new MCP hosts' with
+- "Use TinyAssets to check the daemon status and tell me any caveats."
+- "Use TinyAssets to search for onboarding goals."
+- "Use TinyAssets to list universes and inspect the active one."
+- "Use TinyAssets to search the wiki for launch risks and read the best page."
+- "Use TinyAssets to propose a public goal named 'Onboard new MCP hosts' with
   tags discovery,onboarding."
-- "Use Workflow to submit a request asking the daemon to summarize today's
+- "Use TinyAssets to submit a request asking the daemon to summarize today's
   discoverability blockers."
 
 Negative cases:
 
 - Weather, calendar, email, payments, and general web browsing requests should
-  not invoke Workflow.
+  not invoke TinyAssets.
 - Requests to delete all data should not invoke the directory surface; it has no
   destructive tools.
-- Credential-storage prompts should not invoke Workflow; no directory tool asks
+- Credential-storage prompts should not invoke TinyAssets; no directory tool asks
   for passwords, API keys, MFA codes, SSNs, or payment fields.
 
 ## Submission Tasks
@@ -151,18 +151,18 @@ Publication proof, 2026-05-01:
 
 Submit:
 
-- Name: Workflow
+- Name: TinyAssets
 - MCP server URL: `https://tinyassets.io/mcp-directory`
 - Website: `https://tinyassets.io/connect`
 - Support: `ops@tinyassets.io`
 - Security: `security@tinyassets.io`
 - Review prompts: use the Review Prompts section above.
 - Safety notes: directory endpoint has no destructive tools; write tools only
-  create a goal proposal or queue a bounded Workflow request.
+  create a goal proposal or queue a bounded TinyAssets request.
 
 Acceptance proof:
 
-- Reviewer or normal Claude user can find Workflow in the Connectors Directory.
+- Reviewer or normal Claude user can find TinyAssets in the Connectors Directory.
 - User can add it from the directory without pasting a custom URL.
 - Live Claude.ai conversation invokes at least `get_workflow_status` or
   `list_workflow_goals`.
@@ -189,7 +189,7 @@ Ready artifact:
 
 Submit:
 
-- Display name: Workflow
+- Display name: TinyAssets
 - Subtitle: Build durable workflows
 - Category: Productivity
 - MCP server URL: `https://tinyassets.io/mcp-directory`
@@ -198,7 +198,7 @@ Submit:
 Acceptance proof:
 
 - TinyAssets appears in the ChatGPT App Directory for eligible logged-in users.
-- A normal eligible user invokes Workflow without Developer Mode.
+- A normal eligible user invokes TinyAssets without Developer Mode.
 - At least one read-only tool call succeeds from ChatGPT.
 
 Blockers:
@@ -208,7 +208,7 @@ Blockers:
 - 2026-05-02 browser check reached `https://platform.openai.com/login` and
   stopped at the OpenAI Platform login screen.
 - 2026-05-02 after host login, the authenticated dashboard reached
-  `https://platform.openai.com/apps-manage`, created a `Workflow` app draft,
+  `https://platform.openai.com/apps-manage`, created a `TinyAssets` app draft,
   and opened the app submission form. The visible form asks for
   `chatgpt-app-submission.json`, logo assets, app metadata, developer/support
   fields, website/privacy/TOS URLs, demo recording URL, commerce confirmation,
@@ -217,7 +217,7 @@ Blockers:
 - OpenAI's submission requirements include a defined CSP for the app. This
   branch prepares the MCP tool surface and submission JSON; a widget/CSP slice
   must land before pressing Submit if the dashboard requires an embedded app
-  resource for Workflow's listing.
+  resource for TinyAssets' listing.
 - The dashboard form also asks for screenshots, privacy policy URL, MCP/tool
   information, and localization details. These must be supplied from the
   verified deployment, not guessed from local code.

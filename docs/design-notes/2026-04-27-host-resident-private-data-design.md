@@ -37,7 +37,7 @@ This is NOT a complete spec — it's a strategic design proposal. After host app
 
 | Data category | Today's location | Commons or host? | Rationale |
 |---|---|---|---|
-| **Workflow definitions (BranchDefinition, NodeRegistration, Goal)** | Catalog (git+SQLite) + per-host SQLite | **COMMONS by default**, host-resident by user intent | Designs are public unless user keeps them private. Today's catalog already supports git-publish. |
+| **TinyAssets definitions (BranchDefinition, NodeRegistration, Goal)** | Catalog (git+SQLite) + per-host SQLite | **COMMONS by default**, host-resident by user intent | Designs are public unless user keeps them private. Today's catalog already supports git-publish. |
 | **Run state (in-flight + checkpoints)** | Per-host `output/<universe>/.author_server.db` (post-rename `.workflow.db`) | **HOST-RESIDENT only** | A run includes the user's actual inputs (Maya's invoices, Priya's species data). Always host-resident. |
 | **Run outputs (artifacts: CSVs, PDFs, methods paragraphs)** | Per-host `output/<universe>/<run_id>/...` | **Choice: host-resident or published commons** | Published with user intent → commons (e.g. exemplary repro-script). Default → host-resident. |
 | **Canon / knowledge graph / LanceDB** | Per-host `output/<universe>/{lancedb, knowledge.db, ...}` | **HOST-RESIDENT** | User-uploaded source material. Always host-resident. (Public canon is a separate concept — published commons knowledge.) |

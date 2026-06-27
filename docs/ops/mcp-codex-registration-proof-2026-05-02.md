@@ -7,7 +7,7 @@ Status: registration path verified; runtime proof landed separately
 
 ## What This Proves
 
-Codex CLI accepts Workflow as a Streamable HTTP MCP server and writes the
+Codex CLI accepts TinyAssets as a Streamable HTTP MCP server and writes the
 expected isolated configuration without mutating the user's real
 `~/.codex/config.toml`.
 
@@ -105,7 +105,7 @@ Output:
 
 ## Runtime Proof
 
-Codex CLI 0.104.0 later listed Workflow tools from
+Codex CLI 0.104.0 later listed TinyAssets tools from
 `https://tinyassets.io/mcp-directory` and completed
 `get_workflow_status({})`, returning `"schema_version": 1`. See
 `docs/ops/mcp-codex-runtime-proof-2026-05-02.md`.

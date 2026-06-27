@@ -6,7 +6,7 @@ status: active
 
 ## Problem
 
-Workflow already accumulates substantial long-run fiction artifacts, but the
+TinyAssets already accumulates substantial long-run fiction artifacts, but the
 daemon still risks treating universe memory as a pile of notes and markdown
 files rather than a typed world model. That is good enough for local context
 lookups and weakly structured retrieval, but not good enough for hundred-scene

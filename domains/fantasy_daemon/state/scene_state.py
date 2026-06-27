@@ -48,7 +48,7 @@ class SceneState(TypedDict):
     """Markers for degraded-lane acceptance (tracked for later fix-up)."""
 
     # ------------------------------------------------------------------
-    # Workflow coordination
+    # TinyAssets coordination
     # ------------------------------------------------------------------
     workflow_instructions: dict
     """Per-phase context (notes, premise, etc.)."""
@@ -61,7 +61,7 @@ class SceneState(TypedDict):
     _kg_path: str
 
     # ==================================================================
-    # DOMAIN: Workflow (narrative-specific)
+    # DOMAIN: TinyAssets (narrative-specific)
     # ==================================================================
 
     # ------------------------------------------------------------------

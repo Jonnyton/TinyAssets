@@ -1,7 +1,7 @@
 # Loop Outcome Rubric v0
 
 Status: proposal
-Owner: Workflow community patch loop
+Owner: TinyAssets community patch loop
 Pairs with: `docs/milestones/auto-ship-canary-v0.md` (PR #198, merged a3e6ec4)
 
 ## 1. Purpose

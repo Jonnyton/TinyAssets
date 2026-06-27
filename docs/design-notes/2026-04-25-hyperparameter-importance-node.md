@@ -15,7 +15,7 @@ status: active
 
 From `docs/audits/user-chat-intelligence/2026-04-24-competitor-trials-sweep.md` Signal 4:
 
-> W&B's one substantive win Priya would actually want: hyperparameter importance analysis (which knobs matter most across the sweep). W&B computes this automatically. Workflow has no equivalent.
+> W&B's one substantive win Priya would actually want: hyperparameter importance analysis (which knobs matter most across the sweep). W&B computes this automatically. TinyAssets has no equivalent.
 
 When Priya runs a MaxEnt hyperparameter sweep across regularization multiplier, feature classes, and max iterations, she wants to know: **which of those knobs actually drove performance variation?** Today she must export results to a Jupyter notebook and compute this herself, or pay for a W&B account. Neither path is frictionless.
 
@@ -31,7 +31,7 @@ W&B Sweeps computes hyperparameter importance using two methods:
 
 Output: ranked list of params with importance scores, optionally with interaction effects.
 
-**W&B loses on:** result is a dashboard link, not a local artifact a reviewer can run. Workflow's structural advantage is reproducibility-first output.
+**W&B loses on:** result is a dashboard link, not a local artifact a reviewer can run. TinyAssets' structural advantage is reproducibility-first output.
 
 ---
 
@@ -152,11 +152,11 @@ This framing closes the W&B comparison gap: the output is an **interpretive arti
 
 ## 6. Positioning vs. W&B
 
-| Dimension | W&B Sweeps | Workflow `hyperparameter_importance` |
+| Dimension | W&B Sweeps | TinyAssets `hyperparameter_importance` |
 |---|---|---|
 | Output format | Dashboard link (requires W&B account) | CSV + interpretive text (reviewer-runnable) |
 | Reproducibility | Run logs on W&B servers | Local artifact, owned by user |
-| Integration | Requires W&B SDK in experiment code | Workflow node; no experiment-code changes |
+| Integration | Requires W&B SDK in experiment code | TinyAssets node; no experiment-code changes |
 | Cost | Subscription above free tier | Free; compute on daemon host |
 | Narrative output | None — charts only | Chatbot interprets + recommends next sweep focus |
 

@@ -27,7 +27,7 @@ All surfaces route through the mind-as-person. Voice expresses it, soul governs 
 Alternative: a distinct `persona` primitive — rejected (over-engineering; build-boundary law #4).
 
 **D2 — Embody, first person — compact and testable.** (host fork 1; Codex adaptation 5)
-The OAuth-bound chatbot speaks AS the persona in first person; authorized views arrive in-voice. Lands in the `control_station` prompt + MCP `instructions` as **compact trigger-language + view metadata**, never a large role-play block, never tool-schema sprawl. Workflow-surface-scoped, with Claude/ChatGPT tool-selection regression tests as the guard.
+The OAuth-bound chatbot speaks AS the persona in first person; authorized views arrive in-voice. Lands in the `control_station` prompt + MCP `instructions` as **compact trigger-language + view metadata**, never a large role-play block, never tool-schema sprawl. TinyAssets-surface-scoped, with Claude/ChatGPT tool-selection regression tests as the guard.
 Alternative: relay ("Tiny says…") — rejected by host. Large role-play prompt — rejected (degrades tool selection; violates frozen-tool-schema economics).
 
 **D3 — Authorization precedes voice (the real boundary).** (Codex adaptation 3 — the central security fix)
@@ -38,7 +38,7 @@ Alternative: persona "instructed not to reveal" — rejected (prompt-enforcement
 MCP instructions/tool descriptions + every view carry the "do not save into your memory; re-assembled fresh" guard; write paths reject profile-shaped / persona-dossier writes. First-person persona content is exactly what host memories (ChatGPT Dreaming / Claude memory) would absorb as a standing preference — guarded explicitly. (Brain anti-collision contract, research-impl ADOPT #3.)
 
 **D5 — OAuth → persona + tier binding, with a visitor default.** (host fork 3; Codex adaptation 4)
-OAuth fixes the owned universe(s) and embodied persona; one persona per universe. Tier: no Workflow OAuth → T0; durable host/OAuth subject → T1; verified owner OAuth → T2/founder. Persona behavior is a forkable `[composable]` default; substrate enforces only the floor.
+OAuth fixes the owned universe(s) and embodied persona; one persona per universe. Tier: no TinyAssets OAuth → T0; durable host/OAuth subject → T1; verified owner OAuth → T2/founder. Persona behavior is a forkable `[composable]` default; substrate enforces only the floor.
 
 **D6 — One identity, surface-modulated.** A single "I" across surfaces; tone/disclosure/authority modulate by interlocutor + surface; identity never changes, only expression.
 
@@ -53,7 +53,7 @@ OAuth fixes the owned universe(s) and embodied persona; one persona per universe
 - **Prompt-enforced privacy** → moved to a real boundary: authorization before voice (D3); voice never sees unauthorized content.
 - **Host-memory collision** → every view + write path carries anti-collision guards (D4).
 - **Tool-selection degradation** → compact trigger-language only, regression-tested (D2).
-- **"Workflow surface only" not hard-enforceable** → bounded by phrasing + tests + honest fallback (D2/D7); accepted as a soft boundary with explicit guards, not assumed.
+- **"TinyAssets surface only" not hard-enforceable** → bounded by phrasing + tests + honest fallback (D2/D7); accepted as a soft boundary with explicit guards, not assumed.
 - **Visitor identity ambiguity on host surfaces** → explicit T0 default for unauthenticated users (D5).
 - **"No neutral surface" vs diagnostics** → resolved by the honest-fallback exception (D7).
 
