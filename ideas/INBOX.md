@@ -172,3 +172,6 @@ half-formed experiments.
 - [2026-06-25] (source: user-chat, owner: unassigned, status: captured) PRE-EXISTING (not mine): 11 tests in tests/test_dispatcher_queue.py fail on clean origin/main b4e3f31b — universe_loop_not_declared on submit + IndexError/empty-queue on cancel/list/clamp invariants. Likely a soul-loop-declaration fixture drift (queue ops now require a declared universe loop). Found during loop-lease-reclaim work; unrelated to lease reclaim. Triage separately.
   Next: triage and choose whether this belongs in STATUS.md, PLAN.md, a design note, or an exec plan
   Links: -
+- [2026-06-27] (source: user-chat, owner: codex-gpt5-desktop, status: promoted) **Tiny/TinyAssets naming and Workflow retirement.**
+  Host decision: Tiny is the personified intelligence users and developers interact with; TinyAssets is the website, platform, GitHub/repository, distribution, and app/listing brand; Workflow/workflow is only a migration compatibility name and retires after staged replacement.
+  Promoted to: `PLAN.md` Canonical Naming Boundary; `docs/design-notes/2026-06-27-tinyassets-rename-migration.md`; `docs/exec-plans/active/2026-06-27-tinyassets-rename-migration.md`; STATUS.md Work row "TinyAssets rename migration plan".

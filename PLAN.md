@@ -76,7 +76,13 @@ Depth: lead memory `project_user_capability_axis.md`; host matrix `docs/design-n
 
 ## Canonical Vocabulary
 
-**Status: canonical as of 2026-05-10.** Workflow's foundational substrate vocabulary is six work concepts plus five permissioned MCP handles. Coding sessions should use this vocabulary when naming architecture, docs, tool metadata, and future design notes unless a narrower domain term is explicitly needed.
+**Status: canonical as of 2026-05-10.** The platform's foundational substrate vocabulary is six work concepts plus five permissioned MCP handles. Coding sessions should use this vocabulary when naming architecture, docs, tool metadata, and future design notes unless a narrower domain term is explicitly needed.
+
+### Canonical Naming Boundary
+
+**Status: canonical as of 2026-06-27.** `Tiny` is the personified intelligence users and developers interact with. `TinyAssets` is the website, platform, distribution, GitHub/repository, and app/listing brand. `Workflow` / `workflow` is a migration-only compatibility name from the engineering discovery phase and must retire after each surface has a replacement, migration path, and verification gate.
+
+This boundary does not retire the generic English noun "workflow" when it literally describes a user's process, graph, or branch. It does retire `Workflow` as a product/repository/connector name and `workflow` as a durable namespace label. New public copy, connector metadata, package names, env vars, data paths, and docs must prefer `TinyAssets` for the platform and `Tiny` for the acting persona. Any remaining `Workflow`/`workflow` reference must be classified as historical context, temporary compatibility, or a migration blocker with a planned removal.
 
 The six base concepts describe durable work at the graph layer:
 
@@ -87,7 +93,7 @@ The six base concepts describe durable work at the graph layer:
 | `State` | The durable typed record a graph reads, writes, reduces, checkpoints, and resumes. |
 | `Scope` | The authority and context boundary for a work item: user, branch, goal, daemon, host, commons, or other bounded surface. |
 | `Run` | An execution attempt with inputs, outputs, provider traces, checkpoints, and evidence. |
-| `Trigger` | The event or schedule that asks Workflow to start, resume, replay, or route work. |
+| `Trigger` | The event or schedule that asks the platform to start, resume, replay, or route work. |
 
 The five MCP handles describe the small permissioned control surface agents use to inspect and act on those concepts:
 
