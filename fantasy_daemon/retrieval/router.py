@@ -1,2 +1,2 @@
-"""Shim: use workflow.retrieval.router instead."""
-from workflow.retrieval.router import *  # noqa: F401,F403
+"""Shim: use tinyassets.retrieval.router instead."""
+from tinyassets.retrieval.router import *  # noqa: F401,F403

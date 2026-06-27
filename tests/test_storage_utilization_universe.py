@@ -19,13 +19,13 @@ from unittest.mock import patch
 
 
 def test_path_size_bytes_missing_returns_zero(tmp_path):
-    from workflow.storage import path_size_bytes
+    from tinyassets.storage import path_size_bytes
 
     assert path_size_bytes(tmp_path / "no_such_file") == 0
 
 
 def test_path_size_bytes_file(tmp_path):
-    from workflow.storage import path_size_bytes
+    from tinyassets.storage import path_size_bytes
 
     p = tmp_path / "data.bin"
     p.write_bytes(b"a" * 512)
@@ -33,7 +33,7 @@ def test_path_size_bytes_file(tmp_path):
 
 
 def test_path_size_bytes_directory_recursive(tmp_path):
-    from workflow.storage import path_size_bytes
+    from tinyassets.storage import path_size_bytes
 
     (tmp_path / "a.txt").write_bytes(b"x" * 100)
     sub = tmp_path / "sub"
@@ -67,16 +67,16 @@ def _make_universe(
 
 def test_get_status_activity_log_bytes_nonzero(tmp_path, monkeypatch):
     """get_status must report nonzero bytes for activity_log when the file exists."""
-    from workflow.universe_server import get_status
+    from tinyassets.universe_server import get_status
     udir, uid = _make_universe(tmp_path, log_bytes=400, output_bytes=100)
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     _cfg = _minimal_cfg()
     with (
-        patch("workflow.dispatcher.load_dispatcher_config", return_value=_cfg),
-        patch("workflow.dispatcher.paid_market_enabled", return_value=False),
-        patch("workflow.api.helpers._default_universe", return_value=uid),
-        patch("workflow.api.helpers._universe_dir", return_value=udir),
+        patch("tinyassets.dispatcher.load_dispatcher_config", return_value=_cfg),
+        patch("tinyassets.dispatcher.paid_market_enabled", return_value=False),
+        patch("tinyassets.api.helpers._default_universe", return_value=uid),
+        patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
         raw = get_status(universe_id=uid)
 
@@ -91,16 +91,16 @@ def test_get_status_activity_log_bytes_nonzero(tmp_path, monkeypatch):
 
 def test_get_status_universe_outputs_bytes_nonzero(tmp_path, monkeypatch):
     """get_status must report nonzero bytes for universe_outputs when files exist."""
-    from workflow.universe_server import get_status
+    from tinyassets.universe_server import get_status
     udir, uid = _make_universe(tmp_path, log_bytes=10, output_bytes=800)
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     _cfg = _minimal_cfg()
     with (
-        patch("workflow.dispatcher.load_dispatcher_config", return_value=_cfg),
-        patch("workflow.dispatcher.paid_market_enabled", return_value=False),
-        patch("workflow.api.helpers._default_universe", return_value=uid),
-        patch("workflow.api.helpers._universe_dir", return_value=udir),
+        patch("tinyassets.dispatcher.load_dispatcher_config", return_value=_cfg),
+        patch("tinyassets.dispatcher.paid_market_enabled", return_value=False),
+        patch("tinyassets.api.helpers._default_universe", return_value=uid),
+        patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
         raw = get_status(universe_id=uid)
 
@@ -117,7 +117,7 @@ def test_get_status_checkpoint_db_bytes_nonzero_and_cap_current(
     monkeypatch,
 ):
     """get_status must report the active universe checkpoint DB, not root."""
-    from workflow.universe_server import get_status
+    from tinyassets.universe_server import get_status
 
     udir, uid = _make_universe(
         tmp_path,
@@ -125,15 +125,15 @@ def test_get_status_checkpoint_db_bytes_nonzero_and_cap_current(
         output_bytes=20,
         checkpoint_bytes=4096,
     )
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("WORKFLOW_CAP_CHECKPOINTS_BYTES", "10000")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_CAP_CHECKPOINTS_BYTES", "10000")
 
     _cfg = _minimal_cfg()
     with (
-        patch("workflow.dispatcher.load_dispatcher_config", return_value=_cfg),
-        patch("workflow.dispatcher.paid_market_enabled", return_value=False),
-        patch("workflow.api.helpers._default_universe", return_value=uid),
-        patch("workflow.api.helpers._universe_dir", return_value=udir),
+        patch("tinyassets.dispatcher.load_dispatcher_config", return_value=_cfg),
+        patch("tinyassets.dispatcher.paid_market_enabled", return_value=False),
+        patch("tinyassets.api.helpers._default_universe", return_value=uid),
+        patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
         raw = get_status(universe_id=uid)
 
@@ -147,16 +147,16 @@ def test_get_status_checkpoint_db_bytes_nonzero_and_cap_current(
 
 def test_get_status_activity_log_path_points_into_udir(tmp_path, monkeypatch):
     """The reported path for activity_log must be inside udir, not data_dir root."""
-    from workflow.universe_server import get_status
+    from tinyassets.universe_server import get_status
     udir, uid = _make_universe(tmp_path, log_bytes=50, output_bytes=50)
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     _cfg = _minimal_cfg()
     with (
-        patch("workflow.dispatcher.load_dispatcher_config", return_value=_cfg),
-        patch("workflow.dispatcher.paid_market_enabled", return_value=False),
-        patch("workflow.api.helpers._default_universe", return_value=uid),
-        patch("workflow.api.helpers._universe_dir", return_value=udir),
+        patch("tinyassets.dispatcher.load_dispatcher_config", return_value=_cfg),
+        patch("tinyassets.dispatcher.paid_market_enabled", return_value=False),
+        patch("tinyassets.api.helpers._default_universe", return_value=uid),
+        patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
         raw = get_status(universe_id=uid)
 
@@ -169,20 +169,20 @@ def test_get_status_activity_log_path_points_into_udir(tmp_path, monkeypatch):
 
 def test_get_status_missing_log_and_output_still_reports_zero_not_error(tmp_path, monkeypatch):
     """Missing activity.log + output/ must yield bytes=0, not crash."""
-    from workflow.universe_server import get_status
+    from tinyassets.universe_server import get_status
 
     # Universe dir exists but has no activity.log or output/.
     uid = "empty-universe"
     udir = tmp_path / uid
     udir.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     _cfg = _minimal_cfg()
     with (
-        patch("workflow.dispatcher.load_dispatcher_config", return_value=_cfg),
-        patch("workflow.dispatcher.paid_market_enabled", return_value=False),
-        patch("workflow.api.helpers._default_universe", return_value=uid),
-        patch("workflow.api.helpers._universe_dir", return_value=udir),
+        patch("tinyassets.dispatcher.load_dispatcher_config", return_value=_cfg),
+        patch("tinyassets.dispatcher.paid_market_enabled", return_value=False),
+        patch("tinyassets.api.helpers._default_universe", return_value=uid),
+        patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
         raw = get_status(universe_id=uid)
 

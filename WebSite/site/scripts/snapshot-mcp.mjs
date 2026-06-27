@@ -194,7 +194,7 @@ async function main() {
     requestInit: BEARER ? { headers: { Authorization: `Bearer ${BEARER}` } } : {}
   });
   const client = new sdk.Client(
-    { name: 'workflow-site-snapshot', version: '0.2.0' },
+    { name: 'tinyassets-site-snapshot', version: '0.2.0' },
     { capabilities: {} }
   );
 
@@ -368,7 +368,7 @@ async function main() {
       const tr = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL), {
         requestInit: BEARER ? { headers: { Authorization: `Bearer ${BEARER}` } } : {}
       });
-      const cl = new sdk.Client({ name: 'workflow-site-snapshot-worker', version: '0.2.0' }, { capabilities: {} });
+      const cl = new sdk.Client({ name: 'tinyassets-site-snapshot-worker', version: '0.2.0' }, { capabilities: {} });
       try {
         await Promise.race([
           cl.connect(tr),

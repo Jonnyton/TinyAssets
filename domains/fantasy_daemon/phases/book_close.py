@@ -25,7 +25,7 @@ def book_close(state: dict[str, Any]) -> dict[str, Any]:
         Partial state with:
         - ``book_summary``: summary of the completed book.
     """
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     mgr = runtime.memory_manager
     if mgr is not None:

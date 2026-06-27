@@ -21,16 +21,16 @@ from pathlib import Path
 
 import pytest
 
-from workflow.api.helpers import _base_path as _helpers_base_path
+from tinyassets.api.helpers import _base_path as _helpers_base_path
 
 
 @pytest.fixture
 def p5_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -334,9 +334,9 @@ def test_leaderboard_run_count(p5_env):
 
     # B2 has 2 runs, B1 has 1. Run sync via execute_branch to avoid
     # background worker waits.
-    from workflow.branches import BranchDefinition
-    from workflow.daemon_server import get_branch_definition
-    from workflow.runs import execute_branch
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.runs import execute_branch
 
     for _ in range(1):
         br = BranchDefinition.from_dict(
@@ -390,8 +390,8 @@ def test_leaderboard_forks_counts_parent_chain(p5_env):
 
     # Create two "forks" — manually save branches with parent_def_id
     # pointing at parent.
-    from workflow.branches import BranchDefinition
-    from workflow.daemon_server import save_branch_definition
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import save_branch_definition
 
     parent = BranchDefinition.from_dict({"branch_def_id": parent_bid})
     for i in range(2):
@@ -410,7 +410,7 @@ def test_archive_consultation_uses_gate_leaderboard_parent_signal(p5_env):
     us, base = p5_env
     gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
 
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         claim_gate,
         set_goal_ladder,
         update_branch_definition,
@@ -714,7 +714,7 @@ def test_branch_from_pre_phase5_install_reads_cleanly(tmp_path):
     """An installation that existed before Phase 5 has no goal_id column.
     initialize_author_server adds the column; existing rows surface
     goal_id=None without errors."""
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         _connect,
         get_branch_definition,
         initialize_author_server,

@@ -16,7 +16,7 @@ audience: lead, host (final go/defer decision; if go, scheduling)
 
 ## TL;DR
 
-The on-disk SQLite database in every `WORKFLOW_DATA_DIR` is named `.author_server.db` — a leftover from the pre-rename "author_server" architecture. The constant `DB_FILENAME = ".author_server.db"` lives at `workflow/storage/__init__.py:47`; the resolver `author_server_db_path()` at L289 is the only function that names it. Renaming the constant is a 1-line edit; **renaming the on-disk file** is the actual scope.
+The on-disk SQLite database in every `TINYASSETS_DATA_DIR` is named `.author_server.db` — a leftover from the pre-rename "author_server" architecture. The constant `DB_FILENAME = ".author_server.db"` lives at `tinyassets/storage/__init__.py:47`; the resolver `author_server_db_path()` at L289 is the only function that names it. Renaming the constant is a 1-line edit; **renaming the on-disk file** is the actual scope.
 
 **~7 in-tree references + 12 function-call sites + 4 packaging mirrors + 1 deploy-doc reference.** Surface is small. The hard part is data-migration: existing universes have data in the old file; renaming requires a bootstrap-time discovery + rename pass that's safe under daemon-mid-flight, host-machine-off, and partial-failure conditions.
 
@@ -30,7 +30,7 @@ When both preconditions are met, **Option A (atomic rename + boot-time discovery
 
 ## 1. What "lives in" `.author_server.db`
 
-**Schema (sampled from `workflow/storage/` bounded-context modules):**
+**Schema (sampled from `tinyassets/storage/` bounded-context modules):**
 
 | Bounded context | Tables (approx.) | Volume per universe (typical) |
 |---|---|---|
@@ -45,10 +45,10 @@ When both preconditions are met, **Option A (atomic rename + boot-time discovery
 **Approximate file size per universe:** Live host (per `output/` survey 2026-04-26): `.author_server.db` ~454 KB + `-shm` 32 KB + `-wal` 140 KB. Other universes (`allied-ap` etc.) similar order of magnitude. Total ~few MB per universe at current scale; will grow into hundreds of MB at production scale.
 
 **Callers / writers:**
-- `workflow/daemon_server.py` — top-level orchestration, all write paths.
-- `workflow/storage/{accounts,universes_branches,daemons,requests_votes,notes_work_targets,goals_gates}.py` — bounded-context CRUD via shared `_connect()` helper.
-- `workflow/payments/escrow.py` — per docstring: "SQLite table escrow_locks lives in the same .author_server.db as ..."
-- `workflow/api/branches.py:103,191` — comments only; routes through `_connect()` not direct path.
+- `tinyassets/daemon_server.py` — top-level orchestration, all write paths.
+- `tinyassets/storage/{accounts,universes_branches,daemons,requests_votes,notes_work_targets,goals_gates}.py` — bounded-context CRUD via shared `_connect()` helper.
+- `tinyassets/payments/escrow.py` — per docstring: "SQLite table escrow_locks lives in the same .author_server.db as ..."
+- `tinyassets/api/branches.py:103,191` — comments only; routes through `_connect()` not direct path.
 - `tests/test_outcome_gates.py` — 3 direct `sqlite3.connect(author_server_db_path(base))` sites for white-box verification.
 
 **No external script reads the file directly.** No deploy-time tooling references it by name (only `deploy/RESTORE.md` documents the path for human-restore procedures).
@@ -74,16 +74,16 @@ When both preconditions are met, **Option A (atomic rename + boot-time discovery
 ### Option A — Atomic rename + boot-time discovery (RECOMMENDED)
 
 **Mechanism:** On daemon boot, the storage layer's path resolver does:
-1. Check if `<WORKFLOW_DATA_DIR>/<universe>/.workflow.db` exists. If yes, use it.
-2. Else, check if `<WORKFLOW_DATA_DIR>/<universe>/.author_server.db` exists. If yes, atomically rename to `.workflow.db` (also rename `-shm` and `-wal` siblings if present), log the rename, then proceed.
+1. Check if `<TINYASSETS_DATA_DIR>/<universe>/.workflow.db` exists. If yes, use it.
+2. Else, check if `<TINYASSETS_DATA_DIR>/<universe>/.author_server.db` exists. If yes, atomically rename to `.workflow.db` (also rename `-shm` and `-wal` siblings if present), log the rename, then proceed.
 3. Else, the universe has no DB yet (fresh universe) — create as `.workflow.db`.
 
 **Atomicity:** Use `os.replace()` (atomic on POSIX + Windows for same-filesystem renames). Done before any connection is opened — daemon must NOT be running when boot happens (standard pre-boot expectation).
 
 **Code change scope:**
-- `workflow/storage/__init__.py:47` — `DB_FILENAME = ".workflow.db"`.
-- `workflow/storage/__init__.py:289` — rename `author_server_db_path` → `workflow_db_path` (or just `db_path`); preserve the function but with new name; update `__all__` at L544.
-- `workflow/storage/__init__.py` — add `_migrate_legacy_db_filename()` helper called once per universe at first `_connect()` invocation; idempotent (only renames if old exists + new doesn't).
+- `tinyassets/storage/__init__.py:47` — `DB_FILENAME = ".workflow.db"`.
+- `tinyassets/storage/__init__.py:289` — rename `author_server_db_path` → `workflow_db_path` (or just `db_path`); preserve the function but with new name; update `__all__` at L544.
+- `tinyassets/storage/__init__.py` — add `_migrate_legacy_db_filename()` helper called once per universe at first `_connect()` invocation; idempotent (only renames if old exists + new doesn't).
 - Update 12 call sites to use the new function name.
 - Update 4 docstring/comment references (`.author_server.db` → `.workflow.db`).
 - Update `deploy/RESTORE.md`.
@@ -93,7 +93,7 @@ When both preconditions are met, **Option A (atomic rename + boot-time discovery
 1. Daemon stopped (host-driven; ~30s restart window).
 2. Deploy the new code.
 3. Daemon starts; storage layer auto-migrates each universe's DB on first connect.
-4. Verify: `ls -la $WORKFLOW_DATA_DIR/<universe>/` shows `.workflow.db` (no `.author_server.db`).
+4. Verify: `ls -la $TINYASSETS_DATA_DIR/<universe>/` shows `.workflow.db` (no `.author_server.db`).
 5. After 1-2 stable days, delete the `_migrate_legacy_db_filename()` helper (it'll have nothing to migrate). The code is then shim-free at both layers.
 
 **Effort:** ~2h dev (code change + tests + plugin mirror) + 1 daemon restart window for host.
@@ -159,7 +159,7 @@ Do nothing. Wait for an unrelated migration to bundle this into.
 
 ### Hard dependencies (must ship first)
 
-- **Arc B (code rename ships).** Per `2026-04-27-project-wide-shim-audit.md` Arc B: 4 files / ~366 LOC of `_rename_compat.py` infrastructure + alias modules need to die first. While `workflow.author_server` is still a live import path (gated on `WORKFLOW_AUTHOR_RENAME_COMPAT=1`), renaming the on-disk file would create a confusing intermediate state where the code is named one thing and the DB is named the new thing.
+- **Arc B (code rename ships).** Per `2026-04-27-project-wide-shim-audit.md` Arc B: 4 files / ~366 LOC of `_rename_compat.py` infrastructure + alias modules need to die first. While `workflow.author_server` is still a live import path (gated on `TINYASSETS_AUTHOR_RENAME_COMPAT=1`), renaming the on-disk file would create a confusing intermediate state where the code is named one thing and the DB is named the new thing.
 - **Tests for migrator.** New unit tests in `tests/test_storage_db_filename_migration.py` covering: fresh universe, legacy-only, new-only, both-exist (recovery), sibling-files-present, idempotent re-run.
 
 ### Soft dependencies (nice-to-have)
@@ -200,9 +200,9 @@ This work is Phase 6 of the rename arc — completes the rename at every layer.
 | Delete migrator helper after 1-2 stable days | ~5 min | LOW |
 | **TOTAL** | **~2-3h dev + 1h host** | **LOW** |
 
-**Blast radius:** All universes in every `WORKFLOW_DATA_DIR` rooted at the host. ~5-10 universes today (per `output/` survey 2026-04-26: `default-universe`, `allied-ap`, plus auxiliaries). Production-scale will be similar order of magnitude (single-host MVP per `project_daemon_default_behavior`). Each universe migrates independently in the migrator's per-universe loop — failure in one doesn't block others.
+**Blast radius:** All universes in every `TINYASSETS_DATA_DIR` rooted at the host. ~5-10 universes today (per `output/` survey 2026-04-26: `default-universe`, `allied-ap`, plus auxiliaries). Production-scale will be similar order of magnitude (single-host MVP per `project_daemon_default_behavior`). Each universe migrates independently in the migrator's per-universe loop — failure in one doesn't block others.
 
-**Discovery:** Migrator iterates `Path(WORKFLOW_DATA_DIR).iterdir()` for universe subdirs; per-universe rename. No central registry needed.
+**Discovery:** Migrator iterates `Path(TINYASSETS_DATA_DIR).iterdir()` for universe subdirs; per-universe rename. No central registry needed.
 
 ---
 
@@ -236,8 +236,8 @@ Rationale:
 - `docs/audits/2026-04-27-project-wide-shim-audit.md` §3 item 17 — original deferral.
 - `feedback_no_shims_ever` — policy this work serves at the data layer.
 - `docs/exec-plans/active/2026-04-15-author-to-daemon-rename.md` — code-rename arc; this is its Phase 6.
-- `workflow/storage/__init__.py:47` — `DB_FILENAME` constant (single point of truth).
-- `workflow/storage/__init__.py:289` — `author_server_db_path()` resolver.
-- `workflow/storage/__init__.py:508` — `_connect()` factory (only consumer of `author_server_db_path()` internally).
+- `tinyassets/storage/__init__.py:47` — `DB_FILENAME` constant (single point of truth).
+- `tinyassets/storage/__init__.py:289` — `author_server_db_path()` resolver.
+- `tinyassets/storage/__init__.py:508` — `_connect()` factory (only consumer of `author_server_db_path()` internally).
 - `deploy/RESTORE.md` — operator documentation that names the legacy file.
 - `tests/test_outcome_gates.py:228,250,266` — 3 test sites that import + call `author_server_db_path()` directly; these become the migrator's white-box test fixtures.

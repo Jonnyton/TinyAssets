@@ -5,7 +5,7 @@ is reusable without fantasy-specific state leaking in.
 
 Exports:
     ResearchProbeDomain: The main domain class implementing
-        workflow.protocols.Domain.
+        tinyassets.protocols.Domain.
 """
 
 from domains.research_probe.skill import ResearchProbeDomain

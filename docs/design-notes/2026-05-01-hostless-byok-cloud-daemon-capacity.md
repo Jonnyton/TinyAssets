@@ -1118,10 +1118,10 @@ Exit criteria:
 
 Files likely:
 
-- `workflow/api/universe.py`
-- `workflow/daemon_registry.py`
-- `workflow/runtime/*`
-- `workflow/auth/*` or account boundary module
+- `tinyassets/api/universe.py`
+- `tinyassets/daemon_registry.py`
+- `tinyassets/runtime/*`
+- `tinyassets/auth/*` or account boundary module
 - packaging mirror files
 - `tests/test_api_universe.py`
 
@@ -1150,8 +1150,8 @@ Exit criteria:
 
 Files likely:
 
-- `workflow/storage/*`
-- `workflow/api/*`
+- `tinyassets/storage/*`
+- `tinyassets/api/*`
 - `tests/test_capacity_grants.py`
 - Supabase migration files when platform backend exists
 
@@ -1179,11 +1179,11 @@ Exit criteria:
 
 Files likely:
 
-- `workflow/runtime/`
-- `workflow/providers/`
-- `workflow/api/runs.py` or request API
+- `tinyassets/runtime/`
+- `tinyassets/providers/`
+- `tinyassets/api/runs.py` or request API
 - `tests/test_cloud_byok_execution.py`
-- `workflow_tray.py` / desktop runtime surfaces
+- `tinyassets_tray.py` / desktop runtime surfaces
 
 Work:
 
@@ -1211,7 +1211,7 @@ Exit criteria:
 
 Files likely:
 
-- `workflow/api/prompts.py`
+- `tinyassets/api/prompts.py`
 - website/account capacity surfaces
 - `output/user_sim_session.md`
 - live-chat test harness docs

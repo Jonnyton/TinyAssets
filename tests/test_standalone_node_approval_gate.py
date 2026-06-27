@@ -13,9 +13,9 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "registrant")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base, monkeypatch
@@ -75,9 +75,9 @@ def test_standalone_node_distinct_actor_approval_records_metadata(ext_env):
 
 
 def test_standalone_node_approve_requires_extensions_admin_scope_when_auth_enabled():
-    from workflow.auth.provider import action_scope_for
+    from tinyassets.auth.provider import action_scope_for
 
     metadata = action_scope_for("extensions", "approve")
     assert metadata is not None
-    assert metadata.oauth_scope == "workflow.extensions.admin"
+    assert metadata.oauth_scope == "tinyassets.extensions.admin"
     assert metadata.effect == "admin"

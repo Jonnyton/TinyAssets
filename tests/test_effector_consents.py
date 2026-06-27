@@ -1,8 +1,8 @@
-"""Tests for workflow.storage.effector_consents.
+"""Tests for tinyassets.storage.effector_consents.
 
 PR-122 Phase 2 Slice 1 — per-destination consent grants. The user must
 explicitly grant that this universe's effectors may write to a specific
-destination (e.g. ``"Jonnyton/Workflow"``) via a specific sink (e.g.
+destination (e.g. ``"Jonnyton/TinyAssets"``) via a specific sink (e.g.
 ``"github_pull_request"``).
 """
 
@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from workflow.storage.effector_consents import (
+from tinyassets.storage.effector_consents import (
     consents_db_path,
     grant_consent,
     initialize_consents_db,
@@ -45,7 +45,7 @@ def test_grant_then_is_active_returns_true(tmp_path):
     record = grant_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         granted_by="host",
         granted_at=1700.0,
     )
@@ -53,7 +53,7 @@ def test_grant_then_is_active_returns_true(tmp_path):
     assert record["granted_by"] == "host"
     assert record["revoked_at"] is None
     assert is_consent_active(
-        universe, sink="github_pull_request", destination="Jonnyton/Workflow",
+        universe, sink="github_pull_request", destination="Jonnyton/TinyAssets",
     ) is True
 
 
@@ -63,7 +63,7 @@ def test_is_active_returns_false_for_unmatched_destination(tmp_path):
     grant_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         granted_by="host",
     )
     assert is_consent_active(
@@ -73,7 +73,7 @@ def test_is_active_returns_false_for_unmatched_destination(tmp_path):
     ) is False
     # Sink mismatch.
     assert is_consent_active(
-        universe, sink="twitter_post", destination="Jonnyton/Workflow",
+        universe, sink="twitter_post", destination="Jonnyton/TinyAssets",
     ) is False
 
 
@@ -84,7 +84,7 @@ def test_is_active_is_case_sensitive(tmp_path):
     grant_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         granted_by="host",
     )
     assert is_consent_active(
@@ -117,28 +117,28 @@ def test_grant_refresh_clears_prior_revoke(tmp_path):
     grant_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         granted_by="host",
         granted_at=1000.0,
     )
     revoke_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         revoked_at=1500.0,
     )
     assert is_consent_active(
-        universe, sink="github_pull_request", destination="Jonnyton/Workflow",
+        universe, sink="github_pull_request", destination="Jonnyton/TinyAssets",
     ) is False
     grant_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         granted_by="host-2",
         granted_at=2000.0,
     )
     assert is_consent_active(
-        universe, sink="github_pull_request", destination="Jonnyton/Workflow",
+        universe, sink="github_pull_request", destination="Jonnyton/TinyAssets",
     ) is True
     rows = list_consents(
         universe, sink="github_pull_request", active_only=False,
@@ -161,13 +161,13 @@ def test_revoke_flips_revoked_at(tmp_path):
     grant_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         granted_by="host",
     )
     hit = revoke_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         revoked_at=3000.0,
     )
     assert hit is True
@@ -176,7 +176,7 @@ def test_revoke_flips_revoked_at(tmp_path):
     )
     assert rows[0]["revoked_at"] == 3000.0
     assert is_consent_active(
-        universe, sink="github_pull_request", destination="Jonnyton/Workflow",
+        universe, sink="github_pull_request", destination="Jonnyton/TinyAssets",
     ) is False
 
 
@@ -195,7 +195,7 @@ def test_revoke_with_empty_fields_is_no_op(tmp_path):
     grant_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         granted_by="host",
     )
     assert revoke_consent(universe, sink="", destination="x") is False
@@ -203,7 +203,7 @@ def test_revoke_with_empty_fields_is_no_op(tmp_path):
         universe, sink="github_pull_request", destination="",
     ) is False
     assert is_consent_active(
-        universe, sink="github_pull_request", destination="Jonnyton/Workflow",
+        universe, sink="github_pull_request", destination="Jonnyton/TinyAssets",
     ) is True
 
 
@@ -258,10 +258,10 @@ def test_universes_are_isolated(tmp_path):
     u2.mkdir()
     grant_consent(
         u1, sink="github_pull_request",
-        destination="Jonnyton/Workflow", granted_by="host",
+        destination="Jonnyton/TinyAssets", granted_by="host",
     )
     assert is_consent_active(
-        u2, sink="github_pull_request", destination="Jonnyton/Workflow",
+        u2, sink="github_pull_request", destination="Jonnyton/TinyAssets",
     ) is False
 
 
@@ -272,7 +272,7 @@ def test_default_granted_at_uses_wall_clock(tmp_path):
     grant_consent(
         universe,
         sink="github_pull_request",
-        destination="Jonnyton/Workflow",
+        destination="Jonnyton/TinyAssets",
         granted_by="host",
     )
     after = time.time()

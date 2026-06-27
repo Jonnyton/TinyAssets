@@ -23,7 +23,7 @@ import pytest
 from domains.fantasy_daemon.phases.authorial_priority_review import (
     authorial_priority_review,
 )
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     ROLE_NOTES,
     load_work_targets,
     materialize_pending_requests,
@@ -189,7 +189,7 @@ def test_corrupt_requests_json_warns_and_returns_empty(
     requests_path(universe_dir).write_text(
         "not valid json {{{", encoding="utf-8",
     )
-    with caplog.at_level(logging.WARNING, logger="workflow.work_targets"):
+    with caplog.at_level(logging.WARNING, logger="tinyassets.work_targets"):
         created = materialize_pending_requests(universe_dir)
     assert created == []
     assert any(
@@ -210,9 +210,9 @@ def test_submit_request_rejects_oversize_text(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
     (base / "test-universe").mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow.api import universe as us
+    from tinyassets.api import universe as us
     importlib.reload(us)
     try:
         oversize = "x" * (us._SUBMIT_REQUEST_MAX_BYTES + 1)
@@ -237,9 +237,9 @@ def test_submit_request_accepts_text_at_cap(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
     (base / "test-universe").mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow.api import universe as us
+    from tinyassets.api import universe as us
     importlib.reload(us)
     try:
         at_cap = "x" * us._SUBMIT_REQUEST_MAX_BYTES
@@ -265,9 +265,9 @@ def test_submit_request_response_includes_queue_position(monkeypatch, tmp_path):
     base = tmp_path / "uni"
     universe_dir = base / "test-universe"
     universe_dir.mkdir(parents=True)
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    from workflow.api import universe as us
+    from tinyassets.api import universe as us
     importlib.reload(us)
     try:
         first = json.loads(us._action_submit_request(
@@ -295,13 +295,13 @@ def test_submit_request_write_uses_centralized_filename_constant():
     from pathlib import Path as _Path
 
     # Step 9 (decomp): _action_submit_request and _action_inspect_universe
-    # moved to workflow/api/universe.py. Scan there now.
-    src = _Path("workflow/api/universe.py").read_text(encoding="utf-8")
+    # moved to tinyassets/api/universe.py. Scan there now.
+    src = _Path("tinyassets/api/universe.py").read_text(encoding="utf-8")
     # _action_submit_request and _action_inspect_universe should both
     # import REQUESTS_FILENAME rather than hardcoding "requests.json".
     # Two imports expected (one per action). Zero bare literals of the
     # filename allowed outside import statements.
-    import_hits = src.count("from workflow.work_targets import REQUESTS_FILENAME")
+    import_hits = src.count("from tinyassets.work_targets import REQUESTS_FILENAME")
     assert import_hits >= 2, (
         f"expected >=2 REQUESTS_FILENAME imports, found {import_hits}"
     )

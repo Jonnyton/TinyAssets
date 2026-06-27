@@ -3,7 +3,7 @@
 Navigator 2026-04-22 §a/§b fix: the entrypoint and the systemd
 ExecStartPre + deploy-prod sed-assertions all emit the same canonical
 token so p0-outage-triage.yml can grep journalctl and self-repair
-the /etc/workflow/env perm-regression class without an SSH shell.
+the /etc/tinyassets/env perm-regression class without an SSH shell.
 
 This test file exercises:
   - docker-entrypoint.sh's ENV-UNREADABLE detection path (all sentinels empty).
@@ -17,13 +17,14 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 _REPO = Path(__file__).resolve().parent.parent
 _ENTRYPOINT = _REPO / "deploy" / "docker-entrypoint.sh"
-_SYSTEMD_UNIT = _REPO / "deploy" / "workflow-daemon.service"
+_SYSTEMD_UNIT = _REPO / "deploy" / "tinyassets-daemon.service"
 _DEPLOY_YAML = _REPO / ".github" / "workflows" / "deploy-prod.yml"
 _TRIAGE_YAML = _REPO / ".github" / "workflows" / "p0-outage-triage.yml"
 
@@ -72,10 +73,14 @@ def _run_entrypoint_via_stdin(
     script = _ENTRYPOINT.read_text(encoding="utf-8").replace(
         'exec "$@"', exec_replacement,
     )
+    scratch = Path(tempfile.mkdtemp(prefix="tinyassets-entrypoint-"))
     preamble_lines = [
         # Clear sentinels first so ambient-shell values don't leak through.
-        "unset CLOUDFLARE_TUNNEL_TOKEN SUPABASE_DB_URL WORKFLOW_IMAGE",
-        f"export WORKFLOW_PACKAGE_ROOT={_bash_readable_path(_REPO)!r}",
+        "unset CLOUDFLARE_TUNNEL_TOKEN SUPABASE_DB_URL TINYASSETS_IMAGE",
+        f"export TINYASSETS_PACKAGE_ROOT={_bash_readable_path(_REPO)!r}",
+        f"export TINYASSETS_DATA_DIR={_bash_readable_path(scratch / 'data')!r}",
+        f"export CODEX_HOME={_bash_readable_path(scratch / 'codex')!r}",
+        f"export CLAUDE_CONFIG_DIR={_bash_readable_path(scratch / 'claude')!r}",
     ]
     preamble_lines.extend(raw_preamble_lines or [])
     for key, value in (extra_env or {}).items():
@@ -111,7 +116,7 @@ def test_entrypoint_exits_with_marker_when_all_sentinels_empty():
     )
     # Should name the sentinel env vars so the operator can see what was expected.
     assert "CLOUDFLARE_TUNNEL_TOKEN" in result.stderr
-    assert "WORKFLOW_IMAGE" in result.stderr
+    assert "TINYASSETS_IMAGE" in result.stderr
 
 
 @pytest.mark.skipif(not _have_bash(), reason="bash not on PATH")
@@ -119,7 +124,7 @@ def test_entrypoint_passes_through_when_one_sentinel_set():
     """At least one sentinel non-empty -> entrypoint proceeds past the check."""
     result = _run_entrypoint_via_stdin(
         exec_replacement='echo "[harness] would-exec: $@"',
-        extra_env={"WORKFLOW_IMAGE": "ghcr.io/jonnyton/workflow-daemon:abc123"},
+        extra_env={"TINYASSETS_IMAGE": "ghcr.io/jonnyton/tinyassets-daemon:abc123"},
     )
     assert result.returncode == 0, (
         f"expected happy-path exit 0; got {result.returncode}. "
@@ -137,8 +142,8 @@ def test_entrypoint_fails_loud_when_required_data_file_missing(tmp_path: Path):
     result = _run_entrypoint_via_stdin(
         exec_replacement='echo "[harness] would-exec: $@"',
         extra_env={
-            "WORKFLOW_IMAGE": "ghcr.io/jonnyton/workflow-daemon:abc123",
-            "WORKFLOW_PACKAGE_ROOT": str(tmp_path),
+            "TINYASSETS_IMAGE": "ghcr.io/jonnyton/tinyassets-daemon:abc123",
+            "TINYASSETS_PACKAGE_ROOT": str(tmp_path),
         },
     )
 
@@ -154,7 +159,7 @@ def test_entrypoint_fails_loud_when_required_data_file_missing(tmp_path: Path):
 def test_entrypoint_data_file_probe_accepts_git_bash_windows_package_root(
     tmp_path: Path,
 ):
-    """Git Bash gets WORKFLOW_PACKAGE_ROOT as C:\\...; normalize before -f."""
+    """Git Bash gets TINYASSETS_PACKAGE_ROOT as C:\\...; normalize before -f."""
     package_root = tmp_path / "package-root"
     (package_root / "data").mkdir(parents=True)
     (package_root / "data" / "world_rules.lp").write_text("% rules\n")
@@ -164,7 +169,7 @@ def test_entrypoint_data_file_probe_accepts_git_bash_windows_package_root(
     fake_cygpath = fake_bin / "cygpath"
     fake_cygpath.write_text(
         "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$WORKFLOW_FAKE_POSIX_ROOT\"\n",
+        "printf '%s\\n' \"$TINYASSETS_FAKE_POSIX_ROOT\"\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -173,9 +178,9 @@ def test_entrypoint_data_file_probe_accepts_git_bash_windows_package_root(
     result = _run_entrypoint_via_stdin(
         exec_replacement='echo "[harness] would-exec: $@"',
         extra_env={
-            "WORKFLOW_IMAGE": "ghcr.io/jonnyton/workflow-daemon:abc123",
-            "WORKFLOW_PACKAGE_ROOT": r"C:\Users\Jonathan\Projects\wf-review-108",
-            "WORKFLOW_FAKE_POSIX_ROOT": _bash_readable_path(package_root),
+            "TINYASSETS_IMAGE": "ghcr.io/jonnyton/tinyassets-daemon:abc123",
+            "TINYASSETS_PACKAGE_ROOT": r"C:\Users\Jonathan\Projects\wf-review-108",
+            "TINYASSETS_FAKE_POSIX_ROOT": _bash_readable_path(package_root),
         },
         raw_preamble_lines=[f"export PATH={_bash_readable_path(fake_bin)!r}:$PATH"],
     )
@@ -191,7 +196,7 @@ def test_entrypoint_data_file_probe_accepts_git_bash_windows_package_root(
 def test_entrypoint_data_file_probe_does_not_require_python_alias():
     """The startup data-file probe must stay shell-only for Git Bash hosts."""
     text = _ENTRYPOINT.read_text(encoding="utf-8")
-    probe_start = text.index("_workflow_bash_path()")
+    probe_start = text.index("_tinyassets_bash_path()")
     probe_text = text[probe_start:text.index('exec "$@"', probe_start)]
 
     assert "python" not in probe_text.lower()
@@ -223,40 +228,40 @@ def test_systemd_unit_execstartpre_emits_canonical_marker():
 
 def test_deploy_prod_yaml_sed_sites_emit_canonical_marker():
     """Helper-mediated invariant: every env-mutation site in the YAML
-    invokes ``deploy/install-workflow-env.sh``, and the helper itself
+    invokes ``deploy/install-tinyassets-env.sh``, and the helper itself
     emits the canonical ``ENV-UNREADABLE`` marker on the readability
     failure path.
 
     Task #9 Fix A centralized the marker into
-    ``deploy/install-workflow-env.sh::assert_readable()`` — replacing
+    ``deploy/install-tinyassets-env.sh::assert_readable()`` — replacing
     the prior pattern of three inline marker emits in deploy-prod.yml
     (scrub + deploy heredoc + rollback heredoc). The standalone
-    "Assert /etc/workflow/env readable by daemon user" step in the
+    "Assert /etc/tinyassets/env readable by daemon user" step in the
     YAML still emits the marker directly. So the new invariant is
     cross-file: YAML invokes the helper from each mutation site AND
     the helper file contains the marker.
     """
     yaml_text = _DEPLOY_YAML.read_text(encoding="utf-8")
-    helper_path = _REPO / "deploy" / "install-workflow-env.sh"
+    helper_path = _REPO / "deploy" / "install-tinyassets-env.sh"
     helper_text = helper_path.read_text(encoding="utf-8")
 
     # Cross-file: helper carries the marker on its readability-fail path.
     assert CANONICAL_MARKER in helper_text, (
-        f"deploy/install-workflow-env.sh must contain the canonical "
+        f"deploy/install-tinyassets-env.sh must contain the canonical "
         f"{CANONICAL_MARKER!r} marker so post-write readability failures "
         f"surface in journalctl with the same token as the standalone "
         f"assertions and the entrypoint."
     )
 
     # Within YAML: every env-mutation site routes through the helper.
-    # Three known mutation sites (scrub WORKFLOW_WIKI_PATH + deploy pin + rollback)
+    # Three known mutation sites (scrub TINYASSETS_WIKI_PATH + deploy pin + rollback)
     # plus the standalone assertion step that still inlines the marker.
-    helper_invocations = yaml_text.count("install-workflow-env.sh")
+    helper_invocations = yaml_text.count("install-tinyassets-env.sh")
     assert helper_invocations >= 3, (
-        f"expected ≥3 invocations of install-workflow-env.sh in "
+        f"expected ≥3 invocations of install-tinyassets-env.sh in "
         f"deploy-prod.yml (scrub + deploy + rollback); got "
         f"{helper_invocations}. A new sed-i site that mutates "
-        f"/etc/workflow/env without going through the helper would "
+        f"/etc/tinyassets/env without going through the helper would "
         f"reintroduce the 2026-04-21 P0 perm-regression class."
     )
 
@@ -295,8 +300,8 @@ def test_triage_detection_delegates_to_classifier_module():
 def test_triage_auto_repair_runs_chown_chmod():
     text = _TRIAGE_YAML.read_text(encoding="utf-8")
     # The auto-repair must apply the exact mitigation.
-    assert "chown root:workflow /etc/workflow/env" in text
-    assert "chmod 640 /etc/workflow/env" in text
+    assert "chown root:tinyassets /etc/tinyassets/env" in text
+    assert "chmod 640 /etc/tinyassets/env" in text
 
 
 def test_triage_auto_repair_is_gated_on_env_class():
@@ -347,7 +352,7 @@ def test_triage_auto_repair_is_gated_on_env_class():
         run = str(other.get("run", ""))
         # Allow chown in the `image_pull_failure` repair step too — that
         # step correctly maintains the Task #3 ENV-UNREADABLE invariant
-        # after its own sed on /etc/workflow/env (cross-referential: if
+        # after its own sed on /etc/tinyassets/env (cross-referential: if
         # the sed clobbers perms, chown+chmod+test-r restores them, and
         # the next triage tick's env_unreadable branch catches any miss).
         other_name = other.get("name", "")
@@ -355,8 +360,8 @@ def test_triage_auto_repair_is_gated_on_env_class():
            "image_pull_failure" in other_name.lower() or \
            "fall back to :latest" in other_name.lower():
             continue
-        assert "chown root:workflow /etc/workflow/env" not in run, (
-            f"chown root:workflow /etc/workflow/env leaked outside the "
+        assert "chown root:tinyassets /etc/tinyassets/env" not in run, (
+            f"chown root:tinyassets /etc/tinyassets/env leaked outside the "
             f"ENV-UNREADABLE gate into step {other.get('name')!r}"
         )
 

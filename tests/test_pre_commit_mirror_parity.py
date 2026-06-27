@@ -2,7 +2,7 @@
 
 Creates a throwaway git repo, installs the hook, and drives two scenarios:
 
-1. Canonical workflow/ file changes staged alone → hook rejects.
+1. Canonical tinyassets/ file changes staged alone → hook rejects.
 2. Canonical + mirror both staged with matching bytes → hook passes.
 
 These are full-integration tests (real git, real bash-invoked hook) —
@@ -59,9 +59,9 @@ def _init_repo(tmp_path: Path) -> Path:
     )
 
     # Stage the same directory layout the hook expects.
-    (repo / "workflow").mkdir()
+    (repo / "tinyassets").mkdir()
     mirror = repo / (
-        "packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow"
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets"
     )
     mirror.mkdir(parents=True)
     (repo / ".agents" / "skills").mkdir(parents=True)
@@ -99,15 +99,15 @@ def test_mirror_mismatch_rejects_commit(tmp_path):
     """Canonical file staged without mirror update → hook exits non-zero."""
     repo = _init_repo(tmp_path)
 
-    canon = repo / "workflow" / "sample.py"
+    canon = repo / "tinyassets" / "sample.py"
     canon.write_text("x = 1\n", encoding="utf-8")
     mirror = repo / (
-        "packaging/claude-plugin/plugins/workflow-universe-server/runtime/"
-        "workflow/sample.py"
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
+        "tinyassets/sample.py"
     )
     mirror.write_text("x = 2\n", encoding="utf-8")  # intentionally diverged
 
-    subprocess.run(["git", "add", "workflow/sample.py"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "tinyassets/sample.py"], cwd=repo, check=True)
 
     result = _run_commit(repo, "should fail")
 
@@ -122,18 +122,18 @@ def test_mirror_match_passes_commit(tmp_path):
     """Canonical + byte-identical mirror staged together → commit succeeds."""
     repo = _init_repo(tmp_path)
 
-    canon = repo / "workflow" / "sample.py"
+    canon = repo / "tinyassets" / "sample.py"
     canon.write_text("x = 1\n", encoding="utf-8")
     mirror = repo / (
-        "packaging/claude-plugin/plugins/workflow-universe-server/runtime/"
-        "workflow/sample.py"
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
+        "tinyassets/sample.py"
     )
     mirror.write_text("x = 1\n", encoding="utf-8")  # byte-equal
 
     subprocess.run(
-        ["git", "add", "workflow/sample.py",
-         "packaging/claude-plugin/plugins/workflow-universe-server/runtime/"
-         "workflow/sample.py"],
+        ["git", "add", "tinyassets/sample.py",
+         "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
+         "tinyassets/sample.py"],
         cwd=repo, check=True,
     )
 
@@ -146,7 +146,7 @@ def test_mirror_match_passes_commit(tmp_path):
 
 
 def test_no_canonical_change_passes_trivially(tmp_path):
-    """Staging a non-workflow/ file never touches the mirror gate."""
+    """Staging a non-tinyassets/ file never touches the mirror gate."""
     repo = _init_repo(tmp_path)
 
     (repo / "docs.md").write_text("docs\n", encoding="utf-8")
@@ -155,7 +155,7 @@ def test_no_canonical_change_passes_trivially(tmp_path):
     result = _run_commit(repo, "docs only")
 
     assert result.returncode == 0, (
-        f"Hook must pass when no canonical workflow/ changed. "
+        f"Hook must pass when no canonical tinyassets/ changed. "
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
 
@@ -169,11 +169,11 @@ def test_canonical_file_without_mirror_counterpart_is_allowed(tmp_path):
     """
     repo = _init_repo(tmp_path)
 
-    canon = repo / "workflow" / "brand_new.py"
+    canon = repo / "tinyassets" / "brand_new.py"
     canon.write_text("# new module\n", encoding="utf-8")
     # Note: NO mirror file created.
 
-    subprocess.run(["git", "add", "workflow/brand_new.py"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "tinyassets/brand_new.py"], cwd=repo, check=True)
 
     result = _run_commit(repo, "new module without mirror yet")
 
@@ -187,15 +187,15 @@ def test_no_verify_override_always_succeeds(tmp_path):
     """`--no-verify` must bypass the hook even when mirror mismatches."""
     repo = _init_repo(tmp_path)
 
-    canon = repo / "workflow" / "sample.py"
+    canon = repo / "tinyassets" / "sample.py"
     canon.write_text("x = 1\n", encoding="utf-8")
     mirror = repo / (
-        "packaging/claude-plugin/plugins/workflow-universe-server/runtime/"
-        "workflow/sample.py"
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
+        "tinyassets/sample.py"
     )
     mirror.write_text("x = 2\n", encoding="utf-8")
 
-    subprocess.run(["git", "add", "workflow/sample.py"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "tinyassets/sample.py"], cwd=repo, check=True)
 
     result = subprocess.run(
         ["git", "commit", "-q", "--no-verify", "-m", "override"],

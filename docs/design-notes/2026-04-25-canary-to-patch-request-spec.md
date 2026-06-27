@@ -247,7 +247,7 @@ file_or_cosign(
 
 - Existing canary scripts: `scripts/mcp_public_canary.py`, `scripts/uptime_canary.py`, `scripts/uptime_canary_layer2.py`, `scripts/wiki_canary.py`, `scripts/mcp_tool_canary.py`, `scripts/revert_loop_canary.py`.
 - Log surface: `.agents/uptime.log`, `.agents/uptime_alarms.log` (today's WATCHDOG_RESTART pattern is the precedent for structured event lines).
-- File_bug primitive: `workflow/universe_server.py:13102` (`_wiki_file_bug`), `:13025` (`_wiki_cosign_bug`).
+- File_bug primitive: `tinyassets/universe_server.py:13102` (`_wiki_file_bug`), `:13025` (`_wiki_cosign_bug`).
 - Probe catalog: `docs/ops/acceptance-probe-catalog.md`.
 - Roadmap: `docs/design-notes/2026-04-25-primitive-shipment-roadmap.md` Phase C item 14.
 - v1 vision: `docs/design-notes/2026-04-25-self-evolving-platform-vision.md` §3 (auto-heal as canary trigger surface).

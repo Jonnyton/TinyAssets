@@ -3,7 +3,7 @@
 - **Status:** Proposed (design). Host-ratified principles 2026-06-25/26. Opposite-provider review (Codex) = **ADAPT, blocking** — folded (§8). **AS provider decided 2026-06-26: WorkOS AuthKit (managed) — §3.0; resolves the §2 auth-subject crux + §6 Q1.** Spec currency: tracks MCP auth **2025-11-25** (DCR→CIMD) + **EMA stable 2026-06-18**, not only the 2025-06-18 revision §1 was first drafted against.
 - **Author:** Claude Code session (host design dialogue 2026-06-26).
 - **Upstream of:** the blank-slate universe brain (`2026-06-25-blank-slate-universe-brain.md`). The persona can only "align with its founder" once a founder identity exists.
-- **Touches:** `workflow/auth/*` (provider, middleware, wellknown), `workflow/api/engine_helpers.py`, `workflow/api/universe.py`, `workflow/api/helpers.py`, `workflow/api/status.py`, `workflow/universe_server.py` (`create_streamable_http_app`), `fantasy_daemon/__main__.py` (the single-universe loop), `deploy/cloudflare-worker/worker.js`.
+- **Touches:** `tinyassets/auth/*` (provider, middleware, wellknown), `tinyassets/api/engine_helpers.py`, `tinyassets/api/universe.py`, `tinyassets/api/helpers.py`, `tinyassets/api/status.py`, `tinyassets/universe_server.py` (`create_streamable_http_app`), `fantasy_daemon/__main__.py` (the single-universe loop), `deploy/cloudflare-worker/worker.js`.
 
 ---
 
@@ -20,7 +20,7 @@ is no founder to align with. This is upstream of the persona work.
   forwards `Authorization` (only hop-by-hop headers stripped; CF-Access service-token
   headers added for the Worker itself). `worker.test.js` asserts it. **Not the gap.**
 - ❌ **Gap 0 (deepest) — the OAuth flow never captures a real user subject.** The
-  daemon's OAuth (`workflow/auth/provider.py`) is DCR + token issuance, but
+  daemon's OAuth (`tinyassets/auth/provider.py`) is DCR + token issuance, but
   `authorization_codes.user_id` **defaults to `"anonymous"`**, `create_authorization()`
   inserts no human subject, and token exchange copies that anonymous value into the
   access token. So `resolve_token()` returns a *stable* id that is **structurally
@@ -56,7 +56,7 @@ server validates it against WorkOS's JWKS. **`sub` = the founder key.**
   plumbing, SAML/SCIM, the EMA/ID-JAG extension) is a long-term security liability; managed
   is the industry standard + where it's going, and is *less* code than self-hosting. (Host
   principle: build the known long-term design, not the easy reuse of the existing
-  `workflow/auth` AS code.)
+  `tinyassets/auth` AS code.)
 - **Why WorkOS (head-to-head 2026-06-25, vs Auth0 + 7 others):** $0 + no credit card now,
   **1M MAU free incl. social login**, a production "AuthKit for MCP" AS, **CIMD** (the
   post-DCR client-identity model from the 2025-11-25 spec), SAML/SCIM ready for enterprise
@@ -68,7 +68,7 @@ server validates it against WorkOS's JWKS. **`sub` = the founder key.**
   Resource Server stays insulated and the AS is swappable later; the only real switching
   cost is the identity store (`sub`s) — identical for any managed AS, which is why we pick
   one that covers both horizons up front.
-- **What `workflow/auth` becomes:** the self-issued anonymous-subject provider
+- **What `tinyassets/auth` becomes:** the self-issued anonymous-subject provider
   (`provider.py`) is no longer the production identity source — retire it or demote it to
   local-dev only; production identity comes from WorkOS. (Slice-1 work.)
 - **Implementation recipe → `docs/reference/workos-authkit-integration.md`** (token
@@ -87,7 +87,7 @@ server validates it against WorkOS's JWKS. **`sub` = the founder key.**
   **nothing**. We need a **third mode**: *resolve the bearer when present, allow
   anonymous READS, enforce named scopes only on writes/costly/admin.*
 - **Scopes — the taxonomy ALREADY EXISTS (verified 2026-06-26); do NOT rebuild it.**
-  `workflow/auth/provider.py` `build_action_scope_registry()` already maps every
+  `tinyassets/auth/provider.py` `build_action_scope_registry()` already maps every
   `{tool}.{action}` → a read/write/costly/admin effect with
   `oauth_scope = workflow.{tool}.{effect}`, incl. `_UNIVERSE_COSTLY_ACTIONS`
   (create_universe, post_to_goal_pool, submit_node_bid, daemon_create/summon,
@@ -145,7 +145,7 @@ explicitly out of scope for this note's read-side routing.
 | Area | Today | Direction |
 |---|---|---|
 | OAuth flow | issues anonymous-subject tokens; routes maybe unmounted | **WorkOS AuthKit = the AS** (upstream Google/GitHub OIDC → real `sub`); our server = Resource Server validating WorkOS JWTs vs JWKS; retire/demote self-issued anon provider |
-| `workflow/auth` modes | gated (rejects anon) / optional (enforces nothing) | New mode: resolve-always, anon reads, enforce named scopes on writes/costly/admin |
+| `tinyassets/auth` modes | gated (rejects anon) / optional (enforces nothing) | New mode: resolve-always, anon reads, enforce named scopes on writes/costly/admin |
 | Scopes | coarse `read write` | `workflow.universe.read/write/costly` taxonomy + OAuth grants that match |
 | Universe ACL | only private universes gated | Founder field + founder-only-write policy; public reads stay open |
 | `create_universe` | caller id; no founder; not gated | OAuth-gated; serial id; record `founder = real user_id`; seed blank self-model |
@@ -173,7 +173,7 @@ flag, then founder metadata, then routing.
 1. **Adopt WorkOS AuthKit as the AS (auth-subject proof).** Integrate WorkOS AuthKit as the
    separate Authorization Server with upstream Google/GitHub OIDC; make our MCP server a
    Resource Server that validates AuthKit JWTs against WorkOS's JWKS so `resolve_token()`
-   returns a real `sub`; retire/demote the self-issued anonymous provider in `workflow/auth`.
+   returns a real `sub`; retire/demote the self-issued anonymous provider in `tinyassets/auth`.
    Live proof: an authenticated claude.ai session yields a non-anonymous `account_user`.
    *(Blocks everything. AS-provider decision made; integration is the build.)*
 2. **New capability mode.** Resolve-always + anonymous-reads + enforce named scopes on

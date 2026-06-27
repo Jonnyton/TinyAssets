@@ -53,10 +53,10 @@ Workflow on fail:
 ssh root@<drill-ip>
 
 # Check compose status.
-docker compose -f /opt/workflow/deploy/compose.yml ps
+docker compose -f /opt/tinyassets/deploy/compose.yml ps
 
 # Tail daemon logs.
-docker compose -f /opt/workflow/deploy/compose.yml logs daemon --tail 50
+docker compose -f /opt/tinyassets/deploy/compose.yml logs daemon --tail 50
 
 # Probe locally.
 curl -s -X POST http://127.0.0.1:8001/mcp \

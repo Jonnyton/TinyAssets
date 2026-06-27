@@ -1,4 +1,4 @@
-"""Tests for workflow_tray.UniverseServerManager multi-provider lifecycle.
+"""Tests for tinyassets_tray.UniverseServerManager multi-provider lifecycle.
 
 Exercises the parts of the tray that don't depend on pystray event loops:
 constraint enforcement, lifecycle bookkeeping, auto-start ordering,
@@ -15,12 +15,12 @@ from typing import Any
 
 import pytest
 
-# workflow_tray imports PIL + pystray at module load. Skip if unavailable.
+# tinyassets_tray imports PIL + pystray at module load. Skip if unavailable.
 pystray = pytest.importorskip("pystray")  # noqa: F841
 PIL = pytest.importorskip("PIL")  # noqa: F841
 
-import workflow_tray  # noqa: E402
-from workflow import preferences  # noqa: E402
+import tinyassets_tray  # noqa: E402
+from tinyassets import preferences  # noqa: E402
 
 
 class FakePopen:
@@ -73,19 +73,19 @@ def mgr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     # Pin data_dir() to tmp so marker + universe dirs live under a
     # throwaway root. Post-Task-#7 the tray reads ``data_dir()`` rather
-    # than ``PROJECT_DIR / "output"`` — we set WORKFLOW_DATA_DIR so the
+    # than ``PROJECT_DIR / "output"`` — we set TINYASSETS_DATA_DIR so the
     # tray's internal ``_data_dir()`` resolves into tmp.
     data_root = tmp_path / "data"
     data_root.mkdir()
     (data_root / "testverse").mkdir()
     (data_root / ".active_universe").write_text("testverse", encoding="utf-8")
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(data_root))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
 
     # Still redirect PROJECT_DIR + LOG_DIR to tmp for tray-local state
     # (singleton lock, log files, script lookup) that is intentionally
     # install-anchored, not data-anchored.
-    monkeypatch.setattr(workflow_tray, "PROJECT_DIR", tmp_path)
-    monkeypatch.setattr(workflow_tray, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(tinyassets_tray, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(tinyassets_tray, "LOG_DIR", tmp_path / "logs")
 
     # Patch spawn machinery so nothing real boots.
     spawned: list[dict[str, Any]] = []
@@ -97,11 +97,11 @@ def mgr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     def fake_open(path, *_args, **_kwargs):
         return FakeLog()
 
-    monkeypatch.setattr(workflow_tray.subprocess, "Popen", fake_popen)
-    # Replace the global `open` workflow_tray uses for log handles.
+    monkeypatch.setattr(tinyassets_tray.subprocess, "Popen", fake_popen)
+    # Replace the global `open` tinyassets_tray uses for log handles.
     monkeypatch.setattr("builtins.open", fake_open, raising=False)
 
-    m = workflow_tray.UniverseServerManager()
+    m = tinyassets_tray.UniverseServerManager()
     m._spawn_log = spawned  # test-visible handle
     yield m
     preferences.reset_cache()
@@ -112,7 +112,7 @@ def mgr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 # ---------------------------------------------------------------------------
 
 
-def test_start_refuses_unknown_provider(mgr: workflow_tray.UniverseServerManager) -> None:
+def test_start_refuses_unknown_provider(mgr: tinyassets_tray.UniverseServerManager) -> None:
     assert mgr.start_daemon_for("bogus-provider") is False
     assert mgr.daemon_procs == {}
 
@@ -129,11 +129,11 @@ def test_start_allows_duplicate_subscription_provider_with_warning(mgr) -> None:
 def test_start_refuses_second_local_provider(mgr, monkeypatch) -> None:
     # Pretend there's a second local provider registered.
     monkeypatch.setattr(
-        workflow_tray, "_LOCAL_PROVIDER_SET", {"ollama-local", "fake-local"}
+        tinyassets_tray, "_LOCAL_PROVIDER_SET", {"ollama-local", "fake-local"}
     )
     monkeypatch.setattr(
-        workflow_tray, "ALL_PROVIDERS",
-        workflow_tray.ALL_PROVIDERS + ["fake-local"],
+        tinyassets_tray, "ALL_PROVIDERS",
+        tinyassets_tray.ALL_PROVIDERS + ["fake-local"],
     )
     assert mgr.start_daemon_for("ollama-local") is True
     assert mgr.start_daemon_for("fake-local") is False
@@ -268,16 +268,16 @@ def test_spawn_passes_provider_flag_and_env(mgr) -> None:
     assert "--provider" in record["cmd"]
     flag_idx = record["cmd"].index("--provider")
     assert record["cmd"][flag_idx + 1] == "claude-code"
-    assert record["kwargs"]["env"]["WORKFLOW_PIN_WRITER"] == "claude-code"
-    assert record["kwargs"]["env"]["WORKFLOW_DAEMON_INSTANCE_KEY"] == "claude-code"
+    assert record["kwargs"]["env"]["TINYASSETS_PIN_WRITER"] == "claude-code"
+    assert record["kwargs"]["env"]["TINYASSETS_DAEMON_INSTANCE_KEY"] == "claude-code"
     # Task #7: daemon child must inherit the tray's data_dir() as an
-    # absolute WORKFLOW_DATA_DIR, not a CWD-relative path. Previously
-    # the tray set WORKFLOW_DATA_DIR="output" which drifted whenever
+    # absolute TINYASSETS_DATA_DIR, not a CWD-relative path. Previously
+    # the tray set TINYASSETS_DATA_DIR="output" which drifted whenever
     # tray CWD != data_dir().
     env = record["kwargs"]["env"]
-    assert "WORKFLOW_DATA_DIR" in env
-    assert Path(env["WORKFLOW_DATA_DIR"]).is_absolute()
-    assert env.get("WORKFLOW_DATA_DIR", None) != "output", (
+    assert "TINYASSETS_DATA_DIR" in env
+    assert Path(env["TINYASSETS_DATA_DIR"]).is_absolute()
+    assert env.get("TINYASSETS_DATA_DIR", None) != "output", (
         "CWD-relative literal must not leak to child"
     )
 
@@ -341,16 +341,16 @@ def test_active_universe_falls_back_to_enumeration_in_data_dir(
     (premise_verse / "PROGRAM.md").write_text("hello", encoding="utf-8")
     # No .active_universe marker on purpose.
 
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(data_root))
-    monkeypatch.setattr(workflow_tray, "PROJECT_DIR", tmp_path)
-    monkeypatch.setattr(workflow_tray, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    monkeypatch.setattr(tinyassets_tray, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(tinyassets_tray, "LOG_DIR", tmp_path / "logs")
 
-    monkeypatch.setattr(workflow_tray.subprocess, "Popen",
+    monkeypatch.setattr(tinyassets_tray.subprocess, "Popen",
                         lambda *_a, **_k: FakePopen())
     monkeypatch.setattr("builtins.open",
                         lambda *_a, **_k: FakeLog(), raising=False)
 
-    m = workflow_tray.UniverseServerManager()
+    m = tinyassets_tray.UniverseServerManager()
     assert m._active_universe == "premise-verse"
 
 

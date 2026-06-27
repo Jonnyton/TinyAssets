@@ -166,7 +166,7 @@ Recommendation surfaces to host via next §11 host-Q digest update as HIGH confi
 
 - **Whether to add a `current_persona_hint` field to any platform-side schema** — explicitly out of scope; per §4-§5, the chatbot's contextual inference is not platform identity state.
 - **Whether Person B's data should be visibility-isolated from Person A's** — that's the per-piece chatbot-judged privacy primitive (`project_privacy_per_piece_chatbot_judged.md`), unchanged by anything here.
-- **What the Workflow platform does about sharing/family-account economics** (one paid host slot serving multiple users, etc.) — pure product question, not UX.
+- **What the TinyAssets platform does about sharing/family-account economics** (one paid host slot serving multiple users, etc.) — pure product question, not UX.
 - **The exact wording of the chatbot's narrate-and-act sentences** — that's a copy iteration job for the next user-sim live test, not a design-note call.
 
 These would each become real questions if we shipped §5.2 (the persona-hint tool) — listing them so future-us doesn't think they're forgotten.

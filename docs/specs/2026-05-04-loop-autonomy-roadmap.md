@@ -176,7 +176,7 @@ daemon may generate work. Simulation must use the real user path:
 
 1. Observe that no claimable work has existed for `empty_queue_threshold`.
 2. Spawn a synthetic user-sim conversation in a real chatbot surface with the
-   Workflow connector installed.
+   TinyAssets connector installed.
 3. Ask the chatbot to inspect loop state through normal MCP tools.
 4. File self-improvement candidates through the same chatbot/request path that
    real users use.
@@ -189,7 +189,7 @@ whether the public user path is strong enough for the loop to improve itself.
 ## Implementation Plan
 
 1. Phase 2 / Step 3: loop-created PRs via GitHub API from `auto-change/*`
-   branches, behind `WORKFLOW_AUTO_SHIP_PR_CREATE_ENABLED=false` by default.
+   branches, behind `TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED=false` by default.
 2. Phase 3 / Step 4: auto-merge action that polls GitHub approval state,
    re-checks the safety envelope, checks branch protection/CI, and merges only
    when policy allows.

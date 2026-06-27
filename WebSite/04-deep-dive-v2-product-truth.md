@@ -128,8 +128,8 @@ bisect-on-canary + atomic surgical rollback if regression
 |---|---|---|
 | **`tinyassets.io/mcp` URL** (paste into Claude.ai connectors) | T1 zero-install | **Live** |
 | **MCPB bundle** (one-click installer that registers as MCP server locally) | T1 alternative | `packaging/mcpb/` |
-| **Claude plugin** (registers as marketplace-listed plugin in Claude.ai) | T1 polish | `packaging/claude-plugin/plugins/workflow-universe-server/` |
-| **Tray app** (Windows .exe / macOS .dmg / Linux .deb + .AppImage) | T2 daemon hosts | `workflow_tray.py`; installers from `packaging/dist/` |
+| **Claude plugin** (registers as marketplace-listed plugin in Claude.ai) | T1 polish | `packaging/claude-plugin/plugins/tinyassets-universe-server/` |
+| **Tray app** (Windows .exe / macOS .dmg / Linux .deb + .AppImage) | T2 daemon hosts | `tinyassets_tray.py`; installers from `packaging/dist/` |
 | **`pip install -e .[dev]`** (clone + Python toolchain) | T3 contributors | `pyproject.toml` |
 | **Registry server.json** | discovery / Claude.ai | `packaging/registry/` |
 

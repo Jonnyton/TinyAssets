@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
@@ -24,9 +24,9 @@ from workflow.branches import (
 def runner_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -47,7 +47,7 @@ def _run_and_wait(us, *, timeout: float = 30.0, **kwargs):
     result = _call(us, "run_branch", **kwargs)
     if "run_id" not in result:
         return result
-    from workflow.runs import wait_for
+    from tinyassets.runs import wait_for
 
     wait_for(result["run_id"], timeout=timeout)
     snapshot = _call(us, "get_run", run_id=result["run_id"])
@@ -91,7 +91,7 @@ def _build_recipe_branch(us) -> str:
 
 
 def test_compiler_rejects_invalid_branch(tmp_path):
-    from workflow.graph_compiler import CompilerError, compile_branch
+    from tinyassets.graph_compiler import CompilerError, compile_branch
 
     b = BranchDefinition(name="")  # no name, no nodes
     with pytest.raises(CompilerError):
@@ -99,7 +99,7 @@ def test_compiler_rejects_invalid_branch(tmp_path):
 
 
 def test_compiler_rejects_unapproved_source_code():
-    from workflow.graph_compiler import UnapprovedNodeError, compile_branch
+    from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
 
     b = BranchDefinition(name="test", entry_point="only")
     b.node_defs = [NodeDefinition(
@@ -119,7 +119,7 @@ def test_compiler_rejects_unapproved_source_code():
 def test_compiler_accepts_approved_source_code():
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     b = BranchDefinition(name="test", entry_point="only")
     b.node_defs = [NodeDefinition(
@@ -144,8 +144,8 @@ def test_compiler_accepts_approved_source_code():
 def test_source_code_node_can_call_allowed_mcp_action(monkeypatch):
     from langgraph.checkpoint.memory import InMemorySaver
 
-    import workflow.api.market as market
-    from workflow.graph_compiler import compile_branch
+    import tinyassets.api.market as market
+    from tinyassets.graph_compiler import compile_branch
 
     calls: list[tuple[str, dict]] = []
 
@@ -194,8 +194,8 @@ def test_source_code_node_can_call_allowed_mcp_action(monkeypatch):
 def test_source_code_node_rejects_mcp_action_not_in_tools_allowed(monkeypatch):
     from langgraph.checkpoint.memory import InMemorySaver
 
-    import workflow.api.market as market
-    from workflow.graph_compiler import CompilerError, compile_branch
+    import tinyassets.api.market as market
+    from tinyassets.graph_compiler import CompilerError, compile_branch
 
     def fake_goals(*, action: str, **kwargs):
         raise AssertionError("disallowed MCP action should not dispatch")
@@ -231,8 +231,8 @@ def test_source_code_node_rejects_mcp_action_not_in_tools_allowed(monkeypatch):
 def test_source_code_node_can_call_wiki_read(monkeypatch):
     from langgraph.checkpoint.memory import InMemorySaver
 
-    import workflow.api.wiki as wiki_mod
-    from workflow.graph_compiler import compile_branch
+    import tinyassets.api.wiki as wiki_mod
+    from tinyassets.graph_compiler import compile_branch
 
     calls: list[tuple[str, dict]] = []
 
@@ -277,8 +277,8 @@ def test_source_code_node_can_call_wiki_read(monkeypatch):
 def test_source_code_node_cannot_call_wiki_write(monkeypatch):
     from langgraph.checkpoint.memory import InMemorySaver
 
-    import workflow.api.wiki as wiki_mod
-    from workflow.graph_compiler import CompilerError, compile_branch
+    import tinyassets.api.wiki as wiki_mod
+    from tinyassets.graph_compiler import CompilerError, compile_branch
 
     def fake_wiki(*, action: str, **kwargs):
         raise AssertionError("wiki write must not dispatch from a node")
@@ -315,9 +315,9 @@ def test_source_code_node_cannot_call_wiki_write(monkeypatch):
 def test_node_wiki_dispatch_blocks_write_even_if_aliased(monkeypatch):
     from langgraph.checkpoint.memory import InMemorySaver
 
-    import workflow.api.wiki as wiki_mod
-    import workflow.graph_compiler as gc
-    from workflow.graph_compiler import CompilerError, compile_branch
+    import tinyassets.api.wiki as wiki_mod
+    import tinyassets.graph_compiler as gc
+    from tinyassets.graph_compiler import CompilerError, compile_branch
 
     def fake_wiki(*, action: str, **kwargs):
         raise AssertionError("wiki write must not dispatch from a node")
@@ -356,7 +356,7 @@ def test_node_wiki_dispatch_blocks_write_even_if_aliased(monkeypatch):
 
 
 def test_branch_spec_preserves_tools_allowed():
-    from workflow.api.branches import _apply_node_spec
+    from tinyassets.api.branches import _apply_node_spec
 
     branch = BranchDefinition(name="test")
     err = _apply_node_spec(branch, {
@@ -374,7 +374,7 @@ def test_compiler_synthesized_typeddict_reducer_append():
     """state_schema with reducer=append should accumulate across nodes."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     b = BranchDefinition(name="accumulator", entry_point="a")
     b.node_defs = [
@@ -434,7 +434,7 @@ def _single_node_branch(template: str, output_key: str = "out") -> BranchDefinit
 def _run_and_capture(branch, inputs):
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     captured: list[str] = []
 
@@ -495,7 +495,7 @@ def test_prompt_template_missing_key_raises():
     compile time by BranchDefinition.validate() — the build-time
     layer added in the literal-brace spec. Runtime raise remains as
     the second layer if the validator is bypassed."""
-    from workflow.graph_compiler import CompilerError, compile_branch
+    from tinyassets.graph_compiler import CompilerError, compile_branch
 
     branch = _single_node_branch("Write about {missing}")
     branch.state_schema = [{"name": "out", "type": "str"}]  # no 'missing'
@@ -508,7 +508,7 @@ def test_prompt_template_missing_key_detected_for_double_brace():
     """Bug #44 cousin: ``{{missing}}`` is normalized to ``{missing}``
     before the build-time validator checks declaration, so clients
     can't silently leak Jinja-form placeholders into the LLM."""
-    from workflow.graph_compiler import CompilerError, compile_branch
+    from tinyassets.graph_compiler import CompilerError, compile_branch
 
     branch = _single_node_branch("Write about {{missing}}")
     branch.state_schema = [{"name": "out", "type": "str"}]
@@ -519,7 +519,7 @@ def test_prompt_template_missing_key_detected_for_double_brace():
 
 def test_normalize_placeholders_helper():
     """Direct unit test on the helper."""
-    from workflow.graph_compiler import _normalize_placeholders
+    from tinyassets.graph_compiler import _normalize_placeholders
 
     assert _normalize_placeholders("{x}") == "{x}"
     assert _normalize_placeholders("{{x}}") == "{x}"
@@ -534,7 +534,7 @@ def test_normalize_placeholders_helper():
 
 
 def test_execute_branch_end_to_end(tmp_path):
-    from workflow.runs import execute_branch, get_run, list_events
+    from tinyassets.runs import execute_branch, get_run, list_events
 
     b = BranchDefinition(name="test", entry_point="n1")
     b.node_defs = [NodeDefinition(
@@ -561,7 +561,7 @@ def test_execute_branch_end_to_end(tmp_path):
 
 
 def test_execute_branch_records_executor_identity_without_changing_actor(tmp_path):
-    from workflow.runs import execute_branch, get_run
+    from tinyassets.runs import execute_branch, get_run
 
     b = BranchDefinition(name="test", entry_point="n1")
     b.node_defs = [NodeDefinition(
@@ -596,7 +596,7 @@ def test_execute_branch_records_executor_identity_without_changing_actor(tmp_pat
 
 
 def test_execute_branch_reports_node_status_callback(tmp_path):
-    from workflow.runs import (
+    from tinyassets.runs import (
         NODE_STATUS_RAN,
         NODE_STATUS_RUNNING,
         execute_branch,
@@ -632,7 +632,7 @@ def test_execute_branch_reports_node_status_callback(tmp_path):
 
 
 def test_execute_branch_fails_on_compiler_error(tmp_path):
-    from workflow.runs import execute_branch
+    from tinyassets.runs import execute_branch
 
     # Missing entry point → validate() error → compiler error
     b = BranchDefinition(name="broken")
@@ -648,7 +648,7 @@ def test_execute_branch_fails_on_compiler_error(tmp_path):
 
 
 def test_execute_branch_reports_unapproved_source_code(tmp_path):
-    from workflow.runs import execute_branch
+    from tinyassets.runs import execute_branch
 
     b = BranchDefinition(name="test", entry_point="only")
     b.node_defs = [NodeDefinition(
@@ -822,7 +822,7 @@ def test_thread_isolation_between_runs(runner_env):
     rec2 = _call(us, "get_run", run_id=run2["run_id"])
     assert rec1["run_id"] != rec2["run_id"]
     # thread_id == run_id (isolation guarantee)
-    from workflow.runs import get_run as raw_get_run
+    from tinyassets.runs import get_run as raw_get_run
 
     raw1 = raw_get_run(base, run1["run_id"])
     raw2 = raw_get_run(base, run2["run_id"])
@@ -1003,7 +1003,7 @@ def test_run_branch_returns_quickly_with_queued_status(runner_env):
     assert elapsed < 2.0, f"run_branch took {elapsed:.2f}s, expected <2s"
     # Wait for the background worker to finish before leaving the test
     # so we don't leak threads into the next one.
-    from workflow.runs import wait_for
+    from tinyassets.runs import wait_for
 
     wait_for(result["run_id"], timeout=30.0)
 
@@ -1011,18 +1011,18 @@ def test_run_branch_returns_quickly_with_queued_status(runner_env):
 def test_cancel_run_interrupts_mid_flight(tmp_path):
     """Cancel requested between nodes unwinds the graph cleanly.
 
-    Works directly against ``workflow.runs`` rather than through the
+    Works directly against ``tinyassets.runs`` rather than through the
     Universe Server so the test can control node timing precisely.
     """
     import threading
 
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
         NodeDefinition,
     )
-    from workflow.runs import (
+    from tinyassets.runs import (
         execute_branch_async,
         get_run,
         request_cancel,
@@ -1080,7 +1080,7 @@ def test_cancel_run_interrupts_mid_flight(tmp_path):
     record = get_run(tmp_path, outcome.run_id)
     assert record["status"] == "cancelled"
     # n3 must NOT have emitted a 'ran' event.
-    from workflow.runs import list_events
+    from tinyassets.runs import list_events
 
     events = list_events(tmp_path, outcome.run_id)
     ran_nodes = {e["node_id"] for e in events if e["status"] == "ran"}
@@ -1089,7 +1089,7 @@ def test_cancel_run_interrupts_mid_flight(tmp_path):
 
 def test_recover_in_flight_runs_marks_running_as_interrupted(tmp_path):
     """Simulated restart: queued/running rows become 'interrupted'."""
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_RUNNING,
         create_run,
         get_run,
@@ -1117,7 +1117,7 @@ def test_recover_in_flight_runs_marks_running_as_interrupted(tmp_path):
 
 def test_recover_in_flight_runs_leaves_terminal_rows_alone(tmp_path):
     """Completed/failed/cancelled rows must NOT be re-marked."""
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_CANCELLED,
         RUN_STATUS_COMPLETED,
         RUN_STATUS_FAILED,
@@ -1137,7 +1137,7 @@ def test_recover_in_flight_runs_leaves_terminal_rows_alone(tmp_path):
 
 
 def test_latest_run_by_name_returns_newest_matching_branch_run(tmp_path):
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         create_run,
         latest_run_by_name,
@@ -1170,9 +1170,9 @@ def test_latest_run_by_name_returns_newest_matching_branch_run(tmp_path):
 
 
 def test_concurrent_cap_respected(tmp_path, monkeypatch):
-    """Custom WORKFLOW_RUN_MAX_CONCURRENT is honored."""
-    monkeypatch.setenv("WORKFLOW_RUN_MAX_CONCURRENT", "2")
-    from workflow import runs as runs_mod
+    """Custom TINYASSETS_RUN_MAX_CONCURRENT is honored."""
+    monkeypatch.setenv("TINYASSETS_RUN_MAX_CONCURRENT", "2")
+    from tinyassets import runs as runs_mod
 
     # Force executor re-init with the new env var.
     runs_mod.shutdown_executor()
@@ -1184,13 +1184,13 @@ def test_concurrent_cap_respected(tmp_path, monkeypatch):
 def test_async_run_completes_successfully(tmp_path):
     """End-to-end: execute_branch_async produces the same final output
     as the sync path, just on a worker thread."""
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
         NodeDefinition,
     )
-    from workflow.runs import (
+    from tinyassets.runs import (
         execute_branch_async,
         get_run,
         wait_for,

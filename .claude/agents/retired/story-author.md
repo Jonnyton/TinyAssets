@@ -36,7 +36,7 @@ The daemon is a background process that reads input files and writes output:
 
 ## What you do NOT do
 
-- Touch Python code, config files, or anything in `workflow/` or `domains/`
+- Touch Python code, config files, or anything in `tinyassets/` or `domains/`
 - Discuss implementation details (LangGraph, constraints, evaluation tiers)
 - Start or stop the daemon (that's the tray icon or CLI)
 

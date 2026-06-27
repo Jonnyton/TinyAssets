@@ -12,7 +12,7 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://tinyassets.io"),
   title: "Tiny — a small living engine that turns chat into finished work",
   description:
-    "Tiny is the public face of Workflow — an open-source engine you connect to your chatbot over MCP. Name a goal and it runs real multi-step work, with evidence-gated outcomes and a loop that patches the engine itself.",
+    "Tiny is the public face of TinyAssets — an open-source engine you connect to your chatbot over MCP. Name a goal and it runs real multi-step work, with evidence-gated outcomes and a loop that patches the engine itself.",
   openGraph: {
     siteName: "Tiny",
     type: "website",
@@ -37,20 +37,20 @@ const jsonLd = {
     {
       "@type": "Organization",
       "@id": "https://tinyassets.io/#org",
-      name: "Workflow",
+      name: "TinyAssets",
       alternateName: "Tiny",
       url: "https://tinyassets.io/",
       logo: "https://tinyassets.io/logo-mark.png",
-      sameAs: ["https://github.com/Jonnyton/Workflow"],
+      sameAs: ["https://github.com/Jonnyton/TinyAssets"],
     },
     {
       "@type": "WebSite",
       "@id": "https://tinyassets.io/#site",
       url: "https://tinyassets.io/",
       name: "Tiny",
-      alternateName: "Workflow",
+      alternateName: "TinyAssets",
       description:
-        "Tiny is the public face of Workflow — an open-source engine you connect to your chatbot over MCP.",
+        "Tiny is the public face of TinyAssets — an open-source engine you connect to your chatbot over MCP.",
       publisher: { "@id": "https://tinyassets.io/#org" },
     },
   ],

@@ -87,7 +87,7 @@ def test_resolve_vote_always_passes_force_true(client: TestClient) -> None:
         return {"vote_id": kwargs["vote_id"], "status": "resolved"}
 
     with patch(
-        "workflow.daemon_server.resolve_vote_if_due",
+        "tinyassets.daemon_server.resolve_vote_if_due",
         side_effect=_capture,
     ):
         response = client.post(
@@ -108,7 +108,7 @@ def test_resolve_vote_response_is_vote_wrapped(client: TestClient) -> None:
     """
     sentinel = {"vote_id": "v-123", "status": "resolved", "result": {"ok": True}}
     with patch(
-        "workflow.daemon_server.resolve_vote_if_due",
+        "tinyassets.daemon_server.resolve_vote_if_due",
         return_value=sentinel,
     ):
         response = client.post(
@@ -133,7 +133,7 @@ def test_cast_vote_response_is_vote_wrapped(client: TestClient) -> None:
     sentinel = {"ballot_id": "b-7", "vote_id": "v-123", "choice": "yes"}
 
     with patch(
-        "workflow.daemon_server.cast_vote",
+        "tinyassets.daemon_server.cast_vote",
         return_value=sentinel,
     ):
         response = client.post(
@@ -153,7 +153,7 @@ def test_cast_vote_response_is_vote_wrapped(client: TestClient) -> None:
 def test_resolve_vote_returns_404_when_not_found(client: TestClient) -> None:
     """When resolve_vote_if_due returns None, /resolve must 404."""
     with patch(
-        "workflow.daemon_server.resolve_vote_if_due",
+        "tinyassets.daemon_server.resolve_vote_if_due",
         return_value=None,
     ):
         response = client.post(
@@ -188,7 +188,7 @@ def test_cast_vote_accepts_choice_field(client: TestClient) -> None:
     sentinel = {"ballot_id": "b-9", "vote_id": "v-456", "choice": "no"}
 
     with patch(
-        "workflow.daemon_server.cast_vote",
+        "tinyassets.daemon_server.cast_vote",
         return_value=sentinel,
     ):
         response = client.post(

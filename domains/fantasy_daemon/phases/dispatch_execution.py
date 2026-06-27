@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 from domains.fantasy_daemon.work_kinds import infer_fantasy_execution_scope
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     ROLE_NOTES,
     get_target,
     write_execution_artifact,

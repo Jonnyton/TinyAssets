@@ -1,4 +1,4 @@
-"""Tests for deploy/workflow-prune.service and workflow-prune.timer.
+"""Tests for deploy/tinyassets-prune.service and tinyassets-prune.timer.
 
 Coverage:
   - Service file: Type=oneshot, docker image prune + builder prune present
@@ -12,8 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SERVICE = REPO / "deploy" / "workflow-prune.service"
-TIMER = REPO / "deploy" / "workflow-prune.timer"
+SERVICE = REPO / "deploy" / "tinyassets-prune.service"
+TIMER = REPO / "deploy" / "tinyassets-prune.timer"
 BOOTSTRAP = REPO / "deploy" / "hetzner-bootstrap.sh"
 
 
@@ -80,7 +80,7 @@ def test_timer_persistent():
 
 
 def test_timer_requires_service():
-    assert "workflow-prune.service" in _tmr()
+    assert "tinyassets-prune.service" in _tmr()
 
 
 def test_timer_wantedby_timers_target():
@@ -92,17 +92,17 @@ def test_timer_wantedby_timers_target():
 # ---------------------------------------------------------------------------
 
 def test_bootstrap_installs_prune_service():
-    assert "workflow-prune.service" in _boot()
+    assert "tinyassets-prune.service" in _boot()
 
 
 def test_bootstrap_installs_prune_timer():
-    assert "workflow-prune.timer" in _boot()
+    assert "tinyassets-prune.timer" in _boot()
 
 
 def test_bootstrap_enables_prune_timer():
-    assert "workflow-prune.timer" in _boot()
+    assert "tinyassets-prune.timer" in _boot()
     # systemctl enable --now must reference the timer
     import re
-    assert re.search(r'systemctl enable.*workflow-prune\.timer', _boot()), (
-        "bootstrap must enable --now workflow-prune.timer"
+    assert re.search(r'systemctl enable.*tinyassets-prune\.timer', _boot()), (
+        "bootstrap must enable --now tinyassets-prune.timer"
     )

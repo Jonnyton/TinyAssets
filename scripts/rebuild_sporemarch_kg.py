@@ -37,8 +37,8 @@ _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
-from workflow.ingestion.indexer import index_text  # noqa: E402
-from workflow.knowledge.knowledge_graph import KnowledgeGraph  # noqa: E402
+from tinyassets.ingestion.indexer import index_text  # noqa: E402
+from tinyassets.knowledge.knowledge_graph import KnowledgeGraph  # noqa: E402
 
 logger = logging.getLogger("rebuild_kg")
 

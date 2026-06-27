@@ -19,26 +19,26 @@ from pathlib import Path
 
 import pytest
 
-from workflow import producers as in_univ_mod
-from workflow.branch_tasks import BranchTask, new_task_id
-from workflow.producers import (
+from tinyassets import producers as in_univ_mod
+from tinyassets.branch_tasks import BranchTask, new_task_id
+from tinyassets.producers import (
     branch_task as bt_producer_mod,
 )
-from workflow.producers import (
+from tinyassets.producers import (
     producer_interface_enabled,
     register,
     registered_producers,
     reset_registry,
     run_producers,
 )
-from workflow.producers.branch_task import (
+from tinyassets.producers.branch_task import (
     register_branch_task_producer,
     registered_branch_task_producers,
     reset_branch_task_registry,
     run_branch_task_producers,
     unregister_branch_task_producer,
 )
-from workflow.work_targets import WorkTarget
+from tinyassets.work_targets import WorkTarget
 
 
 @pytest.fixture
@@ -134,13 +134,13 @@ def test_producer_interface_enabled_non_off_values_stay_on(
     strings default to on — defensive posture keeps the interface
     active under typo or deploy-env sloppiness.
     """
-    monkeypatch.setenv("WORKFLOW_PRODUCER_INTERFACE", value)
+    monkeypatch.setenv("TINYASSETS_PRODUCER_INTERFACE", value)
     assert producer_interface_enabled() is True
 
 
 def test_producer_interface_enabled_trims_whitespace_on_off(monkeypatch):
     """The off check strips+lowercases the env value."""
-    monkeypatch.setenv("WORKFLOW_PRODUCER_INTERFACE", "  OFF  ")
+    monkeypatch.setenv("TINYASSETS_PRODUCER_INTERFACE", "  OFF  ")
     assert producer_interface_enabled() is False
 
 

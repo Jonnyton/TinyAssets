@@ -8,7 +8,7 @@ shipped_in: 5fa8eda  # Phase 6.2.2: Path A — Branch visibility column + filter
 
 **Status:** Decided + landed. Path A shipped in `5fa8eda` ("Phase 6.2.2: Path A — Branch visibility column + filters") with follow-up `96a73ae` closing 2 leak sites. Tests in `tests/test_branch_visibility.py`. Retain for decision archaeology.
 **Related:** STATUS.md Work row #56 "Phase 6.2.2 — private-Branch visibility filter". Surfaced in `docs/specs/outcome_gates_phase6.md` §Open Questions (Q3, resolved default) and §Rollout (Phase 6.2 test gap). Referenced in `docs/specs/phase_h_preflight.md` §4.9 Q8 as "surface only; no design resolution."
-**Target files:** `workflow/author_server.py` (schema + branch CRUD), `workflow/universe_server.py` (action handlers that need the filter).
+**Target files:** `tinyassets/author_server.py` (schema + branch CRUD), `tinyassets/universe_server.py` (action handlers that need the filter).
 
 ## Problem
 

@@ -37,7 +37,7 @@ providers / machines.
 ## Clone + install
 
 ```bash
-git clone https://github.com/Jonnyton/Workflow
+git clone https://github.com/Jonnyton/TinyAssets
 cd Workflow
 python -m venv .venv
 # Windows: .venv\Scripts\activate
@@ -48,7 +48,7 @@ pip install -e .
 ## First run — rebuild local cache
 
 The SQLite cache (`output/` directory, `*.db` files) is NOT committed
-— it rebuilds from YAML on first run. The Workflow daemon reads both
+— it rebuilds from YAML on first run. The TinyAssets daemon reads both
 SQLite and YAML transparently; normal tool use (`extensions
 action=build_branch`, `goals action=propose`, etc.) warms the cache
 as a side-effect of writes.
@@ -57,15 +57,15 @@ An automated `rebuild-index` helper is Phase 7.2 G3 (see STATUS.md).
 Until then, a cold clone with no cache will work — the first write
 action populates what's needed.
 
-## Run the Workflow MCP server locally
+## Run the TinyAssets MCP server locally
 
 ```bash
-workflow-universe-server
+tinyassets-universe-server
 ```
 
 MCP listens on `http://localhost:8001/mcp`. Connect any MCP-compatible
 client to that URL. Other entry points in `pyproject.toml`
-`[project.scripts]`: `workflow-cli`, `workflow` (GUI tray).
+`[project.scripts]`: `tinyassets-cli`, `workflow` (GUI tray).
 
 ## Contributing back
 
@@ -83,6 +83,6 @@ Do not commit `output/` or `*.db` files; `.gitignore` excludes them.
 - **"LF will be replaced by CRLF" warnings:** run `git config --global
   core.autocrlf input`. `.gitattributes` alone isn't enough on Windows.
 - **SQLite lock errors:** one writer per DB (PLAN.md hard rule #1).
-  Don't run two Workflow MCP server processes against the same `output/` dir.
+  Don't run two TinyAssets MCP server processes against the same `output/` dir.
 - **Empty `branches/` / `goals/` / `nodes/`:** expected on a fresh
   repo today; the catalog fills up as contributors land branches.

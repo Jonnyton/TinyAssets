@@ -23,7 +23,7 @@ import time
 import uuid
 from pathlib import Path
 
-from workflow.runs import (
+from tinyassets.runs import (
     RUN_STATUS_COMPLETED,
     _connect,
     create_run,
@@ -129,7 +129,7 @@ class TestNewColumnsExist:
     def test_create_run_resolves_owner_user_id_from_daemon_registry(
         self, tmp_path: Path,
     ) -> None:
-        from workflow.daemon_registry import create_daemon
+        from tinyassets.daemon_registry import create_daemon
 
         daemon = create_daemon(
             tmp_path,

@@ -21,10 +21,10 @@ import pytest
 def gates_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base, monkeypatch
     importlib.reload(us)
@@ -365,10 +365,10 @@ def test_goals_leaderboard_outcome_gated_off(tmp_path, monkeypatch):
     """
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.delenv("GATES_ENABLED", raising=False)
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     try:
         gid = json.loads(us.goals(
@@ -457,7 +457,7 @@ def test_claim_gate_storage_raises_branch_rebind_error(gates_env):
     # directly with a divergent goal_id to probe the storage guard.
     gid_b = _call(us, "goals", "propose", name="Goal B",
                   description="")["goal"]["goal_id"]
-    from workflow.daemon_server import BranchRebindError, claim_gate
+    from tinyassets.daemon_server import BranchRebindError, claim_gate
     with pytest.raises(BranchRebindError) as exc_info:
         claim_gate(
             base,
@@ -477,7 +477,7 @@ def test_claim_gate_storage_allows_update_on_same_goal(gates_env):
     us, base, _ = gates_env
     gid, bid = _seed(us)
     _claim(us, bid, "draft_complete", "https://example.com/first")
-    from workflow.daemon_server import claim_gate
+    from tinyassets.daemon_server import claim_gate
     updated = claim_gate(
         base,
         branch_def_id=bid,
@@ -502,7 +502,7 @@ def test_claim_gate_storage_reactivates_retracted_under_new_goal(gates_env):
           reason="moving to B")
     gid_b = _call(us, "goals", "propose", name="Goal B",
                   description="")["goal"]["goal_id"]
-    from workflow.daemon_server import claim_gate
+    from tinyassets.daemon_server import claim_gate
     reactivated = claim_gate(
         base,
         branch_def_id=bid,

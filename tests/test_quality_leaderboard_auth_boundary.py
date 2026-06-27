@@ -79,7 +79,7 @@ def _mock_selector_passthrough(monkeypatch):
             ],
         }
     monkeypatch.setattr(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         _passthrough,
     )
 
@@ -87,9 +87,9 @@ def _mock_selector_passthrough(monkeypatch):
 @pytest.fixture
 def us_env(tmp_path: Path, monkeypatch):
     """Daemon env where the calling actor is ``eve`` by default."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "eve")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, tmp_path
     importlib.reload(us)
@@ -105,7 +105,7 @@ def _seed_universe(base: Path) -> dict:
     Returns a dict of useful ids: {goal_id, pub_eve, pub_bob,
     priv_alice, priv_bob_fork, child_of_pub_bob}.
     """
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         initialize_author_server,
         save_branch_definition,
         save_goal,
@@ -369,8 +369,8 @@ def test_fork_count_includes_owned_private_forks_for_owner(us_env, monkeypatch):
 def test_fork_count_unit_at_storage_layer_respects_viewer(tmp_path):
     """Direct unit on ``_fork_count`` so the regression can't slip
     through if the dispatch wiring shifts."""
-    from workflow.api.quality_leaderboard import _fork_count
-    from workflow.daemon_server import (
+    from tinyassets.api.quality_leaderboard import _fork_count
+    from tinyassets.daemon_server import (
         initialize_author_server,
         save_branch_definition,
         save_goal,
@@ -441,7 +441,7 @@ def test_build_quality_leaderboard_signature_has_no_include_private():
     a caller-controllable visibility knob without a test failure."""
     import inspect
 
-    from workflow.api.quality_leaderboard import build_quality_leaderboard
+    from tinyassets.api.quality_leaderboard import build_quality_leaderboard
     sig = inspect.signature(build_quality_leaderboard)
     assert "include_private" not in sig.parameters
     # ``viewer`` is required (no default) so callers cannot accidentally
@@ -453,7 +453,7 @@ def test_build_quality_leaderboard_signature_has_no_include_private():
 def test_recommend_parent_for_fork_signature_has_no_include_private():
     import inspect
 
-    from workflow.api.quality_leaderboard import recommend_parent_for_fork
+    from tinyassets.api.quality_leaderboard import recommend_parent_for_fork
     sig = inspect.signature(recommend_parent_for_fork)
     assert "include_private" not in sig.parameters
     assert sig.parameters["viewer"].default is inspect.Parameter.empty
@@ -498,7 +498,7 @@ def test_visibility_filter_holds_even_with_signal_rich_branches(us_env):
     seeds = _seed_universe(base)
     # Give alice's private branch a completed run + high-quality
     # judgment so it would score high if visibility were off.
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         add_judgment,
         create_run,

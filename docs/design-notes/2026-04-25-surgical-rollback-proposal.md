@@ -75,7 +75,7 @@ If any step in (1-5) fails (lock contention, missing parent, etc.), the entire t
 ### Schema additions
 
 ```sql
--- workflow/branch_versions.py — extend BRANCH_VERSIONS_SCHEMA
+-- tinyassets/branch_versions.py — extend BRANCH_VERSIONS_SCHEMA
 ALTER TABLE branch_versions ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE branch_versions ADD COLUMN rolled_back_at REAL;
 ALTER TABLE branch_versions ADD COLUMN rolled_back_by TEXT;
@@ -261,9 +261,9 @@ Each entry: `{branch_version_id, rolled_back_at, rolled_back_by, rolled_back_rea
 - Runner version-id bridge (immutable version snapshots): `docs/design-notes/2026-04-25-runner-version-id-bridge.md` (Task #54, committed `dc7d2cb`).
 - Probe catalog (canary inventory used by bisect): `docs/ops/acceptance-probe-catalog.md`.
 - Existing schema:
-  - `branch_versions` table: `workflow/branch_versions.py:25-67` — current shape, this proposal adds `status` / `rolled_back_*` / `watch_window_seconds` columns.
-  - `branch_definitions.fork_from` column: `workflow/daemon_server.py:404-411` (closure walk).
-  - `branch_versions.parent_version_id` column: `workflow/branch_versions.py:34` (closure walk).
+  - `branch_versions` table: `tinyassets/branch_versions.py:25-67` — current shape, this proposal adds `status` / `rolled_back_*` / `watch_window_seconds` columns.
+  - `branch_definitions.fork_from` column: `tinyassets/daemon_server.py:404-411` (closure walk).
+  - `branch_versions.parent_version_id` column: `tinyassets/branch_versions.py:34` (closure walk).
 - Existing canary scripts (reused by bisect):
   - `scripts/mcp_public_canary.py`
   - `scripts/uptime_canary_layer2.py`

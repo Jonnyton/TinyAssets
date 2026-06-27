@@ -2,9 +2,9 @@
 manager (no device flow, no host click).
 
 Usage:
-    python scripts/gh_seed_secret.py --repo Jonnyton/Workflow \\
-        --name DO_SSH_KEY --value-file "$HOME/.ssh/workflow_deploy_ed25519"
-    python scripts/gh_seed_secret.py --repo Jonnyton/Workflow \\
+    python scripts/gh_seed_secret.py --repo Jonnyton/TinyAssets \\
+        --name DO_SSH_KEY --value-file "$HOME/.ssh/tinyassets_deploy_ed25519"
+    python scripts/gh_seed_secret.py --repo Jonnyton/TinyAssets \\
         --name DO_DROPLET_HOST --value "161.35.237.133"
 
 Secret values never print to stdout; only the HTTP result.

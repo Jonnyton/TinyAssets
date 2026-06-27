@@ -6,10 +6,10 @@ import json
 import sqlite3
 from pathlib import Path
 
-from workflow.api import universe as universe_api
-from workflow.payments import migrate_settlement_schema
-from workflow.storage import DB_FILENAME
-from workflow.treasury import migrate_treasury_schema
+from tinyassets.api import universe as universe_api
+from tinyassets.payments import migrate_settlement_schema
+from tinyassets.storage import DB_FILENAME
+from tinyassets.treasury import migrate_treasury_schema
 
 
 def test_universe_treasury_status_is_read_only(monkeypatch, tmp_path: Path) -> None:

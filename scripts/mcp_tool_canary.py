@@ -77,7 +77,7 @@ class ToolCanaryError(Exception):
 _post = partial(
     _post_raw,
     error_factory=ToolCanaryError,
-    user_agent="workflow-mcp-tool-canary/1.0",
+    user_agent="tinyassets-mcp-tool-canary/1.0",
 )
 
 

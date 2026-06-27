@@ -1,7 +1,7 @@
 """Tests for project-scope persistent memory primitive.
 
 Covers:
-- project_memory_set / get / list storage layer (workflow/memory/project.py)
+- project_memory_set / get / list storage layer (tinyassets/memory/project.py)
 - MCP action handlers via extensions() routing (project_memory_set/get/list)
 - Cross-project isolation
 - Size-cap rejection
@@ -23,21 +23,21 @@ class TestProjectMemorySet:
         return tmp_path
 
     def test_set_returns_ok_status(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_set
+        from tinyassets.memory.project import project_memory_set
 
         result = project_memory_set(tmp_path, project_id="proj1", key="k1", value="hello")
         assert result["status"] == "ok"
         assert result["version"] == 1
 
     def test_set_increments_version(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_set
+        from tinyassets.memory.project import project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k1", value="v1")
         result = project_memory_set(tmp_path, project_id="proj1", key="k1", value="v2")
         assert result["version"] == 2
 
     def test_set_accepts_dict_value(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_get, project_memory_set
+        from tinyassets.memory.project import project_memory_get, project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k1", value={"a": 1, "b": [2, 3]})
         row = project_memory_get(tmp_path, project_id="proj1", key="k1")
@@ -45,7 +45,7 @@ class TestProjectMemorySet:
         assert row["value"] == {"a": 1, "b": [2, 3]}
 
     def test_set_version_conflict_returns_conflict(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_set
+        from tinyassets.memory.project import project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k1", value="v1")
         result = project_memory_set(
@@ -55,7 +55,7 @@ class TestProjectMemorySet:
         assert result["current_version"] == 1
 
     def test_set_expected_version_matches_succeeds(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_set
+        from tinyassets.memory.project import project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k1", value="v1")
         result = project_memory_set(
@@ -65,7 +65,7 @@ class TestProjectMemorySet:
         assert result["version"] == 2
 
     def test_set_size_cap_rejection(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_set
+        from tinyassets.memory.project import project_memory_set
 
         big_value = "x" * 500
         result = project_memory_set(
@@ -76,7 +76,7 @@ class TestProjectMemorySet:
         assert "value_bytes" in result
 
     def test_set_size_cap_accounts_for_replaced_key(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_set
+        from tinyassets.memory.project import project_memory_set
 
         project_memory_set(
             tmp_path, project_id="proj1", key="k1", value="x" * 900, size_cap_bytes=1000
@@ -88,7 +88,7 @@ class TestProjectMemorySet:
         assert result["status"] == "ok"
 
     def test_set_actor_stored(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_get, project_memory_set
+        from tinyassets.memory.project import project_memory_get, project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k1", value="v", actor="alice")
         row = project_memory_get(tmp_path, project_id="proj1", key="k1")
@@ -98,13 +98,13 @@ class TestProjectMemorySet:
 
 class TestProjectMemoryGet:
     def test_get_returns_none_for_missing_key(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_get
+        from tinyassets.memory.project import project_memory_get
 
         result = project_memory_get(tmp_path, project_id="proj1", key="missing")
         assert result is None
 
     def test_get_returns_stored_value(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_get, project_memory_set
+        from tinyassets.memory.project import project_memory_get, project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k1", value=42)
         row = project_memory_get(tmp_path, project_id="proj1", key="k1")
@@ -116,7 +116,7 @@ class TestProjectMemoryGet:
         assert "version" in row
 
     def test_get_returns_current_value_after_update(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_get, project_memory_set
+        from tinyassets.memory.project import project_memory_get, project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k1", value="old")
         project_memory_set(tmp_path, project_id="proj1", key="k1", value="new")
@@ -128,13 +128,13 @@ class TestProjectMemoryGet:
 
 class TestProjectMemoryList:
     def test_list_empty_when_no_keys(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_list
+        from tinyassets.memory.project import project_memory_list
 
         result = project_memory_list(tmp_path, project_id="proj1")
         assert result == []
 
     def test_list_returns_all_keys(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_list, project_memory_set
+        from tinyassets.memory.project import project_memory_list, project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="a", value=1)
         project_memory_set(tmp_path, project_id="proj1", key="b", value=2)
@@ -145,7 +145,7 @@ class TestProjectMemoryList:
         assert keys == {"a", "b", "c"}
 
     def test_list_key_prefix_filter(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_list, project_memory_set
+        from tinyassets.memory.project import project_memory_list, project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="foo/bar", value=1)
         project_memory_set(tmp_path, project_id="proj1", key="foo/baz", value=2)
@@ -155,7 +155,7 @@ class TestProjectMemoryList:
         assert all(r["key"].startswith("foo/") for r in result)
 
     def test_list_respects_limit(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_list, project_memory_set
+        from tinyassets.memory.project import project_memory_list, project_memory_set
 
         for i in range(10):
             project_memory_set(tmp_path, project_id="proj1", key=f"k{i}", value=i)
@@ -165,21 +165,21 @@ class TestProjectMemoryList:
 
 class TestCrossProjectIsolation:
     def test_get_does_not_read_other_project(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_get, project_memory_set
+        from tinyassets.memory.project import project_memory_get, project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k", value="proj1-val")
         result = project_memory_get(tmp_path, project_id="proj2", key="k")
         assert result is None
 
     def test_list_does_not_include_other_project_keys(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_list, project_memory_set
+        from tinyassets.memory.project import project_memory_list, project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k", value="v")
         result = project_memory_list(tmp_path, project_id="proj2")
         assert result == []
 
     def test_size_cap_is_per_project(self, tmp_path: Path) -> None:
-        from workflow.memory.project import project_memory_set
+        from tinyassets.memory.project import project_memory_set
 
         project_memory_set(
             tmp_path, project_id="proj1", key="k", value="x" * 900, size_cap_bytes=1000
@@ -195,7 +195,7 @@ class TestHistoryTable:
     def test_history_retains_all_writes(self, tmp_path: Path) -> None:
         import sqlite3
 
-        from workflow.memory.project import _db_path, project_memory_set
+        from tinyassets.memory.project import _db_path, project_memory_set
 
         project_memory_set(tmp_path, project_id="proj1", key="k1", value="v1")
         project_memory_set(tmp_path, project_id="proj1", key="k1", value="v2")
@@ -216,33 +216,33 @@ class TestHistoryTable:
 
 class TestExtensionsProjectMemoryGet:
     def test_missing_project_id_returns_error(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_get
+        from tinyassets.api.runtime_ops import _action_project_memory_get
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_project_memory_get({"project_id": "", "key": "k"}))
         assert "error" in result
 
     def test_missing_key_returns_error(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_get
+        from tinyassets.api.runtime_ops import _action_project_memory_get
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_project_memory_get({"project_id": "p1", "key": ""}))
         assert "error" in result
 
     def test_get_not_found_returns_found_false(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_get
+        from tinyassets.api.runtime_ops import _action_project_memory_get
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(
             _action_project_memory_get({"project_id": "proj1", "key": "missing"})
         )
         assert result["found"] is False
 
     def test_get_found_returns_found_true(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_get
-        from workflow.memory.project import project_memory_set
+        from tinyassets.api.runtime_ops import _action_project_memory_get
+        from tinyassets.memory.project import project_memory_set
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         project_memory_set(tmp_path, project_id="proj1", key="k1", value="hello")
         result = json.loads(
             _action_project_memory_get({"project_id": "proj1", "key": "k1"})
@@ -253,18 +253,18 @@ class TestExtensionsProjectMemoryGet:
 
 class TestExtensionsProjectMemorySet:
     def test_missing_project_id_returns_error(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_set
+        from tinyassets.api.runtime_ops import _action_project_memory_set
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(
             _action_project_memory_set({"project_id": "", "key": "k", "value": '"v"'})
         )
         assert "error" in result
 
     def test_set_returns_ok(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_set
+        from tinyassets.api.runtime_ops import _action_project_memory_set
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(
             _action_project_memory_set(
                 {"project_id": "proj1", "key": "k1", "value": '"hello"'}
@@ -274,12 +274,12 @@ class TestExtensionsProjectMemorySet:
         assert result["version"] == 1
 
     def test_set_with_json_value_string(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import (
+        from tinyassets.api.runtime_ops import (
             _action_project_memory_get,
             _action_project_memory_set,
         )
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _action_project_memory_set(
             {"project_id": "proj1", "key": "k1", "value": '{"x": 99}'}
         )
@@ -289,9 +289,9 @@ class TestExtensionsProjectMemorySet:
         assert result["value"] == {"x": 99}
 
     def test_set_conflict_on_wrong_version(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_set
+        from tinyassets.api.runtime_ops import _action_project_memory_set
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _action_project_memory_set(
             {"project_id": "proj1", "key": "k1", "value": '"v1"'}
         )
@@ -308,9 +308,9 @@ class TestExtensionsProjectMemorySet:
         assert result.get("conflict") is True
 
     def test_invalid_expected_version_returns_error(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_set
+        from tinyassets.api.runtime_ops import _action_project_memory_set
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(
             _action_project_memory_set(
                 {
@@ -326,25 +326,25 @@ class TestExtensionsProjectMemorySet:
 
 class TestExtensionsProjectMemoryList:
     def test_missing_project_id_returns_error(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_list
+        from tinyassets.api.runtime_ops import _action_project_memory_list
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_project_memory_list({"project_id": ""}))
         assert "error" in result
 
     def test_list_empty_project(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_list
+        from tinyassets.api.runtime_ops import _action_project_memory_list
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_project_memory_list({"project_id": "proj1"}))
         assert result["entries"] == []
         assert result["count"] == 0
 
     def test_list_returns_entries(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_list
-        from workflow.memory.project import project_memory_set
+        from tinyassets.api.runtime_ops import _action_project_memory_list
+        from tinyassets.memory.project import project_memory_set
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         project_memory_set(tmp_path, project_id="proj1", key="a", value=1)
         project_memory_set(tmp_path, project_id="proj1", key="b", value=2)
         result = json.loads(_action_project_memory_list({"project_id": "proj1"}))
@@ -352,10 +352,10 @@ class TestExtensionsProjectMemoryList:
         assert len(result["entries"]) == 2
 
     def test_list_prefix_filter_forwarded(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_project_memory_list
-        from workflow.memory.project import project_memory_set
+        from tinyassets.api.runtime_ops import _action_project_memory_list
+        from tinyassets.memory.project import project_memory_set
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         project_memory_set(tmp_path, project_id="proj1", key="foo/1", value=1)
         project_memory_set(tmp_path, project_id="proj1", key="foo/2", value=2)
         project_memory_set(tmp_path, project_id="proj1", key="bar/1", value=3)
@@ -369,8 +369,8 @@ class TestExtensionsRouting:
     def test_unknown_action_includes_project_memory_actions(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        from workflow.universe_server import extensions
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        from tinyassets.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(extensions(action="not_real_action_xyz"))
         assert "error" in result
         available = result.get("available_actions", [])
@@ -379,8 +379,8 @@ class TestExtensionsRouting:
         assert "project_memory_list" in available
 
     def test_extensions_routes_project_memory_set(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.universe_server import extensions
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        from tinyassets.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(
             extensions(
                 action="project_memory_set",
@@ -392,8 +392,8 @@ class TestExtensionsRouting:
         assert result["status"] == "ok"
 
     def test_extensions_routes_project_memory_get(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.universe_server import extensions
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        from tinyassets.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         extensions(
             action="project_memory_set",
             project_id="proj1",
@@ -407,8 +407,8 @@ class TestExtensionsRouting:
         assert result["value"] == "stored"
 
     def test_extensions_routes_project_memory_list(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.universe_server import extensions
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        from tinyassets.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         extensions(
             action="project_memory_set",
             project_id="proj1",

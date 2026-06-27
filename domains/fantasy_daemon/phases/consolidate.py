@@ -48,7 +48,7 @@ def consolidate(state: dict[str, Any]) -> dict[str, Any]:
 
     promoted_facts: list[dict[str, Any]] = []
 
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     mgr = runtime.memory_manager
     if mgr is not None:

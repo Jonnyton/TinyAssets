@@ -13,7 +13,7 @@ status: active
 
 ## 1. The gap
 
-`FactWithContext.seeded_scene` (workflow/knowledge/models.py:129) records which scene-draft seeded a fact. The `facts` table mirrors it as a column (workflow/knowledge/knowledge_graph.py:160). This lets Fix E target exactly the drift-authored facts: `DELETE FROM facts WHERE seeded_scene LIKE '%-B*-C*-S*_chunk_*'`.
+`FactWithContext.seeded_scene` (tinyassets/knowledge/models.py:129) records which scene-draft seeded a fact. The `facts` table mirrors it as a column (tinyassets/knowledge/knowledge_graph.py:160). This lets Fix E target exactly the drift-authored facts: `DELETE FROM facts WHERE seeded_scene LIKE '%-B*-C*-S*_chunk_*'`.
 
 **The `entities` and `edges` tables have no such column.** Schema at `knowledge_graph.py:116-139` shows `entities(entity_id, entity_type, access_tier, public/hidden/secret_description, aliases)` and `edges(source, target, relation_type, access_tier, temporal_scope, pov_characters, weight, valid_from/to_chapter)`. No provenance, no scene-seeding field.
 
@@ -63,6 +63,6 @@ Does the entity/edge extraction path have obvious seams to thread scene context,
 ## 6. Sources
 
 - Concern: `docs/concerns/2026-04-16-synthesis-skip-echoes.md` (Fix E scope line 105, phase-list line 125).
-- Schema: `workflow/knowledge/knowledge_graph.py:116-163` (entities/edges/facts DDL), `:174+` (Stage-2a additive-migration pattern).
-- Model: `workflow/knowledge/models.py:129` (`FactWithContext.seeded_scene`), `:157-180` (GraphEntity/GraphEdge — no seeded_scene).
-- Extraction: `workflow/knowledge/entity_extraction.py:160` (fact-level threading).
+- Schema: `tinyassets/knowledge/knowledge_graph.py:116-163` (entities/edges/facts DDL), `:174+` (Stage-2a additive-migration pattern).
+- Model: `tinyassets/knowledge/models.py:129` (`FactWithContext.seeded_scene`), `:157-180` (GraphEntity/GraphEdge — no seeded_scene).
+- Extraction: `tinyassets/knowledge/entity_extraction.py:160` (fact-level threading).

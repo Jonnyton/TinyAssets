@@ -21,9 +21,9 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -88,7 +88,7 @@ class TestUpdateNodeNameBasedRef:
             display_name="New Display Name",
         )
 
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
         branch = get_branch_definition(base, branch_def_id=bid)
         node = next(n for n in branch["node_defs"] if n["node_id"] == nid)
         assert node["display_name"] == "New Display Name"
@@ -166,6 +166,6 @@ class TestPatchBranchNameBasedRef:
             changes_json=json.dumps([{"op": "set_description", "description": "updated via name"}]),
         )
 
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
         branch = get_branch_definition(base, branch_def_id=bid)
         assert branch["description"] == "updated via name"

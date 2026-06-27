@@ -1,18 +1,19 @@
 {
   "manifest_version": "0.3",
-  "name": "workflow-universe-server",
-  "display_name": "Workflow Server",
+  "name": "tinyassets-universe-server",
+  "display_name": "TinyAssets Server",
   "version": "0.1.0",
-  "description": "Workflow / Workflow Builder — build, run, and steer custom AI agent workflows inside shared universes. Also: custom AI builder, universe builder, agent workflow platform.",
-  "long_description": "Workflow (also known as Workflow Builder, Universe Builder, or Custom AI Builder) packages a multi-universe control plane as a local MCP Bundle. Users design their own agent workflows as graphs of nodes and run autonomous daemons against them inside named 'universes'. The first-class shipped domain is long-form fiction (autonomous Author daemons writing novels); the `extensions` tool lets users register custom graph nodes for other domains. Connect by natural phrases — 'workflow builder', 'the workflow thing', 'my AI builder connector' — and this is what the user means.",
+  "description": "TinyAssets — build, run, and steer custom AI agent workflows inside shared universes. Also: custom AI builder, universe builder, agent workflow platform.",
+  "long_description": "TinyAssets packages a multi-universe control plane as a local MCP Bundle. Users design agent workflows as graphs of nodes and run autonomous daemons against them inside named universes. Tiny is the acting intelligence users talk to; TinyAssets is the platform and distribution brand. Connect by natural phrases such as 'TinyAssets', 'Tiny', 'custom AI builder', 'universe builder', or 'my AI builder connector'.",
   "author": {
     "name": "Jonathan Farnsworth"
   },
   "icon": "assets/icon.png",
   "keywords": [
     "workflow",
-    "workflow-builder",
-    "workflow-engine",
+    "tinyassets",
+    "tiny",
+    "ai-workflow",
     "custom-ai",
     "ai-builder",
     "agent-workflow",
@@ -35,7 +36,7 @@
         "${__dirname}/server.py"
       ],
       "env": {
-        "WORKFLOW_DATA_DIR": "${user_config.workflow_data_dir}",
+        "TINYASSETS_DATA_DIR": "${user_config.tinyassets_data_dir}",
         "UNIVERSE_SERVER_DEFAULT_UNIVERSE": "${user_config.default_universe}"
       }
     }
@@ -43,7 +44,7 @@
   "tools": [
     {
       "name": "universe",
-      "description": "Inspect, read, and modify universe state through the coarse-grained Workflow Server control tool."
+      "description": "Inspect, read, and modify universe state through the coarse-grained TinyAssets Server control tool."
     },
     {
       "name": "extensions",
@@ -62,9 +63,9 @@
     }
   },
   "user_config": {
-    "workflow_data_dir": {
+    "tinyassets_data_dir": {
       "type": "directory",
-      "title": "Workflow Data Directory",
+      "title": "TinyAssets Data Directory",
       "description": "Select the directory that contains your universe folders, such as this repo's output directory.",
       "required": true
     },

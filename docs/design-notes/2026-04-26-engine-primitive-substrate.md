@@ -49,27 +49,27 @@ After auditing the codebase + tracing what domain skills + the 7 current MCP too
 
 | Substrate primitive | Canonical implementation modules |
 |---|---|
-| E1 Graph compile + execute | `workflow/graph_compiler.py` (2126 LOC), `workflow/branches.py` (BranchDefinition models), `workflow/runs.py` (run orchestration), domain `graphs/*.py` |
-| E2 Typed state + reducer | `workflow/branches.py` (state field schemas), domain `state/*.py` modules (e.g. `domains/fantasy_daemon/state/scene_state.py`) |
-| E3 Persistent checkpoint | `workflow/checkpointing/sqlite_saver.py`, `workflow/storage/__init__.py` (SQLite resolution) |
-| E4 Provider routing | `workflow/providers/router.py`, individual `workflow/providers/*.py` modules |
-| E5 Retrieval | `workflow/retrieval/router.py`, `workflow/retrieval/agentic_search.py`, `workflow/knowledge/*` (HippoRAG + KG), `workflow/memory/*` (RAPTOR + scoping) |
-| E6 Evaluator | `workflow/evaluation/*` (structural / process / editorial), `workflow/api/evaluation.py` (dispatch) |
-| E7 Catalog | `workflow/catalog/*`, `workflow/branches.py` (model layer), `workflow/api/branches.py` (CRUD via MCP) |
-| E8 Dispatcher | `workflow/dispatcher.py`, `workflow/scheduler.py`, `workflow/branch_tasks.py`, `workflow/bid/*`, `workflow/producers/*` |
+| E1 Graph compile + execute | `tinyassets/graph_compiler.py` (2126 LOC), `tinyassets/branches.py` (BranchDefinition models), `tinyassets/runs.py` (run orchestration), domain `graphs/*.py` |
+| E2 Typed state + reducer | `tinyassets/branches.py` (state field schemas), domain `state/*.py` modules (e.g. `domains/fantasy_daemon/state/scene_state.py`) |
+| E3 Persistent checkpoint | `tinyassets/checkpointing/sqlite_saver.py`, `tinyassets/storage/__init__.py` (SQLite resolution) |
+| E4 Provider routing | `tinyassets/providers/router.py`, individual `tinyassets/providers/*.py` modules |
+| E5 Retrieval | `tinyassets/retrieval/router.py`, `tinyassets/retrieval/agentic_search.py`, `tinyassets/knowledge/*` (HippoRAG + KG), `tinyassets/memory/*` (RAPTOR + scoping) |
+| E6 Evaluator | `tinyassets/evaluation/*` (structural / process / editorial), `tinyassets/api/evaluation.py` (dispatch) |
+| E7 Catalog | `tinyassets/catalog/*`, `tinyassets/branches.py` (model layer), `tinyassets/api/branches.py` (CRUD via MCP) |
+| E8 Dispatcher | `tinyassets/dispatcher.py`, `tinyassets/scheduler.py`, `tinyassets/branch_tasks.py`, `tinyassets/bid/*`, `tinyassets/producers/*` |
 
-**Total LOC enclosed by these 8 primitives: roughly the entire `workflow/` engine tree (~64k LOC).** Per `project_engine_domain_api_separation`: ~45 engine routes + 6 domain routes = 51 total entry points. The 8 substrates organize that 51.
+**Total LOC enclosed by these 8 primitives: roughly the entire `tinyassets/` engine tree (~64k LOC).** Per `project_engine_domain_api_separation`: ~45 engine routes + 6 domain routes = 51 total entry points. The 8 substrates organize that 51.
 
 ### §1.2 — What's NOT in the 8
 
 Things that LOOK substrate but are actually compositions:
 
-- **MCP tool surface** (`workflow/api/*`) — composition layer over E1-E8. Implements `workspace`, `workflow`, `run`, `evaluate`, `commons` per primary doc §2. NOT substrate.
+- **MCP tool surface** (`tinyassets/api/*`) — composition layer over E1-E8. Implements `workspace`, `workflow`, `run`, `evaluate`, `commons` per primary doc §2. NOT substrate.
 - **HTTP API** (`fantasy_daemon/api.py`) — composition over E1-E8 via FastAPI; same shape as MCP surface, different wire protocol. NOT substrate.
-- **Sandbox / isolation** (`workflow/sandbox/`, `workflow/node_sandbox.py`) — composition over E1 + E4 + node-software-capabilities concept. NOT substrate (it's an execution-policy layer).
-- **Soul + identity + attribution** (`workflow/identity.py`, `workflow/attribution/`, `workflow/contribution_events.py`) — domain-of-collaboration concepts; ride atop E7 (catalog) + E2 (state). NOT substrate.
+- **Sandbox / isolation** (`tinyassets/sandbox/`, `tinyassets/node_sandbox.py`) — composition over E1 + E4 + node-software-capabilities concept. NOT substrate (it's an execution-policy layer).
+- **Soul + identity + attribution** (`tinyassets/identity.py`, `tinyassets/attribution/`, `tinyassets/contribution_events.py`) — domain-of-collaboration concepts; ride atop E7 (catalog) + E2 (state). NOT substrate.
 - **Evaluator KINDS / RUBRICS** — domain-specific evaluator types (`structural`, `editorial`, `process`, future `prose-versions`, `prose-reproducibility`) are CATALOG ENTRIES atop E6. The substrate is the Evaluator interface; specific kinds are content.
-- **Daemon orchestration** (`workflow/daemon_server.py`, `workflow/cloud_worker.py`, `workflow/desktop/launcher.py`) — composition layer. Picks work from E8, runs E1, persists via E3, settles via E7. NOT substrate.
+- **Daemon orchestration** (`tinyassets/daemon_server.py`, `tinyassets/cloud_worker.py`, `tinyassets/desktop/launcher.py`) — composition layer. Picks work from E8, runs E1, persists via E3, settles via E7. NOT substrate.
 
 This list is just as important as the 8 primitives. Anything claiming to be substrate that's actually a composition shouldn't grow the substrate count.
 
@@ -194,7 +194,7 @@ The 8 are the bar. Adding to it means demonstrating composition from existing 8 
 
 ## §6 — Recommendations for engine design discipline
 
-1. **Domain skills don't reach into `workflow/<engine-internal>/` directly.** They depend only on the public surface of E1-E8. Per `project_engine_domain_api_separation`, this is already a stated principle; this note crystallizes the substrate that makes it concrete.
+1. **Domain skills don't reach into `tinyassets/<engine-internal>/` directly.** They depend only on the public surface of E1-E8. Per `project_engine_domain_api_separation`, this is already a stated principle; this note crystallizes the substrate that makes it concrete.
 
 2. **The 8 substrate modules have stable public APIs.** Any breaking change to E1-E8's public surface is a major version bump for the platform. Domain skills depend on this contract.
 
@@ -206,7 +206,7 @@ The 8 are the bar. Adding to it means demonstrating composition from existing 8 
    - E1: support distributed graph execution (multi-node graph spans multiple machines via dispatcher).
    - E5: integrate `MemOS` / `LightRAG` patterns from `docs/design-notes/2026-04-09-memory-graph-research-brief.md` if benchmarks support adoption.
    - E6: add streaming-evaluator mode when MCP sampling lands.
-   - E8: add scheduled-trigger primitive (cron-style) — currently this is a separate `workflow/scheduler.py` that subscribes to E8; could merge.
+   - E8: add scheduled-trigger primitive (cron-style) — currently this is a separate `tinyassets/scheduler.py` that subscribes to E8; could merge.
 
 These are evolutionary refinements, not new primitives.
 
@@ -231,4 +231,4 @@ These are evolutionary refinements, not new primitives.
 - `docs/audits/2026-04-25-engine-domain-api-separation.md` — engine/domain seam audit (~45 engine + 6 domain routes)
 - `docs/design-notes/2026-04-26-fantasy-daemon-unpack-arc.md` — A.1 unpack arc that ratifies this seam
 - `docs/design-notes/2026-04-09-memory-graph-research-brief.md` — E5 retrieval substrate evolution
-- `workflow/graph_compiler.py` (E1), `workflow/checkpointing/` (E3), `workflow/providers/` (E4), `workflow/retrieval/` + `workflow/knowledge/` + `workflow/memory/` (E5), `workflow/evaluation/` (E6), `workflow/catalog/` (E7), `workflow/dispatcher.py` + `workflow/scheduler.py` + `workflow/branch_tasks.py` (E8) — canonical homes for the 8 substrates
+- `tinyassets/graph_compiler.py` (E1), `tinyassets/checkpointing/` (E3), `tinyassets/providers/` (E4), `tinyassets/retrieval/` + `tinyassets/knowledge/` + `tinyassets/memory/` (E5), `tinyassets/evaluation/` (E6), `tinyassets/catalog/` (E7), `tinyassets/dispatcher.py` + `tinyassets/scheduler.py` + `tinyassets/branch_tasks.py` (E8) — canonical homes for the 8 substrates

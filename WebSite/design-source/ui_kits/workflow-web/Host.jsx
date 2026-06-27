@@ -128,7 +128,7 @@ function DesktopDownload({ os, setOs }) {
   const builds = {
     macos:   { file: "Workflow-0.4.2-arm64.dmg",       size: "42.1 MB", cmd: "brew install workflow-host" },
     windows: { file: "Workflow-Host-0.4.2-Setup.exe", size: "38.7 MB", cmd: "winget install Jonnyton.WorkflowHost" },
-    linux:   { file: "workflow-host_0.4.2_amd64.deb",  size: "36.4 MB", cmd: "curl -sSL get.workflow.host | sh" },
+    linux:   { file: "workflow-host_0.4.2_amd64.deb",  size: "36.4 MB", cmd: "curl -sSL get.tinyassets.host | sh" },
   };
   const b = builds[os];
 
@@ -160,7 +160,7 @@ function DesktopDownload({ os, setOs }) {
           <Button variant="primary" size="lg">
             Download for {os === "macos" ? "macOS" : os === "windows" ? "Windows" : "Linux"} <span style={{ fontFamily: "var(--font-mono)", opacity: 0.8 }}>↓</span>
           </Button>
-          <Button variant="ghost" size="lg" onClick={() => window.open("https://github.com/Jonnyton/Workflow/releases", "_blank")}>
+          <Button variant="ghost" size="lg" onClick={() => window.open("https://github.com/Jonnyton/TinyAssets/releases", "_blank")}>
             All releases
           </Button>
         </div>

@@ -52,7 +52,7 @@ substrate_fixed_when:
   kind: workflow_secret_visible
   any_of:
     - CLAUDE_CODE_OAUTH_TOKEN
-    - WORKFLOW_CODEX_AUTH_JSON_B64
+    - TINYASSETS_CODEX_AUTH_JSON_B64
 clear_labels:
   - needs-human
   - auto-fix-auth-missing

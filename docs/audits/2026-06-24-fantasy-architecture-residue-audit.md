@@ -17,7 +17,7 @@ opposite-provider (Codex) review gate per AGENTS.md before any code lands.
 The hypothesis is correct. Fantasy is **not** yet one goal indistinguishable
 from "research paper" or "legal brief" in the code — it is the hardcoded
 default, fallback, and only-executable runtime. The general seams exist and
-work (`workflow/providers/`, `graph_compiler`, soul-declared loops,
+work (`tinyassets/providers/`, `graph_compiler`, soul-declared loops,
 `DomainNeutralUniverseState`), but the engine still reaches *back into the
 fantasy domain folder* for its most fundamental primitive (the LLM call), and
 the production entrypoints still spawn the fantasy daemon directly instead of
@@ -37,7 +37,7 @@ real `ProviderRouter`"* — a thin synchronous wrapper over
 `workflow.providers.router.ProviderRouter`. Its docstring even claims "This
 module lives in `nodes/` (graph-core's directory)" — a stale relic of an
 earlier location; it now sits inside the fantasy domain. The general provider
-package **already exists and is complete**: `workflow/providers/` (router.py,
+package **already exists and is complete**: `tinyassets/providers/` (router.py,
 base.py, claude/codex/gemini/grok/groq/ollama_provider.py, quota.py).
 
 Yet the general engine imports `call_provider` / `last_provider` / `_FORCE_MOCK`
@@ -45,14 +45,14 @@ from the fantasy-located shim across the whole platform:
 
 | Engine module (general) | Site | Imports from fantasy domain |
 |---|---|---|
-| `workflow/api/runs.py` | `:542`, `:1110`, `:1520` | `_provider_stub.call_provider` (the general `run_branch`/run path) |
-| `workflow/api/selector_dispatch.py` | `:733` | `_provider_stub.call_provider` |
-| `workflow/evaluation/editorial.py` | `:119` | `_provider_stub.call_provider` |
-| `workflow/ingestion/extractors.py` | `:259`, `:260` | `_provider_stub.call_provider` **and** `phases.worldbuild._write_canon_file` |
-| `workflow/retrieval/agentic_search.py` | `:182`, `:381`–`:387` | `_provider_stub` + `phases._paths.resolve_kg_path` |
-| `workflow/memory/reflexion.py` | `:205`, `:260` | `_provider_stub.call_provider` |
-| `workflow/knowledge/raptor.py` | `:333` | `_provider_stub.call_provider` |
-| `workflow/checkpointing/sqlite_saver.py` | `:172` | `domains.fantasy_daemon.graphs` (graphs, not provider — scope separately) |
+| `tinyassets/api/runs.py` | `:542`, `:1110`, `:1520` | `_provider_stub.call_provider` (the general `run_branch`/run path) |
+| `tinyassets/api/selector_dispatch.py` | `:733` | `_provider_stub.call_provider` |
+| `tinyassets/evaluation/editorial.py` | `:119` | `_provider_stub.call_provider` |
+| `tinyassets/ingestion/extractors.py` | `:259`, `:260` | `_provider_stub.call_provider` **and** `phases.worldbuild._write_canon_file` |
+| `tinyassets/retrieval/agentic_search.py` | `:182`, `:381`–`:387` | `_provider_stub` + `phases._paths.resolve_kg_path` |
+| `tinyassets/memory/reflexion.py` | `:205`, `:260` | `_provider_stub.call_provider` |
+| `tinyassets/knowledge/raptor.py` | `:333` | `_provider_stub.call_provider` |
+| `tinyassets/checkpointing/sqlite_saver.py` | `:172` | `domains.fantasy_daemon.graphs` (graphs, not provider — scope separately) |
 
 **Why this is the "single fantasy pipeline" signal:** the general platform was
 carved out of the fantasy daemon, but the LLM-call seam was never relocated.
@@ -60,7 +60,7 @@ Every general subsystem (runs, evaluation, ingestion, retrieval, memory,
 knowledge, selector) depends on a domain package to talk to a model.
 
 **Fix (atomic, no-shims per `feedback_no_shims_ever`):**
-1. Move the provider bridge to the general home, e.g. `workflow/providers/call.py`,
+1. Move the provider bridge to the general home, e.g. `tinyassets/providers/call.py`,
    wrapping `ProviderRouter` exactly as today. **Expose an explicit API**
    (`set_provider_router()` / `call_provider()` / `get_last_provider()`), NOT
    bare module globals. Two traps the relocation must preserve (Codex review):
@@ -81,13 +81,13 @@ knowledge, selector) depends on a domain package to talk to a model.
    fix; do not bundle blindly.
 
 **Additional residue surfaced in review (Codex 2026-06-24) — fold into the move:**
-- `workflow/exceptions.py:8` — the *entire* platform exception hierarchy
+- `tinyassets/exceptions.py:8` — the *entire* platform exception hierarchy
   inherits from a base class named `FantasyAuthorError` ("Every exception in the
   system inherits from FantasyAuthorError"). Rename to a neutral base
   (e.g. `WorkflowError`) with the fantasy name as a same-arc alias only.
-- `workflow/registry.py:13` — imports `FantasyAuthorDomain` (registration site).
-- `workflow/memory/episodic.py:27` — `FANTASY_DOMAIN_ID = "fantasy_author"` +
-  `WORKFLOW_EPISODIC_SCHEMA_MIGRATION` flag (fantasy-keyed episodic schema mid-
+- `tinyassets/registry.py:13` — imports `FantasyAuthorDomain` (registration site).
+- `tinyassets/memory/episodic.py:27` — `FANTASY_DOMAIN_ID = "fantasy_author"` +
+  `TINYASSETS_EPISODIC_SCHEMA_MIGRATION` flag (fantasy-keyed episodic schema mid-
   migration to neutral — coordinate with that migration, don't fork it).
 
 Risk: medium. Mostly relocation + import repoint, behavior-preserving — but the
@@ -101,21 +101,21 @@ above.
 
 Two production entrypoints refuse to run anything but fantasy:
 
-- **`workflow/__main__.py:164`** — the general CLI hard-gates:
+- **`tinyassets/__main__.py:164`** — the general CLI hard-gates:
   `if args.domain != "fantasy_author": ... "Only fantasy_author domain is fully
   operational in this phase" ... return 1`. The comment admits it: *"Phase 5
   bridge: for now, delegate to fantasy_daemon.__main__.DaemonController... Once
   the runtime is extracted, this will build and execute the domain's graph
   directly."* The extraction never happened — non-fantasy domains can be
   *registered* but not *executed*.
-- **`workflow/cloud_worker.py:359 / 516 / 533 / 535`** — the production
+- **`tinyassets/cloud_worker.py:359 / 516 / 533 / 535`** — the production
   supervisor loop default-spawns `_spawn_fantasy_daemon` for every universe
   ("Spawn fantasy_daemon against the universe"). This is the live 24/7 worker.
 
 **Fix — activate + harden the path that already exists (do NOT build a second
 runner).** Codex review surfaced that the soul-loop execution path is already
 written and ships dark: `fantasy_daemon/__main__.py:154`
-`_soul_loop_dispatch_enabled()` (`WORKFLOW_SOUL_LOOP_DISPATCH`) runs a souled
+`_soul_loop_dispatch_enabled()` (`TINYASSETS_SOUL_LOOP_DISPATCH`) runs a souled
 universe's declared `loop_branch_def_id` (resolved via `_universe_loop_dispatch`)
 through `execute_branch` — the same path that runs claimed BranchTasks, so it
 inherits heartbeat, leases, producer pumping, status files, runtime
@@ -136,11 +136,11 @@ soulless/legacy universes keep running unchanged during cutover.
 
 ## Tier C — Fantasy-as-default fallback (compat seams, lower risk)
 
-- **`workflow/api/universe.py:337`** — soul-less universe falls back to
+- **`tinyassets/api/universe.py:337`** — soul-less universe falls back to
   `LEGACY_FANTASY_LOOP_BRANCH_DEF_ID` (caveat: *"keeping the existing fantasy
   loop only until the universe is migrated to a soul-declared loop"*). The
   fallback for *any* domain-less universe is the fantasy loop.
-- **`workflow/producers/goal_pool.py:197`–`200`** — *"Fantasy seed always
+- **`tinyassets/producers/goal_pool.py:197`–`200`** — *"Fantasy seed always
   available"* unconditionally injects `fantasy_author/universe-cycle` and
   `fantasy_author:universe_cycle_wrapper` into the goal-pool slug set.
 
@@ -156,11 +156,11 @@ This is the subtlest residue: probe-origin words that became *enforced engine
 contract*, so they cannot be scrubbed in docs without code/data migration.
 
 - **`worldbuild` is a validated enum, not a label.** It is a member of
-  `VALID_PHASES` in both `workflow/branches.py:256` and
-  `workflow/api/extensions.py:214`, enforced at node registration
+  `VALID_PHASES` in both `tinyassets/branches.py:256` and
+  `tinyassets/api/extensions.py:214`, enforced at node registration
   (`extensions.py:764`, `branches.py:412`) and on the advertised control-station
-  surface (`workflow/universe_server.py:321`). It also names a **persisted
-  artifact** — `worldbuild_signals.json` (`workflow/ingestion/core.py:474`) —
+  surface (`tinyassets/universe_server.py:321`). It also names a **persisted
+  artifact** — `worldbuild_signals.json` (`tinyassets/ingestion/core.py:474`) —
   and threads through `notes.py`, `packets.py` (`worldbuild_signals`),
   `api/universe.py:308` (`daemon_worldbuild`). Removing it from the advertised
   enum without changing `VALID_PHASES` creates doc/code drift; removing it from
@@ -198,7 +198,7 @@ state + enum surgery), and must not be faked as a doc scrub.
 ## Suggested sequencing
 
 1. **Tier A** first — relocate the provider bridge + repoint imports + add the
-   `workflow/** !-> domains.fantasy_daemon` import-boundary guard. Behavior-
+   `tinyassets/** !-> domains.fantasy_daemon` import-boundary guard. Behavior-
    preserving; unblocks honest generality and prevents regression.
 2. **Tier D** (live wire vocab) alongside the docs rewrite — cheap, stops the
    re-infection loop.
@@ -209,7 +209,7 @@ state + enum surgery), and must not be faked as a doc scrub.
 
 ## Prevention (stop the residue from returning)
 
-Add an architectural import-boundary test/lint: nothing under `workflow/` may
+Add an architectural import-boundary test/lint: nothing under `tinyassets/` may
 `import domains.fantasy_daemon` (or any `domains.*`). The engine depends on the
 domain registry interface, never on a concrete domain. This guard makes "engine
 acting like the fantasy pipeline" a failing test instead of a discovered
@@ -233,7 +233,7 @@ adaptations above are folded in: (1) added residue (`exceptions.py`
 `FantasyAuthorError`, `registry.py:13`, `memory/episodic.py` migration);
 (2) explicit `set_provider_router`/`get_last_provider` API + preserve daemon
 router injection; (3) `last_provider` snapshot bug; (4) staged/ratcheted import
-guard; (5) Tier B = harden the existing dark `WORKFLOW_SOUL_LOOP_DISPATCH` path,
+guard; (5) Tier B = harden the existing dark `TINYASSETS_SOUL_LOOP_DISPATCH` path,
 not a new runner; (6) README wording softened. Tier-A/B code may proceed under
 these adaptations; each lands with its own tests + (Tier B) the §14 proof +
 canary.

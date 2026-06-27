@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 
-from workflow.memory.core import CoreMemory
-from workflow.memory.episodic import EpisodicMemory
-from workflow.memory.manager import DRAFT, EVALUATE, ORIENT, PLAN, MemoryManager
-from workflow.memory.promotion import PromotionGates
-from workflow.memory.reflexion import ReflexionEngine, ReflexionResult
+from tinyassets.memory.core import CoreMemory
+from tinyassets.memory.episodic import EpisodicMemory
+from tinyassets.memory.manager import DRAFT, EVALUATE, ORIENT, PLAN, MemoryManager
+from tinyassets.memory.promotion import PromotionGates
+from tinyassets.memory.reflexion import ReflexionEngine, ReflexionResult
 
 # =====================================================================
 # CoreMemory

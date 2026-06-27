@@ -51,7 +51,7 @@ Behavior is identical to `run_branch` from the chatbot's perspective EXCEPT: the
 ### Internal helper (where the actual bridge lives)
 
 ```python
-# workflow/runs.py — new helper sibling to execute_branch_async
+# tinyassets/runs.py — new helper sibling to execute_branch_async
 def execute_branch_version_async(
     base_path,
     *,
@@ -109,7 +109,7 @@ Sibling-action wins or ties on every axis. The "convention parity" + "discovery"
 ## 4. Implementation sketch
 
 ```python
-# workflow/universe_server.py — new MCP handler sibling to _action_run_branch
+# tinyassets/universe_server.py — new MCP handler sibling to _action_run_branch
 
 def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     """Execute a published branch_version snapshot."""
@@ -183,7 +183,7 @@ Skipping the column now means a Schema Migration #2 in ~weeks. Add it once.
 
 ### Step 1 — internal helper lands
 
-Add `execute_branch_version_async` to `workflow/runs.py`. Refactor `execute_branch_async` to call shared `_execute_branch_core(branch_version_id=None)`. Existing tests must continue passing — the refactor is shape-equivalent.
+Add `execute_branch_version_async` to `tinyassets/runs.py`. Refactor `execute_branch_async` to call shared `_execute_branch_core(branch_version_id=None)`. Existing tests must continue passing — the refactor is shape-equivalent.
 
 ### Step 2 — MCP handler lands
 
@@ -229,7 +229,7 @@ Both are unsafe. Sibling-action sync helper is the clean primitive.
 
 4. **publish_version side effects on in-flight runs.** When a new version is published while runs are in flight, do those runs reference the new version_id, or stay tagged with their original? Recommend: **stay tagged with original**. Once a run starts, its `branch_version_id` (or NULL for def-based runs) is immutable. Re-tagging would obscure attribution.
 
-5. **Cancellation semantics.** Per lead's note: **identical to def-based runs**. Same `run_cancels` table at `workflow/runs.py:129-132`. **Closed.**
+5. **Cancellation semantics.** Per lead's note: **identical to def-based runs**. Same `run_cancels` table at `tinyassets/runs.py:129-132`. **Closed.**
 
 ---
 
@@ -251,7 +251,7 @@ Both are unsafe. Sibling-action sync helper is the clean primitive.
 - Contribution ledger: `docs/design-notes/2026-04-25-contribution-ledger-proposal.md` (Task #48 — needs `runs.branch_version_id` for attribution).
 - Route-back verdict: `docs/design-notes/2026-04-25-gate-route-back-verb-proposal.md` (Task #53 — hard dependency on this proposal).
 - Navigator's run_branch audit: commit 4e608e3 (sibling-action recommendation, §D).
-- Existing run handler: `workflow/universe_server.py:7248-7340` (`_action_run_branch`).
-- Branch versions storage: `workflow/branch_versions.py:25-67` (DDL + dataclass).
-- Publish helper: `workflow/branch_versions.py:109` (`publish_branch_version`).
-- Run-cancel primitive (reused as-is): `workflow/runs.py:129-132` (`run_cancels` table).
+- Existing run handler: `tinyassets/universe_server.py:7248-7340` (`_action_run_branch`).
+- Branch versions storage: `tinyassets/branch_versions.py:25-67` (DDL + dataclass).
+- Publish helper: `tinyassets/branch_versions.py:109` (`publish_branch_version`).
+- Run-cancel primitive (reused as-is): `tinyassets/runs.py:129-132` (`run_cancels` table).

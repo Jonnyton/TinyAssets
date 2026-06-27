@@ -1,6 +1,6 @@
 # Cowork session-start bootstrap
 
-When a Cowork session opens this Workflow project, before any other tool
+When a Cowork session opens this TinyAssets project, before any other tool
 call, run:
 
     bash "$(pwd)/scripts/cowork-bootstrap.sh"

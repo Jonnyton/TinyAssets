@@ -42,7 +42,7 @@ on:
       script:
         description: Worker script name for upsert-worker-route.
         required: false
-        default: workflow-mcp-router
+        default: tinyassets-mcp-router
       apply:
         description: Mutate Cloudflare. False runs a dry-run only.
         required: true
@@ -92,7 +92,7 @@ jobs:
             --record-type "${RECORD_TYPE:-CNAME}"
             --ttl "${TTL:-1}"
             --pattern "${PATTERN:-tinyassets.io/mcp*}"
-            --script "${SCRIPT:-workflow-mcp-router}"
+            --script "${SCRIPT:-tinyassets-mcp-router}"
             --json
           )
 

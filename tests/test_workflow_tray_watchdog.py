@@ -1,4 +1,4 @@
-"""Tests for the tab-watchdog integration into workflow_tray (task #19).
+"""Tests for the tab-watchdog integration into tinyassets_tray (task #19).
 
 The tray spawns the watchdog alongside MCP + cloudflared. Tests mock
 subprocess.Popen so they don't actually launch processes, and verify:
@@ -25,11 +25,11 @@ from unittest.mock import MagicMock
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TRAY_PATH = REPO_ROOT / "workflow_tray.py"
+TRAY_PATH = REPO_ROOT / "tinyassets_tray.py"
 
 
 def _stub_tray_deps(monkeypatch):
-    """workflow_tray imports PIL + pystray at module top. Stub them
+    """tinyassets_tray imports PIL + pystray at module top. Stub them
     so tests don't need those packages installed on CI."""
     if "PIL" not in sys.modules:
         pil = types.ModuleType("PIL")
@@ -54,12 +54,12 @@ def _stub_tray_deps(monkeypatch):
 
 @pytest.fixture(scope="module")
 def tray_mod():
-    """Load workflow_tray.py by path (it's not a package)."""
+    """Load tinyassets_tray.py by path (it's not a package)."""
     # Stub tray deps in whatever state we're in; these stubs don't
     # need real functionality because tests never invoke icon/menu paths.
     _stub_tray_deps(None)
     spec = importlib.util.spec_from_file_location(
-        "workflow_tray_under_test", TRAY_PATH,
+        "tinyassets_tray_under_test", TRAY_PATH,
     )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)

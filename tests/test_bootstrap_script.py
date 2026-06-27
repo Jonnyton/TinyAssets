@@ -135,7 +135,7 @@ def test_swappiness_idempotent_guard():
     )
 
 
-# ── Task #61 — mkdir -p /opt/workflow/deploy pre-git-clone ───────────
+# ── Task #61 — mkdir -p /opt/tinyassets/deploy pre-git-clone ───────────
 
 
 def test_deploy_dir_mkdir_present():
@@ -158,9 +158,9 @@ def test_deploy_dir_mkdir_before_git_clone():
 
 def test_deploy_dir_mkdir_uses_workflow_home_var():
     text = _text()
-    # Should use the ${WORKFLOW_HOME} variable, not a hardcoded path.
-    assert re.search(r'mkdir -p.*WORKFLOW_HOME.*deploy', text), (
-        "deploy dir mkdir should use ${WORKFLOW_HOME}/deploy, not a hardcoded path"
+    # Should use the ${TINYASSETS_HOME} variable, not a hardcoded path.
+    assert re.search(r'mkdir -p.*TINYASSETS_HOME.*deploy', text), (
+        "deploy dir mkdir should use ${TINYASSETS_HOME}/deploy, not a hardcoded path"
     )
 
 

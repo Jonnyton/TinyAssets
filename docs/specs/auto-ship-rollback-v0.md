@@ -33,7 +33,7 @@ This spec defines the primitive's **interface**, **decision rules**, and
 ## 2. Module shape
 
 New module: `workflow.auto_ship_rollback`. Mirrored at
-`packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/auto_ship_rollback.py`.
+`packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/auto_ship_rollback.py`.
 
 Public API (small, additive — no changes to Slice A's surface):
 
@@ -276,7 +276,7 @@ These are intentionally NOT decided here — they're Slice C-time conversations:
 The Slice C PR is acceptable when:
 
 ```
-1. workflow/auto_ship_rollback.py module exists (mirrored to packaging
+1. tinyassets/auto_ship_rollback.py module exists (mirrored to packaging
    plugin path).
 2. assess_rollback_candidates returns the right rows for the test
    matrix in §7.

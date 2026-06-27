@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from workflow.evaluation.structural import (
+from tinyassets.evaluation.structural import (
     CheckResult,
     StructuralEvaluator,
     StructuralResult,
@@ -511,7 +511,7 @@ class TestCanonBreach:
 class TestASPConstraint:
     def test_stub_passes_when_no_engine(self):
         """Without the constraints module installed, ASP check should pass."""
-        from workflow.evaluation.structural import _HAS_ASP
+        from tinyassets.evaluation.structural import _HAS_ASP
 
         if not _HAS_ASP:
             state = _make_scene_state()
@@ -602,7 +602,7 @@ class TestAggregateScore:
         result = evaluator.evaluate(state)
 
         # Manually compute expected weighted average
-        from workflow.evaluation.structural import _CHECK_WEIGHTS
+        from tinyassets.evaluation.structural import _CHECK_WEIGHTS
 
         weighted_sum = 0.0
         weight_total = 0.0
@@ -714,7 +714,7 @@ class TestBuildEditorialContext:
 
     def test_extracts_direction_notes_from_notes_store(self, tmp_path):
         from domains.fantasy_daemon.phases.commit import _build_editorial_context
-        from workflow.notes import add_note
+        from tinyassets.notes import add_note
 
         add_note(
             tmp_path,
@@ -740,7 +740,7 @@ class TestEditorialReaderEnrichedContext:
 
     def test_editorial_prompt_includes_context(self):
         """Verify the editorial reader receives enriched context."""
-        from workflow.evaluation.editorial import read_editorial
+        from tinyassets.evaluation.editorial import read_editorial
 
         captured_prompts = []
 
@@ -773,8 +773,8 @@ class TestEditorialReaderEnrichedContext:
 class TestConsistencyAuditNotes:
     def test_builds_notes_from_structural_and_process_failures(self):
         from domains.fantasy_daemon.phases.commit import _build_consistency_audit_notes
-        from workflow.evaluation.process import ProcessCheck, ProcessEvaluation
-        from workflow.evaluation.structural import CheckResult, StructuralResult
+        from tinyassets.evaluation.process import ProcessCheck, ProcessEvaluation
+        from tinyassets.evaluation.structural import CheckResult, StructuralResult
 
         structural = StructuralResult(
             checks=[
@@ -949,7 +949,7 @@ class TestToEditorialConcerns:
 
     def test_concerns_are_editorial_concern_instances(self):
         """Returned objects are proper EditorialConcern instances."""
-        from workflow.evaluation.editorial import EditorialConcern
+        from tinyassets.evaluation.editorial import EditorialConcern
 
         evaluator = StructuralEvaluator()
         state = _make_scene_state(

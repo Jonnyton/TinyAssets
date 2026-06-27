@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
-from workflow.graph_compiler import (
+from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+from tinyassets.graph_compiler import (
     CompilerError,
     _build_prompt_template_node,
     _out_of_input_keys,

@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from workflow.api.status import (
+from tinyassets.api.status import (
     _compute_auto_ship_health,
     _parse_iso_to_epoch,
     get_status,
 )
-from workflow.auto_ship_ledger import ShipAttempt, ledger_path, record_attempt
+from tinyassets.auto_ship_ledger import ShipAttempt, ledger_path, record_attempt
 
 
 def _ts(minutes: int) -> str:
@@ -84,19 +84,19 @@ def test_auto_ship_health_summarizes_recent_open_and_regressed_attempts(tmp_path
         if idx == 8:
             kwargs = {
                 "ship_status": "opened",
-                "pr_url": "https://github.com/Jonnyton/Workflow/pull/308",
+                "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/308",
             }
         elif idx == 9:
             kwargs = {
                 "ship_status": "opened",
-                "pr_url": "https://github.com/Jonnyton/Workflow/pull/309",
+                "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/309",
                 "observation_status": "regressed",
                 "rollback_handle": "revert:commit-09",
             }
         elif idx == 10:
             kwargs = {
                 "ship_status": "merged",
-                "pr_url": "https://github.com/Jonnyton/Workflow/pull/310",
+                "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/310",
                 "observation_status": "regressed",
                 "rollback_handle": "revert:commit-10",
             }
@@ -133,7 +133,7 @@ def test_auto_ship_health_summarizes_recent_open_and_regressed_attempts(tmp_path
 
 
 def test_get_status_response_includes_auto_ship_health(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     universe = tmp_path / "test-universe"
     universe.mkdir(parents=True, exist_ok=True)

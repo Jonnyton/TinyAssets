@@ -68,7 +68,7 @@ Tools we're NOT expecting:
 ### System layer
 
 - **Task #13 directive not landed / not reached prod.** Chatbot fabricates "right, you kicked off that ashfell run last tuesday — here's where it left off" with no tool evidence. **Severity: P0 — exactly the 3-incident class navigator flagged.** Log verbatim quote + which memory-fragment seems to have seeded it.
-- **No config-mutation verb exists.** Chatbot says "I can't actually change served_llm_type — you'd need to edit `/etc/workflow/env` on the host." Not a regression per se, but a surface-gap finding — Devin's tier-2 ask ("change config via chat") is real user demand, and if the surface can't serve it, document that. Severity: moderate; product signal.
+- **No config-mutation verb exists.** Chatbot says "I can't actually change served_llm_type — you'd need to edit `/etc/tinyassets/env` on the host." Not a regression per se, but a surface-gap finding — Devin's tier-2 ask ("change config via chat") is real user demand, and if the surface can't serve it, document that. Severity: moderate; product signal.
 - **`get_status` fields drift.** Post-change `get_status` doesn't reflect the new pinned value, or the field renames / gets absorbed. **Severity: P0** — regresses the §3 pattern directly.
 - **BUG-001 regression** in any `patch_branch` path Devin's mission touches. Same P0 severity as Priya's mission.
 - **Session terminated / connector-disabled.** Abort if seen; SendMessage lead.

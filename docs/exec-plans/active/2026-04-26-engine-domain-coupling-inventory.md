@@ -1,5 +1,5 @@
 ---
-title: workflow/ → domains.fantasy_* coupling site inventory (read-only)
+title: tinyassets/ → domains.fantasy_* coupling site inventory (read-only)
 date: 2026-04-26
 author: dev-2
 status: read-only inventory — input for Task #11/#28/#29 host-review queue
@@ -8,13 +8,13 @@ companion: docs/audits/2026-04-25-engine-domain-api-separation.md (planned scope
 
 # Engine → domain coupling site inventory
 
-Read-only audit of every `workflow/` import that reaches into `domains.fantasy_*`. Defines the surface area the engine-domain decoupling work has to handle when host green-lights audit doc `docs/audits/2026-04-25-engine-domain-api-separation.md`.
+Read-only audit of every `tinyassets/` import that reaches into `domains.fantasy_*`. Defines the surface area the engine-domain decoupling work has to handle when host green-lights audit doc `docs/audits/2026-04-25-engine-domain-api-separation.md`.
 
-**Scope:** all `from domains.fantasy_(daemon|author) import …` and `import domains.fantasy_…` statements anywhere under `workflow/`. Does NOT include `domains/` ↔ `domains/` references (that's intra-domain) or `tests/` ↔ `domains/` (test-side, out of engine scope).
+**Scope:** all `from domains.fantasy_(daemon|author) import …` and `import domains.fantasy_…` statements anywhere under `tinyassets/`. Does NOT include `domains/` ↔ `domains/` references (that's intra-domain) or `tests/` ↔ `domains/` (test-side, out of engine scope).
 
-**Method:** `grep -rn "domains\.fantasy_(daemon|author)" workflow/`. Re-grep canonical — line numbers from navigator's earlier note (L1088, L1645, L7349, L7846, L8511, all in pre-decomp universe_server.py) have entirely drifted because `workflow/api/runs.py` extraction (Task #16, dev-owned, in-flight) just moved 3 of those references out. Current as of 2026-04-26 21:55 local.
+**Method:** `grep -rn "domains\.fantasy_(daemon|author)" tinyassets/`. Re-grep canonical — line numbers from navigator's earlier note (L1088, L1645, L7349, L7846, L8511, all in pre-decomp universe_server.py) have entirely drifted because `tinyassets/api/runs.py` extraction (Task #16, dev-owned, in-flight) just moved 3 of those references out. Current as of 2026-04-26 21:55 local.
 
-**Naming caveat:** `domains.fantasy_author` is today a back-compat alias to `domains.fantasy_daemon` per `domains/fantasy_author/__init__.py` shim (gated by `WORKFLOW_AUTHOR_RENAME_COMPAT`, removed in Phase 5). Every import below uses the legacy `fantasy_author` path; the actual module loaded is `fantasy_daemon`. The decoupling work would normalize to `fantasy_daemon` in passing OR (better) replace with a domain-agnostic seam.
+**Naming caveat:** `domains.fantasy_author` is today a back-compat alias to `domains.fantasy_daemon` per `domains/fantasy_author/__init__.py` shim (gated by `TINYASSETS_AUTHOR_RENAME_COMPAT`, removed in Phase 5). Every import below uses the legacy `fantasy_author` path; the actual module loaded is `fantasy_daemon`. The decoupling work would normalize to `fantasy_daemon` in passing OR (better) replace with a domain-agnostic seam.
 
 ---
 
@@ -36,7 +36,7 @@ Read-only audit of every `workflow/` import that reaches into `domains.fantasy_*
 
 ## Site-by-site inventory
 
-### 1. `workflow/api/runs.py:387` — engine-only-leak (trivial)
+### 1. `tinyassets/api/runs.py:387` — engine-only-leak (trivial)
 
 ```python
 def _action_run_branch(kwargs):
@@ -55,7 +55,7 @@ def _action_run_branch(kwargs):
 **Refactor:** trivial. Replace with module-level `provider_call: Callable | None = None` resolved by a domain-router lookup at runtime, OR have the caller pass it via `kwargs`. The `try/except ImportError` graceful-degrade pattern means swapping in a registry lookup is a one-line edit.
 **Recently moved:** post-Task #16 extraction — was at universe_server.py L7349 in pre-decomp. Same code, new home.
 
-### 2. `workflow/api/runs.py:885` — engine-only-leak (trivial)
+### 2. `tinyassets/api/runs.py:885` — engine-only-leak (trivial)
 
 ```python
 def _action_resume_run(kwargs):
@@ -74,7 +74,7 @@ def _action_resume_run(kwargs):
 **Refactor:** trivial — same fix as #1; share the resolution helper.
 **Recently moved:** was at universe_server.py L7846 pre-decomp.
 
-### 3. `workflow/api/runs.py:1232` — engine-only-leak (trivial)
+### 3. `tinyassets/api/runs.py:1232` — engine-only-leak (trivial)
 
 ```python
 def _action_run_branch_version(kwargs):
@@ -95,7 +95,7 @@ def _action_run_branch_version(kwargs):
 
 **Cross-cut observation for sites #1-#3:** identical to the canary `_post` triplication that Task #14 consolidated. Same partial-binding pattern would fit: `_resolve_provider_call` returns the same callable object for all 3 callers, locking the contract via identity-check tests once consolidated. **NOT in scope for this inventory** — flagging as a future Task #14-style consolidation candidate.
 
-### 4. `workflow/evaluation/editorial.py:119` — engine-only-leak (trivial)
+### 4. `tinyassets/evaluation/editorial.py:119` — engine-only-leak (trivial)
 
 ```python
 def get_editorial_notes(prose, ..., provider_call=None):
@@ -109,7 +109,7 @@ def get_editorial_notes(prose, ..., provider_call=None):
 **Classification:** engine-only-leak — caller can already pass `provider_call`; the domain import is just the lazy default.
 **Refactor:** trivial — caller must always pass `provider_call`, OR this default lookup goes through a domain registry. Same pattern as the api/runs.py trio.
 
-### 5. `workflow/knowledge/raptor.py:333` — engine-only-leak (trivial)
+### 5. `tinyassets/knowledge/raptor.py:333` — engine-only-leak (trivial)
 
 ```python
 async def _summarize(prompt: str, system: str, role: str) -> str:
@@ -121,7 +121,7 @@ async def _summarize(prompt: str, system: str, role: str) -> str:
 **Classification:** engine-only-leak — RAPTOR is fully domain-agnostic; the import here is purely "what callable do we use?"
 **Refactor:** trivial — `build_raptor_tree` already takes `provider_call` as a parameter (see L344 of raptor.py); the wrapper closure should accept a `provider_call` from the outer scope rather than late-importing the domain stub. One refactor candidate: hoist `_summarize` to take provider_call from the enclosing function's signature.
 
-### 6. `workflow/memory/reflexion.py:205` — engine-only-leak (moderate)
+### 6. `tinyassets/memory/reflexion.py:205` — engine-only-leak (moderate)
 
 ```python
 def _llm_critique(state, feedback, template_critique):
@@ -138,7 +138,7 @@ def _llm_critique(state, feedback, template_critique):
 **Classification:** engine-only-leak — but note the additional `_FORCE_MOCK` toggle reach. The toggle is a domain-internal test flag; reading it from engine code couples engine to the domain's testing model. (See memory `feedback_flag_at_import_time.md`.)
 **Refactor:** moderate. The `call_provider` import is trivial; the `_FORCE_MOCK` toggle needs a different mechanism — either move to a `workflow.providers.routing._mock_mode_active()` helper, or accept the test-mode signal via env var resolved at engine boot.
 
-### 7. `workflow/memory/reflexion.py:260` — engine-only-leak (moderate)
+### 7. `tinyassets/memory/reflexion.py:260` — engine-only-leak (moderate)
 
 ```python
 def _llm_reflection(critique: str, state: dict) -> str:
@@ -153,7 +153,7 @@ def _llm_reflection(critique: str, state: dict) -> str:
 **Classification:** engine-only-leak.
 **Refactor:** moderate — co-fix with #6. Two near-identical blocks.
 
-### 8. `workflow/ingestion/extractors.py:259-260` — hybrid (moderate)
+### 8. `tinyassets/ingestion/extractors.py:259-260` — hybrid (moderate)
 
 ```python
 def synthesize_canon_from_source(source_text, filename, canon_dir, premise):
@@ -164,9 +164,9 @@ def synthesize_canon_from_source(source_text, filename, canon_dir, premise):
 
 **Context:** Source ingestion pipeline — synthesizes canon docs from uploaded source text.
 **Classification:** hybrid — `call_provider` is engine-only-leak (same as #1-#7), but `_write_canon_file` is genuinely domain-specific (writes to the fantasy domain's canon/ layout). Even `last_provider` is a domain-side telemetry helper.
-**Refactor:** moderate. `call_provider` consolidates with #1-#7. `_write_canon_file` needs the domain to expose a public `write_canon(path, content)` API on its `Domain` protocol (see `workflow/registry.py` for the existing protocol surface). Then this engine helper takes a `domain_writer: Callable[[Path, str], None]` param.
+**Refactor:** moderate. `call_provider` consolidates with #1-#7. `_write_canon_file` needs the domain to expose a public `write_canon(path, content)` API on its `Domain` protocol (see `tinyassets/registry.py` for the existing protocol surface). Then this engine helper takes a `domain_writer: Callable[[Path, str], None]` param.
 
-### 9. `workflow/retrieval/agentic_search.py:140` — hybrid (moderate)
+### 9. `tinyassets/retrieval/agentic_search.py:140` — hybrid (moderate)
 
 ```python
 def run_phase_retrieval(...):
@@ -183,7 +183,7 @@ def run_phase_retrieval(...):
 **Classification:** hybrid — `resolve_kg_path` IS legitimately domain-side (knows where the fantasy domain stores its KG file), but the engine retrieval router has to know it exists.
 **Refactor:** moderate. Domain protocol should expose a `kg_path(state) -> Path | None` method; engine asks the registered domain rather than reaching into `domains.fantasy_author.phases._paths`. Cleaner long-term but requires a tiny protocol extension.
 
-### 10. `workflow/retrieval/agentic_search.py:317` — engine-only-leak (trivial)
+### 10. `tinyassets/retrieval/agentic_search.py:317` — engine-only-leak (trivial)
 
 ```python
 def _build_provider_call() -> Callable[[str, str, str], Any] | None:
@@ -199,7 +199,7 @@ def _build_provider_call() -> Callable[[str, str, str], Any] | None:
 **Classification:** engine-only-leak (same `_FORCE_MOCK` smell as #6/#7).
 **Refactor:** trivial for `call_provider`, moderate for the `_FORCE_MOCK` toggle.
 
-### 11. `workflow/checkpointing/sqlite_saver.py:167` — domain-handler (large)
+### 11. `tinyassets/checkpointing/sqlite_saver.py:167` — domain-handler (large)
 
 ```python
 def build_compiled_graphs(checkpointer):
@@ -221,7 +221,7 @@ def build_compiled_graphs(checkpointer):
 **Classification:** domain-handler — this function IS a domain entry point that landed in the engine package. The dict keys (`scene`/`chapter`/`book`/`universe`) are entirely fantasy-vocabulary; another domain (e.g. research_probe) would have entirely different graphs.
 **Refactor:** large. This is misplaced architecturally — `build_compiled_graphs` is a fantasy-domain function masquerading as an engine helper. The right fix is to move it to `domains/fantasy_daemon/checkpointing.py` or have the domain's `Domain` protocol expose a `compile_graphs(checkpointer) -> dict[str, CompiledStateGraph]` method. Engine then asks the registered domain. Touches every caller (`workflow.checkpointing` users), so it's a real architectural commit, not a 1-liner.
 
-### 12. `workflow/desktop/launcher.py:544, 553, 555` — domain-handler (large)
+### 12. `tinyassets/desktop/launcher.py:544, 553, 555` — domain-handler (large)
 
 ```python
 _RELOAD_PACKAGES = (
@@ -244,7 +244,7 @@ _RELOAD_PACKAGES = (
 
 ## Comment-only reference (NOT a coupling site)
 
-### `workflow/universe_server.py:1126` — comment-only
+### `tinyassets/universe_server.py:1126` — comment-only
 
 ```python
 # The daemon writes `current_phase` and `last_updated` into status.json via
@@ -256,7 +256,7 @@ _RELOAD_PACKAGES = (
 
 ## Docstring reference (NOT a coupling site)
 
-### `workflow/registry.py:13` — docstring example
+### `tinyassets/registry.py:13` — docstring example
 
 ```python
 Usage:
@@ -274,7 +274,7 @@ Usage:
 When host green-lights `docs/audits/2026-04-25-engine-domain-api-separation.md` work:
 
 ### Phase A — engine-only-leak consolidation (low-hanging fruit)
-Sites #1, #2, #3, #4, #5 — all trivial-difficulty `provider_call` lazy imports. One Task #14-style consolidation: extract a `_resolve_default_provider_call()` helper to `workflow/providers/__init__.py` (or similar engine-side location); the 5 callers replace their local `try: from domains... import call_provider` blocks with a single function call. Identity-check tests lock in the contract.
+Sites #1, #2, #3, #4, #5 — all trivial-difficulty `provider_call` lazy imports. One Task #14-style consolidation: extract a `_resolve_default_provider_call()` helper to `tinyassets/providers/__init__.py` (or similar engine-side location); the 5 callers replace their local `try: from domains... import call_provider` blocks with a single function call. Identity-check tests lock in the contract.
 
 **Estimate:** 60-90 min including tests + verifier handoff. Net ~20 LOC removed across 5 files; 1 new helper + tests/test_provider_resolution.py.
 
@@ -284,7 +284,7 @@ Sites #6, #7, #10 — moderate-difficulty `_FORCE_MOCK` reaches. Replace with `w
 **Estimate:** 90-120 min. Reflexion + retrieval modules + 1 new helper + integration tests.
 
 ### Phase C — domain protocol extensions for the 2 hybrid sites (#8, #9)
-Add to `workflow/protocols.py` (or wherever the `Domain` protocol lives):
+Add to `tinyassets/protocols.py` (or wherever the `Domain` protocol lives):
 ```python
 def write_canon(self, path: Path, content: str) -> None: ...
 def kg_path(self, state: dict[str, Any]) -> Path | None: ...
@@ -301,7 +301,7 @@ Site #12 (tray reload allowlist): replace hard-coded list with `default_registry
 **Estimate:** 1-2 dev-days, host-decision required on protocol-surface shape. Best done AFTER Phases A-C land so the engine→domain dependency surface is already shrunk.
 
 ### Phase E — fantasy_author → fantasy_daemon rename cleanup
-Once Phases A-D land, the only remaining `domains.fantasy_author` refs are documentation (universe_server.py L1126 comment + registry.py L13 docstring). Rename Phase 2's `WORKFLOW_AUTHOR_RENAME_COMPAT` shim can flip default-off, then be removed in rename Phase 5.
+Once Phases A-D land, the only remaining `domains.fantasy_author` refs are documentation (universe_server.py L1126 comment + registry.py L13 docstring). Rename Phase 2's `TINYASSETS_AUTHOR_RENAME_COMPAT` shim can flip default-off, then be removed in rename Phase 5.
 
 **Estimate:** 15 min after preceding phases land. Just a docstring/comment refresh.
 

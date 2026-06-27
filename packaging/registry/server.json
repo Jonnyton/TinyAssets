@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.Jonnyton/workflow-universe-server",
-  "title": "Workflow",
+  "name": "io.github.Jonnyton/tinyassets-universe-server",
+  "title": "TinyAssets",
   "description": "Create, browse, remix, collaborate on, and run durable AI workflow nodes from MCP hosts.",
   "version": "0.1.0",
   "repository": {
-    "url": "https://github.com/Jonnyton/Workflow",
+    "url": "https://github.com/Jonnyton/TinyAssets",
     "source": "github"
   },
   "websiteUrl": "https://tinyassets.io/connect",
   "icons": [
     {
-      "src": "https://raw.githubusercontent.com/Jonnyton/Workflow/main/assets/icon.png",
+      "src": "https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/assets/icon.png",
       "mimeType": "image/png",
       "sizes": [
         "512x512"

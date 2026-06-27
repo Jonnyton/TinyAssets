@@ -123,7 +123,7 @@ When the user has computer-use access (Claude Code, ChatGPT desktop, OSS-app lik
 
 The local-app user's chat-client can:
 - Read/write the local file system directly (no MCP roundtrip)
-- Spawn local processes (run `python -m workflow`, run a daemon, run tests)
+- Spawn local processes (run `python -m tinyassets`, run a daemon, run tests)
 - Edit code in an IDE (Cursor, VS Code)
 - Show file diffs / preview rich artifacts inline
 
@@ -164,7 +164,7 @@ As Claude.ai web gains computer-use + local-file capabilities (Anthropic + OpenA
 
 The `host` primitive becomes the only structurally-tier-restricted one — running a daemon requires a real local computer, not just file system access. (Browser users with persistent tab-pinned connection to a cloud daemon could simulate hosting, but that's a different shape.)
 
-**Provider portability:** the 5 + 2 primitives are CONTRACTS, not implementations. Claude.ai, ChatGPT, Cline, OpenWebUI all implement MCP tools per spec — same JSON shape works on all of them. Per F33 of the capability-axis sweep, current tool descriptions are already client-portable (zero hardcoded "Claude.ai" / "ChatGPT" in canonical workflow/api/* tool descriptions). The proposed 5-primitive consolidation MAINTAINS this portability.
+**Provider portability:** the 5 + 2 primitives are CONTRACTS, not implementations. Claude.ai, ChatGPT, Cline, OpenWebUI all implement MCP tools per spec — same JSON shape works on all of them. Per F33 of the capability-axis sweep, current tool descriptions are already client-portable (zero hardcoded "Claude.ai" / "ChatGPT" in canonical tinyassets/api/* tool descriptions). The proposed 5-primitive consolidation MAINTAINS this portability.
 
 **Phone-browser-only canonical persona:** per F26 of the sweep, the lowest-capability target is "phone-browser-only-OR-ChatGPT user." All 5 primitives MUST work on phone-Claude.ai AND phone-ChatGPT. The 5-primitive consolidation reduces tool-list cognitive load on small screens (5 < 7) — net win for phone users.
 
@@ -172,7 +172,7 @@ The `host` primitive becomes the only structurally-tier-restricted one — runni
 
 ## §5 — Comparison vs current platform surface
 
-### §5.1 — Current 7-tool surface (per `workflow/universe_server.py`)
+### §5.1 — Current 7-tool surface (per `tinyassets/universe_server.py`)
 
 | Current tool | LOC dispatched (approx.) | Action verbs | Survives? | Notes |
 |---|---|---|---|---|

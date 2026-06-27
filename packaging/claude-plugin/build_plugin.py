@@ -1,8 +1,8 @@
-"""Stage the Workflow Server claude-plugin runtime tree.
+"""Stage the TinyAssets Server claude-plugin runtime tree.
 
 Mirrors the auto-build contract that ``packaging/mcpb/build_bundle.py``
 implements for the MCPB surface. Both surfaces auto-derive from the
-live ``workflow/`` package — no hand-maintained snapshots, no shim,
+live ``tinyassets/`` package — no hand-maintained snapshots, no shim,
 no drift between commits.
 
 Per design-note ``2026-04-14-packaging-mirror-decision.md`` Option 1.
@@ -22,10 +22,10 @@ PLUGIN_ROOT = (
     / "packaging"
     / "claude-plugin"
     / "plugins"
-    / "workflow-universe-server"
+    / "tinyassets-universe-server"
 )
 RUNTIME_ROOT = PLUGIN_ROOT / "runtime"
-WORKFLOW_SRC = REPO_ROOT / "workflow"
+TINYASSETS_SRC = REPO_ROOT / "tinyassets"
 
 _TREE_EXCLUDES: tuple[str, ...] = (
     "__pycache__",
@@ -67,27 +67,30 @@ def _copy_tree(source: Path, destination: Path) -> int:
 
 
 def _stage_runtime() -> int:
-    """Replace the runtime's bundled `workflow/` tree with the live one.
+    """Replace the runtime's bundled `tinyassets/` tree with the live one.
 
     Preserves the runtime scaffolding (server.py, bootstrap.py,
     requirements.txt, pyproject.toml) — those carry venv-bootstrap
     logic the build script does not regenerate. Only the
-    ``workflow/`` subtree (and the now-retired ``fantasy_author/``
+    ``tinyassets/`` subtree (and the now-retired ``fantasy_author/``
     snapshot, if present) is purged + re-staged.
     """
-    workflow_dir = RUNTIME_ROOT / "workflow"
+    tinyassets_dir = RUNTIME_ROOT / "tinyassets"
+    old_workflow_dir = RUNTIME_ROOT / "workflow"
     legacy_fantasy = RUNTIME_ROOT / "fantasy_author"
 
-    if workflow_dir.exists():
-        shutil.rmtree(workflow_dir)
+    if tinyassets_dir.exists():
+        shutil.rmtree(tinyassets_dir)
+    if old_workflow_dir.exists():
+        shutil.rmtree(old_workflow_dir)
     if legacy_fantasy.exists():
         # Pre-Option-1 snapshot. Remove so the runtime imports the
-        # auto-staged ``workflow.universe_server`` and never the
+        # auto-staged ``tinyassets.universe_server`` and never the
         # frozen ``fantasy_author/universe_server.py``.
         shutil.rmtree(legacy_fantasy)
 
-    workflow_dir.mkdir(parents=True, exist_ok=True)
-    return _copy_tree(WORKFLOW_SRC, workflow_dir)
+    tinyassets_dir.mkdir(parents=True, exist_ok=True)
+    return _copy_tree(TINYASSETS_SRC, tinyassets_dir)
 
 
 def _probe_import() -> None:
@@ -98,8 +101,8 @@ def _probe_import() -> None:
     """
     probe_script = (
         f"import sys; sys.path.insert(0, {str(RUNTIME_ROOT)!r}); "
-        "import workflow.universe_server as us; "
-        "assert hasattr(us, 'main'), 'workflow.universe_server.main missing'; "
+        "import tinyassets.universe_server as us; "
+        "assert hasattr(us, 'main'), 'tinyassets.universe_server.main missing'; "
         "print('probe-ok')"
     )
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
@@ -118,9 +121,9 @@ def _probe_import() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage the Workflow claude-plugin runtime by re-staging the "
-            "live workflow/ package into "
-            "packaging/claude-plugin/.../runtime/workflow/."
+            "Stage the TinyAssets claude-plugin runtime by re-staging the "
+            "live tinyassets/ package into "
+            "packaging/claude-plugin/.../runtime/tinyassets/."
         ),
     )
     parser.add_argument(
@@ -135,7 +138,7 @@ def main() -> None:
 
     file_count = _stage_runtime()
     print(
-        f"Staged claude-plugin runtime workflow/ at {RUNTIME_ROOT / 'workflow'} "
+        f"Staged claude-plugin runtime tinyassets/ at {RUNTIME_ROOT / 'tinyassets'} "
         f"({file_count} files)"
     )
 

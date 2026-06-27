@@ -29,7 +29,7 @@ from typing import Any
 import pytest
 import yaml
 
-from workflow.bid.node_bid import NodeBid, bid_path, bids_dir, claim_node_bid
+from tinyassets.bid.node_bid import NodeBid, bid_path, bids_dir, claim_node_bid
 
 # ---------------------------------------------------------------------------
 # Git harness helpers
@@ -203,7 +203,7 @@ def test_claim_rebase_midway(race_repos: dict[str, Path], monkeypatch: Any) -> N
     + execution continues; the subsequent push will fail if the
     pull left state inconsistent).
     """
-    import workflow.bid.node_bid as nb_mod
+    import tinyassets.bid.node_bid as nb_mod
 
     clone_a = race_repos["clone_a"]
     clone_b = race_repos["clone_b"]
@@ -254,7 +254,7 @@ def test_claim_push_failure_revert_verify(race_repos: dict[str, Path], monkeypat
     Verifies the revert (step 5 of claim sequence) cleans both the
     renamed bid file and any executor bid_outputs pre-populated.
     """
-    import workflow.bid.node_bid as nb_mod
+    import tinyassets.bid.node_bid as nb_mod
 
     clone_a = race_repos["clone_a"]
     clone_b = race_repos["clone_b"]
@@ -340,7 +340,7 @@ def test_claim_stale_origin_ref(race_repos: dict[str, Path]) -> None:
     Pins the exact race G.2 closed: the fallback path short-circuits
     to None on push failure regardless of local bid state after revert.
     """
-    import workflow.bid.node_bid as nb_mod
+    import tinyassets.bid.node_bid as nb_mod
 
     clone_a = race_repos["clone_a"]
     clone_b = race_repos["clone_b"]

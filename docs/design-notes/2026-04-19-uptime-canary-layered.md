@@ -66,7 +66,7 @@ Single-line format so `grep RED .agents/uptime.log | tail -5` gives instant stat
 
 **Shape:**
 
-- User-sim persona `uptime_canary` (new minimal persona — one-liner: "briefly verifies the Workflow MCP is responding").
+- User-sim persona `uptime_canary` (new minimal persona — one-liner: "briefly verifies the TinyAssets MCP is responding").
 - Single turn: persona says "Are you there? Call get_status and tell me the provider_routed field."
 - Expect: chatbot invokes `get_status` MCP tool + returns a body mentioning `provider_routed`.
 - Pass = tool was called AND response parsed. Fail = tool not called, OR error, OR empty.

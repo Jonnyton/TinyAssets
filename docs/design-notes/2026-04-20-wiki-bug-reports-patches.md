@@ -33,9 +33,9 @@ file.
 
 ## (a) Add `"bugs"` to `_WIKI_CATEGORIES`
 
-**File:** `workflow/universe_server.py` (line 9056-9066).
+**File:** `tinyassets/universe_server.py` (line 9056-9066).
 
-**Mirror file:** `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/universe_server.py`
+**Mirror file:** `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py`
 at the matching `_WIKI_CATEGORIES = (` block. Apply identically.
 
 ```diff
@@ -164,7 +164,7 @@ Bugs don't require wikilinks for lint-pass (they have stable
 
 ## (c) Insert rule 11 into `_CONTROL_STATION_PROMPT`
 
-**File:** `workflow/universe_server.py` (between line 943 and 944 —
+**File:** `tinyassets/universe_server.py` (between line 943 and 944 —
 end of rule 10, before blank line preceding `## Tool Catalog`).
 
 Anchor on "narrow case of confirmed tool failure." + the blank line
@@ -204,7 +204,7 @@ No change needed for `_EXTENSION_GUIDE_PROMPT` or other prompts.
 
 ## (d) `wiki` tool docstring — advertise `file_bug` + `bugs` category
 
-**File:** `workflow/universe_server.py` (wiki tool args docstring,
+**File:** `tinyassets/universe_server.py` (wiki tool args docstring,
 lines 9298-9319).
 
 Two edits: (d1) extend the `action` enumeration in the docstring to
@@ -326,7 +326,7 @@ to `handler(**kwargs)` so `_wiki_file_bug` receives them.
 
 ## (e) New `_wiki_file_bug` helper + BUG-NNN allocator
 
-**File:** `workflow/universe_server.py` — add alongside other
+**File:** `tinyassets/universe_server.py` — add alongside other
 `_wiki_*` action implementations (around line 9407+, after the
 existing `_wiki_write` / before `_wiki_consolidate`).
 
@@ -510,15 +510,15 @@ def _render_bug_markdown(
   and monkey-patch `_wiki_pages_dir` / `_wiki_drafts_dir`.
 - **No `wiki-mcp/server.js` mirror for `file_bug`.** That server is
   the read-only-wiki bridge for Claude Code sessions; chatbots on the
-  Workflow connector file bugs through the Workflow server directly.
+  TinyAssets connector file bugs through the Workflow server directly.
   The `bugs` category entry in (b) is enough for wiki-mcp to render
-  + search bug pages; writing is routed through the Workflow MCP.
+  + search bug pages; writing is routed through the TinyAssets MCP.
 
 ---
 
 ## Landing checklist for dev
 
-1. [ ] Apply (a) to `workflow/universe_server.py` + its packaging
+1. [ ] Apply (a) to `tinyassets/universe_server.py` + its packaging
        mirror.
 2. [ ] Apply (b1-b5) to `C:/Users/Jonathan/Projects/wiki-mcp/server.js`.
 3. [ ] Apply (e) — new `_wiki_file_bug` helper + allocator + renderer.

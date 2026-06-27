@@ -58,7 +58,7 @@ Task #25 filed with full description capturing all 6 decisions. blockedBy #1 (pl
 
 Old: `Phase 6 .author_server.db → .workflow.db migration | per design note 2026-04-27; 6 host asks: ... | Arc C | host-decision`
 
-New: `**Phase 6 DECIDED 2026-04-28** (nav): \`.workflow.db\` filename, \`db_path()\` fn, Option A migration, 30s restart, plugin minor-bump. ~2-3h dev + 1h host. | workflow/storage/__init__.py + plugin mirror + tests | Arc C | dev-ready (post-Arc-C)`
+New: `**Phase 6 DECIDED 2026-04-28** (nav): \`.workflow.db\` filename, \`db_path()\` fn, Option A migration, 30s restart, plugin minor-bump. ~2-3h dev + 1h host. | tinyassets/storage/__init__.py + plugin mirror + tests | Arc C | dev-ready (post-Arc-C)`
 
 ---
 
@@ -103,9 +103,9 @@ Path A end-state spec (`docs/exec-plans/active/2026-04-19-rename-end-state.md`) 
 | 2 | Test fixtures updated | `from domains.fantasy_author` in tests/ | ~50 sites | partial — Arc B Phase 2 |
 | 3 | Compat aliases removed | `_rename_compat.py` | exists | pending Arc B Phase 3 |
 | 4 | `_rename_compat.py` + alias modules deleted | path exists | exists | pending Arc B Phase 3 |
-| 5 | `WORKFLOW_AUTHOR_RENAME_COMPAT` flag removed | flag-name grep | extant | pending Arc B Phase 3 |
-| 6 | DB schema rename `author_definitions` → `daemon_definitions` | `author_definitions` in workflow/storage/ | **0 matches** | **OBVIATED** |
-| 7 | ID-prefix backfill `"author::"` → `"daemon::"` | `"author::"` in workflow/ | **0 matches** | **OBVIATED** |
+| 5 | `TINYASSETS_AUTHOR_RENAME_COMPAT` flag removed | flag-name grep | extant | pending Arc B Phase 3 |
+| 6 | DB schema rename `author_definitions` → `daemon_definitions` | `author_definitions` in tinyassets/storage/ | **0 matches** | **OBVIATED** |
+| 7 | ID-prefix backfill `"author::"` → `"daemon::"` | `"author::"` in tinyassets/ | **0 matches** | **OBVIATED** |
 | 8 | Brand-pass copy | `Universe Server` in canonical user-facing | partial | partial — skill scrub LANDED 6ce641f, doc rewrite #14 LANDED, Phase 6 = data-layer brand-pass |
 
 ### Risk-register satisfaction (Path A §risk-register)

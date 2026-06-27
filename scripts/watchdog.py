@@ -1,4 +1,4 @@
-"""Workflow daemon watchdog — probe + restart on sustained failure.
+"""TinyAssets daemon watchdog — probe + restart on sustained failure.
 
 Self-host migration Row L per
 ``docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md``.
@@ -11,7 +11,7 @@ loop, deadlocked thread, wedged SQLite transaction, etc.).
 Mechanism: probe the container-internal MCP endpoint every tick via
 ``scripts/mcp_public_canary.py``. Track consecutive reds across ticks
 via a small state file. On 3 consecutive reds → ``systemctl restart
-workflow-daemon`` (which the systemd unit wires to
+tinyassets-daemon`` (which the systemd unit wires to
 ``docker compose down && up``). On GREEN after reds → reset state.
 
 Stdlib only. No third-party deps. Idempotent + race-free because the
@@ -27,7 +27,7 @@ Exit codes
 
 State
 -----
-Persisted at ``/var/lib/workflow-watchdog/state.json`` (readable +
+Persisted at ``/var/lib/tinyassets-watchdog/state.json`` (readable +
 writable by the ``workflow`` user). Schema::
 
     {"consecutive_reds": N, "last_probe_ts": "<iso>",
@@ -50,10 +50,10 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_PROBE_URL = "http://127.0.0.1:8001/mcp"
-DEFAULT_STATE_DIR = Path("/var/lib/workflow-watchdog")
+DEFAULT_STATE_DIR = Path("/var/lib/tinyassets-watchdog")
 DEFAULT_STATE_FILE = DEFAULT_STATE_DIR / "state.json"
-DEFAULT_CANARY_SCRIPT = Path("/opt/workflow/scripts/mcp_public_canary.py")
-DEFAULT_SERVICE_UNIT = "workflow-daemon.service"
+DEFAULT_CANARY_SCRIPT = Path("/opt/tinyassets/scripts/mcp_public_canary.py")
+DEFAULT_SERVICE_UNIT = "tinyassets-daemon.service"
 DEFAULT_THRESHOLD = 3
 # Min wall-time between restarts. Prevents a wedged daemon from
 # being restart-looped every 30s when the underlying problem
@@ -66,9 +66,9 @@ MIN_RESTART_INTERVAL_SECONDS = 600  # 10 min
 # which collided with `tests/test_watchdog.py` writes (no `alarm_log=`
 # injection) and contaminated the only signal we had for production
 # watchdog behavior. Audit: docs/audits/2026-04-26-restart-loop-correlation.md.
-DEFAULT_ALARM_LOG = Path("/var/log/workflow/uptime_alarms.log")
+DEFAULT_ALARM_LOG = Path("/var/log/tinyassets/uptime_alarms.log")
 ALARM_LOG = Path(
-    os.environ.get("WORKFLOW_WATCHDOG_ALARM_LOG", str(DEFAULT_ALARM_LOG))
+    os.environ.get("TINYASSETS_WATCHDOG_ALARM_LOG", str(DEFAULT_ALARM_LOG))
 )
 
 
@@ -136,7 +136,7 @@ def _probe(canary_script: Path, url: str, timeout: float) -> tuple[bool, str]:
     return (False, f"exit={result.returncode}: {msg[:300]}")
 
 
-GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "Jonnyton/Workflow")
+GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "Jonnyton/TinyAssets")
 GITHUB_API = "https://api.github.com"
 
 
@@ -175,9 +175,9 @@ def _open_gh_issue(title: str, body: str) -> tuple[bool, str]:
 def _restart_service(unit: str) -> tuple[bool, str]:
     """Issue systemctl restart via sudo. Return (success, message).
 
-    The workflow user doesn't have bare systemctl privilege — the
+    The tinyassets user doesn't have bare systemctl privilege — the
     hetzner-bootstrap.sh script installs a scoped sudoers rule at
-    /etc/sudoers.d/workflow-watchdog giving the user NOPASSWD ONLY
+    /etc/sudoers.d/tinyassets-watchdog giving the user NOPASSWD ONLY
     for this exact command. Any other systemctl action is refused.
     """
     try:
@@ -312,7 +312,7 @@ def watchdog_tick(
 
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description="Workflow daemon watchdog — one tick.")
+    ap = argparse.ArgumentParser(description="TinyAssets daemon watchdog — one tick.")
     ap.add_argument("--probe-url", default=DEFAULT_PROBE_URL)
     ap.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
     ap.add_argument("--service-unit", default=DEFAULT_SERVICE_UNIT)

@@ -45,5 +45,5 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            'sudo docker exec -e CODEX_HOME=/data/.codex workflow-daemon codex exec --full-auto --skip-git-repo-check "Reply with the single word OK." >/dev/null'
+            'sudo docker exec -e CODEX_HOME=/data/.codex tinyassets-daemon codex exec --full-auto --skip-git-repo-check "Reply with the single word OK." >/dev/null'
           echo "Codex keepalive OK; subscription session exercised."

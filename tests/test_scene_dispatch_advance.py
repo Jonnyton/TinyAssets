@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from domains.fantasy_daemon.graphs.universe import _build_book_execution_seed
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     PUBLISH_STAGE_PROVISIONAL,
     ROLE_PUBLISHABLE,
     WorkTarget,

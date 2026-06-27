@@ -10,7 +10,7 @@ parked at NODE_STATUS_RUNNING even after the run flips to RUN_STATUS_FAILED
 Two contracts under test:
 1. The compiler-side emission: phase="failed" fires from BOTH the policy-
    aware exception handler AND the plain provider_call handler in
-   workflow/graph_compiler.py.
+   tinyassets/graph_compiler.py.
 2. The runs.py-side translator: phase="failed" maps to NODE_STATUS_FAILED
    in both _on_node handlers, so build_node_status_map flips the node
    to "failed" terminally.
@@ -20,14 +20,14 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import CompilerError, compile_branch
-from workflow.runs import (
+from tinyassets.graph_compiler import CompilerError, compile_branch
+from tinyassets.runs import (
     NODE_STATUS_FAILED,
     NODE_STATUS_RUNNING,
     RUN_STATUS_FAILED,
@@ -109,7 +109,7 @@ def test_failed_event_emitted_on_policy_path_exception(monkeypatch):
             raise RuntimeError("All providers for role='writer' are API-key-backed")
 
     monkeypatch.setattr(
-        "workflow.graph_compiler._get_shared_router",
+        "tinyassets.graph_compiler._get_shared_router",
         lambda: _RaisingRouter(),
     )
 

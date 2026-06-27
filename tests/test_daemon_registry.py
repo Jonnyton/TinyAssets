@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from workflow import daemon_registry
+from tinyassets import daemon_registry
 
 
 def test_create_soulless_daemon_uses_project_wide_daemon_id(tmp_path):

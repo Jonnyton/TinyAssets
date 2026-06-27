@@ -174,7 +174,7 @@ wiki changes, but those changes should cite memory IDs and source episodes.
 Prompt composition should be a read policy:
 
 1. Load soul capsule.
-2. Load bounded wiki packet from `workflow/daemon_memory.py`.
+2. Load bounded wiki packet from `tinyassets/daemon_memory.py`.
 3. Generate a task-specific memory query from the node/gate contract, daemon
    role, recent failure state, and current branch context.
 4. Retrieve candidate mini-brain entries by structured filters, FTS, and vector
@@ -302,7 +302,7 @@ This keeps the v1 loop team unique while allowing community capacity.
 
 ## Minimal Tool Surface
 
-Future `workflow/daemon_brain.py` should expose a small internal/tool surface:
+Future `tinyassets/daemon_brain.py` should expose a small internal/tool surface:
 
 1. `capture_daemon_memory`
 2. `search_daemon_memory`
@@ -318,10 +318,10 @@ level, not database mechanics.
 
 The first implementation adds:
 
-- `workflow/daemon_brain.py` with daemon-scoped SQLite entries, FTS search,
+- `tinyassets/daemon_brain.py` with daemon-scoped SQLite entries, FTS search,
   content fingerprint dedupe, observable memory events, promotion records, and
   optional LanceDB indexing when an embedding is supplied.
-- bounded mini-brain hit injection in `workflow/daemon_memory.py`, preserving
+- bounded mini-brain hit injection in `tinyassets/daemon_memory.py`, preserving
   the existing packet cap and reserving brain budget when a task-specific query
   is supplied.
 - non-destructive daemon wiki scaffolding for `pages/brain/review.md` using
@@ -333,7 +333,7 @@ The first implementation adds:
 
 1. Focused pytest coverage landed in `tests/test_daemon_brain.py`; the smoke
    script remains as an operator CLI proof.
-2. Plugin mirror parity is green; `workflow/daemon_brain.py` is present in the
+2. Plugin mirror parity is green; `tinyassets/daemon_brain.py` is present in the
    packaged Claude plugin runtime.
 3. Minimal daemon-owned `universe` action surface landed:
    `daemon_memory_capture`, `daemon_memory_search`, `daemon_memory_list`,

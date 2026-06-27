@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from workflow.daemon_brain import (  # noqa: E402
+from tinyassets.daemon_brain import (  # noqa: E402
     build_daemon_brain_packet,
     capture_daemon_memory,
     list_daemon_memory,
@@ -22,9 +22,9 @@ from workflow.daemon_brain import (  # noqa: E402
     promote_daemon_memory_to_wiki,
     search_daemon_memory,
 )
-from workflow.daemon_memory import build_daemon_memory_packet  # noqa: E402
-from workflow.daemon_registry import create_daemon  # noqa: E402
-from workflow.daemon_wiki import daemon_wiki_root, scaffold_daemon_wiki  # noqa: E402
+from tinyassets.daemon_memory import build_daemon_memory_packet  # noqa: E402
+from tinyassets.daemon_registry import create_daemon  # noqa: E402
+from tinyassets.daemon_wiki import daemon_wiki_root, scaffold_daemon_wiki  # noqa: E402
 
 
 def _create_daemon(base: Path, name: str) -> dict:

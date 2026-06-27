@@ -8,15 +8,15 @@ and both invoke ``gh pr create``, producing duplicate PRs.
 
 Round-2 contract enforced here:
 
-* :func:`workflow.storage.external_write_receipts.try_reserve_receipt`
+* :func:`tinyassets.storage.external_write_receipts.try_reserve_receipt`
   atomically reserves the slot via INSERT … ON CONFLICT DO NOTHING.
   Concurrent reservers see exactly one ``reserved`` outcome and the
   others see ``in_flight`` (pending row) or ``duplicate`` (terminal
   succeeded row).
-* :func:`workflow.storage.external_write_receipts.finalize_receipt`
+* :func:`tinyassets.storage.external_write_receipts.finalize_receipt`
   promotes ``pending`` → ``succeeded`` only when the caller's
   ``run_id`` matches the reservation owner.
-* :func:`workflow.storage.external_write_receipts.release_reservation`
+* :func:`tinyassets.storage.external_write_receipts.release_reservation`
   flips ``pending`` → ``failed`` only when the caller still owns the
   row, so a retry under the same hint can re-reserve.
 * The effector NEVER silently swallows
@@ -38,13 +38,13 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.effectors import EXTERNAL_WRITE_SINK_GITHUB_PR
-from workflow.effectors.github_pr import (
+from tinyassets.effectors import EXTERNAL_WRITE_SINK_GITHUB_PR
+from tinyassets.effectors.github_pr import (
     _CAPABILITIES_ENV,
     run_github_pr_effector,
 )
-from workflow.storage.effector_consents import grant_consent
-from workflow.storage.external_write_receipts import (
+from tinyassets.storage.effector_consents import grant_consent
+from tinyassets.storage.external_write_receipts import (
     STALE_PENDING_THRESHOLD_SECONDS,
     STATUS_FAILED,
     STATUS_PENDING,
@@ -57,7 +57,7 @@ from workflow.storage.external_write_receipts import (
     try_reserve_receipt,
 )
 
-_DESTINATION = "Jonnyton/Workflow"
+_DESTINATION = "Jonnyton/TinyAssets"
 
 
 def _make_packet(*, idempotency_hint: str = "hint-race") -> dict:
@@ -90,8 +90,8 @@ def gates_open(universe_dir, monkeypatch):
     monkeypatch.setenv(
         _CAPABILITIES_ENV, json.dumps({_DESTINATION: "tok"}),
     )
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_ENABLED", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     grant_consent(
         universe_dir,
         sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
@@ -307,7 +307,7 @@ def test_migration_adds_status_column_to_existing_db(tmp_path):
     universe = tmp_path / "u-mig"
     universe.mkdir()
     # Hand-build a round-1-shape table.
-    from workflow.storage.external_write_receipts import (
+    from tinyassets.storage.external_write_receipts import (
         receipts_db_path,
     )
     db = receipts_db_path(universe)
@@ -369,7 +369,7 @@ def test_concurrent_effector_calls_invoke_gh_exactly_once(gates_open):
     """
     universe = gates_open
     packet = _make_packet(idempotency_hint="hint-concurrent")
-    fake_stdout = "https://github.com/Jonnyton/Workflow/pull/4242\n"
+    fake_stdout = "https://github.com/Jonnyton/TinyAssets/pull/4242\n"
     call_count = {"n": 0}
 
     def fake_run(*args, **kwargs):
@@ -382,7 +382,7 @@ def test_concurrent_effector_calls_invoke_gh_exactly_once(gates_open):
     # invoked gh. We simulate this with a manually-injected pending
     # row at the storage layer — the same shape ``try_reserve_receipt``
     # would have left after a successful reserve.
-    from workflow.storage.external_write_receipts import (
+    from tinyassets.storage.external_write_receipts import (
         _connect,
         initialize_receipts_db,
     )
@@ -403,7 +403,7 @@ def test_concurrent_effector_calls_invoke_gh_exactly_once(gates_open):
     # Caller B enters the effector. Reservation is contended; they
     # must see concurrent_in_flight and skip gh.
     with patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         side_effect=fake_run,
     ):
         result_b = run_github_pr_effector(
@@ -422,14 +422,14 @@ def test_concurrent_effector_calls_invoke_gh_exactly_once(gates_open):
 
     # Step 2: caller A finishes its (mocked) gh invocation and
     # finalizes the receipt to succeeded.
-    from workflow.storage.external_write_receipts import finalize_receipt
+    from tinyassets.storage.external_write_receipts import finalize_receipt
     finalize_receipt(
         universe,
         idempotency_hint="hint-concurrent",
         sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
         evidence={
             "pr_number": 4242,
-            "pr_url": "https://github.com/Jonnyton/Workflow/pull/4242",
+            "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/4242",
         },
         run_id="run-A",
     )
@@ -437,7 +437,7 @@ def test_concurrent_effector_calls_invoke_gh_exactly_once(gates_open):
     # Step 3: caller B retries. Now the row is terminal-succeeded, so
     # they get the dedup-hit shape and STILL don't invoke gh.
     with patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         side_effect=fake_run,
     ):
         result_b_retry = run_github_pr_effector(
@@ -471,7 +471,7 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
     """When the receipt is already terminal-succeeded, no thread should
     invoke gh — both see ``duplicate``."""
     universe = gates_open
-    from workflow.storage.external_write_receipts import record_receipt
+    from tinyassets.storage.external_write_receipts import record_receipt
     record_receipt(
         universe,
         idempotency_hint="hint-already-done",
@@ -495,7 +495,7 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
 
     def worker(run_id: str) -> None:
         with patch(
-            "workflow.effectors.github_pr.subprocess.run",
+            "tinyassets.effectors.github_pr.subprocess.run",
             side_effect=fake_run,
         ):
             results[run_id] = run_github_pr_effector(
@@ -542,10 +542,10 @@ def test_receipt_store_lock_error_returns_structured_evidence(
         raise sqlite3.OperationalError("database is locked")
 
     with patch(
-        "workflow.effectors.github_pr._try_reserve",
+        "tinyassets.effectors.github_pr._try_reserve",
         side_effect=boom,
     ), patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -576,10 +576,10 @@ def test_receipt_store_non_lock_error_also_short_circuits(
         raise sqlite3.OperationalError("disk I/O error")
 
     with patch(
-        "workflow.effectors.github_pr._try_reserve",
+        "tinyassets.effectors.github_pr._try_reserve",
         side_effect=boom,
     ), patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -604,15 +604,15 @@ def test_effector_materializes_packet_changes_before_creating_pr(gates_open):
     packet["payload"]["changes_json"] = changes_json
     succeed = SimpleNamespace(
         returncode=0,
-        stdout="https://github.com/Jonnyton/Workflow/pull/77\n",
+        stdout="https://github.com/Jonnyton/TinyAssets/pull/77\n",
         stderr="",
     )
 
     with patch(
-        "workflow.effectors.github_pr._materialize_branch",
+        "tinyassets.effectors.github_pr._materialize_branch",
         return_value={"materialized": True},
     ) as mock_materialize, patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=succeed,
     ) as mock_run:
         result = run_github_pr_effector(
@@ -642,14 +642,14 @@ def test_failure_releases_reservation_and_retry_can_proceed(gates_open):
     )
     succeed = SimpleNamespace(
         returncode=0,
-        stdout="https://github.com/Jonnyton/Workflow/pull/77\n",
+        stdout="https://github.com/Jonnyton/TinyAssets/pull/77\n",
         stderr="",
     )
     with patch(
-        "workflow.effectors.github_pr._materialize_branch",
+        "tinyassets.effectors.github_pr._materialize_branch",
         return_value={"materialized": True},
     ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fail,
     ):
         first = run_github_pr_effector(
@@ -672,10 +672,10 @@ def test_failure_releases_reservation_and_retry_can_proceed(gates_open):
 
     # Retry under the same hint succeeds.
     with patch(
-        "workflow.effectors.github_pr._materialize_branch",
+        "tinyassets.effectors.github_pr._materialize_branch",
         return_value={"materialized": True},
     ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=succeed,
     ):
         second = run_github_pr_effector(
@@ -706,14 +706,14 @@ def test_failure_releases_reservation_and_retry_can_proceed(gates_open):
 def test_storage_module_exports_atomic_primitives():
     """Lock the public surface so a future refactor can't quietly
     revert to a non-atomic record_receipt-only flow."""
-    from workflow.storage import external_write_receipts as mod
+    from tinyassets.storage import external_write_receipts as mod
     for name in (
         "try_reserve_receipt", "finalize_receipt", "release_reservation",
         "STATUS_PENDING", "STATUS_SUCCEEDED", "STATUS_FAILED",
         "STALE_PENDING_THRESHOLD_SECONDS",
     ):
         assert hasattr(mod, name), (
-            f"workflow.storage.external_write_receipts must export "
+            f"tinyassets.storage.external_write_receipts must export "
             f"`{name}` so the effector's atomic seam stays callable"
         )
         assert name in mod.__all__, (

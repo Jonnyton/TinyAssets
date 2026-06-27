@@ -10,11 +10,11 @@ import json
 
 import pytest
 
-from workflow.runs import initialize_runs_db
-from workflow.universe_server import extensions
+from tinyassets.runs import initialize_runs_db
+from tinyassets.universe_server import extensions
 @pytest.fixture(autouse=True)
 def _set_data_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     initialize_runs_db(tmp_path)
 
 

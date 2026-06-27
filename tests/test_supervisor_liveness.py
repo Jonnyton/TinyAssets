@@ -1,4 +1,4 @@
-"""Tests for ``workflow.api.status._compute_supervisor_liveness``.
+"""Tests for ``tinyassets.api.status._compute_supervisor_liveness``.
 
 Pairs with PR #212 (BUG-011 Phase A lease metadata fields). This test
 file uses ``getattr`` defaults to verify the supervisor_liveness helper
@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from workflow.api.status import (
+from tinyassets.api.status import (
     _HEARTBEAT_STALE_THRESHOLD_S,
     _STUCK_PENDING_THRESHOLD_S,
     _compute_supervisor_liveness,
     _parse_iso_to_epoch,
 )
-from workflow.branch_tasks import BranchTask, append_task, claim_task
+from tinyassets.branch_tasks import BranchTask, append_task, claim_task
 
 # ── _parse_iso_to_epoch unit ───────────────────────────────────────────────
 
@@ -174,7 +174,7 @@ def test_recent_pending_no_warning(tmp_path):
 
 def test_loop_stalled_warns_on_fail_only_backlog(tmp_path):
     """The real wedge: failures stamp terminal_at but zero successes."""
-    from workflow.api.status import _LOOP_STALL_WINDOW_S
+    from tinyassets.api.status import _LOOP_STALL_WINDOW_S
 
     now = datetime.now(timezone.utc)
     old = (now - timedelta(seconds=_LOOP_STALL_WINDOW_S + 600)).isoformat()
@@ -201,7 +201,7 @@ def test_loop_stalled_warns_on_fail_only_backlog(tmp_path):
 
 
 def test_no_loop_stalled_when_a_recent_success_exists(tmp_path):
-    from workflow.api.status import _LOOP_STALL_WINDOW_S
+    from tinyassets.api.status import _LOOP_STALL_WINDOW_S
 
     now = datetime.now(timezone.utc)
     old = (now - timedelta(seconds=_LOOP_STALL_WINDOW_S + 600)).isoformat()
@@ -227,7 +227,7 @@ def test_no_loop_stalled_when_a_recent_success_exists(tmp_path):
 
 def test_no_loop_stalled_on_fresh_queue_without_terminal_at(tmp_path):
     """Old rows predating terminal_at must not false-fire the stall warning."""
-    from workflow.api.status import _LOOP_STALL_WINDOW_S
+    from tinyassets.api.status import _LOOP_STALL_WINDOW_S
 
     old = (
         datetime.now(timezone.utc)
@@ -421,9 +421,9 @@ def test_running_task_without_lease_fields_emits_lease_unavailable_warning(tmp_p
 def test_get_status_response_includes_supervisor_liveness(tmp_path, monkeypatch):
     import json
 
-    from workflow.api.status import get_status
+    from tinyassets.api.status import get_status
 
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     universe = tmp_path / "test-universe"
     universe.mkdir(parents=True, exist_ok=True)
@@ -438,9 +438,9 @@ def test_get_status_response_includes_supervisor_liveness(tmp_path, monkeypatch)
 def test_get_status_supervisor_liveness_reflects_stuck_pending(tmp_path, monkeypatch):
     import json
 
-    from workflow.api.status import get_status
+    from tinyassets.api.status import get_status
 
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     universe = tmp_path / "test-universe"
     universe.mkdir(parents=True, exist_ok=True)

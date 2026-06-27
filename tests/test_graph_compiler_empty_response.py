@@ -17,19 +17,19 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import (
+from tinyassets.graph_compiler import (
     CompilerError,
     EmptyResponseError,
     NodeTimeoutError,
     compile_branch,
 )
-from workflow.runs import _find_empty_response_exception, _find_timeout_exception
+from tinyassets.runs import _find_empty_response_exception, _find_timeout_exception
 
 # ── EmptyResponseError class shape ────────────────────────────────────────────
 
@@ -118,7 +118,7 @@ def test_bwrap_provider_output_raises_sandbox_unavailable():
     """A CLI provider leaking bwrap text in stdout must fail loudly."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.providers.base import SandboxUnavailableError
+    from tinyassets.providers.base import SandboxUnavailableError
 
     def _bwrap_leak(prompt, system, *, role):
         return "bwrap: No permissions to create new namespace"

@@ -32,7 +32,7 @@ Why:
   with state, tools, evaluation, and providers underneath.
 - But the diagram is stale in emphasis. The project is no longer best
   described primarily as `User <-> Custom GPT <-> FastAPI / MCP`.
-- Current runtime evidence shows live MCP traffic and active Workflow MCP server
+- Current runtime evidence shows live MCP traffic and active TinyAssets MCP server
   usage.
 
 Evidence:
@@ -195,7 +195,7 @@ Why:
 
 - The control-station principle still broadly holds: the daemon remains the
   author, not the GPT surface.
-- But the section underweights the current Workflow MCP interface,
+- But the section underweights the current TinyAssets MCP interface,
   which is now a live primary path.
 
 Evidence:
@@ -243,10 +243,10 @@ Why:
 
 Evidence:
 
-- `workflow/__main__.py`
-- `workflow/api/__init__.py`
-- `workflow/discovery.py`
-- `workflow/registry.py`
+- `tinyassets/__main__.py`
+- `tinyassets/api/__init__.py`
+- `tinyassets/discovery.py`
+- `tinyassets/registry.py`
 
 Assessment:
 
@@ -274,7 +274,7 @@ them more than it contradicts them.
 
 Do not apply automatically. These are proposed edits for approval later.
 
-1. Update `System Shape` to show the Workflow MCP surface as a first-class public
+1. Update `System Shape` to show the TinyAssets MCP surface as a first-class public
    interface, not only Custom GPT.
 2. Revise `Retrieval And Memory` to say the tool-driven surface is partially
    implemented and still coexists with pre-assembled compatibility context.
@@ -299,7 +299,7 @@ It still holds up well as:
 It is least trustworthy where it:
 
 - declares extraction or verification complete in a present-tense way
-- under-describes the Workflow MCP shift
+- under-describes the TinyAssets MCP shift
 - describes target-state thinness/tool-driven context as if the transitional
   bridge is already gone
 

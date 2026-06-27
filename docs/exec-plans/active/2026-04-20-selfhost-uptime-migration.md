@@ -27,7 +27,7 @@ Two URLs, two roles. Named here once so every subsequent row + the docs-sweep fo
 **IN SCOPE:** the minimum surface that, when moved off the host machine, means the host's computer can be powered off for 48 hours without any surface going red.
 
 That surface is exactly two things:
-1. **The MCP daemon process** (`workflow/daemon_server.py` + `workflow/universe_server.py`, served via `fastmcp` on streamable-http transport).
+1. **The MCP daemon process** (`tinyassets/daemon_server.py` + `tinyassets/universe_server.py`, served via `fastmcp` on streamable-http transport).
 2. **The cloudflared tunnel origin** that terminates `mcp.tinyassets.io/mcp` + `tinyassets.io/` and forwards to (1).
 
 Every other uptime surface is already independent of the host machine:
@@ -95,7 +95,7 @@ Reasoning below is the 5-bullet always-works case for Hetzner. It still applies 
 
 Per host directive *"think long term and pick the cleanest design."* Navigator decides; no host round-trip. All four answers below are HIGH confidence unless noted; lead ratifies silently.
 
-- **Secrets storage for prod:** env vars injected via Hetzner cloud-init + systemd `EnvironmentFile` pointing at `/etc/workflow/secrets.env` with `chmod 600` root-only read. One secret today (`CLOUDFLARE_TUNNEL_TOKEN`); vault integration is overkill at this count. Revisit when Supabase JWT + wallet keys land (post-Track A, ~2-3 secrets total). Rationale: file-on-box + ownership-restricted is standard Linux posture, no third-party dependency, easy to rotate by re-writing the file, survives all the secret-vault migration scenarios in plan-b.
+- **Secrets storage for prod:** env vars injected via Hetzner cloud-init + systemd `EnvironmentFile` pointing at `/etc/tinyassets/secrets.env` with `chmod 600` root-only read. One secret today (`CLOUDFLARE_TUNNEL_TOKEN`); vault integration is overkill at this count. Revisit when Supabase JWT + wallet keys land (post-Track A, ~2-3 secrets total). Rationale: file-on-box + ownership-restricted is standard Linux posture, no third-party dependency, easy to rotate by re-writing the file, survives all the secret-vault migration scenarios in plan-b.
 - **Postgres:** Supabase managed. Already ratified as Q1 per v3 host-Q digest. No near-term change.
 - **Host machine role post-cutover:** dev seat only. Host keeps the full local dev loop; prod is on Hetzner. Warm-fallback adds operational complexity (sync issues, split-brain risk) without measurable robustness win. Pure-off wastes a capable local dev environment. Standard one-person-project pattern.
 - **Data on first box:** box starts empty. Universes are tier-2 per-host concept (`project_user_tiers.md`); the public MCP endpoint exists to serve catalog + paid-market + connector handshake, not per-user universe state. MEDIUM confidence — flagging in case this contradicts an unstated host model — but going with it. Any universe-migration scope that surfaces later is additive work, not a foundation change.
@@ -111,11 +111,11 @@ Five rows. All dispatchable immediately against the current main. Zero provider-
 **Files:** `Dockerfile` (new at repo root), `.dockerignore` (new), `docs/ops/docker-notes.md` (new).
 
 **Scope:**
-- Multi-stage Dockerfile: Python 3.11 base, `pip install -e .`, install cloudflared binary, expose port 8001, entrypoint = `python -m workflow.daemon_server` or equivalent.
+- Multi-stage Dockerfile: Python 3.11 base, `pip install -e .`, install cloudflared binary, expose port 8001, entrypoint = `python -m tinyassets.daemon_server` or equivalent.
 - `.dockerignore` excludes `.venv/`, `__pycache__/`, `output/`, `*.db`, `node_modules/`, `.git/`, `packaging/` (the Windows tray plugin doesn't ship in the server image).
 - Short ops-notes doc explaining build + local test.
 
-**Acceptance:** `docker build -t workflow-daemon . && docker run -p 8001:8001 workflow-daemon` serves `/mcp` locally; `curl -X POST localhost:8001/mcp` gets a valid MCP initialize response.
+**Acceptance:** `docker build -t tinyassets-daemon . && docker run -p 8001:8001 tinyassets-daemon` serves `/mcp` locally; `curl -X POST localhost:8001/mcp` gets a valid MCP initialize response.
 
 **Effort:** ~0.5 dev-day. First draft; iterations expected.
 
@@ -123,14 +123,14 @@ Five rows. All dispatchable immediately against the current main. Zero provider-
 
 ### Row B: Extract hardcoded host-machine paths
 
-**Files:** audit + refactor any `C:\Users\...` / `C:\\Users\\...` / `Path(os.environ["USERPROFILE"])` / similar absolute-path assumptions in `workflow/` server code. Suspect surfaces per grep: `workflow/daemon_server.py`, `workflow/universe_server.py`, `workflow/storage/__init__.py`, anywhere LanceDB or SqliteSaver construct paths.
+**Files:** audit + refactor any `C:\Users\...` / `C:\\Users\\...` / `Path(os.environ["USERPROFILE"])` / similar absolute-path assumptions in `tinyassets/` server code. Suspect surfaces per grep: `tinyassets/daemon_server.py`, `tinyassets/universe_server.py`, `tinyassets/storage/__init__.py`, anywhere LanceDB or SqliteSaver construct paths.
 
 **Scope:**
-- Audit: grep for literal `C:\` and `USERPROFILE` across `workflow/` (exclude tests + packaging + scripts). Expect: LanceDB default path, universe_base path, any sqlite path.
-- Refactor to env-driven: `WORKFLOW_DATA_DIR` (default `~/.workflow` on Unix, `%APPDATA%\Workflow` on Windows). All on-disk state roots through this variable.
-- Docstring: document the env var in `workflow/daemon_server.py` module docstring + `AGENTS.md` if warranted.
+- Audit: grep for literal `C:\` and `USERPROFILE` across `tinyassets/` (exclude tests + packaging + scripts). Expect: LanceDB default path, universe_base path, any sqlite path.
+- Refactor to env-driven: `TINYASSETS_DATA_DIR` (default `~/.workflow` on Unix, `%APPDATA%\Workflow` on Windows). All on-disk state roots through this variable.
+- Docstring: document the env var in `tinyassets/daemon_server.py` module docstring + `AGENTS.md` if warranted.
 
-**Acceptance:** `WORKFLOW_DATA_DIR=/tmp/test_data python -m workflow.daemon_server` starts cleanly on a Linux host with no `C:\` paths touched in the success path. Existing Windows-host behavior unchanged when the env var is unset (defaults resolve to the current Windows path).
+**Acceptance:** `TINYASSETS_DATA_DIR=/tmp/test_data python -m tinyassets.daemon_server` starts cleanly on a Linux host with no `C:\` paths touched in the success path. Existing Windows-host behavior unchanged when the env var is unset (defaults resolve to the current Windows path).
 
 **Effort:** ~0.5-1 dev-day. Surface area unknown until audit; estimate widens if LanceDB / FAISS / etc. deeply encode Windows paths.
 
@@ -157,10 +157,10 @@ Five rows. All dispatchable immediately against the current main. Zero provider-
 
 **Scope:**
 - Provision a Hetzner Cloud CX22 (Debian 12, Falkenstein or Nuremberg region — both have long clean track records; first-draft picks whichever has lower latency to tinyassets.io's Cloudflare edge).
-- Run `scripts/provision.sh` (new): installs Docker + Compose, creates `/etc/workflow/secrets.env` with `chmod 600`, fetches the daemon image + cloudflared image, sets up systemd unit files for both.
+- Run `scripts/provision.sh` (new): installs Docker + Compose, creates `/etc/tinyassets/secrets.env` with `chmod 600`, fetches the daemon image + cloudflared image, sets up systemd unit files for both.
 - `docker compose up -d` brings up the daemon + tunnel sidecar containers; healthcheck confirms `localhost:8001/mcp` responds.
 - DNS: `mcp.tinyassets.io` CNAME points at the Hetzner box's tunnel (NOT the host's tunnel). Host machine's tunnel removed from the Cloudflare Zero-Trust config to prevent dual-origin routing.
-- Secrets: `CLOUDFLARE_TUNNEL_TOKEN` written once to `/etc/workflow/secrets.env`; systemd `EnvironmentFile` pulls it on service start.
+- Secrets: `CLOUDFLARE_TUNNEL_TOKEN` written once to `/etc/tinyassets/secrets.env`; systemd `EnvironmentFile` pulls it on service start.
 
 **Relationship to Row E (Worker):** Row D lands the direct-tunnel-origin side (`mcp.tinyassets.io/mcp`). The user-facing canonical `tinyassets.io/mcp` is fronted by an independent Cloudflare Worker (Row E) that forwards to this origin. Worker + tunnel origin are independent layers — either can be updated without the other. The Worker ships BEFORE the Hetzner cutover (it routes to the current tunnel origin regardless of whether that origin is the host machine or the Hetzner box); Hetzner cutover just changes which origin the Worker reaches.
 
@@ -179,7 +179,7 @@ Five rows. All dispatchable immediately against the current main. Zero provider-
 - Worker forwards matching requests to `https://mcp.tinyassets.io/mcp...` preserving method, headers, streaming body, and trailing path segments (so that `/mcp/anything/nested` routes cleanly if FastMCP ever adds sub-routes).
 - Non-`/mcp*` requests at apex pass through unchanged (landing HTML served by the daemon's own `@mcp.custom_route("/")` or any future GoDaddy/Pages route — Worker doesn't intercept them).
 - Streaming HTTP transport support: the Worker must proxy `Content-Type: text/event-stream` and chunked-transfer bodies correctly. FastMCP's streamable-http transport depends on long-lived streaming responses; naïve `fetch(...).then(r => new Response(r))` works in Workers for this.
-- `wrangler.toml` declares the route + environment variables + Worker name (recommend `workflow-mcp-router`).
+- `wrangler.toml` declares the route + environment variables + Worker name (recommend `tinyassets-mcp-router`).
 - README: one-command deploy via `wrangler deploy`; secret setup (none needed for MVP — tunnel origin is public; revisit when Supabase JWT lands); rollback procedure (remove route binding = apex serves whatever was behind it before).
 
 **Independence from Row D:** Row E ships NOW (post-Row-A, no dependency on Row D). While the host machine is still serving `mcp.tinyassets.io`, the Worker restores `tinyassets.io/mcp` as canonical immediately. When Row D cuts over to Hetzner, the Worker's target (`mcp.tinyassets.io/mcp`) points at the new origin automatically — no Worker redeploy needed. This sequencing gets the user-facing canonical URL back online FAST without gating on the full self-host migration.
@@ -284,7 +284,7 @@ Lead surfaced 10 gaps 2026-04-20 after host asked *"what else is needed for 24/7
 **Files:**
 - `.github/workflows/build-image.yml` (new) — build + push on every main-branch push.
 - `Dockerfile` (Row A artifact) tagged for GHCR.
-- `deploy/compose.yml` pulls from `ghcr.io/<owner>/workflow-daemon:<tag>`.
+- `deploy/compose.yml` pulls from `ghcr.io/<owner>/tinyassets-daemon:<tag>`.
 
 **Scope:**
 - GitHub Actions workflow on push to main: `docker buildx build` + push to GHCR. Tags: `latest` + git SHA short.
@@ -297,7 +297,7 @@ Lead surfaced 10 gaps 2026-04-20 after host asked *"what else is needed for 24/7
 
 **Sequence:** Dispatchable NOW. Collides only with whoever is editing `Dockerfile` (Row A already landed — no collision).
 
-**Acceptance:** `docker pull ghcr.io/<owner>/workflow-daemon:latest` from a fresh machine succeeds + `docker run` serves `/mcp` green. Row D's deploy can pull from registry instead of local build.
+**Acceptance:** `docker pull ghcr.io/<owner>/tinyassets-daemon:latest` from a fresh machine succeeds + `docker run` serves `/mcp` green. Row D's deploy can pull from registry instead of local build.
 
 **Without this row, Row D has no deploy source.** The plan previously hand-waved image source; Row I names it.
 
@@ -310,7 +310,7 @@ Lead surfaced 10 gaps 2026-04-20 after host asked *"what else is needed for 24/7
 
 **Scope:**
 - Hetzner Storage Box (€1/mo, 100GB, S3-compatible via `rclone`) — the plan-b playbook already references this shape.
-- `backup.sh` runs nightly at 03:00 UTC (low-traffic): rsync'd snapshot of `/var/lib/workflow/data/` (LanceDB + SqliteSaver + SQLite DBs + any disk-backed state) to Storage Box with 7-day rotation + 4-week weekly retention + 12-month monthly retention.
+- `backup.sh` runs nightly at 03:00 UTC (low-traffic): rsync'd snapshot of `/var/lib/tinyassets/data/` (LanceDB + SqliteSaver + SQLite DBs + any disk-backed state) to Storage Box with 7-day rotation + 4-week weekly retention + 12-month monthly retention.
 - Supabase-hosted data (Postgres rows) NOT in this backup — Supabase Pro handles its own daily PITR.
 - Restore runbook: one-command restore from a named snapshot date.
 
@@ -347,9 +347,9 @@ Lead surfaced 10 gaps 2026-04-20 after host asked *"what else is needed for 24/7
 ### Row L: Daemon auto-restart + watchdog (gap 6)
 
 **Files:**
-- `deploy/systemd/workflow-daemon.service` (new OR extend existing).
-- `scripts/watchdog.py` (new) — external MCP-initialize probe every 30 s on `localhost:8001/mcp`; if 3 consecutive failures, `systemctl restart workflow-daemon`.
-- `deploy/systemd/workflow-watchdog.service` + `.timer`.
+- `deploy/systemd/tinyassets-daemon.service` (new OR extend existing).
+- `scripts/watchdog.py` (new) — external MCP-initialize probe every 30 s on `localhost:8001/mcp`; if 3 consecutive failures, `systemctl restart tinyassets-daemon`.
+- `deploy/systemd/tinyassets-watchdog.service` + `.timer`.
 
 **Scope:**
 - systemd `Restart=always` + `RestartSec=5` on the daemon unit. Covers plain crashes.
@@ -363,7 +363,7 @@ Lead surfaced 10 gaps 2026-04-20 after host asked *"what else is needed for 24/7
 **Sequence:** Depends on Row D. Parallel-safe with Row F.
 
 **Acceptance:**
-- `kill -9 $(pgrep -f workflow-daemon)` — daemon back and serving within 10 s.
+- `kill -9 $(pgrep -f tinyassets-daemon)` — daemon back and serving within 10 s.
 - Force-hang (simulate infinite loop in a test build) — watchdog restarts within 90 s.
 - Induce flap (crash the daemon in a restart loop) — after 5 restarts in 10 min, watchdog stops + Row H fires an alarm; box does NOT go into a CPU-burning loop.
 
@@ -374,8 +374,8 @@ Lead surfaced 10 gaps 2026-04-20 after host asked *"what else is needed for 24/7
 - Required secrets in repo settings: `HETZNER_SSH_HOST`, `HETZNER_SSH_USER`, `HETZNER_SSH_KEY` (private key for a deploy-only user on the box).
 
 **Scope:**
-- On main-branch push (after Row I's image build green), GHA SSHs into the Hetzner box as a deploy-only user (`chmod`-restricted, `sudo` allowed for only `docker compose pull && docker compose up -d workflow-daemon`).
-- Deploy step: `docker compose pull && docker compose up -d workflow-daemon` — rolling restart; systemd's `Restart=always` + Row L's watchdog + the daemon's own graceful-shutdown-of-pending-MCP-sessions keep continuity.
+- On main-branch push (after Row I's image build green), GHA SSHs into the Hetzner box as a deploy-only user (`chmod`-restricted, `sudo` allowed for only `docker compose pull && docker compose up -d tinyassets-daemon`).
+- Deploy step: `docker compose pull && docker compose up -d tinyassets-daemon` — rolling restart; systemd's `Restart=always` + Row L's watchdog + the daemon's own graceful-shutdown-of-pending-MCP-sessions keep continuity.
 - Post-deploy: GHA runs a remote `scripts/uptime_canary.py --once` against `tinyassets.io/mcp` AND `mcp.tinyassets.io/mcp`. Green = ship confirmed; red = **automatic rollback** via `docker compose pull --tag=<previous-SHA>` + retry canary.
 - Manual override: `workflow_dispatch` trigger with a `--skip-canary` parameter (NOT default) for emergency rollback scenarios.
 
@@ -484,7 +484,7 @@ If all seven hold, **the host's computer is officially replaceable.** The foreve
 | Row B (path extraction) surfaces undocumented Windows assumptions in LanceDB or a vendored dep | Start Row B audit in parallel with A; if surface area exceeds 1 dev-day, scope creep flag → re-estimate before committing. |
 | Hetzner regional outage during near-term operation | Per plan-b §5.2 fallback trigger: move to Fly.io if Hetzner sustained outage > 24h or repeated <99% availability for 3 months. Fallback shape documented; not engaged until observed. |
 | Tunnel auth regression during provider-swap | Row D includes Layer-1 canary probe immediately post-deploy + Hard Rule 11 post-change discipline. |
-| Host local dev setup breaks after path-extraction refactor | Row B acceptance requires Windows-host behavior unchanged when `WORKFLOW_DATA_DIR` is unset. Regression test in tests/smoke/ covers both Unix + Windows default resolution. |
+| Host local dev setup breaks after path-extraction refactor | Row B acceptance requires Windows-host behavior unchanged when `TINYASSETS_DATA_DIR` is unset. Regression test in tests/smoke/ covers both Unix + Windows default resolution. |
 | Remote box starts empty but user-sim actually needs a universe | Box-starts-empty decision made in §3. If evidence surfaces post-deploy that a universe IS needed public-side, add a one-off data-seeding commit — additive, not re-architecture. |
 | 48h offline trial during host travel / real use | Trial period can be any 48 consecutive hours; host picks a low-stakes window. Do NOT gate acceptance on trial completion — acceptance is "when 48h clean has happened," not "immediately." |
 | OS patch cadence adds ~2-4 ops-hours/month | Accepted cost. Plan-b §6.6 documents this tradeoff; the always-works criterion weighed OS maintenance below control-plane-fate-sharing. Host runs `apt upgrade` + reboot on a monthly cron or delegates per SUCCESSION.md. |

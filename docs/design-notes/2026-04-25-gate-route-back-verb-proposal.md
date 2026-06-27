@@ -25,7 +25,7 @@ Correct primitive: extend `EvalVerdict` to include `"route_back"` and add a `rou
 The action signature is the EvalResult shape itself, not a separate MCP verb:
 
 ```python
-# workflow/evaluation/__init__.py — extend existing types
+# tinyassets/evaluation/__init__.py — extend existing types
 
 EvalVerdict = Literal["pass", "fail", "skip", "error", "route_back"]
 
@@ -145,7 +145,7 @@ on EvalResult with verdict == "route_back":
 
 Route-back execution is synchronous from the gate-series's perspective. The originating gate-series blocks on the routed run returning a terminal status, then continues based on that status.
 
-**Why sync:** async route-back creates state-management hell (gate-series paused indefinitely; patch_notes in limbo). Long-running routed branches are themselves a separate concern handled by the existing runner timeout + retry primitives. Sync is consistent with how `evaluate(state)` already returns synchronously in the evaluator protocol (`workflow/evaluation/__init__.py:67`).
+**Why sync:** async route-back creates state-management hell (gate-series paused indefinitely; patch_notes in limbo). Long-running routed branches are themselves a separate concern handled by the existing runner timeout + retry primitives. Sync is consistent with how `evaluate(state)` already returns synchronously in the evaluator protocol (`tinyassets/evaluation/__init__.py:67`).
 
 **Compositional note:** sync-only means a single rejected-patch's route-back chain executes serially across max 3 hops. Total wall-clock = sum of routed runs' durations. Acceptable for current low-frequency routing; revisit at high volume.
 
@@ -161,7 +161,7 @@ Each route-back resolution emits a `code_committed`-style event to the contribut
 
 2. **Patch_notes payload schema.** Today proposed as `dict[str, Any]` (opaque). Alternative: typed `PatchNotes` dataclass with required fields (`reason`, `evidence`, `suggested_changes_json`). Typed wins on chatbot-author guidance; opaque wins on flexibility. Recommend typed when the gate-series typed-output contract from navigator's v1 vision §2 lands; opaque until then.
 
-3. **Cycle detection — visited-set vs depth-only.** This proposal mandates BOTH: depth ≤ 3 AND no repeated (goal, scope) in history. Belt-and-braces. Open Q: is depth=3 the right number, or does the platform need a config-tunable max-depth? Recommend config-tunable (`WORKFLOW_ROUTE_BACK_MAX_DEPTH`, default 3) so emergency adjustments don't require migration.
+3. **Cycle detection — visited-set vs depth-only.** This proposal mandates BOTH: depth ≤ 3 AND no repeated (goal, scope) in history. Belt-and-braces. Open Q: is depth=3 the right number, or does the platform need a config-tunable max-depth? Recommend config-tunable (`TINYASSETS_ROUTE_BACK_MAX_DEPTH`, default 3) so emergency adjustments don't require migration.
 
 4. **Sync vs async route-back execution.** Recommended: SYNC. Reasons in §5. Open Q: does any persona require async / fire-and-forget routing semantics? Mark's gate-series story is sync. Future personas with multi-day human-in-the-loop gates may need async; mark for revisit when that surfaces.
 
@@ -186,9 +186,9 @@ Each route-back resolution emits a `code_committed`-style event to the contribut
 - Variant canonicals: `docs/design-notes/2026-04-25-variant-canonicals-proposal.md` (Task #47).
 - Contribution ledger: `docs/design-notes/2026-04-25-contribution-ledger-proposal.md` (Task #48).
 - Navigator v1 vision: `docs/design-notes/2026-04-25-self-evolving-platform-vision.md` §2 (decision-routing primitive named-checkpoint contract).
-- Existing evaluator contract: `workflow/evaluation/__init__.py:32-54` (`EvalVerdict` enum + `EvalResult` dataclass).
-- Existing evaluator implementations: `workflow/outcomes/evaluators.py` (PublishedPaperEvaluator, MergedPREvaluator, DeployedAppEvaluator) — pattern reference for typed evaluator subclasses.
-- Existing run-cancel primitive: `workflow/runs.py:129-132` (`run_cancels` table) — reused for routed-run interruption.
+- Existing evaluator contract: `tinyassets/evaluation/__init__.py:32-54` (`EvalVerdict` enum + `EvalResult` dataclass).
+- Existing evaluator implementations: `tinyassets/outcomes/evaluators.py` (PublishedPaperEvaluator, MergedPREvaluator, DeployedAppEvaluator) — pattern reference for typed evaluator subclasses.
+- Existing run-cancel primitive: `tinyassets/runs.py:129-132` (`run_cancels` table) — reused for routed-run interruption.
 
 ---
 
@@ -235,7 +235,7 @@ if len(notes.route_history) > 3 or (goal, scope) in notes.route_history:
     terminate("route_back_loop")
 ```
 
-Engine logic identical in semantics. The `WORKFLOW_ROUTE_BACK_MAX_DEPTH` env var (v1 §6 Q3) still tunes the depth cap.
+Engine logic identical in semantics. The `TINYASSETS_ROUTE_BACK_MAX_DEPTH` env var (v1 §6 Q3) still tunes the depth cap.
 
 When the engine appends a hop to `route_history`, it constructs a new PatchNotes via `dataclasses.replace`:
 
@@ -272,7 +272,7 @@ When a gate cites a PatchNotes as decision input, attribution-layer-specs §1.4 
 |---|---|
 | Q1 verdict-string vs separate decision-shape | Unchanged — still open. Verdict-string remains the v2 default. |
 | **Q2 patch_notes opaque vs typed** | **RATIFIED — closed by Task #66.** TypedPatchNotes is the v2 shape. |
-| Q3 cycle-detection config-tunable max-depth | Unchanged — `WORKFLOW_ROUTE_BACK_MAX_DEPTH` env, default 3. |
+| Q3 cycle-detection config-tunable max-depth | Unchanged — `TINYASSETS_ROUTE_BACK_MAX_DEPTH` env, default 3. |
 | Q4 sync vs async route-back | Unchanged — recommended sync. |
 | Q5 fallthrough fail-fast vs hold-for-host-bind | Unchanged — recommended fail-fast. |
 
@@ -282,7 +282,7 @@ The v2 amend closes Q2 specifically; the other 4 open Qs carry forward unchanged
 
 Task #66 must land before #53 implementation can consume the typed shape. Sequence:
 
-1. Task #66 lands: `workflow/evaluation/patch_notes.py` ships PatchNotes + EvidenceRef.
+1. Task #66 lands: `tinyassets/evaluation/patch_notes.py` ships PatchNotes + EvidenceRef.
 2. (Concurrent) Task #54 already landed `dc7d2cb` — `execute_branch_version_async` available.
 3. Task #53 implementation: route-back handler consumes `PatchNotes` via the typed field on `EvalResult.patch_notes`.
 

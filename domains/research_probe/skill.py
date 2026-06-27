@@ -1,13 +1,13 @@
 """Research Probe domain implementation.
 
-Implements the workflow.protocols.Domain protocol for document research
+Implements the tinyassets.protocols.Domain protocol for document research
 and summarization. This is a minimal generality probe demonstrating that
-the workflow engine can support non-fantasy domains with different graph
+the TinyAssets engine can support non-fantasy domains with different graph
 topologies.
 
 Key properties:
 - Flat loop topology (gather → analyze → synthesize → review with revision)
-- Uses only workflow.* infrastructure (no domain-specific imports)
+- Uses only tinyassets.* infrastructure (no domain-specific imports)
 - Implements full Domain protocol
 - Domain-specific tools, state, and eval criteria
 """
@@ -18,13 +18,13 @@ from typing import Any
 
 from domains.research_probe.graph import build_research_graph
 from domains.research_probe.tools import research_search
-from workflow.protocols import DomainConfig, DomainTool, EvalCriteria, MemorySchema
+from tinyassets.protocols import DomainConfig, DomainTool, EvalCriteria, MemorySchema
 
 
 class ResearchProbeDomain:
-    """Research Probe domain — implements workflow.protocols.Domain.
+    """Research Probe domain — implements tinyassets.protocols.Domain.
 
-    Proves the workflow engine is reusable for non-fantasy domains with
+    Proves the TinyAssets engine is reusable for non-fantasy domains with
     different graph structures and semantics.
     """
 
@@ -48,7 +48,7 @@ class ResearchProbeDomain:
         Returns:
             Uncompiled LangGraph StateGraph with research topology
             (gather → analyze → synthesize → review with conditional loop).
-            This topology is deliberately different from Workflow's
+            This topology is deliberately different from the fantasy domain's
             4-level hierarchy, proving that domain-specific graph shapes
             are supported.
         """
@@ -57,14 +57,14 @@ class ResearchProbeDomain:
     def state_extensions(self) -> dict[str, type]:
         """Return domain-specific state fields.
 
-        These extend WorkflowState with research fields.
+        These extend TinyAssetsState with research fields.
 
         Returns:
             Dict mapping field names to types. The engine merges these into
             the full state schema at graph build time.
         """
         # Extract domain-specific field definitions
-        # (WorkflowState fields are already in the base)
+        # (TinyAssetsState fields are already in the base)
         domain_fields = {
             "research_query": str,
             "sources": list,

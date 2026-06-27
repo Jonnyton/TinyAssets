@@ -48,35 +48,35 @@ def _import_attr(module: str, attr: str) -> object:
 
 def main() -> int:
     # 1. Core public entry point — the module everything else hangs off.
-    _check("workflow package imports", lambda: importlib.import_module("workflow"))
+    _check("workflow package imports", lambda: importlib.import_module("tinyassets"))
 
     # 2. daemon_server — the SQLite-backed multiplayer substrate.
     _check(
-        "workflow.daemon_server imports",
-        lambda: importlib.import_module("workflow.daemon_server"),
+        "tinyassets.daemon_server imports",
+        lambda: importlib.import_module("tinyassets.daemon_server"),
     )
 
     # 3. FastMCP object — proves universe_server wired up.
     def _mcp_has_tools() -> object:
-        mcp = _import_attr("workflow.universe_server", "mcp")
+        mcp = _import_attr("tinyassets.universe_server", "mcp")
         if mcp is None:
-            raise AssertionError("workflow.universe_server.mcp is None")
+            raise AssertionError("tinyassets.universe_server.mcp is None")
         return mcp
 
-    _check("workflow.universe_server.mcp exists", _mcp_has_tools)
+    _check("tinyassets.universe_server.mcp exists", _mcp_has_tools)
 
     # 4. Bid surface (R2 end-state). Regression here means the Phase-G
     #    refactor left a broken re-export.
     _check(
-        "workflow.bid imports",
-        lambda: importlib.import_module("workflow.bid"),
+        "tinyassets.bid imports",
+        lambda: importlib.import_module("tinyassets.bid"),
     )
 
     # 5. Catalog surface (R7a end-state). Regression here means the
     #    storage-split rename left a broken import.
     _check(
-        "workflow.catalog imports",
-        lambda: importlib.import_module("workflow.catalog"),
+        "tinyassets.catalog imports",
+        lambda: importlib.import_module("tinyassets.catalog"),
     )
 
     # 6. Domain skill discovery. fantasy_daemon is the benchmark

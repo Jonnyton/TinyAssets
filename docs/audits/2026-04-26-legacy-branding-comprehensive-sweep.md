@@ -23,7 +23,7 @@ Found **~3,200 distinct legacy-branding references** across the canonical tree. 
 |---|---|---|---|
 | **HISTORICAL CONTEXT** — content discussing the rename arc itself, audit docs, exec-plans, design notes about the migration | ~1,800 | Leave alone (paper-trail is a feature). Optional 1-line annotation where confusion is plausible. | Optional |
 | **LIVE INSTRUCTION (RETIRE-WITH-STAMP)** — superseded architecture docs that compete with PLAN.md as a source of truth | ~7 doc files | Add archive-stamp header at top; optionally move to `docs/historical/`. Do not rewrite content; do not delete. | YES |
-| **LIVE INSTRUCTION (REWRITE)** — chatbot-facing surfaces with vocabulary-hygiene contract violations (skills, user-facing docs, deploy README) | ~50 sites across ~15 files | Replace "Universe Server" → "Workflow MCP server" / "the daemon"; update "author-server DB" prose | YES |
+| **LIVE INSTRUCTION (REWRITE)** — chatbot-facing surfaces with vocabulary-hygiene contract violations (skills, user-facing docs, deploy README) | ~50 sites across ~15 files | Replace "Universe Server" → "TinyAssets MCP server" / "the daemon"; update "author-server DB" prose | YES |
 | **SHIPPED-PHASE ARTIFACTS** — phase-named docs/tests/identifiers surviving past the phase | 17 files (5 spec preflights + 11 test names + 5 module docstrings) | Docs: retire-with-stamp. Tests: rename file (test logic stays). Module docstrings: rewrite opener. | YES |
 | **DELETE-WITH-ARC-B-PHASE-3** — caller migration sites scheduled for the in-flight rename arc | ~600 | No action — rename arcs handle this | NO (already scoped) |
 | **OTHER** — packaging mirrors (auto-rebuild), generated `output/*`, test fixture string literals (intentional), `.claude/agent-memory` (session context), pre-commit invariant scripts | ~550 | Skip / no action | NO |
@@ -41,8 +41,8 @@ Found **~3,200 distinct legacy-branding references** across the canonical tree. 
 
 ### Search vocabulary
 
-- Module/symbol legacy: `workflow.author_server`, `author_server.py`, `workflow/author_server`, `fantasy_author/`, `domains/fantasy_author/`, `FantasyAuthorDomain` class
-- Env vars: `UNIVERSE_SERVER_BASE`, `WIKI_PATH`, `WORKFLOW_AUTHOR_RENAME_COMPAT`
+- Module/symbol legacy: `workflow.author_server`, `author_server.py`, `tinyassets/author_server`, `fantasy_author/`, `domains/fantasy_author/`, `FantasyAuthorDomain` class
+- Env vars: `UNIVERSE_SERVER_BASE`, `WIKI_PATH`, `TINYASSETS_AUTHOR_RENAME_COMPAT`
 - File / data: `.author_server.db`
 - Brand: "Universe Server" / "Workflow Universe Server" (per `tests/test_vocabulary_hygiene.py` this is INTERNAL JARGON to suppress in chatbot-facing surfaces)
 - Phased naming surviving past phases: `phase7_`, `phase_h`, `phase_e`, etc.
@@ -146,7 +146,7 @@ For `Universe Server` rewrite (the real bug class per §2.2):
 - `IMPORT_COMPATIBILITY.md` — every import path it describes still resolves (via shims) and is being unwound by Arc B. NOT abandoned. Retire-with-stamp.
 - `PHASE_3_5_6_IMPLEMENTATION.md` — work landed; tests for Phase 3.5/3.6 still in tests/. NOT abandoned. Retire-with-stamp.
 - `IMPLEMENTATION_SUMMARY_PHASE_3.md` — same.
-- `AGENTIC_SEARCH_RESEARCH.md` — research, not implementation; conclusions informed `workflow/retrieval/agentic_search.py` etc. NOT abandoned. Retire-with-stamp.
+- `AGENTIC_SEARCH_RESEARCH.md` — research, not implementation; conclusions informed `tinyassets/retrieval/agentic_search.py` etc. NOT abandoned. Retire-with-stamp.
 
 **Result: zero DELETE-CANDIDATEs.** All 7 retire-with-stamp.
 
@@ -159,7 +159,7 @@ For `Universe Server` rewrite (the real bug class per §2.2):
 | File | Refs | Surface class | Action |
 |---|---|---|---|
 | **Skills (HIGHEST LEVERAGE — chatbot-vendor agents read these)** | | | |
-| `.agents/skills/ui-test/SKILL.md` | 6 | Canonical skill source | **REWRITE** — "Workflow MCP server" / "the daemon" |
+| `.agents/skills/ui-test/SKILL.md` | 6 | Canonical skill source | **REWRITE** — "TinyAssets MCP server" / "the daemon" |
 | `.claude/skills/ui-test/SKILL.md` | 6 | Auto-mirror via `scripts/sync-skills.ps1` | Auto-syncs from `.agents/` |
 | `.codex/skills/ui-test/SKILL.md` | 5 | Codex mirror | Edit + sync |
 | **User-facing strategy/research docs** | | | |
@@ -204,7 +204,7 @@ For `Universe Server` rewrite (the real bug class per §2.2):
 
 | File | Refs | Recommended action |
 |---|---|---|
-| `docs/conway_readiness_strategy.md` | 8 "Universe Server" refs | Rewrite to "Workflow MCP server" / "the daemon" — strategy doc visible to contributors |
+| `docs/conway_readiness_strategy.md` | 8 "Universe Server" refs | Rewrite to "TinyAssets MCP server" / "the daemon" — strategy doc visible to contributors |
 | `docs/plan_revalidation.md` | 26 fantasy_author + 4 "Universe Server" + 2 `.author_server.db` | Likely a one-shot plan-revalidation memo; check if still active or candidate for `docs/historical/` |
 | `docs/reality_audit.md` | 12 fantasy_author refs | Same — point-in-time audit doc |
 | `docs/planning/daemon_task_economy.md` | 15 fantasy_author + 4 author_server | Active planning doc — needs canonical rewrite |
@@ -278,15 +278,15 @@ Per SWEEP 2 addendum heuristic 1:
 
 | Module | Current docstring | Recommended |
 |---|---|---|
-| `workflow/bid/settlements.py` | "Phase G cross-host immutable settlement ledger." | "Cross-host immutable settlement ledger for the paid-market node-bid surface." |
-| `workflow/branch_tasks.py` | "Phase E durable BranchTask queue." | "Durable BranchTask queue." |
-| `workflow/catalog/__init__.py` | "Phase 7 — git-native storage backend." | "Git-native catalog backend (branch / node / goal / bid YAML)." |
-| `workflow/dispatcher.py` | "Phase E tier-aware BranchTask dispatcher." | "Tier-aware BranchTask dispatcher." |
-| `workflow/identity.py` | "Phase 7.4 v1 — git author identity for commits." | "Git-author identity for commits authored by daemons + users." |
+| `tinyassets/bid/settlements.py` | "Phase G cross-host immutable settlement ledger." | "Cross-host immutable settlement ledger for the paid-market node-bid surface." |
+| `tinyassets/branch_tasks.py` | "Phase E durable BranchTask queue." | "Durable BranchTask queue." |
+| `tinyassets/catalog/__init__.py` | "Phase 7 — git-native storage backend." | "Git-native catalog backend (branch / node / goal / bid YAML)." |
+| `tinyassets/dispatcher.py` | "Phase E tier-aware BranchTask dispatcher." | "Tier-aware BranchTask dispatcher." |
+| `tinyassets/identity.py` | "Phase 7.4 v1 — git author identity for commits." | "Git-author identity for commits authored by daemons + users." |
 
 **Note (false positives — KEEP):**
-- `workflow/retrieval/agentic_search.py` "Phase-aware agentic search policy." — "Phase-aware" describes behavior pattern (story-phase-aware retrieval), not project phase.
-- `workflow/retrieval/phase_context.py` "Phase-aware retrieval configuration." — same.
+- `tinyassets/retrieval/agentic_search.py` "Phase-aware agentic search policy." — "Phase-aware" describes behavior pattern (story-phase-aware retrieval), not project phase.
+- `tinyassets/retrieval/phase_context.py` "Phase-aware retrieval configuration." — same.
 
 #### D — Phase-numbered exec-plans (3 files) — retire-with-stamp at landing
 
@@ -337,13 +337,13 @@ Lines 127-135: live "Scrub legacy Windows WIKI_PATH env leakage" step. Documents
 |---|---|
 | `pyproject.toml:93` | `packages = ["fantasy_author", "workflow", "domains"]` — lists `fantasy_author` as a package. Per Arc B, the `fantasy_author/` package is a 50-LOC alias module scheduled for deletion. **Update post-Arc-B-Phase-3.** |
 | `pyproject.toml:98` | `extend-exclude = ["fantasy_author_original"]` — references the pre-rename snapshot. **Delete with `fantasy_author_original/` deletion** (separate housekeeping). |
-| `.mcp.json:14` | `WIKI_PATH` env var. **NOT WORKFLOW** — this is a separate `wiki-mcp` Node.js server (different codebase, runs from `C:\\Users\\Jonathan\\Projects\\wiki-mcp\\server.js`). Workflow MCP server uses `WORKFLOW_UNIVERSE` (line 7). **No action — this is a different project.** |
+| `.mcp.json:14` | `WIKI_PATH` env var. **NOT WORKFLOW** — this is a separate `wiki-mcp` Node.js server (different codebase, runs from `C:\\Users\\Jonathan\\Projects\\wiki-mcp\\server.js`). TinyAssets MCP server uses `TINYASSETS_UNIVERSE` (line 7). **No action — this is a different project.** |
 
 ### 2.8 Source-of-truth Markdown (AGENTS, README, INDEX, CLAUDE)
 
 | File | Issue |
 |---|---|
-| `AGENTS.md:270` | `UNIVERSE_SERVER_BASE` "Deprecated. Legacy alias for `WORKFLOW_DATA_DIR`" — KEEP as DEPRECATION DOC; deletes with Arc C Phase 3. |
+| `AGENTS.md:270` | `UNIVERSE_SERVER_BASE` "Deprecated. Legacy alias for `TINYASSETS_DATA_DIR`" — KEEP as DEPRECATION DOC; deletes with Arc C Phase 3. |
 | `AGENTS.md:274` | `WIKI_PATH` "Deprecated." — same |
 | `STATUS.md` | 3 author_server refs — all live (rename arc tracking rows) |
 | `README.md` | (check — `grep` did not surface major refs) |
@@ -390,11 +390,11 @@ Caller migration sites scheduled for in-flight rename arcs. **No action by this 
 | Surface | Sites | Tracked in |
 |---|---|---|
 | `tests/*.py` `from domains.fantasy_author.X import Y` | ~192 sites, 37 files | `docs/exec-plans/active/2026-04-26-decomp-arc-b-prep.md` Phase 2 |
-| `workflow/api/runs.py:391,889,1236` `from domains.fantasy_author.phases._provider_stub` | 3 sites | Same prep doc (excluded from Arc B Phase 1 dispatch per dev/dev-2 collision boundary) |
+| `tinyassets/api/runs.py:391,889,1236` `from domains.fantasy_author.phases._provider_stub` | 3 sites | Same prep doc (excluded from Arc B Phase 1 dispatch per dev/dev-2 collision boundary) |
 | `tests/*.py` `monkeypatch.setenv("UNIVERSE_SERVER_BASE", ...)` | ~135 sites, 60 files | `docs/exec-plans/active/2026-04-26-decomp-arc-c-prep.md` Phase 2 |
 | `tests/*.py` `monkeypatch.setenv("WIKI_PATH", ...)` | ~16 sites, 4 files | Same prep doc |
-| `workflow/storage/__init__.py:210-222, 272-283` resolver branches | 2 blocks | Arc C Phase 3 |
-| `workflow/_rename_compat.py` + 3 alias modules | 4 files / ~366 LOC | Arc B Phase 3 |
+| `tinyassets/storage/__init__.py:210-222, 272-283` resolver branches | 2 blocks | Arc C Phase 3 |
+| `tinyassets/_rename_compat.py` + 3 alias modules | 4 files / ~366 LOC | Arc B Phase 3 |
 | `.author_server.db` filename + DB_FILENAME constant | ~20 doc/comment refs | Phase 6 |
 
 ---
@@ -403,8 +403,8 @@ Caller migration sites scheduled for in-flight rename arcs. **No action by this 
 
 | Surface | Why skip |
 |---|---|
-| `packaging/dist/workflow-universe-server-src/*` | Auto-built distribution mirror — re-generated by `python packaging/claude-plugin/build_plugin.py` after canonical changes |
-| `packaging/claude-plugin/plugins/workflow-universe-server/runtime/*` | Same — runtime mirror |
+| `packaging/dist/tinyassets-universe-server-src/*` | Auto-built distribution mirror — re-generated by `python packaging/claude-plugin/build_plugin.py` after canonical changes |
+| `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/*` | Same — runtime mirror |
 | `packaging/mcpb/server.py` (5 `UNIVERSE_SERVER_BASE` refs) | This IS canonical for the MCPB packager surface; updates gated on Arc C Phase 3 |
 | `output/claude_chat_trace.md` (106 "Universe Server" refs) | Generated session log — chat artifact |
 | `output/user_sim_session.md` (24 refs) | Generated session log |
@@ -438,7 +438,7 @@ Caller migration sites scheduled for in-flight rename arcs. **No action by this 
 | `packaging/mcpb/` | ~10 | 0 | — | All bound to Arc C Phase 3 | — |
 | `packaging/claude-plugin/` mirror | ~50 | 0 | — | — | All auto-rebuild |
 | `packaging/dist/` mirror | ~50 | 0 | — | — | All auto-rebuild |
-| `workflow/` (canonical Python) | ~30 | Various docstring/comment refs (§7) | — | All bound to Arc B/C/Phase 6 | — |
+| `tinyassets/` (canonical Python) | ~30 | Various docstring/comment refs (§7) | — | All bound to Arc B/C/Phase 6 | — |
 | `domains/` | ~15 | 0 | — | All bound to Arc B Phase 3 | — |
 | `tests/` | ~600 | 0 | — | All bound to Arc B/C Phase 2 | — |
 | `scripts/` | ~80 | 0 | — | — | All migration/invariant tooling — intentional refs |
@@ -451,10 +451,10 @@ Caller migration sites scheduled for in-flight rename arcs. **No action by this 
 
 Mostly handled by the rename arcs themselves, but flagging the docstring + comment refs that survive the mechanical sed:
 
-- `workflow/api/branches.py` — DB filename comments now reference `.workflow.db`; helper symbol still waits on the evaluation API lane.
-- `workflow/payments/escrow.py` — docstring: "SQLite table escrow_locks lives in the same .author_server.db as ...". Update with Phase 6.
-- `workflow/api/engine_helpers.py` — docstring mentions "Tests using `UNIVERSE_SERVER_BASE=<tmp_path>/output`". Update with Arc C Phase 3.
-- `workflow/api/helpers.py` — docstring mentions legacy alias. Update with Arc C Phase 3.
+- `tinyassets/api/branches.py` — DB filename comments now reference `.workflow.db`; helper symbol still waits on the evaluation API lane.
+- `tinyassets/payments/escrow.py` — docstring: "SQLite table escrow_locks lives in the same .author_server.db as ...". Update with Phase 6.
+- `tinyassets/api/engine_helpers.py` — docstring mentions "Tests using `UNIVERSE_SERVER_BASE=<tmp_path>/output`". Update with Arc C Phase 3.
+- `tinyassets/api/helpers.py` — docstring mentions legacy alias. Update with Arc C Phase 3.
 
 ---
 
@@ -509,9 +509,9 @@ After the audit landed, lead added vocabulary I should also sweep. Re-ran with t
 
 | File | Line | Status |
 |---|---|---|
-| `workflow/storage/__init__.py` | 47 | Canonical — Phase 6 spec target |
-| `packaging/claude-plugin/.../runtime/workflow/storage/__init__.py` | 47 | Auto-rebuild mirror |
-| `packaging/dist/.../workflow/storage/__init__.py` | 47 | Auto-rebuild mirror |
+| `tinyassets/storage/__init__.py` | 47 | Canonical — Phase 6 spec target |
+| `packaging/claude-plugin/.../runtime/tinyassets/storage/__init__.py` | 47 | Auto-rebuild mirror |
+| `packaging/dist/.../tinyassets/storage/__init__.py` | 47 | Auto-rebuild mirror |
 
 **No new finding.** Already scoped by Phase 6 design note.
 
@@ -523,11 +523,11 @@ Canonical-tree refs (excluding worktrees + originals): zero in canonical .py / .
 
 - Audit/design-note FILE NAMES (e.g. `docs/design-notes/2026-04-27-author-server-db-filename-migration.md`) — INTENTIONAL, HISTORICAL CONTEXT.
 - `docs/design-notes/2026-04-27-...migration.md:123` — "author-server data" inside the rejected Option C narrative — HISTORICAL CONTEXT.
-- **NEW LIVE-INSTRUCTION FINDING: `docs/planning/daemon_task_economy.md:31`** — "author-server DB" in current planning prose. Should be "Workflow daemon DB" or "the SQLite catalog DB." Bundle into §2.3 dispatch.
+- **NEW LIVE-INSTRUCTION FINDING: `docs/planning/daemon_task_economy.md:31`** — "author-server DB" in current planning prose. Should be "TinyAssets daemon DB" or "the SQLite catalog DB." Bundle into §2.3 dispatch.
 
 ### A4. Capitalized product voice ("The Author", "Fantasy Author", "Author daemon")
 
-**Canonical workflow/ Python code: ZERO matches.** Excellent — chatbot-facing strings have already been scrubbed of capitalized "Author" product voice in canonical code.
+**Canonical tinyassets/ Python code: ZERO matches.** Excellent — chatbot-facing strings have already been scrubbed of capitalized "Author" product voice in canonical code.
 
 Doc references:
 - `docs/planning/daemon_task_economy.md:58` — quotes the LEGACY user-facing message "The Author will consider it at the next review gate." HISTORICAL CONTEXT (the doc explains the bug got fixed in commit `590d11a`).
@@ -571,26 +571,26 @@ Already cataloged in main audit §2.7 (lines 93 + 98). No additional refs.
 
 ### SWEEP 2 extra heuristics — extended vocabulary edition
 
-#### B1. Modules with docstrings starting "Phase X..." in canonical workflow/
+#### B1. Modules with docstrings starting "Phase X..." in canonical tinyassets/
 
 | Module | Docstring opening | Phase status |
 |---|---|---|
-| `workflow/bid/settlements.py` | "Phase G cross-host immutable settlement ledger." | Phase G shipped |
-| `workflow/branch_tasks.py` | "Phase E durable BranchTask queue." | Phase E shipped |
-| `workflow/catalog/__init__.py` | "Phase 7 — git-native storage backend." | Phase 7 host-decision-pending close-out |
-| `workflow/dispatcher.py` | "Phase E tier-aware BranchTask dispatcher." | Phase E shipped |
-| `workflow/identity.py` | "Phase 7.4 v1 — git author identity for commits." | Phase 7.4 shipped |
-| `workflow/retrieval/agentic_search.py` | "Phase-aware agentic search policy." | "Phase-aware" — describes a behavior pattern, not a project phase. KEEP. |
-| `workflow/retrieval/phase_context.py` | "Phase-aware retrieval configuration." | Same — KEEP. Module name is also "phase_context" describing the behavior. |
+| `tinyassets/bid/settlements.py` | "Phase G cross-host immutable settlement ledger." | Phase G shipped |
+| `tinyassets/branch_tasks.py` | "Phase E durable BranchTask queue." | Phase E shipped |
+| `tinyassets/catalog/__init__.py` | "Phase 7 — git-native storage backend." | Phase 7 host-decision-pending close-out |
+| `tinyassets/dispatcher.py` | "Phase E tier-aware BranchTask dispatcher." | Phase E shipped |
+| `tinyassets/identity.py` | "Phase 7.4 v1 — git author identity for commits." | Phase 7.4 shipped |
+| `tinyassets/retrieval/agentic_search.py` | "Phase-aware agentic search policy." | "Phase-aware" — describes a behavior pattern, not a project phase. KEEP. |
+| `tinyassets/retrieval/phase_context.py` | "Phase-aware retrieval configuration." | Same — KEEP. Module name is also "phase_context" describing the behavior. |
 
 **5 new dispatch targets — module docstrings to rewrite.** Each docstring should describe what the module DOES, not which project phase shipped it. Mechanical edits, ~5 min each = 25 min total. Bundle as one dev-2 task.
 
 Recommendation: dev-2 rewrites each docstring to:
-- `workflow/bid/settlements.py` → "Cross-host immutable settlement ledger for the paid-market node-bid surface."
-- `workflow/branch_tasks.py` → "Durable BranchTask queue."
-- `workflow/catalog/__init__.py` → "Git-native catalog backend (branch / node / goal / bid YAML)."
-- `workflow/dispatcher.py` → "Tier-aware BranchTask dispatcher."
-- `workflow/identity.py` → "Git-author identity for commits authored by daemons + users."
+- `tinyassets/bid/settlements.py` → "Cross-host immutable settlement ledger for the paid-market node-bid surface."
+- `tinyassets/branch_tasks.py` → "Durable BranchTask queue."
+- `tinyassets/catalog/__init__.py` → "Git-native catalog backend (branch / node / goal / bid YAML)."
+- `tinyassets/dispatcher.py` → "Tier-aware BranchTask dispatcher."
+- `tinyassets/identity.py` → "Git-author identity for commits authored by daemons + users."
 
 #### B2. `from X import *` patterns
 
@@ -598,8 +598,8 @@ Recommendation: dev-2 rewrites each docstring to:
 
 #### B3. util/helpers/common modules
 
-- `workflow/api/helpers.py` (142 LOC, 15 callers) — has clear "Public surface (stable contract)" docstring listing 9 helpers: `_base_path`, `_universe_dir`, `_default_universe`, `_read_json`, `_read_text`, `_wiki_root`, `_wiki_pages_dir`, `_wiki_drafts_dir`, `_find_all_pages`. Narrow purpose (path resolvers + safe I/O). **NOT a grab-bag.** No refactor needed.
-- `workflow/utils/__init__.py` (1 LOC), `workflow/utils/json_parsing.py` (70 LOC) — minimal namespace. Clean.
+- `tinyassets/api/helpers.py` (142 LOC, 15 callers) — has clear "Public surface (stable contract)" docstring listing 9 helpers: `_base_path`, `_universe_dir`, `_default_universe`, `_read_json`, `_read_text`, `_wiki_root`, `_wiki_pages_dir`, `_wiki_drafts_dir`, `_find_all_pages`. Narrow purpose (path resolvers + safe I/O). **NOT a grab-bag.** No refactor needed.
+- `tinyassets/utils/__init__.py` (1 LOC), `tinyassets/utils/json_parsing.py` (70 LOC) — minimal namespace. Clean.
 
 **No grab-bag findings.**
 
@@ -609,12 +609,12 @@ Recommendation: dev-2 rewrites each docstring to:
 
 **6 NEW LIVE-INSTRUCTION findings from addendum:**
 
-1. **A3.1** — `docs/planning/daemon_task_economy.md:31` "author-server DB" → "Workflow daemon DB". Bundle into §2.3 strategy/spec doc rewrite dispatch.
-2. **B1.1** — `workflow/bid/settlements.py` docstring rewrite (drop "Phase G").
-3. **B1.2** — `workflow/branch_tasks.py` docstring rewrite (drop "Phase E").
-4. **B1.3** — `workflow/catalog/__init__.py` docstring rewrite (drop "Phase 7").
-5. **B1.4** — `workflow/dispatcher.py` docstring rewrite (drop "Phase E").
-6. **B1.5** — `workflow/identity.py` docstring rewrite (drop "Phase 7.4 v1").
+1. **A3.1** — `docs/planning/daemon_task_economy.md:31` "author-server DB" → "TinyAssets daemon DB". Bundle into §2.3 strategy/spec doc rewrite dispatch.
+2. **B1.1** — `tinyassets/bid/settlements.py` docstring rewrite (drop "Phase G").
+3. **B1.2** — `tinyassets/branch_tasks.py` docstring rewrite (drop "Phase E").
+4. **B1.3** — `tinyassets/catalog/__init__.py` docstring rewrite (drop "Phase 7").
+5. **B1.4** — `tinyassets/dispatcher.py` docstring rewrite (drop "Phase E").
+6. **B1.5** — `tinyassets/identity.py` docstring rewrite (drop "Phase 7.4 v1").
 
 Items B1.1-B1.5 bundle as one ~25-min dev-2 dispatch (sed-style docstring edits in 5 files).
 

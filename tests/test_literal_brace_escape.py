@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.branches import BranchDefinition, NodeDefinition
-from workflow.graph_compiler import (
+from tinyassets.branches import BranchDefinition, NodeDefinition
+from tinyassets.graph_compiler import (
     _placeholder_keys,
     _render_template,
     _unescape_literal_braces,
@@ -120,7 +120,7 @@ def _single_node_branch(node: NodeDefinition) -> BranchDefinition:
 def _add_entry_graph_node(
     branch: BranchDefinition, node_id: str,
 ) -> None:
-    from workflow.branches import EdgeDefinition, GraphNodeRef
+    from tinyassets.branches import EdgeDefinition, GraphNodeRef
     branch.graph_nodes.append(
         GraphNodeRef(id=node_id, node_def_id=node_id, position=0),
     )
@@ -267,11 +267,11 @@ def test_validate_and_compiler_placeholder_regexes_stay_in_sync():
     surfaces any one-sided edit regardless of whether the behavioral
     tests happen to still pass.
     """
-    from workflow.branches import (
+    from tinyassets.branches import (
         _VALIDATE_DOUBLE_PLACEHOLDER_RE,
         _VALIDATE_PLACEHOLDER_RE,
     )
-    from workflow.graph_compiler import (
+    from tinyassets.graph_compiler import (
         _DOUBLE_PLACEHOLDER_RE,
         _PLACEHOLDER_RE,
     )

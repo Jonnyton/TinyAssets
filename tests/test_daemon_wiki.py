@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow import daemon_registry, daemon_wiki
+from tinyassets import daemon_registry, daemon_wiki
 
 
 def _soul_daemon(tmp_path: Path) -> dict:

@@ -54,7 +54,7 @@ user browser
 
 ## 3. Daemon-side commitment — non-negotiable
 
-Private universes pin the daemon to local providers. `workflow/preferences.py:31` already declares `LOCAL_PROVIDERS = ["ollama-local"]` and defaults to it. The gap is enforcement: `workflow/providers/router.py` does not consult a per-universe allowlist today. A silent fallback to Groq / OpenAI / Anthropic would leak everything the daemon's system prompt touched.
+Private universes pin the daemon to local providers. `tinyassets/preferences.py:31` already declares `LOCAL_PROVIDERS = ["ollama-local"]` and defaults to it. The gap is enforcement: `tinyassets/providers/router.py` does not consult a per-universe allowlist today. A silent fallback to Groq / OpenAI / Anthropic would leak everything the daemon's system prompt touched.
 
 **Required:** per-universe `allowed_providers` list, enforced at router level. Hard-fail when the allowlist is violated, matching the "fail loudly, never silently" hard rule. For private universes, `allowed_providers = ["ollama-local"]`. No ambient fallback permitted.
 
@@ -141,7 +141,7 @@ Every MCP connection begins with an `initialize` request ([MCP spec 2025-03-26 l
 }
 ```
 
-Workflow Server should:
+TinyAssets Server should:
 
 - **Parse and log `clientInfo.name` + `Origin` header** on every session. Claude.ai connects from `https://claude.ai`; Claude Desktop reports differently; direct API calls identify themselves.
 - **Stamp every tool response with `client_id`** — the resolved client identity for the session. Host auditing ("did anything confidential go out through Claude.ai?") becomes a query against an audit log, not a trust question.
@@ -230,7 +230,7 @@ For every MCP action callable on a `confidential` universe, the server returns *
 
 ### 8.1 Redactor implementation shape
 
-A single dispatcher in `workflow/universe_server.py` near `_dispatch_with_ledger` (~line 712):
+A single dispatcher in `tinyassets/universe_server.py` near `_dispatch_with_ledger` (~line 712):
 
 ```python
 def _apply_redaction(action: str, result: str, universe_id: str) -> str:
@@ -248,7 +248,7 @@ def _apply_redaction(action: str, result: str, universe_id: str) -> str:
 
 The Claude.ai-hosted agent is helpful by default. It will try to be useful with whatever it sees. On a confidential universe it *will* attempt to infer content from metadata if not told not to. Prevention is via MCP tool description strings — the agent reads them as part of the tool schema and conditions its behavior.
 
-Proposed additions to the `universe` tool's `instructions`/docstring in `workflow/universe_server.py:57-103`:
+Proposed additions to the `universe` tool's `instructions`/docstring in `tinyassets/universe_server.py:57-103`:
 
 ```
 "\n\nHARD RULE — CONFIDENTIAL UNIVERSE BEHAVIOR: When a universe response "
@@ -308,4 +308,4 @@ Not on this list: local-chatbot launchers, LM Studio integration, llama.cpp webu
 - [Anthropic Privacy Center — training opt-out](https://privacy.claude.com/en/articles/10023580-is-my-data-used-for-model-training)
 - [MCP spec 2025-03-26 — lifecycle / initialize / clientInfo](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle)
 - [MCPJam — MCP auth checklist (November 2025 spec)](https://www.mcpjam.com/blog/mcp-oauth-guide) — Origin header validation.
-- Codebase: `workflow/preferences.py:24-34` (LOCAL_PROVIDERS vs SUBSCRIPTION_PROVIDERS), `workflow/providers/router.py` (router target for allowlist enforcement), `workflow/universe_server.py:57-105` (MCP instructions — §9 nudges land here), `:712` (`_dispatch_with_ledger` — redactor hook point), `:1075-1180` (universe tool dispatch map — §8 enforcement surface), `:3450+` (`_action_create_universe` — add `sensitivity_tier` param).
+- Codebase: `tinyassets/preferences.py:24-34` (LOCAL_PROVIDERS vs SUBSCRIPTION_PROVIDERS), `tinyassets/providers/router.py` (router target for allowlist enforcement), `tinyassets/universe_server.py:57-105` (MCP instructions — §9 nudges land here), `:712` (`_dispatch_with_ledger` — redactor hook point), `:1075-1180` (universe tool dispatch map — §8 enforcement surface), `:3450+` (`_action_create_universe` — add `sensitivity_tier` param).

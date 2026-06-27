@@ -25,7 +25,7 @@ For each event_type defined in #47 §1.1, this section pins: trigger condition, 
 
 **Trigger:** every successful step finalize on a run. One event per step, regardless of step duration or output volume.
 
-**Emit-site:** `workflow/runs.py:331-377` (`update_run_status`'s step-finalize transaction). Inside the same `_connect()` block that writes node-completion to `run_events`, append one row to `contribution_events`. Same SQLite transaction = atomicity guarantee.
+**Emit-site:** `tinyassets/runs.py:331-377` (`update_run_status`'s step-finalize transaction). Inside the same `_connect()` block that writes node-completion to `run_events`, append one row to `contribution_events`. Same SQLite transaction = atomicity guarantee.
 
 **Required metadata:**
 | Field | Source | Notes |
@@ -64,14 +64,14 @@ For each event_type defined in #47 §1.1, this section pins: trigger condition, 
 
 **Trigger:** GitHub webhook `pull_request.closed` with `merged=true` AND PR carries the `patch_request` label (or its alias). Future: include classifier-detected `docs-only` / `format-only` / `hot-fix` PRs even without explicit label, per canary→patch_request spec §6.
 
-**Emit-site:** the GitHub webhook handler (Phase D item 17 / Task #55, currently pending). Per #47 §3 row 3, lives at `workflow/integrations/github_webhook.py` (new file). Emits one event per PR commit author + each `Co-Authored-By` actor in the commit chain.
+**Emit-site:** the GitHub webhook handler (Phase D item 17 / Task #55, currently pending). Per #47 §3 row 3, lives at `tinyassets/integrations/github_webhook.py` (new file). Emits one event per PR commit author + each `Co-Authored-By` actor in the commit chain.
 
 **Required metadata:**
 | Field | Source | Notes |
 |---|---|---|
 | `actor_id` | PR author's Workflow id (looked up via CONTRIBUTORS.md handle linkage) | If no linkage exists, emit with `actor_id` = synthetic `github:<handle>`; retroactive linkage primitive (per E17) backfills later. |
 | `actor_handle` | GitHub handle | Stored verbatim. |
-| `source_artifact_id` | PR URL | e.g. `https://github.com/jfarn/workflow/pull/142` |
+| `source_artifact_id` | PR URL | e.g. `https://github.com/jfarn/tinyassets/pull/142` |
 | `source_artifact_kind` | `'github_pr'` | |
 | `source_run_id` | NULL | PR is run-free until a downstream daemon run references it. |
 | `weight` | 1.0 default; modified by PR-size/complexity heuristic in §2.3 | |
@@ -133,7 +133,7 @@ Per artifact reference. Lineage decay is applied at calc-time, not here — the 
 - `soul` reference: weight = 0.3 (soul tunes behavior; doesn't define structure)
 - `evaluator` reference: weight = 0.5 (similar to node)
 
-These multipliers are **calibration parameters**, not load-bearing semantics. Pin defaults; let host adjust based on observed economic effects. Storage location: `workflow/economics/weights.py` (per #47 §6 Q3 recommendation).
+These multipliers are **calibration parameters**, not load-bearing semantics. Pin defaults; let host adjust based on observed economic effects. Storage location: `tinyassets/economics/weights.py` (per #47 §6 Q3 recommendation).
 
 ### 2.3 `code_committed.weight`
 
@@ -223,7 +223,7 @@ Truncation MUST be visible in the audit trail. A merge's bounty calc result incl
 
 ### 3.4 Storage location
 
-`workflow/economics/decay.py` (matches #47 §6 Q3 recommendation). Constants pinned as module-level; bounty calc imports. Changing α is a config-as-code edit, requires PR and dispatch — not runtime-mutable. (Per memory: "platform parameter, not per-user choice.")
+`tinyassets/economics/decay.py` (matches #47 §6 Q3 recommendation). Constants pinned as module-level; bounty calc imports. Changing α is a config-as-code edit, requires PR and dispatch — not runtime-mutable. (Per memory: "platform parameter, not per-user choice.")
 
 ### 3.5 Cross-artifact lineage
 
@@ -567,4 +567,4 @@ This preserves symmetric privacy (per v1 vision §7 ρ): actors choose their vis
   - `project_user_builds_we_enable` — reputation is a primitive users compose; platform exposes data.
   - `project_q10_q11_q12_resolutions` — batch settlements <$1; informs §4.2 bucketing threshold.
   - `project_privacy_per_piece_chatbot_judged` — symmetric privacy filter on reputation queries.
-- Code refs: `workflow/runs.py:331-377` (execute_step emit-site), `workflow/runs.py:434-450` (design_used emit-site), `workflow/branch_definitions.fork_from` at `daemon_server.py:404-411` (lineage substrate), `workflow/branch_versions.py:109` (publish path).
+- Code refs: `tinyassets/runs.py:331-377` (execute_step emit-site), `tinyassets/runs.py:434-450` (design_used emit-site), `tinyassets/branch_definitions.fork_from` at `daemon_server.py:404-411` (lineage substrate), `tinyassets/branch_versions.py:109` (publish path).

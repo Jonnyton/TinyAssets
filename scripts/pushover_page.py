@@ -96,7 +96,7 @@ def _host_has_commented_since(
     comments: Iterable[dict], since: _dt.datetime, bot_logins: set[str] | None = None,
 ) -> bool:
     """True if a non-bot comment exists after ``since`` — host ack signal."""
-    bots = bot_logins or {"github-actions[bot]", "workflow-daemon[bot]"}
+    bots = bot_logins or {"github-actions[bot]", "tinyassets-daemon[bot]"}
     for c in comments:
         if (c.get("user") or {}).get("login") in bots:
             continue
@@ -275,7 +275,7 @@ def main(argv: list[str]) -> int:
     if not fire:
         return 0
 
-    title = f"P0 Workflow outage — {args.kind}"
+    title = f"P0 TinyAssets outage — {args.kind}"
     message = (
         f"{args.probe_url} red (exit {args.probe_exit}).\n"
         f"Reason: {reason}.\n"

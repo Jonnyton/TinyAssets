@@ -1,9 +1,9 @@
-# Open WebUI Runtime Proof - Workflow MCP Directory
+# Open WebUI Runtime Proof - TinyAssets MCP Directory
 
 Date: 2026-05-01
 Host: Open WebUI
 Host version: 0.9.2
-Proof scope: local Docker Open WebUI instance using the public Workflow MCP
+Proof scope: local Docker Open WebUI instance using the public TinyAssets MCP
 directory endpoint.
 
 ## Environment
@@ -57,7 +57,7 @@ server as:
 ```text
 id: server:mcp:workflow
 name: Workflow
-description: Directory-safe Workflow MCP endpoint
+description: Directory-safe TinyAssets MCP endpoint
 ```
 
 ## Chat Tool-Call Proof
@@ -86,7 +86,7 @@ message=The system is reachable=true as confirmed by the universe_exists field b
 finish_reason=stop
 ```
 
-This proves Open WebUI invoked the Workflow MCP server, exposed the tool result
+This proves Open WebUI invoked the TinyAssets MCP server, exposed the tool result
 as a chat source, and produced a user-visible response grounded in the
 `get_workflow_status` result.
 

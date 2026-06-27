@@ -1,2 +1,2 @@
-"""Shim: use workflow.branches instead."""
-from workflow.branches import *  # noqa: F401,F403
+"""Shim: use tinyassets.branches instead."""
+from tinyassets.branches import *  # noqa: F401,F403

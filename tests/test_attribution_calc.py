@@ -1,4 +1,4 @@
-"""Tests for workflow/attribution/calc.py — Task #39."""
+"""Tests for tinyassets/attribution/calc.py — Task #39."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from workflow.attribution.schema import AttributionCredit, AttributionEdge
+from tinyassets.attribution.schema import AttributionCredit, AttributionEdge
 
 
 def _edge(parent: str, child: str, depth: int = 1) -> AttributionEdge:
@@ -70,13 +70,13 @@ def _assert_sums_to_one(shares: dict[str, float]) -> None:
 
 class TestComputeCreditSharesFromCredits:
     def test_single_author_gets_full_share(self):
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         credits = [_credit("alice", "art-1", gen_depth=0)]
         shares = compute_credit_shares(edges=[], credits=credits)
         assert shares == {"alice": pytest.approx(1.0)}
 
     def test_two_authors_same_generation_split_equally(self):
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         credits = [
             _credit("alice", "art-1", gen_depth=0),
             _credit("bob", "art-1", gen_depth=0),
@@ -87,7 +87,7 @@ class TestComputeCreditSharesFromCredits:
         _assert_sums_to_one(shares)
 
     def test_identity_fields_do_not_change_credit_split(self):
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         credits = [
             _credit_with_identity("alice", "art-1"),
             _credit_with_identity("bob", "art-1"),
@@ -99,7 +99,7 @@ class TestComputeCreditSharesFromCredits:
 
     def test_two_generation_chain_depth_decay(self):
         """Gen 0 gets weight 1.0, gen 1 gets weight 0.5. Normalized: 2/3, 1/3."""
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         credits = [
             _credit("alice", "art-leaf", gen_depth=0),
             _credit("bob", "art-parent", gen_depth=1),
@@ -112,7 +112,7 @@ class TestComputeCreditSharesFromCredits:
 
     def test_three_generation_chain_decay(self):
         """Weights: gen0=1, gen1=0.5, gen2=0.25. Total=1.75."""
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         credits = [
             _credit("a", "art-0", gen_depth=0),
             _credit("b", "art-1", gen_depth=1),
@@ -130,7 +130,7 @@ class TestComputeCreditSharesFromCredits:
         Weights: alice (gen0) = 1.0; bob (gen1) = 0.25; carol (gen1) = 0.25.
         Total raw = 1.5. Normalized: alice = 2/3, bob = 1/6, carol = 1/6.
         """
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         credits = [
             _credit("alice", "art-leaf", gen_depth=0),
             _credit("bob", "art-p1", gen_depth=1),
@@ -145,7 +145,7 @@ class TestComputeCreditSharesFromCredits:
 
     def test_depth_cap_truncates_deep_lineage(self):
         """Authors beyond depth_cap contribute nothing (as if lineage ends there)."""
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         credits = [
             _credit("alice", "art-0", gen_depth=0),
             _credit("bob", "art-deep", gen_depth=100),
@@ -158,11 +158,11 @@ class TestComputeCreditSharesFromCredits:
         _assert_sums_to_one(shares)
 
     def test_empty_credits_returns_empty(self):
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         assert compute_credit_shares(edges=[], credits=[]) == {}
 
     def test_shares_sum_to_one(self):
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         credits = [
             _credit("a", "x", gen_depth=0),
             _credit("b", "x", gen_depth=1),
@@ -179,14 +179,14 @@ class TestComputeCreditSharesFromCredits:
 class TestComputeCreditSharesFromEdges:
     def test_single_parent_gets_full_share(self):
         """A → B: artifact A is the sole contributor; gets 100%."""
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         edges = [_edge("art-a", "art-b", depth=1)]
         shares = compute_credit_shares(edges=edges)
         assert shares == {"art-a": pytest.approx(1.0)}
 
     def test_two_parents_same_depth_split_equally(self):
         """A → C and B → C at depth 1: A and B each get 50%."""
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         edges = [
             _edge("art-a", "art-c", depth=1),
             _edge("art-b", "art-c", depth=1),
@@ -197,14 +197,14 @@ class TestComputeCreditSharesFromEdges:
 
     def test_cycle_detection_raises(self):
         """A → B and B → A is a cycle; should raise ValueError."""
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         edges = [_edge("art-a", "art-b"), _edge("art-b", "art-a")]
         with pytest.raises(ValueError, match="[Cc]ycle"):
             compute_credit_shares(edges=edges)
 
     def test_depth_cap_respected(self):
         """Chain longer than depth_cap should not crash; deep ancestors are ignored."""
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         # Build linear chain: art-0 → art-1 → ... → art-20 (art-20 is the leaf)
         edges = [_edge(f"art-{i}", f"art-{i+1}", depth=i + 1) for i in range(20)]
         shares = compute_credit_shares(edges=edges, depth_cap=5)
@@ -215,7 +215,7 @@ class TestComputeCreditSharesFromEdges:
         _assert_sums_to_one(shares)
 
     def test_no_edges_no_credits_returns_empty(self):
-        from workflow.attribution.calc import compute_credit_shares
+        from tinyassets.attribution.calc import compute_credit_shares
         assert compute_credit_shares(edges=[]) == {}
 
 
@@ -225,7 +225,7 @@ class TestComputeCreditSharesFromEdges:
 class TestComputePayoutShares:
     def test_fee_goes_to_treasury(self):
         """1% of total_payout goes to _treasury."""
-        from workflow.attribution.calc import compute_payout_shares
+        from tinyassets.attribution.calc import compute_payout_shares
         credits = [_credit("alice", "art-1", gen_depth=0)]
         result = compute_payout_shares(
             edges=[], credits=credits, total_payout=100.0, fee_pct=0.01
@@ -235,7 +235,7 @@ class TestComputePayoutShares:
 
     def test_distributable_remainder_after_fee(self):
         """Two equal-weight authors split 99% of payout."""
-        from workflow.attribution.calc import compute_payout_shares
+        from tinyassets.attribution.calc import compute_payout_shares
         credits = [
             _credit("alice", "art-1", gen_depth=0),
             _credit("bob", "art-1", gen_depth=0),
@@ -248,13 +248,13 @@ class TestComputePayoutShares:
         assert result["bob"] == pytest.approx(49.5)
 
     def test_zero_payout_returns_zero_treasury(self):
-        from workflow.attribution.calc import compute_payout_shares
+        from tinyassets.attribution.calc import compute_payout_shares
         credits = [_credit("alice", "art-1")]
         result = compute_payout_shares(edges=[], credits=credits, total_payout=0.0)
         assert result == {"_treasury": pytest.approx(0.0)}
 
     def test_custom_fee_pct(self):
-        from workflow.attribution.calc import compute_payout_shares
+        from tinyassets.attribution.calc import compute_payout_shares
         credits = [_credit("alice", "art-1", gen_depth=0)]
         result = compute_payout_shares(
             edges=[], credits=credits, total_payout=100.0, fee_pct=0.05
@@ -264,7 +264,7 @@ class TestComputePayoutShares:
 
     def test_no_credits_only_treasury(self):
         """No credits → entire fee to treasury, nothing to distribute."""
-        from workflow.attribution.calc import compute_payout_shares
+        from tinyassets.attribution.calc import compute_payout_shares
         result = compute_payout_shares(
             edges=[], credits=[], total_payout=100.0, fee_pct=0.01
         )

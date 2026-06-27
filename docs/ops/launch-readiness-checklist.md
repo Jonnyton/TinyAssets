@@ -34,7 +34,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 
 ## C. Auth + gateway
 
-- [ ] **OAuth 2.1 + PKCE flow works end-to-end** from a real browser chatbot client with the Workflow connector installed (Claude.ai, ChatGPT Developer Mode, or equivalent; per spec #27 §5.1).
+- [ ] **OAuth 2.1 + PKCE flow works end-to-end** from a real browser chatbot client with the TinyAssets connector installed (Claude.ai, ChatGPT Developer Mode, or equivalent; per spec #27 §5.1).
 - [ ] **`.well-known/oauth-authorization-server` returns valid metadata**.
 - [ ] **`/mcp/health` responds 200** under load (p95 < 200ms in #26 S8 mixed test).
 - [ ] **JWT secret in vault + rotation schedule set** (per `SUCCESSION.md §3.2`, 180d).

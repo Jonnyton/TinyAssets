@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Recover the Workflow daemon when the systemd unit, compose containers, or
+# Recover the TinyAssets daemon when the systemd unit, compose containers, or
 # daemon heartbeat stop advancing. Intended for systemd timer execution.
 
 set -euo pipefail
 
-COMPOSE_FILE="${WORKFLOW_COMPOSE_FILE:-/opt/workflow/compose.yml}"
-SERVICE_UNIT="${WORKFLOW_DAEMON_UNIT:-workflow-daemon.service}"
-DATA_VOLUME="${WORKFLOW_DATA_VOLUME:-workflow-data}"
+COMPOSE_FILE="${TINYASSETS_COMPOSE_FILE:-/opt/tinyassets/compose.yml}"
+SERVICE_UNIT="${TINYASSETS_DAEMON_UNIT:-tinyassets-daemon.service}"
+DATA_VOLUME="${TINYASSETS_DATA_VOLUME:-tinyassets-data}"
 # Empty default -> auto-discover the freshest worker-supervisor heartbeat
-# (see heartbeat_path). Set WORKFLOW_HEARTBEAT_RELATIVE to a
+# (see heartbeat_path). Set TINYASSETS_HEARTBEAT_RELATIVE to a
 # "<universe>/<file>" path under the data volume to pin a specific one.
-HEARTBEAT_RELATIVE="${WORKFLOW_HEARTBEAT_RELATIVE:-}"
-HEARTBEAT_MAX_AGE_SECONDS="${WORKFLOW_HEARTBEAT_MAX_AGE_SECONDS:-900}"
-LOCK_FILE="${WORKFLOW_DAEMON_WATCHDOG_LOCK:-/run/workflow-daemon-watchdog.lock}"
+HEARTBEAT_RELATIVE="${TINYASSETS_HEARTBEAT_RELATIVE:-}"
+HEARTBEAT_MAX_AGE_SECONDS="${TINYASSETS_HEARTBEAT_MAX_AGE_SECONDS:-900}"
+LOCK_FILE="${TINYASSETS_DAEMON_WATCHDOG_LOCK:-/run/tinyassets-daemon-watchdog.lock}"
 LOG_TAG="daemon-watchdog"
 
 log() {
@@ -90,8 +90,8 @@ main() {
         exit 0
     fi
 
-    if ! container_running workflow-daemon; then
-        restart_daemon "workflow-daemon container is not running"
+    if ! container_running tinyassets-daemon; then
+        restart_daemon "tinyassets-daemon container is not running"
         exit 0
     fi
 
@@ -109,7 +109,7 @@ main() {
         log "heartbeat volume ${DATA_VOLUME} is not available yet; relying on unit/container checks"
     fi
 
-    log "healthy: unit active, workflow-daemon running"
+    log "healthy: unit active, tinyassets-daemon running"
 }
 
 main "$@"

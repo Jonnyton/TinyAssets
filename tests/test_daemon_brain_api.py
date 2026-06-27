@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from workflow.api import universe as universe_api
-from workflow.daemon_registry import create_daemon
+from tinyassets.api import universe as universe_api
+from tinyassets.daemon_registry import create_daemon
 
 
 def _create_daemon(base: Path) -> dict:

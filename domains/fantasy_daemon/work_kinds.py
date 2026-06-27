@@ -1,6 +1,6 @@
 """Fantasy-authoring execution kinds + scope inference.
 
-Moved here from `workflow/work_targets.py` in Phase C.2 per
+Moved here from `tinyassets/work_targets.py` in Phase C.2 per
 `docs/specs/taskproducer_phase_c.md` §2. BOOK/CHAPTER/SCENE are fantasy
 concepts; a second domain would never emit them. `EXECUTION_KIND_NOTES`
 stays on the generic engine side (every domain has notes-class work).
@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     EXECUTION_KIND_NOTES,
     ROLE_NOTES,
     WorkTarget,

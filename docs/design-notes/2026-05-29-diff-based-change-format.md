@@ -10,7 +10,7 @@ Writer: Claude. Checker gate: opposite-provider review + host merge key.
 The patch-request loop's `propose` step emits `changes_json = {path: FULL new
 file contents}`, and the effector commits those full contents. For small/medium
 files this works (proven: PR #1192 calc.py, PR #1196 idempotency.py). For **large
-files** (~100 KB, e.g. `workflow/api/wiki.py`) the writer model degrades to
+files** (~100 KB, e.g. `tinyassets/api/wiki.py`) the writer model degrades to
 placeholders like `# ... existing content unchanged ...` when asked to reproduce
 the whole file. The review gate correctly REJECTs (it would corrupt the file),
 so no bad PR is opened — but the edit cannot flow through. This is the documented

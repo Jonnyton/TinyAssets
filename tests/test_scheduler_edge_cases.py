@@ -1,4 +1,4 @@
-"""Edge-case tests for workflow/scheduler.py.
+"""Edge-case tests for tinyassets/scheduler.py.
 
 Spec: docs/vetted-specs.md §Scheduled + event-triggered branch invocation.
 
@@ -9,7 +9,7 @@ These extend the 39 baseline tests in tests/test_scheduler.py with:
 - Concurrency: two scheduler instances compete for same trigger
 
 If a test surfaces a real bug, it is marked pytest.mark.xfail(strict=False)
-with a comment explaining the bug. Do NOT edit workflow/scheduler.py here.
+with a comment explaining the bug. Do NOT edit tinyassets/scheduler.py here.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ import time
 
 import pytest
 
-from workflow.runs import initialize_runs_db
-from workflow.scheduler import (
+from tinyassets.runs import initialize_runs_db
+from tinyassets.scheduler import (
     VALID_EVENT_TYPES,
     CronParseError,
     CronSchedule,

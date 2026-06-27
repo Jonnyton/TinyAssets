@@ -26,10 +26,10 @@ import pytest
 def gates_on_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
     importlib.reload(us)
@@ -39,10 +39,10 @@ def gates_on_env(tmp_path, monkeypatch):
 def gates_off_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.delenv("GATES_ENABLED", raising=False)
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
     importlib.reload(us)
@@ -79,7 +79,7 @@ def _seed_goal_with_ladder(us):
 
 
 def test_goal_gate_summary_empty_when_no_ladder(gates_on_env):
-    from workflow.daemon_server import goal_gate_summary
+    from tinyassets.daemon_server import goal_gate_summary
 
     us, base = gates_on_env
     g = _call(us, "goals", "propose", name="G", description="x")
@@ -94,7 +94,7 @@ def test_goal_gate_summary_empty_when_no_ladder(gates_on_env):
 
 
 def test_goal_gate_summary_ladder_length_reflects_rungs(gates_on_env):
-    from workflow.daemon_server import goal_gate_summary
+    from tinyassets.daemon_server import goal_gate_summary
 
     us, base = gates_on_env
     gid, _bid = _seed_goal_with_ladder(us)
@@ -106,7 +106,7 @@ def test_goal_gate_summary_ladder_length_reflects_rungs(gates_on_env):
 
 
 def test_goal_gate_summary_counts_across_multiple_branches(gates_on_env):
-    from workflow.daemon_server import goal_gate_summary
+    from tinyassets.daemon_server import goal_gate_summary
 
     us, base = gates_on_env
     gid, bid_a = _seed_goal_with_ladder(us)
@@ -129,7 +129,7 @@ def test_goal_gate_summary_counts_across_multiple_branches(gates_on_env):
 
 
 def test_goal_gate_summary_ignores_retracted(gates_on_env):
-    from workflow.daemon_server import goal_gate_summary
+    from tinyassets.daemon_server import goal_gate_summary
 
     us, base = gates_on_env
     gid, bid = _seed_goal_with_ladder(us)
@@ -146,7 +146,7 @@ def test_goal_gate_summary_ignores_retracted(gates_on_env):
 
 
 def test_goal_gate_summary_ignores_orphaned_rungs(gates_on_env):
-    from workflow.daemon_server import goal_gate_summary
+    from tinyassets.daemon_server import goal_gate_summary
 
     us, base = gates_on_env
     gid, bid = _seed_goal_with_ladder(us)
@@ -269,10 +269,10 @@ def test_goal_gate_summary_hides_existing_claims(tmp_path, monkeypatch):
     """
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     try:
         gid, bid = _seed_goal_with_ladder(us)
@@ -303,10 +303,10 @@ def test_get_branch_gates_off_hides_existing_claims(tmp_path, monkeypatch):
     """
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     try:
         gid, bid = _seed_goal_with_ladder(us)

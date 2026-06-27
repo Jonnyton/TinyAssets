@@ -222,7 +222,7 @@
     "title": "Contribute",
     "tagline": "The platform itself is open source. So is the workflow catalog. Two paths for two kinds of contribution.",
     "instructions": "Clone the repo, read CONTRIBUTING.md, submit a PR.",
-    "clone_cmd": "git clone https://github.com/Jonnyton/Workflow.git",
+    "clone_cmd": "git clone https://github.com/Jonnyton/TinyAssets.git",
     "platform_code_title": "Platform code (the engine)",
     "platform_code_description": "The daemon engine, MCP gateway, web app, tray — all in the main TinyAssets platform repo. The current GitHub path still uses Workflow during migration. Standard fork-and-PR flow. MIT-licensed.",
     "catalog_content_title": "Public catalog (the content)",
@@ -246,7 +246,7 @@
     "what_to_work_on": [
       {
         "path": "Open issues",
-        "where": "github.com/Jonnyton/Workflow/issues for the current TinyAssets platform repo while the repository rename is pending. Labels to watch: good-first-issue, help-wanted, track-X (where X ∈ A-K)."
+        "where": "github.com/Jonnyton/TinyAssets/issues for the current TinyAssets platform repo while the repository rename is pending. Labels to watch: good-first-issue, help-wanted, track-X (where X ∈ A-K)."
       },
       {
         "path": "Track work",

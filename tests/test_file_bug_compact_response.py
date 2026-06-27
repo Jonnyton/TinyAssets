@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from workflow.api.wiki import _wiki_file_bug, wiki
+from tinyassets.api.wiki import _wiki_file_bug, wiki
 
 
 @pytest.fixture
@@ -28,13 +28,13 @@ def wired_wiki(tmp_path, monkeypatch):
     (wiki_root / "pages" / "feature-requests").mkdir(parents=True)
     (wiki_root / "drafts" / "bugs").mkdir(parents=True)
     (wiki_root / "drafts" / "feature-requests").mkdir(parents=True)
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv(
-        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID",
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID",
         "branch-canonical-test",
     )
-    monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+    monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
     return wiki_root
 
 

@@ -17,7 +17,7 @@ from domains.fantasy_daemon.phases.target_actions import (
     mark_target_for_discard_from_execution,
 )
 from fantasy_daemon.api import app, configure
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     LIFECYCLE_DISCARDED,
     LIFECYCLE_MARKED_FOR_DISCARD,
     PUBLISH_STAGE_COMMITTED,
@@ -243,7 +243,7 @@ def test_api_note_tags_and_metadata_round_trip(client, universe_dir):
 # test_api_review_state_endpoint asserted GET /v1/universes/{id}/review-state.
 # Neither HTTP route ever existed on main — `git log -S "/work-targets"` and
 # `git log -S "/review-state"` return zero add-commits, and a 50+ route audit
-# of workflow/api.py + workflow/universe_server.py confirms. By design,
+# of tinyassets/api.py + tinyassets/universe_server.py confirms. By design,
 # work-targets access is MCP-side (PLAN.md "API And MCP Interface"). The
 # review_state test was additionally malformed (nested-def, mixed indent —
 # pytest could not collect it). Same orphan-test pattern as commit d8a4757

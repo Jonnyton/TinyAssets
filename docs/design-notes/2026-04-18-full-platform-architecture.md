@@ -876,7 +876,7 @@ This collapses contention from "all daemons lock-scanning all rows" to "only int
 
 Quick scan for "this works because there's one of everything":
 
-- **Active-universe lock / singleton assumptions in existing `workflow/universe_server.py`.** Current codebase has singleton patterns (SqliteSaver, LanceDB singleton per hard rule) that assume one process. Multiple daemon hosts = no shared process; each host keeps its own singletons — this is already correct per PLAN.md §Local-first. No change.
+- **Active-universe lock / singleton assumptions in existing `tinyassets/universe_server.py`.** Current codebase has singleton patterns (SqliteSaver, LanceDB singleton per hard rule) that assume one process. Multiple daemon hosts = no shared process; each host keeps its own singletons — this is already correct per PLAN.md §Local-first. No change.
 - **Ledger consistency across thousands of concurrent settlements.** Postgres transactional guarantees cover this. Settlement = single row UPDATE + single INSERT in a transaction. Safe at any scale.
 - **MCP session fan-out.** Each Claude.ai MCP connection is one streamable-HTTP connection to the gateway. Gateway is stateless (sessions in Postgres). Horizontally scalable — Supabase's Edge Functions or a separate Fly/Hetzner gateway-box fronting Supabase absorbs this if the hosted gateway becomes the bottleneck. Not an issue below 10k DAU.
 - **GitHub OAuth rate limits.** App-level OAuth has 5k/h per client. 10k DAU × ~1 OAuth handshake/day = 10k/day = well within envelope. Token refresh at background rates is similarly fine.
@@ -1223,7 +1223,7 @@ nodes ADD COLUMN domain_ids uuid[] DEFAULT '{}'  -- multi-tag, GIN-indexed
 | Content class | What it is | Model | Target tier | Friction budget |
 |---|---|---|---|---|
 | **Workflow content** | Nodes, goals, branches, soul files, canon concepts | **Wiki-open** via chatbot | T1 (~95%) | Near-zero — chatbot mediates every edit |
-| **Platform code** | `workflow/`, `domains/`, tray, MCP gateway, schema migrations, tests | **GitHub fork-and-PR** | T3 (~1%) | Classical OSS — clone, fork, branch, PR, review, merge |
+| **Platform code** | `tinyassets/`, `domains/`, tray, MCP gateway, schema migrations, tests | **GitHub fork-and-PR** | T3 (~1%) | Classical OSS — clone, fork, branch, PR, review, merge |
 
 Tier-2 daemon hosts sit across both — they edit workflow content like T1 (via chatbot or web app) and can optionally contribute platform code like T3 (via PR).
 
@@ -1237,7 +1237,7 @@ Tier-2 daemon hosts sit across both — they edit workflow content like T1 (via 
 
 ### §16.3 Fork-and-PR model — details
 
-- Platform code lives in the canonical Workflow repo on GitHub. Clone-and-run must stay flawless (forever-rule: OSS priority).
+- Platform code lives in the canonical TinyAssets repo on GitHub. Clone-and-run must stay flawless (forever-rule: OSS priority).
 - Contributions go through fork → branch → PR → CI → review → merge. Standard GitHub workflow.
 - `AGENTS.md`, `PLAN.md`, `STATUS.md`, `CONTRIBUTING.md` are the orientation surface. Unchanged.
 - This is how `discover_nodes` RPC implementation changes, tray capability UX changes, schema migrations land, test-harness additions ship. All platform evolution.
@@ -2070,7 +2070,7 @@ Folds into revised §10 totals below.
 
 A user encounters `Workflow: X` in one of three states. The chatbot routes differently in each:
 
-**State 1 — user does not have the Workflow connector yet.** The chatbot discovers Workflow alongside the user's other connectors in Claude.ai's connector catalog and offers to connect it self-service, from inside the chat. *"I can connect Workflow for you — shall I?"* → user consents → OAuth 2.1 + PKCE flow completes → connector live → original request proceeds. Zero leaving the chat surface.
+**State 1 — user does not have the TinyAssets connector yet.** The chatbot discovers Workflow alongside the user's other connectors in Claude.ai's connector catalog and offers to connect it self-service, from inside the chat. *"I can connect Workflow for you — shall I?"* → user consents → OAuth 2.1 + PKCE flow completes → connector live → original request proceeds. Zero leaving the chat surface.
 
 **State 2 — connector present, first invocation this session.** `Workflow: <anything>` is assumed to be an invocation intent; chatbot routes via `discover_nodes` + the name-resolution rules below.
 

@@ -1,6 +1,6 @@
 """DESIGN-008 — selector-branch dispatch unit tests.
 
-Covers ``workflow.api.selector_dispatch`` directly:
+Covers ``tinyassets.api.selector_dispatch`` directly:
 
   * ``resolve_selector_branch_version_id`` — goal_binding vs.
     platform_default fallback.
@@ -24,9 +24,9 @@ import pytest
 
 @pytest.fixture
 def base_path(tmp_path: Path, monkeypatch) -> Path:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    from workflow.daemon_server import initialize_author_server
-    from workflow.runs import initialize_runs_db
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.runs import initialize_runs_db
     initialize_author_server(tmp_path)
     initialize_runs_db(tmp_path)
     return tmp_path
@@ -38,7 +38,7 @@ def _make_goal(
     *,
     selector_branch_version_id: str | None = None,
 ) -> dict:
-    from workflow.daemon_server import save_goal, update_goal
+    from tinyassets.daemon_server import save_goal, update_goal
     save_goal(
         base_path,
         goal=dict(
@@ -58,7 +58,7 @@ def _make_goal(
                 "selector_branch_version_id": selector_branch_version_id,
             },
         )
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     return get_goal(base_path, goal_id=goal_id)
 
 
@@ -68,7 +68,7 @@ def _make_goal(
 
 
 def test_default_selector_publishes_on_first_call(base_path):
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         DEFAULT_SELECTOR_BRANCH_DEF_ID,
         ensure_default_selector_published,
     )
@@ -77,19 +77,19 @@ def test_default_selector_publishes_on_first_call(base_path):
 
 
 def test_default_selector_is_idempotent(base_path):
-    from workflow.api.selector_dispatch import ensure_default_selector_published
+    from tinyassets.api.selector_dispatch import ensure_default_selector_published
     a = ensure_default_selector_published(base_path)
     b = ensure_default_selector_published(base_path)
     assert a == b
 
 
 def test_default_selector_branch_def_exists_after_publish(base_path):
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         DEFAULT_SELECTOR_BRANCH_DEF_ID,
         ensure_default_selector_published,
     )
     ensure_default_selector_published(base_path)
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition
     branch = get_branch_definition(
         base_path, branch_def_id=DEFAULT_SELECTOR_BRANCH_DEF_ID,
     )
@@ -115,7 +115,7 @@ def test_resolve_returns_goal_binding_when_set(base_path):
     Publish a custom selector via the default-selector helper, then
     bind to it.
     """
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         ensure_default_selector_published,
         resolve_selector_branch_version_id,
     )
@@ -135,7 +135,7 @@ def test_resolve_returns_goal_binding_when_set(base_path):
 
 def test_resolve_falls_back_to_platform_default(base_path):
     _make_goal(base_path, "g1", selector_branch_version_id=None)
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         DEFAULT_SELECTOR_BRANCH_DEF_ID,
         resolve_selector_branch_version_id,
     )
@@ -148,7 +148,7 @@ def test_resolve_falls_back_to_platform_default(base_path):
 
 
 def test_resolve_returns_goal_not_found_for_missing_goal(base_path):
-    from workflow.api.selector_dispatch import resolve_selector_branch_version_id
+    from tinyassets.api.selector_dispatch import resolve_selector_branch_version_id
     result = resolve_selector_branch_version_id(base_path, goal_id="never")
     assert result["ok"] is False
     assert result["error_kind"] == "goal_not_found"
@@ -161,7 +161,7 @@ def test_resolve_returns_goal_not_found_for_missing_goal(base_path):
 
 def test_dispatch_short_circuits_on_empty_candidates(base_path):
     _make_goal(base_path, "g1")
-    from workflow.api.selector_dispatch import dispatch_selector
+    from tinyassets.api.selector_dispatch import dispatch_selector
     result = dispatch_selector(
         base_path, goal_id="g1", candidate_branches=[],
     )
@@ -170,10 +170,10 @@ def test_dispatch_short_circuits_on_empty_candidates(base_path):
     assert result["source"] == "empty_candidate_set"
     # No selector publish should have happened — we short-circuited
     # before resolving.
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         DEFAULT_SELECTOR_BRANCH_DEF_ID,
     )
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition
     with pytest.raises(KeyError):
         get_branch_definition(
             base_path, branch_def_id=DEFAULT_SELECTOR_BRANCH_DEF_ID,
@@ -186,7 +186,7 @@ def test_dispatch_short_circuits_on_empty_candidates(base_path):
 
 
 def _parse(output):
-    from workflow.api.selector_dispatch import _parse_ranked_entries
+    from tinyassets.api.selector_dispatch import _parse_ranked_entries
     return _parse_ranked_entries(output)
 
 
@@ -331,7 +331,7 @@ def test_parse_normalizes_score_to_float():
 
 
 def test_resolve_timeout_reads_env(monkeypatch):
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         SELECTOR_TIMEOUT_ENV,
         SELECTOR_TIMEOUT_S_DEFAULT,
         _resolve_timeout,
@@ -345,7 +345,7 @@ def test_resolve_timeout_reads_env(monkeypatch):
 
 
 def test_resolve_timeout_clamps_to_min_one_second(monkeypatch):
-    from workflow.api.selector_dispatch import _resolve_timeout
+    from tinyassets.api.selector_dispatch import _resolve_timeout
     assert _resolve_timeout(0.0) == 1.0
     assert _resolve_timeout(-5) == 1.0
 
@@ -403,11 +403,11 @@ def test_end_to_end_selector_dispatch_with_real_published_branch(base_path):
     as ``_action_run_branch_version`` accepts). This is the seam
     real production code uses to bind providers.
     """
-    from workflow.api.quality_leaderboard import recommend_parent_for_fork
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.quality_leaderboard import recommend_parent_for_fork
+    from tinyassets.api.selector_dispatch import (
         ensure_default_selector_published,
     )
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         save_branch_definition,
         save_goal,
         update_goal,
@@ -482,8 +482,8 @@ def test_end_to_end_platform_default_fallback(base_path):
     no-binding fallback path also runs end-to-end without snapshot
     reconstruction errors.
     """
-    from workflow.api.quality_leaderboard import recommend_parent_for_fork
-    from workflow.daemon_server import save_branch_definition, save_goal
+    from tinyassets.api.quality_leaderboard import recommend_parent_for_fork
+    from tinyassets.daemon_server import save_branch_definition, save_goal
 
     save_goal(
         base_path,
@@ -538,7 +538,7 @@ def _flip_branch_version_status(base_path, branch_version_id, status):
     Simulates the post-bind state where a rollback (or any other
     lifecycle operation) marks the version as no longer ``active``.
     """
-    from workflow.branch_versions import _connect
+    from tinyassets.branch_versions import _connect
     with _connect(base_path) as conn:
         conn.execute(
             "UPDATE branch_versions SET status = ? "
@@ -553,8 +553,8 @@ def _publish_custom_selector(
     """Publish a custom selector branch_version distinct from the
     platform default so tests can flip ITS status without disturbing
     the fallback target."""
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import (
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
         get_branch_definition,
         save_branch_definition,
     )
@@ -615,10 +615,10 @@ def test_resolve_falls_back_when_bound_selector_is_rolled_back(base_path):
     """
     _make_goal(base_path, "g1")
     custom_bvid = _publish_custom_selector(base_path)
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         resolve_selector_branch_version_id,
     )
-    from workflow.daemon_server import update_goal
+    from tinyassets.daemon_server import update_goal
     update_goal(
         base_path,
         goal_id="g1",
@@ -646,8 +646,8 @@ def test_resolve_falls_back_when_bound_selector_version_missing(base_path):
     (e.g. hard-deleted by an administrator). Resolver falls back +
     surfaces a different ``reason`` so audit tools can distinguish."""
     _make_goal(base_path, "g1")
-    from workflow.api.selector_dispatch import resolve_selector_branch_version_id
-    from workflow.daemon_server import update_goal
+    from tinyassets.api.selector_dispatch import resolve_selector_branch_version_id
+    from tinyassets.daemon_server import update_goal
     update_goal(
         base_path,
         goal_id="g1",
@@ -669,8 +669,8 @@ def test_resolve_logs_fallback_with_clear_operator_guidance(
     custom_bvid = _publish_custom_selector(
         base_path, branch_def_id="stale_test_selector",
     )
-    from workflow.api.selector_dispatch import resolve_selector_branch_version_id
-    from workflow.daemon_server import update_goal
+    from tinyassets.api.selector_dispatch import resolve_selector_branch_version_id
+    from tinyassets.daemon_server import update_goal
     update_goal(
         base_path,
         goal_id="g-stale",
@@ -678,7 +678,7 @@ def test_resolve_logs_fallback_with_clear_operator_guidance(
     )
     _flip_branch_version_status(base_path, custom_bvid, "rolled_back")
     with caplog.at_level(
-        logging.WARNING, logger="workflow.api.selector_dispatch",
+        logging.WARNING, logger="tinyassets.api.selector_dispatch",
     ):
         resolve_selector_branch_version_id(base_path, goal_id="g-stale")
     matching = [
@@ -704,8 +704,8 @@ def test_dispatch_threads_fallback_diagnostic_to_caller(base_path):
     untouched (and available as the fallback target).
     """
     _make_goal(base_path, "g1")
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import (
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
         get_branch_definition,
         save_branch_definition,
         update_goal,
@@ -783,7 +783,7 @@ def test_dispatch_threads_fallback_diagnostic_to_caller(base_path):
     )
     _flip_branch_version_status(base_path, custom_bvid, "rolled_back")
 
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         DEFAULT_SELECTOR_BRANCH_DEF_ID,
         dispatch_selector,
     )
@@ -835,7 +835,7 @@ def test_ensure_default_returns_empty_when_existing_default_rolled_back(
     return empty so callers surface ``default_selector_unavailable``
     rather than silently dispatching a rolled-back selector.
     """
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         DEFAULT_SELECTOR_BRANCH_DEF_ID,
         ensure_default_selector_published,
     )
@@ -866,7 +866,7 @@ def test_resolve_surfaces_default_unavailable_when_default_rolled_back(
     must surface a structured ``default_selector_unavailable`` error
     to the leaderboard caller rather than crashing or dispatching."""
     _make_goal(base_path, "g-default-rolled-back")
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         ensure_default_selector_published,
         resolve_selector_branch_version_id,
     )
@@ -906,7 +906,7 @@ def test_dispatch_selector_rejects_inactive_at_dispatch_time(
     # Force resolve to return the rolled-back bvid (bypass its own
     # status re-check). The dispatch-time guard is the only defense
     # left.
-    from workflow.api import selector_dispatch as sd
+    from tinyassets.api import selector_dispatch as sd
 
     def _fake_resolve(base_path, *, goal_id):
         return {
@@ -947,11 +947,11 @@ def test_quality_leaderboard_unavailable_when_default_rolled_back(base_path):
     dispatching the rolled-back row (which was the Codex round-4
     reproduction).
     """
-    from workflow.api.quality_leaderboard import build_quality_leaderboard
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.quality_leaderboard import build_quality_leaderboard
+    from tinyassets.api.selector_dispatch import (
         ensure_default_selector_published,
     )
-    from workflow.daemon_server import save_branch_definition, save_goal
+    from tinyassets.daemon_server import save_branch_definition, save_goal
 
     save_goal(
         base_path,

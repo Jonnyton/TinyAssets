@@ -1,4 +1,4 @@
-"""Tests for workflow.preferences — tray runtime defaults."""
+"""Tests for tinyassets.preferences — tray runtime defaults."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow import preferences
+from tinyassets import preferences
 
 
 @pytest.fixture(autouse=True)
@@ -111,7 +111,7 @@ def test_cache_hit_avoids_disk(_isolated_prefs: Path) -> None:
 
 def test_provider_constants_cover_router_chain() -> None:
     # Every provider in the router fallback chains must be classified.
-    from workflow.providers.router import FALLBACK_CHAINS
+    from tinyassets.providers.router import FALLBACK_CHAINS
 
     seen: set[str] = set()
     for chain in FALLBACK_CHAINS.values():

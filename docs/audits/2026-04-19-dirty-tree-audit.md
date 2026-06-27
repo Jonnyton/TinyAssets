@@ -47,14 +47,14 @@ Task #7 classification of remaining uncommitted state after `ba1d3c3` (layer-2 r
 | `.agents/activity.log` | (a) | 106 lines of session narrative appended across prior sessions. Historical; coordination record. | Ship in **[AGENT-DEFS]** or stand-alone trivial commit; low risk. |
 | `scripts/sync-skills.ps1` | (a) | Minor edit (LF/CRLF + comment). | Ship in **[AGENT-DEFS]**. |
 
-## Rename Phase 1+ compat extensions (workflow/ canonical + packaging mirror)
+## Rename Phase 1+ compat extensions (tinyassets/ canonical + packaging mirror)
 
 | Path | Cat | Verdict | Action |
 |------|-----|---------|--------|
-| `workflow/_rename_compat.py` | (a) | Extends rename compat with `_RenameAliasLoader`, `install_module_alias` — aliases old module paths to new canonical. Active Phase 1–4. | **DEFER** to navigator-coordinated Phase-1-Part-3 commit. See §Deferred. |
-| `workflow/desktop/launcher.py` | (a) | Host tray migration (`TrayApp` → `HostTrayService.shared().bind_dashboard`) + start/stop guards. Non-rename UX improvement bundled into rename-era churn. | Ship separately as **[TRAY-SINGLETON]** — maps to STATUS Work row #23 ("Tray singleton"). |
-| `workflow/discovery.py` | (a) | Adds `rename_compat_enabled()` branch that appends `fantasy_author` alias to discovered domain list. Phase 1 shim behavior. | **DEFER** with _rename_compat.py. |
-| `workflow/knowledge/models.py` | (a) | Adds `FactHardness` enum + `hardness` field on `FactWithContext`. Independent of rename; knowledge model extension. | Ship as **[KG-HARDNESS]** standalone OR fold into upcoming Fix-C follow-up. Needs one-line owner confirmation from navigator. |
+| `tinyassets/_rename_compat.py` | (a) | Extends rename compat with `_RenameAliasLoader`, `install_module_alias` — aliases old module paths to new canonical. Active Phase 1–4. | **DEFER** to navigator-coordinated Phase-1-Part-3 commit. See §Deferred. |
+| `tinyassets/desktop/launcher.py` | (a) | Host tray migration (`TrayApp` → `HostTrayService.shared().bind_dashboard`) + start/stop guards. Non-rename UX improvement bundled into rename-era churn. | Ship separately as **[TRAY-SINGLETON]** — maps to STATUS Work row #23 ("Tray singleton"). |
+| `tinyassets/discovery.py` | (a) | Adds `rename_compat_enabled()` branch that appends `fantasy_author` alias to discovered domain list. Phase 1 shim behavior. | **DEFER** with _rename_compat.py. |
+| `tinyassets/knowledge/models.py` | (a) | Adds `FactHardness` enum + `hardness` field on `FactWithContext`. Independent of rename; knowledge model extension. | Ship as **[KG-HARDNESS]** standalone OR fold into upcoming Fix-C follow-up. Needs one-line owner confirmation from navigator. |
 | `domains/fantasy_author/__init__.py` | (a) | Adds `install_module_alias` call + attribute delegation. Phase 1 shim. | **DEFER** with _rename_compat.py. |
 | `fantasy_author/__init__.py` | (a) | Same Phase 1 shim pattern as domains/. | **DEFER** with _rename_compat.py. |
 | `fantasy_author/__main__.py` *(untracked)* | (a) | Back-compat CLI shim; one-line `from fantasy_daemon.__main__ import *`. Part of Phase 1 shim set. | **DEFER** with _rename_compat.py. |
@@ -63,10 +63,10 @@ Task #7 classification of remaining uncommitted state after `ba1d3c3` (layer-2 r
 **Mirror-side rename compat** (must stay byte-matched to canonical above):
 | Path | Cat | Verdict | Action |
 |------|-----|---------|--------|
-| `packaging/.../runtime/workflow/_rename_compat.py` | (a) | Identical to canonical. | **DEFER** with canonical counterpart. |
-| `packaging/.../runtime/workflow/desktop/launcher.py` | (a) | Identical to canonical (tray singleton). | Ship with **[TRAY-SINGLETON]**. |
-| `packaging/.../runtime/workflow/discovery.py` | (a) | Identical to canonical. | **DEFER** with canonical. |
-| `packaging/.../runtime/workflow/knowledge/models.py` | (a) | Identical to canonical. | Ship with **[KG-HARDNESS]**. |
+| `packaging/.../runtime/tinyassets/_rename_compat.py` | (a) | Identical to canonical. | **DEFER** with canonical counterpart. |
+| `packaging/.../runtime/tinyassets/desktop/launcher.py` | (a) | Identical to canonical (tray singleton). | Ship with **[TRAY-SINGLETON]**. |
+| `packaging/.../runtime/tinyassets/discovery.py` | (a) | Identical to canonical. | **DEFER** with canonical. |
+| `packaging/.../runtime/tinyassets/knowledge/models.py` | (a) | Identical to canonical. | Ship with **[KG-HARDNESS]**. |
 
 ## Packaging mirror sync-forward (task #17 Fix C catch-up)
 
@@ -74,25 +74,25 @@ Canonical is at `05ce779` (#17 synthesis-skip fix + bite diagnostics). Mirror wa
 
 | Path | Cat | Verdict | Action |
 |------|-----|---------|--------|
-| `packaging/.../runtime/workflow/ingestion/core.py` | (c) | Adds `last_bite_outcomes` field on `ManifestEntry`. Mirror-side sync of #17. | Ship in **[MIRROR-SYNC]**. |
-| `packaging/.../runtime/workflow/ingestion/extractors.py` | (c) | Adds `_LAST_BITE_OUTCOMES` + bite synthesis diagnostics. Mirror-side sync of #17. | Ship in **[MIRROR-SYNC]**. |
-| `packaging/.../runtime/workflow/retrieval/router.py` | (c) | 1-line mirror sync. | Ship in **[MIRROR-SYNC]**. |
-| `packaging/.../runtime/workflow/universe_server.py` | (c) | 444/-444 — intent-disambiguation + control_station prompt relocation + tool-description churn. Canonical of this file shows no diff in `git status`, so the canonical version is already at HEAD and the mirror is catching up. | Ship in **[MIRROR-SYNC]**. |
-| `packaging/.../runtime/workflow/runs.py` | (c) | 1-line (pre-existing canonical edit already landed). Mirror catch-up. | Ship in **[MIRROR-SYNC]**. |
-| `packaging/.../runtime/workflow/work_targets.py` | (c) | 1-line (pre-existing canonical edit already landed). Mirror catch-up. | Ship in **[MIRROR-SYNC]**. |
+| `packaging/.../runtime/tinyassets/ingestion/core.py` | (c) | Adds `last_bite_outcomes` field on `ManifestEntry`. Mirror-side sync of #17. | Ship in **[MIRROR-SYNC]**. |
+| `packaging/.../runtime/tinyassets/ingestion/extractors.py` | (c) | Adds `_LAST_BITE_OUTCOMES` + bite synthesis diagnostics. Mirror-side sync of #17. | Ship in **[MIRROR-SYNC]**. |
+| `packaging/.../runtime/tinyassets/retrieval/router.py` | (c) | 1-line mirror sync. | Ship in **[MIRROR-SYNC]**. |
+| `packaging/.../runtime/tinyassets/universe_server.py` | (c) | 444/-444 — intent-disambiguation + control_station prompt relocation + tool-description churn. Canonical of this file shows no diff in `git status`, so the canonical version is already at HEAD and the mirror is catching up. | Ship in **[MIRROR-SYNC]**. |
+| `packaging/.../runtime/tinyassets/runs.py` | (c) | 1-line (pre-existing canonical edit already landed). Mirror catch-up. | Ship in **[MIRROR-SYNC]**. |
+| `packaging/.../runtime/tinyassets/work_targets.py` | (c) | 1-line (pre-existing canonical edit already landed). Mirror catch-up. | Ship in **[MIRROR-SYNC]**. |
 
 Parity verification (performed during audit, no files modified):
 ```
-diff workflow/_rename_compat.py       <mirror>   → identical
-diff workflow/desktop/launcher.py     <mirror>   → identical
-diff workflow/discovery.py            <mirror>   → identical
-diff workflow/knowledge/models.py     <mirror>   → identical
-diff workflow/ingestion/core.py       <mirror>   → identical
-diff workflow/ingestion/extractors.py <mirror>   → identical
-diff workflow/retrieval/router.py     <mirror>   → identical
-diff workflow/runs.py                 <mirror>   → identical
-diff workflow/universe_server.py      <mirror>   → identical
-diff workflow/work_targets.py         <mirror>   → identical
+diff tinyassets/_rename_compat.py       <mirror>   → identical
+diff tinyassets/desktop/launcher.py     <mirror>   → identical
+diff tinyassets/discovery.py            <mirror>   → identical
+diff tinyassets/knowledge/models.py     <mirror>   → identical
+diff tinyassets/ingestion/core.py       <mirror>   → identical
+diff tinyassets/ingestion/extractors.py <mirror>   → identical
+diff tinyassets/retrieval/router.py     <mirror>   → identical
+diff tinyassets/runs.py                 <mirror>   → identical
+diff tinyassets/universe_server.py      <mirror>   → identical
+diff tinyassets/work_targets.py         <mirror>   → identical
 ```
 
 ## Test/script shrapnel
@@ -143,7 +143,7 @@ All ship together as **[DOCS]** (one commit, all design notes + exec plans + ind
 
 ## Deferred cluster
 
-**Rename Phase 1 compat extensions** — `workflow/_rename_compat.py`, `workflow/discovery.py`, `domains/fantasy_author/__init__.py`, `fantasy_author/__init__.py`, `fantasy_author/__main__.py`, `domains/fantasy_author/phases/`, plus mirror pair. These extend Phase 1 beyond what landed in `72e696e`. Do not ship until navigator's task #8 rename-status delta clarifies whether these are Phase-1-Part-3 extensions, Phase-2 preview, or orphaned from a prior WIP attempt. Risk: shipping prematurely could conflict with the planned Phase 2 module rename (`fantasy_author/` directory move) or change the shim surface before tests cover the new aliases.
+**Rename Phase 1 compat extensions** — `tinyassets/_rename_compat.py`, `tinyassets/discovery.py`, `domains/fantasy_author/__init__.py`, `fantasy_author/__init__.py`, `fantasy_author/__main__.py`, `domains/fantasy_author/phases/`, plus mirror pair. These extend Phase 1 beyond what landed in `72e696e`. Do not ship until navigator's task #8 rename-status delta clarifies whether these are Phase-1-Part-3 extensions, Phase-2 preview, or orphaned from a prior WIP attempt. Risk: shipping prematurely could conflict with the planned Phase 2 module rename (`fantasy_author/` directory move) or change the shim surface before tests cover the new aliases.
 
 **Recommended dispatch:** wait for navigator's #8 status output (which exists at `docs/exec-plans/active/2026-04-19-author-to-daemon-rename-status.md` — ship that note as part of [DOCS], then read it, then decide).
 
@@ -155,12 +155,12 @@ Order matters: ship mirror-sync + docs first (low-risk, unblocks), then agent de
 
 1. **[MIRROR-SYNC]** — mirror catch-up for #17 Fix C + other landed canonical edits.
    Paths:
-   - `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/ingestion/core.py`
-   - `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/ingestion/extractors.py`
-   - `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/retrieval/router.py`
-   - `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/universe_server.py`
-   - `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/runs.py`
-   - `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/work_targets.py`
+   - `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/ingestion/core.py`
+   - `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/ingestion/extractors.py`
+   - `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/retrieval/router.py`
+   - `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py`
+   - `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/runs.py`
+   - `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/work_targets.py`
    Proposed message: `packaging mirror: sync canonical #17 Fix C + control_station + small deltas`
 
 2. **[DOCS]** — all untracked design notes + exec plans + two INDEX updates.
@@ -179,19 +179,19 @@ Order matters: ship mirror-sync + docs first (low-risk, unblocks), then agent de
    Proposed message: `docs: living-doc sync — Forever Rule, verifier/navigator refs, install-readiness principle`
 
 6. **[TRAY-SINGLETON]** — STATUS Work row #23.
-   Paths: `workflow/desktop/launcher.py` + mirror pair.
+   Paths: `tinyassets/desktop/launcher.py` + mirror pair.
    Proposed message: `tray: single host tray service, bind/unbind per dashboard (closes #23)`
-   Note: STATUS row also mentions `universe_tray.py`, `start-universe-server.bat`; those are already at rest on main. Only the launcher change is in the dirty tree. If the row's intent included bat-file touches, they already landed in `1b29d92` (tray launcher bat references renamed workflow_tray.py). Confirm with lead before marking #23 closed.
+   Note: STATUS row also mentions `universe_tray.py`, `start-universe-server.bat`; those are already at rest on main. Only the launcher change is in the dirty tree. If the row's intent included bat-file touches, they already landed in `1b29d92` (tray launcher bat references renamed tinyassets_tray.py). Confirm with lead before marking #23 closed.
 
 7. **[KG-HARDNESS]** — `FactHardness` enum on `FactWithContext`.
-   Paths: `workflow/knowledge/models.py` + mirror pair.
+   Paths: `tinyassets/knowledge/models.py` + mirror pair.
    Proposed message: `kg: add FactHardness enum + hardness field on FactWithContext`
    Needs: one-line navigator confirmation this isn't mid-flight in a larger #17 follow-up or memory-scope work.
 
 8. **[PROTO]** (optional) — prototype/full-platform-v0 Dockerfile + requirements.txt. Low-priority; can wait for uptime Phase 1a owner.
 
 **Deferred (post-navigator #8):**
-9. **[RENAME-PHASE-1-SHIMS]** — `workflow/_rename_compat.py`, `workflow/discovery.py`, `domains/fantasy_author/__init__.py`, `fantasy_author/__init__.py`, `fantasy_author/__main__.py`, `domains/fantasy_author/phases/` + mirror pair. Hold until navigator's #8 rename-status delta is read.
+9. **[RENAME-PHASE-1-SHIMS]** — `tinyassets/_rename_compat.py`, `tinyassets/discovery.py`, `domains/fantasy_author/__init__.py`, `fantasy_author/__init__.py`, `fantasy_author/__main__.py`, `domains/fantasy_author/phases/` + mirror pair. Hold until navigator's #8 rename-status delta is read.
 
 ---
 

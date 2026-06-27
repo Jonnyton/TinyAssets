@@ -1,6 +1,6 @@
 """Tests for ``extensions action=validate_ship_packet`` (PR #198 Phase 2A).
 
-Wraps ``workflow.auto_ship.validate_ship_request`` as an MCP action so the
+Wraps ``tinyassets.auto_ship.validate_ship_request`` as an MCP action so the
 loop's release_safety_gate prompt and external callers (chatbots /
 canaries) can reach it via tool. The validator itself is exercised
 exhaustively in ``tests/test_auto_ship.py`` — these tests cover the
@@ -12,12 +12,12 @@ from __future__ import annotations
 import inspect
 import json
 
-from workflow.api.auto_ship_actions import (
+from tinyassets.api.auto_ship_actions import (
     _AUTO_SHIP_ACTIONS,
     _action_open_auto_ship_pr,
     _action_validate_ship_packet,
 )
-from workflow.api.extensions import _extensions_impl
+from tinyassets.api.extensions import _extensions_impl
 
 # ── Wrapper layer (handler-level) ──────────────────────────────────────────
 
@@ -94,7 +94,7 @@ class TestHandlerLayer:
 
 class TestDispatchIntegration:
     def test_public_extensions_signature_exposes_ledger_kwargs(self):
-        from workflow import universe_server as us
+        from tinyassets import universe_server as us
 
         params = inspect.signature(us.extensions).parameters
         for name in (
@@ -144,9 +144,9 @@ class TestDispatchIntegration:
         tmp_path,
         monkeypatch,
     ):
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
         universe = tmp_path / "ledger-uni"
         universe.mkdir(parents=True, exist_ok=True)
@@ -203,10 +203,10 @@ class TestDispatchIntegration:
         monkeypatch,
     ):
         """The public MCP wrapper forwards ledger fields to the action."""
-        from workflow import universe_server as us
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets import universe_server as us
+        from tinyassets.auto_ship_ledger import read_attempts
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
         universe = tmp_path / "wrapper-uni"
         universe.mkdir(parents=True, exist_ok=True)
@@ -251,11 +251,11 @@ class TestDispatchIntegration:
         assert row.stable_evidence_handle == "wrapper-evidence"
 
     def test_open_auto_ship_pr_routes_to_handler_disabled(self, tmp_path, monkeypatch):
-        from workflow.auto_ship_ledger import ShipAttempt, find_attempt, record_attempt
+        from tinyassets.auto_ship_ledger import ShipAttempt, find_attempt, record_attempt
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-uni")
-        monkeypatch.delenv("WORKFLOW_AUTO_SHIP_PR_CREATE_ENABLED", raising=False)
+        monkeypatch.delenv("TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED", raising=False)
         universe = tmp_path / "test-uni"
         universe.mkdir(parents=True, exist_ok=True)
         record_attempt(universe, ShipAttempt(
@@ -293,7 +293,7 @@ class TestResilience:
             raise RuntimeError("simulated validator failure")
 
         # Need to patch the import location used inside the handler.
-        monkeypatch.setattr("workflow.auto_ship.validate_ship_request", boom)
+        monkeypatch.setattr("tinyassets.auto_ship.validate_ship_request", boom)
 
         result = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps({"any": "packet"}),
@@ -340,14 +340,14 @@ class TestLedgerRecording:
     @staticmethod
     def _setup_universe(tmp_path, monkeypatch, name="test-uni"):
         from pathlib import Path
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", name)
         (Path(tmp_path) / name).mkdir(parents=True, exist_ok=True)
         return Path(tmp_path) / name
 
     def test_record_off_response_is_byte_identical_to_pr224(self, tmp_path, monkeypatch):
         self._setup_universe(tmp_path, monkeypatch)
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
         result = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet()),
         }))
@@ -359,7 +359,7 @@ class TestLedgerRecording:
 
     def test_record_on_passed_writes_skipped_row(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
         result = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet()),
             "record_in_ledger": True,
@@ -389,7 +389,7 @@ class TestLedgerRecording:
 
     def test_record_on_blocked_writes_blocked_row_with_violations(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
         result = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet(release_gate_result="HOLD")),
             "record_in_ledger": True,
@@ -409,8 +409,8 @@ class TestLedgerRecording:
     def test_explicit_universe_id_overrides_default(self, tmp_path, monkeypatch):
         from pathlib import Path
 
-        from workflow.auto_ship_ledger import read_attempts
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        from tinyassets.auto_ship_ledger import read_attempts
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
         (Path(tmp_path) / "default-uni").mkdir(parents=True, exist_ok=True)
         (Path(tmp_path) / "other-uni").mkdir(parents=True, exist_ok=True)
@@ -428,7 +428,7 @@ class TestLedgerRecording:
 
     def test_string_truthy_record_flag_enables_recording(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
         result = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet()),
             "record_in_ledger": "true",
@@ -439,7 +439,7 @@ class TestLedgerRecording:
 
     def test_string_falsy_record_flag_skips_recording(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
         for falsy in ("false", " False ", "0", "no", "off", ""):
             result = json.loads(_action_validate_ship_packet({
                 "body_json": json.dumps(self._packet()),
@@ -450,7 +450,7 @@ class TestLedgerRecording:
 
     def test_changed_paths_json_kwarg_overrides_packet_paths(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
         json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet(
                 changed_paths=["docs/autoship-canaries/from-packet.md"],
@@ -472,7 +472,7 @@ class TestLedgerRecording:
 
     def test_malformed_changed_paths_json_falls_back_to_packet(self, tmp_path, monkeypatch):
         u = self._setup_universe(tmp_path, monkeypatch)
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
         json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet(changed_paths=["docs/autoship-canaries/x.md"])),
             "record_in_ledger": True,
@@ -486,7 +486,7 @@ class TestLedgerRecording:
     def test_ledger_write_failure_surfaces_in_response(self, tmp_path, monkeypatch):
         """If record_attempt raises (e.g. invalid universe), the wrapper
         blocks acceptance and surfaces ledger_error."""
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
         # No universe directories exist; helper falls back to "default-universe"
         # which doesn't exist as a dir. record_attempt creates it via mkdir —
@@ -520,9 +520,9 @@ class TestLedgerRecording:
         return an accepting ship decision when record_in_ledger=true but no
         ledger row is created.
         """
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
         (tmp_path / "default-uni").mkdir(parents=True, exist_ok=True)
 
@@ -546,7 +546,7 @@ class TestLedgerRecording:
         ship_attempt_id on each call so the ledger gives a per-call audit
         trail rather than collapsing identical packets."""
         u = self._setup_universe(tmp_path, monkeypatch)
-        from workflow.auto_ship_ledger import read_attempts
+        from tinyassets.auto_ship_ledger import read_attempts
         result_a = json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet()),
             "record_in_ledger": True,

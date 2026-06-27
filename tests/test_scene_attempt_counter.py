@@ -54,8 +54,8 @@ def _make_target(
     target_id: str = "tgt-1",
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Write a WorkTarget via the real workflow.work_targets API."""
-    from workflow.work_targets import WorkTarget, save_work_targets
+    """Write a WorkTarget via the real tinyassets.work_targets API."""
+    from tinyassets.work_targets import WorkTarget, save_work_targets
 
     t = WorkTarget(
         target_id=target_id,
@@ -67,7 +67,7 @@ def _make_target(
 
 
 def _read_target(universe_dir: Path, target_id: str):
-    from workflow.work_targets import get_target
+    from tinyassets.work_targets import get_target
 
     return get_target(universe_dir, target_id)
 
@@ -133,26 +133,26 @@ def test_bump_handles_corrupt_counter_as_zero(tmp_path):
 
 def test_max_scene_attempts_default():
     # Clear any env override for this test.
-    os.environ.pop("WORKFLOW_MAX_SCENE_ATTEMPTS", None)
+    os.environ.pop("TINYASSETS_MAX_SCENE_ATTEMPTS", None)
     assert max_scene_attempts() == MAX_SCENE_ATTEMPTS_DEFAULT
     assert MAX_SCENE_ATTEMPTS_DEFAULT == 3
 
 
 def test_max_scene_attempts_env_override(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_MAX_SCENE_ATTEMPTS", "7")
+    monkeypatch.setenv("TINYASSETS_MAX_SCENE_ATTEMPTS", "7")
     assert max_scene_attempts() == 7
 
 
 def test_max_scene_attempts_rejects_zero_or_negative(monkeypatch):
     """A zero/negative value falls back to default — never 0 (infinite)."""
-    monkeypatch.setenv("WORKFLOW_MAX_SCENE_ATTEMPTS", "0")
+    monkeypatch.setenv("TINYASSETS_MAX_SCENE_ATTEMPTS", "0")
     assert max_scene_attempts() == MAX_SCENE_ATTEMPTS_DEFAULT
-    monkeypatch.setenv("WORKFLOW_MAX_SCENE_ATTEMPTS", "-5")
+    monkeypatch.setenv("TINYASSETS_MAX_SCENE_ATTEMPTS", "-5")
     assert max_scene_attempts() == MAX_SCENE_ATTEMPTS_DEFAULT
 
 
 def test_max_scene_attempts_rejects_garbage(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_MAX_SCENE_ATTEMPTS", "not-a-number")
+    monkeypatch.setenv("TINYASSETS_MAX_SCENE_ATTEMPTS", "not-a-number")
     assert max_scene_attempts() == MAX_SCENE_ATTEMPTS_DEFAULT
 
 

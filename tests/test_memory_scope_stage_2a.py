@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.memory.node_scope import (
+from tinyassets.memory.node_scope import (
     ExternalSource,
     NodeScopeEntry,
     NodeScopeManifest,
@@ -31,19 +31,19 @@ from workflow.memory.node_scope import (
 def base_path(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
-    from workflow.daemon_server import initialize_author_server
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    from tinyassets.daemon_server import initialize_author_server
     initialize_author_server(base)
     return base
 
 
 def test_universe_is_private_false_when_no_grants(base_path):
-    from workflow.daemon_server import universe_is_private
+    from tinyassets.daemon_server import universe_is_private
     assert universe_is_private(base_path, universe_id="u-public") is False
 
 
 def test_grant_then_private(base_path):
-    from workflow.daemon_server import grant_universe_access, universe_is_private
+    from tinyassets.daemon_server import grant_universe_access, universe_is_private
 
     grant_universe_access(
         base_path,
@@ -58,7 +58,7 @@ def test_grant_then_private(base_path):
 
 
 def test_grant_is_idempotent_and_updates_permission(base_path):
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         grant_universe_access,
         list_universe_acl,
     )
@@ -77,7 +77,7 @@ def test_grant_is_idempotent_and_updates_permission(base_path):
 
 
 def test_grant_rejects_unknown_permission(base_path):
-    from workflow.daemon_server import grant_universe_access
+    from tinyassets.daemon_server import grant_universe_access
 
     with pytest.raises(ValueError, match="Unknown permission"):
         grant_universe_access(
@@ -89,7 +89,7 @@ def test_grant_rejects_unknown_permission(base_path):
 
 
 def test_revoke_removes_grant(base_path):
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         grant_universe_access,
         revoke_universe_access,
         universe_is_private,
@@ -111,7 +111,7 @@ def test_revoke_removes_grant(base_path):
 def test_universe_access_permission_semantics(base_path):
     """Public universe returns 'read' for any actor; private returns
     exactly what was granted or '' if ungranted."""
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         grant_universe_access,
         universe_access_permission,
     )
@@ -134,7 +134,7 @@ def test_universe_access_permission_semantics(base_path):
 
 
 def test_list_universe_acl_ordered_by_granted_at(base_path):
-    from workflow.daemon_server import grant_universe_access, list_universe_acl
+    from tinyassets.daemon_server import grant_universe_access, list_universe_acl
 
     grant_universe_access(
         base_path, universe_id="u", actor_id="first", permission="read",
@@ -150,7 +150,7 @@ def test_list_universe_acl_ordered_by_granted_at(base_path):
 
 
 def test_kg_schema_adds_scope_columns(tmp_path):
-    from workflow.knowledge.knowledge_graph import KnowledgeGraph
+    from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
     db_path = tmp_path / "kg.db"
     kg = KnowledgeGraph(db_path=str(db_path))
@@ -168,7 +168,7 @@ def test_kg_schema_adds_scope_columns(tmp_path):
 
 def test_kg_migration_is_idempotent(tmp_path):
     """Re-opening the DB doesn't re-add columns or error."""
-    from workflow.knowledge.knowledge_graph import KnowledgeGraph
+    from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
     db_path = tmp_path / "kg.db"
     KnowledgeGraph(db_path=str(db_path))  # first open = schema create
@@ -181,8 +181,8 @@ def test_kg_migration_is_idempotent(tmp_path):
 
 
 def test_kg_migrate_scope_columns_backfills_universe_id(tmp_path):
-    from workflow.knowledge.knowledge_graph import KnowledgeGraph
-    from workflow.knowledge.models import GraphEntity
+    from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+    from tinyassets.knowledge.models import GraphEntity
 
     db_path = tmp_path / "kg.db"
     kg = KnowledgeGraph(db_path=str(db_path))
@@ -209,7 +209,7 @@ def test_kg_migrate_scope_columns_backfills_universe_id(tmp_path):
 
 
 def test_kg_migrate_requires_universe_id(tmp_path):
-    from workflow.knowledge.knowledge_graph import KnowledgeGraph
+    from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
     kg = KnowledgeGraph(db_path=str(tmp_path / "kg.db"))
     with pytest.raises(ValueError, match="non-empty universe_id"):
@@ -217,7 +217,7 @@ def test_kg_migrate_requires_universe_id(tmp_path):
 
 
 def test_kg_scope_index_exists(tmp_path):
-    from workflow.knowledge.knowledge_graph import KnowledgeGraph
+    from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
     kg = KnowledgeGraph(db_path=str(tmp_path / "kg.db"))
     names = [
@@ -233,7 +233,7 @@ def test_kg_scope_index_exists(tmp_path):
 
 
 def test_vector_store_seed_carries_scope_fields(tmp_path):
-    from workflow.retrieval.vector_store import VectorStore, reset_db
+    from tinyassets.retrieval.vector_store import VectorStore, reset_db
 
     reset_db()
     store = VectorStore(db_path=str(tmp_path / "vec"), embedding_dim=4)
@@ -244,7 +244,7 @@ def test_vector_store_seed_carries_scope_fields(tmp_path):
 
 
 def test_vector_store_index_accepts_scope_fields(tmp_path):
-    from workflow.retrieval.vector_store import VectorStore, reset_db
+    from tinyassets.retrieval.vector_store import VectorStore, reset_db
 
     reset_db()
     store = VectorStore(db_path=str(tmp_path / "vec"), embedding_dim=4)

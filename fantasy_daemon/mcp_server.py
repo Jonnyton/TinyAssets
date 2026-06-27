@@ -1,2 +1,2 @@
-"""Shim: use workflow.mcp_server instead."""
-from workflow.mcp_server import *  # noqa: F401,F403
+"""Shim: use tinyassets.mcp_server instead."""
+from tinyassets.mcp_server import *  # noqa: F401,F403

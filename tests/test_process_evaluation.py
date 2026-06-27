@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from workflow.evaluation.process import (
+from tinyassets.evaluation.process import (
     ProcessEvaluation,
     evaluate_scene_process,
 )

@@ -1,4 +1,4 @@
-"""Tests for workflow.outcomes schema — DDL, OutcomeEvent dataclass."""
+"""Tests for tinyassets.outcomes schema — DDL, OutcomeEvent dataclass."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from workflow.outcomes import (
+from tinyassets.outcomes import (
     OUTCOME_TYPES,
     OutcomeEvent,
     migrate_outcome_schema,

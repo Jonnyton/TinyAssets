@@ -2,13 +2,13 @@
   "name": "Destiny",
   "display_name": "Destiny (tiny)",
   "legacy_project_name": "Tiny Assets",
-  "tagline": "Workflow currently uses test tiny on Base Sepolia. The real currency reference is Destiny (tiny), and mainnet integration is a later roadmap step.",
+  "tagline": "TinyAssets currently uses test tiny on Base Sepolia. The real currency reference is Destiny (tiny), and mainnet integration is a later roadmap step.",
   "ticker": "tiny",
   "workflow_test_currency": {
     "name": "test tiny",
     "chain": "Base Sepolia",
     "mode": "testnet-only",
-    "note": "Workflow settlement and daemon-economy testing must touch only the Base Sepolia test token until real-currency integration is explicitly opened."
+    "note": "TinyAssets settlement and daemon-economy testing must touch only the Base Sepolia test token until real-currency integration is explicitly opened."
   },
   "deploys": [
     {
@@ -47,5 +47,5 @@
     { "phase": 7, "label": "test tiny settlement", "status": "planned" },
     { "phase": 8, "label": "real Destiny integration", "status": "planned" }
   ],
-  "disclaimer": "Forward-looking. Workflow uses test tiny on Base Sepolia only until real-currency integration is opened. Destiny (tiny) contracts are reference-only for current Workflow surfaces."
+  "disclaimer": "Forward-looking. TinyAssets uses test tiny on Base Sepolia only until real-currency integration is opened. Destiny (tiny) contracts are reference-only for current TinyAssets surfaces."
 }

@@ -1,7 +1,7 @@
 """Tests for the MCP server tool functions.
 
 Each tool is a plain function that reads/writes files in a universe
-directory. We test them by pointing WORKFLOW_UNIVERSE at a
+directory. We test them by pointing TINYASSETS_UNIVERSE at a
 temp directory and calling them directly.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.mcp_server import (
+from tinyassets.mcp_server import (
     add_canon,
     add_note,
     get_activity,
@@ -33,7 +33,7 @@ from workflow.mcp_server import (
 @pytest.fixture(autouse=True)
 def universe_dir(tmp_path, monkeypatch):
     """Point the MCP server at a temp directory for every test."""
-    monkeypatch.setenv("WORKFLOW_UNIVERSE", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(tmp_path))
     return tmp_path
 
 
@@ -53,16 +53,16 @@ class TestUniverseDirResolution:
     """_universe_dir() resolves paths without cwd-relative landmines."""
 
     def test_env_var_is_honored(self, tmp_path, monkeypatch):
-        from workflow.mcp_server import _universe_dir
+        from tinyassets.mcp_server import _universe_dir
 
-        monkeypatch.setenv("WORKFLOW_UNIVERSE", str(tmp_path / "custom"))
+        monkeypatch.setenv("TINYASSETS_UNIVERSE", str(tmp_path / "custom"))
         assert _universe_dir() == Path(str(tmp_path / "custom"))
 
     def test_default_is_absolute(self, monkeypatch):
         """Default must be absolute so a wrong cwd cannot redirect writes."""
-        from workflow.mcp_server import _universe_dir
+        from tinyassets.mcp_server import _universe_dir
 
-        monkeypatch.delenv("WORKFLOW_UNIVERSE", raising=False)
+        monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
         result = _universe_dir()
         assert result.is_absolute()
         assert result.name == "default-universe"
@@ -71,9 +71,9 @@ class TestUniverseDirResolution:
         """Changing cwd must NOT change where the default resolves to."""
         import os
 
-        from workflow.mcp_server import _universe_dir
+        from tinyassets.mcp_server import _universe_dir
 
-        monkeypatch.delenv("WORKFLOW_UNIVERSE", raising=False)
+        monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
         before = _universe_dir()
 
         original_cwd = os.getcwd()
@@ -163,7 +163,7 @@ class TestSteer:
 
     def test_creates_directory_if_needed(self, tmp_path, monkeypatch):
         sub = tmp_path / "nested" / "universe"
-        monkeypatch.setenv("WORKFLOW_UNIVERSE", str(sub))
+        monkeypatch.setenv("TINYASSETS_UNIVERSE", str(sub))
         steer("test")
         assert (sub / "notes.json").exists()
 
@@ -201,7 +201,7 @@ class TestPremise:
         assert "Old premise" not in content
 
     def test_get_premise_falls_back_to_soul(self, universe_dir):
-        from workflow.universe_soul import write_universe_soul
+        from tinyassets.universe_soul import write_universe_soul
 
         write_universe_soul(
             universe_dir,
@@ -379,7 +379,7 @@ class TestMCPFlag:
         """The --mcp argument should be recognized by the arg parser."""
         # We can't easily test the full main() with --mcp without
         # actually starting a server, but we can verify the import path.
-        from workflow.mcp_server import main as mcp_main
+        from tinyassets.mcp_server import main as mcp_main
 
         assert callable(mcp_main)
 
@@ -402,7 +402,7 @@ class TestMCPConfig:
         server = data["mcpServers"]["workflow"]
         assert server["command"] == "python"
         assert "-m" in server["args"]
-        assert "workflow.mcp_server" in server["args"]
+        assert "tinyassets.mcp_server" in server["args"]
 
     def test_local_config_is_ignored(self):
         gitignore_path = Path(__file__).parent.parent / ".gitignore"

@@ -1,4 +1,4 @@
-"""Tests for workflow.treasury schema — DDL, dataclasses, invariants."""
+"""Tests for tinyassets.treasury schema — DDL, dataclasses, invariants."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from workflow.treasury import (
+from tinyassets.treasury import (
     BountyAllocation,
     RoyaltyPayment,
     TreasuryEntry,

@@ -12,7 +12,7 @@ Specify the data shape for an `AcceptanceScenario` — a typed contract that com
 
 ## Inheritance / storage
 
-An `AcceptanceScenario` is a new typed record, NOT a memory_kind. Each scenario has a stable identity and is reusable across runs. Storage location is decided in Slice 2 design (candidate: `workflow/storage/acceptance_scenarios.py` table with the existing `_connect()` pattern, OR a `pages/scenarios/` wiki-page-backed surface). This spec defines the **contract shape**; Slice 2 picks the storage.
+An `AcceptanceScenario` is a new typed record, NOT a memory_kind. Each scenario has a stable identity and is reusable across runs. Storage location is decided in Slice 2 design (candidate: `tinyassets/storage/acceptance_scenarios.py` table with the existing `_connect()` pattern, OR a `pages/scenarios/` wiki-page-backed surface). This spec defines the **contract shape**; Slice 2 picks the storage.
 
 ## Fields
 
@@ -98,11 +98,11 @@ Slice 1 (this PR) passes when:
 
 Slice 2 (runtime, future PR) passes when:
 
-- [ ] A `workflow/evaluation/scenario_runner.py` module exists with a `run_scenario(scenario, candidate_ref) -> EvalResult` function
+- [ ] A `tinyassets/evaluation/scenario_runner.py` module exists with a `run_scenario(scenario, candidate_ref) -> EvalResult` function
 - [ ] The runner dispatches to existing primitives (user-sim for ui_test_mission, run_branch for branch_run, MCP tool call for mcp_call) — no parallel implementation
 - [ ] Cost budget enforcement hard-kills on over-budget
 - [ ] At least one end-to-end scenario from registration to EvalResult is exercised by a test
-- [ ] Plugin mirror parity holds if `workflow/evaluation/` is touched
+- [ ] Plugin mirror parity holds if `tinyassets/evaluation/` is touched
 
 Slice 3+ (concrete scenarios + community library + optimization gate): each ships as separate PRs against their own slice plans.
 

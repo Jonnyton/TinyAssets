@@ -1,4 +1,4 @@
-"""Tests for workflow.storage.external_write_receipts.
+"""Tests for tinyassets.storage.external_write_receipts.
 
 PR-122 Phase 2 Slice 1 — the idempotency-receipt store for the
 ``github_pr`` effector and any future external-write sink.
@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from workflow.storage.external_write_receipts import (
+from tinyassets.storage.external_write_receipts import (
     delete_receipt,
     initialize_receipts_db,
     list_receipts,
@@ -55,7 +55,7 @@ def test_record_then_lookup_roundtrip(tmp_path):
         universe,
         idempotency_hint="loop-2-cycle-001",
         sink="github_pull_request",
-        evidence={"pr_url": "https://github.com/Jonnyton/Workflow/pull/123",
+        evidence={"pr_url": "https://github.com/Jonnyton/TinyAssets/pull/123",
                   "pr_number": 123},
         run_id="run-abc",
         created_at=1234567890.0,

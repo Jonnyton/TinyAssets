@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh Workflow GitHub App installation token before expiry
+Description=Refresh TinyAssets GitHub App installation token before expiry
 Requires=github-app-token-refresher.service
 
 [Timer]

@@ -24,7 +24,7 @@ when the user can discover and use Workflow through normal host surfaces:
 
 - MCP Registry: `server.json` is published in the official registry and
   Workflow is discoverable by registry clients. Completed 2026-05-01 as
-  `io.github.Jonnyton/workflow-universe-server`.
+  `io.github.Jonnyton/tinyassets-universe-server`.
 - Claude: Workflow is accepted/listed in the Claude Connectors Directory, and
   a normal logged-in Claude user can add it from the directory without a custom
   MCP URL.
@@ -60,7 +60,7 @@ Short description: Build durable workflows
 Long description:
 
 Workflow helps users inspect durable AI workflow state, browse shared goals and
-wiki knowledge, and submit bounded requests into a long-running Workflow daemon.
+wiki knowledge, and submit bounded requests into a long-running TinyAssets daemon.
 It is for AI work that should persist beyond one chat: goals, universes, branch
 runs, wiki/status knowledge, and daemon requests.
 
@@ -141,10 +141,10 @@ Publication proof, 2026-05-01:
   local auth granted `io.github.Jonnyton/*`, while the draft used
   `io.github.jonnyton/*`.
 - After updating the generator and artifact to
-  `io.github.Jonnyton/workflow-universe-server`, publish succeeded for version
+  `io.github.Jonnyton/tinyassets-universe-server`, publish succeeded for version
   `0.1.0`.
 - Registry API verification:
-  `https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Jonnyton/workflow-universe-server`
+  `https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Jonnyton/tinyassets-universe-server`
   returned one active/latest listing.
 
 ### Claude Connectors Directory
@@ -197,7 +197,7 @@ Submit:
 
 Acceptance proof:
 
-- Workflow appears in the ChatGPT App Directory for eligible logged-in users.
+- TinyAssets appears in the ChatGPT App Directory for eligible logged-in users.
 - A normal eligible user invokes Workflow without Developer Mode.
 - At least one read-only tool call succeeds from ChatGPT.
 
@@ -245,8 +245,8 @@ Production evidence, 2026-05-01:
 - `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp-directory --timeout 15 --verbose` returned OK.
 - `python scripts/mcp_probe.py --url https://tinyassets.io/mcp-directory tools` returned the 11 directory tools listed above.
 - `mcp-publisher publish packaging/registry/server.json` published
-  `io.github.Jonnyton/workflow-universe-server` 0.1.0.
-- `https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Jonnyton/workflow-universe-server`
+  `io.github.Jonnyton/tinyassets-universe-server` 0.1.0.
+- `https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Jonnyton/tinyassets-universe-server`
   returned the active/latest listing with remote URL
   `https://tinyassets.io/mcp-directory`.
 

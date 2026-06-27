@@ -24,11 +24,11 @@ Completion note 2026-05-02: this plan is retained as the historical scope and
 execution record. Arc B is no longer live work; see the completion_evidence
 frontmatter for the landed commits.
 
-Read-only scope for deleting the Author→Daemon rename compat infrastructure: `workflow/_rename_compat.py` + 3 alias modules + their downstream consumers. **The biggest win-per-effort cleanup remaining** in the post-decomp shim ledger if rename caller-migration verifies clean.
+Read-only scope for deleting the Author→Daemon rename compat infrastructure: `tinyassets/_rename_compat.py` + 3 alias modules + their downstream consumers. **The biggest win-per-effort cleanup remaining** in the post-decomp shim ledger if rename caller-migration verifies clean.
 
-The audit framed Arc B as "4 files, 366 LOC, 2-3h." Verification surfaced **208 import sites across 47 files** still using `domains.fantasy_author.*` paths — far more caller migration than the audit estimate. Most live in `tests/` (192 sites / ~38 files); 13 live in `workflow/` (~8 files); 3 live in `domains/` (the alias modules themselves).
+The audit framed Arc B as "4 files, 366 LOC, 2-3h." Verification surfaced **208 import sites across 47 files** still using `domains.fantasy_author.*` paths — far more caller migration than the audit estimate. Most live in `tests/` (192 sites / ~38 files); 13 live in `tinyassets/` (~8 files); 3 live in `domains/` (the alias modules themselves).
 
-**Recommended split:** Phase 1 (workflow/ + domains/ tree migration, ~16 sites) is suitable for dev-2 NOW (non-overlapping with #18). Phase 2 (tests/ tree migration, ~192 sites) lands AFTER #18 ships, since #18 already touches the test-import surface. Phase 3 (shim/test/script deletion + smoke verify) closes Arc B once Phases 1+2 land.
+**Recommended split:** Phase 1 (tinyassets/ + domains/ tree migration, ~16 sites) is suitable for dev-2 NOW (non-overlapping with #18). Phase 2 (tests/ tree migration, ~192 sites) lands AFTER #18 ships, since #18 already touches the test-import surface. Phase 3 (shim/test/script deletion + smoke verify) closes Arc B once Phases 1+2 land.
 
 ---
 
@@ -41,7 +41,7 @@ The audit framed Arc B as "4 files, 366 LOC, 2-3h." Verification surfaced **208 
 The audit's "if rename caller-migration is complete" caveat was load-bearing. **It is not complete.** Verified 2026-04-27 via:
 
 ```
-grep -rE "from domains.fantasy_author|import domains.fantasy_author" workflow/ tests/ domains/ --include='*.py'
+grep -rE "from domains.fantasy_author|import domains.fantasy_author" tinyassets/ tests/ domains/ --include='*.py'
 ```
 
 → 208 distinct lines across 47 distinct files.
@@ -50,15 +50,15 @@ grep -rE "from domains.fantasy_author|import domains.fantasy_author" workflow/ t
 
 | Tree | Sites | Files | Status |
 |---|---|---|---|
-| `workflow/` | 13 | 8 | NOT migrated (lazy imports, mostly inside try/except) |
+| `tinyassets/` | 13 | 8 | NOT migrated (lazy imports, mostly inside try/except) |
 | `tests/` | 192 | 37 | NOT migrated (top-level `from domains.fantasy_author.X import Y` patterns) |
 | `domains/` | 3 | 2 | The alias modules' own self-references — fold into deletion |
 | **TOTAL** | **208** | **47** | |
 
 **Reality:** Arc B is **not 2-3h.** Realistic scope is ~6-10h split across 3 phases:
-- Phase 1 (workflow/ + domains/ migration): ~1-2h, 16 sites, 10 files. **Dispatchable now to dev-2 (non-#18 overlap).**
+- Phase 1 (tinyassets/ + domains/ migration): ~1-2h, 16 sites, 10 files. **Dispatchable now to dev-2 (non-#18 overlap).**
 - Phase 2 (tests/ migration): ~3-5h, 192 sites, 37 files. **Blocked on #18 ship** (test-import surface conflict).
-- Phase 3 (shim/test/script deletion + `WORKFLOW_AUTHOR_RENAME_COMPAT=0` smoke + plugin mirror): ~1-2h. **Blocked on Phases 1+2 green.**
+- Phase 3 (shim/test/script deletion + `TINYASSETS_AUTHOR_RENAME_COMPAT=0` smoke + plugin mirror): ~1-2h. **Blocked on Phases 1+2 green.**
 
 Total revised: ~6-10h. Still LOW risk per arc (mechanical sed + smoke), but materially larger than the audit estimate.
 
@@ -68,14 +68,14 @@ Total revised: ~6-10h. Still LOW risk per arc (mechanical sed + smoke), but mate
 
 The five compat files that die when Arc B ships:
 
-### 2.1 `workflow/_rename_compat.py` (~189 LOC)
+### 2.1 `tinyassets/_rename_compat.py` (~189 LOC)
 
 PEP-451 meta-path finder + loader infrastructure. Provides:
 
 | Symbol | Role |
 |---|---|
-| `_FLAG_ENV = "WORKFLOW_AUTHOR_RENAME_COMPAT"` | Env-var flag name |
-| `rename_compat_enabled() -> bool` | Public predicate; default `True`; reads `WORKFLOW_AUTHOR_RENAME_COMPAT` env var |
+| `_FLAG_ENV = "TINYASSETS_AUTHOR_RENAME_COMPAT"` | Env-var flag name |
+| `rename_compat_enabled() -> bool` | Public predicate; default `True`; reads `TINYASSETS_AUTHOR_RENAME_COMPAT` env var |
 | `_RenameAliasLoader` | PEP-451 Loader; resolves alias module name → canonical target module |
 | `_AliasModuleProxy` | `types.ModuleType` subclass that proxies `getattr` to canonical target |
 | `_RenameAliasFinder` | PEP-451 Finder; intercepts imports matching `alias_prefix` |
@@ -85,11 +85,11 @@ PEP-451 meta-path finder + loader infrastructure. Provides:
 
 | File | Line | Symbol |
 |---|---|---|
-| `workflow/discovery.py` | L40 | `from workflow._rename_compat import rename_compat_enabled` |
+| `tinyassets/discovery.py` | L40 | `from workflow._rename_compat import rename_compat_enabled` |
 
 Single non-shim consumer. `discovery.py:111-125` uses `rename_compat_enabled()` to gate a `fantasy_author` registry compat lookup. When Arc B deletes `_rename_compat.py`, this `discovery.py` gate also dies — verify `discovery.py` is functionally clean without it.
 
-### 2.2 `workflow/author_server.py` (~39 LOC)
+### 2.2 `tinyassets/author_server.py` (~39 LOC)
 
 Pure legacy redirect. `sys.modules[__name__] = workflow.daemon_server` (after import). Any `from workflow.author_server import X` resolves to `workflow.daemon_server.X`.
 
@@ -107,20 +107,20 @@ Custom `_PhaseAliasModule` proxy needed because deep-submodule imports (`from do
 
 ## 3. Caller migration sites — concrete enumeration
 
-### 3.1 Phase 1 — workflow/ + domains/ trees (16 sites, 10 files)
+### 3.1 Phase 1 — tinyassets/ + domains/ trees (16 sites, 10 files)
 
 All migrations are mechanical: `domains.fantasy_author.X` → `domains.fantasy_daemon.X`. No symbol-name changes; canonical tree at `domains/fantasy_daemon/` mirrors `domains/fantasy_author/` 1:1 (verified — same `phases/`, `graphs/`, `skill.py`, etc.).
 
 | File | Line(s) | Current import | Migration target |
 |---|---|---|---|
-| `workflow/api/runs.py` | 391, 889, 1236 | `from domains.fantasy_author.phases._provider_stub import (...)` | `from domains.fantasy_daemon.phases._provider_stub import (...)` |
-| `workflow/checkpointing/sqlite_saver.py` | 167 | `from domains.fantasy_author.graphs import (...)` | `from domains.fantasy_daemon.graphs import (...)` |
-| `workflow/evaluation/editorial.py` | 119 | `from domains.fantasy_author.phases._provider_stub import call_provider` | `from domains.fantasy_daemon.phases._provider_stub import call_provider` |
-| `workflow/ingestion/extractors.py` | 259, 260 | `from domains.fantasy_author.phases._provider_stub import (...)` + `phases.worldbuild import _write_canon_file` | `from domains.fantasy_daemon.phases._provider_stub` + `phases.worldbuild` |
-| `workflow/knowledge/raptor.py` | 333 | `from domains.fantasy_author.phases._provider_stub import call_provider` | `from domains.fantasy_daemon.phases._provider_stub import call_provider` |
-| `workflow/memory/reflexion.py` | 205, 260 | `from domains.fantasy_author.phases._provider_stub import (...)` | `from domains.fantasy_daemon.phases._provider_stub import (...)` |
-| `workflow/registry.py` | 13 | `from domains.fantasy_author.skill import FantasyAuthorDomain` | `from domains.fantasy_daemon.skill import FantasyAuthorDomain` (class name UNCHANGED — verified 2026-04-27: `domains/fantasy_daemon/skill.py:19` still defines `class FantasyAuthorDomain`. Class-rename is a separate arc; not in Arc B scope.) |
-| `workflow/retrieval/agentic_search.py` | 140, 317 | `from domains.fantasy_author.phases._paths import resolve_kg_path` + `from domains.fantasy_author.phases import _provider_stub` | `from domains.fantasy_daemon.phases._paths` + `from domains.fantasy_daemon.phases` |
+| `tinyassets/api/runs.py` | 391, 889, 1236 | `from domains.fantasy_author.phases._provider_stub import (...)` | `from domains.fantasy_daemon.phases._provider_stub import (...)` |
+| `tinyassets/checkpointing/sqlite_saver.py` | 167 | `from domains.fantasy_author.graphs import (...)` | `from domains.fantasy_daemon.graphs import (...)` |
+| `tinyassets/evaluation/editorial.py` | 119 | `from domains.fantasy_author.phases._provider_stub import call_provider` | `from domains.fantasy_daemon.phases._provider_stub import call_provider` |
+| `tinyassets/ingestion/extractors.py` | 259, 260 | `from domains.fantasy_author.phases._provider_stub import (...)` + `phases.worldbuild import _write_canon_file` | `from domains.fantasy_daemon.phases._provider_stub` + `phases.worldbuild` |
+| `tinyassets/knowledge/raptor.py` | 333 | `from domains.fantasy_author.phases._provider_stub import call_provider` | `from domains.fantasy_daemon.phases._provider_stub import call_provider` |
+| `tinyassets/memory/reflexion.py` | 205, 260 | `from domains.fantasy_author.phases._provider_stub import (...)` | `from domains.fantasy_daemon.phases._provider_stub import (...)` |
+| `tinyassets/registry.py` | 13 | `from domains.fantasy_author.skill import FantasyAuthorDomain` | `from domains.fantasy_daemon.skill import FantasyAuthorDomain` (class name UNCHANGED — verified 2026-04-27: `domains/fantasy_daemon/skill.py:19` still defines `class FantasyAuthorDomain`. Class-rename is a separate arc; not in Arc B scope.) |
+| `tinyassets/retrieval/agentic_search.py` | 140, 317 | `from domains.fantasy_author.phases._paths import resolve_kg_path` + `from domains.fantasy_author.phases import _provider_stub` | `from domains.fantasy_daemon.phases._paths` + `from domains.fantasy_daemon.phases` |
 
 **Class-name continuity verified 2026-04-27.** `domains/fantasy_daemon/skill.py:19` still defines `class FantasyAuthorDomain` (the rename was module-path, not class-name). All Phase 1 migrations are pure-import-path edits; no symbol-rename burden. Class-rename is a separate concern outside Arc B scope.
 
@@ -138,12 +138,12 @@ Recommend: delete the file in Phase 3. It's purpose-built for the migration wind
 
 ### 3.3 Phase 3 — alias module + infrastructure deletion
 
-After Phases 1+2 land (zero callers in workflow/ + domains/ + tests/):
+After Phases 1+2 land (zero callers in tinyassets/ + domains/ + tests/):
 
 | File to delete | LOC | Risk |
 |---|---|---|
-| `workflow/_rename_compat.py` | 189 | LOW (only consumer is `discovery.py:40`; that line + L111-125 fold into the same commit) |
-| `workflow/author_server.py` | 39 | LOW (no callers) |
+| `tinyassets/_rename_compat.py` | 189 | LOW (only consumer is `discovery.py:40`; that line + L111-125 fold into the same commit) |
+| `tinyassets/author_server.py` | 39 | LOW (no callers) |
 | `fantasy_daemon/author_server.py` | ~40 | LOW (imports `_rename_compat`; must die with the shared gate after callers migrate) |
 | `fantasy_author/__init__.py` | ~50 | LOW (top-level import shim; imports `_rename_compat`) |
 | `fantasy_author/__main__.py` | ~8 | LOW (old CLI shim) |
@@ -152,7 +152,7 @@ After Phases 1+2 land (zero callers in workflow/ + domains/ + tests/):
 | `domains/fantasy_author/` directory | (empty after above) | `git rm -r` once directory is empty |
 | `scripts/build_shims.py` | (file) | LOW (rename-era shim generator; retire with shims) |
 | `scripts/migrate_imports.py` | (file) | LOW (one-shot migration helper; retire after caller migration) |
-| **Plus update:** `workflow/discovery.py:40, 111-125` (delete the rename_compat gate) | ~15 | LOW |
+| **Plus update:** `tinyassets/discovery.py:40, 111-125` (delete the rename_compat gate) | ~15 | LOW |
 | **Plus delete:** `tests/test_import_compatibility.py` (purpose-built migration test) | (file) | LOW |
 | **Plus update:** `AGENTS.md` config table — delete the deprecation row if present | ~2 | LOW |
 | **Total** | **~406** | **LOW** |
@@ -171,7 +171,7 @@ After Phases 1+2 land (zero callers in workflow/ + domains/ + tests/):
 
 ### What can run NOW (Phase 1 dispatch-ready for dev-2)
 
-Phase 1 (workflow/ + domains/ tree, 16 sites, 10 files) does NOT touch tests/. **Zero overlap with Task #18's Files boundary.** Dispatchable to dev-2 today.
+Phase 1 (tinyassets/ + domains/ tree, 16 sites, 10 files) does NOT touch tests/. **Zero overlap with Task #18's Files boundary.** Dispatchable to dev-2 today.
 
 ### Cannot block
 
@@ -183,7 +183,7 @@ Phase 1 (workflow/ + domains/ tree, 16 sites, 10 files) does NOT touch tests/. *
 
 ## 5. Risk profile
 
-### Phase 1 (workflow/ + domains/ migration) — LOW risk
+### Phase 1 (tinyassets/ + domains/ migration) — LOW risk
 
 - Mechanical sed; tests still run via the `_rename_compat` alias finder during the migration so green-state holds throughout.
 - Loud failure mode: if canonical `domains.fantasy_daemon.X` is missing a symbol, `ImportError` at first test.
@@ -197,7 +197,7 @@ Phase 1 (workflow/ + domains/ tree, 16 sites, 10 files) does NOT touch tests/. *
 
 ### Phase 3 (shim/test/script deletion + smoke) — LOW risk
 
-- The smoke test is `WORKFLOW_AUTHOR_RENAME_COMPAT=0 pytest -q`. If green, all callers have migrated; safe to delete.
+- The smoke test is `TINYASSETS_AUTHOR_RENAME_COMPAT=0 pytest -q`. If green, all callers have migrated; safe to delete.
 - If not green, the failing test names the holdout caller; iterate.
 - Plugin mirror: `python packaging/claude-plugin/build_plugin.py` after deletion to propagate.
 
@@ -215,10 +215,10 @@ Phase 1 (workflow/ + domains/ tree, 16 sites, 10 files) does NOT touch tests/. *
 
 | Metric | Before | After |
 |---|---|---|
-| Shim modules in `workflow/` + `domains/` | 4 | 0 |
+| Shim modules in `tinyassets/` + `domains/` | 4 | 0 |
 | `workflow.author_server` legacy import path | live | dead |
 | `domains.fantasy_author` legacy import path | live | dead |
-| `WORKFLOW_AUTHOR_RENAME_COMPAT` env var | live | dead |
+| `TINYASSETS_AUTHOR_RENAME_COMPAT` env var | live | dead |
 | Total shim LOC | ~406 | 0 |
 | `feedback_no_shims_ever` compliance | partial | full (code layer) |
 | New-contributor confusion ("what's an author?") | yes | no |
@@ -237,13 +237,13 @@ Phase 1 (workflow/ + domains/ tree, 16 sites, 10 files) does NOT touch tests/. *
 
 Arc B is "done" when:
 
-1. `git ls-files workflow/_rename_compat.py workflow/author_server.py fantasy_daemon/author_server.py fantasy_author/ domains/fantasy_author/ scripts/build_shims.py scripts/migrate_imports.py` returns nothing.
-2. `grep -rE "from workflow.author_server|import workflow.author_server|from domains.fantasy_author|import domains.fantasy_author" workflow/ tests/ domains/ --include='*.py'` returns 0 lines (excluding the pre-commit invariant test fixtures, which are string literals not imports).
-3. `WORKFLOW_AUTHOR_RENAME_COMPAT=0 pytest -q` is fully green.
+1. `git ls-files tinyassets/_rename_compat.py tinyassets/author_server.py fantasy_daemon/author_server.py fantasy_author/ domains/fantasy_author/ scripts/build_shims.py scripts/migrate_imports.py` returns nothing.
+2. `grep -rE "from workflow.author_server|import workflow.author_server|from domains.fantasy_author|import domains.fantasy_author" tinyassets/ tests/ domains/ --include='*.py'` returns 0 lines (excluding the pre-commit invariant test fixtures, which are string literals not imports).
+3. `TINYASSETS_AUTHOR_RENAME_COMPAT=0 pytest -q` is fully green.
 4. `pytest -q` (default env) is fully green.
 5. `python packaging/claude-plugin/build_plugin.py` clean parity check.
-6. `workflow/discovery.py` no longer imports from `_rename_compat`; the `fantasy_author` registry compat lookup at L111-125 is deleted.
-7. `AGENTS.md` config table has no `WORKFLOW_AUTHOR_RENAME_COMPAT` reference (if it existed).
+6. `tinyassets/discovery.py` no longer imports from `_rename_compat`; the `fantasy_author` registry compat lookup at L111-125 is deleted.
+7. `AGENTS.md` config table has no `TINYASSETS_AUTHOR_RENAME_COMPAT` reference (if it existed).
 8. `tests/test_import_compatibility.py` deleted (purpose-built migration test).
 
 ---
@@ -253,7 +253,7 @@ Arc B is "done" when:
 1. **Approve Phase 1 dispatch to dev-2 NOW?** 16 sites / 10 files / ~1-2h mechanical migration. No #18 overlap. Closes 16/208 of Arc B's caller-migration burden ahead of schedule.
 2. **Approve Phase 2 dispatch to dev (or dev-2) post-#18?** 192 sites / 37 files / ~3-5h. Largest single chunk; sequenced after #18 lands.
 3. **Approve Phase 3 (shim/test/script deletion) as a separate dev task post-Phase-2?** ~1-2h with smoke verify. Final closing commit on the rename arc.
-4. **`workflow/registry.py:13` class-name check** — verify `FantasyAuthorDomain` vs `FantasyDaemonDomain` before Phase 1 dispatch. (Navigator: I'll verify before lead dispatches.)
+4. **`tinyassets/registry.py:13` class-name check** — verify `FantasyAuthorDomain` vs `FantasyDaemonDomain` before Phase 1 dispatch. (Navigator: I'll verify before lead dispatches.)
 5. **`tests/test_import_compatibility.py` deletion confirmed?** Recommend yes — file's purpose dies with the alias modules.
 
 ---
@@ -265,5 +265,5 @@ Arc B is "done" when:
 - `docs/exec-plans/completed/2026-04-15-author-to-daemon-rename.md` — original rename arc; Arc B closes Phase 5.
 - `docs/exec-plans/active/2026-04-26-decomp-arc-c-prep.md` — env-var alias deletion; runs after Arc B.
 - `docs/design-notes/2026-04-27-author-server-db-filename-migration.md` — Phase 6 data rename; runs after Arc C.
-- `workflow/_rename_compat.py:18` — `_FLAG_ENV` constant.
-- `workflow/discovery.py:40, 111-125` — only non-shim consumer of `rename_compat`.
+- `tinyassets/_rename_compat.py:18` — `_FLAG_ENV` constant.
+- `tinyassets/discovery.py:40, 111-125` — only non-shim consumer of `rename_compat`.

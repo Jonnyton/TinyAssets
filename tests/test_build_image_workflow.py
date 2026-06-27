@@ -51,7 +51,7 @@ def test_build_image_push_is_limited_to_runtime_paths():
         ".dockerignore",
         "pyproject.toml",
         "PLAN.md",
-        "workflow/**",
+        "tinyassets/**",
         "domains/**",
         "fantasy_daemon/**",
         "data/world_rules.lp",

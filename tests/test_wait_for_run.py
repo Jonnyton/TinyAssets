@@ -24,7 +24,7 @@ import time
 
 import pytest
 
-from workflow.runs import (
+from tinyassets.runs import (
     NODE_STATUS_RAN,
     RunStepEvent,
     await_run_events,
@@ -38,9 +38,9 @@ from workflow.runs import (
 def us_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -99,8 +99,8 @@ def test_await_returns_on_terminal_status(tmp_path):
     base.mkdir()
     initialize_runs_db(base)
     # Insert a run row with terminal status.
-    from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
-    from workflow.runs import _prepare_run
+    from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+    from tinyassets.runs import _prepare_run
     b = BranchDefinition(name="t", entry_point="only")
     b.node_defs = [NodeDefinition(node_id="only", display_name="Only",
                                    prompt_template="x",
@@ -180,7 +180,7 @@ def test_await_wakes_when_event_lands_mid_wait(tmp_path):
 def test_wait_for_run_returns_terminal_quickly(us_env):
     """When the run has already completed, wait_for_run should return
     immediately with status=completed — no wasted wall time."""
-    from workflow.runs import wait_for
+    from tinyassets.runs import wait_for
 
     us, _ = us_env
     bid = _build_min_branch(us)
@@ -203,7 +203,7 @@ def test_wait_for_run_returns_terminal_quickly(us_env):
 
 
 def test_wait_for_run_phone_legible_text_channel(us_env):
-    from workflow.runs import wait_for
+    from tinyassets.runs import wait_for
 
     us, _ = us_env
     bid = _build_min_branch(us)
@@ -245,7 +245,7 @@ def test_wait_for_run_rejects_unknown_run(us_env):
 def test_wait_for_run_caps_max_wait_at_120s(us_env):
     """A client asking for a 10-minute wait should be capped at 120s
     so the server thread isn't tied up forever."""
-    from workflow.runs import wait_for
+    from tinyassets.runs import wait_for
 
     us, _ = us_env
     bid = _build_min_branch(us)

@@ -88,7 +88,7 @@ terminology.
 
 ## Slice 1 commit-flow note
 
-Slice 1 (`workflow/evaluation/schema.py` + `tests/test_evaluator_result_schema.py`
+Slice 1 (`tinyassets/evaluation/schema.py` + `tests/test_evaluator_result_schema.py`
 + `__init__.py` + `process.py` changes) is currently uncommitted in the
 cursor checkout's working tree. When Codex pushes, verifier on the
 Claude side will run a wider regression sweep against

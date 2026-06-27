@@ -1,10 +1,10 @@
 """Phase 7.4 v1 — git author identity resolution.
 
-Covers the narrow v1 contract in :mod:`workflow.identity`:
+Covers the narrow v1 contract in :mod:`tinyassets.identity`:
 
-- ``WORKFLOW_GIT_AUTHOR`` env var overrides everything (verbatim).
+- ``TINYASSETS_GIT_AUTHOR`` env var overrides everything (verbatim).
 - Otherwise ``actor`` arg or ``UNIVERSE_SERVER_USER`` → slugged
-  ``Workflow User <slug@users.noreply.workflow.local>``.
+  ``TinyAssets User <slug@users.noreply.tinyassets.local>``.
 - Empty/None/invalid slug → ``anonymous``.
 
 Also pins the ``git_bridge.commit(author=None)`` default so the
@@ -15,16 +15,16 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.identity import git_author
+from tinyassets.identity import git_author
 
-_DOMAIN = "users.noreply.workflow.local"
-_DISPLAY = "Workflow User"
+_DOMAIN = "users.noreply.tinyassets.local"
+_DISPLAY = "TinyAssets User"
 
 
 @pytest.fixture(autouse=True)
 def _clean_identity_env(monkeypatch: pytest.MonkeyPatch):
-    """Every test starts without Workflow identity env vars set."""
-    monkeypatch.delenv("WORKFLOW_GIT_AUTHOR", raising=False)
+    """Every test starts without TinyAssets identity env vars set."""
+    monkeypatch.delenv("TINYASSETS_GIT_AUTHOR", raising=False)
     monkeypatch.delenv("UNIVERSE_SERVER_USER", raising=False)
     yield
 
@@ -50,7 +50,7 @@ def test_special_chars_stripped_by_slug(monkeypatch):
 
 def test_workflow_git_author_env_is_verbatim(monkeypatch):
     monkeypatch.setenv(
-        "WORKFLOW_GIT_AUTHOR", "Alice Real <alice@example.com>",
+        "TINYASSETS_GIT_AUTHOR", "Alice Real <alice@example.com>",
     )
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "would-be-ignored")
     assert git_author() == "Alice Real <alice@example.com>"
@@ -58,13 +58,13 @@ def test_workflow_git_author_env_is_verbatim(monkeypatch):
 
 def test_workflow_git_author_env_strips_surrounding_whitespace(monkeypatch):
     monkeypatch.setenv(
-        "WORKFLOW_GIT_AUTHOR", "  Bob <b@x.io>  ",
+        "TINYASSETS_GIT_AUTHOR", "  Bob <b@x.io>  ",
     )
     assert git_author() == "Bob <b@x.io>"
 
 
 def test_workflow_git_author_blank_falls_through_to_composite(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_GIT_AUTHOR", "   ")
+    monkeypatch.setenv("TINYASSETS_GIT_AUTHOR", "   ")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "charlie")
     assert git_author() == f"{_DISPLAY} <charlie@{_DOMAIN}>"
 
@@ -102,7 +102,7 @@ def test_git_bridge_commit_resolves_default_author(monkeypatch, tmp_path):
     if shutil.which("git") is None:
         pytest.skip("git not available")
 
-    from workflow import git_bridge
+    from tinyassets import git_bridge
 
     git_bridge.invalidate_cache()
     repo = tmp_path / "repo"
@@ -130,7 +130,7 @@ def test_git_bridge_commit_resolves_default_author(monkeypatch, tmp_path):
     )
 
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    monkeypatch.delenv("WORKFLOW_GIT_AUTHOR", raising=False)
+    monkeypatch.delenv("TINYASSETS_GIT_AUTHOR", raising=False)
 
     # No author argument — default identity should be used
     result = git_bridge.commit("seed commit", repo_path=repo)

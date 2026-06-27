@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from workflow.auto_ship_ledger import ShipAttempt, find_attempt, record_attempt
-from workflow.auto_ship_pr import PR_CREATE_FLAG, open_auto_ship_pr
-from workflow.credential_vault import write_credential_vault
+from tinyassets.auto_ship_ledger import ShipAttempt, find_attempt, record_attempt
+from tinyassets.auto_ship_pr import PR_CREATE_FLAG, open_auto_ship_pr
+from tinyassets.credential_vault import write_credential_vault
 
 
 def _attempt(
@@ -107,7 +107,7 @@ def test_enabled_uses_vault_token_and_ignores_env(tmp_path, monkeypatch):
             {
                 "credential_type": "vcs",
                 "service": "github",
-                "destination": "Jonnyton/Workflow",
+                "destination": "Jonnyton/TinyAssets",
                 "purpose": "write",
                 "token": "vault-token",
             }
@@ -122,7 +122,7 @@ def test_enabled_uses_vault_token_and_ignores_env(tmp_path, monkeypatch):
     def fake_post(url, token, payload):
         calls.append(("post", token))
         return 201, {
-            "html_url": "https://github.com/Jonnyton/Workflow/pull/999",
+            "html_url": "https://github.com/Jonnyton/TinyAssets/pull/999",
             "number": 999,
             "head": {"sha": "abc123"},
         }
@@ -168,7 +168,7 @@ def test_enabled_creates_pr_and_updates_ledger(tmp_path):
     def fake_post(url, token, payload):
         calls.append((url, token, payload))
         return 201, {
-            "html_url": "https://github.com/Jonnyton/Workflow/pull/999",
+            "html_url": "https://github.com/Jonnyton/TinyAssets/pull/999",
             "number": 999,
             "head": {"sha": "abc123"},
         }
@@ -187,16 +187,16 @@ def test_enabled_creates_pr_and_updates_ledger(tmp_path):
 
     assert result["ship_status"] == "opened"
     assert result["dry_run"] is False
-    assert result["pr_url"] == "https://github.com/Jonnyton/Workflow/pull/999"
+    assert result["pr_url"] == "https://github.com/Jonnyton/TinyAssets/pull/999"
     assert result["commit_sha"] == "abc123"
     assert calls == [
         (
-            "https://api.github.com/repos/Jonnyton/Workflow/compare/main...auto-change%2Fissue-999-codex-123",
+            "https://api.github.com/repos/Jonnyton/TinyAssets/compare/main...auto-change%2Fissue-999-codex-123",
             "gh-token",
             None,
         ),
         (
-            "https://api.github.com/repos/Jonnyton/Workflow/pulls",
+            "https://api.github.com/repos/Jonnyton/TinyAssets/pulls",
             "gh-token",
             {
                 "title": "[auto-change] BUG-999",
@@ -210,17 +210,17 @@ def test_enabled_creates_pr_and_updates_ledger(tmp_path):
     row = find_attempt(tmp_path, attempt_id)
     assert row is not None
     assert row.ship_status == "opened"
-    assert row.pr_url == "https://github.com/Jonnyton/Workflow/pull/999"
+    assert row.pr_url == "https://github.com/Jonnyton/TinyAssets/pull/999"
     assert row.commit_sha == "abc123"
     assert row.ci_status == "pending"
-    assert row.rollback_handle == "pr:https://github.com/Jonnyton/Workflow/pull/999"
+    assert row.rollback_handle == "pr:https://github.com/Jonnyton/TinyAssets/pull/999"
 
 
 def test_existing_open_pr_is_idempotent(tmp_path):
     attempt_id = _record(
         tmp_path,
         ship_status="opened",
-        pr_url="https://github.com/Jonnyton/Workflow/pull/123",
+        pr_url="https://github.com/Jonnyton/TinyAssets/pull/123",
     )
 
     def should_not_post(url, token, payload):  # pragma: no cover - failure path
@@ -238,7 +238,7 @@ def test_existing_open_pr_is_idempotent(tmp_path):
 
     assert result["ship_status"] == "opened"
     assert result["already_open"] is True
-    assert result["pr_url"] == "https://github.com/Jonnyton/Workflow/pull/123"
+    assert result["pr_url"] == "https://github.com/Jonnyton/TinyAssets/pull/123"
 
 
 def test_github_api_failure_records_failed(tmp_path):
@@ -329,7 +329,7 @@ def test_enabled_rejects_stale_head_before_pr_creation(tmp_path):
     assert result["base_branch"] == "main"
     assert calls == [(
         "get",
-        "https://api.github.com/repos/Jonnyton/Workflow/compare/main...auto-change%2Fissue-999-codex-123",
+        "https://api.github.com/repos/Jonnyton/TinyAssets/compare/main...auto-change%2Fissue-999-codex-123",
         "gh-token",
     )]
     row = find_attempt(tmp_path, attempt_id)

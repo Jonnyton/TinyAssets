@@ -161,7 +161,7 @@ Slice 1 (this PR) passes when:
 
 Slice 2 (memory_kind + test, future PR) passes when:
 
-- [ ] `experience_lesson` appears in `workflow/daemon_brain.py::MEMORY_KIND_REGISTRY` with one-line description
+- [ ] `experience_lesson` appears in `tinyassets/daemon_brain.py::MEMORY_KIND_REGISTRY` with one-line description
 - [ ] Plugin mirror parity ✓
 - [ ] One lifecycle test in `tests/test_daemon_brain.py` covers the new kind through candidate → accepted → promoted
 - [ ] Wiki composition-pattern page `pages/plans/composing-experience-pool-queries.md` exists in commons with a worked example

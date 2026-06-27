@@ -1,13 +1,13 @@
-"""Pre-commit invariant: block new workflow.author_server imports.
+"""Pre-commit invariant: block new tinyassets.author_server imports.
 
-The workflow.author_server module is a deprecated shim (author→daemon rename).
+The tinyassets.author_server module is a deprecated shim (author→daemon rename).
 124 existing call sites are grandfathered. This invariant blocks new ones from
 being introduced — it checks only ADDED lines in the staged diff, not the full
 file content, so existing sites don't trigger false positives.
 
 Patterns blocked (module-level or deferred):
-- `from workflow.author_server import ...`
-- `import workflow.author_server`
+- `from tinyassets.author_server import ...`
+- `import tinyassets.author_server`
 
 Exit codes:
   0 — no new forbidden imports in staged diff (or no Python files staged)
@@ -28,8 +28,8 @@ import sys
 
 # Patterns that match the deprecated import forms (module-level or deferred).
 _PATTERNS = [
-    re.compile(r"from\s+workflow\.author_server\b"),
-    re.compile(r"import\s+workflow\.author_server\b"),
+    re.compile(r"from\s+tinyassets\.author_server\b"),
+    re.compile(r"import\s+tinyassets\.author_server\b"),
 ]
 
 
@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     hits = check_diff(diff)
     if not hits:
         print(
-            "pre-commit [author_server]: no new workflow.author_server imports",
+            "pre-commit [author_server]: no new tinyassets.author_server imports",
             file=sys.stderr,
         )
         return 0
@@ -117,18 +117,18 @@ def main(argv: list[str] | None = None) -> int:
     print("pre-commit [author_server]: INVARIANT VIOLATED", file=sys.stderr)
     print("", file=sys.stderr)
     print(
-        "  New imports of the deprecated workflow.author_server shim detected:",
+        "  New imports of the deprecated tinyassets.author_server shim detected:",
         file=sys.stderr,
     )
     for filename, lineno, line in hits:
         print(f"    {filename}:{lineno}: {line.strip()}", file=sys.stderr)
     print("", file=sys.stderr)
     print(
-        "  workflow.author_server is a back-compat alias for workflow.daemon_server.",
+        "  tinyassets.author_server is a back-compat alias for tinyassets.daemon_server.",
         file=sys.stderr,
     )
     print(
-        "  Use workflow.daemon_server directly in new code.",
+        "  Use tinyassets.daemon_server directly in new code.",
         file=sys.stderr,
     )
     print(

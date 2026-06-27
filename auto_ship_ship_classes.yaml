@@ -16,11 +16,11 @@ defaults:
     - auto_ship_envelope
     - ci
   forbidden_paths:
-    - workflow/runtime/**
-    - workflow/providers/**
-    - workflow/api/**
-    - workflow/wiki/**
-    - workflow/dispatcher/**
+    - tinyassets/runtime/**
+    - tinyassets/providers/**
+    - tinyassets/api/**
+    - tinyassets/wiki/**
+    - tinyassets/dispatcher/**
     - .github/**
     - scripts/deploy/**
     - migrations/**

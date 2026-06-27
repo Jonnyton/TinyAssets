@@ -22,17 +22,17 @@ import pytest
 
 @pytest.fixture
 def wiki_env(tmp_path, monkeypatch):
-    """Set up an isolated wiki root with WORKFLOW_WIKI_PATH."""
+    """Set up an isolated wiki root with TINYASSETS_WIKI_PATH."""
     wiki_root = tmp_path / "wiki"
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    from workflow.api.wiki import _ensure_wiki_scaffold
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.api.wiki import _ensure_wiki_scaffold
     _ensure_wiki_scaffold(wiki_root)
     return wiki_root
 
 
 def _file_bug(wiki_env, **kwargs):  # noqa: ARG001
-    from workflow.universe_server import wiki
+    from tinyassets.universe_server import wiki
     defaults = {
         "action": "file_bug",
         "component": "test.surface",
@@ -150,7 +150,7 @@ def test_force_new_skips_similarity_check(wiki_env):
 
 def test_cosign_bug_roundtrip(wiki_env):
     """cosign_bug appends a Cosigns section, increments count, returns count."""
-    from workflow.universe_server import wiki
+    from tinyassets.universe_server import wiki
     filed = _seed_bug(wiki_env, title="Cosign target bug unique string xyzabc",
                       observed="the xyzabc thing broke")
     bug_id = filed["bug_id"]
@@ -167,7 +167,7 @@ def test_cosign_bug_roundtrip(wiki_env):
 
 def test_cosign_bug_increments_count(wiki_env):
     """Each subsequent cosign increments cosign_count by 1."""
-    from workflow.universe_server import wiki
+    from tinyassets.universe_server import wiki
     filed = _seed_bug(wiki_env, title="Multi-cosign target bug zyxwvu98",
                       observed="zyxwvu98 broken")
     bug_id = filed["bug_id"]
@@ -185,7 +185,7 @@ def test_cosign_bug_increments_count(wiki_env):
 
 def test_cosign_bug_file_contains_entry(wiki_env):
     """The bug file on disk should contain a ## Cosigns section after cosigning."""
-    from workflow.universe_server import wiki
+    from tinyassets.universe_server import wiki
     filed = _seed_bug(wiki_env, title="Readable cosign test bug qwerty99",
                       observed="qwerty99 broke")
     bug_id = filed["bug_id"]
@@ -205,7 +205,7 @@ def test_cosign_bug_file_contains_entry(wiki_env):
 
 
 def test_cosign_bug_missing_bug_id_returns_error(wiki_env):
-    from workflow.universe_server import wiki
+    from tinyassets.universe_server import wiki
     result = json.loads(wiki(
         action="cosign_bug",
         bug_id="BUG-999",
@@ -215,7 +215,7 @@ def test_cosign_bug_missing_bug_id_returns_error(wiki_env):
 
 
 def test_cosign_bug_missing_required_args_returns_error(wiki_env):
-    from workflow.universe_server import wiki  # Missing bug_id
+    from tinyassets.universe_server import wiki  # Missing bug_id
     r1 = json.loads(wiki(action="cosign_bug", reporter_context="ctx"))
     assert "error" in r1
 
@@ -245,7 +245,7 @@ def test_file_bug_returns_path_in_pages_bugs(wiki_env):
 
 def test_file_bug_validation_errors_still_work(wiki_env):
     """Validation errors (missing required field) still return error dict."""
-    from workflow.universe_server import wiki
+    from tinyassets.universe_server import wiki
     result = json.loads(wiki(action="file_bug", title=""))
     assert "error" in result
 
@@ -314,7 +314,7 @@ class TestThresholdEdgeCases:
     """Direct unit tests against _jaccard + _bug_token_set."""
 
     def test_exact_duplicate_tokens_score_one(self):
-        from workflow.api.wiki import (
+        from tinyassets.api.wiki import (
             _bug_token_set,
             _jaccard,
         )
@@ -322,7 +322,7 @@ class TestThresholdEdgeCases:
         assert _jaccard(tokens, tokens) == 1.0
 
     def test_zero_overlap_score_zero(self):
-        from workflow.api.wiki import (
+        from tinyassets.api.wiki import (
             _bug_token_set,
             _jaccard,
         )
@@ -332,7 +332,7 @@ class TestThresholdEdgeCases:
 
     def test_threshold_boundary_above_fires(self):
         """Jaccard ≥ 0.5 must trigger dedup; construct tokens to guarantee it."""
-        from workflow.api.wiki import (
+        from tinyassets.api.wiki import (
             _bug_token_set,
             _jaccard,
         )
@@ -345,7 +345,7 @@ class TestThresholdEdgeCases:
 
     def test_threshold_boundary_below_silent(self):
         """Jaccard < 0.5 must NOT trigger dedup."""
-        from workflow.api.wiki import (
+        from tinyassets.api.wiki import (
             _bug_token_set,
             _jaccard,
         )
@@ -357,11 +357,11 @@ class TestThresholdEdgeCases:
 
     def test_empty_both_returns_one(self):
         """Two empty sets → Jaccard = 1.0 (both describe nothing)."""
-        from workflow.api.wiki import _jaccard
+        from tinyassets.api.wiki import _jaccard
         assert _jaccard(set(), set()) == 1.0
 
     def test_empty_vs_nonempty_returns_zero(self):
-        from workflow.api.wiki import (
+        from tinyassets.api.wiki import (
             _bug_token_set,
             _jaccard,
         )
@@ -370,7 +370,7 @@ class TestThresholdEdgeCases:
 
     def test_short_tokens_filtered(self):
         """Tokens with len ≤ 2 must be excluded from the set."""
-        from workflow.api.wiki import _bug_token_set
+        from tinyassets.api.wiki import _bug_token_set
         tokens = _bug_token_set("an is it of at to")
         assert tokens == set(), f"Expected all filtered, got {tokens}"
 
@@ -446,7 +446,7 @@ class TestIntegrationEdgeCases:
 
     def test_cosign_count_increments_to_high_values(self, wiki_env):
         """cosign_count increments correctly beyond 2 (up to N)."""
-        from workflow.universe_server import wiki
+        from tinyassets.universe_server import wiki
         filed = _seed_bug(wiki_env,
                           title="Cosign stress test bug unique aaabbbccc",
                           observed="aaabbbccc broken")
@@ -467,7 +467,7 @@ class TestIntegrationEdgeCases:
         are appended. This test documents that behavior so a future change is
         explicit, not silent.
         """
-        from workflow.universe_server import wiki
+        from tinyassets.universe_server import wiki
         filed = _seed_bug(wiki_env,
                           title="Cosign dedup behavior test unique dddeeefff",
                           observed="dddeeefff broken on my machine")

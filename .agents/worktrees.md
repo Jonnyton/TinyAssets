@@ -49,7 +49,7 @@ Format for future entries:
 - Memory refs: none
 - Related implications: `scripts/wiki_bug_sync.py`; `tests/test_wiki_bug_sync.py`
 - Idea feed refs: none
-- Ship/abandon: draft PR to Jonnyton/Workflow pending review
+- Ship/abandon: draft PR to Jonnyton/TinyAssets pending review
 
 ---
 
@@ -206,7 +206,7 @@ Notes:
 
 - Provider: codex-gpt5-desktop
 - Branch: cursor/claim-check-session-d
-- Worktree: C:\Users\Jonathan\Projects\Workflow
+- Worktree: C:\Users\Jonathan\Projects\TinyAssets
 - STATUS/Issue/PR: Provider-context feed lifecycle scanner row.
 - PLAN refs: Harness And Coordination; State And Artifacts; Providers.
 - Purpose: Make new sessions see active worktree implications before claiming.
@@ -502,7 +502,7 @@ Notes:
   `codex/auto-fix-pr-token` by codex-gpt5-desktop.
 - Source: post-#395 proof opened PR #397, but the PR had no status checks
   because it was created through the default Actions token.
-- Purpose: prefer `WORKFLOW_PUSH_TOKEN` for Codex PR creation so pull_request
+- Purpose: prefer `TINYASSETS_PUSH_TOKEN` for Codex PR creation so pull_request
   checks fire on loop-created PRs.
 - Ship condition: workflow static tests, actionlint, diff-check, PR opened for
   Claude/Cowork review.

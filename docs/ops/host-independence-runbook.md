@@ -266,27 +266,27 @@ expected entry in `authorized_keys`.
 #### openai-api-key
 
 **What:** Deprecated legacy Codex API-key credential. As of 2026-04-30,
-Workflow daemons run LLM calls through host subscription auth by default.
+TinyAssets daemons run LLM calls through host subscription auth by default.
 `OPENAI_API_KEY` is stripped at container startup unless
-`WORKFLOW_ALLOW_API_KEY_PROVIDERS=1` and is not a valid default recovery path
+`TINYASSETS_ALLOW_API_KEY_PROVIDERS=1` and is not a valid default recovery path
 for `llm_endpoint_bound=unset`.
 
 **Do not rotate for default-daemon recovery.** Instead:
-1. Confirm `/etc/workflow/env` has `WORKFLOW_ALLOW_API_KEY_PROVIDERS=0`.
-2. Provide subscription auth, e.g. set `WORKFLOW_CODEX_AUTH_JSON_B64` to a
+1. Confirm `/etc/tinyassets/env` has `TINYASSETS_ALLOW_API_KEY_PROVIDERS=0`.
+2. Provide subscription auth, e.g. set `TINYASSETS_CODEX_AUTH_JSON_B64` to a
    base64-encoded Codex subscription `~/.codex/auth.json`, or use the approved
    Claude subscription lane for GitHub Actions (`CLAUDE_CODE_OAUTH_TOKEN`).
-3. Preferred: set `WORKFLOW_CODEX_AUTH_JSON_B64` as a GitHub Actions secret,
+3. Preferred: set `TINYASSETS_CODEX_AUTH_JSON_B64` as a GitHub Actions secret,
    then trigger `.github/workflows/deploy-prod.yml`. Deploy syncs the bundle
-   into `/etc/workflow/env` through `deploy/install-workflow-env.sh`, keeps it
-   out of logs, and forces `WORKFLOW_ALLOW_API_KEY_PROVIDERS=0`.
-4. Manual fallback: SSH to droplet, edit `/etc/workflow/env`, then restore
-   permissions: `sudo chown root:workflow /etc/workflow/env && sudo chmod 640 /etc/workflow/env`
+   into `/etc/tinyassets/env` through `deploy/install-workflow-env.sh`, keeps it
+   out of logs, and forces `TINYASSETS_ALLOW_API_KEY_PROVIDERS=0`.
+4. Manual fallback: SSH to droplet, edit `/etc/tinyassets/env`, then restore
+   permissions: `sudo chown root:workflow /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env`
    (ENV-UNREADABLE invariant per Task #3).
-5. `sudo systemctl restart workflow-daemon` if you used the manual fallback.
+5. `sudo systemctl restart tinyassets-daemon` if you used the manual fallback.
 6. Trigger `.github/workflows/llm-binding-canary.yml` manually or wait for
    the next tick. Confirm `llm_endpoint_bound` is not `unset`.
-7. Leave `OPENAI_API_KEY=` blank in `/etc/workflow/env`. Revoke any old
+7. Leave `OPENAI_API_KEY=` blank in `/etc/tinyassets/env`. Revoke any old
    project-specific OpenAI API key once no non-cloud process depends on it.
 
 #### pushover-user-key
@@ -324,9 +324,9 @@ Row N is complete when these checks pass:
 
 ## 5. Watchdog Restart Signals
 
-`scripts/watchdog.py` fires every 30 s via `workflow-watchdog.timer`. When 3 consecutive probes fail, it:
+`scripts/watchdog.py` fires every 30 s via `tinyassets-watchdog.timer`. When 3 consecutive probes fail, it:
 
-1. Issues `sudo systemctl restart workflow-daemon.service`.
+1. Issues `sudo systemctl restart tinyassets-daemon.service`.
 2. Appends a `WATCHDOG_RESTART` line to `.agents/uptime_alarms.log`.
 3. Opens a GitHub issue (label `watchdog`) if `GH_TOKEN` is set.
 
@@ -334,32 +334,32 @@ Row N is complete when these checks pass:
 
 ```bash
 # On the Droplet — live watchdog logs
-journalctl -u workflow-watchdog -f
+journalctl -u tinyassets-watchdog -f
 
 # Alarm log (also readable locally after sync)
-tail -f /opt/workflow/.agents/uptime_alarms.log | grep WATCHDOG_RESTART
+tail -f /opt/tinyassets/.agents/uptime_alarms.log | grep WATCHDOG_RESTART
 
 # GitHub issues opened by the watchdog
-gh issue list --label watchdog --repo Jonnyton/Workflow
+gh issue list --label watchdog --repo Jonnyton/TinyAssets
 ```
 
 ### Suppressing restarts during maintenance
 
 ```bash
 # Stop the timer without disabling it permanently
-systemctl stop workflow-watchdog.timer
+systemctl stop tinyassets-watchdog.timer
 
 # Resume when done
-systemctl start workflow-watchdog.timer
+systemctl start tinyassets-watchdog.timer
 ```
 
 ### DRY_RUN mode
 
 ```bash
 # Probe without restarting or emitting alarms — safe for smoke-testing the watchdog itself
-DRY_RUN=1 python /opt/workflow/scripts/watchdog.py
+DRY_RUN=1 python /opt/tinyassets/scripts/watchdog.py
 # or
-python /opt/workflow/scripts/watchdog.py --dry-run
+python /opt/tinyassets/scripts/watchdog.py --dry-run
 ```
 
 ---
@@ -380,7 +380,7 @@ local copy.
 ```bash
 # 1. Set DO_TOKEN so the pubkey also registers with the DO account
 #    (required to reference the key at droplet-creation time, e.g. DR drill).
-export DIGITALOCEAN_TOKEN="$(op read 'op://workflow/DIGITALOCEAN_TOKEN/password')"
+export DIGITALOCEAN_TOKEN="$(op read 'op://tinyassets/DIGITALOCEAN_TOKEN/password')"
 
 # 2. Generate + distribute:
 python scripts/bootstrap_add_second_ssh_key.py \
@@ -422,7 +422,7 @@ python scripts/bootstrap_add_second_ssh_key.py \
 
 1. Retrieve the private key from 1Password:
    ```bash
-   op read "op://workflow/DO Droplet backup SSH key (private)/document" \
+   op read "op://tinyassets/DO Droplet backup SSH key (private)/document" \
        > /tmp/backup_key
    chmod 600 /tmp/backup_key
    ```
@@ -470,11 +470,11 @@ Each class is detected by a single regex against the diag bundle. First-match-wi
 
 | Class | Anchor regex match | Repair | Manual-only? |
 |---|---|---|---|
-| `env_unreadable` | `ENV-UNREADABLE` token emitted from systemd ExecStartPre / entrypoint / sed sites | `chown root:workflow && chmod 640 /etc/workflow/env` | No |
+| `env_unreadable` | `ENV-UNREADABLE` token emitted from systemd ExecStartPre / entrypoint / sed sites | `chown root:workflow && chmod 640 /etc/tinyassets/env` | No |
 | `tunnel_token` | `UnauthorizedError` / `authentication failed` / `Invalid tunnel secret` in cloudflared logs | **None** — detection opens `tunnel-token-rotation` issue, pages priority=2 | **Yes** |
 | `oom` | Kernel `Out of memory:` / `oom-killer` / container `OOMKilled` | `docker compose restart daemon` (memory cap **not** auto-bumped) | No |
 | `disk_full` | `df -h` shows ≥90% on `/`, `/data`, or `/var/lib/docker` | `docker system prune -af` + `journalctl --vacuum-time=3d` | No |
-| `image_pull_failure` | `manifest not found` / `pull access denied` / `ImagePullBackOff` | Fall back to `WORKFLOW_IMAGE=ghcr.io/jonnyton/workflow-daemon:latest` (loses SHA pin until next deploy) | No |
+| `image_pull_failure` | `manifest not found` / `pull access denied` / `ImagePullBackOff` | Fall back to `TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon:latest` (loses SHA pin until next deploy) | No |
 | `watchdog_hotloop` | systemd `start-limit-hit` / `Start request repeated too quickly` | `systemctl stop → sleep 60 → reset-failed → start` | No |
 | `unknown` | Fall-through when no class matches | Generic compose restart (legacy behavior) | No |
 
@@ -497,16 +497,16 @@ Don't ratchet faster — each OOM is signal about a real memory leak worth prese
 When auto-triage falls the daemon off the SHA pin to `:latest`, the next `deploy-prod.yml` run re-pins to a new short-SHA. If you want to pin manually in the interim:
 
 ```bash
-ssh ... "sudo sed -i 's|^WORKFLOW_IMAGE=.*|WORKFLOW_IMAGE=ghcr.io/jonnyton/workflow-daemon:<sha>|' /etc/workflow/env && \
-         sudo chown root:workflow /etc/workflow/env && sudo chmod 640 /etc/workflow/env && \
-         sudo systemctl restart workflow-daemon"
+ssh ... "sudo sed -i 's|^TINYASSETS_IMAGE=.*|TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon:<sha>|' /etc/tinyassets/env && \
+         sudo chown root:workflow /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env && \
+         sudo systemctl restart tinyassets-daemon"
 ```
 
 **Tunnel-token rotation (manual):**
 See `#cloudflare-api-token` / `#pushover-app-token` for the general rotation pattern. Tunnel-token specifics:
-1. Cloudflare Zero Trust → Networks → Tunnels → `workflow-daemon-prod` → rotate token → copy new value.
+1. Cloudflare Zero Trust → Networks → Tunnels → `tinyassets-daemon-prod` → rotate token → copy new value.
 2. `gh secret set CLOUDFLARE_TUNNEL_TOKEN --body "<new token>"`.
-3. Trigger `.github/workflows/deploy-prod.yml` or edit `/etc/workflow/env` directly on the droplet (maintains ENV-UNREADABLE invariant — chown + chmod after sed).
+3. Trigger `.github/workflows/deploy-prod.yml` or edit `/etc/tinyassets/env` directly on the droplet (maintains ENV-UNREADABLE invariant — chown + chmod after sed).
 4. Close the auto-opened `tunnel-token-rotation` issue with a resolution comment.
 
 ---
@@ -523,7 +523,7 @@ checks that `llm_endpoint_bound` in `get_status` is not `"unset"`.
 - Recovery (green after open issue): comments RECOVERED + closes issue.
 
 **Likely causes when it fires:**
-- Subscription auth missing or expired (`WORKFLOW_CODEX_AUTH_JSON_B64` absent,
+- Subscription auth missing or expired (`TINYASSETS_CODEX_AUTH_JSON_B64` absent,
   Codex auth file invalid, or Claude OAuth unavailable in the relevant lane)
 - `codex` CLI missing from the container image (image rebuild needed)
 - Container restarted without env file (`docker compose down` + manual restart)

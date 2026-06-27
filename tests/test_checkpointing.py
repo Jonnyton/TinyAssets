@@ -20,7 +20,7 @@ import tempfile
 import pytest
 
 from domains.fantasy_daemon.graphs.scene import build_scene_graph
-from workflow.checkpointing import (
+from tinyassets.checkpointing import (
     CheckpointRetentionPolicy,
     compile_all_graphs,
     configured_checkpoint_retention_keep_last,
@@ -28,7 +28,7 @@ from workflow.checkpointing import (
     get_checkpoint_history,
     prune_checkpoint_history,
 )
-from workflow.checkpointing.sqlite_saver import (
+from tinyassets.checkpointing.sqlite_saver import (
     make_resume_config,
     verify_wal_mode,
 )
@@ -534,10 +534,10 @@ class TestDirectCheckpointPruning:
         self,
         monkeypatch,
     ):
-        monkeypatch.delenv("WORKFLOW_CHECKPOINT_RETENTION_KEEP_LAST", raising=False)
+        monkeypatch.delenv("TINYASSETS_CHECKPOINT_RETENTION_KEEP_LAST", raising=False)
         assert configured_checkpoint_retention_keep_last() == 500
 
-        monkeypatch.setenv("WORKFLOW_CHECKPOINT_RETENTION_KEEP_LAST", "0")
+        monkeypatch.setenv("TINYASSETS_CHECKPOINT_RETENTION_KEEP_LAST", "0")
         assert configured_checkpoint_retention_keep_last() is None
 
 

@@ -17,7 +17,7 @@ Run prerequisite:
     psql ... -f migrations/004_indexes.sql
     psql ... -f migrations/005_seed.sql
 
-If WORKFLOW_V0_DSN is unreachable, tests SKIP — this matches the existing
+If TINYASSETS_V0_DSN is unreachable, tests SKIP — this matches the existing
 test_schema.py / test_rls.py harness (live-Postgres dependent).
 """
 
@@ -36,7 +36,7 @@ except ImportError:
     psycopg = None
 
 DSN = os.environ.get(
-    "WORKFLOW_V0_DSN",
+    "TINYASSETS_V0_DSN",
     "postgresql://workflow:workflow_v0_dev@localhost:5433/workflow_v0",
 )
 

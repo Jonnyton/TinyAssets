@@ -3,7 +3,7 @@
 **Date:** 2026-04-25
 **Author:** dev
 **Scope:** read-only audit of BUG-005 sub-branch invocation. Answers 6 questions about today's primitive, gaps for gate-routing-back-to-canonical, and the variant-vs-version axis. NO redesign. Lead routes redesign as follow-up.
-**Surfaces read:** `workflow/branches.py` (lines 215-243 NodeDefinition fields, 920-960 validate); `workflow/graph_compiler.py` (lines 1185-1380 invoke/await builders); `workflow/runs.py` (lines 2087-2129 sub-branch helpers, 1388-1500 execute_branch entry points); `tests/test_sub_branch_invocation.py`; `docs/design-notes/2026-04-25-self-evolving-platform-vision.md`; `docs/audits/2026-04-23-navigator-full-corpus-synthesis.md` §B4; `docs/audits/2026-04-25-canonical-primitive-audit.md` (G1, dev-2-2). Wiki page `bugs/BUG-005` not present in `$APPDATA/Workflow/wiki/pages/bugs/` — bug content reconstructed from design-doc references.
+**Surfaces read:** `tinyassets/branches.py` (lines 215-243 NodeDefinition fields, 920-960 validate); `tinyassets/graph_compiler.py` (lines 1185-1380 invoke/await builders); `tinyassets/runs.py` (lines 2087-2129 sub-branch helpers, 1388-1500 execute_branch entry points); `tests/test_sub_branch_invocation.py`; `docs/design-notes/2026-04-25-self-evolving-platform-vision.md`; `docs/audits/2026-04-23-navigator-full-corpus-synthesis.md` §B4; `docs/audits/2026-04-25-canonical-primitive-audit.md` (G1, dev-2-2). Wiki page `bugs/BUG-005` not present in `$APPDATA/Workflow/wiki/pages/bugs/` — bug content reconstructed from design-doc references.
 
 ---
 
@@ -42,7 +42,7 @@ So BUG-005 names the **load-bearing engine substrate** for: (a) gate-rejection r
 
 ### B.1 Schema: `invoke_branch_spec` on NodeDefinition
 
-`workflow/branches.py:222-234`
+`tinyassets/branches.py:222-234`
 
 ```python
 # Sub-branch invocation (invoke_branch node kind).
@@ -77,7 +77,7 @@ The two specs together form a fork–join pattern: an `invoke_branch_spec` node 
 
 ### B.2 Validation: `BranchDefinition.validate()`
 
-`workflow/branches.py:920-960`. Catches:
+`tinyassets/branches.py:920-960`. Catches:
 - Missing `branch_def_id` in spec.
 - Invalid `wait_mode` (must be "blocking" or "async").
 - Mutually-exclusive: a node with `invoke_branch_spec` cannot also have `prompt_template` or other execution kinds.
@@ -85,7 +85,7 @@ The two specs together form a fork–join pattern: an `invoke_branch_spec` node 
 
 ### B.3 Runtime: `_build_invoke_branch_node`
 
-`workflow/graph_compiler.py:1189-1261`. Constructs a closure that:
+`tinyassets/graph_compiler.py:1189-1261`. Constructs a closure that:
 1. Loads child `BranchDefinition` via `get_branch_definition(base_path, child_branch_def_id)`.
 2. Maps parent state keys to child input keys per `inputs_mapping`.
 3. If blocking: calls `execute_branch(base_path, branch=child, inputs=child_inputs)`, then maps `outcome.output` back to parent state per `output_mapping`. Returns parent-state updates.
@@ -93,7 +93,7 @@ The two specs together form a fork–join pattern: an `invoke_branch_spec` node 
 
 ### B.4 Runtime: `_build_await_branch_run_node`
 
-`workflow/graph_compiler.py:1264-1380`. Constructs a closure that:
+`tinyassets/graph_compiler.py:1264-1380`. Constructs a closure that:
 1. Reads `run_id` from parent state via `run_id_field`.
 2. Calls `poll_child_run_status(base_path, run_id, timeout_seconds=...)`.
 3. If completed: extracts `output_json` from the run record, maps to parent state per `output_mapping`. Returns parent-state updates.
@@ -102,7 +102,7 @@ The two specs together form a fork–join pattern: an `invoke_branch_spec` node 
 
 ### B.5 Recursion cap
 
-`workflow/runs.py:2091-2093`:
+`tinyassets/runs.py:2091-2093`:
 ```python
 #: Maximum nesting depth for invoke_branch nodes. A child run increments
 #: the depth counter; reaching this cap raises CompilerError at runtime.
@@ -113,7 +113,7 @@ The compiler raises `CompilerError` at depth 5 (`graph_compiler.py:1222-1226`). 
 
 ### B.6 Polling: `poll_child_run_status`
 
-`workflow/runs.py:2103-2129`. Blocks until run reaches `RUN_STATUS_COMPLETED | RUN_STATUS_FAILED | RUN_STATUS_CANCELLED | RUN_STATUS_INTERRUPTED`. Default poll interval 1s, default timeout 300s. Raises `KeyError` for unknown run_id, `TimeoutError` on deadline.
+`tinyassets/runs.py:2103-2129`. Blocks until run reaches `RUN_STATUS_COMPLETED | RUN_STATUS_FAILED | RUN_STATUS_CANCELLED | RUN_STATUS_INTERRUPTED`. Default poll interval 1s, default timeout 300s. Raises `KeyError` for unknown run_id, `TimeoutError` on deadline.
 
 ### B.7 Tests
 
@@ -160,7 +160,7 @@ Each has cascading test/migration cost. None are landed.
 
 ## E. Concurrency model
 
-**No coordination between parent and child concurrency.** Both blocking and async modes call into `execute_branch` / `execute_branch_async` which use the same global executor pool (`workflow/runs.py:_DEFAULT_MAX_WORKERS = 4`). Behaviors:
+**No coordination between parent and child concurrency.** Both blocking and async modes call into `execute_branch` / `execute_branch_async` which use the same global executor pool (`tinyassets/runs.py:_DEFAULT_MAX_WORKERS = 4`). Behaviors:
 
 - **Blocking sub-branch:** the parent's calling thread blocks inside `execute_branch`. Inside that call, child nodes execute synchronously on the SAME thread (per the SqliteSaver-only constraint and the in-process synchronous `app.invoke`). No concurrency hazard, but parent throughput is gated 1:1 on child throughput.
 - **Async sub-branch:** the parent fires a worker into the executor and returns immediately. The parent and child run concurrently. **Parent's `concurrency_budget_override` is NOT propagated to the child run.** Each child run independently consumes from the shared pool. Pathological case: a parent with 4 async-fan-out invoke_branch nodes immediately consumes the entire executor pool plus its own slot, starving sibling parent runs.
@@ -243,9 +243,9 @@ The other gaps (#5–#11) are non-blocking for first-cut; they become important 
 
 ## References
 
-- Schema: `workflow/branches.py` lines 215-243 (NodeDefinition fields), 920-960 (validate).
-- Compiler: `workflow/graph_compiler.py` lines 1185-1380 (`_build_invoke_branch_node`, `_build_await_branch_run_node`).
-- Runtime: `workflow/runs.py` lines 1388-1500 (`execute_branch`, `execute_branch_async`), 2087-2129 (`MAX_INVOKE_BRANCH_DEPTH`, `poll_child_run_status`).
+- Schema: `tinyassets/branches.py` lines 215-243 (NodeDefinition fields), 920-960 (validate).
+- Compiler: `tinyassets/graph_compiler.py` lines 1185-1380 (`_build_invoke_branch_node`, `_build_await_branch_run_node`).
+- Runtime: `tinyassets/runs.py` lines 1388-1500 (`execute_branch`, `execute_branch_async`), 2087-2129 (`MAX_INVOKE_BRANCH_DEPTH`, `poll_child_run_status`).
 - Tests: `tests/test_sub_branch_invocation.py`.
 - Cross-reference G1 audit: `docs/audits/2026-04-25-canonical-primitive-audit.md` (gaps #4, #6 overlap with this audit's #3, #1).
 - Strategic context: `docs/audits/2026-04-23-navigator-full-corpus-synthesis.md` §B4; `docs/design-notes/2026-04-25-self-evolving-platform-vision.md` lines 79, 116, 194; `docs/design-notes/2026-04-25-primitive-shipment-roadmap.md` row #5.

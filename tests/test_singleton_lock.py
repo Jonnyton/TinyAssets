@@ -1,4 +1,4 @@
-"""Tests for workflow/singleton_lock.py.
+"""Tests for tinyassets/singleton_lock.py.
 
 Host singleton — one tray / MCP / tunnel per host. The OS-level file
 lock is the ground-truth exclusion mechanism; the PID sidecar is
@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from workflow.singleton_lock import (
+from tinyassets.singleton_lock import (
     LockAcquisition,
     _pid_alive,
     _pid_path,
@@ -200,10 +200,10 @@ def _race_worker(lock_path_str: str, barrier: mp.Barrier, results_queue: mp.Queu
     """Top-level worker so mp.spawn (Windows) can pickle it."""
     from pathlib import Path
 
-    from workflow.singleton_lock import (
+    from tinyassets.singleton_lock import (
         acquire_singleton_lock as _acquire,
     )
-    from workflow.singleton_lock import (
+    from tinyassets.singleton_lock import (
         release_singleton_lock as _release,
     )
 
@@ -259,7 +259,7 @@ def _crash_holder(lock_path_str: str, ready_event: mp.Event) -> None:
     without calling release_singleton_lock (simulates ungraceful exit)."""
     from pathlib import Path
 
-    from workflow.singleton_lock import acquire_singleton_lock as _acquire
+    from tinyassets.singleton_lock import acquire_singleton_lock as _acquire
 
     acq = _acquire(Path(lock_path_str))
     assert acq.acquired, "crash-holder could not acquire its own fresh lock"

@@ -1,10 +1,10 @@
-# Merge Plan — Workflow site (lead) + Tiny Assets token (secondary)
+# Merge Plan — TinyAssets site (lead) + Tiny Assets token (secondary)
 
 ## Decisions locked in
 - **Lead product:** Workflow (the MCP tooling / branchable AI workflows product)
 - **Secondary:** Tiny Assets token as a future utility-rewards mechanism — present, not centered
 - **Stack:** Plain HTML / CSS / JS, single static site (no build step). Portable to GoDaddy hosting or any static host.
-- **Project root:** `C:\Users\Jonathan\Projects\Workflow\WebSite\`
+- **Project root:** `C:\Users\Jonathan\Projects\TinyAssets\WebSite\`
 - **Visual direction:** parchment / dusty-rose / sage diagrams (from Claude design) inside a dark ink + ember chrome (navbar/hero) — kept consistent with current Tiny Assets purple-on-dark brand where it makes sense
 
 ## Folder layout (proposed)
@@ -101,7 +101,7 @@ A long-scroll homepage with these sections, in order:
 
 ## Open questions / things I'll need from you later
 - Logo files (SVG ideal) — can grab from tinyassets.io if you don't have separate files
-- Real GitHub URL for the Workflow project (the buttons currently go to placeholders)
+- Real GitHub URL for the TinyAssets project (the buttons currently go to placeholders)
 - Real "Connect to MCP" target — is this a doc page, install command, or `claude mcp add ...` snippet?
 - Real contract address (currently shows nothing on the homepage of live site)
 - Confirmation when Claude design source is dropped into `design-source/`

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from workflow.api.extensions import (
+from tinyassets.api.extensions import (
     VALID_PHASES as EXTENSION_VALID_PHASES,
 )
-from workflow.api.extensions import (
+from tinyassets.api.extensions import (
     NodeRegistration,
 )
-from workflow.branches import VALID_PHASES as BRANCH_VALID_PHASES
-from workflow.branches import NodeDefinition
+from tinyassets.branches import VALID_PHASES as BRANCH_VALID_PHASES
+from tinyassets.branches import NodeDefinition
 
 
 def test_enrich_phase_is_canonical_and_worldbuild_alias_is_dual_accepted() -> None:

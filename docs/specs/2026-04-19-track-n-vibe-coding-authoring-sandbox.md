@@ -440,7 +440,7 @@ At ~1,000 concurrent authors:
 
 **Realistic worst case at MVP:** a sophisticated attacker finds a Deno zero-day, escapes the Edge Function, gains arbitrary code execution on Supabase's Edge runtime. They could:
 - Read the authoring user's draft_concept (but they already wrote it, so meh).
-- Read the `WORKFLOW_V0_DSN` env var (would need to already have platform code-execution to do that — same as a direct Supabase attack, not a Track-N-specific risk).
+- Read the `TINYASSETS_V0_DSN` env var (would need to already have platform code-execution to do that — same as a direct Supabase attack, not a Track-N-specific risk).
 - Not read other users' data — Edge Function invocations are isolated at the platform layer.
 
 **Mitigations we're explicitly NOT taking at MVP:**

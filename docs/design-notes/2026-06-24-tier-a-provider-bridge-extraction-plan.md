@@ -7,7 +7,7 @@ opposite-provider review. NOT behavior-preserving in two places (flagged below).
 
 ## Done (this slice)
 
-`workflow/providers/call.py` — the engine's domain-agnostic LLM-call primitive,
+`tinyassets/providers/call.py` — the engine's domain-agnostic LLM-call primitive,
 extracted from `domains/fantasy_daemon/phases/_provider_stub.py`. Carries
 `call_provider`, the retry wrapper, the fallback-router builder, and an explicit
 accessor API: `set_provider_router` / `get_provider_router` /
@@ -45,14 +45,14 @@ production-path; get sign-off (host + Codex) on fixing vs. preserving.
 ## Repoint checklist (remaining)
 
 **Engine call sites (8) → `from workflow.providers.call import ...`:**
-- `workflow/api/runs.py:542, 1110, 1520` (`call_provider`)
-- `workflow/api/selector_dispatch.py:733` (`call_provider`)
-- `workflow/evaluation/editorial.py:119` (`call_provider`)
-- `workflow/knowledge/raptor.py:340` (`call_provider`)
-- `workflow/ingestion/extractors.py:260` (`call_provider`; replace `last_provider`
+- `tinyassets/api/runs.py:542, 1110, 1520` (`call_provider`)
+- `tinyassets/api/selector_dispatch.py:733` (`call_provider`)
+- `tinyassets/evaluation/editorial.py:119` (`call_provider`)
+- `tinyassets/knowledge/raptor.py:340` (`call_provider`)
+- `tinyassets/ingestion/extractors.py:260` (`call_provider`; replace `last_provider`
   use at :315 with `get_last_provider()` — see bug #2)
-- `workflow/memory/reflexion.py:205-210, 260-265` (`_FORCE_MOCK` → `is_force_mock()`)
-- `workflow/retrieval/agentic_search.py:381-387` (`_provider_stub._FORCE_MOCK`
+- `tinyassets/memory/reflexion.py:205-210, 260-265` (`_FORCE_MOCK` → `is_force_mock()`)
+- `tinyassets/retrieval/agentic_search.py:381-387` (`_provider_stub._FORCE_MOCK`
   → `call.is_force_mock()`; `_provider_stub.call_provider` → `call.call_provider`)
 
 **Fantasy domain:** reduce `domains/fantasy_daemon/phases/_provider_stub.py` to
@@ -72,11 +72,11 @@ to `workflow.providers.call` to satisfy the de-fantasy goal + import guard.
 Removed-symbol consumers that MUST move atomically:
 - `last_provider` -> `get_last_provider()`:
   `domains/fantasy_daemon/phases/worldbuild.py:489,539,608,909`,
-  `workflow/ingestion/extractors.py:260/315`,
+  `tinyassets/ingestion/extractors.py:260/315`,
   `fantasy_daemon/__main__.py:1962` (via nodes shim).
 - `_FORCE_MOCK` -> `is_force_mock()` / `set_force_mock()`:
-  `workflow/memory/reflexion.py:205,260`,
-  `workflow/retrieval/agentic_search.py:381`, `tests/conftest.py:19`, and the
+  `tinyassets/memory/reflexion.py:205,260`,
+  `tinyassets/retrieval/agentic_search.py:381`, `tests/conftest.py:19`, and the
   test files below.
 - Daemon injection `fantasy_daemon/__main__.py:1176-1178` ->
   `set_provider_router(self._router)` (fixes bug #1).
@@ -109,11 +109,11 @@ star-import shim) — no-shims rule: delete it in this arc, not leave a re-expor
   test_provider_stub_registration, test_ingestion, test_knowledge_graph,
   test_universe_nodes`.
 - **Packaging mirror:** regenerate
-  `packaging/claude-plugin/.../runtime/workflow/` (run
+  `packaging/claude-plugin/.../runtime/tinyassets/` (run
   `python packaging/claude-plugin/build_plugin.py`) so the packaged runtime
   ships the new module + repointed imports, not the old coupling.
 
-**Prevention:** add the staged/ratcheted `workflow/** !-> domains.*` import
+**Prevention:** add the staged/ratcheted `tinyassets/** !-> domains.*` import
 guard (audit Prevention). After this slice the only remaining offenders are the
 Tier-C/D sites; the guard's allowlist shrinks as each tier lands.
 

@@ -11,8 +11,8 @@ import sqlite3
 
 import pytest
 
-from workflow.branch_versions import publish_branch_version
-from workflow.daemon_server import (
+from tinyassets.branch_versions import publish_branch_version
+from tinyassets.daemon_server import (
     _connect,
     initialize_author_server,
     save_goal,
@@ -29,13 +29,13 @@ def _seed_goal(base_path, goal_id: str = "g1", author: str = "alice") -> dict:
 
 
 def _seed_branch_version(base_path, branch_id: str = "b1") -> str:
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
         NodeDefinition,
     )
-    from workflow.daemon_server import save_branch_definition
+    from tinyassets.daemon_server import save_branch_definition
 
     initialize_author_server(base_path)
     nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")
@@ -238,7 +238,7 @@ class TestDualWrite:
         )
 
         # Legacy column populated.
-        from workflow.daemon_server import get_goal
+        from tinyassets.daemon_server import get_goal
         goal = get_goal(tmp_path, goal_id="g1")
         assert goal["canonical_branch_version_id"] == bvid
 
@@ -267,7 +267,7 @@ class TestDualWrite:
             tmp_path, goal_id="g1", branch_version_id=bvid2, set_by="alice"
         )
 
-        from workflow.daemon_server import get_goal
+        from tinyassets.daemon_server import get_goal
         goal = get_goal(tmp_path, goal_id="g1")
         assert goal["canonical_branch_version_id"] == bvid2
 
@@ -293,7 +293,7 @@ class TestDualWrite:
             tmp_path, goal_id="g1", branch_version_id=None, set_by="alice"
         )
 
-        from workflow.daemon_server import get_goal
+        from tinyassets.daemon_server import get_goal
         goal = get_goal(tmp_path, goal_id="g1")
         assert goal["canonical_branch_version_id"] is None
 
@@ -355,7 +355,7 @@ class TestDualWrite:
                 set_by="alice",
             )
 
-        from workflow.daemon_server import get_goal
+        from tinyassets.daemon_server import get_goal
         goal = get_goal(tmp_path, goal_id="g1")
         assert goal["canonical_branch_version_id"] is None
 
@@ -373,7 +373,7 @@ class TestDualWrite:
 @pytest.fixture
 def reset_fallback_counter():
     """Ensure each Step-3 test starts with a clean _LEGACY_FALLBACK_HITS counter."""
-    from workflow.daemon_server import _LEGACY_FALLBACK_HITS
+    from tinyassets.daemon_server import _LEGACY_FALLBACK_HITS
     saved = _LEGACY_FALLBACK_HITS["count"]
     _LEGACY_FALLBACK_HITS["count"] = 0
     yield _LEGACY_FALLBACK_HITS
@@ -396,7 +396,7 @@ class TestReaderCutover:
             tmp_path, goal_id="g1", branch_version_id=bvid, set_by="alice"
         )
 
-        from workflow.daemon_server import get_goal
+        from tinyassets.daemon_server import get_goal
         goal = get_goal(tmp_path, goal_id="g1")
         assert goal["canonical_branch_version_id"] == bvid
         # No fallback hit — both stores agree.
@@ -415,7 +415,7 @@ class TestReaderCutover:
         helper-level test exercises the fallback code path without the
         backfill interference.
         """
-        from workflow.daemon_server import _apply_canonical_bindings_cutover
+        from tinyassets.daemon_server import _apply_canonical_bindings_cutover
 
         bvid = _seed_branch_version(tmp_path, "b1")
         _seed_goal(tmp_path, "g1", author="alice")
@@ -428,7 +428,7 @@ class TestReaderCutover:
             )
             # Goal dict mimicking what _goal_from_row would produce.
             goal_dict = {"goal_id": "g1", "canonical_branch_version_id": bvid}
-            with caplog.at_level("WARNING", logger="workflow.daemon_server"):
+            with caplog.at_level("WARNING", logger="tinyassets.daemon_server"):
                 _apply_canonical_bindings_cutover(conn, [goal_dict])
 
         # Legacy column value preserved on the dict.
@@ -451,7 +451,7 @@ class TestReaderCutover:
         """No canonical anywhere → None, no fallback hit (legacy is also None)."""
         _seed_goal(tmp_path, "g1", author="alice")
 
-        from workflow.daemon_server import get_goal
+        from tinyassets.daemon_server import get_goal
         goal = get_goal(tmp_path, goal_id="g1")
         assert goal["canonical_branch_version_id"] is None
         # No fallback fires — there's nothing to fall back to.
@@ -483,7 +483,7 @@ class TestReaderCutover:
 
     def test_list_goals_uses_cutover(self, tmp_path, reset_fallback_counter):
         """list_goals must apply the cutover too — single batch query, no N+1."""
-        from workflow.daemon_server import list_goals
+        from tinyassets.daemon_server import list_goals
 
         bvid_a = _seed_branch_version(tmp_path, "b_a")
         bvid_b = _seed_branch_version(tmp_path, "b_b")
@@ -513,7 +513,7 @@ class TestReaderCutover:
         Tested at helper level for the same reason as the previous test:
         list_goals/get_goal would silently re-backfill via _init_db.
         """
-        from workflow.daemon_server import _apply_canonical_bindings_cutover
+        from tinyassets.daemon_server import _apply_canonical_bindings_cutover
 
         bvid_a = _seed_branch_version(tmp_path, "b_a")
         bvid_b = _seed_branch_version(tmp_path, "b_b")

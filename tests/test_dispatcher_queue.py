@@ -28,8 +28,8 @@ from pathlib import Path
 
 import pytest
 
-from workflow import branch_tasks as bt_mod
-from workflow.branch_tasks import (
+from tinyassets import branch_tasks as bt_mod
+from tinyassets.branch_tasks import (
     ARCHIVE_FILENAME,
     QUEUE_FILENAME,
     BranchTask,
@@ -43,7 +43,7 @@ from workflow.branch_tasks import (
     read_queue,
     recover_claimed_tasks,
 )
-from workflow.dispatcher import (
+from tinyassets.dispatcher import (
     DispatcherConfig,
     dispatcher_enabled,
     load_dispatcher_config,
@@ -259,7 +259,7 @@ def test_select_next_empty_queue_returns_none(universe_dir):
 
 
 def test_select_next_skips_tasks_directed_to_other_daemon(tmp_path):
-    from workflow import daemon_registry
+    from tinyassets import daemon_registry
 
     universe = tmp_path / "test-universe"
     universe.mkdir()
@@ -305,8 +305,8 @@ def test_select_next_skips_tasks_directed_to_other_daemon(tmp_path):
 
 
 def test_soul_guided_dispatch_read_boosts_matching_open_brain_task(tmp_path):
-    from workflow import daemon_registry
-    from workflow.daemon_brain import capture_daemon_memory
+    from tinyassets import daemon_registry
+    from tinyassets.daemon_brain import capture_daemon_memory
 
     universe = tmp_path / "test-universe"
     universe.mkdir()
@@ -379,18 +379,18 @@ def test_soul_guided_dispatch_read_boosts_matching_open_brain_task(tmp_path):
 
 @pytest.fixture
 def server_base(tmp_path: Path, monkeypatch):
-    """Point WORKFLOW_DATA_DIR at a fresh tmp dir with one universe."""
+    """Point TINYASSETS_DATA_DIR at a fresh tmp dir with one universe."""
     base = tmp_path / "output"
     base.mkdir()
     uid = "test-uni"
     (base / uid).mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
     return base, uid
 
 
 def _call_submit(**kwargs):
-    from workflow.api.universe import _action_submit_request
+    from tinyassets.api.universe import _action_submit_request
 
     return json.loads(_action_submit_request(**kwargs))
 
@@ -403,7 +403,7 @@ def test_submit_request_as_host_queues_host_request_branch_task(
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="do a scene")
     assert "branch_task_id" in resp and resp["branch_task_id"]
-    q = read_queue(Path(os.environ["WORKFLOW_DATA_DIR"]) / uid)
+    q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
     assert len(q) == 1
     assert q[0].trigger_source == "host_request"
 
@@ -416,7 +416,7 @@ def test_submit_request_as_non_host_queues_user_request(
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="please write")
     assert resp["branch_task_id"]
-    q = read_queue(Path(os.environ["WORKFLOW_DATA_DIR"]) / uid)
+    q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
     assert q[0].trigger_source == "user_request"
 
 
@@ -424,9 +424,9 @@ def test_submit_creates_both_request_and_branch_task(server_base, monkeypatch):
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     _call_submit(universe_id=uid, text="do a scene")
-    udir = Path(os.environ["WORKFLOW_DATA_DIR"]) / uid
+    udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     # requests.json populated
-    from workflow.work_targets import REQUESTS_FILENAME
+    from tinyassets.work_targets import REQUESTS_FILENAME
     reqs = json.loads((udir / REQUESTS_FILENAME).read_text(encoding="utf-8"))
     assert len(reqs) == 1
     # branch_tasks.json populated
@@ -446,7 +446,7 @@ def test_submit_host_priority_weight_persists(server_base, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     _call_submit(universe_id=uid, text="boosted", priority_weight=50.0)
-    q = read_queue(Path(os.environ["WORKFLOW_DATA_DIR"]) / uid)
+    q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
     assert q[0].priority_weight == 50.0
 
 
@@ -456,7 +456,7 @@ def test_submit_non_host_priority_weight_clamped(server_base, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="sneaky", priority_weight=50.0)
     assert "error" not in resp
-    q = read_queue(Path(os.environ["WORKFLOW_DATA_DIR"]) / uid)
+    q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
     assert q[0].priority_weight == 0.0
 
 
@@ -466,7 +466,7 @@ def test_submit_negative_priority_weight_rejected(server_base, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="bad", priority_weight=-10.0)
     assert "error" in resp
-    q = read_queue(Path(os.environ["WORKFLOW_DATA_DIR"]) / uid)
+    q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
     assert q == []
 
 
@@ -490,10 +490,10 @@ def test_dispatcher_flag_matrix_observational_safe(
     from fantasy_daemon.__main__ import _dispatcher_observe, _dispatcher_startup
 
     monkeypatch.setenv(
-        "WORKFLOW_UNIFIED_EXECUTION", "1" if unified_execution == "on" else "0",
+        "TINYASSETS_UNIFIED_EXECUTION", "1" if unified_execution == "on" else "0",
     )
     monkeypatch.setenv(
-        "WORKFLOW_DISPATCHER_ENABLED", "on" if dispatcher_enabled == "on" else "off",
+        "TINYASSETS_DISPATCHER_ENABLED", "on" if dispatcher_enabled == "on" else "off",
     )
     # Seed the queue with a pending task; call the startup + observe
     # hooks. Queue should be unchanged (pending stays pending).
@@ -512,7 +512,7 @@ def test_dispatcher_flag_off_returns_no_observation_logs(
     """Dispatcher flag off means dispatcher_observe silently skips."""
     from fantasy_daemon.__main__ import _dispatcher_observe
 
-    monkeypatch.setenv("WORKFLOW_DISPATCHER_ENABLED", "off")
+    monkeypatch.setenv("TINYASSETS_DISPATCHER_ENABLED", "off")
     append_task(universe_dir, _make_task(trigger_source="host_request"))
     import logging as _logging
     caplog.set_level(_logging.INFO)
@@ -525,13 +525,13 @@ def test_dispatcher_flag_off_returns_no_observation_logs(
 
 
 def test_dispatcher_enabled_flag_defaults_on(monkeypatch):
-    monkeypatch.delenv("WORKFLOW_DISPATCHER_ENABLED", raising=False)
+    monkeypatch.delenv("TINYASSETS_DISPATCHER_ENABLED", raising=False)
     assert dispatcher_enabled() is True
 
 
 def test_dispatcher_enabled_flag_off_respected(monkeypatch):
     for val in ("off", "0", "false", "no"):
-        monkeypatch.setenv("WORKFLOW_DISPATCHER_ENABLED", val)
+        monkeypatch.setenv("TINYASSETS_DISPATCHER_ENABLED", val)
         assert dispatcher_enabled() is False
 
 
@@ -549,7 +549,7 @@ def test_dispatcher_observe_does_not_raise_on_corrupt_queue(
     queue file is corrupt — it logs and moves on."""
     from fantasy_daemon.__main__ import _dispatcher_observe
 
-    monkeypatch.setenv("WORKFLOW_DISPATCHER_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_DISPATCHER_ENABLED", "on")
     queue_path(universe_dir).write_text("{not json", encoding="utf-8")
     # Should not raise — observe swallows.
     _dispatcher_observe(universe_dir)
@@ -666,13 +666,13 @@ def test_invariant_2_cancel_branch_task_preserves_work_target(
 ):
     """WorkTarget (in requests.json) persists even when its BranchTask
     is cancelled. Invariant §4.3 #2."""
-    from workflow.api.universe import _action_queue_cancel
-    from workflow.work_targets import REQUESTS_FILENAME
+    from tinyassets.api.universe import _action_queue_cancel
+    from tinyassets.work_targets import REQUESTS_FILENAME
 
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     _call_submit(universe_id=uid, text="keep this")
-    udir = Path(os.environ["WORKFLOW_DATA_DIR"]) / uid
+    udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q_before = read_queue(udir)
     btid = q_before[0].branch_task_id
     resp = json.loads(
@@ -691,9 +691,9 @@ def test_invariant_3_dispatcher_does_not_call_producers(
     """R9 / Invariant §4.3 #3: producers run inside the graph's
     review gates, NEVER inside the dispatcher.
 
-    Patch at the registry boundary — `workflow.producers.registered_producers()`.
+    Patch at the registry boundary — `tinyassets.producers.registered_producers()`.
     """
-    from workflow import producers as prod_mod
+    from tinyassets import producers as prod_mod
 
     # Snapshot real registry, replace with a mock producer counter.
     calls: list[str] = []
@@ -737,8 +737,8 @@ def test_invariant_3_producer_boundary_each_called_exactly_once(
     instance of the same name must show as a new id, and the counting
     wrapper must catch a double-call regardless.
     """
-    from workflow import producers as prod_mod
-    from workflow.producers import run_producers
+    from tinyassets import producers as prod_mod
+    from tinyassets.producers import run_producers
 
     class _Producer:
         def __init__(self, name: str):
@@ -791,7 +791,7 @@ def test_invariant_9_priority_weight_clamp_at_submission(
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     _call_submit(universe_id=uid, text="anyone", priority_weight=999.0)
-    q = read_queue(Path(os.environ["WORKFLOW_DATA_DIR"]) / uid)
+    q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
     assert q[0].priority_weight == 0.0
 
 
@@ -801,7 +801,7 @@ def test_invariant_9_priority_weight_clamp_at_submission(
 
 
 def test_queue_list_returns_sorted_scored_queue(server_base, monkeypatch):
-    from workflow.api.universe import _action_queue_list
+    from tinyassets.api.universe import _action_queue_list
 
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
@@ -833,14 +833,14 @@ def test_queue_cancel_on_running_task_as_host_requests_cancel(
     host identity is now one of two authorized actors (the other is
     the claiming daemon). See test_queue_cancel_on_running_task_unauthorized
     for the rejection path."""
-    from workflow.api.universe import _action_queue_cancel
-    from workflow.branch_tasks import is_task_cancel_requested
+    from tinyassets.api.universe import _action_queue_cancel
+    from tinyassets.branch_tasks import is_task_cancel_requested
 
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     _call_submit(universe_id=uid, text="A")
-    udir = Path(os.environ["WORKFLOW_DATA_DIR"]) / uid
+    udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q = read_queue(udir)
     btid = q[0].branch_task_id
     claim_task(udir, btid, "daemon-1")
@@ -861,14 +861,14 @@ def test_queue_cancel_on_running_task_as_owner_requests_cancel(
     server_base, monkeypatch,
 ):
     """Task #21: the claiming daemon can self-cancel its running task."""
-    from workflow.api.universe import _action_queue_cancel
-    from workflow.branch_tasks import is_task_cancel_requested
+    from tinyassets.api.universe import _action_queue_cancel
+    from tinyassets.branch_tasks import is_task_cancel_requested
 
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "daemon-1")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     _call_submit(universe_id=uid, text="A")
-    udir = Path(os.environ["WORKFLOW_DATA_DIR"]) / uid
+    udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q = read_queue(udir)
     btid = q[0].branch_task_id
     claim_task(udir, btid, "daemon-1")
@@ -888,13 +888,13 @@ def test_queue_cancel_on_running_task_unauthorized(
     Carries forward the original test's intent — running tasks require
     authorization — but narrows it to the actually-unauthorized case
     instead of the now-always-host case."""
-    from workflow.api.universe import _action_queue_cancel
+    from tinyassets.api.universe import _action_queue_cancel
 
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "random-guest")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     _call_submit(universe_id=uid, text="A")
-    udir = Path(os.environ["WORKFLOW_DATA_DIR"]) / uid
+    udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q = read_queue(udir)
     btid = q[0].branch_task_id
     claim_task(udir, btid, "daemon-1")
@@ -907,7 +907,7 @@ def test_queue_cancel_on_running_task_unauthorized(
 
 
 def test_queue_cancel_missing_id_rejects():
-    from workflow.api.universe import _action_queue_cancel
+    from tinyassets.api.universe import _action_queue_cancel
 
     resp = json.loads(_action_queue_cancel(universe_id="anything"))
     assert "error" in resp

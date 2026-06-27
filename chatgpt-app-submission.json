@@ -2,9 +2,9 @@
   "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
   "schema_version": 1,
   "app_info": {
-    "display_name": "Workflow",
+    "display_name": "TinyAssets",
     "subtitle": "Build durable workflows",
-    "description": "Workflow connects ChatGPT to a durable open-source work graph. Users can check daemon status, browse shared goals and project wiki knowledge, run graph branches, and submit bounded requests that continue through the Workflow loop beyond a single chat.",
+    "description": "TinyAssets connects ChatGPT to a durable open-source work graph. Users can check daemon status, browse shared goals and project wiki knowledge, run graph branches, and submit bounded requests that continue through the TinyAssets loop beyond a single chat.",
     "category": "PRODUCTIVITY"
   },
   "tools": {
@@ -15,7 +15,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads directory-safe Workflow graph status, graph listings, goals, or run metadata without changing Workflow state.",
+        "read_only_justification": "Reads directory-safe TinyAssets graph status, graph listings, goals, or run metadata without changing TinyAssets state.",
         "open_world_justification": "Does not publish content or modify public internet state.",
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
@@ -27,8 +27,8 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Creates shared Workflow goal proposals or queues bounded Workflow requests, so it changes Workflow state.",
-        "open_world_justification": "Writes bounded Workflow graph records inside the Workflow system and does not publish content to an external account or public internet surface.",
+        "read_only_justification": "Creates shared TinyAssets goal proposals or queues bounded TinyAssets requests, so it changes TinyAssets state.",
+        "open_world_justification": "Writes bounded TinyAssets graph records inside the TinyAssets system and does not publish content to an external account or public internet surface.",
         "destructive_justification": "Creates or queues new records and does not delete, overwrite, revoke access, or perform irreversible actions."
       }
     },
@@ -39,8 +39,8 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Starts a Workflow graph branch run, so it changes Workflow state.",
-        "open_world_justification": "Runs Workflow-managed graph logic and does not publish content or modify third-party systems by itself.",
+        "read_only_justification": "Starts a TinyAssets graph branch run, so it changes TinyAssets state.",
+        "open_world_justification": "Runs TinyAssets-managed graph logic and does not publish content or modify third-party systems by itself.",
         "destructive_justification": "Starts a run and does not delete, overwrite, revoke access, or perform irreversible actions."
       }
     },
@@ -51,7 +51,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads or searches existing Workflow wiki pages without modifying the wiki.",
+        "read_only_justification": "Reads or searches existing TinyAssets wiki pages without modifying the wiki.",
         "open_world_justification": "Does not publish content or write to external systems.",
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
@@ -63,16 +63,16 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Writes, patches, or files Workflow wiki pages, so it changes Workflow state.",
-        "open_world_justification": "Filed public project pages can be visible through Workflow wiki discovery.",
+        "read_only_justification": "Writes, patches, or files TinyAssets wiki pages, so it changes TinyAssets state.",
+        "open_world_justification": "Filed public project pages can be visible through TinyAssets wiki discovery.",
         "destructive_justification": "Writes or patches pages using bounded parameters and does not expose a destructive delete operation."
       }
     }
   },
   "test_cases": [
     {
-      "description": "Check whether Workflow is connected and safe to use.",
-      "user_prompt": "Use Workflow to check the current daemon status and tell me any caveats before I start.",
+      "description": "Check whether TinyAssets is connected and safe to use.",
+      "user_prompt": "Use TinyAssets to check the current daemon status and tell me any caveats before I start.",
       "file_attachment_urls": null,
       "tools_triggered": "read_graph",
       "expected_output": "Returns a factual daemon status summary with routing evidence and caveats.",
@@ -80,81 +80,81 @@
     },
     {
       "description": "Find existing durable goals for a user's work category.",
-      "user_prompt": "Use Workflow to search for goals related to onboarding and show the best matches.",
+      "user_prompt": "Use TinyAssets to search for goals related to onboarding and show the best matches.",
       "file_attachment_urls": null,
       "tools_triggered": "read_graph",
-      "expected_output": "Returns matching Workflow goals when present, or clearly reports that no goals matched and suggests a safe next step.",
+      "expected_output": "Returns matching TinyAssets goals when present, or clearly reports that no goals matched and suggests a safe next step.",
       "expected_output_url": null
     },
     {
       "description": "Browse available graphs before choosing where to work.",
-      "user_prompt": "Use Workflow to list available graphs, then inspect the active one.",
+      "user_prompt": "Use TinyAssets to list available graphs, then inspect the active one.",
       "file_attachment_urls": null,
       "tools_triggered": "read_graph",
       "expected_output": "Shows available graphs and summarizes the selected graph's durable state.",
       "expected_output_url": null
     },
     {
-      "description": "Read project knowledge from the Workflow wiki.",
-      "user_prompt": "Use Workflow to search the wiki for current launch risks, then read the most relevant page.",
+      "description": "Read project knowledge from the TinyAssets wiki.",
+      "user_prompt": "Use TinyAssets to search the wiki for current launch risks, then read the most relevant page.",
       "file_attachment_urls": null,
       "tools_triggered": "read_page",
       "expected_output": "Returns relevant wiki search results and a grounded summary of the chosen page.",
       "expected_output_url": null
     },
     {
-      "description": "Review recent Workflow run history.",
-      "user_prompt": "Use Workflow to list recent runs and tell me whether anything is currently active or blocked.",
+      "description": "Review recent TinyAssets run history.",
+      "user_prompt": "Use TinyAssets to list recent runs and tell me whether anything is currently active or blocked.",
       "file_attachment_urls": null,
       "tools_triggered": "read_graph",
-      "expected_output": "Returns recent Workflow runs or a clear empty-state message without starting, stopping, or editing runs.",
+      "expected_output": "Returns recent TinyAssets runs or a clear empty-state message without starting, stopping, or editing runs.",
       "expected_output_url": null
     },
     {
       "description": "Create a new shared goal proposal after user intent is clear.",
-      "user_prompt": "Use Workflow to propose a public goal named 'Onboard new MCP hosts' with tags discovery,onboarding.",
+      "user_prompt": "Use TinyAssets to propose a public goal named 'Onboard new MCP hosts' with tags discovery,onboarding.",
       "file_attachment_urls": null,
       "tools_triggered": "write_graph",
-      "expected_output": "Confirms that a new Workflow goal proposal was created and reports its identifier or next step.",
+      "expected_output": "Confirms that a new TinyAssets goal proposal was created and reports its identifier or next step.",
       "expected_output_url": null
     },
     {
-      "description": "Queue a bounded request into an existing Workflow graph.",
-      "user_prompt": "Use Workflow to submit a request asking the daemon to summarize today's discoverability blockers.",
+      "description": "Queue a bounded request into an existing TinyAssets graph.",
+      "user_prompt": "Use TinyAssets to submit a request asking the daemon to summarize today's discoverability blockers.",
       "file_attachment_urls": null,
       "tools_triggered": "write_graph",
-      "expected_output": "Confirms the request was queued in Workflow and states what will happen next.",
+      "expected_output": "Confirms the request was queued in TinyAssets and states what will happen next.",
       "expected_output_url": null
     },
     {
       "description": "Run a graph branch after the user chooses a branch.",
-      "user_prompt": "Use Workflow to run branch br_demo with the saved default inputs.",
+      "user_prompt": "Use TinyAssets to run branch br_demo with the saved default inputs.",
       "file_attachment_urls": null,
       "tools_triggered": "run_graph",
-      "expected_output": "Starts the selected Workflow graph branch run and reports the run identifier or next step.",
+      "expected_output": "Starts the selected TinyAssets graph branch run and reports the run identifier or next step.",
       "expected_output_url": null
     },
     {
-      "description": "File a project patch request into the Workflow wiki.",
-      "user_prompt": "Use Workflow to file a patch request about simplifying the public connector surface.",
+      "description": "File a project patch request into the TinyAssets wiki.",
+      "user_prompt": "Use TinyAssets to file a patch request about simplifying the public connector surface.",
       "file_attachment_urls": null,
       "tools_triggered": "write_page",
-      "expected_output": "Creates or reports a matching Workflow wiki filing with its identifier or page path.",
+      "expected_output": "Creates or reports a matching TinyAssets wiki filing with its identifier or page path.",
       "expected_output_url": null
     }
   ],
   "negative_test_cases": [
     {
-      "description": "Do not invoke Workflow for unrelated weather requests.",
+      "description": "Do not invoke TinyAssets for unrelated weather requests.",
       "user_prompt": "What is the weather in San Francisco tomorrow?",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "The app should not be invoked because the request is unrelated to Workflow.",
+      "expected_output": "The app should not be invoked because the request is unrelated to TinyAssets.",
       "expected_output_url": null
     },
     {
-      "description": "Do not use legacy implementation-shaped Workflow tool names.",
-      "user_prompt": "Use get_workflow_status, search_workflow_goals, and submit_workflow_request directly.",
+      "description": "Do not use legacy implementation-shaped TinyAssets tool names.",
+      "user_prompt": "Use get_tinyassets_status, search_tinyassets_goals, and submit_tinyassets_request directly.",
       "file_attachment_urls": null,
       "tools_triggered": null,
       "expected_output": "The app should not advertise or call legacy implementation-shaped tool names; use the five public handles instead.",
@@ -162,18 +162,18 @@
     },
     {
       "description": "Do not perform destructive admin operations.",
-      "user_prompt": "Use Workflow to delete every graph and wipe all stored data.",
+      "user_prompt": "Use TinyAssets to delete every graph and wipe all stored data.",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "The app should not call any Workflow tool because the directory surface exposes no destructive delete operation.",
+      "expected_output": "The app should not call any TinyAssets tool because the directory surface exposes no destructive delete operation.",
       "expected_output_url": null
     },
     {
       "description": "Do not request or store account credentials.",
-      "user_prompt": "Use Workflow to save my API key and password for later.",
+      "user_prompt": "Use TinyAssets to save my API key and password for later.",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "The app should not be invoked because Workflow's directory tools do not collect credentials.",
+      "expected_output": "The app should not be invoked because TinyAssets' directory tools do not collect credentials.",
       "expected_output_url": null
     }
   ]

@@ -19,14 +19,14 @@ name: Deploy prod
 #   DO_SSH_KEY       — Private key PEM for the above user
 #
 # Optional subscription auth secret:
-#   WORKFLOW_CODEX_AUTH_JSON_B64 - base64-encoded ~/.codex/auth.json.
-#   When present, deploy syncs it into /etc/workflow/env without printing it
-#   and forces WORKFLOW_ALLOW_API_KEY_PROVIDERS=0 for the public daemon.
+#   TINYASSETS_CODEX_AUTH_JSON_B64 - base64-encoded ~/.codex/auth.json.
+#   When present, deploy syncs it into /etc/tinyassets/env without printing it
+#   and forces TINYASSETS_ALLOW_API_KEY_PROVIDERS=0 for the public daemon.
 #
 # Optional PR-122 Phase 2 capability secret (PR-128):
-#   WORKFLOW_GITHUB_PR_CAPABILITIES - JSON object mapping
+#   TINYASSETS_GITHUB_PR_CAPABILITIES - JSON object mapping
 #   "<owner>/<repo>" -> "<token>". Read by
-#   workflow.effectors.github_pr at invocation time; never echoed
+#   tinyassets.effectors.github_pr at invocation time; never echoed
 #   into branch-visible run state. When unset, the effector emits
 #   error_kind="missing_capability" dry-run evidence on real-PR
 #   attempts.
@@ -68,26 +68,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      HAS_CODEX_AUTH_BUNDLE: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 != '' }}
+      HAS_CODEX_AUTH_BUNDLE: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 != '' }}
       # Claude provider auth on the droplet. CLAUDE_CODE_OAUTH_TOKEN is a
       # `claude setup-token` long-lived token Claude Code reads from the env
       # (rotation-safe, no file). When set, the deploy syncs it into
-      # /etc/workflow/env so a fresh /data volume is not left "Not logged in"
+      # /etc/tinyassets/env so a fresh /data volume is not left "Not logged in"
       # (the 2026-06-25 loop-wedge root cause). Same secret the CI workers use.
       HAS_CLAUDE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
       # Codex-style fallback: base64 of a subscription ~/.claude/.credentials.json.
       # The entrypoint seeds it to $CLAUDE_CONFIG_DIR/.credentials.json only when
       # missing. Preferred is CLAUDE_CODE_OAUTH_TOKEN above (rotation-safe); this
       # is the file path for hosts without a setup-token.
-      HAS_CLAUDE_CREDENTIALS_BUNDLE: ${{ secrets.WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 != '' }}
+      HAS_CLAUDE_CREDENTIALS_BUNDLE: ${{ secrets.TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 != '' }}
       # PR-128 — PR-122 Phase 2 capability map sync. When the
-      # WORKFLOW_GITHUB_PR_CAPABILITIES GH Actions secret is set
+      # TINYASSETS_GITHUB_PR_CAPABILITIES GH Actions secret is set
       # (JSON object keyed by "<owner>/<repo>" -> "<token>"), the
-      # deploy step installs it into /etc/workflow/env so the Phase 2
+      # deploy step installs it into /etc/tinyassets/env so the Phase 2
       # effector can pass its capability gate. Without this the
       # effector emits error_kind="missing_capability" and stays in
       # dry-run for real-PR attempts.
-      HAS_GITHUB_PR_CAPABILITY: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES != '' }}
+      HAS_GITHUB_PR_CAPABILITY: ${{ secrets.TINYASSETS_GITHUB_PR_CAPABILITIES != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +116,7 @@ jobs:
             tag="$(git rev-parse --short=12 HEAD)"
           fi
           owner_lower="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
-          image="ghcr.io/${owner_lower}/workflow-daemon"
+          image="ghcr.io/${owner_lower}/tinyassets-daemon"
 
           echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null 2>&1 || true
           if docker manifest inspect "${image}:${tag}" >/dev/null 2>&1; then
@@ -167,78 +167,78 @@ jobs:
       - name: Capture previous image tag (for rollback)
         id: prev
         run: |
-          # Read current WORKFLOW_IMAGE from the running env file.
+          # Read current TINYASSETS_IMAGE from the running env file.
           prev=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo grep -E '^WORKFLOW_IMAGE=' /etc/workflow/env | head -1 | cut -d= -f2-" \
+              "sudo grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env | head -1 | cut -d= -f2-" \
               || echo '')
           if [ -z "$prev" ]; then
-            echo "::warning::no previous WORKFLOW_IMAGE found on box; rollback unavailable for this deploy"
+            echo "::warning::no previous TINYASSETS_IMAGE found on box; rollback unavailable for this deploy"
           elif [[ "${prev}" != *@sha256:* ]]; then
             prev_digest="$(docker buildx imagetools inspect "${prev}" | awk '/^Digest:/ {print $2; exit}' || true)"
             if [ -z "${prev_digest}" ]; then
-              echo "::warning::previous WORKFLOW_IMAGE is not digest-pinned and could not be resolved; rollback unavailable"
+              echo "::warning::previous TINYASSETS_IMAGE is not digest-pinned and could not be resolved; rollback unavailable"
               prev=""
             else
               prev_image="${prev%%:*}"
               prev="${prev_image}@${prev_digest}"
-              echo "::notice::resolved previous WORKFLOW_IMAGE to immutable rollback ref: ${prev}"
+              echo "::notice::resolved previous TINYASSETS_IMAGE to immutable rollback ref: ${prev}"
             fi
           fi
           echo "previous=${prev}" >> "$GITHUB_OUTPUT"
           echo "Previous: ${prev}"
 
-      # INVARIANT — /etc/workflow/env must stay root:workflow 640.
-      # All env mutations route through `deploy/install-workflow-env.sh`
-      # which uses `install -m 640 -o root -g workflow` for an atomic
+      # INVARIANT — /etc/tinyassets/env must stay root:tinyassets 640.
+      # All env mutations route through `deploy/install-tinyassets-env.sh`
+      # which uses `install -m 640 -o root -g tinyassets` for an atomic
       # write. The legacy `sed -i + chown + chmod` chain (root cause of
       # the 2026-04-21 P0 outage — see RC-1 in
       # docs/audits/2026-04-25-etc-workflow-env-mode-flip.md) is gone.
-      # The helper asserts post-write readability by user=workflow, so
+      # The helper asserts post-write readability by user=tinyassets, so
       # any mode-flip class is caught at the call site, not later by
       # systemd ExecStartPre.
       #
       # BUG-002 (2026-04-19): host's Windows wiki path leaked to the
       # droplet env file, making wiki_path() resolve to /app/C:\Users\...
-      # Strip explicit WORKFLOW_WIKI_PATH so the resolver falls back to
-      # $WORKFLOW_DATA_DIR/wiki (=/data/wiki).
-      # Also strip WORKFLOW_UNIVERSE: it is a stdio-shim override, and
-      # leaving it in the cloud env can bind workflow-worker to a
+      # Strip explicit TINYASSETS_WIKI_PATH so the resolver falls back to
+      # $TINYASSETS_DATA_DIR/wiki (=/data/wiki).
+      # Also strip TINYASSETS_UNIVERSE: it is a stdio-shim override, and
+      # leaving it in the cloud env can bind tinyassets-worker to a
       # different universe than the public MCP default.
       - name: Scrub stale cloud env overrides
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo bash -s -- delete WORKFLOW_WIKI_PATH WORKFLOW_UNIVERSE' \
-              < deploy/install-workflow-env.sh
+              'sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE' \
+              < deploy/install-tinyassets-env.sh
 
       - name: Sync runtime deploy files
         run: |
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/compose.yml \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/workflow-compose.yml"
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-compose.yml"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/vector.yaml \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/workflow-vector.yaml"
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-vector.yaml"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/vector-betterstack.yaml \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/workflow-vector-betterstack.yaml"
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-vector-betterstack.yaml"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/vector-entrypoint.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/workflow-vector-entrypoint.sh"
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-vector-entrypoint.sh"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/workflow-daemon.service \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/workflow-daemon.service"
+              deploy/tinyassets-daemon.service \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-daemon.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "set -e; \
-               sudo mkdir -p /opt/workflow/deploy; \
-               sudo install -m 0644 -o workflow -g workflow /tmp/workflow-compose.yml /opt/workflow/compose.yml; \
-               sudo install -m 0644 -o workflow -g workflow /tmp/workflow-compose.yml /opt/workflow/deploy/compose.yml; \
-               sudo install -m 0644 -o workflow -g workflow /tmp/workflow-vector.yaml /opt/workflow/deploy/vector.yaml; \
-               sudo install -m 0644 -o workflow -g workflow /tmp/workflow-vector-betterstack.yaml /opt/workflow/deploy/vector-betterstack.yaml; \
-               sudo install -m 0755 -o workflow -g workflow /tmp/workflow-vector-entrypoint.sh /opt/workflow/deploy/vector-entrypoint.sh; \
-               sudo install -m 0644 -o root -g root /tmp/workflow-daemon.service /etc/systemd/system/workflow-daemon.service; \
+               sudo mkdir -p /opt/tinyassets/deploy; \
+               sudo install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-compose.yml /opt/tinyassets/compose.yml; \
+               sudo install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-compose.yml /opt/tinyassets/deploy/compose.yml; \
+               sudo install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-vector.yaml /opt/tinyassets/deploy/vector.yaml; \
+               sudo install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-vector-betterstack.yaml /opt/tinyassets/deploy/vector-betterstack.yaml; \
+               sudo install -m 0755 -o tinyassets -g tinyassets /tmp/tinyassets-vector-entrypoint.sh /opt/tinyassets/deploy/vector-entrypoint.sh; \
+               sudo install -m 0644 -o root -g root /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service; \
                sudo systemctl daemon-reload"
 
       - name: Preflight droplet disk before image pull
@@ -246,7 +246,7 @@ jobs:
         run: |
           # A full root volume can make both the forward deploy and the rollback
           # fail while the live daemon is already down. Reclaim disposable state
-          # before touching WORKFLOW_IMAGE or pulling the new image.
+          # before touching TINYASSETS_IMAGE or pulling the new image.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               'sudo bash -s' <<'SH'
@@ -296,22 +296,22 @@ jobs:
       # Codex CLI rotates single-use OAuth refresh tokens in-place inside
       # the container. compose.yml sets CODEX_HOME=/data/.codex and
       # CLAUDE_CONFIG_DIR=/data/.claude for daemon + worker, backed by the
-      # shared workflow-data volume, so rotated subscription auth survives
+      # shared tinyassets-data volume, so rotated subscription auth survives
       # container restart. This step makes those directories self-provisioning
       # on every deploy — idempotent, no host hands required, per the Forever
       # Rule (24/7 uptime, zero hosts online).
       #
       # Three idempotent branches:
-      #   - workflow-data/.codex already present -> skip creation
+      #   - tinyassets-data/.codex already present -> skip creation
       #   - /data/.codex/auth.json already in volume -> skip migration
       #   - no running container with /data/.codex/auth.json or legacy
       #     /app/.codex/auth.json -> skip migration
-      #     (new container will seed from WORKFLOW_CODEX_AUTH_JSON_B64 on first boot)
+      #     (new container will seed from TINYASSETS_CODEX_AUTH_JSON_B64 on first boot)
       #   - /data/.claude already present -> preserve; otherwise migrate from
       #     a running container's /data/.claude or legacy /app/.claude.
       #
       # The migration branch only fires once: the first deploy after this
-      # CODEX_HOME move onto a live droplet where workflow-worker has a
+      # CODEX_HOME move onto a live droplet where tinyassets-worker has a
       # rotated auth.json at either the new or legacy location.
       - name: Prepare codex auth persistent volume
         run: |
@@ -320,9 +320,9 @@ jobs:
               'sudo bash -s' <<'SH'
           set -euo pipefail
 
-          VOLUME_NAME="workflow-data"
-          WORKFLOW_UID=1001
-          WORKFLOW_GID=1001
+          VOLUME_NAME="tinyassets-data"
+          TINYASSETS_UID=1001
+          TINYASSETS_GID=1001
 
           docker volume create "$VOLUME_NAME" >/dev/null
           VOLUME_DIR="$(docker volume inspect "$VOLUME_NAME" --format '{{ .Mountpoint }}')"
@@ -340,28 +340,28 @@ jobs:
           # If a prior attempt left the dir root-owned, this heals the
           # posture so uid 1001 can write. Both chown and chmod are
           # themselves idempotent — no-op when state already matches.
-          chown "$WORKFLOW_UID:$WORKFLOW_GID" "$CODEX_DIR"
+          chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"
           chmod 700 "$CODEX_DIR"
 
-          # Migration: if the volume is empty but a workflow-worker container is
+          # Migration: if the volume is empty but a tinyassets-worker container is
           # currently running with a Codex auth.json inside it, copy the live
           # refresh chain into /data/.codex so the new container preserves it
           # instead of falling back to the stale env-var secret.
           if [ ! -f "$CODEX_DIR/auth.json" ]; then
             tmp_dir="$(mktemp -d)"
             trap 'rm -rf "$tmp_dir"' EXIT
-            if docker inspect workflow-worker >/dev/null 2>&1; then
-              if docker exec workflow-worker test -f /data/.codex/auth.json 2>/dev/null; then
-                echo "migrating live codex auth.json from workflow-worker:/data/.codex"
-                docker cp workflow-worker:/data/.codex/auth.json "$tmp_dir/auth.json"
-              elif docker exec workflow-worker test -f /app/.codex/auth.json 2>/dev/null; then
-                echo "migrating legacy codex auth.json from workflow-worker:/app/.codex"
-                docker cp workflow-worker:/app/.codex/auth.json "$tmp_dir/auth.json"
+            if docker inspect tinyassets-worker >/dev/null 2>&1; then
+              if docker exec tinyassets-worker test -f /data/.codex/auth.json 2>/dev/null; then
+                echo "migrating live codex auth.json from tinyassets-worker:/data/.codex"
+                docker cp tinyassets-worker:/data/.codex/auth.json "$tmp_dir/auth.json"
+              elif docker exec tinyassets-worker test -f /app/.codex/auth.json 2>/dev/null; then
+                echo "migrating legacy codex auth.json from tinyassets-worker:/app/.codex"
+                docker cp tinyassets-worker:/app/.codex/auth.json "$tmp_dir/auth.json"
               fi
             fi
             if [ -s "$tmp_dir/auth.json" ]; then
               cp "$tmp_dir/auth.json" "$CODEX_DIR/auth.json"
-              chown "$WORKFLOW_UID:$WORKFLOW_GID" "$CODEX_DIR/auth.json"
+              chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR/auth.json"
               chmod 600 "$CODEX_DIR/auth.json"
             fi
           fi
@@ -373,23 +373,23 @@ jobs:
             echo "creating Claude auth persistent directory at $CLAUDE_DIR"
             mkdir -p "$CLAUDE_DIR"
           fi
-          chown -R "$WORKFLOW_UID:$WORKFLOW_GID" "$CLAUDE_DIR"
+          chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
           chmod 700 "$CLAUDE_DIR"
 
           if ! find "$CLAUDE_DIR" -mindepth 1 -maxdepth 1 | grep -q .; then
             tmp_claude="$(mktemp -d)"
-            if docker inspect workflow-worker >/dev/null 2>&1; then
-              if docker exec workflow-worker test -d /data/.claude 2>/dev/null; then
-                echo "migrating live Claude config from workflow-worker:/data/.claude"
-                docker cp workflow-worker:/data/.claude/. "$tmp_claude/" || true
-              elif docker exec workflow-worker test -d /app/.claude 2>/dev/null; then
-                echo "migrating legacy Claude config from workflow-worker:/app/.claude"
-                docker cp workflow-worker:/app/.claude/. "$tmp_claude/" || true
+            if docker inspect tinyassets-worker >/dev/null 2>&1; then
+              if docker exec tinyassets-worker test -d /data/.claude 2>/dev/null; then
+                echo "migrating live Claude config from tinyassets-worker:/data/.claude"
+                docker cp tinyassets-worker:/data/.claude/. "$tmp_claude/" || true
+              elif docker exec tinyassets-worker test -d /app/.claude 2>/dev/null; then
+                echo "migrating legacy Claude config from tinyassets-worker:/app/.claude"
+                docker cp tinyassets-worker:/app/.claude/. "$tmp_claude/" || true
               fi
             fi
             if find "$tmp_claude" -mindepth 1 -maxdepth 1 | grep -q .; then
               cp -a "$tmp_claude"/. "$CLAUDE_DIR"/
-              chown -R "$WORKFLOW_UID:$WORKFLOW_GID" "$CLAUDE_DIR"
+              chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
               find "$CLAUDE_DIR" -type d -exec chmod 700 {} +
               find "$CLAUDE_DIR" -type f -exec chmod 600 {} +
             fi
@@ -402,31 +402,31 @@ jobs:
       - name: Deploy new image
         id: deploy
         env:
-          WORKFLOW_CODEX_AUTH_JSON_B64: ${{ secrets.WORKFLOW_CODEX_AUTH_JSON_B64 }}
+          TINYASSETS_CODEX_AUTH_JSON_B64: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64: ${{ secrets.WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 }}
+          TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64: ${{ secrets.TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 }}
           # PR-128 — Phase 2 effector capability map. JSON object
           # mapping "<owner>/<repo>" -> "<token>" (round-2 P1.2
-          # shape). Read by workflow.effectors.github_pr at
+          # shape). Read by tinyassets.effectors.github_pr at
           # invocation time; never echoed into branch-visible state.
-          WORKFLOW_GITHUB_PR_CAPABILITIES: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES }}
+          TINYASSETS_GITHUB_PR_CAPABILITIES: ${{ secrets.TINYASSETS_GITHUB_PR_CAPABILITIES }}
         run: |
           NEW_IMAGE="${{ steps.tag.outputs.image_ref }}"
           echo "Deploying: ${NEW_IMAGE}"
-          # Pin the new tag in /etc/workflow/env via the atomic helper.
-          # Helper enforces root:workflow 640 in a single install(1)
-          # call + asserts post-write readability by user=workflow.
+          # Pin the new tag in /etc/tinyassets/env via the atomic helper.
+          # Helper enforces root:tinyassets 640 in a single install(1)
+          # call + asserts post-write readability by user=tinyassets.
           # Replaces the legacy sed -i + chown + chmod chain that was
           # the 2026-04-21 P0 root cause.
           # First scp the helper to the droplet, then exec it with the
           # new value piped in via stdin. Two SSH round-trips, but
           # avoids stdin-multiplexing fragility on the runner shell.
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/install-workflow-env.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-workflow-env.sh"
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' '${NEW_IMAGE}' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_IMAGE"
+              "printf '%s' '${NEW_IMAGE}' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE"
           # Cutover (2026-05-29): route file_bug investigation requests to the
           # user-buildable patch-request loop instead of the legacy cheat branch.
           # patch_request_loop_v5 (branch_def_id 0ca6e9c97f65) localizes via
@@ -437,7 +437,7 @@ jobs:
           # this block restores the prior handler on the next deploy.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' '0ca6e9c97f65' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID"
+              "printf '%s' '0ca6e9c97f65' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID"
           # Enqueue go-live (2026-06-03): turn ON the in-node paced enqueue verb
           # so a user-built driver branch can append run-requests to its own
           # universe's dispatcher queue. The verb shipped dark in #1214 and was
@@ -451,7 +451,7 @@ jobs:
           # block returns the verb to fail-closed dark on the next deploy.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' 'on' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_NODE_ENQUEUE_ENABLED"
+              "printf '%s' 'on' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_NODE_ENQUEUE_ENABLED"
           # Soul-loop go-live (2026-06-03): turn ON soul-declared loop dispatch
           # so the daemon runs a souled universe's declared loop_branch_def_id
           # (a user-built branch) via execute_branch instead of the fantasy
@@ -464,7 +464,7 @@ jobs:
           # reverting returns soul-loop dispatch to fail-closed dark next deploy.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' 'on' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_SOUL_LOOP_DISPATCH"
+              "printf '%s' 'on' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_SOUL_LOOP_DISPATCH"
           # Identity activation (2026-06-04): set optional OAuth auth mode so the
           # daemon RESOLVES an authenticated Bearer subject into the request
           # identity (_current_actor) when one is present, while anonymous tier-1
@@ -476,108 +476,108 @@ jobs:
           # #1252 are merged AND deployed (release-state sha includes both).
           # Founder/owner ENFORCEMENT is a separate follow-on (#1168 / PR-147) and
           # is intentionally NOT enabled here. Idempotent set. ROLLBACK is NOT a
-          # plain PR revert: install-workflow-env.sh writes persistent state to
-          # /etc/workflow/env, so removing this block only stops FUTURE writes —
+          # plain PR revert: install-tinyassets-env.sh writes persistent state to
+          # /etc/tinyassets/env, so removing this block only stops FUTURE writes —
           # the already-written UNIVERSE_SERVER_AUTH=optional entry persists. To
           # roll back, a follow-up deploy must explicitly
-          # `install-workflow-env.sh set UNIVERSE_SERVER_AUTH false` (or
+          # `install-tinyassets-env.sh set UNIVERSE_SERVER_AUTH false` (or
           # `delete UNIVERSE_SERVER_AUTH`).
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' 'optional' | sudo bash /tmp/install-workflow-env.sh set UNIVERSE_SERVER_AUTH"
+              "printf '%s' 'optional' | sudo bash /tmp/install-tinyassets-env.sh set UNIVERSE_SERVER_AUTH"
           if [ "${HAS_CODEX_AUTH_BUNDLE}" = "true" ]; then
-            echo "Deploy-visible WORKFLOW_CODEX_AUTH_JSON_B64 found; syncing subscription auth bundle."
-            printf '%s' "${WORKFLOW_CODEX_AUTH_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            echo "Deploy-visible TINYASSETS_CODEX_AUTH_JSON_B64 found; syncing subscription auth bundle."
+            printf '%s' "${TINYASSETS_CODEX_AUTH_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-workflow-env.sh set WORKFLOW_CODEX_AUTH_JSON_B64"
+                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_CODEX_AUTH_JSON_B64"
             printf '%s' '0' | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-workflow-env.sh set WORKFLOW_ALLOW_API_KEY_PROVIDERS"
+                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_ALLOW_API_KEY_PROVIDERS"
           else
-            echo "::warning::WORKFLOW_CODEX_AUTH_JSON_B64 is not visible to deploy; leaving any existing droplet subscription auth untouched."
+            echo "::warning::TINYASSETS_CODEX_AUTH_JSON_B64 is not visible to deploy; leaving any existing droplet subscription auth untouched."
           fi
           # Claude provider auth: sync CLAUDE_CODE_OAUTH_TOKEN into
-          # /etc/workflow/env (same atomic helper) so claude-code workers
+          # /etc/tinyassets/env (same atomic helper) so claude-code workers
           # authenticate from the env on a fresh /data volume. Without it the
           # deploy could only migrate creds from a live container — a circular
           # dependency that fails once the credentials are gone (the 2026-06-25
           # loop-wedge root cause). The entrypoint also seeds a credentials file
-          # from WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 when present; the env token
+          # from TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 when present; the env token
           # is preferred (rotation-safe).
           if [ "${HAS_CLAUDE_OAUTH_TOKEN}" = "true" ]; then
             echo "Deploy-visible CLAUDE_CODE_OAUTH_TOKEN found; syncing claude-code auth token."
             printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-workflow-env.sh set CLAUDE_CODE_OAUTH_TOKEN"
+                "sudo bash /tmp/install-tinyassets-env.sh set CLAUDE_CODE_OAUTH_TOKEN"
           elif [ "${HAS_CLAUDE_CREDENTIALS_BUNDLE}" = "true" ]; then
-            echo "Deploy-visible WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 found; syncing claude credentials bundle."
-            printf '%s' "${WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            echo "Deploy-visible TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 found; syncing claude credentials bundle."
+            printf '%s' "${TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-workflow-env.sh set WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64"
+                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64"
           else
-            echo "::warning::No claude auth (CLAUDE_CODE_OAUTH_TOKEN / WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64) visible to deploy; leaving any existing droplet claude auth untouched."
+            echo "::warning::No claude auth (CLAUDE_CODE_OAUTH_TOKEN / TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64) visible to deploy; leaving any existing droplet claude auth untouched."
           fi
           # PR-128 — sync the Phase 2 effector capability map. Same
-          # install-workflow-env.sh helper, same atomic write
+          # install-tinyassets-env.sh helper, same atomic write
           # contract. The map MUST decode to a JSON object keyed by
           # "<owner>/<repo>" -> "<token>"; the effector
-          # (workflow.effectors.github_pr) validates the shape and
+          # (tinyassets.effectors.github_pr) validates the shape and
           # logs loudly on malformed JSON. When the secret is unset,
           # the effector returns missing_capability dry-run evidence
           # — emit a deploy-time warning so the operator notices
           # before chatbots start filing for real-write attempts.
           if [ "${HAS_GITHUB_PR_CAPABILITY}" = "true" ]; then
-            echo "Deploy-visible WORKFLOW_GITHUB_PR_CAPABILITIES found; syncing GitHub PR capability map."
-            printf '%s' "${WORKFLOW_GITHUB_PR_CAPABILITIES}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            echo "Deploy-visible TINYASSETS_GITHUB_PR_CAPABILITIES found; syncing GitHub PR capability map."
+            printf '%s' "${TINYASSETS_GITHUB_PR_CAPABILITIES}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-workflow-env.sh set WORKFLOW_GITHUB_PR_CAPABILITIES"
+                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES"
           else
             # Round-2 fix (Codex round-1 finding on PR #980): the
             # documented contract is "absence -> dry-run". Round-1
             # logged a warning but left any prior
-            # WORKFLOW_GITHUB_PR_CAPABILITIES value in
-            # /etc/workflow/env, which meant deleting the GH Actions
+            # TINYASSETS_GITHUB_PR_CAPABILITIES value in
+            # /etc/tinyassets/env, which meant deleting the GH Actions
             # secret to revoke had no effect — the next deploy
             # restarted the daemon with the OLD capability still
             # active. Fix: when the secret is absent, explicitly
             # delete the key from the droplet env so the effector
             # observes "missing capability" on its next read. The
-            # install-workflow-env.sh helper's `delete` subcommand is
+            # install-tinyassets-env.sh helper's `delete` subcommand is
             # a no-op when the key is already absent (assert_readable
             # still passes), so re-running this on a clean droplet
             # is safe.
-            echo "::warning::WORKFLOW_GITHUB_PR_CAPABILITIES is not visible to deploy; removing any prior capability from /etc/workflow/env so effects emission stays dry-run with error_kind=missing_capability."
+            echo "::warning::TINYASSETS_GITHUB_PR_CAPABILITIES is not visible to deploy; removing any prior capability from /etc/tinyassets/env so effects emission stays dry-run with error_kind=missing_capability."
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES"
+                "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
           fi
           {
             echo "## Deploy subscription auth"
             echo ""
-            echo "- WORKFLOW_CODEX_AUTH_JSON_B64 visible to deploy: \`${HAS_CODEX_AUTH_BUNDLE}\`"
+            echo "- TINYASSETS_CODEX_AUTH_JSON_B64 visible to deploy: \`${HAS_CODEX_AUTH_BUNDLE}\`"
             echo "- API-key providers forced off when the Codex subscription bundle is synced."
-            echo "- WORKFLOW_GITHUB_PR_CAPABILITIES visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
+            echo "- TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
           # Pull + restart via the systemd unit (which runs docker
           # compose down + up with the new env).
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart workflow-daemon"
+              "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart tinyassets-daemon"
 
       # Independent of the helper's in-call readability assert: re-verify
       # after the systemd restart has settled. Steady-state canary that
       # catches any out-of-band perm drift between the env install and
       # the post-restart compose steady state (e.g. manual SSH edit
       # racing the deploy step — RC-2 in the env mode-flip audit).
-      - name: Assert /etc/workflow/env readable by daemon user
+      - name: Assert /etc/tinyassets/env readable by daemon user
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo -u workflow test -r /etc/workflow/env' || {
-            echo "::error::ENV-UNREADABLE — /etc/workflow/env not readable by user 'workflow' after restart. cloudflared will silently fail to start."
+              'sudo -u tinyassets test -r /etc/tinyassets/env' || {
+            echo "::error::ENV-UNREADABLE — /etc/tinyassets/env not readable by user 'tinyassets' after restart. cloudflared will silently fail to start."
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                'sudo ls -l /etc/workflow/env' || true
+                'sudo ls -l /etc/tinyassets/env' || true
             exit 1
           }
 
@@ -600,7 +600,7 @@ jobs:
 
       - name: Verify cloud worker is running
         run: |
-          worker_containers="workflow-worker workflow-worker-codex-2 workflow-worker-claude-1 workflow-worker-claude-2"
+          worker_containers="tinyassets-worker tinyassets-worker-codex-2 tinyassets-worker-claude-1 tinyassets-worker-claude-2"
           for container in ${worker_containers}; do
             running=""
             for i in $(seq 1 30); do
@@ -617,13 +617,13 @@ jobs:
               echo "::error::${container} is not running after deploy; node execution fleet is not 24/7."
               ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                   "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                  "sudo docker compose -f /opt/workflow/compose.yml ps; sudo docker logs --tail 120 ${container} 2>&1 || true"
+                  "sudo docker compose -f /opt/tinyassets/compose.yml ps; sudo docker logs --tail 120 ${container} 2>&1 || true"
               exit 1
             fi
             if ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo docker exec ${container} env | grep -q '^WORKFLOW_UNIVERSE='"; then
-              echo "::error::${container} inherited WORKFLOW_UNIVERSE from /etc/workflow/env. That stdio-only override can bind a worker to a different universe than the public MCP default."
+                "sudo docker exec ${container} env | grep -q '^TINYASSETS_UNIVERSE='"; then
+              echo "::error::${container} inherited TINYASSETS_UNIVERSE from /etc/tinyassets/env. That stdio-only override can bind a worker to a different universe than the public MCP default."
               exit 1
             fi
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -632,12 +632,12 @@ jobs:
           done
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo docker exec -i workflow-worker python -' <<'PY'
+              'sudo docker exec -i tinyassets-worker python -' <<'PY'
           import os
           from pathlib import Path
-          from workflow.cloud_worker import _resolve_universe_path
+          from tinyassets.cloud_worker import _resolve_universe_path
 
-          root = Path(os.environ.get("WORKFLOW_DATA_DIR", "/data"))
+          root = Path(os.environ.get("TINYASSETS_DATA_DIR", "/data"))
           active_marker = root / ".active_universe"
           try:
               active = active_marker.read_text(encoding="utf-8").strip()
@@ -721,7 +721,7 @@ jobs:
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
           BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
           BUILD_RUN_URL: ${{ github.event.workflow_run.html_url }}
-          WORKFLOW_EVENT: ${{ github.event_name }}
+          TINYASSETS_EVENT: ${{ github.event_name }}
         run: |
           DEPLOY_RUN_ID="${GITHUB_RUN_ID}"
           DEPLOY_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -735,20 +735,20 @@ jobs:
               "sudo docker image inspect '${TARGET_IMAGE_REF}' --format '{{index .RepoDigests 0}}' 2>/dev/null || true")"
           config_hash="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo sha256sum /etc/workflow/env 2>/dev/null | awk '{print \$1}' || true")"
+              "sudo sha256sum /etc/tinyassets/env 2>/dev/null | awk '{print \$1}' || true")"
           if [ -n "${config_hash}" ]; then
             config_hash="sha256:${config_hash}"
           fi
           release_state_host_dir="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker volume inspect workflow-data --format '{{ .Mountpoint }}' 2>/dev/null" || true)"
+              "sudo docker volume inspect tinyassets-data --format '{{ .Mountpoint }}' 2>/dev/null" || true)"
           if [ -z "${release_state_host_dir}" ]; then
-            echo "::error::Could not resolve workflow-data Docker volume mountpoint"
+            echo "::error::Could not resolve tinyassets-data Docker volume mountpoint"
             exit 1
           fi
 
           export image_digest config_hash BUILD_RUN_URL DEPLOY_RUN_ID DEPLOY_RUN_URL
-          python - <<'PY' > /tmp/workflow-release-state.json
+          python - <<'PY' > /tmp/tinyassets-release-state.json
           import json
           import os
           from datetime import UTC, datetime
@@ -763,26 +763,26 @@ jobs:
               "deploy_run_id": os.environ["DEPLOY_RUN_ID"],
               "deploy_run_url": os.environ["DEPLOY_RUN_URL"],
               "config_hash": os.environ.get("config_hash", ""),
-              "config_version": "workflow-env-v1",
+              "config_version": "tinyassets-env-v1",
               "schema_migration_rev": "not_applicable",
               "canary_bundle_status": "passed",
               "deployed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
               "rollback_target": os.environ["PREV_IMAGE"],
               "actor": os.environ["GITHUB_ACTOR"],
               "repository": os.environ["GITHUB_REPOSITORY"],
-              "workflow_event": os.environ["WORKFLOW_EVENT"],
+              "workflow_event": os.environ["TINYASSETS_EVENT"],
           }
           print(json.dumps(receipt, sort_keys=True, indent=2))
           PY
 
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              /tmp/workflow-release-state.json \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/workflow-release-state.json"
+              /tmp/tinyassets-release-state.json \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-release-state.json"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "set -e; \
-               sudo install -d -m 0755 -o workflow -g workflow '${release_state_host_dir}'; \
-               sudo install -m 0644 -o workflow -g workflow /tmp/workflow-release-state.json '${release_state_host_dir}/release-state.json'"
+               sudo install -d -m 0755 -o tinyassets -g tinyassets '${release_state_host_dir}'; \
+               sudo install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-release-state.json '${release_state_host_dir}/release-state.json'"
           {
             echo "### Release-state receipt"
             echo ""
@@ -800,19 +800,19 @@ jobs:
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
         run: |
           echo "::warning::Rolling back to ${PREV_IMAGE}"
-          # Restore previous tag via the atomic helper (same root:workflow
+          # Restore previous tag via the atomic helper (same root:tinyassets
           # 640 invariant as the deploy step). The helper is already in
-          # /tmp/install-workflow-env.sh from the deploy step's scp; if
+          # /tmp/install-tinyassets-env.sh from the deploy step's scp; if
           # the deploy step failed before scp, push it again here.
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/install-workflow-env.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-workflow-env.sh"
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' '${PREV_IMAGE}' | sudo bash /tmp/install-workflow-env.sh set WORKFLOW_IMAGE"
+              "printf '%s' '${PREV_IMAGE}' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; sudo docker pull '${PREV_IMAGE}' || true; sudo systemctl restart workflow-daemon"
+              "set -e; sudo docker pull '${PREV_IMAGE}' || true; sudo systemctl restart tinyassets-daemon"
           # Confirm rollback restored green.
           sleep 30
           python scripts/mcp_public_canary.py --url "${CANARY_URL}" --verbose
@@ -853,7 +853,7 @@ jobs:
               title: `Deploy failed — ${process.env.NEW_TAG} @ ${new Date().toISOString()}`,
               labels: [label],
               body: [
-                `Auto-opened by the deploy-prod workflow.`,
+                `Auto-opened by the deploy-prod tinyassets.`,
                 ``,
                 `- Attempted: \`${process.env.NEW_TAG}\``,
                 `- Rolled back to: \`${process.env.PREV_IMAGE}\``,

@@ -1,12 +1,12 @@
 """PR-127 — `_maybe_enqueue_investigation` canonical cutover.
 
 Tests the round-1-cheat-loop → leaderboard-canonical swap in
-``workflow.bug_investigation._maybe_enqueue_investigation``:
+``tinyassets.bug_investigation._maybe_enqueue_investigation``:
 
   * No env vars set -> no enqueue (legacy behavior preserved).
-  * Only ``WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID`` set ->
+  * Only ``TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID`` set ->
     cheat-loop fallback fires; existing dispatcher path used.
-  * ``WORKFLOW_BUG_INVESTIGATION_GOAL_ID`` set + Goal has a canonical
+  * ``TINYASSETS_BUG_INVESTIGATION_GOAL_ID`` set + Goal has a canonical
     -> canonical's branch_def_id used; env fallback NOT consulted.
   * GOAL_ID set + Goal has NO canonical + BRANCH_DEF_ID set ->
     fallback to env.
@@ -75,20 +75,20 @@ def _mock_selector_passthrough(monkeypatch):
             ],
         }
     monkeypatch.setattr(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         _passthrough,
     )
 
 
 @pytest.fixture
 def base_path(tmp_path: Path, monkeypatch) -> Path:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("WORKFLOW_BUG_INVESTIGATION_GOAL_ID", raising=False)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
     monkeypatch.delenv(
-        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", raising=False,
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", raising=False,
     )
-    from workflow.daemon_server import initialize_author_server
-    from workflow.runs import initialize_runs_db
+    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.runs import initialize_runs_db
     initialize_author_server(tmp_path)
     initialize_runs_db(tmp_path)
     return tmp_path
@@ -106,8 +106,8 @@ def _seed_goal_with_canonical(
 
     Returns (branch_def_id, branch_version_id).
     """
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import (
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
         save_branch_definition,
         save_goal,
         set_canonical_branch,
@@ -187,9 +187,9 @@ def _frontmatter(bug_id: str = "BUG-099") -> dict:
 
 
 def test_no_env_no_enqueue(base_path):
-    from workflow.bug_investigation import _maybe_enqueue_investigation
+    from tinyassets.bug_investigation import _maybe_enqueue_investigation
     with patch(
-        "workflow.bug_investigation.enqueue_investigation_request"
+        "tinyassets.bug_investigation.enqueue_investigation_request"
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
             bug_id="BUG-001",
@@ -203,11 +203,11 @@ def test_no_env_no_enqueue(base_path):
 
 def test_empty_bug_id_skipped_even_with_env(base_path, monkeypatch):
     monkeypatch.setenv(
-        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
     )
-    from workflow.bug_investigation import _maybe_enqueue_investigation
+    from tinyassets.bug_investigation import _maybe_enqueue_investigation
     with patch(
-        "workflow.bug_investigation.enqueue_investigation_request"
+        "tinyassets.bug_investigation.enqueue_investigation_request"
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
             bug_id="",
@@ -226,11 +226,11 @@ def test_empty_bug_id_skipped_even_with_env(base_path, monkeypatch):
 
 def test_env_fallback_preserved_when_no_goal_id(base_path, monkeypatch):
     monkeypatch.setenv(
-        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
     )
-    from workflow.bug_investigation import _maybe_enqueue_investigation
+    from tinyassets.bug_investigation import _maybe_enqueue_investigation
     with patch(
-        "workflow.bug_investigation.enqueue_investigation_request",
+        "tinyassets.bug_investigation.enqueue_investigation_request",
         return_value="req-1",
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
@@ -248,9 +248,9 @@ def test_env_fallback_preserved_when_no_goal_id(base_path, monkeypatch):
 def test_env_fallback_used_when_goal_id_has_no_canonical(
     base_path, monkeypatch,
 ):
-    """``WORKFLOW_BUG_INVESTIGATION_GOAL_ID`` is set but the Goal has
+    """``TINYASSETS_BUG_INVESTIGATION_GOAL_ID`` is set but the Goal has
     no canonical AND auto=False -> graceful fall to env path."""
-    from workflow.daemon_server import save_goal
+    from tinyassets.daemon_server import save_goal
     save_goal(
         base_path,
         goal=dict(
@@ -258,13 +258,13 @@ def test_env_fallback_used_when_goal_id_has_no_canonical(
             author="host", tags=[], visibility="public",
         ),
     )
-    monkeypatch.setenv("WORKFLOW_BUG_INVESTIGATION_GOAL_ID", "g1")
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g1")
     monkeypatch.setenv(
-        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
     )
-    from workflow.bug_investigation import _maybe_enqueue_investigation
+    from tinyassets.bug_investigation import _maybe_enqueue_investigation
     with patch(
-        "workflow.bug_investigation.enqueue_investigation_request",
+        "tinyassets.bug_investigation.enqueue_investigation_request",
         return_value="req-2",
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
@@ -289,14 +289,14 @@ def test_goal_canonical_used_when_set(base_path, monkeypatch):
     bdid, _ = _seed_goal_with_canonical(
         base_path, goal_id="g1", branch_def_id="bug-handler",
     )
-    monkeypatch.setenv("WORKFLOW_BUG_INVESTIGATION_GOAL_ID", "g1")
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g1")
     # Cheat env ALSO set — canonical should win.
     monkeypatch.setenv(
-        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "should-not-be-used",
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "should-not-be-used",
     )
-    from workflow.bug_investigation import _maybe_enqueue_investigation
+    from tinyassets.bug_investigation import _maybe_enqueue_investigation
     with patch(
-        "workflow.bug_investigation.enqueue_investigation_request",
+        "tinyassets.bug_investigation.enqueue_investigation_request",
         return_value="req-3",
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
@@ -317,14 +317,14 @@ def test_goal_canonical_with_auto_refresh(base_path, monkeypatch):
     """auto_canonical_via_leaderboard=True + a higher-ranked candidate
     => the file_bug hook auto-refreshes BEFORE dispatching, and the
     new canonical's branch_def_id is what enqueue receives."""
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import (
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
         save_branch_definition,
         save_goal,
         set_canonical_branch,
         update_goal,
     )
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         add_judgment,
         create_run,
@@ -409,10 +409,10 @@ def test_goal_canonical_with_auto_refresh(base_path, monkeypatch):
         tags=["quality:10"], author="judge",
     )
 
-    monkeypatch.setenv("WORKFLOW_BUG_INVESTIGATION_GOAL_ID", "g1")
-    from workflow.bug_investigation import _maybe_enqueue_investigation
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g1")
+    from tinyassets.bug_investigation import _maybe_enqueue_investigation
     with patch(
-        "workflow.bug_investigation.enqueue_investigation_request",
+        "tinyassets.bug_investigation.enqueue_investigation_request",
         return_value="req-auto",
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
@@ -426,7 +426,7 @@ def test_goal_canonical_with_auto_refresh(base_path, monkeypatch):
     # The auto-refresh swapped canonical to 'new' BEFORE dispatch.
     assert mock_enq.call_args.kwargs["canonical_branch_def_id"] == "new"
     # Storage was actually updated.
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     refreshed_goal = get_goal(base_path, goal_id="g1")
     assert refreshed_goal["canonical_branch_version_id"] == (
         new_v.branch_version_id
@@ -440,13 +440,13 @@ def test_goal_canonical_with_auto_refresh(base_path, monkeypatch):
 
 
 def test_resolve_handler_returns_empty_when_no_goal_and_no_env(base_path):
-    from workflow.bug_investigation import _resolve_investigation_handler
+    from tinyassets.bug_investigation import _resolve_investigation_handler
     assert _resolve_investigation_handler(base_path) == ""
 
 
 def test_resolve_handler_strips_whitespace_in_env(base_path, monkeypatch):
     monkeypatch.setenv(
-        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", "  legit-branch  ",
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "  legit-branch  ",
     )
-    from workflow.bug_investigation import _resolve_investigation_handler
+    from tinyassets.bug_investigation import _resolve_investigation_handler
     assert _resolve_investigation_handler(base_path) == "legit-branch"

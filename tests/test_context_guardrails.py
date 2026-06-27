@@ -1,7 +1,7 @@
-"""Tests for workflow.context.guardrails module."""
+"""Tests for tinyassets.context.guardrails module."""
 
 
-from workflow.context.guardrails import (
+from tinyassets.context.guardrails import (
     FilterGuardrail,
     GuardrailPipeline,
     PaginationGuardrail,

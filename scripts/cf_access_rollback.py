@@ -39,7 +39,7 @@ from emergency_dns_flip import (  # noqa: E402
     make_cloudflare_client,
 )
 
-SERVICE_TOKEN_NAME = "workflow-mcp-worker"
+SERVICE_TOKEN_NAME = "tinyassets-mcp-worker"
 APP_DOMAIN = "mcp.tinyassets.io"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 

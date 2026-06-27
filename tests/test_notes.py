@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from workflow.notes import (
+from tinyassets.notes import (
     Note,
     add_note,
     bulk_update_status,

@@ -4,8 +4,8 @@ This is a default-branch, stdlib-only checker. It intentionally covers the
 mechanical commitments that can be inspected without understanding product
 semantics:
 
-- canonical subpackages named in PLAN.md exist under ``workflow/``;
-- concrete ``workflow/...`` Python files mentioned in PLAN.md exist;
+- canonical subpackages named in PLAN.md exist under ``tinyassets/``;
+- concrete ``tinyassets/...`` Python files mentioned in PLAN.md exist;
 - large root-level modules are called out when they are not in PLAN.md's
   correctly-flat allowlist.
 
@@ -55,7 +55,7 @@ def find_repo_root(start: Path) -> Path:
     if current.is_file():
         current = current.parent
     for candidate in (current, *current.parents):
-        if (candidate / "PLAN.md").is_file() and (candidate / "workflow").is_dir():
+        if (candidate / "PLAN.md").is_file() and (candidate / "tinyassets").is_dir():
             return candidate
     return Path.cwd().resolve()
 
@@ -68,7 +68,7 @@ def parse_plan_commitments(plan_text: str) -> PlanCommitments:
     subpackages = sorted(
         {
             match.group(1).rstrip("/")
-            for match in re.finditer(r"`workflow/([A-Za-z0-9_]+/)`", plan_text)
+            for match in re.finditer(r"`tinyassets/([A-Za-z0-9_]+/)`", plan_text)
         }
     )
 
@@ -87,7 +87,7 @@ def parse_plan_commitments(plan_text: str) -> PlanCommitments:
     mentioned_files: set[str] = {
         match.group(1)
         for match in re.finditer(
-            r"`(workflow/[A-Za-z0-9_./-]+\.py)`",
+            r"`(tinyassets/[A-Za-z0-9_./-]+\.py)`",
             plan_text,
         )
     }
@@ -95,7 +95,7 @@ def parse_plan_commitments(plan_text: str) -> PlanCommitments:
         r"`((?:api|storage|runtime|bid|servers)/[A-Za-z0-9_./-]+\.py)`",
         plan_text,
     ):
-        mentioned_files.add(f"workflow/{match.group(1)}")
+        mentioned_files.add(f"tinyassets/{match.group(1)}")
 
     return PlanCommitments(
         canonical_subpackages=tuple(subpackages),
@@ -118,7 +118,7 @@ def detect_plan_drift(
     root_module_loc_threshold: int = DEFAULT_ROOT_MODULE_LOC_THRESHOLD,
 ) -> list[DriftIssue]:
     plan_path = root / "PLAN.md"
-    workflow_dir = root / "workflow"
+    workflow_dir = root / "tinyassets"
     issues: list[DriftIssue] = []
 
     if not plan_path.is_file():
@@ -134,8 +134,8 @@ def detect_plan_drift(
         return [
             DriftIssue(
                 code="missing-workflow-package",
-                path="workflow/",
-                message="workflow/ package is missing; implementation state cannot be checked.",
+                path="tinyassets/",
+                message="tinyassets/ package is missing; implementation state cannot be checked.",
                 plan_reference="PLAN.md Module Layout (target shape)",
             )
         ]
@@ -143,7 +143,7 @@ def detect_plan_drift(
     commitments = parse_plan_commitments(read_text(plan_path))
 
     for subpackage in commitments.canonical_subpackages:
-        rel = f"workflow/{subpackage}/"
+        rel = f"tinyassets/{subpackage}/"
         if not (root / rel).is_dir():
             issues.append(
                 DriftIssue(
@@ -179,7 +179,7 @@ def detect_plan_drift(
             issues.append(
                 DriftIssue(
                     code="oversized-correctly-flat-module",
-                    path=f"workflow/{path.name}",
+                    path=f"tinyassets/{path.name}",
                     message=(
                         f"{path.name} is in PLAN.md's correctly-flat allowlist "
                         f"but is {line_count} LOC, above the "
@@ -192,9 +192,9 @@ def detect_plan_drift(
         issues.append(
             DriftIssue(
                 code="oversized-root-module",
-                path=f"workflow/{path.name}",
+                path=f"tinyassets/{path.name}",
                 message=(
-                    f"{path.name} is {line_count} LOC at workflow/ root and is "
+                    f"{path.name} is {line_count} LOC at tinyassets/ root and is "
                     "not listed as correctly-flat in PLAN.md."
                 ),
                 plan_reference="PLAN.md Module Layout migration policy",
@@ -224,7 +224,7 @@ def format_text_report(root: Path, issues: list[DriftIssue]) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Check PLAN.md mechanical module-layout commitments against workflow/.",
+        description="Check PLAN.md mechanical module-layout commitments against tinyassets/.",
     )
     parser.add_argument(
         "--root",
@@ -236,7 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--root-module-loc-threshold",
         type=int,
         default=DEFAULT_ROOT_MODULE_LOC_THRESHOLD,
-        help="LOC threshold for root workflow/*.py migration-policy drift.",
+        help="LOC threshold for root tinyassets/*.py migration-policy drift.",
     )
     parser.add_argument(
         "--json",

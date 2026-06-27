@@ -4,7 +4,7 @@
 const TRANSCRIPT = [
   { role: "user", text: "hey, I want to use workflow — trying to design a pipeline for writing a research paper on deep-space population. can you help me build it?" },
   { role: "thought", text: "Mapping jonnyton's existing pipeline architectures and configurations" },
-  { role: "tool", text: "workflow.list_branches(goal=\"research-paper\")" },
+  { role: "tool", text: "tinyassets.list_branches(goal=\"research-paper\")" },
   { role: "assistant", text: "Happy to help. You've got three branches in play on research-paper already: claim-first-iterative (7 nodes), replication-focused (9 nodes), and adversarial-peer (5 nodes). A 6-node remix feels right — I'll fold novelty-assessment into scope_framer and drop the standalone insight_tracker." },
   { role: "thought", text: "Reconciled timeline context and prepared to load workflow tools" },
   { role: "assistant", text: "Here's the paste-ready spec. Six nodes, split 3-and-3 between upstream planning (orient/plan) and downstream writing (draft/commit/reflect). Rigor checker is the node that earns the remix — it audits the six population-specific failure modes deep-space papers stumble on: Drake hand-waving, delta-v math, closed-biosphere budgets, cosmological consistency, OoM slips, Fermi robustness.", spec: true },

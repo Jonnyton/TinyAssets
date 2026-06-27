@@ -32,7 +32,7 @@ from domains.fantasy_daemon.phases.drift_cleanup import (
     cleanup_drift_kg,
     is_drift_seeded_scene,
 )
-from workflow.ingestion.extractors import (
+from tinyassets.ingestion.extractors import (
     _LAST_BITE_OUTCOMES,
     _synthesize_bite_by_bite,
     get_last_bite_outcomes,

@@ -114,7 +114,7 @@ code-review-and-quality`.
 | Build | frontend-ui-engineering | Build production-quality UIs |
 | Build | game-prototyping | Build playable game-like prototypes |
 | Build | classic-game-design-test | Restore/emulate/port/prove playability of old games |
-| Build | website-editing | Workflow site preview / capture / ship conventions |
+| Build | website-editing | TinyAssets site preview / capture / ship conventions |
 | Build | api-and-interface-design | Design stable interfaces and contracts |
 | Build | code-simplification | Write the least code that works; simplify existing code |
 | Verify | test-driven-development | Write failing tests first, then make them pass |

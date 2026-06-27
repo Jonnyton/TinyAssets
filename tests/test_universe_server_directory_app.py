@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from workflow.connector_catalog import DIRECTORY_MCP_PATH, VERSIONED_DIRECTORY_MCP_PATH
-from workflow.universe_server import create_streamable_http_app
+from tinyassets.connector_catalog import DIRECTORY_MCP_PATH, VERSIONED_DIRECTORY_MCP_PATH
+from tinyassets.universe_server import create_streamable_http_app
 
 
 def test_streamable_http_app_mounts_legacy_and_directory_surfaces() -> None:

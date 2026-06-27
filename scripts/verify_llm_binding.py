@@ -158,9 +158,9 @@ def check_llm_binding(
             3,
             f"llm_endpoint_bound is {llm_bound!r} — daemon has no LLM bound. "
             "For default daemons, provide subscription-backed Claude/Codex CLI "
-            "auth (for example WORKFLOW_CODEX_AUTH_JSON_B64 for Codex) and "
+            "auth (for example TINYASSETS_CODEX_AUTH_JSON_B64 for Codex) and "
             "restart the container. API-key billing lanes are ignored when "
-            "WORKFLOW_ALLOW_API_KEY_PROVIDERS is not explicitly truthy.",
+            "TINYASSETS_ALLOW_API_KEY_PROVIDERS is not explicitly truthy.",
         )
 
     if require_sandbox:

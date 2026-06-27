@@ -1,2 +1,2 @@
-"""Shim: use workflow.constraints instead."""
-from workflow.constraints import *  # noqa: F401,F403
+"""Shim: use tinyassets.constraints instead."""
+from tinyassets.constraints import *  # noqa: F401,F403

@@ -4,12 +4,12 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.api.runs import (
+from tinyassets.api.runs import (
     _classify_run_error,
     _classify_run_outcome_error,
 )
-from workflow.graph_compiler import EmptyResponseError
-from workflow.runs import RunOutcome
+from tinyassets.graph_compiler import EmptyResponseError
+from tinyassets.runs import RunOutcome
 
 
 class TestClassifyRunError:
@@ -105,7 +105,7 @@ class TestRunBranchTaxonomyIntegration:
     """Integration tests: mock execute_branch_async to raise, verify MCP response shape."""
 
     def _call_run_branch(self, exc_to_raise):
-        from workflow.api.runs import _action_run_branch
+        from tinyassets.api.runs import _action_run_branch
 
         branch_dict = {
             "branch_def_id": "b1", "name": "Test", "description": "",
@@ -122,13 +122,13 @@ class TestRunBranchTaxonomyIntegration:
             raise exc_to_raise
 
         with (
-            patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
-            patch("workflow.api.helpers._base_path", return_value="/fake"),
-            patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-            patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-            patch("workflow.api.runs._ensure_runs_recovery"),
-            patch("workflow.branches.BranchDefinition.validate", return_value=[]),
-            patch("workflow.runs.execute_branch_async", side_effect=raise_exc),
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+            patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+            patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+            patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+            patch("tinyassets.api.runs._ensure_runs_recovery"),
+            patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
+            patch("tinyassets.runs.execute_branch_async", side_effect=raise_exc),
         ):
             return json.loads(_action_run_branch({"branch_def_id": "b1"}))
 
@@ -280,16 +280,16 @@ class TestAsyncRunOutcomeEnrichment:
     }
 
     def _call_run_branch_with_outcome(self, outcome: RunOutcome) -> dict:
-        from workflow.api.runs import _action_run_branch
+        from tinyassets.api.runs import _action_run_branch
 
         with (
-            patch("workflow.daemon_server.get_branch_definition", return_value=self._BRANCH_DICT),
-            patch("workflow.api.helpers._base_path", return_value="/fake"),
-            patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-            patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-            patch("workflow.api.runs._ensure_runs_recovery"),
-            patch("workflow.branches.BranchDefinition.validate", return_value=[]),
-            patch("workflow.runs.execute_branch_async", return_value=outcome),
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=self._BRANCH_DICT),
+            patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+            patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+            patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+            patch("tinyassets.api.runs._ensure_runs_recovery"),
+            patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
+            patch("tinyassets.runs.execute_branch_async", return_value=outcome),
         ):
             return json.loads(_action_run_branch({"branch_def_id": "b1"}))
 
@@ -335,7 +335,7 @@ class TestComposeRunSnapshotEnrichment:
     """Test that _compose_run_snapshot enriches failed runs with failure_class/suggested_action."""
 
     def _make_snapshot(self, status: str, error: str) -> dict:
-        from workflow.api.runs import _compose_run_snapshot
+        from tinyassets.api.runs import _compose_run_snapshot
 
         run_record = {
             "run_id": "r1",
@@ -347,9 +347,9 @@ class TestComposeRunSnapshotEnrichment:
             "finished_at": None,
         }
         with (
-            patch("workflow.daemon_server.get_branch_definition", side_effect=KeyError("b1")),
-            patch("workflow.runs.build_node_status_map", return_value=[]),
-            patch("workflow.api.runs._run_mermaid_from_events", return_value=""),
+            patch("tinyassets.daemon_server.get_branch_definition", side_effect=KeyError("b1")),
+            patch("tinyassets.runs.build_node_status_map", return_value=[]),
+            patch("tinyassets.api.runs._run_mermaid_from_events", return_value=""),
         ):
             return _compose_run_snapshot(run_record, [])
 
@@ -389,12 +389,12 @@ class TestActionableByCanonicalTable:
     """
 
     def test_table_imports(self):
-        from workflow.runs import ACTIONABLE_BY
+        from tinyassets.runs import ACTIONABLE_BY
         assert isinstance(ACTIONABLE_BY, dict)
         assert ACTIONABLE_BY  # non-empty
 
     def test_values_only_in_allowed_set(self):
-        from workflow.runs import ACTIONABLE_BY
+        from tinyassets.runs import ACTIONABLE_BY
         allowed = {"chatbot", "host", "user", "none"}
         for failure_class, actor in ACTIONABLE_BY.items():
             assert actor in allowed, (
@@ -429,13 +429,13 @@ class TestActionableByCanonicalTable:
         ("cancelled", "none"),
     ])
     def test_canonical_mapping(self, failure_class, expected_actor):
-        from workflow.runs import ACTIONABLE_BY
+        from tinyassets.runs import ACTIONABLE_BY
         assert ACTIONABLE_BY[failure_class] == expected_actor
 
     def test_none_value_present(self):
         """Sanity: at least one terminal class maps to "none" — proves
         the value is in active use, not an aspirational fourth bucket."""
-        from workflow.runs import ACTIONABLE_BY
+        from tinyassets.runs import ACTIONABLE_BY
         terminal = [k for k, v in ACTIONABLE_BY.items() if v == "none"]
         assert terminal, (
             "ACTIONABLE_BY must use 'none' for at least one terminal "
@@ -511,16 +511,16 @@ class TestActionableByOnAsyncOutcomePath:
     }
 
     def _call(self, outcome):
-        from workflow.api.runs import _action_run_branch
+        from tinyassets.api.runs import _action_run_branch
 
         with (
-            patch("workflow.daemon_server.get_branch_definition", return_value=self._BRANCH_DICT),
-            patch("workflow.api.helpers._base_path", return_value="/fake"),
-            patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-            patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-            patch("workflow.api.runs._ensure_runs_recovery"),
-            patch("workflow.branches.BranchDefinition.validate", return_value=[]),
-            patch("workflow.runs.execute_branch_async", return_value=outcome),
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=self._BRANCH_DICT),
+            patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+            patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+            patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+            patch("tinyassets.api.runs._ensure_runs_recovery"),
+            patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
+            patch("tinyassets.runs.execute_branch_async", return_value=outcome),
         ):
             return json.loads(_action_run_branch({"branch_def_id": "b1"}))
 
@@ -573,7 +573,7 @@ class TestActionableByOnGetRunSnapshot:
     """`_compose_run_snapshot` includes actionable_by — what `get_run` actually returns."""
 
     def _make_snapshot(self, status, error):
-        from workflow.api.runs import _compose_run_snapshot
+        from tinyassets.api.runs import _compose_run_snapshot
 
         run_record = {
             "run_id": "r1", "branch_def_id": "b1", "status": status,
@@ -581,9 +581,9 @@ class TestActionableByOnGetRunSnapshot:
             "started_at": None, "finished_at": None,
         }
         with (
-            patch("workflow.daemon_server.get_branch_definition", side_effect=KeyError("b1")),
-            patch("workflow.runs.build_node_status_map", return_value=[]),
-            patch("workflow.api.runs._run_mermaid_from_events", return_value=""),
+            patch("tinyassets.daemon_server.get_branch_definition", side_effect=KeyError("b1")),
+            patch("tinyassets.runs.build_node_status_map", return_value=[]),
+            patch("tinyassets.api.runs._run_mermaid_from_events", return_value=""),
         ):
             return _compose_run_snapshot(run_record, [])
 
@@ -617,7 +617,7 @@ class TestActionableByOnListRecentRuns:
 
     def test_failed_run_includes_actionable_by(self, tmp_path):
         # Drive list_recent_runs end-to-end via the real DB layer.
-        from workflow.runs import (
+        from tinyassets.runs import (
             create_run,
             initialize_runs_db,
             list_recent_runs,
@@ -639,7 +639,7 @@ class TestActionableByOnListRecentRuns:
         assert row["actionable_by"] == "host"
 
     def test_empty_llm_response_includes_host_next_action(self, tmp_path):
-        from workflow.runs import (
+        from tinyassets.runs import (
             create_run,
             initialize_runs_db,
             list_recent_runs,
@@ -664,7 +664,7 @@ class TestActionableByOnListRecentRuns:
         assert "get_status" in row["suggested_action"]
 
     def test_completed_run_actionable_by_empty(self, tmp_path):
-        from workflow.runs import (
+        from tinyassets.runs import (
             create_run,
             initialize_runs_db,
             list_recent_runs,

@@ -77,7 +77,7 @@ WebSite/
 
 ## Build + deploy commands (host runs these locally for now)
 ```powershell
-cd C:\Users\Jonathan\Projects\Workflow\WebSite\site
+cd C:\Users\Jonathan\Projects\TinyAssets\WebSite\site
 npm install
 npm run dev          # local dev server on http://localhost:5173
 npm run build        # static output in build/

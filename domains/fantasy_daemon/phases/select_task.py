@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from workflow.enrichment_signals import load_enrichment_signals, state_enrichment_signals
+from tinyassets.enrichment_signals import load_enrichment_signals, state_enrichment_signals
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +245,7 @@ def _is_world_state_stale(state: dict[str, Any]) -> bool:
 
 def _count_canon_files(state: dict[str, Any]) -> int:
     """Count .md files in the universe's canon directory."""
-    from workflow.ingestion.canon_io import iter_canon_files
+    from tinyassets.ingestion.canon_io import iter_canon_files
 
     universe_path = state.get(
         "_universe_path", state.get("universe_path", "")

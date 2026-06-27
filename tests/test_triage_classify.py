@@ -24,10 +24,10 @@ import triage_classify as tc  # noqa: E402
 
 def test_classify_env_unreadable_marker():
     diag = (
-        "Apr 22 03:00:01 droplet systemd[1]: workflow-daemon.service: "
+        "Apr 22 03:00:01 droplet systemd[1]: tinyassets-daemon.service: "
         "Failed to execute ExecStartPre\n"
         "Apr 22 03:00:01 droplet sh[12345]: ENV-UNREADABLE: "
-        "/etc/workflow/env not readable by user workflow (uid 1001)\n"
+        "/etc/tinyassets/env not readable by user tinyassets (uid 1001)\n"
     )
     result = tc.classify(diag)
     assert result["class"] == tc.TriageClass.ENV_UNREADABLE
@@ -41,7 +41,7 @@ def test_env_unreadable_wins_over_compose_cascade():
     a generic error, the classifier must still report env as root cause —
     repair order matters, fix the perms before the restart."""
     diag = (
-        "ENV-UNREADABLE: /etc/workflow/env not readable\n"
+        "ENV-UNREADABLE: /etc/tinyassets/env not readable\n"
         "docker compose up failed: exit code 1\n"
         "Error response from daemon: manifest for ghcr.io/... not found\n"
     )
@@ -54,9 +54,9 @@ def test_env_unreadable_wins_over_compose_cascade():
 
 def test_execstartpre_marker_text_does_not_mask_disk_full():
     diag = (
-        "Process: 760709 ExecStartPre=/bin/sh -c test -r /etc/workflow/env "
-        "|| { echo \"ENV-UNREADABLE: /etc/workflow/env not readable\" >&2; "
-        "ls -l /etc/workflow/env >&2 || true; exit 1; } "
+        "Process: 760709 ExecStartPre=/bin/sh -c test -r /etc/tinyassets/env "
+        "|| { echo \"ENV-UNREADABLE: /etc/tinyassets/env not readable\" >&2; "
+        "ls -l /etc/tinyassets/env >&2 || true; exit 1; } "
         "(code=exited, status=0/SUCCESS)\n"
         "--- df -h ---\n"
         "Filesystem      Size  Used Avail Use% Mounted on\n"
@@ -82,7 +82,7 @@ def test_classify_oom_kernel_killer():
 
 def test_classify_oom_container_oomkilled():
     diag = (
-        "workflow-daemon     Exited (137) 2 seconds ago\n"
+        "tinyassets-daemon     Exited (137) 2 seconds ago\n"
         '"State": {"OOMKilled": true, "Dead": false}\n'
     )
     result = tc.classify(diag)
@@ -153,7 +153,7 @@ def test_disk_not_full_wrong_mountpoint():
 def test_classify_image_pull_manifest_not_found():
     diag = (
         "Error response from daemon: manifest for "
-        "ghcr.io/jonnyton/workflow-daemon:abc123def456 not found\n"
+        "ghcr.io/jonnyton/tinyassets-daemon:abc123def456 not found\n"
         "docker compose up: exit code 1\n"
     )
     result = tc.classify(diag)
@@ -168,7 +168,7 @@ def test_classify_image_pull_manifest_unknown():
 
 
 def test_classify_image_pull_access_denied():
-    diag = "docker: pull access denied for ghcr.io/jonnyton/workflow-daemon\n"
+    diag = "docker: pull access denied for ghcr.io/jonnyton/tinyassets-daemon\n"
     result = tc.classify(diag)
     assert result["class"] == tc.TriageClass.IMAGE_PULL_FAILURE
 
@@ -226,10 +226,10 @@ def test_classify_tunnel_token_priority_beats_image_pull():
 
 def test_classify_watchdog_hotloop_start_limit_hit():
     diag = (
-        "● workflow-daemon.service - Workflow MCP daemon\n"
-        "   Loaded: loaded (/etc/systemd/system/workflow-daemon.service)\n"
+        "● tinyassets-daemon.service - TinyAssets MCP daemon\n"
+        "   Loaded: loaded (/etc/systemd/system/tinyassets-daemon.service)\n"
         "   Active: failed (Result: start-limit-hit) since Mon 2026-04-22\n"
-        "     Docs: https://github.com/Jonnyton/Workflow/...\n"
+        "     Docs: https://github.com/Jonnyton/TinyAssets/...\n"
         "  Process: 12345 ExecStart=/usr/bin/docker compose up (code=exited)\n"
     )
     result = tc.classify(diag)
@@ -239,7 +239,7 @@ def test_classify_watchdog_hotloop_start_limit_hit():
 
 def test_classify_watchdog_start_request_repeated():
     diag = (
-        "Apr 22 03:20:00 droplet systemd[1]: workflow-daemon.service: "
+        "Apr 22 03:20:00 droplet systemd[1]: tinyassets-daemon.service: "
         "Start request repeated too quickly.\n"
     )
     result = tc.classify(diag)
@@ -252,7 +252,7 @@ def test_classify_watchdog_start_request_repeated():
 def test_classify_unknown_falls_through():
     diag = (
         "docker ps: CONTAINER ID   IMAGE   STATUS\n"
-        "abc123          workflow-daemon    Up 2 hours\n"
+        "abc123          tinyassets-daemon    Up 2 hours\n"
         "--- compose ps --- (all healthy)\n"
     )
     result = tc.classify(diag)
@@ -277,7 +277,7 @@ def test_classify_whitespace_only_is_unknown():
 def test_evidence_truncates_past_200_chars():
     long_context = (
         "x" * 500
-        + "\nsh[123]: ENV-UNREADABLE: /etc/workflow/env\n"
+        + "\nsh[123]: ENV-UNREADABLE: /etc/tinyassets/env\n"
         + "y" * 500
     )
     result = tc.classify(long_context)
@@ -299,7 +299,7 @@ def test_evidence_strips_newlines_for_single_line_log():
 def test_main_reads_from_stdin_and_emits_json():
     proc = subprocess.run(
         [sys.executable, str(_SCRIPTS / "triage_classify.py")],
-        input="ENV-UNREADABLE: /etc/workflow/env",
+        input="ENV-UNREADABLE: /etc/tinyassets/env",
         capture_output=True,
         text=True,
         timeout=10,
@@ -353,7 +353,7 @@ def test_main_exit_2_when_input_file_missing(tmp_path):
 def test_priority_order_env_unreadable_beats_oom():
     """Both markers present; ENV-UNREADABLE wins because it's higher
     priority (root cause of cascading failures)."""
-    diag = "ENV-UNREADABLE: /etc/workflow/env\nOut of memory: killed process 1\n"
+    diag = "ENV-UNREADABLE: /etc/tinyassets/env\nOut of memory: killed process 1\n"
     result = tc.classify(diag)
     assert result["class"] == tc.TriageClass.ENV_UNREADABLE
 

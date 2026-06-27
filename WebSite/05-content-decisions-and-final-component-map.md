@@ -7,7 +7,7 @@ After reading the UI kit (TopNav, Connect, Host, Contribute, Catalog, ChatDemo, 
 | # | Decision | Source-confirmed answer |
 |---|---|---|
 | 1 | **Logo source** | `assets/logo-mark.svg` (sigil) + `assets/wordmark-horizontal.svg` (sigil + "Workflow" wordmark) — both already in `WebSite/design-source/assets/` |
-| 2 | **GitHub repo URL** | `https://github.com/Jonnyton/Workflow` — confirmed via Contribute.jsx + design README |
+| 2 | **GitHub repo URL** | `https://github.com/Jonnyton/TinyAssets` — confirmed via Contribute.jsx + design README |
 | 3 | **Contact email** | `security@tinyassets.io` (per CONTRIBUTING.md — routes to admin pool / maintainers; doubles as security inbox) |
 | 4 | **MCP target page** | Just the URL `https://tinyassets.io/mcp` — Connect page is intentionally radical-simplicity (paste URL, 2 steps, done) — NOT a docs page |
 | 5 | **Contract address home** | **Still unknown.** Host must provide the existing `ta` token contract address. Economy.jsx confirms the rebrand carries balances 1:1 from the original tinyassets contract, but the actual address isn't in the codebase. → **Ask host for the contract address (and chain — Ethereum mainnet?)** |

@@ -1,2 +1,2 @@
-"""Shim: use workflow.node_sandbox instead."""
-from workflow.node_sandbox import *  # noqa: F401,F403
+"""Shim: use tinyassets.node_sandbox instead."""
+from tinyassets.node_sandbox import *  # noqa: F401,F403

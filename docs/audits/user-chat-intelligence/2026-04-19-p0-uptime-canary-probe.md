@@ -4,7 +4,7 @@
 **Author:** user-sim
 **Lens:** *System → Chatbot → User.* Single-probe outage reproduction, pre-fix baseline for end-to-end P0 verification.
 
-**Trigger:** Host reported connector P0 at ~5:05 PM. Workflow MCP connector configured at `https://tinyassets.io/mcp` (apex URL, no subdomain) returned `Session terminated` across all surfaces. Lead dispatched user-sim to reproduce from a fresh chat as a bare-curious-user to confirm pre-fix baseline before the then-planned connector URL change.
+**Trigger:** Host reported connector P0 at ~5:05 PM. TinyAssets MCP connector configured at `https://tinyassets.io/mcp` (apex URL, no subdomain) returned `Session terminated` across all surfaces. Lead dispatched user-sim to reproduce from a fresh chat as a bare-curious-user to confirm pre-fix baseline before the then-planned connector URL change.
 
 **Superseding endpoint note (2026-04-20):** do not flip Claude.ai to `mcp.tinyassets.io/mcp`. The canonical user-facing connector URL is `https://tinyassets.io/mcp`; `mcp.tinyassets.io` is the Access-gated tunnel origin only.
 

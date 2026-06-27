@@ -24,8 +24,8 @@ Given PR #176 just landed (in-process trigger), in this order:
 **State of PR #176 verified via GitHub API:**
 
 PR #176 changed exactly 3 files:
-- `workflow/api/wiki.py` (+42 / -0)
-- `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/api/wiki.py` (+42 / -0)
+- `tinyassets/api/wiki.py` (+42 / -0)
+- `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/wiki.py` (+42 / -0)
 - `tests/test_bug_investigation_wiring.py` (+19 / -13)
 
 **No `run_id` token in the patch text.** The trigger fires but the spawned `run_id` is not returned to the caller or written to the bug page frontmatter. So Step 2 is genuinely needed.
@@ -40,7 +40,7 @@ Replaces the weaker idea of a single `last_trigger_attempted_at` field. Per-bug-
 
 ### Where it lives
 
-`_wiki_file_bug` in `workflow/api/wiki.py`. When the bug page is written, also create a trigger record (separate row in a new `bug_trigger_attempts` table or appended to existing run-events table — Codex picks the storage shape).
+`_wiki_file_bug` in `tinyassets/api/wiki.py`. When the bug page is written, also create a trigger record (separate row in a new `bug_trigger_attempts` table or appended to existing run-events table — Codex picks the storage shape).
 
 ### Trigger record fields
 
@@ -257,7 +257,7 @@ This canary is a **second layer**, not the primary tripwire. Trigger-receipt rec
 
 ## Provenance notes
 
-- Conversation captured at https://chatgpt.com/c/69f64b8d-fa04-83e8-b4d3-bb6e95b16475 — the chat is on Jonathan's ChatGPT Pro account in Developer Mode with the Workflow DEV connector enabled.
+- Conversation captured at https://chatgpt.com/c/69f64b8d-fa04-83e8-b4d3-bb6e95b16475 — the chat is on Jonathan's ChatGPT Pro account in Developer Mode with the TinyAssets DEV connector enabled.
 - Chatbot was driven in dev-partner mode (per host directive 2026-05-02 retiring the persona-narrative framing) with senior-dev framing in the opening turn.
 - The ui-test skill rules that authorize this self-initiated work are PR #175 ("do not self-initiate" retired) and PR #181 ("Mission's primary question answered → stop" retired). Both pushed by this Cowork session.
 - Cross-family rule applied: Cowork (Anthropic family) drives ChatGPT (OpenAI family) for cross-perspective coverage.

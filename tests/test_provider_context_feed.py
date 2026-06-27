@@ -46,7 +46,7 @@ def test_collects_claude_memory_and_shared_ideas(tmp_path: Path) -> None:
 
 
 def test_provider_filter_keeps_shared_context(tmp_path: Path) -> None:
-    cursor_rule = tmp_path / ".cursor" / "rules" / "workflow.mdc"
+    cursor_rule = tmp_path / ".cursor" / "rules" / "tinyassets.mdc"
     cursor_rule.parent.mkdir(parents=True)
     cursor_rule.write_text("TODO: route Cursor memories into STATUS.md lanes.\n")
     codex_config = tmp_path / ".codex" / "config.toml"
@@ -401,7 +401,7 @@ def test_drop_dead_lane_purposes_filters_merged_branches(
 def test_drop_dead_lane_purposes_passes_through_when_env_flag_set(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """`WORKFLOW_FEED_INCLUDE_DEAD_LANES=1` lets archaeologists see everything."""
+    """`TINYASSETS_FEED_INCLUDE_DEAD_LANES=1` lets archaeologists see everything."""
     dead_wt = tmp_path / "wf-dead"
     dead_wt.mkdir()
     dead_purpose = dead_wt / "_PURPOSE.md"
@@ -411,7 +411,7 @@ def test_drop_dead_lane_purposes_passes_through_when_env_flag_set(
     monkeypatch.setattr(
         provider_context_feed, "_merged_branch_set", lambda *_a, **_kw: {"codex/dead-lane"}
     )
-    monkeypatch.setenv("WORKFLOW_FEED_INCLUDE_DEAD_LANES", "1")
+    monkeypatch.setenv("TINYASSETS_FEED_INCLUDE_DEAD_LANES", "1")
 
     kept = provider_context_feed._drop_dead_lane_purposes(
         [dead_purpose], branch_map=branch_map, root=tmp_path

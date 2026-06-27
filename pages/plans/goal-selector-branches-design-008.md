@@ -24,7 +24,7 @@ selection logic themselves.
 
 ## Current State
 
-`workflow/api/quality_leaderboard.py` computes:
+`tinyassets/api/quality_leaderboard.py` computes:
 
 ```text
 score = 3.0 * normalized_judgment_score
@@ -144,4 +144,4 @@ Acceptance:
 - PLAN.md: Scoping Rules
 - PLAN.md: Module: Goals & Gates
 - PLAN.md: Module: Evolution & Evaluation
-- `workflow/api/quality_leaderboard.py`
+- `tinyassets/api/quality_leaderboard.py`

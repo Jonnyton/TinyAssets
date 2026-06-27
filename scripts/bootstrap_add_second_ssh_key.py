@@ -4,7 +4,7 @@ Raises bus factor from 1 to 2 for Droplet SSH access (HD-1 close action).
 
 What it does (idempotent):
   1. Generates a new ed25519 keypair. By default writes the private key to
-     ``~/.ssh/workflow_deploy_backup_ed25519`` so the host can pipe it
+     ``~/.ssh/tinyassets_deploy_backup_ed25519`` so the host can pipe it
      into 1Password (Task #7 vault-first). Pass ``--out-dir /tmp/...``
      to land the key elsewhere, or ``--print-only`` to emit the PEM to
      stdout for direct ``op item create`` piping.
@@ -34,13 +34,13 @@ Usage
     # pipe into 1Password:
     python scripts/bootstrap_add_second_ssh_key.py \\
         --host 161.35.237.133 \\
-        --primary-key ~/.ssh/workflow_deploy_ed25519 \\
+        --primary-key ~/.ssh/tinyassets_deploy_ed25519 \\
         --do-token "$DIGITALOCEAN_TOKEN"
 
     # Then (host action):
-    op document create ~/.ssh/workflow_deploy_backup_ed25519 \\
+    op document create ~/.ssh/tinyassets_deploy_backup_ed25519 \\
         --title "DO Droplet backup SSH key (private)" --vault workflow
-    shred -u ~/.ssh/workflow_deploy_backup_ed25519
+    shred -u ~/.ssh/tinyassets_deploy_backup_ed25519
 
     # Print-only mode (pipe directly to 1Password without touching disk):
     python scripts/bootstrap_add_second_ssh_key.py \\
@@ -50,7 +50,7 @@ Usage
     # Legacy GH-secret mode:
     python scripts/bootstrap_add_second_ssh_key.py \\
         --host ... --primary-key ... --gh-secret \\
-        --repo Jonnyton/Workflow
+        --repo Jonnyton/TinyAssets
 
 Environment (override CLI for CI use):
     DROPLET_HOST          Droplet IP/hostname.
@@ -77,11 +77,11 @@ import urllib.request
 from base64 import b64encode
 from pathlib import Path
 
-DEFAULT_REPO = "Jonnyton/Workflow"
+DEFAULT_REPO = "Jonnyton/TinyAssets"
 SECRET_NAME = "DO_SSH_KEY_BACKUP"
 AUTHORIZED_KEYS = "/root/.ssh/authorized_keys"
-DEFAULT_KEY_NAME = "workflow_deploy_backup_ed25519"
-DEFAULT_DO_KEY_LABEL = "workflow-deploy-backup"
+DEFAULT_KEY_NAME = "tinyassets_deploy_backup_ed25519"
+DEFAULT_DO_KEY_LABEL = "tinyassets-deploy-backup"
 DO_API_KEYS = "https://api.digitalocean.com/v2/account/keys"
 
 
@@ -326,7 +326,7 @@ def run(
 
         result = subprocess.run(
             ["ssh-keygen", "-t", "ed25519", "-N", "",
-             "-C", "workflow-backup-key", "-f", str(key_path)],
+             "-C", "tinyassets-backup-key", "-f", str(key_path)],
             capture_output=True, text=True,
         )
         if result.returncode != 0:

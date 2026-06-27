@@ -95,7 +95,7 @@ class TaskProducer(Protocol):
 Producers register via a module-level list, loaded at daemon startup:
 
 ```python
-# workflow/producers/__init__.py
+# tinyassets/producers/__init__.py
 _registered: list[TaskProducer] = []
 
 def register(producer: TaskProducer) -> None:
@@ -151,7 +151,7 @@ targets = choose_authorial_targets(universe_path, candidate_override=merged)
 
 ### Current state (the leak)
 
-`workflow/work_targets.py:51-54`:
+`tinyassets/work_targets.py:51-54`:
 
 ```python
 EXECUTION_KIND_NOTES = "notes"
@@ -160,7 +160,7 @@ EXECUTION_KIND_CHAPTER = "chapter"
 EXECUTION_KIND_SCENE = "scene"
 ```
 
-Plus `infer_execution_scope` matches strings against these constants. Plus `workflow/work_targets.py:381` hardcodes `EXECUTION_KIND_BOOK` when ensuring a seed target.
+Plus `infer_execution_scope` matches strings against these constants. Plus `tinyassets/work_targets.py:381` hardcodes `EXECUTION_KIND_BOOK` when ensuring a seed target.
 
 `BOOK`/`CHAPTER`/`SCENE` are fantasy-authoring concepts. `NOTES` is domain-neutral. The mix is a classic leak: a second domain (research-paper, legal-brief) would never produce a `SCENE`-kinded target but the generic module asserts it's a valid value.
 
@@ -184,21 +184,21 @@ FANTASY_EXECUTION_KINDS = (
 )
 ```
 
-`workflow/work_targets.py` keeps only `EXECUTION_KIND_NOTES` (every domain has notes-class work; it's the minimum viable value).
+`tinyassets/work_targets.py` keeps only `EXECUTION_KIND_NOTES` (every domain has notes-class work; it's the minimum viable value).
 
 `WorkTarget.execution_kind` field stays `str`. No enum type enforcement at the dataclass level — the generic module doesn't know what values are valid.
 
 ### Validation
 
-Validation shifts to the producer layer. Each producer that emits non-NOTES targets does so knowing the domain's valid set. `FantasyAuthorialProducer` asserts outputs are in `FANTASY_EXECUTION_KINDS`. Generic validation in `workflow/work_targets.py` becomes: "execution_kind must be a non-empty string."
+Validation shifts to the producer layer. Each producer that emits non-NOTES targets does so knowing the domain's valid set. `FantasyAuthorialProducer` asserts outputs are in `FANTASY_EXECUTION_KINDS`. Generic validation in `tinyassets/work_targets.py` becomes: "execution_kind must be a non-empty string."
 
 ### infer_execution_scope migration
 
-`workflow/work_targets.py:793` currently hardcodes the four-kind match. Move to `domains/fantasy_author/work_kinds.py:infer_fantasy_execution_scope`. Generic module loses `infer_execution_scope` entirely — callers (all fantasy) update imports.
+`tinyassets/work_targets.py:793` currently hardcodes the four-kind match. Move to `domains/fantasy_author/work_kinds.py:infer_fantasy_execution_scope`. Generic module loses `infer_execution_scope` entirely — callers (all fantasy) update imports.
 
 ### Call-site migration
 
-grep for `EXECUTION_KIND_BOOK`, `EXECUTION_KIND_CHAPTER`, `EXECUTION_KIND_SCENE`, `infer_execution_scope`. All hits live in `domains/fantasy_author/` and `workflow/work_targets.py` itself. Update imports:
+grep for `EXECUTION_KIND_BOOK`, `EXECUTION_KIND_CHAPTER`, `EXECUTION_KIND_SCENE`, `infer_execution_scope`. All hits live in `domains/fantasy_author/` and `tinyassets/work_targets.py` itself. Update imports:
 
 ```python
 # before
@@ -244,7 +244,7 @@ Mechanical, test-covered, no behavior change.
 ### Schema
 
 ```python
-# workflow/work_targets.py
+# tinyassets/work_targets.py
 @dataclass
 class WorkTarget:
     # ... existing fields ...
@@ -257,7 +257,7 @@ No new table, no migration. JSON serializer handles the field additively — old
 
 ## 4. `sync_source_synthesis_priorities` stays where it is
 
-This function already exists at `workflow/work_targets.py:663` and writes `HardPriorityItem` for unsynthesized uploads. It is also fantasy-adjacent (uploads → synthesis is fantasy's data-intake pattern) but because it writes `HardPriorityItem` not `WorkTarget`, it is NOT a TaskProducer in the Phase C sense. Leave it alone. A future refactor may convert `HardPriorityItem` emission into a producer too, but that's orthogonal — `origin` is a WorkTarget-only field and never stamped on HardPriorityItems.
+This function already exists at `tinyassets/work_targets.py:663` and writes `HardPriorityItem` for unsynthesized uploads. It is also fantasy-adjacent (uploads → synthesis is fantasy's data-intake pattern) but because it writes `HardPriorityItem` not `WorkTarget`, it is NOT a TaskProducer in the Phase C sense. Leave it alone. A future refactor may convert `HardPriorityItem` emission into a producer too, but that's orthogonal — `origin` is a WorkTarget-only field and never stamped on HardPriorityItems.
 
 ---
 
@@ -289,7 +289,7 @@ Each wraps existing logic:
 
 ## 6. Feature flag
 
-`WORKFLOW_PRODUCER_INTERFACE=on` by default (per rollout plan §Phase C "Flag default ON"). When off, the daemon bypasses the producer list entirely and calls the old `choose_authorial_targets(universe_path)` path. This preserves revert capability if the producer interface misbehaves on a clean universe.
+`TINYASSETS_PRODUCER_INTERFACE=on` by default (per rollout plan §Phase C "Flag default ON"). When off, the daemon bypasses the producer list entirely and calls the old `choose_authorial_targets(universe_path)` path. This preserves revert capability if the producer interface misbehaves on a clean universe.
 
 Tests must exercise both settings. CI runs both.
 
@@ -325,10 +325,10 @@ Plus integration: `test_fantasy_universe_cycle_produces_identical_targets_with_f
 1. **C.1** — Add `origin` field to `WorkTarget` dataclass. Existing tests pass with default `"unknown"`. Ship in isolation; no code reads `origin` yet.
 2. **C.2** — Move `EXECUTION_KIND_BOOK/CHAPTER/SCENE` + `infer_execution_scope` to `domains/fantasy_author/work_kinds.py`. Update all callers. Generic module keeps only `EXECUTION_KIND_NOTES`. Tests pass.
 3. **C.3** — Define `TaskProducer` protocol + registry + dispatcher helper. No producers registered yet. Tests: protocol isinstance check, registry idempotence.
-4. **C.4** — Convert `ensure_seed_targets`, `materialize_pending_requests`, fantasy authorial pre-scoring into producers. Register them. Behind `WORKFLOW_PRODUCER_INTERFACE=on` (default) vs direct-call path. Load-bearing identity test.
+4. **C.4** — Convert `ensure_seed_targets`, `materialize_pending_requests`, fantasy authorial pre-scoring into producers. Register them. Behind `TINYASSETS_PRODUCER_INTERFACE=on` (default) vs direct-call path. Load-bearing identity test.
 5. **C.5** — Add `candidate_override` param to `choose_authorial_targets` AND update the `domains/fantasy_author/graphs/universe.py` call site to dispatch through producers when flag-on, direct call when flag-off. Concretely: the existing `choose_authorial_targets(universe_path)` call becomes:
    ```python
-   if os.environ.get("WORKFLOW_PRODUCER_INTERFACE", "on") == "on":
+   if os.environ.get("TINYASSETS_PRODUCER_INTERFACE", "on") == "on":
        merged = _run_producers(universe_path)
        targets = choose_authorial_targets(universe_path, candidate_override=merged)
    else:
@@ -354,7 +354,7 @@ Today it's `str` — deliberately loose to allow new producer types without a sc
 
 ### Q2. Producer config — single daemon-wide config file or per-producer?
 
-The dispatcher passes `config=producer_config.get(producer.name)`. Source of truth can be (a) a single `daemon_config.yaml` with per-producer keys, or (b) per-producer config files under `workflow/producers/*.yaml`. Recommend: **(a) single file** — one place for host to edit all producer settings; simpler mental model; less file sprawl.
+The dispatcher passes `config=producer_config.get(producer.name)`. Source of truth can be (a) a single `daemon_config.yaml` with per-producer keys, or (b) per-producer config files under `tinyassets/producers/*.yaml`. Recommend: **(a) single file** — one place for host to edit all producer settings; simpler mental model; less file sprawl.
 
 **Resolved by implementation:** followed recommended default in Phase C.3-C.4 (`ba83254`, `b0b1b2d`) — producer config stayed minimal (no per-producer YAML files landed); single-daemon-config assumption preserved.
 

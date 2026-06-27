@@ -65,11 +65,11 @@ This preserves dev-2's "no test rewrites except the assertion shape" property �
 
 **7.1 Storage layout + serializer (no git yet).**
 - YAML schema for branches, goals, nodes, state_schema. Round-trip property tests: SQLite → YAML → SQLite is identity.
-- One-time export script `workflow/scripts/export_to_repo.py` writes existing universes' shared artifacts to `repo/<universe>/...`.
+- One-time export script `tinyassets/scripts/export_to_repo.py` writes existing universes' shared artifacts to `repo/<universe>/...`.
 - `StorageBackend.sqlite_cached` lands but git seam stubs out as "write file to working dir, no commit."
 - All existing tests pass against either backend (env switch).
 
-**7.2 Git bridge (`workflow/git_bridge.py`).**
+**7.2 Git bridge (`tinyassets/git_bridge.py`).**
 Thin wrapper around `subprocess.run(["git", ...])`. Surface:
 - `stage(path)` — `git add <path>`.
 - `commit(message, author)` — `git commit -m ... --author=...`. Author is the GitHub identity from §7.4 below; falls back to `anonymous <noreply@>` in dev mode.
@@ -88,7 +88,7 @@ Two-phase commit semantics dev-2 recommended:
 
 **7.4 Identity wiring (the unblock).**
 Per dev-2 audit §1: `_current_actor()` reads env var today; auth provider is implemented but unwired. Phase 7 wires it.
-- New env var `WORKFLOW_GITHUB_USERNAME` for dev/local use — populates actor + git commit author.
+- New env var `TINYASSETS_GITHUB_USERNAME` for dev/local use — populates actor + git commit author.
 - For hosted self-host installs that want OAuth, the existing `OAuthProvider` flow lights up (DCR + PKCE per MCP spec). Out of scope for Phase 7.1 ship; lands in 7.4 follow-up.
 - Ledger queries (`/ledger` endpoint, `_action_get_ledger`) translate to `git log --pretty=...` calls. Tests assert commit shape, not row shape (per dev-2 test-suite impact note).
 

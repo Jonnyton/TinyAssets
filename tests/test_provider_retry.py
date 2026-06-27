@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from workflow.exceptions import AllProvidersExhaustedError
-from workflow.providers import call as _provider_stub
+from tinyassets.exceptions import AllProvidersExhaustedError
+from tinyassets.providers import call as _provider_stub
 
 
 class TestProviderRetry:

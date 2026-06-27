@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from workflow.protocols import EvalCriteria
+from tinyassets.protocols import EvalCriteria
 
 
 def _check_scene_coherence(output: Any) -> bool | str:

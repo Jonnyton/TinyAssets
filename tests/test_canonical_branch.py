@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.branch_versions import publish_branch_version
-from workflow.daemon_server import (
+from tinyassets.branch_versions import publish_branch_version
+from tinyassets.daemon_server import (
     get_canonical_branch_history,
     get_goal,
     save_goal,
@@ -17,15 +17,15 @@ from workflow.daemon_server import (
 
 
 def _seed_goal(base_path, goal_id: str = "g1") -> dict:
-    from workflow.daemon_server import initialize_author_server
+    from tinyassets.daemon_server import initialize_author_server
     initialize_author_server(base_path)
     return save_goal(base_path, goal={"goal_id": goal_id, "name": "Test Goal",
                                        "author": "alice"})
 
 
 def _seed_branch_version(base_path, branch_id: str = "b1") -> str:
-    from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
-    from workflow.daemon_server import initialize_author_server, save_branch_definition
+    from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
 
     initialize_author_server(base_path)
     nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")
@@ -55,7 +55,7 @@ class TestCanonicalBranchDefaults:
         assert goal["canonical_branch_history"] == []
 
     def test_get_canonical_branch_history_nonexistent_goal_returns_empty(self, tmp_path):
-        from workflow.daemon_server import initialize_author_server
+        from tinyassets.daemon_server import initialize_author_server
         initialize_author_server(tmp_path)
         result = get_canonical_branch_history(tmp_path, goal_id="missing_goal")
         assert result == []
@@ -126,7 +126,7 @@ class TestSetCanonicalBranch:
         assert history[0]["replaced_by"] is None
 
     def test_nonexistent_goal_raises_key_error(self, tmp_path):
-        from workflow.daemon_server import initialize_author_server
+        from tinyassets.daemon_server import initialize_author_server
         initialize_author_server(tmp_path)
         bvid = _seed_branch_version(tmp_path)
         with pytest.raises(KeyError):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from workflow.packets import (
+from tinyassets.packets import (
     EditorialVerdict,
     FactRef,
     PromiseRef,
@@ -192,7 +192,7 @@ class TestEmitScenePacket:
     def test_emits_packet_file(self, tmp_path):
         """Accepted scene should produce a .packet.json file."""
         from domains.fantasy_daemon.phases.commit import _emit_scene_packet
-        from workflow.evaluation.structural import StructuralResult
+        from tinyassets.evaluation.structural import StructuralResult
 
         # Use dict-style characters (as orient actually produces them)
         # to verify participants are extracted as plain strings.
@@ -248,8 +248,8 @@ class TestEmitScenePacket:
     def test_emits_with_facts_and_promises(self, tmp_path):
         """Packet should include extracted facts and promises."""
         from domains.fantasy_daemon.phases.commit import _emit_scene_packet
-        from workflow.evaluation.structural import StructuralResult
-        from workflow.knowledge.models import FactWithContext, SourceType
+        from tinyassets.evaluation.structural import StructuralResult
+        from tinyassets.knowledge.models import FactWithContext, SourceType
 
         facts = [
             FactWithContext(
@@ -308,7 +308,7 @@ class TestEmitScenePacket:
     def test_no_universe_path_skips(self):
         """Missing _universe_path should silently skip emission."""
         from domains.fantasy_daemon.phases.commit import _emit_scene_packet
-        from workflow.evaluation.structural import StructuralResult
+        from tinyassets.evaluation.structural import StructuralResult
 
         state = {"orient_result": {}}
         structural = StructuralResult(

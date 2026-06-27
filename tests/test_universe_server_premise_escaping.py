@@ -20,8 +20,8 @@ import pytest
 def us(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
-    import workflow.api.universe as module
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    import tinyassets.api.universe as module
 
     importlib.reload(module)
     yield module
@@ -119,7 +119,7 @@ def test_read_premise_reports_missing_premise(us):
 
 
 def test_create_universe_normalizes_embedded_premise(us):
-    from workflow.api.universe import _action_create_universe
+    from tinyassets.api.universe import _action_create_universe
 
     base = Path(us._base_path())
     corrupt = "# New Universe\\n\\nFirst premise line."

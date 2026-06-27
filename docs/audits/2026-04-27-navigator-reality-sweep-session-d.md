@@ -38,8 +38,8 @@ Provider attribution is read off explicit `Made-with:` trailers and commit-messa
 
 | row | claimer | files (declared) | activity since claim |
 |-----|---------|------------------|----------------------|
-| #18 retarget sweep | dev (Claude session prior) | `workflow/universe_server.py` + 5 api/* + plugin mirror + ~53 tests | none in last commits — WIP preserved in worktree per prior session-wrap (87 files modified, 972 LOC residual). Awaiting resume next dev session. |
-| #23 Arc B phase 2 | dev (Claude session prior) | `workflow/_rename_compat.py`, `workflow/fantasy_author/`, `workflow/fantasy_daemon/`, `tests/`, `workflow/api/runs.py` | **Files cell partially phantom** — `workflow/fantasy_author/` and `workflow/fantasy_daemon/` directories no longer exist; tree is at `domains/fantasy_*/` (post-Arc-B-phase-1 in `0cbdea9`). Real lock is `_rename_compat.py` + `tests/` + `workflow/api/runs.py`. |
+| #18 retarget sweep | dev (Claude session prior) | `tinyassets/universe_server.py` + 5 api/* + plugin mirror + ~53 tests | none in last commits — WIP preserved in worktree per prior session-wrap (87 files modified, 972 LOC residual). Awaiting resume next dev session. |
+| #23 Arc B phase 2 | dev (Claude session prior) | `tinyassets/_rename_compat.py`, `tinyassets/fantasy_author/`, `tinyassets/fantasy_daemon/`, `tests/`, `tinyassets/api/runs.py` | **Files cell partially phantom** — `tinyassets/fantasy_author/` and `tinyassets/fantasy_daemon/` directories no longer exist; tree is at `domains/fantasy_*/` (post-Arc-B-phase-1 in `0cbdea9`). Real lock is `_rename_compat.py` + `tests/` + `tinyassets/api/runs.py`. |
 | Autonomous burn-down | codex-gpt5-desktop | `docs/exec-plans/active/2026-04-27-autonomous-backlog-queue.md`, `docs/notes/2026-04-27-backlog-user-sim-bundle.md`, `ideas/PIPELINE.md`, `ideas/INBOX.md` | actively producing (last touch 23:28). 18 untracked artifacts on disk authored by codex tonight 23:14-23:28; codex appears to be queue-ing them for a Cursor commit pass. |
 | Public endpoint docs hygiene | cursor-gpt55 | deploy/cloudflare-worker/README.md, docs/ops/{acceptance-probe-catalog, day-of-cutover, launch-readiness-checklist}.md, several audits, design-note, specs (many) | live: `c9de18e` "Made-with: Cursor" 23:30 included partial sweep of these files. Continuing. |
 | Mission 10 retest | user | (host watches browser) | not in flight — placeholder for next user-sim run. |
@@ -51,7 +51,7 @@ All authored by `codex-gpt5-desktop` per frontmatter `author:` field and queue m
 | file | type | purpose | gating |
 |------|------|---------|--------|
 | `docs/exec-plans/active/2026-04-27-autonomous-backlog-queue.md` | exec-plan | Codex's own queue manifest (item 11 = next) | self-paced |
-| `docs/exec-plans/active/2026-04-27-post-18-recency-continue-implementation-cards.md` | exec-plan | 5-card implementation breakdown for `extensions action=my_recent_runs` + `goals action=my_recent` + `extensions action=continue_branch` | blocked by #18 lock on `workflow/api/runs.py` |
+| `docs/exec-plans/active/2026-04-27-post-18-recency-continue-implementation-cards.md` | exec-plan | 5-card implementation breakdown for `extensions action=my_recent_runs` + `goals action=my_recent` + `extensions action=continue_branch` | blocked by #18 lock on `tinyassets/api/runs.py` |
 | `docs/exec-plans/active/2026-04-27-hyperparameter-importance-implementation-cards.md` | exec-plan | domain-skill cards | module-lane blocked |
 | `docs/exec-plans/active/2026-04-27-runtime-fiction-memory-graph-restart-cards.md` | exec-plan | restart-cards thin slice for Tomás-style fiction graph | needs scope decision (fiction-domain skill) |
 | `docs/specs/2026-04-27-recency-continue-fixture-pack.md` | spec | fixture pack for cards above | post-#18 |
@@ -77,8 +77,8 @@ Authored 2026-04-27 22:48; references `workflow.config.UniverseConfig` `allowed_
 
 `claim_check.py` reports STALE = 0. Independent verification:
 
-- **#18 dev claim** — last commit on its lock-set (`workflow/api/branches.py` `65abde1`, `extensions.py` `d662249`, `engine_helpers.py` `ade38bc`) was 2026-04-27 morning/midday session. Lead's prior session-wrap explicitly preserves WIP in worktree pending dev resume. NOT stale yet (24h not exceeded; lead intent documented).
-- **#23 Arc B phase 2** — last `workflow/_rename_compat.py` activity was 2026-04-25. Approaching staleness boundary (~50h). However, dev's #18 lock blocks this row from being touched in parallel anyway; reap would not unblock anything. Recommend leaving claimed until #18 lands.
+- **#18 dev claim** — last commit on its lock-set (`tinyassets/api/branches.py` `65abde1`, `extensions.py` `d662249`, `engine_helpers.py` `ade38bc`) was 2026-04-27 morning/midday session. Lead's prior session-wrap explicitly preserves WIP in worktree pending dev resume. NOT stale yet (24h not exceeded; lead intent documented).
+- **#23 Arc B phase 2** — last `tinyassets/_rename_compat.py` activity was 2026-04-25. Approaching staleness boundary (~50h). However, dev's #18 lock blocks this row from being touched in parallel anyway; reap would not unblock anything. Recommend leaving claimed until #18 lands.
 - **Codex burn-down** — actively touching files within the last hour. Live.
 - **Cursor docs hygiene** — `c9de18e` 23:30 commit IS the activity. Live.
 - **Mission 10 retest (user)** — placeholder, not active claim. Skip.
@@ -102,10 +102,10 @@ Concrete patches the lead can apply:
 
 | Row | Edit | Reason |
 |-----|------|--------|
-| `#23 Arc B phase 2` Files cell | Replace `workflow/fantasy_author/, workflow/fantasy_daemon/` with `domains/fantasy_author/, domains/fantasy_daemon/` (or strip the directory references entirely if Arc B phase 2 only touches `_rename_compat.py` + `workflow/api/runs.py` + tests/ — see prep doc `docs/exec-plans/active/2026-04-26-decomp-arc-b-prep.md`). | The `workflow/fantasy_*/` paths don't exist; collision warnings on those paths are spurious. |
+| `#23 Arc B phase 2` Files cell | Replace `tinyassets/fantasy_author/, tinyassets/fantasy_daemon/` with `domains/fantasy_author/, domains/fantasy_daemon/` (or strip the directory references entirely if Arc B phase 2 only touches `_rename_compat.py` + `tinyassets/api/runs.py` + tests/ — see prep doc `docs/exec-plans/active/2026-04-26-decomp-arc-b-prep.md`). | The `tinyassets/fantasy_*/` paths don't exist; collision warnings on those paths are spurious. |
 | Wiki #32 row | Update post-`116a657` deploy state. The row says "wiki.py fix LIVE in prod (116a657 deployed 05:04Z)" which appears to be from a prior cursor — verify via tinyassets canary or `mcp_probe.py` that 116a657 is actually live in prod (commit timestamp is 21:54 PDT 2026-04-27, not 05:04). If yes, the only outstanding items are 2 host `rm`s + BUG-018 promote. If no, raise as deploy-lag. | Stale timestamp suggests cursor copy-paste from prior session. |
 | `Phase 6` row Files cell | Includes `tests/` — this overlaps every dev row. Tighten to specific test files (e.g., `tests/test_storage_db_path.py` NEW + 2-3 specific migration tests) before Phase 6 dispatches. | claim_check flags `files-overlap:tests/` as blocker. Real overlap is narrow. |
-| `Claude.ai injection mitigation` row | Files cell `workflow/universe_server.py, workflow/prompts/` overlaps #18 lock. After #18 lands, the prompt-discipline edits move to the new locations (`workflow/api/universe.py` + extracted control_station prompt). Either defer this row's dispatch, or pre-rewrite Files cell now. | Will collide with dev's #18 sweep. |
+| `Claude.ai injection mitigation` row | Files cell `tinyassets/universe_server.py, tinyassets/prompts/` overlaps #18 lock. After #18 lands, the prompt-discipline edits move to the new locations (`tinyassets/api/universe.py` + extracted control_station prompt). Either defer this row's dispatch, or pre-rewrite Files cell now. | Will collide with dev's #18 sweep. |
 | `R7 closure pass` | Already correctly tagged `nav-then-dev` blocked on `#25`. No change needed but note: current STATUS.md does not list a `#25` row by that ID — the dependency is to "Phase 6" / "Arc C #24". Either update R7's Depends to `#24` or rename. | ID mismatch. |
 
 ### 4.c Path line
@@ -120,9 +120,9 @@ These are tasks that became dispatch-ready because (a) their gating commit lande
 |------|-------|-----------|--------------------|
 | Land Codex's 18 untracked artifacts | (the 18 paths in §2) | Codex appears to be writing them for Cursor to commit. If Codex doesn't commit by next sweep, lead can ask Cursor to bundle. | cursor-gpt55 (precedent: `c9de18e` was a Cursor commit picking up Codex docs work) |
 | Resolve `tests/test_provider_allowlist.py` anomaly | `tests/test_provider_allowlist.py` | Either skip-mark or remove until Q6.3 lands | dev (small, 5 min) |
-| `#24 Arc C` env-var deprecation aliases | `workflow/storage/__init__.py` | `dev-ready` per row, blocked only by `#23`. After #23 phase 2 lands, this is single-file. | dev |
+| `#24 Arc C` env-var deprecation aliases | `tinyassets/storage/__init__.py` | `dev-ready` per row, blocked only by `#23`. After #23 phase 2 lands, this is single-file. | dev |
 | Recency + continue_branch primitives (post-#18) | per implementation cards `docs/exec-plans/active/2026-04-27-post-18-recency-continue-implementation-cards.md` | Specs + fixtures + cards all frozen. Becomes immediately dev-ready the moment #18 lands. | dev |
-| `run_branch resume_from=<run_id>` param | `workflow/api/runs.py`, `tests/` | F2 ACCEPTED 2026-04-28; single param add. Gated only by #18 lock. | dev (queue post-#18) |
+| `run_branch resume_from=<run_id>` param | `tinyassets/api/runs.py`, `tests/` | F2 ACCEPTED 2026-04-28; single param add. Gated only by #18 lock. | dev (queue post-#18) |
 | Methods-prose rubric wiki promote | wiki | Content ready in `docs/notes/2026-04-27-methods-prose-rubric-starter-pack.md`. Just needs post-#16-style promote. | navigator (small) |
 | Cross-algorithm parity wiki publish | wiki | Template + checklist + RF-vs-MaxEnt seed all landed. | navigator (small) |
 | CONTRIBUTORS maintenance runbook adoption | docs ops | Runbook landed 23:24. Lead can wire into AGENTS.md cross-ref or tooling. | trivial doc-only |
@@ -143,7 +143,7 @@ Nothing is "claim now and start coding" because every code-track row is gated by
 ## 7. Cross-references verified
 
 - `wiki_sweep_cursor.md` last sweep tick states `45 promoted (was 45), 8 drafts (was 8)` with no deltas. No new wiki sweep run this session — cursor still valid.
-- `116a657` wiki.py fix is verified in repo (`workflow/api/wiki.py:269` `_resolve_bugs_canonical`); canonical test file `tests/test_wiki_alias_corner_cases.py` exists.
+- `116a657` wiki.py fix is verified in repo (`tinyassets/api/wiki.py:269` `_resolve_bugs_canonical`); canonical test file `tests/test_wiki_alias_corner_cases.py` exists.
 - `BUG-034` STATUS line correctly references the ChatGPT connector approval bug; cross-ref "see BUG-034" present per AGENTS.md rule.
 - `BUG-003` and `BUG-018` are still in host-action queue as documented.
 

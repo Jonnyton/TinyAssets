@@ -1,4 +1,4 @@
-"""Tests for workflow.context.compaction module."""
+"""Tests for tinyassets.context.compaction module."""
 
 import tempfile
 import time
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.context.compaction import (
+from tinyassets.context.compaction import (
     CompactionService,
     HandoffArtifact,
     HandoffStore,

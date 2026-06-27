@@ -1,9 +1,9 @@
-"""Task #11 — direct tests for `workflow.api.runs` after decomp Step 4.
+"""Task #11 — direct tests for `tinyassets.api.runs` after decomp Step 4.
 
 The legacy test files (test_run_branch_failure_taxonomy.py,
 test_query_runs.py, test_run_branch_version.py, test_canonical_branch_mcp.py)
-still cover the chatbot-facing `workflow.universe_server` MCP wrappers. This
-file exercises `workflow.api.runs` directly to lock in the canonical
+still cover the chatbot-facing `tinyassets.universe_server` MCP wrappers. This
+file exercises `tinyassets.api.runs` directly to lock in the canonical
 implementation surface.
 """
 
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import json
 
-from workflow.api import runs as runs_mod
-from workflow.api.runs import (
+from tinyassets.api import runs as runs_mod
+from tinyassets.api.runs import (
     _FAILURE_TAXONOMY,
     _RUN_ACTIONS,
     _RUN_WRITE_ACTIONS,
@@ -203,13 +203,13 @@ def test_action_run_branch_returns_str():
 
 def test_compile_failure_records_actionable_run_error(tmp_path, monkeypatch):
     """Compile-time failures must not collapse into background-worker crash."""
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
         NodeDefinition,
     )
-    from workflow.runs import (
+    from tinyassets.runs import (
         execute_branch_async,
         get_run,
         shutdown_executor,
@@ -219,7 +219,7 @@ def test_compile_failure_records_actionable_run_error(tmp_path, monkeypatch):
     def boom(*_args, **_kwargs):
         raise ValueError("'source_manifest' is already being used as a state key")
 
-    monkeypatch.setattr("workflow.runs.compile_branch", boom)
+    monkeypatch.setattr("tinyassets.runs.compile_branch", boom)
 
     branch = BranchDefinition(name="Compile failure", entry_point="node_a")
     branch.node_defs = [
@@ -274,7 +274,7 @@ def test_failed_run_snapshot_marks_last_running_node_failed(monkeypatch):
     def _missing_branch(*_args, **_kwargs):
         raise KeyError("missing-branch")
 
-    monkeypatch.setattr("workflow.daemon_server.get_branch_definition", _missing_branch)
+    monkeypatch.setattr("tinyassets.daemon_server.get_branch_definition", _missing_branch)
     monkeypatch.setattr(
         runs_mod,
         "_run_mermaid_from_events",
@@ -345,7 +345,7 @@ def test_failed_run_snapshot_surfaces_provider_chain_from_failed_event(monkeypat
         }
 
     monkeypatch.setattr(
-        "workflow.daemon_server.get_branch_definition",
+        "tinyassets.daemon_server.get_branch_definition",
         _science_branch,
     )
     monkeypatch.setattr(
@@ -395,7 +395,7 @@ def test_failed_run_snapshot_surfaces_provider_chain_from_error_suffix(monkeypat
         raise KeyError("b1")
 
     monkeypatch.setattr(
-        "workflow.daemon_server.get_branch_definition",
+        "tinyassets.daemon_server.get_branch_definition",
         _missing_branch,
     )
     monkeypatch.setattr(

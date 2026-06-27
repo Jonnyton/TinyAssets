@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from workflow.coding_packet_rubric import validate_coding_packet_rubric
+from tinyassets.coding_packet_rubric import validate_coding_packet_rubric
 
 
 def _keep_packet(**overrides) -> dict:

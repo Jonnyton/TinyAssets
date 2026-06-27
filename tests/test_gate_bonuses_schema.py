@@ -1,4 +1,4 @@
-"""Tests for workflow.gates schema layer.
+"""Tests for tinyassets.gates schema layer.
 
 Spec: docs/vetted-specs.md §Gate bonuses — staked payouts attached to gate milestones.
 
@@ -15,7 +15,7 @@ import sqlite3
 
 import pytest
 
-from workflow.gates import (
+from tinyassets.gates import (
     BONUS_COLUMNS,
     GateBonusClaim,
     migrate_gate_bonus_columns,

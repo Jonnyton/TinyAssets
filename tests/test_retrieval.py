@@ -7,8 +7,8 @@ import json
 import numpy as np
 import pytest
 
-from workflow.knowledge.knowledge_graph import KnowledgeGraph
-from workflow.knowledge.models import (
+from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+from tinyassets.knowledge.models import (
     FactWithContext,
     GraphEdge,
     GraphEntity,
@@ -16,22 +16,22 @@ from workflow.knowledge.models import (
     RetrievalResult,
     SourceType,
 )
-from workflow.memory.scoping import MemoryScope
-from workflow.retrieval.agentic_search import (
+from tinyassets.memory.scoping import MemoryScope
+from tinyassets.retrieval.agentic_search import (
     assemble_phase_search_context,
     build_phase_query,
 )
-from workflow.retrieval.phase_context import (
+from tinyassets.retrieval.phase_context import (
     get_phase_config,
     get_token_budget,
     should_use_backend,
 )
-from workflow.retrieval.router import (
+from tinyassets.retrieval.router import (
     RetrievalRouter,
     _parse_decomposition,
     _simple_decompose,
 )
-from workflow.retrieval.vector_store import VectorStore, reset_db
+from tinyassets.retrieval.vector_store import VectorStore, reset_db
 
 _SCOPE = MemoryScope(universe_id="test-universe")
 
@@ -106,7 +106,7 @@ def tmp_vs(tmp_path):
 
 class TestVectorStore:
     def test_singleton_connection(self, tmp_path):
-        from workflow.retrieval.vector_store import get_db
+        from tinyassets.retrieval.vector_store import get_db
 
         db1 = get_db(str(tmp_path / "lance"))
         db2 = get_db(str(tmp_path / "lance"))
@@ -115,7 +115,7 @@ class TestVectorStore:
     def test_get_db_rejects_empty_path(self):
         import pytest
 
-        from workflow.retrieval.vector_store import get_db
+        from tinyassets.retrieval.vector_store import get_db
 
         with pytest.raises(ValueError, match="cross-universe contamination"):
             get_db("")
@@ -431,10 +431,10 @@ class TestScopeAssertion:
         )
         bad_fact.universe_id = "universe-B"  # row-level tag (future Stage 2)
 
-        from workflow.retrieval.router import _drop_cross_universe_rows
+        from tinyassets.retrieval.router import _drop_cross_universe_rows
 
         result = RetrievalResult(facts=[good_fact, bad_fact])
-        with caplog.at_level(logging.WARNING, logger="workflow.retrieval.router"):
+        with caplog.at_level(logging.WARNING, logger="tinyassets.retrieval.router"):
             filtered = _drop_cross_universe_rows(result, scope)
 
         kept_ids = [f.fact_id for f in filtered.facts]
@@ -447,7 +447,7 @@ class TestScopeAssertion:
     @pytest.mark.asyncio
     async def test_cross_universe_relationships_dropped(self, tmp_kg):
         """Dict-shaped relationship rows are also filtered by universe_id."""
-        from workflow.retrieval.router import _drop_cross_universe_rows
+        from tinyassets.retrieval.router import _drop_cross_universe_rows
 
         scope = MemoryScope(universe_id="universe-A")
         result = RetrievalResult(
@@ -489,7 +489,7 @@ class TestAgenticSearchPolicy:
         """Missing universe_id + missing scope → skip retrieval, don't crash."""
         import logging
 
-        from workflow.retrieval.agentic_search import run_phase_retrieval
+        from tinyassets.retrieval.agentic_search import run_phase_retrieval
 
         state = {
             "orient_result": {
@@ -498,7 +498,7 @@ class TestAgenticSearchPolicy:
             },
         }
         with caplog.at_level(
-            logging.WARNING, logger="workflow.retrieval.agentic_search",
+            logging.WARNING, logger="tinyassets.retrieval.agentic_search",
         ):
             result = run_phase_retrieval(state, "orient")
         assert result == {}
@@ -508,7 +508,7 @@ class TestAgenticSearchPolicy:
 
     def test_run_phase_retrieval_threads_scope_to_router(self, monkeypatch):
         """State with universe_id → router.query receives a MemoryScope."""
-        from workflow.retrieval import agentic_search
+        from tinyassets.retrieval import agentic_search
 
         captured: dict[str, object] = {}
 
@@ -525,7 +525,7 @@ class TestAgenticSearchPolicy:
                 return _empty()
 
         monkeypatch.setattr(
-            "workflow.retrieval.router.RetrievalRouter", _FakeRouter,
+            "tinyassets.retrieval.router.RetrievalRouter", _FakeRouter,
         )
 
         class _FakeKG:
@@ -533,7 +533,7 @@ class TestAgenticSearchPolicy:
                 pass
 
         monkeypatch.setattr(
-            "workflow.knowledge.knowledge_graph.KnowledgeGraph",
+            "tinyassets.knowledge.knowledge_graph.KnowledgeGraph",
             lambda *a, **kw: _FakeKG(),
         )
         monkeypatch.setattr(
@@ -542,7 +542,7 @@ class TestAgenticSearchPolicy:
         )
         # Clear the runtime singletons so run_phase_retrieval falls
         # through to construct a fresh KG/router.
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
         monkeypatch.setattr(runtime, "knowledge_graph", None)
 
         state = {
@@ -579,11 +579,11 @@ class TestAgenticSearchPolicy:
         }
 
         monkeypatch.setattr(
-            "workflow.retrieval.agentic_search.assemble_memory_context",
+            "tinyassets.retrieval.agentic_search.assemble_memory_context",
             lambda state, phase: {"style_rules": [{"rule": "Stay intimate."}]},
         )
         monkeypatch.setattr(
-            "workflow.retrieval.agentic_search.run_phase_retrieval",
+            "tinyassets.retrieval.agentic_search.run_phase_retrieval",
             lambda state, phase, memory_context=None: {
                 "facts": [],
                 "canon_facts": [],
@@ -609,7 +609,7 @@ class TestAgenticSearchPolicy:
     def test_assemble_phase_search_context_adds_pinned_soul_lens(
         self, tmp_path, monkeypatch,
     ):
-        from workflow.universe_soul import write_universe_soul
+        from tinyassets.universe_soul import write_universe_soul
 
         write_universe_soul(
             tmp_path,
@@ -619,11 +619,11 @@ class TestAgenticSearchPolicy:
             soft_preferences=("Prefer compact steps.",),
         )
         monkeypatch.setattr(
-            "workflow.retrieval.agentic_search.assemble_memory_context",
+            "tinyassets.retrieval.agentic_search.assemble_memory_context",
             lambda state, phase: {},
         )
         monkeypatch.setattr(
-            "workflow.retrieval.agentic_search.run_phase_retrieval",
+            "tinyassets.retrieval.agentic_search.run_phase_retrieval",
             lambda state, phase, memory_context=None: {},
         )
 

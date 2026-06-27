@@ -4,8 +4,8 @@
   "review_status": "Draft v0 \u2014 pending securities-counsel confirmation. Defaults are best-effort, not legal advice.",
   "platform_license": "MIT",
   "content_license": "CC0-1.0",
-  "platform_repo": "https://github.com/Jonnyton/Workflow",
-  "content_repo": "https://github.com/Jonnyton/Workflow-catalog",
+  "platform_repo": "https://github.com/Jonnyton/TinyAssets",
+  "content_repo": "https://github.com/Jonnyton/TinyAssets-catalog",
   "operating_entity": {
     "name": "TinyAssets (operating entity TBD pending Wyoming DAO LLC formation)",
     "type": "Pre-formation; treat as unincorporated association at v0",

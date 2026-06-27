@@ -1,6 +1,6 @@
 """Security invariants for the user-node sandbox.
 
-`workflow/node_sandbox.py` runs user-contributed LangGraph nodes inside a
+`tinyassets/node_sandbox.py` runs user-contributed LangGraph nodes inside a
 subprocess with import allowlisting, timeout enforcement, IO scoping,
 and forbidden-pattern pre-validation. These tests pin the invariants
 the paid-market execution path depends on.
@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from workflow.node_sandbox import (
+from tinyassets.node_sandbox import (
     ALLOWED_IMPORTS,
     FORBIDDEN_PATTERNS,
     NodeSandbox,
@@ -352,7 +352,7 @@ def test_environment_is_restricted_to_allowlist(monkeypatch):
     # shape has not drifted.
     import inspect
 
-    from workflow import node_sandbox
+    from tinyassets import node_sandbox
 
     src = inspect.getsource(node_sandbox.NodeSandbox.execute)
     # The subprocess env dict must include only PATH, PYTHONPATH, HOME.
@@ -361,8 +361,8 @@ def test_environment_is_restricted_to_allowlist(monkeypatch):
     assert '"PYTHONPATH": ""' in src
     assert '"HOME":' in src
     # Any host secret we set should NOT appear listed in the env dict.
-    monkeypatch.setenv("WORKFLOW_TEST_SECRET", "should-not-leak")
-    assert "WORKFLOW_TEST_SECRET" not in src
+    monkeypatch.setenv("TINYASSETS_TEST_SECRET", "should-not-leak")
+    assert "TINYASSETS_TEST_SECRET" not in src
 
 
 # -------------------------------------------------------------------

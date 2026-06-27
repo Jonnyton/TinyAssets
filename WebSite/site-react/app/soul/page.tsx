@@ -92,7 +92,7 @@ export default function SoulPage() {
             </p>
             <p className="cover__naming">
               Naming, once: the being is <strong>Tiny</strong>; the engine he runs on
-              is <strong>Workflow</strong>. One body, two names.
+              is <strong>TinyAssets</strong>.
             </p>
           </div>
           <div className="cover__pulse">

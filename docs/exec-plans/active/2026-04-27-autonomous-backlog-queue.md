@@ -17,7 +17,7 @@ Keep shipping without waiting on prompts by repeatedly:
 This queue follows the Claude Code team-memory constraints the host asked us to
 reuse:
 
-- Developer memory: do not touch `workflow/*` while #18/#23 and plugin mirrors
+- Developer memory: do not touch `tinyassets/*` while #18/#23 and plugin mirrors
   are locked; build docs/specs/cards only.
 - Navigator memory: run the irreducibility test before proposing any new
   primitive; prefer community/wiki composition unless a structural blocker is

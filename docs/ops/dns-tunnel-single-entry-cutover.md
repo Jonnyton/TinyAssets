@@ -105,7 +105,7 @@ environment is safe — it finds existing resources by name/domain and reuses th
 rather than creating duplicates.
 
 **What the script does:**
-1. Creates (or reuses) service token `workflow-mcp-worker`
+1. Creates (or reuses) service token `tinyassets-mcp-worker`
 2. Creates (or reuses) Access application for `mcp.tinyassets.io`
 3. Creates (or reuses) policy `worker-only` (Service Auth = service token)
 4. Sets `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET` as Worker secrets on
@@ -125,7 +125,7 @@ Use this if the API token is unavailable or if the script errors.
 
 Cloudflare dashboard → Zero Trust → Access → Service Auth → **Service Tokens** → **Create Service Token**.
 
-- Name: `workflow-mcp-worker`
+- Name: `tinyassets-mcp-worker`
 - Token duration: Non-expiring (or set a long rotation schedule)
 - Click **Generate Token**
 
@@ -137,7 +137,7 @@ Copy both values immediately — the `Client Secret` is shown only once:
 
 Zero Trust → Access → Applications → **Add an Application** → **Self-hosted**.
 
-- **Application name:** `workflow-mcp-worker-gate`
+- **Application name:** `tinyassets-mcp-worker-gate`
 - **Application domain:**
   - Subdomain: `mcp`
   - Domain: `tinyassets.io`
@@ -148,7 +148,7 @@ Zero Trust → Access → Applications → **Add an Application** → **Self-hos
 On the policy screen:
 - **Policy name:** `worker-only`
 - **Action:** Service Auth
-- **Include rule:** Service Token = `workflow-mcp-worker` (select from dropdown)
+- **Include rule:** Service Token = `tinyassets-mcp-worker` (select from dropdown)
 - Click **Next**, then **Save**
 
 After saving, Cloudflare Access is now active on `mcp.tinyassets.io`. Direct browser/curl
@@ -252,7 +252,7 @@ Dashboard → `tinyassets.io` zone → Workers Routes → click the Worker → L
 
 **Layer-1 canary (`scripts/uptime_canary.py`):**
 Probes `tinyassets.io/mcp` every 5 minutes via GHA (Row H). Single-URL canary is correct
-for single-URL architecture. Confirm `WORKFLOW_MCP_CANARY_URL=https://tinyassets.io/mcp`.
+for single-URL architecture. Confirm `TINYASSETS_MCP_CANARY_URL=https://tinyassets.io/mcp`.
 
 ---
 
@@ -279,7 +279,7 @@ green and internal is now reachable (ungated), proving the rollback worked.
 
 ### Rollback — Dashboard path (fallback)
 
-1. Zero Trust → Access → Applications → `workflow-mcp-worker-gate` → **Delete**.
+1. Zero Trust → Access → Applications → `tinyassets-mcp-worker-gate` → **Delete**.
 2. `mcp.tinyassets.io` immediately becomes publicly reachable again (no propagation delay).
 3. The Worker continues to work either way — the Access headers it sends are ignored
    if no Access application is protecting the subdomain.
@@ -294,10 +294,10 @@ the Access application and investigate root cause.
 
 After cutover, confirm the canary is pointed at the right URL.
 
-In `/etc/workflow/env` (or wherever the daemon env is managed):
+In `/etc/tinyassets/env` (or wherever the daemon env is managed):
 
 ```
-WORKFLOW_MCP_CANARY_URL=https://tinyassets.io/mcp
+TINYASSETS_MCP_CANARY_URL=https://tinyassets.io/mcp
 ```
 
 If it still reads `https://mcp.tinyassets.io/mcp`, update it. The Layer-1 canary

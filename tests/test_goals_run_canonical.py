@@ -73,20 +73,20 @@ def _mock_selector_passthrough(monkeypatch):
             ],
         }
     monkeypatch.setattr(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         _passthrough,
     )
 
 
 @pytest.fixture
 def us_env(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
-    monkeypatch.delenv("WORKFLOW_BUG_INVESTIGATION_GOAL_ID", raising=False)
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
     monkeypatch.delenv(
-        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID", raising=False,
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", raising=False,
     )
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, tmp_path
     importlib.reload(us)
@@ -109,13 +109,13 @@ def _seed_runnable_branch(
     """Seed a Goal + Branch + (optional) published version + N completed
     runs. Returns (goal_id, branch_version_id-or-empty).
     """
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import (
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
         save_branch_definition,
         save_goal,
         update_goal,
     )
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         create_run,
         initialize_runs_db,
@@ -244,7 +244,7 @@ def test_stored_canonical_dispatches_via_run_branch_version(us_env):
         base, goal_id="g1", branch_def_id="b1",
         auto=False, publish=True,
     )
-    from workflow.daemon_server import set_canonical_branch
+    from tinyassets.daemon_server import set_canonical_branch
     set_canonical_branch(
         base, goal_id="g1",
         branch_version_id=bvid, set_by="host",
@@ -261,7 +261,7 @@ def test_stored_canonical_dispatches_via_run_branch_version(us_env):
         "error": "",
     })
     with patch(
-        "workflow.api.runs._action_run_branch_version",
+        "tinyassets.api.runs._action_run_branch_version",
         return_value=fake,
     ) as mock_dispatch:
         result = _call(us, "run_canonical", goal_id="g1")
@@ -282,7 +282,7 @@ def test_dispatch_forwards_inputs_json_and_run_name(us_env):
         base, goal_id="g1", branch_def_id="b1",
         auto=False, publish=True,
     )
-    from workflow.daemon_server import set_canonical_branch
+    from tinyassets.daemon_server import set_canonical_branch
     set_canonical_branch(
         base, goal_id="g1",
         branch_version_id=bvid, set_by="host",
@@ -292,7 +292,7 @@ def test_dispatch_forwards_inputs_json_and_run_name(us_env):
         "output": {}, "error": "",
     })
     with patch(
-        "workflow.api.runs._action_run_branch_version",
+        "tinyassets.api.runs._action_run_branch_version",
         return_value=fake,
     ) as mock_dispatch:
         _call(
@@ -322,8 +322,8 @@ def test_auto_on_refreshes_canonical_and_dispatches(us_env):
         auto=True, min_runs=2, publish=True, runs_completed=3,
     )
     # set_canonical to the old version.
-    from workflow.branch_versions import list_branch_versions
-    from workflow.daemon_server import set_canonical_branch
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.daemon_server import set_canonical_branch
     old_versions = list_branch_versions(
         base, branch_def_id="old", limit=1,
     )
@@ -335,7 +335,7 @@ def test_auto_on_refreshes_canonical_and_dispatches(us_env):
 
     # Boost 'new' with a high quality judgment so the leaderboard
     # ranks it first.
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         add_judgment,
         create_run,
@@ -357,7 +357,7 @@ def test_auto_on_refreshes_canonical_and_dispatches(us_env):
         "output": {}, "error": "",
     })
     with patch(
-        "workflow.api.runs._action_run_branch_version",
+        "tinyassets.api.runs._action_run_branch_version",
         return_value=fake,
     ) as mock_dispatch:
         result = _call(us, "run_canonical", goal_id="g1")
@@ -382,14 +382,14 @@ def test_auto_on_insufficient_runs_keeps_stored(us_env):
         base, goal_id="g1", branch_def_id="new",
         auto=True, min_runs=5, publish=True, runs_completed=1,
     )
-    from workflow.daemon_server import set_canonical_branch
+    from tinyassets.daemon_server import set_canonical_branch
     set_canonical_branch(
         base, goal_id="g1",
         branch_version_id=old_bvid, set_by="host",
     )
     # Add a high judgment on 'new' so it would rank first if not
     # blocked by the threshold.
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         add_judgment,
         create_run,
@@ -410,7 +410,7 @@ def test_auto_on_insufficient_runs_keeps_stored(us_env):
         "output": {}, "error": "",
     })
     with patch(
-        "workflow.api.runs._action_run_branch_version",
+        "tinyassets.api.runs._action_run_branch_version",
         return_value=fake,
     ) as mock_dispatch:
         result = _call(us, "run_canonical", goal_id="g1")
@@ -430,13 +430,13 @@ def test_auto_on_in_flight_defers_refresh(us_env):
         base, goal_id="g1", branch_def_id="new",
         auto=True, min_runs=1, publish=True, runs_completed=3,
     )
-    from workflow.daemon_server import set_canonical_branch
+    from tinyassets.daemon_server import set_canonical_branch
     set_canonical_branch(
         base, goal_id="g1",
         branch_version_id=old_bvid, set_by="host",
     )
     # Boost 'new' so it would rank first.
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         RUN_STATUS_RUNNING,
         add_judgment,
@@ -465,7 +465,7 @@ def test_auto_on_in_flight_defers_refresh(us_env):
         "output": {}, "error": "",
     })
     with patch(
-        "workflow.api.runs._action_run_branch_version",
+        "tinyassets.api.runs._action_run_branch_version",
         return_value=fake,
     ) as mock_dispatch:
         result = _call(us, "run_canonical", goal_id="g1")
@@ -494,7 +494,7 @@ def test_update_goal_accepts_auto_canonical_flag(us_env):
         base, goal_id="g1", branch_def_id="b1",
         auto=False, publish=False,
     )
-    from workflow.daemon_server import get_goal, update_goal
+    from tinyassets.daemon_server import get_goal, update_goal
     update_goal(
         base, goal_id="g1",
         updates={
@@ -513,7 +513,7 @@ def test_update_goal_rejects_negative_threshold(us_env):
         base, goal_id="g1", branch_def_id="b1",
         auto=False, publish=False,
     )
-    from workflow.daemon_server import update_goal
+    from tinyassets.daemon_server import update_goal
     with pytest.raises(ValueError):
         update_goal(
             base, goal_id="g1",

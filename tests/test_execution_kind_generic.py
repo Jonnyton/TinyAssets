@@ -3,7 +3,7 @@
 Per docs/specs/taskproducer_phase_c.md §2 + §7.
 
 Contract:
-- `workflow.work_targets` exports ONLY `EXECUTION_KIND_NOTES` among
+- `tinyassets.work_targets` exports ONLY `EXECUTION_KIND_NOTES` among
   the execution-kind constants. BOOK/CHAPTER/SCENE and
   `infer_execution_scope` live at `domains.fantasy_daemon.work_kinds`.
 - `FANTASY_EXECUTION_KINDS` reflects the full fantasy set.
@@ -19,9 +19,9 @@ def test_workflow_work_targets_only_exports_notes():
     """Generic engine must not re-export fantasy execution_kind constants.
 
     Tests the barrier: if a non-fantasy domain imports
-    `workflow.work_targets`, they must not see BOOK/CHAPTER/SCENE.
+    `tinyassets.work_targets`, they must not see BOOK/CHAPTER/SCENE.
     """
-    import workflow.work_targets as wt
+    import tinyassets.work_targets as wt
 
     assert hasattr(wt, "EXECUTION_KIND_NOTES")
     assert not hasattr(wt, "EXECUTION_KIND_BOOK")
@@ -53,7 +53,7 @@ def test_infer_fantasy_execution_scope_handles_notes(tmp_path):
     from domains.fantasy_daemon.work_kinds import (
         infer_fantasy_execution_scope,
     )
-    from workflow.work_targets import ROLE_NOTES, WorkTarget
+    from tinyassets.work_targets import ROLE_NOTES, WorkTarget
 
     target = WorkTarget(
         target_id="universe-notes",
@@ -72,7 +72,7 @@ def test_infer_fantasy_execution_scope_infers_book_from_default():
     from domains.fantasy_daemon.work_kinds import (
         infer_fantasy_execution_scope,
     )
-    from workflow.work_targets import (
+    from tinyassets.work_targets import (
         PUBLISH_STAGE_PROVISIONAL,
         ROLE_PUBLISHABLE,
         WorkTarget,
@@ -95,7 +95,7 @@ def test_infer_fantasy_execution_scope_infers_scene_from_tags():
     from domains.fantasy_daemon.work_kinds import (
         infer_fantasy_execution_scope,
     )
-    from workflow.work_targets import (
+    from tinyassets.work_targets import (
         PUBLISH_STAGE_PROVISIONAL,
         ROLE_PUBLISHABLE,
         WorkTarget,

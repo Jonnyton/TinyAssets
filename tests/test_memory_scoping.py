@@ -1,16 +1,16 @@
-"""Tests for ``workflow.memory.scoping``.
+"""Tests for ``tinyassets.memory.scoping``.
 
 Covers the Stage 2b 5-tier orthogonal-composition model: ``MemoryScope``,
 ``NodeScope``, ``SliceSpec``, ``ExternalSource``, ``ScopedQuery``,
 ``ScopeResolver``, ``ScopedMemoryRouter``. Also exercises the
-agent-controlled memory tools from ``workflow.memory.tools``.
+agent-controlled memory tools from ``tinyassets.memory.tools``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from workflow.memory.scoping import (
+from tinyassets.memory.scoping import (
     ExternalSource,
     MemoryScope,
     NodeScope,
@@ -19,7 +19,7 @@ from workflow.memory.scoping import (
     ScopeResolver,
     SliceSpec,
 )
-from workflow.memory.tools import (
+from tinyassets.memory.tools import (
     get_memory_tools,
     memory_assert,
     memory_conflicts,

@@ -35,7 +35,7 @@ The quarantine addresses **artifacts**, not **root cause**. See
 
 - File-write paths are clean. Every `canon_dir` construction in
   `domains/fantasy_author/phases/{commit,worldbuild,select_task,orient}.py`
-  and `workflow/universe_server.py` uses `Path(universe_path) / "canon"`
+  and `tinyassets/universe_server.py` uses `Path(universe_path) / "canon"`
   with `universe_path` threaded from the daemon's `_universe_path` state
   field — no bare `Path("canon")`, no cwd-based writes.
 - The leak therefore happened at the **content-generation layer**, not the

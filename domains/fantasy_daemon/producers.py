@@ -17,8 +17,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from workflow.universe_soul import premise_from_soul, read_legacy_premise
-from workflow.work_targets import (
+from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
+from tinyassets.work_targets import (
     WorkTarget,
     ensure_seed_targets,
     list_selectable_targets,
@@ -104,7 +104,7 @@ def register_fantasy_producers() -> None:
     Idempotent: safe to call on module reload (re-register replaces
     by name). Called from ``domains/fantasy_daemon/__init__.py``.
     """
-    from workflow.producers import register
+    from tinyassets.producers import register
     register(SeedProducer())
     register(FantasyAuthorialProducer())
     register(UserRequestProducer())

@@ -30,7 +30,7 @@ Two viable shapes for Phase 2:
 ### Option A — daemon-side env-sourced token (JSON map)
 
 The host configures a single env var
-``WORKFLOW_GITHUB_PR_CAPABILITIES`` containing a JSON map of
+``TINYASSETS_GITHUB_PR_CAPABILITIES`` containing a JSON map of
 ``{"<owner>/<repo>": "<token>"}``. The effector reads the map at
 invocation time and looks up the destination by exact string match.
 The token is **never** echoed into the merged run state the branch
@@ -40,7 +40,7 @@ config the branch cannot observe.
 
 Round-2 refinement (Codex P1.2): an earlier shape used a
 per-destination suffix env name
-(``WORKFLOW_GITHUB_PR_CAPABILITY_REPO_<OWNER>_<REPO>`` with non-alnum
+(``TINYASSETS_GITHUB_PR_CAPABILITY_REPO_<OWNER>_<REPO>`` with non-alnum
 runs collapsed to ``_``). That encoding collapsed distinct repos —
 ``octo/my.repo`` and ``octo/my_repo`` and ``octo/my-repo`` all
 mapped to the same env name and therefore the same token. The JSON
@@ -149,20 +149,20 @@ refinement once we see real grant-list shape.
 Slice-1 status (all checked items shipped in this slice):
 
 - [x] Re-introduce `_invoke_gh_pr_create` in
-      ``workflow/effectors/github_pr.py``.
+      ``tinyassets/effectors/github_pr.py``.
 - [x] Add the capability-token check (**Option A — env-sourced JSON
-      map**; the env var is ``WORKFLOW_GITHUB_PR_CAPABILITIES``
+      map**; the env var is ``TINYASSETS_GITHUB_PR_CAPABILITIES``
       decoded as ``{"<owner>/<repo>": "<token>"}``). Round-2
       replaced the round-1 per-destination suffix encoding to close
       the punctuation-collision finding (Codex P1.2).
 - [x] Add the idempotency-store check before any `gh pr create` call,
       using the atomic ``try_reserve_receipt`` / ``finalize_receipt``
       / ``release_reservation`` seam (round-2 fix for Codex P1.1).
-      Storage: ``workflow/storage/external_write_receipts.py``.
+      Storage: ``tinyassets/storage/external_write_receipts.py``.
 - [x] Add the `effector_consents` table + migration. Storage:
-      ``workflow/storage/effector_consents.py``.
+      ``tinyassets/storage/effector_consents.py``.
 - [x] Add MCP actions to grant/revoke/list consent on the ``extensions``
-      surface. Dispatch: ``workflow/api/extensions_consent_actions.py``.
+      surface. Dispatch: ``tinyassets/api/extensions_consent_actions.py``.
 - [x] Update `drafts/concepts/external-write-packet-shape.md` to add
       the `destination` field (also documents the new Phase-2 dry-run
       evidence shape and the idempotency dedup-hit shape).
@@ -186,7 +186,7 @@ Deferred to follow-on slices (NOT in Slice 1):
       Slice 1 relies on the local receipt store; a future slice can
       add the remote check for cases where the receipt was lost
       (e.g. universe DB restored from a backup older than the PR).
-- [ ] ``WORKFLOW_EXTERNAL_WRITE_ENABLED`` is **kept as a Phase-1 signal**
+- [ ] ``TINYASSETS_EXTERNAL_WRITE_ENABLED`` is **kept as a Phase-1 signal**
       in Slice 1 — Phase-1-shaped packets (no ``destination``) still
       observe it via the ``mode="dry_run_phase_1"`` evidence label.
       Retire / repurpose when no Phase-1 packets remain in the wild.

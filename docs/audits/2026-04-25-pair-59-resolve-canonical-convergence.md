@@ -104,4 +104,4 @@ Per the four pair-reads (#59, #60, #62-as-solo-audit, #65, #66, #67) + this fift
   - `canonical_bindings` table (Task #61 commit `7b020ae`).
 - Sibling pair-reads completed: `docs/audits/2026-04-25-pair-{54-vs-56,50-vs-56,57-surgical-rollback,58-named-checkpoint,55-external-pr-bridge}-convergence.md` + `docs/audits/2026-04-25-audit-53-gate-route-back-solo.md`.
 - v2 vision: `docs/design-notes/2026-04-25-self-evolving-platform-vision-v2.md` §6 Phase A phasing.
-- Existing read-only goal action pattern: `workflow/universe_server.py:10247-10328` (`_action_goal_get`).
+- Existing read-only goal action pattern: `tinyassets/universe_server.py:10247-10328` (`_action_goal_get`).

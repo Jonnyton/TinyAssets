@@ -12,7 +12,7 @@ Workflow is **a global goals engine + paid-market AI workflow platform** with a 
 - **Wiki system** — 47 promoted pages: 33 bug reports filed by chatbot users, plus concept/plan/builder-notes pages
 - **Three tiers of users**:
   - **T1** — browser/Claude.ai users, copy `tinyassets.io/mcp` into chatbot, no install
-  - **T2** — daemon hosts, run Windows tray app (`workflow_tray.py`), can earn money completing bids
+  - **T2** — daemon hosts, run Windows tray app (`tinyassets_tray.py`), can earn money completing bids
   - **T3** — OSS contributors writing nodes/branches/goals
 - **MCP tools live now** (I just called them): `wiki`, `get_status`, `universe`, `goals`, `gates`, `extensions`
 
@@ -25,7 +25,7 @@ Source: `docs/specs/2026-04-18-paid-market-crypto-settlement.md` (Track E, ~4 de
 - **WalletConnect v2** — wallet only required at bid placement; browse + run free nodes wallet-less
 - **48h dispute window** with auto-accept; daemon can respond with corrected work
 - **Anti-sybil**: same-user bidding refused, account-age gate, GitHub OAuth only
-- **Outcome gates** with bonus staking — `gates` MCP tool already has `stake_bonus / unstake_bonus / release_bonus` actions (needs `WORKFLOW_PAID_MARKET=on`)
+- **Outcome gates** with bonus staking — `gates` MCP tool already has `stake_bonus / unstake_bonus / release_bonus` actions (needs `TINYASSETS_PAID_MARKET=on`)
 
 ### Website plan (specced, not yet shipped)
 Source: `docs/specs/2026-04-18-web-app-landing-and-catalog.md` (Track B, ~7-8 dev-day estimate)

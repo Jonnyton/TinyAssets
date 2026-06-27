@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from workflow.branch_versions import publish_branch_version
-from workflow.gate_events import attest_gate_event, leaderboard_by_gate_events, verify_gate_event
-from workflow.gate_events.store import dispute_gate_event, retract_gate_event
-from workflow.runs import initialize_runs_db
+from tinyassets.branch_versions import publish_branch_version
+from tinyassets.gate_events import attest_gate_event, leaderboard_by_gate_events, verify_gate_event
+from tinyassets.gate_events.store import dispute_gate_event, retract_gate_event
+from tinyassets.runs import initialize_runs_db
 
 
 def _seed_bv(base_path: Path, branch_id: str, publisher: str = "alice") -> str:
-    from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
-    from workflow.daemon_server import initialize_author_server, save_branch_definition
+    from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
 
     initialize_author_server(base_path)
     nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")

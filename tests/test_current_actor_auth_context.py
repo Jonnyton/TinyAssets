@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from workflow.auth.middleware import auth_middleware, set_provider
-from workflow.auth.provider import AuthProvider, DevAuthProvider, Identity
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 
 
 class StaticAuthProvider(AuthProvider):
@@ -56,13 +56,13 @@ def _reset_auth_context() -> None:
 def test_current_actor_prefers_authenticated_oauth_subject(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from workflow.api.engine_helpers import _current_actor
+    from tinyassets.api.engine_helpers import _current_actor
 
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "env-actor")
     set_provider(StaticAuthProvider(Identity(
         user_id="oauth-subject-123",
         username="display-name",
-        capabilities=["workflow.universe.write"],
+        capabilities=["tinyassets.universe.write"],
     )))
 
     auth_middleware("valid")
@@ -73,7 +73,7 @@ def test_current_actor_prefers_authenticated_oauth_subject(
 def test_current_actor_falls_back_to_env_without_request_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from workflow.api.engine_helpers import _current_actor
+    from tinyassets.api.engine_helpers import _current_actor
 
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "env-actor")
     set_provider(DevAuthProvider())
@@ -88,18 +88,18 @@ def test_get_status_account_user_uses_authenticated_subject(
 ) -> None:
     import json
 
-    from workflow.api.status import get_status
+    from tinyassets.api.status import get_status
 
     base = tmp_path / "output"
     universe = base / "status-uni"
     universe.mkdir(parents=True)
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "status-uni")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "env-actor")
     set_provider(StaticAuthProvider(Identity(
         user_id="oauth-status-subject",
         username="display-name",
-        capabilities=["workflow.universe.read"],
+        capabilities=["tinyassets.universe.read"],
     )))
 
     auth_middleware("valid")
@@ -113,8 +113,8 @@ def test_get_status_account_user_uses_authenticated_subject(
 async def test_auth_context_middleware_sets_actor_for_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from workflow.api.engine_helpers import _current_actor
-    from workflow.auth.middleware import AuthContextMiddleware
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.auth.middleware import AuthContextMiddleware
 
     seen: list[str] = []
 
@@ -127,7 +127,7 @@ async def test_auth_context_middleware_sets_actor_for_request(
     set_provider(StaticAuthProvider(Identity(
         user_id="oauth-subject-456",
         username="display-name",
-        capabilities=["workflow.universe.write"],
+        capabilities=["tinyassets.universe.write"],
     )))
 
     middleware = AuthContextMiddleware(app)

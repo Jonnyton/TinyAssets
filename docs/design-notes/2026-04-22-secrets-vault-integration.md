@@ -49,13 +49,13 @@ model we're trying to close.
 | `scripts/load_secrets.ps1` | PowerShell mirror. Dot-source to export. |
 | `scripts/migrate_secrets_to_vault.py` | One-shot migrator — reads `$HOME/workflow-secrets.env`, writes each key into the chosen vault. Idempotent. |
 
-**Vendor selection:** `WORKFLOW_SECRETS_VENDOR=1password|bitwarden|plaintext`
+**Vendor selection:** `TINYASSETS_SECRETS_VENDOR=1password|bitwarden|plaintext`
 (default `1password`). The `plaintext` value is the migration-period
 opt-out; it reads `$HOME/workflow-secrets.env` directly. To be removed
 once the host confirms cutover works.
 
 **Vault path convention:**
-- **1Password:** vault = `workflow` (override with `WORKFLOW_SECRETS_VAULT`); item name = the KEY (e.g. `CLOUDFLARE_API_TOKEN`); field = `password`.
+- **1Password:** vault = `workflow` (override with `TINYASSETS_SECRETS_VAULT`); item name = the KEY (e.g. `CLOUDFLARE_API_TOKEN`); field = `password`.
 - **Bitwarden:** item name = the KEY; login.password = the value.
 
 ## Fresh-laptop bootstrap runbook
@@ -66,7 +66,7 @@ once the host confirms cutover works.
 2. Sign in interactively:
    - 1Password: `eval $(op signin)`
    - Bitwarden: `bw login && export BW_SESSION=$(bw unlock --raw)`
-3. Clone the Workflow repo.
+3. Clone the TinyAssets repo.
 4. Load secrets into the current shell:
    ```bash
    set -a; source scripts/load_secrets.sh; set +a
@@ -102,17 +102,17 @@ disk but the vault CLI's encrypted local cache.
    shred -u ~/workflow-secrets.env  # Linux
    # macOS: rm -P; Windows: del + clear recycle bin
    ```
-6. Set `WORKFLOW_SECRETS_VENDOR=1password` in your shell profile
+6. Set `TINYASSETS_SECRETS_VENDOR=1password` in your shell profile
    (`~/.bashrc`, `~/.zshrc`, or PowerShell `$PROFILE`) so future
    sessions default to the vault.
 
 ## Opt-out / fallback semantics
 
-During the migration period, `WORKFLOW_SECRETS_VENDOR=plaintext`
+During the migration period, `TINYASSETS_SECRETS_VENDOR=plaintext`
 explicitly selects the old file-based loader. The loader warns every
 invocation: "plaintext mode is migration-period only."
 
-`WORKFLOW_SECRETS_PLAINTEXT_FALLBACK=1` allows silent fallback when a
+`TINYASSETS_SECRETS_PLAINTEXT_FALLBACK=1` allows silent fallback when a
 specified vendor CLI is unavailable — **removed after cutover**. Do not
 use this in production sessions once the vault works.
 
@@ -130,7 +130,7 @@ use this in production sessions once the vault works.
 ## Non-scope
 
 - **GitHub Actions secrets are unchanged.** CI uses `secrets.CLOUDFLARE_API_TOKEN` etc. directly from the GH repo settings. The local `GH_TOKEN` vault item is for operator/sandbox push sessions; GitHub Actions' built-in `GITHUB_TOKEN` stays CI-side and is not listed in `scripts/secrets_keys.txt`.
-- **Daemon-side `/etc/workflow/env`** on the Droplet is also unchanged.
+- **Daemon-side `/etc/tinyassets/env`** on the Droplet is also unchanged.
   That's a systemd `EnvironmentFile=` mount, not a developer laptop.
 - **Shared-team vault** — the current design is per-operator. If/when
   the team grows beyond the single-host model, a shared 1Password

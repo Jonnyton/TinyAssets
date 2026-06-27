@@ -5,8 +5,8 @@
 # + §7 (scheduler drift mitigation — XML-serializable entries).
 #
 # Creates two tasks in the user's task library:
-#   Workflow-Canary-L1  — every 2 min, runs scripts/uptime_canary.py
-#   Workflow-Alarm      — every 2 min, runs scripts/uptime_alarm.py
+#   TinyAssets-Canary-L1  — every 2 min, runs scripts/uptime_canary.py
+#   TinyAssets-Alarm      — every 2 min, runs scripts/uptime_alarm.py
 #
 # Both are decoupled (separate tasks) per design-note §5: probe liveness is
 # independent of alarm liveness. Each runs out-of-process so a tray crash
@@ -23,7 +23,7 @@
 [CmdletBinding()]
 param(
     [switch]$Uninstall,
-    [string]$CanaryUrl = $env:WORKFLOW_MCP_CANARY_URL,
+    [string]$CanaryUrl = $env:TINYASSETS_MCP_CANARY_URL,
     [string]$PythonExe = ""
 )
 
@@ -40,8 +40,8 @@ if ([string]::IsNullOrWhiteSpace($PythonExe)) {
     }
 }
 
-$L1Name    = "Workflow-Canary-L1"
-$AlarmName = "Workflow-Alarm"
+$L1Name    = "TinyAssets-Canary-L1"
+$AlarmName = "TinyAssets-Alarm"
 
 function Remove-TaskIfPresent([string]$Name) {
     $existing = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
@@ -108,7 +108,7 @@ Register-ScheduledTask `
     -Action $ProbeAction `
     -Settings $Settings `
     -Principal $Principal `
-    -Description "Workflow uptime canary Layer 1 — probes public MCP every 2 min." | Out-Null
+    -Description "TinyAssets uptime canary Layer 1 — probes public MCP every 2 min." | Out-Null
 Write-Host "[install_canary] registered $L1Name (starts $ProbeStart, 2-min repeat)"
 
 Remove-TaskIfPresent $AlarmName
@@ -118,11 +118,11 @@ Register-ScheduledTask `
     -Action $AlarmAction `
     -Settings $Settings `
     -Principal $Principal `
-    -Description "Workflow uptime alarm — reads uptime.log, escalates on 2+ consecutive reds." | Out-Null
+    -Description "TinyAssets uptime alarm — reads uptime.log, escalates on 2+ consecutive reds." | Out-Null
 Write-Host "[install_canary] registered $AlarmName (starts $AlarmStart, 2-min repeat)"
 
 Write-Host ""
 Write-Host "Done. Verify with:"
-Write-Host "  Get-ScheduledTask -TaskName Workflow-Canary-L1,Workflow-Alarm | Format-List"
+Write-Host "  Get-ScheduledTask -TaskName TinyAssets-Canary-L1,TinyAssets-Alarm | Format-List"
 Write-Host "  Get-Content .agents/uptime.log -Tail 5"
 Write-Host "  Get-Content .agents/uptime_alarms.log -Tail 5    # only exists once an alarm fires"

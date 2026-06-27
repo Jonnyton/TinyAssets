@@ -28,7 +28,7 @@ The `ta` token is multi-chain — three live deploys.
 | Link | Current target | Where it lives in new site |
 |---|---|---|
 | **Home** | tinyassets.io | `/` (landing) — replaced |
-| **White Paper / GitHub** | (need to verify URL) | Footer link + /contribute page (split into "Read paper" + "github.com/Jonnyton/Workflow") |
+| **White Paper / GitHub** | (need to verify URL) | Footer link + /contribute page (split into "Read paper" + "github.com/Jonnyton/TinyAssets") |
 | **Blog** | tinyassets.io/blog | Phase 2: `/blog` (RSS or Notion-driven). Phase 1: link out to current /blog |
 | **Contract Add** | tinyassets.io/contract-add | `/economy` (Phase 1.5) — full token info; or `/token` standalone |
 | **Tiny Alliance** | tinyassets.io/tiny-alliance | Footer link + dedicated page if substantive content (need to crawl) |
@@ -74,7 +74,7 @@ The `ta` token is multi-chain — three live deploys.
 ### `/white-paper-github` — **404 PAGE NOT FOUND**
 - Real broken link on the live site! The nav points to a URL that doesn't exist
 - Either the slug is different (e.g. `/white-paper`) or there's no actual White Paper page yet
-- → Recommend: replace nav link with `https://github.com/Jonnyton/Workflow` directly OR write a `/white-paper` page that wraps `PLAN.md` (the actual design truth doc)
+- → Recommend: replace nav link with `https://github.com/Jonnyton/TinyAssets` directly OR write a `/white-paper` page that wraps `PLAN.md` (the actual design truth doc)
 
 ## Footer chrome (legacy)
 - Footer links: HOME · WHITE PAPER/GITHUB · CONTRACT ADD
@@ -134,7 +134,7 @@ The `ta` token is multi-chain — three live deploys.
 | Contact form | Phase 1 footer (mailto: ops@tinyassets.io) | Same with backend |
 | Social links | Phase 1 footer (LinkedIn / X / YouTube / etc.) | Same |
 | White Paper link | Phase 1 nav or footer ("Read PLAN.md" → github URL) | Same |
-| GitHub link | Phase 1 nav + Contribute CTA → github.com/Jonnyton/Workflow | Same |
+| GitHub link | Phase 1 nav + Contribute CTA → github.com/Jonnyton/TinyAssets | Same |
 
 ## Open questions for host
 

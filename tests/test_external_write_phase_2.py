@@ -32,17 +32,17 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.branches import NodeDefinition
-from workflow.credential_vault import write_credential_vault
-from workflow.effectors import EXTERNAL_WRITE_SINK_GITHUB_PR
-from workflow.effectors.github_pr import (
+from tinyassets.branches import NodeDefinition
+from tinyassets.credential_vault import write_credential_vault
+from tinyassets.effectors import EXTERNAL_WRITE_SINK_GITHUB_PR
+from tinyassets.effectors.github_pr import (
     _CAPABILITIES_ENV,
     _read_capability,
     run_effects_for_branch,
     run_github_pr_effector,
 )
-from workflow.storage.effector_consents import grant_consent
-from workflow.storage.external_write_receipts import (
+from tinyassets.storage.effector_consents import grant_consent
+from tinyassets.storage.external_write_receipts import (
     STATUS_FAILED,
     STATUS_PENDING,
     STATUS_SUCCEEDED,
@@ -50,7 +50,7 @@ from workflow.storage.external_write_receipts import (
     record_receipt,
 )
 
-_DESTINATION = "Jonnyton/Workflow"
+_DESTINATION = "Jonnyton/TinyAssets"
 _HEAD_BRANCH = "auto/loop-2/cycle-001"
 
 
@@ -106,10 +106,10 @@ def _clean_capability_env(monkeypatch):
     """
     monkeypatch.delenv(_CAPABILITIES_ENV, raising=False)
     for name in list(os.environ.keys()):
-        if name.startswith("WORKFLOW_GITHUB_PR_CAPABILITY_REPO_"):
+        if name.startswith("TINYASSETS_GITHUB_PR_CAPABILITY_REPO_"):
             monkeypatch.delenv(name, raising=False)
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_ENABLED", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
 
 
 def _patch_materialize(head_branch: str = _HEAD_BRANCH):
@@ -121,7 +121,7 @@ def _patch_materialize(head_branch: str = _HEAD_BRANCH):
     so they mock it to a success record and stay focused on their real subject.
     """
     return patch(
-        "workflow.effectors.github_pr._materialize_branch",
+        "tinyassets.effectors.github_pr._materialize_branch",
         return_value={
             "materialized": True,
             "head_branch": head_branch,
@@ -157,16 +157,16 @@ def _set_capability(monkeypatch, destination: str, token: str) -> None:
 def test_read_capability_via_json_map(monkeypatch):
     monkeypatch.setenv(
         _CAPABILITIES_ENV,
-        json.dumps({"Jonnyton/Workflow": "tok-A"}),
+        json.dumps({"Jonnyton/TinyAssets": "tok-A"}),
     )
-    assert _read_capability("Jonnyton/Workflow") == "tok-A"
+    assert _read_capability("Jonnyton/TinyAssets") == "tok-A"
     assert _read_capability("never-set/repo") == ""
 
 
 def test_read_capability_distinguishes_punctuation_variants(monkeypatch):
     """Round-2 P1.2 regression guard. Under the round-1 suffix encoding
     `octo/my.repo`, `octo/my_repo`, and `octo/my-repo` collapsed to
-    `WORKFLOW_GITHUB_PR_CAPABILITY_REPO_OCTO_MY_REPO` and shared one
+    `TINYASSETS_GITHUB_PR_CAPABILITY_REPO_OCTO_MY_REPO` and shared one
     token. The JSON-map keys are the raw destination strings, so each
     variant maps to its own token."""
     monkeypatch.setenv(
@@ -191,7 +191,7 @@ def test_read_capability_empty_destination_returns_empty():
 def test_read_capability_unset_env_returns_empty():
     """No env set -> empty token -> missing_capability dry-run."""
     # _clean_capability_env autouse already cleared the env.
-    assert _read_capability("Jonnyton/Workflow") == ""
+    assert _read_capability("Jonnyton/TinyAssets") == ""
 
 
 def test_read_capability_uses_universe_vault_before_env(universe_dir, monkeypatch):
@@ -227,15 +227,15 @@ def test_read_capability_malformed_json_logs_and_returns_empty(monkeypatch):
     """Malformed JSON is logged loudly (the operator sees the warning)
     but never raises — the lookup collapses to missing_capability."""
     monkeypatch.setenv(_CAPABILITIES_ENV, "{not valid json}")
-    assert _read_capability("Jonnyton/Workflow") == ""
+    assert _read_capability("Jonnyton/TinyAssets") == ""
 
 
 def test_read_capability_non_object_json_returns_empty(monkeypatch):
     """The env value must decode to a JSON object. A list, scalar, or
     null all collapse to no-capability rather than crashing."""
-    for value in ("[\"Jonnyton/Workflow\"]", "\"tok\"", "null", "42"):
+    for value in ("[\"Jonnyton/TinyAssets\"]", "\"tok\"", "null", "42"):
         monkeypatch.setenv(_CAPABILITIES_ENV, value)
-        assert _read_capability("Jonnyton/Workflow") == ""
+        assert _read_capability("Jonnyton/TinyAssets") == ""
 
 
 def test_read_capability_strips_empty_token_entries(monkeypatch):
@@ -245,12 +245,12 @@ def test_read_capability_strips_empty_token_entries(monkeypatch):
     monkeypatch.setenv(
         _CAPABILITIES_ENV,
         json.dumps({
-            "Jonnyton/Workflow": "",
+            "Jonnyton/TinyAssets": "",
             "octo/other": "   ",
             "octo/real": "tok-real",
         }),
     )
-    assert _read_capability("Jonnyton/Workflow") == ""
+    assert _read_capability("Jonnyton/TinyAssets") == ""
     assert _read_capability("octo/other") == ""
     assert _read_capability("octo/real") == "tok-real"
 
@@ -263,7 +263,7 @@ def test_read_capability_strips_empty_token_entries(monkeypatch):
 def test_destination_present_capability_missing_returns_dry_run(universe_dir):
     packet = _make_packet()
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -323,7 +323,7 @@ def test_capability_present_consent_missing_returns_dry_run(
     _set_capability(monkeypatch, _DESTINATION, "tok")
     packet = _make_packet()
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -353,7 +353,7 @@ def test_consent_destination_must_match_exactly(universe_dir, monkeypatch):
     )
     packet = _make_packet()
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -387,7 +387,7 @@ def test_idempotency_hit_returns_recorded_evidence_no_subprocess(
         idempotency_hint="loop-2-cycle-001",
         sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
         evidence={
-            "pr_url": "https://github.com/Jonnyton/Workflow/pull/901",
+            "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/901",
             "pr_number": 901,
         },
         run_id="prior-run",
@@ -395,7 +395,7 @@ def test_idempotency_hit_returns_recorded_evidence_no_subprocess(
     )
     packet = _make_packet()
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -425,11 +425,11 @@ def test_idempotency_miss_when_hint_omitted(universe_dir, monkeypatch):
     packet = _make_packet(idempotency_hint=None)
     fake = SimpleNamespace(
         returncode=0,
-        stdout="https://github.com/Jonnyton/Workflow/pull/777\n",
+        stdout="https://github.com/Jonnyton/TinyAssets/pull/777\n",
         stderr="",
     )
     with _patch_materialize(), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:
         result = run_github_pr_effector(
@@ -474,12 +474,12 @@ def test_all_gates_open_invokes_gh_and_records_receipt(
         stdout=(
             "Creating draft pull request for "
             "auto/loop-2/cycle-001 into main\n"
-            "https://github.com/Jonnyton/Workflow/pull/1234\n"
+            "https://github.com/Jonnyton/TinyAssets/pull/1234\n"
         ),
         stderr="",
     )
     with _patch_materialize(), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:
         result = run_github_pr_effector(
@@ -503,7 +503,7 @@ def test_all_gates_open_invokes_gh_and_records_receipt(
     assert "writer:loop-2" in cmd  # label passthrough
 
     assert result["phase"] == "phase_2"
-    assert result["pr_url"] == "https://github.com/Jonnyton/Workflow/pull/1234"
+    assert result["pr_url"] == "https://github.com/Jonnyton/TinyAssets/pull/1234"
     assert result["pr_number"] == 1234
     assert result["destination"] == _DESTINATION
     assert result["matched_output_key"] == "pr_packet"
@@ -529,11 +529,11 @@ def test_second_run_with_same_hint_is_dedup_hit(universe_dir, monkeypatch):
     packet = _make_packet()
     fake = SimpleNamespace(
         returncode=0,
-        stdout="https://github.com/Jonnyton/Workflow/pull/42\n",
+        stdout="https://github.com/Jonnyton/TinyAssets/pull/42\n",
         stderr="",
     )
     with _patch_materialize(), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:
         first = run_github_pr_effector(
@@ -573,7 +573,7 @@ def test_gh_nonzero_exit_releases_reservation_to_failed(
         stderr="gh: GraphQL: Branch already has an open pull request\n",
     )
     with _patch_materialize(), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fake,
     ):
         result = run_github_pr_effector(
@@ -605,11 +605,11 @@ def test_gh_not_installed_and_api_unavailable_returns_structured_error(
     with (
         _patch_materialize(),
         patch(
-            "workflow.effectors.github_pr.subprocess.run",
+            "tinyassets.effectors.github_pr.subprocess.run",
             side_effect=FileNotFoundError("gh"),
         ),
         patch(
-            "workflow.effectors.github_pr.urllib.request.urlopen",
+            "tinyassets.effectors.github_pr.urllib.request.urlopen",
             side_effect=urllib.error.URLError("offline"),
         ),
     ):
@@ -657,7 +657,7 @@ def test_gh_not_installed_falls_back_to_github_api(
             assert body["draft"] is True
             assert req.headers["Authorization"] == "Bearer tok"
             return FakeResponse({
-                "html_url": "https://github.com/Jonnyton/Workflow/pull/5678",
+                "html_url": "https://github.com/Jonnyton/TinyAssets/pull/5678",
                 "number": 5678,
             })
         if req.full_url.endswith("/issues/5678/labels"):
@@ -669,10 +669,10 @@ def test_gh_not_installed_falls_back_to_github_api(
     with (
         _patch_materialize(),
         patch(
-            "workflow.effectors.github_pr.subprocess.run",
+            "tinyassets.effectors.github_pr.subprocess.run",
             side_effect=FileNotFoundError("gh"),
         ) as mock_run,
-        patch("workflow.effectors.github_pr.urllib.request.urlopen", fake_urlopen),
+        patch("tinyassets.effectors.github_pr.urllib.request.urlopen", fake_urlopen),
     ):
         result = run_github_pr_effector(
             node_id="emit",
@@ -685,7 +685,7 @@ def test_gh_not_installed_falls_back_to_github_api(
     mock_run.assert_called_once()
     assert len(requests) == 2
     assert result["phase"] == "phase_2"
-    assert result["pr_url"] == "https://github.com/Jonnyton/Workflow/pull/5678"
+    assert result["pr_url"] == "https://github.com/Jonnyton/TinyAssets/pull/5678"
     assert result["pr_number"] == 5678
     assert result["invocation_mode"] == "github_api"
     assert "tok" not in json.dumps(result)
@@ -704,7 +704,7 @@ def test_gh_timeout_returns_structured_error(universe_dir, monkeypatch):
     _open_all_gates(universe_dir, monkeypatch)
     packet = _make_packet()
     with _patch_materialize(), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=60),
     ):
         result = run_github_pr_effector(
@@ -731,7 +731,7 @@ def test_gh_returns_zero_but_no_pr_url_returns_error(
         stderr="",
     )
     with _patch_materialize(), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fake,
     ):
         result = run_github_pr_effector(
@@ -774,11 +774,11 @@ def test_run_effects_for_branch_passes_base_path_and_run_id(
     )
     fake = SimpleNamespace(
         returncode=0,
-        stdout="https://github.com/Jonnyton/Workflow/pull/9\n",
+        stdout="https://github.com/Jonnyton/TinyAssets/pull/9\n",
         stderr="",
     )
     with _patch_materialize(), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fake,
     ):
         ev_map = run_effects_for_branch(
@@ -814,7 +814,7 @@ def test_packet_without_destination_returns_phase_1_evidence(
     _open_all_gates(universe_dir, monkeypatch)
     packet = _make_packet(destination=None)
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -861,7 +861,7 @@ def test_phase_2_packet_with_capability_but_no_base_path_is_dry_run(
     _set_capability(monkeypatch, _DESTINATION, "tok")
     packet = _make_packet()
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -893,7 +893,7 @@ def test_existing_pending_reservation_blocks_concurrent_in_flight(
     # worker holding the reservation.
     import time as _time
 
-    from workflow.storage.external_write_receipts import (
+    from tinyassets.storage.external_write_receipts import (
         _connect,
         initialize_receipts_db,
     )
@@ -913,7 +913,7 @@ def test_existing_pending_reservation_blocks_concurrent_in_flight(
 
     packet = _make_packet()
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -936,7 +936,7 @@ def test_existing_pending_reservation_blocks_concurrent_in_flight(
 def test_kill_switch_bypasses_all_gates_when_truthy(
     universe_dir, monkeypatch,
 ):
-    """``WORKFLOW_EXTERNAL_WRITE_DRY_RUN=1`` is the operator
+    """``TINYASSETS_EXTERNAL_WRITE_DRY_RUN=1`` is the operator
     panic-button override. Round-1 of Phase 2 inadvertently left this
     env recognized-but-ignored; Codex round-2 caught the
     documentation/behavior drift and asked for the override to be
@@ -947,10 +947,10 @@ def test_kill_switch_bypasses_all_gates_when_truthy(
     short-circuit to dry-run evidence and never invoke ``gh``.
     """
     _open_all_gates(universe_dir, monkeypatch)
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", "1")
+    monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", "1")
     packet = _make_packet()
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -963,7 +963,7 @@ def test_kill_switch_bypasses_all_gates_when_truthy(
     assert result["dry_run"] is True
     assert result["phase"] == "phase_2"
     assert result["reason"] == "operator_kill_switch_active"
-    assert result["kill_switch_env"] == "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"
+    assert result["kill_switch_env"] == "TINYASSETS_EXTERNAL_WRITE_DRY_RUN"
     assert result["matched_output_key"] == "pr_packet"
     hint_lc = result["hint"].lower()
     assert (
@@ -985,10 +985,10 @@ def test_kill_switch_truthy_variants(universe_dir, monkeypatch, value):
     """All truthy spellings (matching the existing ``_TRUTHY`` set) must
     activate the override."""
     _open_all_gates(universe_dir, monkeypatch)
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", value)
+    monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", value)
     packet = _make_packet()
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -1009,15 +1009,15 @@ def test_kill_switch_falsy_variants_do_not_override(
     a truthy capability+consent+no-receipt combo must produce a real
     invocation (the mocked gh subprocess fires once)."""
     _open_all_gates(universe_dir, monkeypatch)
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", value)
+    monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", value)
     packet = _make_packet()
     fake = SimpleNamespace(
         returncode=0,
-        stdout="https://github.com/Jonnyton/Workflow/pull/4242\n",
+        stdout="https://github.com/Jonnyton/TinyAssets/pull/4242\n",
         stderr="",
     )
     with _patch_materialize(), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:
         result = run_github_pr_effector(
@@ -1038,15 +1038,15 @@ def test_kill_switch_unset_does_not_override(universe_dir, monkeypatch):
     _open_all_gates(universe_dir, monkeypatch)
     # autouse _clean_capability_env already cleared DRY_RUN; confirm.
     import os as _os
-    assert "WORKFLOW_EXTERNAL_WRITE_DRY_RUN" not in _os.environ
+    assert "TINYASSETS_EXTERNAL_WRITE_DRY_RUN" not in _os.environ
     packet = _make_packet()
     fake = SimpleNamespace(
         returncode=0,
-        stdout="https://github.com/Jonnyton/Workflow/pull/4242\n",
+        stdout="https://github.com/Jonnyton/TinyAssets/pull/4242\n",
         stderr="",
     )
     with _patch_materialize(), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fake,
     ) as mock_run:
         result = run_github_pr_effector(
@@ -1064,10 +1064,10 @@ def test_kill_switch_bypasses_phase_1_path_too(universe_dir, monkeypatch):
     """Phase-1-shaped packets (no ``destination``) must also honor the
     kill switch — the override fires at the top of the effector,
     BEFORE the Phase-1 / Phase-2 branch."""
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", "1")
+    monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", "1")
     packet = _make_packet(destination=None)
     with patch(
-        "workflow.effectors.github_pr.subprocess.run"
+        "tinyassets.effectors.github_pr.subprocess.run"
     ) as mock_run:
         result = run_github_pr_effector(
             node_id="emit",
@@ -1094,7 +1094,7 @@ def test_kill_switch_evidence_never_leaks_capability_token(
         destination=_DESTINATION,
         granted_by="host",
     )
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", "1")
+    monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", "1")
     packet = _make_packet()
     result = run_github_pr_effector(
         node_id="emit",

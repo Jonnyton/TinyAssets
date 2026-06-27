@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from workflow.utils.json_parsing import parse_llm_json
+from tinyassets.utils.json_parsing import parse_llm_json
 
 # ---------------------------------------------------------------------------
 # Enums

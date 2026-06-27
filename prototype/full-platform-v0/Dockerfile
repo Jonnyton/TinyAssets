@@ -24,7 +24,7 @@ COPY gateway.py ./
 
 # Default DSN — compose overrides via env for container-to-container
 # routing (postgres hostname resolves inside the compose network).
-ENV WORKFLOW_V0_DSN="postgresql://workflow:workflow_v0_dev@postgres:5432/workflow_v0"
+ENV TINYASSETS_V0_DSN="postgresql://workflow:workflow_v0_dev@postgres:5432/workflow_v0"
 
 # FastMCP stdio is the default transport; for HTTP / streamable, real
 # track C uses `mcp.run(transport='streamable-http')`. v0 defaults to

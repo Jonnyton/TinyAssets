@@ -13,7 +13,7 @@ from pathlib import Path
 from domains.fantasy_daemon.phases.target_actions import (
     advance_work_target_on_accept,
 )
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     PUBLISH_STAGE_PROVISIONAL,
     ROLE_PUBLISHABLE,
     WorkTarget,

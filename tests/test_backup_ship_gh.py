@@ -35,7 +35,7 @@ def _fake_post_fn(responses: list[dict]) -> object:
     return _fn
 
 
-def _make_tarball(tmp_path: Path, name: str = "workflow-data-2026-04-20T02-00-00Z.tar.gz") -> Path:
+def _make_tarball(tmp_path: Path, name: str = "tinyassets-data-2026-04-20T02-00-00Z.tar.gz") -> Path:
     p = tmp_path / name
     p.write_bytes(b"\x1f\x8b" + b"\x00" * 100)  # minimal gzip magic bytes
     return p
@@ -262,7 +262,7 @@ def test_ship_exits_3_on_api_error(tmp_path, monkeypatch) -> None:
 
 def test_tag_derived_from_tarball_stem(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("GH_TOKEN", "ghp_test")
-    tarball = _make_tarball(tmp_path, "workflow-data-2026-04-20T02-00-00Z.tar.gz")
+    tarball = _make_tarball(tmp_path, "tinyassets-data-2026-04-20T02-00-00Z.tar.gz")
     tags_seen = []
 
     def _ensure(token, repo, **kw):
@@ -279,7 +279,7 @@ def test_tag_derived_from_tarball_stem(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(bsg, "prune_releases", lambda *a, **kw: 0)
 
     bsg.ship(tarball)
-    assert tags_seen == ["workflow-data-2026-04-20T02-00-00Z"]
+    assert tags_seen == ["tinyassets-data-2026-04-20T02-00-00Z"]
 
 
 # ── backup.sh integration ─────────────────────────────────────────────

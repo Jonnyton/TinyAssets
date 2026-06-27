@@ -1,4 +1,4 @@
-"""Tests for workflow/gate_events/ — real-world outcome attestation.
+"""Tests for tinyassets/gate_events/ — real-world outcome attestation.
 
 Spec: docs/vetted-specs.md §gate_event.
 
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from workflow.branch_versions import publish_branch_version
-from workflow.gate_events import (
+from tinyassets.branch_versions import publish_branch_version
+from tinyassets.gate_events import (
     attest_gate_event,
     dispute_gate_event,
     get_gate_event,
@@ -21,12 +21,12 @@ from workflow.gate_events import (
     retract_gate_event,
     verify_gate_event,
 )
-from workflow.runs import initialize_runs_db
+from tinyassets.runs import initialize_runs_db
 
 
 def _seed_branch_version(base_path: Path, branch_id: str = "b1") -> str:
-    from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
-    from workflow.daemon_server import initialize_author_server, save_branch_definition
+    from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
 
     initialize_author_server(base_path)
     nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")

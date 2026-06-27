@@ -42,13 +42,13 @@ import pytest
 def us_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.setenv("GATES_ENABLED", "1")
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite")
-    from workflow.catalog import backend as backend_mod
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
+    from tinyassets.catalog import backend as backend_mod
     backend_mod.invalidate_backend_cache()
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
     backend_mod.invalidate_backend_cache()
@@ -95,7 +95,7 @@ def _seed_completed_run(
     Bypasses execute_branch_async since we don't need real graph
     execution — just a runs row the action can read from.
     """
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         create_run,
         update_run_status,
@@ -145,7 +145,7 @@ def test_run_not_completed_is_rejected(us_env):
     gid = _seed_goal_with_ladder(us)
     bid = _seed_branch_bound_to_goal(us, gid)
     # Create a run but leave it in 'queued' status (no update_run_status).
-    from workflow.runs import create_run
+    from tinyassets.runs import create_run
     run_id = create_run(
         base, branch_def_id=bid, thread_id=bid, inputs={},
     )
@@ -161,7 +161,7 @@ def test_failed_run_is_rejected(us_env):
     us, base = us_env
     gid = _seed_goal_with_ladder(us)
     bid = _seed_branch_bound_to_goal(us, gid)
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_FAILED,
         create_run,
         update_run_status,
@@ -366,7 +366,7 @@ def test_branch_supplied_evidence_url_used(us_env):
         output={
             "recommended_rung_claim": "draft_ready",
             "recommended_rung_claim_evidence_url":
-                "https://github.com/Jonnyton/Workflow/pull/970",
+                "https://github.com/Jonnyton/TinyAssets/pull/970",
             "recommended_rung_claim_evidence_note":
                 "PR #970 from branch v1.2",
         },
@@ -380,7 +380,7 @@ def test_branch_supplied_evidence_url_used(us_env):
     assert claim["goal_id"] == gid
     assert claim["branch_def_id"] == bid
     assert claim["evidence_url"] == (
-        "https://github.com/Jonnyton/Workflow/pull/970"
+        "https://github.com/Jonnyton/TinyAssets/pull/970"
     )
     assert claim["evidence_note"] == "PR #970 from branch v1.2"
     assert result["run_id"] == run_id
@@ -404,12 +404,12 @@ def test_caller_evidence_url_overrides_branch_supplied(us_env):
     result = _call(
         us, "gates", "claim_from_branch_run",
         run_id=run_id,
-        evidence_url="https://github.com/Jonnyton/Workflow/pull/970",
+        evidence_url="https://github.com/Jonnyton/TinyAssets/pull/970",
         evidence_note="caller-supplied override",
     )
     assert result["status"] == "claimed"
     assert result["claim"]["evidence_url"] == (
-        "https://github.com/Jonnyton/Workflow/pull/970"
+        "https://github.com/Jonnyton/TinyAssets/pull/970"
     )
     assert result["claim"]["evidence_note"] == "caller-supplied override"
 
@@ -424,7 +424,7 @@ def test_default_evidence_note_traces_back_to_run(us_env):
         output={
             "recommended_rung_claim": "draft_ready",
             "recommended_rung_claim_evidence_url":
-                "https://github.com/Jonnyton/Workflow/pull/970",
+                "https://github.com/Jonnyton/TinyAssets/pull/970",
         },
     )
     result = _call(
@@ -451,7 +451,7 @@ def test_happy_path_claim_lands_via_existing_gates_claim(us_env):
         output={
             "recommended_rung_claim": "review_passed",
             "recommended_rung_claim_evidence_url":
-                "https://github.com/Jonnyton/Workflow/pull/970",
+                "https://github.com/Jonnyton/TinyAssets/pull/970",
             "recommended_rung_claim_evidence_note":
                 "Codex round-2 approved",
         },
@@ -537,10 +537,10 @@ def test_works_against_fantasy_ladder_vocabulary(us_env):
 
 
 def test_action_short_circuits_when_gates_disabled(monkeypatch, tmp_path):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "output"))
     (tmp_path / "output").mkdir()
     monkeypatch.delenv("GATES_ENABLED", raising=False)
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     try:
         result = _call(

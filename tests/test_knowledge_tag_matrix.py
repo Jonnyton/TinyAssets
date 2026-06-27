@@ -3,17 +3,17 @@ from __future__ import annotations
 import json
 import logging
 
-from workflow.knowledge.knowledge_graph import KnowledgeGraph
-from workflow.knowledge.models import FactWithContext, RetrievalResult, SourceType
-from workflow.knowledge.tag_matrix import (
+from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+from tinyassets.knowledge.models import FactWithContext, RetrievalResult, SourceType
+from tinyassets.knowledge.tag_matrix import (
     CommonsPromotionRecord,
     KnowledgeTags,
     TagMatrixQuery,
     filter_rows_by_tag_matrix,
     row_visible_for_tag_matrix,
 )
-from workflow.memory.scoping import MemoryScope
-from workflow.retrieval.router import _drop_cross_universe_rows, _filter_by_tag_matrix
+from tinyassets.memory.scoping import MemoryScope
+from tinyassets.retrieval.router import _drop_cross_universe_rows, _filter_by_tag_matrix
 
 
 def _promotion_record() -> CommonsPromotionRecord:
@@ -68,7 +68,7 @@ def test_tag_matrix_includes_same_scope_and_promoted_commons(caplog):
         },
     ]
 
-    with caplog.at_level(logging.WARNING, logger="workflow.knowledge.tag_matrix"):
+    with caplog.at_level(logging.WARNING, logger="tinyassets.knowledge.tag_matrix"):
         filtered = filter_rows_by_tag_matrix(rows, scope=scope, query=query)
 
     assert [row["id"] for row in filtered] == [

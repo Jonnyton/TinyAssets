@@ -16,7 +16,7 @@ Exit codes
 Environment variables
 ---------------------
 GITHUB_TOKEN       fine-grained PAT or Actions GITHUB_TOKEN (issues: write)
-GITHUB_REPOSITORY  owner/repo  (default: Jonnyton/Workflow)
+GITHUB_REPOSITORY  owner/repo  (default: Jonnyton/TinyAssets)
 DISK_WARN_PCT      integer alert threshold, default 80
 DISK_WATCH_PATH    filesystem path to check, default /var/lib/docker
 DRY_RUN            set to 1/true to print plan without opening issues
@@ -37,7 +37,7 @@ GITHUB_API = "https://api.github.com"
 
 _DEFAULT_PATH = "/var/lib/docker"
 _DEFAULT_WARN_PCT = 80
-_DEFAULT_REPO = "Jonnyton/Workflow"
+_DEFAULT_REPO = "Jonnyton/TinyAssets"
 _DISK_PRESSURE_LABEL = "disk-pressure"
 
 
@@ -64,7 +64,7 @@ def _gh_ensure_label(
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "Content-Type": "application/json",
-            "User-Agent": "workflow-disk-watch/1.0",
+            "User-Agent": "tinyassets-disk-watch/1.0",
         },
     )
     try:
@@ -110,7 +110,7 @@ def open_gh_issue(
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "Content-Type": "application/json",
-            "User-Agent": "workflow-disk-watch/1.0",
+            "User-Agent": "tinyassets-disk-watch/1.0",
         },
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:

@@ -21,13 +21,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from workflow.bid.execution_log import (
+from tinyassets.bid.execution_log import (
     append_execution_log_entry as append_ledger_entry,
 )
-from workflow.bid.execution_log import (
+from tinyassets.bid.execution_log import (
     read_execution_log as read_ledger,
 )
-from workflow.bid.node_bid import (
+from tinyassets.bid.node_bid import (
     NodeBid,
     bid_path,
     claim_node_bid,
@@ -38,22 +38,22 @@ from workflow.bid.node_bid import (
     validate_node_bid_inputs,
     write_node_bid_post,
 )
-from workflow.branch_tasks import BranchTask
-from workflow.dispatcher import (
+from tinyassets.branch_tasks import BranchTask
+from tinyassets.dispatcher import (
     DispatcherConfig,
     load_dispatcher_config,
     score_task,
     select_next_task,
 )
-from workflow.dispatcher import (
+from tinyassets.dispatcher import (
     paid_market_enabled as dispatcher_paid_market_enabled,
 )
-from workflow.executors.node_bid import execute_node_bid
-from workflow.producers import branch_task as bt_producer_mod
-from workflow.producers.branch_task import (
+from tinyassets.executors.node_bid import execute_node_bid
+from tinyassets.producers import branch_task as bt_producer_mod
+from tinyassets.producers.branch_task import (
     reset_branch_task_registry,
 )
-from workflow.producers.node_bid import (
+from tinyassets.producers.node_bid import (
     NODE_BID_SENTINEL_PREFIX,
     NodeBidProducer,
     paid_market_enabled,
@@ -80,7 +80,7 @@ def repo_root(tmp_path: Path, monkeypatch) -> Path:
     root.mkdir()
     (root / "branches").mkdir()
     (root / "bids").mkdir()
-    monkeypatch.setenv("WORKFLOW_REPO_ROOT", str(root))
+    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(root))
     return root
 
 
@@ -93,13 +93,13 @@ def universe_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def paid_flag_on(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     return True
 
 
 @pytest.fixture
 def paid_flag_off(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "off")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
     return True
 
 
@@ -130,7 +130,7 @@ def _write_bid_yaml(
 
 
 def _make_approved_node(node_id: str, source_code: str):
-    from workflow.branches import NodeDefinition
+    from tinyassets.branches import NodeDefinition
     return NodeDefinition(
         node_id=node_id,
         display_name=node_id,
@@ -237,8 +237,8 @@ def test_claim_node_bid_first_wins(repo_root):
 
 
 def test_claim_node_bid_records_identity_tuple(repo_root, monkeypatch):
-    import workflow.bid.node_bid as nb_mod
-    from workflow.bid.node_bid import bids_dir
+    import tinyassets.bid.node_bid as nb_mod
+    from tinyassets.bid.node_bid import bids_dir
 
     monkeypatch.setattr(nb_mod, "_git_has_remote", lambda _root: False)
 
@@ -423,7 +423,7 @@ def test_execute_unknown_node_fails(tmp_path):
 
 
 def test_execute_unapproved_node_fails(tmp_path):
-    from workflow.branches import NodeDefinition
+    from tinyassets.branches import NodeDefinition
     node = NodeDefinition(
         node_id="bad", display_name="bad",
         approved=False, source_code="def run(s): return {}",
@@ -532,7 +532,7 @@ def test_bid_term_cap_enforced():
 
 
 def test_host_request_beats_max_bid_paid(tmp_path):
-    from workflow.branch_tasks import append_task
+    from tinyassets.branch_tasks import append_task
     u = tmp_path / "u"
     u.mkdir()
     append_task(u, _mk_task(
@@ -549,7 +549,7 @@ def test_host_request_beats_max_bid_paid(tmp_path):
 
 
 def test_llm_type_filter_empty_served_passes_all(tmp_path):
-    from workflow.branch_tasks import append_task
+    from tinyassets.branch_tasks import append_task
     u = tmp_path / "u"
     u.mkdir()
     append_task(u, _mk_task(
@@ -560,7 +560,7 @@ def test_llm_type_filter_empty_served_passes_all(tmp_path):
 
 
 def test_llm_type_filter_matching_passes(tmp_path):
-    from workflow.branch_tasks import append_task
+    from tinyassets.branch_tasks import append_task
     u = tmp_path / "u"
     u.mkdir()
     append_task(u, _mk_task(
@@ -571,7 +571,7 @@ def test_llm_type_filter_matching_passes(tmp_path):
 
 
 def test_llm_type_filter_mismatch_skipped(tmp_path):
-    from workflow.branch_tasks import append_task
+    from tinyassets.branch_tasks import append_task
     u = tmp_path / "u"
     u.mkdir()
     append_task(u, _mk_task(
@@ -595,24 +595,24 @@ def mcp_harness(tmp_path, monkeypatch, paid_flag_on):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "bids").mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
-    monkeypatch.setenv("WORKFLOW_REPO_ROOT", str(repo))
+    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(repo))
     return {"base": base, "uid": uid, "repo": repo}
 
 
 def test_submit_node_bid_flag_off_returns_not_available(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "off")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
     base = tmp_path / "output"
     base.mkdir()
     uid = "test-uni"
     (base / uid).mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
 
-    from workflow.api.universe import _action_submit_node_bid
+    from tinyassets.api.universe import _action_submit_node_bid
     resp = json.loads(_action_submit_node_bid(
         universe_id=uid, node_def_id="foo", inputs_json="{}", bid=1.0,
     ))
@@ -620,7 +620,7 @@ def test_submit_node_bid_flag_off_returns_not_available(
 
 
 def test_submit_node_bid_valid_writes_yaml(mcp_harness):
-    from workflow.api.universe import _action_submit_node_bid
+    from tinyassets.api.universe import _action_submit_node_bid
     resp = json.loads(_action_submit_node_bid(
         universe_id=mcp_harness["uid"],
         node_def_id="extract_entities",
@@ -637,7 +637,7 @@ def test_submit_node_bid_valid_writes_yaml(mcp_harness):
 
 
 def test_submit_node_bid_response_has_git_push_hint(mcp_harness):
-    from workflow.api.universe import _action_submit_node_bid
+    from tinyassets.api.universe import _action_submit_node_bid
     resp = json.loads(_action_submit_node_bid(
         universe_id=mcp_harness["uid"],
         node_def_id="extract_entities",
@@ -649,7 +649,7 @@ def test_submit_node_bid_response_has_git_push_hint(mcp_harness):
 
 
 def test_submit_node_bid_rejects_nested_inputs(mcp_harness):
-    from workflow.api.universe import _action_submit_node_bid
+    from tinyassets.api.universe import _action_submit_node_bid
     resp = json.loads(_action_submit_node_bid(
         universe_id=mcp_harness["uid"],
         node_def_id="f",
@@ -661,7 +661,7 @@ def test_submit_node_bid_rejects_nested_inputs(mcp_harness):
 
 
 def test_submit_node_bid_rejects_negative_bid(mcp_harness):
-    from workflow.api.universe import _action_submit_node_bid
+    from tinyassets.api.universe import _action_submit_node_bid
     resp = json.loads(_action_submit_node_bid(
         universe_id=mcp_harness["uid"],
         node_def_id="f",
@@ -677,7 +677,7 @@ def test_submit_node_bid_rejects_negative_bid(mcp_harness):
 
 
 def test_flag_off_producer_not_registered(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "off")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
     reset_branch_task_registry()
     registered = register_if_enabled()
     assert registered is False
@@ -686,7 +686,7 @@ def test_flag_off_producer_not_registered(monkeypatch):
 
 
 def test_flag_on_producer_registered(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     reset_branch_task_registry()
     registered = register_if_enabled()
     assert registered is True
@@ -695,10 +695,10 @@ def test_flag_on_producer_registered(monkeypatch):
 
 
 def test_dispatcher_paid_market_enabled_reads_env(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     assert dispatcher_paid_market_enabled() is True
     assert paid_market_enabled() is True
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "off")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
     assert dispatcher_paid_market_enabled() is False
     assert paid_market_enabled() is False
 
@@ -706,7 +706,7 @@ def test_dispatcher_paid_market_enabled_reads_env(monkeypatch):
 def test_load_dispatcher_config_flag_on_defaults_bid_coefficient(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     u = tmp_path / "u"
     u.mkdir()
     cfg = load_dispatcher_config(u)
@@ -718,7 +718,7 @@ def test_load_dispatcher_config_flag_off_bid_coefficient_stays_zero(
     tmp_path, monkeypatch,
 ):
     """Invariant: flag-off means bid_coefficient=0.0 and base scores stay unchanged."""
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "off")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
     u = tmp_path / "u"
     u.mkdir()
     cfg = load_dispatcher_config(u)
@@ -727,7 +727,7 @@ def test_load_dispatcher_config_flag_off_bid_coefficient_stays_zero(
 
 
 def test_load_dispatcher_config_yaml_override_wins(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     u = tmp_path / "u"
     u.mkdir()
     (u / "dispatcher_config.yaml").write_text(
@@ -801,17 +801,17 @@ _VALID_SOURCE = "def run(state):\n    return {'ok': True}\n"
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Phase G.1 — settlement records (workflow/settlements.py)
+# Phase G.1 — settlement records (tinyassets/settlements.py)
 # ───────────────────────────────────────────────────────────────────────
 
 
 def test_settlement_emitted_on_succeeded_bid(repo_root):
-    from workflow.bid.settlements import (
+    from tinyassets.bid.settlements import (
         SCHEMA_VERSION,
         record_settlement_event,
         settlements_dir,
     )
-    from workflow.executors.node_bid import NodeBidResult
+    from tinyassets.executors.node_bid import NodeBidResult
 
     bid = NodeBid(
         node_bid_id="nb_ok", node_def_id="n/x",
@@ -834,8 +834,8 @@ def test_settlement_emitted_on_succeeded_bid(repo_root):
 
 
 def test_settlement_records_identity_tuple_without_changing_amount(repo_root):
-    from workflow.bid.settlements import record_settlement_event
-    from workflow.executors.node_bid import NodeBidResult
+    from tinyassets.bid.settlements import record_settlement_event
+    from tinyassets.executors.node_bid import NodeBidResult
 
     bid = NodeBid(
         node_bid_id="nb_identity", node_def_id="n/x",
@@ -865,8 +865,8 @@ def test_settlement_records_identity_tuple_without_changing_amount(repo_root):
 
 
 def test_settlement_emitted_on_failed_bid(repo_root):
-    from workflow.bid.settlements import record_settlement_event
-    from workflow.executors.node_bid import NodeBidResult
+    from tinyassets.bid.settlements import record_settlement_event
+    from tinyassets.executors.node_bid import NodeBidResult
 
     bid = NodeBid(node_bid_id="nb_fail", node_def_id="n/x")
     result = NodeBidResult(
@@ -884,11 +884,11 @@ def test_settlement_refuses_overwrite(repo_root):
     """Preflight §4.1 #5b: v1 records are IMMUTABLE. A second call
     with the same (bid_id, daemon_id) raises SettlementExistsError.
     """
-    from workflow.bid.settlements import (
+    from tinyassets.bid.settlements import (
         SettlementExistsError,
         record_settlement_event,
     )
-    from workflow.executors.node_bid import NodeBidResult
+    from tinyassets.executors.node_bid import NodeBidResult
 
     bid = NodeBid(node_bid_id="nb_dup", node_def_id="n/x")
     result = NodeBidResult(
@@ -901,13 +901,13 @@ def test_settlement_refuses_overwrite(repo_root):
 
 
 def test_settlement_schema_version_locked():
-    from workflow.bid.settlements import SCHEMA_VERSION
+    from tinyassets.bid.settlements import SCHEMA_VERSION
     assert SCHEMA_VERSION == "1"
 
 
 def test_settlement_rejects_invalid_outcome_status(repo_root):
-    from workflow.bid.settlements import record_settlement_event
-    from workflow.executors.node_bid import NodeBidResult
+    from tinyassets.bid.settlements import record_settlement_event
+    from tinyassets.executors.node_bid import NodeBidResult
 
     bid = NodeBid(node_bid_id="nb_bad_outcome", node_def_id="n/x")
     # A result with status="running" shouldn't be able to settle.
@@ -919,7 +919,7 @@ def test_settlement_rejects_invalid_outcome_status(repo_root):
 
 
 def test_settlement_path_daemon_id_sanitized(tmp_path):
-    from workflow.bid.settlements import settlement_path
+    from tinyassets.bid.settlements import settlement_path
     # daemon_id with slashes must not break the filename.
     path = settlement_path(tmp_path, "nb_1", "daemon/with/slashes")
     # Only the daemon-id suffix part is sanitized; the path itself
@@ -947,7 +947,7 @@ def _init_git(repo_root: Path) -> None:
 def test_claim_local_only_renames_yaml(repo_root):
     """Local-only install (no remote): file renames to .claimed_by
     suffix; original YAML gone; returned NodeBid has claimed status."""
-    from workflow.bid.node_bid import bids_dir
+    from tinyassets.bid.node_bid import bids_dir
     _init_git(repo_root)
     _write_bid_yaml(repo_root, "nb_rename")
     claimed = claim_node_bid(repo_root, "nb_rename", "daemon-local")
@@ -970,7 +970,7 @@ def test_claim_revert_on_push_failure(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "bids").mkdir()
-    monkeypatch.setenv("WORKFLOW_REPO_ROOT", str(repo))
+    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(repo))
     _init_git(repo)
     _write_bid_yaml(repo, "nb_push_fail")
 
@@ -979,7 +979,7 @@ def test_claim_revert_on_push_failure(tmp_path, monkeypatch):
     outputs_dir.mkdir(parents=True)
     (outputs_dir / "leftover.json").write_text("{}", encoding="utf-8")
 
-    import workflow.bid.node_bid as nb_mod
+    import tinyassets.bid.node_bid as nb_mod
     monkeypatch.setattr(nb_mod, "_git_has_remote", lambda _root: True)
     monkeypatch.setattr(nb_mod, "_git_current_branch", lambda _root: "main")
 
@@ -1011,7 +1011,7 @@ def test_claim_returns_none_when_already_claimed(repo_root):
     result = claim_node_bid(repo_root, "nb_pre_claimed", "daemon-self")
     assert result is None
     # Original YAML untouched (status still claimed:other).
-    from workflow.bid.node_bid import read_node_bid
+    from tinyassets.bid.node_bid import read_node_bid
     bid = read_node_bid(repo_root, "nb_pre_claimed")
     assert bid is not None
     assert bid.status == "claimed:other"
@@ -1026,7 +1026,7 @@ def test_producer_rejects_unapproved_node(repo_root):
     """Layer 1 at the producer boundary: unapproved node skipped
     before BranchTask emission.
     """
-    from workflow.producers.node_bid import NodeBidProducer
+    from tinyassets.producers.node_bid import NodeBidProducer
 
     _write_bid_yaml(repo_root, "nb_unapproved")
 
@@ -1047,7 +1047,7 @@ def test_producer_rejects_dangerous_source_pattern(repo_root):
     """Layer 2 at the producer boundary: dangerous source pattern
     skipped before BranchTask emission.
     """
-    from workflow.producers.node_bid import NodeBidProducer
+    from tinyassets.producers.node_bid import NodeBidProducer
 
     _write_bid_yaml(repo_root, "nb_dangerous_src")
 
@@ -1066,7 +1066,7 @@ def test_producer_rejects_dangerous_source_pattern(repo_root):
 
 def test_producer_accepts_approved_clean_node(repo_root):
     """Happy path: layer 1+2 pass → bid enters the queue."""
-    from workflow.producers.node_bid import NodeBidProducer
+    from tinyassets.producers.node_bid import NodeBidProducer
 
     _write_bid_yaml(repo_root, "nb_clean")
 
@@ -1086,9 +1086,9 @@ def test_producer_accepts_approved_clean_node(repo_root):
 def test_bid_dangerous_patterns_strict_superset_of_wrapper():
     """Preflight §4.1 #5d + invariant 1: the bid list is a strict
     superset of the wrapper list, and both live at a single source
-    of truth in workflow.graph_compiler.
+    of truth in tinyassets.graph_compiler.
     """
-    from workflow.graph_compiler import (
+    from tinyassets.graph_compiler import (
         _BID_DANGEROUS_PATTERNS,
         _DANGEROUS_PATTERNS,
     )
@@ -1101,7 +1101,7 @@ def test_bid_dangerous_patterns_excludes_network_patterns():
     """Network-call patterns intentionally NOT in the bid list —
     approved nodes may legitimately call LLM APIs via urllib/requests.
     """
-    from workflow.graph_compiler import _BID_DANGEROUS_PATTERNS
+    from tinyassets.graph_compiler import _BID_DANGEROUS_PATTERNS
     for network in ("urllib", "requests", "socket", "http.client"):
         assert network not in _BID_DANGEROUS_PATTERNS
 
@@ -1150,17 +1150,17 @@ def test_race_bypass_rejected_when_remote_configured(
     _write_bid_yaml(repo_root, "nb_race_bypass", status="open")
 
     # Re-import the fantasy_author module with the monkeypatched
-    # claim_node_bid. We patch at `workflow.bid.node_bid` so the
+    # claim_node_bid. We patch at `tinyassets.bid.node_bid` so the
     # function-local import in _try_execute_claimed_node_bid picks
     # up the patched callable.
-    import workflow.bid.node_bid as nb_mod
+    import tinyassets.bid.node_bid as nb_mod
 
     def _patched_claim(repo, bid_id, daemon_id, **_kwargs):
         return None  # always "race lost"
     monkeypatch.setattr(nb_mod, "claim_node_bid", _patched_claim)
 
     from fantasy_daemon.__main__ import _try_execute_claimed_node_bid
-    from workflow.branch_tasks import BranchTask
+    from tinyassets.branch_tasks import BranchTask
 
     task = BranchTask(
         branch_task_id="t_race_1",
@@ -1203,14 +1203,14 @@ def test_fallback_still_works_without_remote(
     # NO `git remote add` — single-daemon local repo.
     _write_bid_yaml(repo_root, "nb_local_fb", status="open")
 
-    import workflow.bid.node_bid as nb_mod
+    import tinyassets.bid.node_bid as nb_mod
 
     def _patched_claim(repo, bid_id, daemon_id):
         return None
     monkeypatch.setattr(nb_mod, "claim_node_bid", _patched_claim)
 
     from fantasy_daemon.__main__ import _try_execute_claimed_node_bid
-    from workflow.branch_tasks import BranchTask
+    from tinyassets.branch_tasks import BranchTask
 
     task = BranchTask(
         branch_task_id="t_local_1",
@@ -1240,13 +1240,13 @@ def test_fallback_rejected_when_remote_and_yaml_missing(
     _init_repo_with_remote(repo_root)
     # Note: NO call to _write_bid_yaml — the file is missing.
 
-    import workflow.bid.node_bid as nb_mod
+    import tinyassets.bid.node_bid as nb_mod
     monkeypatch.setattr(
         nb_mod, "claim_node_bid", lambda r, b, d, **_kwargs: None,
     )
 
     from fantasy_daemon.__main__ import _try_execute_claimed_node_bid
-    from workflow.branch_tasks import BranchTask
+    from tinyassets.branch_tasks import BranchTask
 
     task = BranchTask(
         branch_task_id="t_missing_1",

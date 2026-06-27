@@ -37,7 +37,7 @@ The canonical mapping. Dev treats this as authoritative. Ambiguous cases land in
 | `fantasy_author/` (package) | `fantasy_daemon/` | Full package rename. ~2366 Python files reference the path in some form; most via `from fantasy_author.X import Y`. |
 | `domains/fantasy_author/` | `domains/fantasy_daemon/` | Domain-specific sub-package. |
 | `fantasy_author_original/` | **DELETE** | Per explorer scout (see §2), this is a legacy snapshot; confirm before delete. |
-| `fantasy_author.pyw` / `workflow.pyw` | `fantasy_daemon.pyw` | Windows launcher. |
+| `fantasy_author.pyw` / `tinyassets.pyw` | `fantasy_daemon.pyw` | Windows launcher. |
 | `AUTHOR_*` env vars (if any) | `DAEMON_*` | Check `.env.example` if exists. |
 | Error messages, docstrings, log strings saying "author" | "daemon" | User-visible strings FIRST priority (weeks-to-launch). |
 | `docs/specs/**/*author*` (file names, TOC) | Leave historical specs; update *active* docs only. | Specs are historical record; renaming them rewrites history. |
@@ -108,7 +108,7 @@ From repo grep at 2026-04-15 (all excluding `__pycache__`):
 - SQLite tables affected (confirmed): **3** (`author_definitions`, `author_votes`, plus `author_id` column appears on at least `branch_definitions` and `goals` as FK).
 - Test files affected: **all major test suites** (`test_author_server_api.py` is explicit; plus `test_branches.py`, `test_branch_definitions_db.py`, `test_community_branches_phase*`, etc).
 - Documentation: ~30 docs files mention the term in content.
-- Module root surfaces: `workflow/author_server.py` (2600+ lines), `fantasy_author/` package (32 files), `domains/fantasy_author/` (subpackage), `fantasy_author_original/` (legacy).
+- Module root surfaces: `tinyassets/author_server.py` (2600+ lines), `fantasy_author/` package (32 files), `domains/fantasy_author/` (subpackage), `fantasy_author_original/` (legacy).
 
 **This is a 1000+ file diff.** Treat it as a landing risk commensurate with a full phase shift, not a cleanup commit.
 
@@ -123,7 +123,7 @@ Ship in 5 phases. Each phase is independently mergeable and leaves the repo in a
 - **Classify every `author_id` site** into agent-runtime (→ rename `daemon_id`) vs content-authorship (→ keep `author_id`, add `author_kind` in Phase 3) vs ambiguous (→ escalate). Produce a short audit list committed to the plan thread. This is §1.5's audit deliverable; dev owns it.
 - Confirm `fantasy_author_original/` has zero live imports. Grep: `from fantasy_author_original` + `import fantasy_author_original`. If zero: proceed. If non-zero: fix the imports first (they shouldn't exist). **Host-confirmed delete; no safety net.**
 - Confirm no external consumer depends on current user-visible identifiers. Packaging surfaces (`packaging/mcpb/manifest.json`, `packaging/registry/server.json`, `packaging/claude-plugin/.../plugin.json`) — check if any string field names or IDs say "author" and are consumed by clients. Per planner memory + STATUS direction, packaging is weeks from user traffic; renaming before distribution goes live is the cheaper order.
-- Add `WORKFLOW_AUTHOR_RENAME_COMPAT` flag (default `on`) — re-exports old names from new modules during the transition. Flag flips to `off` in Phase 5. Keeps third-party scripts / user tooling from breaking mid-rename.
+- Add `TINYASSETS_AUTHOR_RENAME_COMPAT` flag (default `on`) — re-exports old names from new modules during the transition. Flag flips to `off` in Phase 5. Keeps third-party scripts / user tooling from breaking mid-rename.
 - Freeze the rename scope. Any `author_id` / `Author` / `author_server` additions between Phase 0 and Phase 5 merge must use the new names (or be a documented content-authorship site).
 
 ### Phase 1 — Module + package rename (1-2 commits, ~1 day)
@@ -132,8 +132,8 @@ Ship in 5 phases. Each phase is independently mergeable and leaves the repo in a
 
 - `fantasy_author/` → `fantasy_daemon/` (full `git mv` of the package tree).
 - `domains/fantasy_author/` → `domains/fantasy_daemon/` (full move).
-- `workflow/author_server.py` → `workflow/daemon_server.py`.
-- `fantasy_author/__init__.py` gets a back-compat shim: `from fantasy_daemon import *` (enabled by `WORKFLOW_AUTHOR_RENAME_COMPAT`). Same for `workflow/author_server.py` → shim to `workflow.daemon_server`.
+- `tinyassets/author_server.py` → `tinyassets/daemon_server.py`.
+- `fantasy_author/__init__.py` gets a back-compat shim: `from fantasy_daemon import *` (enabled by `TINYASSETS_AUTHOR_RENAME_COMPAT`). Same for `tinyassets/author_server.py` → shim to `workflow.daemon_server`.
 - **Delete `fantasy_author_original/` outright** (host-confirmed §9-B, zero safety net). Include the `rm -rf` in this phase's commit. Phase 0 already confirmed zero live imports; no rollback planned.
 - Rename `fantasy_author.pyw` → `fantasy_daemon.pyw`.
 - Run `pytest` — should pass because shims re-export. Run `ruff check` — should pass.
@@ -205,11 +205,11 @@ Copy is evocative, not sanitized. Internal symbols stay disciplined (`daemon`, `
 ### Scope (files + surfaces)
 
 **MCP tool descriptions** (visible inside Claude.ai and other MCP clients — HIGHEST priority):
-- `workflow/universe_server.py` — every tool's description string, parameter descriptions, example response copy.
-- `workflow/daemon_server.py` — same.
+- `tinyassets/universe_server.py` — every tool's description string, parameter descriptions, example response copy.
+- `tinyassets/daemon_server.py` — same.
 - `packaging/mcpb/manifest.json` — bundle description, tool descriptions visible in install UI.
 - `packaging/claude-plugin/.claude-plugin/marketplace.json` — plugin marketplace copy.
-- `packaging/claude-plugin/plugins/workflow-universe-server/.claude-plugin/plugin.json` — plugin description.
+- `packaging/claude-plugin/plugins/tinyassets-universe-server/.claude-plugin/plugin.json` — plugin description.
 - `packaging/registry/server.json` — MCP Registry listing copy (desc, title if needed).
 
 **User-facing docs (external entry points):**
@@ -217,10 +217,10 @@ Copy is evocative, not sanitized. Internal symbols stay disciplined (`daemon`, `
 - `INDEX.md` — repo map; brand matters for the first-time reader.
 - `packaging/PACKAGING_MAP.md`, `packaging/INDEX.md`, `packaging/mcpb/README.md`, `packaging/claude-plugin/README.md` — install/setup narrative.
 - `docs/mcpb_packaging.md`, `docs/distribution_validation.md` — adjacent to install copy.
-- Any onboarding / setup text the user encounters on first launch (check `packaging/claude-plugin/plugins/workflow-universe-server/runtime/bootstrap.py` for first-launch messages).
+- Any onboarding / setup text the user encounters on first launch (check `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/bootstrap.py` for first-launch messages).
 
 **User-facing error messages:**
-- Every `raise ValueError(...)` / `raise RuntimeError(...)` inside `workflow/universe_server.py` and `workflow/daemon_server.py` that can surface to an MCP client.
+- Every `raise ValueError(...)` / `raise RuntimeError(...)` inside `tinyassets/universe_server.py` and `tinyassets/daemon_server.py` that can surface to an MCP client.
 - Any MCP tool response `message` / `error` / `note` strings.
 - Log strings that show up in MCP client-visible surfaces (daemon_overview, status responses).
 
@@ -235,7 +235,7 @@ Copy is evocative, not sanitized. Internal symbols stay disciplined (`daemon`, `
 - A single launch-tweet / announcement draft file would help lock the voice for consistency; recommend host drafts this and drops a reference in `docs/launch/` if they want it in-repo.
 
 **MCP tool response FIELD names** (schema-breaking):
-- Check each tool response in `workflow/universe_server.py` for fields literally named `author` (vs `author_id`).
+- Check each tool response in `tinyassets/universe_server.py` for fields literally named `author` (vs `author_id`).
 - Rename to `daemon_id` and document the break. No distribution yet = no external consumers to break.
 
 ### Test gate
@@ -248,10 +248,10 @@ Copy is evocative, not sanitized. Internal symbols stay disciplined (`daemon`, `
 
 **Goal:** finalize. Delete compat shims, remove the flag.
 
-- Delete `fantasy_author/__init__.py` shim file + `workflow/author_server.py` shim.
+- Delete `fantasy_author/__init__.py` shim file + `tinyassets/author_server.py` shim.
 - Remove `Author = Daemon` aliases from classes.
 - Remove `_normalize_daemon_id` if Phase 3 chose Option A.
-- Flip `WORKFLOW_AUTHOR_RENAME_COMPAT` to default `off`, document in release notes.
+- Flip `TINYASSETS_AUTHOR_RENAME_COMPAT` to default `off`, document in release notes.
 - Delete the flag entirely after one release cycle passes.
 - Final `ruff check` + `pytest` — the repo should have zero "author" references outside the §2 exclusion list, content-authorship sites (§1.5), and historical docs.
 - Grep the repo for stragglers: `grep -rn "author" --include="*.py" | grep -v "# git-author-ok" | grep -v "author_kind\|author_id"` → review hits, fix any. (Content-authorship `author_id`/`author_kind` is expected and kept.)
@@ -279,7 +279,7 @@ Copy is evocative, not sanitized. Internal symbols stay disciplined (`daemon`, `
 
 Per current STATUS.md Work rows (2026-04-15 snapshot):
 
-- `#56 Path A — Branch visibility column` (dev-2) → land FIRST. Touches `workflow/author_server.py` schema. This rename consumes its schema change cleanly.
+- `#56 Path A — Branch visibility column` (dev-2) → land FIRST. Touches `tinyassets/author_server.py` schema. This rename consumes its schema change cleanly.
 - `Phase E queue_cancel graph interrupt` (dev) → land FIRST or IN PARALLEL on non-overlapping files. Check collision before starting.
 - `Packaging Option 1` (dev-2, pending) → land IN PARALLEL. Packaging touches `packaging/` + `scripts/` + build config, not the rename surface. Low collision.
 - `Memory-scope Stage 2` (blocked:host) → land AFTER the rename if possible. The tiered scope design introduces `user_id`, `goal_id`, etc — it'd be nice if `author_id`→`daemon_id` had already happened so Stage 2 doesn't have to cite both names.
@@ -293,7 +293,7 @@ Per current STATUS.md Work rows (2026-04-15 snapshot):
 - Zero user-visible strings (tool docstrings, error messages, MCP response field docs) contain "author" in the agent sense.
 - Full test suite green. Ruff green. Daemon starts, connects via MCP, writes to SQLite.
 - Release notes contain a clear "Breaking: `Author`→`Daemon` rename" section.
-- `WORKFLOW_AUTHOR_RENAME_COMPAT` flag removed from the codebase.
+- `TINYASSETS_AUTHOR_RENAME_COMPAT` flag removed from the codebase.
 
 ## 8. Effort estimate
 
@@ -327,7 +327,7 @@ Escalations:
 
 ## 9.2 Still open (lower-priority)
 
-1. **`WORKFLOW_AUTHOR_RENAME_COMPAT` flag removal timeline**: delete in the same release as Phase 5, or keep one release for grace? Recommend: same release, no distribution yet = no external scripts to grandfather.
+1. **`TINYASSETS_AUTHOR_RENAME_COMPAT` flag removal timeline**: delete in the same release as Phase 5, or keep one release for grace? Recommend: same release, no distribution yet = no external scripts to grandfather.
 2. **ID-prefix backfill (Phase 3 Option A vs B)**: confirm Option A (backfill once) is acceptable. If any user has IDs stashed in external tools, Option B is safer; if not, Option A is cleaner.
 3. **`author_kind` values enum boundary**: start with `'human' | 'daemon'`. Third value candidates: `'system'` (for automated ingest that's neither human nor a registered daemon), `'co_authored'` (human+daemon). Recommend: start with the two, add as concrete need surfaces.
 

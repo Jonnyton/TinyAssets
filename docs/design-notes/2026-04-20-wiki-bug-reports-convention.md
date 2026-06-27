@@ -90,9 +90,9 @@ Why top-level (not `notes/bugs/` or `meta/bugs/`):
 otherwise use nested top-level folders, and `meta/` implies
 "about-the-wiki", not "about-any-project's-software".
 
-## Decision 2 — scope: any software defect, not just the Workflow MCP server
+## Decision 2 — scope: any software defect, not just the TinyAssets MCP server
 
-Initial framing was "bugs in the Workflow MCP server". Broaden: any software
+Initial framing was "bugs in the TinyAssets MCP server". Broaden: any software
 defect a chatbot or user hits while working on any project the wiki
 covers. The `component` front-matter field tells the reader which
 project/surface is affected (e.g. `universe-server`, `wiki-mcp`, `tray`,
@@ -268,7 +268,7 @@ Include this in the dev task.
 Landed as sibling commits:
 
 1. This design note (docs/design-notes/).
-2. `_WIKI_CATEGORIES` += `"bugs"` in `workflow/universe_server.py` and
+2. `_WIKI_CATEGORIES` += `"bugs"` in `tinyassets/universe_server.py` and
    its `packaging/claude-plugin/` mirror.
 3. Matching update in `wiki-mcp/server.js` category enum.
 4. `pages/bugs/INDEX.md` skeleton + one seed entry for the

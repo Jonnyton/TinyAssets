@@ -4,7 +4,7 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
-from workflow.connector_catalog import (
+from tinyassets.connector_catalog import (
     DIRECTORY_MCP_PATH,
     DIRECTORY_TOOL_CATALOG_VERSION,
     VERSIONED_DIRECTORY_MCP_PATH,

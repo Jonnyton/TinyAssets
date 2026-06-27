@@ -12,7 +12,7 @@
 
 ## TL;DR for STATUS.md
 
-> Two audits recommend bundled refactor of `workflow/universe_server.py` (13,067 LOC, 490 KB). #28: extract 9 fantasy-domain actions (~720 LOC) to `domains/fantasy_daemon/api/`. #29: split remaining engine code into 8 submodules under `workflow/api/`. Net effort: ~5 dev-days, no behavior change, executes in 8 incrementally-mergeable commits. Sequence: gates on rename Phases 2–4 + in-flight tasks #21/#22 landing first. Three host questions outstanding (tool-shape after extraction, security-surface placement, registration pattern).
+> Two audits recommend bundled refactor of `tinyassets/universe_server.py` (13,067 LOC, 490 KB). #28: extract 9 fantasy-domain actions (~720 LOC) to `domains/fantasy_daemon/api/`. #29: split remaining engine code into 8 submodules under `tinyassets/api/`. Net effort: ~5 dev-days, no behavior change, executes in 8 incrementally-mergeable commits. Sequence: gates on rename Phases 2–4 + in-flight tasks #21/#22 landing first. Three host questions outstanding (tool-shape after extraction, security-surface placement, registration pattern).
 
 ---
 
@@ -20,7 +20,7 @@
 
 | Audit | Problem |
 |-------|---------|
-| **#28 Engine/Domain separation** | `workflow/universe_server.py` mixes engine primitives (cross-domain) with fantasy-specific world state (`story.db`, premises, canon). PLAN.md test fails: a second domain (research, journalism, etc.) cannot adopt the engine without engine changes. |
+| **#28 Engine/Domain separation** | `tinyassets/universe_server.py` mixes engine primitives (cross-domain) with fantasy-specific world state (`story.db`, premises, canon). PLAN.md test fails: a second domain (research, journalism, etc.) cannot adopt the engine without engine changes. |
 | **#29 universe_server decomposition** | The file is 13,067 LOC / 490 KB — every dev touches it; merge conflicts compound; 23 importers fan in. The 2026-04-19 spaghetti audit already named it the #1 hotspot. |
 
 Both problems live in the same file, which is why both audits exist as a pair and why a bundled execution is the proposal.
@@ -38,9 +38,9 @@ Both problems live in the same file, which is why both audits exist as a pair an
 
 ### #29 (Decomposition)
 
-- **8 submodules under `workflow/api/`:** `universe_helpers.py`, `universe_ops.py`, `branches.py` (largest at ~3,282 LOC), `runs.py`, `evaluation.py`, `market.py` (goals + gates + escrow + outcomes + attribution bundled), `runtime_ops.py`, `wiki.py`, `status.py`.
+- **8 submodules under `tinyassets/api/`:** `universe_helpers.py`, `universe_ops.py`, `branches.py` (largest at ~3,282 LOC), `runs.py`, `evaluation.py`, `market.py` (goals + gates + escrow + outcomes + attribution bundled), `runtime_ops.py`, `wiki.py`, `status.py`.
 - **Pattern A (Single FastMCP instance, decorators on shared `mcp`)** recommended over Pattern B (mount-based isolation) — Pattern B would change all tool names and break chatbot integrations. Defer to future breaking-change window.
-- **`universe_server.py` becomes a ~100-LOC aggregator shim** that re-exports from `workflow/api/*` to preserve the 23 existing importers — Strategy 1 (compat shim) over Strategy 2 (migrate all 23 immediately).
+- **`universe_server.py` becomes a ~100-LOC aggregator shim** that re-exports from `tinyassets/api/*` to preserve the 23 existing importers — Strategy 1 (compat shim) over Strategy 2 (migrate all 23 immediately).
 - **No behavior change** — pure refactor.
 - **Estimate:** ~5 dev-days across 8 sequential commits, each green on `pytest` + `ruff` between.
 
@@ -84,7 +84,7 @@ Both audits surface decisions only the host can make:
 **From #28 §8:**
 
 1. **Tool shape after extraction.** Should domain actions remain accessible via `universe(action="query_world")` (engine delegates to domain) or surface as a separate domain-registered tool (e.g. `fantasy(action="query_world")`)? Latter is cleaner long-term; former preserves existing chatbot flows.
-2. **Security-surface placement.** `add_canon_from_path` has `WORKFLOW_UPLOAD_WHITELIST` enforcement. Should the whitelist check stay engine-side (policy enforcement at the boundary) or move with the handler to the domain?
+2. **Security-surface placement.** `add_canon_from_path` has `TINYASSETS_UPLOAD_WHITELIST` enforcement. Should the whitelist check stay engine-side (policy enforcement at the boundary) or move with the handler to the domain?
 3. **Registration hook.** Import-time declarative registration vs explicit `register(mcp)` call from engine startup?
 
 **From #29:** No new asks beyond the in-flight rename design note's §5 host questions, which already track separately.

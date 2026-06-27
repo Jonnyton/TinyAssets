@@ -19,14 +19,14 @@ def treasury_key_path() -> Path:
     """Return the filesystem path to the treasury wallet seed file.
 
     Precedence:
-        1. WORKFLOW_TREASURY_KEY_PATH env var (explicit override).
+        1. TINYASSETS_TREASURY_KEY_PATH env var (explicit override).
         2. ~/.workflow-secrets/base-sepolia-treasury-v0.txt (default).
 
     The file itself is gitignored + lives outside the project folder.
     This function only returns the path; callers are responsible for
     reading + parsing (and for refusing to log the contents).
     """
-    env = os.environ.get("WORKFLOW_TREASURY_KEY_PATH")
+    env = os.environ.get("TINYASSETS_TREASURY_KEY_PATH")
     if env:
         return Path(env).expanduser()
     return Path.home() / ".workflow-secrets" / "base-sepolia-treasury-v0.txt"

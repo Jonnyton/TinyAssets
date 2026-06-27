@@ -21,8 +21,8 @@ from scripts.migrate_design_008_selector_backfill import run_backfill
 
 @pytest.fixture
 def base_path(tmp_path: Path, monkeypatch) -> Path:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    from workflow.daemon_server import initialize_author_server
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.daemon_server import initialize_author_server
     initialize_author_server(tmp_path)
     return tmp_path
 
@@ -34,7 +34,7 @@ def _seed_goal_with_branches(
     branch_ids: list[str],
     selector_branch_version_id: str | None = None,
 ):
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         save_branch_definition,
         save_goal,
         update_goal,
@@ -78,7 +78,7 @@ def _seed_goal_with_branches(
 
 
 def _get_goal(base_path: Path, goal_id: str) -> dict:
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     return get_goal(base_path, goal_id=goal_id)
 
 

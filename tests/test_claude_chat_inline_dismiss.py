@@ -105,15 +105,15 @@ def test_inline_dismiss_missing_label_falls_back_to_default(chat_module):
 
 def test_inline_probe_script_gating_strings(chat_module):
     """The JS probe uses the exact gate strings team-lead specified —
-    "Claude wants to use" AND a brand match (Workflow / Workflow Server /
+    "Claude wants to use" AND a brand match (TinyAssets / TinyAssets Server /
     legacy Universe Server) AND a button whose text starts with "Always
     allow". Pin the contract."""
     probe = chat_module._INLINE_ALWAYS_ALLOW_PROBE
     assert "Claude wants to use" in probe
-    # Brand gate covers the new "Workflow" connector name AND retains
+    # Brand gate covers the new "TinyAssets" connector name AND retains
     # the legacy "Universe Server" name so the probe still works for
     # connectors that haven't been reconnected yet.
-    assert "Workflow" in probe
+    assert "TinyAssets" in probe
     assert "Universe Server" in probe
     # Case-insensitive exact-prefix match on Always allow.
     assert "^always allow" in probe.lower()

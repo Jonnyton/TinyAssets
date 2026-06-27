@@ -1,2 +1,2 @@
-"""Shim: use workflow.desktop.create_shortcut instead."""
-from workflow.desktop.create_shortcut import *  # noqa: F401,F403
+"""Shim: use tinyassets.desktop.create_shortcut instead."""
+from tinyassets.desktop.create_shortcut import *  # noqa: F401,F403

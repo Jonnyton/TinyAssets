@@ -2,10 +2,10 @@
   "fetched_at": "2026-04-30T02:40:01.448Z",
   "source": "local git checkout + GitHub remote",
   "repo": {
-    "id": "repo:Workflow",
-    "name": "Workflow",
+    "id": "repo:TinyAssets",
+    "name": "TinyAssets",
     "owner": "Jonnyton",
-    "remote_url": "https://github.com/Jonnyton/Workflow.git",
+    "remote_url": "https://github.com/Jonnyton/TinyAssets.git",
     "current_branch": "cursor/claim-check-session-d",
     "head": "8980315",
     "main": "6207949",
@@ -164,11 +164,11 @@
     {
       "id": "area:mcp-api",
       "label": "MCP/API surface",
-      "summary": "The public connector tools and server adapters that expose Workflow to chatbots.",
+      "summary": "The public connector tools and server adapters that expose TinyAssets to chatbots.",
       "paths": [
-        "workflow/api",
-        "workflow/mcp_server.py",
-        "workflow/cloud_worker.py"
+        "tinyassets/api",
+        "tinyassets/mcp_server.py",
+        "tinyassets/cloud_worker.py"
       ]
     },
     {
@@ -199,8 +199,8 @@
       "label": "Coding system",
       "summary": "Agent-team coding, patch packets, tests, review gates, and repo-change execution.",
       "paths": [
-        "workflow/api/runs.py",
-        "workflow/branch_tasks.py",
+        "tinyassets/api/runs.py",
+        "tinyassets/branch_tasks.py",
         "tests",
         ".agents/skills"
       ]
@@ -277,7 +277,7 @@
       "name": "bug_to_patch_packet_v1",
       "area": "coding",
       "state": "wired",
-      "summary": "Investigation branch that turns a filed Workflow bug into a patch packet."
+      "summary": "Investigation branch that turns a filed TinyAssets bug into a patch packet."
     },
     {
       "id": "branch:agent_team_3node_v4",
@@ -346,72 +346,72 @@
   ],
   "edges": [
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "git:main",
       "kind": "git"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "git:cursor/claim-check-session-d",
       "kind": "git"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "git:origin/main",
       "kind": "git"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "git:origin/cursor/claim-check-session-d",
       "kind": "git"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "git:worktree-agent-a54683e4",
       "kind": "git"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "area:mcp-api",
       "kind": "contains"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "area:runtime-engine",
       "kind": "contains"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "area:fantasy-domain",
       "kind": "contains"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "area:coding-system",
       "kind": "contains"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "area:patch-loop",
       "kind": "contains"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "area:website",
       "kind": "contains"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "area:docs-plans",
       "kind": "contains"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "area:packaging-ops",
       "kind": "contains"
     },
     {
-      "from": "repo:Workflow",
+      "from": "repo:TinyAssets",
       "to": "area:tests-ci",
       "kind": "contains"
     },
@@ -567,7 +567,7 @@
     },
     {
       "from": "route:/graph",
-      "to": "repo:Workflow",
+      "to": "repo:TinyAssets",
       "kind": "showcases"
     },
     {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_domain_neutral_universe_state_excludes_fantasy_counters() -> None:
-    from workflow.universe_state import (
+    from tinyassets.universe_state import (
         DOMAIN_NEUTRAL_UNIVERSE_STATE_FIELDS,
         FANTASY_DEFAULT_UNIVERSE_STATE_FIELDS,
     )
@@ -22,7 +22,7 @@ def test_domain_neutral_universe_state_excludes_fantasy_counters() -> None:
 
 
 def test_project_domain_neutral_universe_state_drops_domain_fields() -> None:
-    from workflow.universe_state import project_domain_neutral_universe_state
+    from tinyassets.universe_state import project_domain_neutral_universe_state
 
     projected = project_domain_neutral_universe_state(
         {
@@ -52,7 +52,7 @@ def test_project_domain_neutral_universe_state_drops_domain_fields() -> None:
 
 def test_fantasy_universe_state_extends_domain_neutral_base() -> None:
     from domains.fantasy_daemon.state.universe_state import UniverseState
-    from workflow.universe_state import DOMAIN_NEUTRAL_UNIVERSE_STATE_FIELDS
+    from tinyassets.universe_state import DOMAIN_NEUTRAL_UNIVERSE_STATE_FIELDS
 
     fantasy_fields = frozenset(UniverseState.__annotations__)
 

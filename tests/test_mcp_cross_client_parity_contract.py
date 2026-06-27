@@ -13,9 +13,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 MCP_SERVER_SURFACES = (
-    "workflow/mcp_server.py",
-    "workflow/universe_server.py",
-    "workflow/directory_server.py",
+    "tinyassets/mcp_server.py",
+    "tinyassets/universe_server.py",
+    "tinyassets/directory_server.py",
 )
 
 

@@ -1,6 +1,6 @@
 <!--
   ChatDemo — verbatim capture from claude.ai chat 57e7d188-a4ff captured
-  2026-04-29 with the legacy Workflow MCP connector at tinyassets.io/mcp.
+  2026-04-29 with the TinyAssets MCP connector at tinyassets.io/mcp.
 
   Mirrors the real claude.ai layout: user prompt → assistant intro →
   one-line summary chip ("Synthesized loop architecture with real IDs
@@ -24,13 +24,13 @@
     | { kind: 'thought'; text: string }
     | { kind: 'tool'; name: string };
 
-  // Full reasoning trace, verbatim from the chat. Tool-call boxes show
+  // Reasoning trace from the chat with labels updated to the current name. Tool-call boxes show
   // the tool name as Claude.ai displays it; "Result" indicators omitted
   // as visual chrome only.
   const TRACE: Step[] = [
-    { kind: 'thought', text: "I need to access the Workflow MCP connector at tinyassets.io/mcp, so let me search for the available tools to load them." },
+    { kind: 'thought', text: "I need to access the TinyAssets MCP connector at tinyassets.io/mcp, so let me search for the available tools to load them." },
     { kind: 'tool', name: 'Loading tools' },
-    { kind: 'thought', text: "The Workflow tools are now loaded, so I'm checking the active goals to see what needs attention." },
+    { kind: 'thought', text: "The TinyAssets tools are now loaded, so I'm checking the active goals to see what needs attention." },
     { kind: 'tool', name: 'Goals' },
     { kind: 'thought', text: "I've identified the two key goals for the patch flow — routing patch requests through investigation, PR, release, and live observation, and converting workflow bugs into patch packets. Now I'm checking the wiki for relevant context around patch_request flow, daemon, and gates." },
     { kind: 'tool', name: 'Wiki Knowledge Base' },
@@ -45,18 +45,18 @@
   <div class="chat__header">
     <div class="chat__live">
       <span class="dot"></span>
-      <span class="meta">claude.ai · legacy Workflow connector attached</span>
+      <span class="meta">claude.ai · TinyAssets connector attached</span>
     </div>
     <span class="meta meta--right">real conversation · tinyassets.io/mcp</span>
   </div>
 
   <div class="chat__body">
-    <!-- USER PROMPT (verbatim) -->
+    <!-- USER PROMPT -->
     <div class="msg msg--user">
-      Using the Workflow MCP connector at tinyassets.io/mcp — browse the active goals and the live wiki, then draw me a mermaid flowchart showing how a chatbot user files a patch_request, a daemon claims it, gates verify the fix, and the patch ships to live. Use the real goal IDs and bug numbers you find through the connector. Make the diagram readable, not exhaustive.
+      Using the TinyAssets MCP connector at tinyassets.io/mcp — browse the active goals and the live wiki, then draw me a mermaid flowchart showing how a chatbot user files a patch_request, a daemon claims it, gates verify the fix, and the patch ships to live. Use the real goal IDs and bug numbers you find through the connector. Make the diagram readable, not exhaustive.
     </div>
 
-    <!-- ASSISTANT INTRO (verbatim) -->
+    <!-- ASSISTANT INTRO -->
     <p class="msg msg--intro">Here's the patch_request loop, grounded in what's actually in the connector:</p>
 
     <!-- COLLAPSIBLE TRACE — mirrors Claude.ai's "Synthesized loop architecture..." chip -->
@@ -221,14 +221,14 @@
       </svg>
     </div>
 
-    <!-- ANCHORS PROSE — verbatim -->
+    <!-- ANCHORS PROSE -->
     <div class="msg msg--anchors">
       <p>
-        <strong>Anchors used:</strong> Goal <code>4ff5862cc26d</code> — <em>Route a patch request through investigation, PR, release, and live observation.</em> The whole outer loop binds to this one; failed gates route work backward "with edits." Goal <code>f10caea2e437</code> — <em>Turn a Workflow bug into a patch packet.</em> The investigation branch (<code>0731a3122bd4</code>) is bound here. Bug numbers like <strong>BUG-019</strong> (conditional_edges to END throws KeyError) and <strong>BUG-029</strong> (empty-LLM-response error gives no next action) are real entries from <code>pages/bugs/</code> and are the kind of report that enters at <code>file_bug</code>. The wiki currently has BUG-001 through BUG-034 filed.
+        <strong>Anchors used:</strong> Goal <code>4ff5862cc26d</code> — <em>Route a patch request through investigation, PR, release, and live observation.</em> The whole outer loop binds to this one; failed gates route work backward "with edits." Goal <code>f10caea2e437</code> — <em>Turn a TinyAssets bug into a patch packet.</em> The investigation branch (<code>0731a3122bd4</code>) is bound here. Bug numbers like <strong>BUG-019</strong> (conditional_edges to END throws KeyError) and <strong>BUG-029</strong> (empty-LLM-response error gives no next action) are real entries from <code>pages/bugs/</code> and are the kind of report that enters at <code>file_bug</code>. The wiki currently has BUG-001 through BUG-034 filed.
       </p>
     </div>
 
-    <!-- HONEST CAVEAT — verbatim -->
+    <!-- HONEST CAVEAT -->
     <div class="msg msg--caveat">
       <p>
         <strong>One honest caveat from the piece-map draft:</strong> today the gates emit <em>text decisions, not conditional route transitions</em>, and branch selection still reads state fields rather than doing canonical-goal lookup. So the diagram shows the loop as designed — the backward edges are the intent, not yet fully automated wiring.
@@ -237,7 +237,7 @@
   </div>
 
   <div class="chat__footer">
-    <span class="footer__source">Captured 2026-04-29 from claude.ai/new with the Workflow MCP connector attached. Every word above appears verbatim in the original chat.</span>
+    <span class="footer__source">Captured 2026-04-29 from claude.ai/new with the TinyAssets MCP connector attached; labels reflect the current product name.</span>
   </div>
 </div>
 

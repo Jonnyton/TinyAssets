@@ -1,4 +1,4 @@
-"""Tests for workflow.storage.data_dir — canonical WORKFLOW_DATA_DIR resolver.
+"""Tests for tinyassets.storage.data_dir — canonical TINYASSETS_DATA_DIR resolver.
 
 Per docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md Row B.
 The 2026-04-19 P0 had a container CWD-drift class: pre-Row-B, the daemon
@@ -19,7 +19,7 @@ import pytest
 @pytest.fixture
 def clean_env(monkeypatch):
     """Strip all env vars the resolver reads so tests start from a known state."""
-    for name in ("WORKFLOW_DATA_DIR",):
+    for name in ("TINYASSETS_DATA_DIR",):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
@@ -28,11 +28,11 @@ def clean_env(monkeypatch):
 
 
 def test_workflow_data_dir_takes_precedence(clean_env, tmp_path):
-    """Explicit WORKFLOW_DATA_DIR wins over the platform default."""
-    from workflow.storage import data_dir
+    """Explicit TINYASSETS_DATA_DIR wins over the platform default."""
+    from tinyassets.storage import data_dir
 
     target = tmp_path / "canonical"
-    clean_env.setenv("WORKFLOW_DATA_DIR", str(target))
+    clean_env.setenv("TINYASSETS_DATA_DIR", str(target))
 
     result = data_dir()
     assert result == target.resolve()
@@ -43,25 +43,25 @@ def test_workflow_data_dir_takes_precedence(clean_env, tmp_path):
 
 def test_default_is_absolute(clean_env):
     """Default path MUST be absolute (no CWD-relative drift)."""
-    from workflow.storage import data_dir
+    from tinyassets.storage import data_dir
     assert data_dir().is_absolute()
 
 
 def test_explicit_env_is_absolute(clean_env, tmp_path):
-    """Explicit WORKFLOW_DATA_DIR is always resolved to absolute."""
-    from workflow.storage import data_dir
+    """Explicit TINYASSETS_DATA_DIR is always resolved to absolute."""
+    from tinyassets.storage import data_dir
 
     # Set a relative-looking path; resolver must absolute-ize it.
-    clean_env.setenv("WORKFLOW_DATA_DIR", "relative/path")
+    clean_env.setenv("TINYASSETS_DATA_DIR", "relative/path")
     result = data_dir()
     assert result.is_absolute()
 
 
 def test_expanduser_honored(clean_env):
     """Tilde expansion works for shell-style paths."""
-    from workflow.storage import data_dir
+    from tinyassets.storage import data_dir
 
-    clean_env.setenv("WORKFLOW_DATA_DIR", "~/workflow-test")
+    clean_env.setenv("TINYASSETS_DATA_DIR", "~/workflow-test")
     result = data_dir()
     expected = (Path.home() / "workflow-test").resolve()
     assert result == expected
@@ -71,8 +71,8 @@ def test_expanduser_honored(clean_env):
 
 
 def test_linux_mac_default_dot_workflow_under_home(clean_env):
-    """On non-Windows, default is ~/.workflow."""
-    from workflow.storage import data_dir
+    """On non-Windows, default is ~/.tinyassets."""
+    from tinyassets.storage import data_dir
 
     if os.name == "nt":
         pytest.skip("test targets non-Windows default branch")
@@ -82,8 +82,8 @@ def test_linux_mac_default_dot_workflow_under_home(clean_env):
 
 
 def test_windows_default_uses_appdata(clean_env, monkeypatch):
-    """On Windows with APPDATA, default is %APPDATA%\\Workflow."""
-    from workflow.storage import data_dir
+    """On Windows with APPDATA, default is %APPDATA%\\TinyAssets."""
+    from tinyassets.storage import data_dir
 
     # Simulate Windows even when tests run on Linux CI. We patch os.name
     # + APPDATA to prove the branch is correct.
@@ -91,18 +91,18 @@ def test_windows_default_uses_appdata(clean_env, monkeypatch):
     monkeypatch.setenv("APPDATA", "/fake/appdata")
 
     result = data_dir()
-    assert result == Path("/fake/appdata/Workflow").resolve()
+    assert result == Path("/fake/appdata/TinyAssets").resolve()
 
 
 def test_windows_default_without_appdata_falls_back(clean_env, monkeypatch):
-    """Windows without APPDATA uses Path.home() / AppData / Roaming / Workflow."""
-    from workflow.storage import data_dir
+    """Windows without APPDATA uses Path.home() / AppData / Roaming / TinyAssets."""
+    from tinyassets.storage import data_dir
 
     monkeypatch.setattr(os, "name", "nt")
     monkeypatch.delenv("APPDATA", raising=False)
 
     result = data_dir()
-    expected = (Path.home() / "AppData" / "Roaming" / "Workflow").resolve()
+    expected = (Path.home() / "AppData" / "Roaming" / "TinyAssets").resolve()
     assert result == expected
 
 
@@ -110,10 +110,10 @@ def test_windows_default_without_appdata_falls_back(clean_env, monkeypatch):
 
 
 def test_empty_string_env_treated_as_unset(clean_env):
-    """WORKFLOW_DATA_DIR="" must not resolve to CWD — fall through to default."""
-    from workflow.storage import data_dir
+    """TINYASSETS_DATA_DIR="" must not resolve to CWD — fall through to default."""
+    from tinyassets.storage import data_dir
 
-    clean_env.setenv("WORKFLOW_DATA_DIR", "")
+    clean_env.setenv("TINYASSETS_DATA_DIR", "")
     result = data_dir()
     assert result.is_absolute()
     # Should NOT be CWD — the CWD-drift bug we're guarding against.
@@ -121,10 +121,10 @@ def test_empty_string_env_treated_as_unset(clean_env):
 
 
 def test_whitespace_only_env_treated_as_unset(clean_env):
-    """Whitespace-only WORKFLOW_DATA_DIR doesn't resolve to the CWD."""
-    from workflow.storage import data_dir
+    """Whitespace-only TINYASSETS_DATA_DIR doesn't resolve to the CWD."""
+    from tinyassets.storage import data_dir
 
-    clean_env.setenv("WORKFLOW_DATA_DIR", "   ")
+    clean_env.setenv("TINYASSETS_DATA_DIR", "   ")
     result = data_dir()
     assert result.is_absolute()
 
@@ -133,34 +133,34 @@ def test_whitespace_only_env_treated_as_unset(clean_env):
 
 
 def test_universe_server_base_path_uses_data_dir(clean_env, tmp_path):
-    """workflow.api.helpers._base_path() delegates to data_dir()."""
-    from workflow.api.helpers import _base_path
+    """tinyassets.api.helpers._base_path() delegates to data_dir()."""
+    from tinyassets.api.helpers import _base_path
 
     target = tmp_path / "universe-server-root"
-    clean_env.setenv("WORKFLOW_DATA_DIR", str(target))
+    clean_env.setenv("TINYASSETS_DATA_DIR", str(target))
 
     assert _base_path() == target.resolve()
 
 
 def test_mcp_server_universe_dir_uses_data_dir(clean_env, tmp_path):
-    """workflow.mcp_server._universe_dir() roots at data_dir() / default-universe."""
-    from workflow.mcp_server import _universe_dir
+    """tinyassets.mcp_server._universe_dir() roots at data_dir() / default-universe."""
+    from tinyassets.mcp_server import _universe_dir
 
     target = tmp_path / "mcp-root"
-    clean_env.setenv("WORKFLOW_DATA_DIR", str(target))
-    # WORKFLOW_UNIVERSE must be unset so we hit the default branch.
-    clean_env.delenv("WORKFLOW_UNIVERSE", raising=False)
+    clean_env.setenv("TINYASSETS_DATA_DIR", str(target))
+    # TINYASSETS_UNIVERSE must be unset so we hit the default branch.
+    clean_env.delenv("TINYASSETS_UNIVERSE", raising=False)
 
     assert _universe_dir() == (target / "default-universe").resolve()
 
 
 def test_mcp_server_workflow_universe_overrides(clean_env, tmp_path):
-    """WORKFLOW_UNIVERSE env override still works (per-universe explicit path)."""
-    from workflow.mcp_server import _universe_dir
+    """TINYASSETS_UNIVERSE env override still works (per-universe explicit path)."""
+    from tinyassets.mcp_server import _universe_dir
 
     override = tmp_path / "explicit-universe"
-    clean_env.setenv("WORKFLOW_UNIVERSE", str(override))
-    clean_env.setenv("WORKFLOW_DATA_DIR", "/should/be/ignored")
+    clean_env.setenv("TINYASSETS_UNIVERSE", str(override))
+    clean_env.setenv("TINYASSETS_DATA_DIR", "/should/be/ignored")
 
     assert _universe_dir() == override.resolve()
 
@@ -174,7 +174,7 @@ def test_no_cwd_drift_when_env_unset(clean_env, tmp_path, monkeypatch):
     Even if the CWD changes between resolver calls (e.g., process
     chdir after startup), the returned path must be stable.
     """
-    from workflow.storage import data_dir
+    from tinyassets.storage import data_dir
 
     monkeypatch.chdir(tmp_path)
     first = data_dir()
@@ -188,8 +188,8 @@ def test_no_cwd_drift_when_env_unset(clean_env, tmp_path, monkeypatch):
 
 
 def test_data_dir_exported_from_workflow_storage(clean_env):
-    """data_dir is reachable via `from workflow.storage import data_dir`."""
-    import workflow.storage
+    """data_dir is reachable via `from tinyassets.storage import data_dir`."""
+    import tinyassets.storage
 
-    assert "data_dir" in workflow.storage.__all__
-    assert callable(workflow.storage.data_dir)
+    assert "data_dir" in tinyassets.storage.__all__
+    assert callable(tinyassets.storage.data_dir)

@@ -269,10 +269,10 @@ The 2026-04-27 incident (`module 'lead_browser' has no attribute 'navigate'`) ha
 After `python scripts/uptime_canary_layer2.py --once` returns 0 (GREEN) or 14 (SKIP, browser lock held) — NOT 13 (RED browser-load) — wire Task Scheduler:
 
 ```powershell
-# Run as Administrator from C:\Users\Jonathan\Projects\Workflow
+# Run as Administrator from C:\Users\Jonathan\Projects\TinyAssets
 schtasks /Create `
   /TN "Workflow-Canary-L2" `
-  /TR "python C:\Users\Jonathan\Projects\Workflow\scripts\uptime_canary_layer2.py" `
+  /TR "python C:\Users\Jonathan\Projects\TinyAssets\scripts\uptime_canary_layer2.py" `
   /SC HOURLY `
   /ST 00:30 `
   /F

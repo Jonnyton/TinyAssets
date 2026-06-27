@@ -5,12 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from workflow.memory.ingestion import (
+from tinyassets.memory.ingestion import (
     IngestionPriority,
     ProgressiveIngestor,
 )
-from workflow.memory.promises import SeriesPromiseTracker
-from workflow.memory.versioning import OutputVersionStore
+from tinyassets.memory.promises import SeriesPromiseTracker
+from tinyassets.memory.versioning import OutputVersionStore
 
 # =====================================================================
 # ProgressiveIngestor
@@ -270,7 +270,7 @@ class TestCommitVersionStoreWiring:
 
     def test_save_to_version_store_called(self):
         from domains.fantasy_daemon.phases.commit import _save_to_version_store
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         store = OutputVersionStore(":memory:", "test")
         state = {
@@ -293,7 +293,7 @@ class TestCommitVersionStoreWiring:
     def test_save_to_version_store_absent(self):
         """No crash when version_store is not set."""
         from domains.fantasy_daemon.phases.commit import _save_to_version_store
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         runtime.version_store = None
         _save_to_version_store({}, "prose", "accept", 0.8)  # should not raise
@@ -301,7 +301,7 @@ class TestCommitVersionStoreWiring:
     def test_save_to_version_store_error_handled(self):
         """Errors in version store are caught gracefully."""
         from domains.fantasy_daemon.phases.commit import _save_to_version_store
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         broken_store = MagicMock()
         broken_store.save_draft.side_effect = RuntimeError("DB error")
@@ -317,7 +317,7 @@ class TestBookClosePromiseWiring:
 
     def test_promote_promises_on_close(self):
         from domains.fantasy_daemon.phases.book_close import book_close
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         tracker = SeriesPromiseTracker(":memory:", "test")
         state = {
@@ -341,7 +341,7 @@ class TestBookClosePromiseWiring:
     def test_book_close_no_tracker(self):
         """No crash when promise_tracker is not set."""
         from domains.fantasy_daemon.phases.book_close import book_close
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         runtime.promise_tracker = None
         result = book_close({
@@ -353,7 +353,7 @@ class TestBookClosePromiseWiring:
     def test_book_close_empty_promises(self):
         """Graceful handling when no promises to promote."""
         from domains.fantasy_daemon.phases.book_close import book_close
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         tracker = SeriesPromiseTracker(":memory:", "test")
         runtime.promise_tracker = tracker

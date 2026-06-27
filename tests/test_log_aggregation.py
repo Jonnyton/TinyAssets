@@ -94,7 +94,7 @@ def test_vector_tails_workflow_daemon():
     )
     assert docker_source is not None
     containers = docker_source.get("include_containers", [])
-    assert "workflow-daemon" in containers, "docker_logs source must include workflow-daemon"
+    assert "tinyassets-daemon" in containers, "docker_logs source must include tinyassets-daemon"
 
 
 def test_vector_tails_workflow_tunnel():
@@ -105,7 +105,7 @@ def test_vector_tails_workflow_tunnel():
     )
     assert docker_source is not None
     containers = docker_source.get("include_containers", [])
-    assert "workflow-tunnel" in containers, "docker_logs source must include workflow-tunnel"
+    assert "tinyassets-tunnel" in containers, "docker_logs source must include tinyassets-tunnel"
 
 
 def test_vector_has_stdout_sink():

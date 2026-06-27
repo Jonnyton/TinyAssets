@@ -30,11 +30,11 @@ The community patch loop had produced **zero terminal successes since ~Jun 3**
 00:09:13 worker        dispatcher_pick: claimed bt_…d7502b5a
 00:11:38 worker-claude-2 dispatcher_pick: claimed bt_…d7502b5a   ← same task
 00:11:43 worker-claude-1 dispatcher_pick: claimed bt_…d7502b5a   ← same task
-CompilerError: Pinned writer provider 'claude-code' exhausted. WORKFLOW_PIN_WRITER disables fallback
+CompilerError: Pinned writer provider 'claude-code' exhausted. TINYASSETS_PIN_WRITER disables fallback
 00:11:48 worker-claude-2 executed … status=failed
 ValueError: Invalid transition failed -> succeeded for task bt_…d7502b5a   ← codex success LOST
 …
-daemon-watchdog.service: failed — "required variable WORKFLOW_IMAGE is missing a value"
+daemon-watchdog.service: failed — "required variable TINYASSETS_IMAGE is missing a value"
 /data/.codex/auth.json → codex login status: "Logged in using ChatGPT"   (codex OK)
 /data/.claude → claude -p: "Not logged in · Please run /login"            (claude DEAD)
 ```
@@ -93,7 +93,7 @@ health** — surface `claude-code: not logged in` as a provider-down warning so
 ## Question 3 — How can the loop fix this break next time, automatically?
 
 `daemon-watchdog.service` is the intended auto-recovery layer but is itself
-**failed** (`WORKFLOW_IMAGE` missing) — fixing separately so it can act. A
+**failed** (`TINYASSETS_IMAGE` missing) — fixing separately so it can act. A
 periodic stuck-claim reaper (`reclaim_expired_leases` already exists; ensure it
 runs on a timer, not only on claim attempts). Auto-quarantine a provider whose
 auth check fails so dead-auth workers stop poisoning the queue and work routes
@@ -114,7 +114,7 @@ restart a live subprocess at all.
 ## Substrate improvement filed
 
 - **PR #1339** — lease-aware startup recovery + idempotent finalize (the cure).
-- Follow-ups (not yet filed as PRs): daemon-watchdog `WORKFLOW_IMAGE` fix
+- Follow-ups (not yet filed as PRs): daemon-watchdog `TINYASSETS_IMAGE` fix
   (host-side, in progress); claude-auth re-seed on the droplet (host decision —
   needs their subscription creds, or run a codex-only fleet); restart-on-pending
   hardening; provider-auth health surfaced in `get_status`.

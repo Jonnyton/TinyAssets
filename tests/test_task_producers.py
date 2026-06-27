@@ -18,14 +18,14 @@ from domains.fantasy_daemon.producers import (
     SeedProducer,
     UserRequestProducer,
 )
-from workflow.producers import (
+from tinyassets.producers import (
     TaskProducer,
     producer_interface_enabled,
     registered_producers,
     reset_registry,
     run_producers,
 )
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     ROLE_NOTES,
     WorkTarget,
     choose_authorial_targets,
@@ -135,7 +135,7 @@ def test_user_request_producer_materializes_pending(universe_dir):
 def test_dispatcher_stamps_origin_from_producer(universe_dir):
     """Spec §7: even if a producer emits origin='wrong', the dispatcher
     overrides to producer.origin."""
-    from workflow.producers import register
+    from tinyassets.producers import register
 
     class MisLabelledProducer:
         name = "mislabeled"
@@ -157,7 +157,7 @@ def test_dispatcher_logs_and_skips_failing_producer(
     universe_dir, caplog,
 ):
     """One bad producer doesn't break the cycle."""
-    from workflow.producers import register
+    from tinyassets.producers import register
 
     class FailingProducer:
         name = "broken"
@@ -174,7 +174,7 @@ def test_dispatcher_logs_and_skips_failing_producer(
     register(FailingProducer())
     register(OKProducer())
     import logging
-    with caplog.at_level(logging.WARNING, logger="workflow.producers"):
+    with caplog.at_level(logging.WARNING, logger="tinyassets.producers"):
         merged = run_producers(universe_dir)
     assert len(merged) == 1
     assert merged[0].target_id == "survivor"
@@ -183,7 +183,7 @@ def test_dispatcher_logs_and_skips_failing_producer(
 
 def test_dispatcher_last_write_wins_on_target_id(universe_dir, caplog):
     """Two producers emitting same target_id → later wins, warn logged."""
-    from workflow.producers import register
+    from tinyassets.producers import register
 
     class First:
         name = "first"
@@ -204,7 +204,7 @@ def test_dispatcher_last_write_wins_on_target_id(universe_dir, caplog):
     register(First())
     register(Second())
     import logging
-    with caplog.at_level(logging.WARNING, logger="workflow.producers"):
+    with caplog.at_level(logging.WARNING, logger="tinyassets.producers"):
         merged = run_producers(universe_dir)
     assert len(merged) == 1
     assert merged[0].title == "second version"
@@ -238,13 +238,13 @@ def test_choose_authorial_targets_without_override_uses_file(universe_dir):
 
 
 def test_producer_interface_enabled_default_on(monkeypatch):
-    monkeypatch.delenv("WORKFLOW_PRODUCER_INTERFACE", raising=False)
+    monkeypatch.delenv("TINYASSETS_PRODUCER_INTERFACE", raising=False)
     assert producer_interface_enabled() is True
 
 
 @pytest.mark.parametrize("value", ["off", "OFF", "0", "false", "no"])
 def test_producer_interface_flag_off_values(monkeypatch, value):
-    monkeypatch.setenv("WORKFLOW_PRODUCER_INTERFACE", value)
+    monkeypatch.setenv("TINYASSETS_PRODUCER_INTERFACE", value)
     assert producer_interface_enabled() is False
 
 
@@ -306,7 +306,7 @@ def test_fantasy_universe_cycle_produces_identical_targets_with_flag_on_vs_off(
     # The current authorial_priority_review also calls materialize
     # after ensure_seed_targets. Mirror that so the two paths are
     # comparing the same "what's live" set.
-    from workflow.work_targets import materialize_pending_requests
+    from tinyassets.work_targets import materialize_pending_requests
     materialize_pending_requests(universe_dir)
     off_targets = choose_authorial_targets(
         universe_dir,
@@ -357,9 +357,9 @@ def test_authorial_review_dispatches_through_producers_when_flag_on(
     from domains.fantasy_daemon.phases.authorial_priority_review import (
         authorial_priority_review,
     )
-    from workflow.producers import register
+    from tinyassets.producers import register
 
-    monkeypatch.setenv("WORKFLOW_PRODUCER_INTERFACE", "on")
+    monkeypatch.setenv("TINYASSETS_PRODUCER_INTERFACE", "on")
     (universe_dir / "PROGRAM.md").write_text(
         "Ignored in producer path.", encoding="utf-8",
     )
@@ -393,9 +393,9 @@ def test_authorial_review_skips_producers_when_flag_off(
     from domains.fantasy_daemon.phases.authorial_priority_review import (
         authorial_priority_review,
     )
-    from workflow.producers import register
+    from tinyassets.producers import register
 
-    monkeypatch.setenv("WORKFLOW_PRODUCER_INTERFACE", "off")
+    monkeypatch.setenv("TINYASSETS_PRODUCER_INTERFACE", "off")
 
     class SentinelProducer:
         name = "sentinel"

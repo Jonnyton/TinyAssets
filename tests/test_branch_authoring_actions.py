@@ -16,18 +16,18 @@ import pytest
 
 @pytest.fixture
 def branch_env(tmp_path, monkeypatch):
-    """Point the Workflow data root at a temp base path for the test.
+    """Point the TinyAssets data root at a temp base path for the test.
 
     The Community Branches storage layer uses ``_base_path()`` which
-    reads ``WORKFLOW_DATA_DIR`` — pointing it at a temp dir keeps
+    reads ``TINYASSETS_DATA_DIR`` — pointing it at a temp dir keeps
     tests isolated from real universes. Storage backend is pinned to
     ``sqlite_only`` globally by the conftest autouse fixture.
     """
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     import importlib
 
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, Path(tmp_path)
@@ -156,7 +156,7 @@ def test_list_branches_scope_mine_filters_to_caller(branch_env, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "other")
     import importlib
 
-    from workflow import universe_server as us2
+    from tinyassets import universe_server as us2
     importlib.reload(us2)
     json.loads(us2.extensions(
         action="build_branch",

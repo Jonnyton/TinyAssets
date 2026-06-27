@@ -22,7 +22,7 @@ decision fronts remain before resetting priorities.
 
 This season made the engine/domain split real enough to matter:
 
-- `workflow/` exists as shared infrastructure
+- `tinyassets/` exists as shared infrastructure
 - `domains/fantasy_author/` exists as the first domain
 - `domains/research_probe/` exists as a second-domain probe
 
@@ -102,7 +102,7 @@ That is not side process. It is now part of the project’s architecture.
 
 ### 1. Structural extraction is easier than operational extraction
 
-We learned that moving packages and creating `workflow/` is not the same as
+We learned that moving packages and creating `tinyassets/` is not the same as
 finishing extraction.
 
 The hard part is not:

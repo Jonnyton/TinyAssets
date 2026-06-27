@@ -33,7 +33,7 @@ from domains.fantasy_daemon.phases.world_state_db import (
     init_db,
     upsert_character,
 )
-from workflow.memory.manager import MAX_CONTEXT_TOKENS, MemoryManager
+from tinyassets.memory.manager import MAX_CONTEXT_TOKENS, MemoryManager
 
 
 class TestBuildWorldStateSnapshotDedup:

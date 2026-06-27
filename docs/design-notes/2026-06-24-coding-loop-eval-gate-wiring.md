@@ -11,9 +11,9 @@ A reality audit found this repo is **split by lane**:
 
 - **Prose lane (fantasy-author):** bar IS at the eval. `domains/fantasy_daemon/phases/commit.py` runs a `StructuralEvaluator` + an LLM-as-judge `read_editorial` (a *different* model from the writer), and the accept/revert/second-draft verdict is gated by them. Real, running, gating.
 - **Coding / community-patch lane (what AGENTS.md's verification norms are actually about):** bar is at the **demo**. All three eval components exist but are **disconnected**:
-  1. `workflow/coding_packet_rubric.py` — `validate_coding_packet_rubric` (KEEP ≥ 9.0, child-output evidence, anti-overclaim contradiction checks). Imported by **exactly one file: its own test**. The governing doc `loop-outcome-rubric-v0.md` is `Status: proposal`, Phase 1 only.
-  2. `workflow/evaluation/scenario_runner.py` + `scenario_dispatchers/mcp_call.py` — a genuine `AcceptanceScenario` harness (rubric fields: `evaluator_chain`, `pass_threshold.min_score`, `cost_budget`, `artifact_requirements`). But **no dispatcher is registered** and **no scenario instances exist as data**, so `run_scenario` returns `skip → no_dispatcher_registered` in production.
-  3. `workflow/evaluation/process.py` — `evaluate_scene_process` IS a trajectory evaluator (scores `trace_handoff`, `tool_use`, `retrieval_choices`, `grounding_quality`, `stopping_behavior`) and IS called from `commit.py`. But the result is **logged, never enforced** — the verdict is computed before it from structural+editorial only.
+  1. `tinyassets/coding_packet_rubric.py` — `validate_coding_packet_rubric` (KEEP ≥ 9.0, child-output evidence, anti-overclaim contradiction checks). Imported by **exactly one file: its own test**. The governing doc `loop-outcome-rubric-v0.md` is `Status: proposal`, Phase 1 only.
+  2. `tinyassets/evaluation/scenario_runner.py` + `scenario_dispatchers/mcp_call.py` — a genuine `AcceptanceScenario` harness (rubric fields: `evaluator_chain`, `pass_threshold.min_score`, `cost_budget`, `artifact_requirements`). But **no dispatcher is registered** and **no scenario instances exist as data**, so `run_scenario` returns `skip → no_dispatcher_registered` in production.
+  3. `tinyassets/evaluation/process.py` — `evaluate_scene_process` IS a trajectory evaluator (scores `trace_handoff`, `tool_use`, `retrieval_choices`, `grounding_quality`, `stopping_behavior`) and IS called from `commit.py`. But the result is **logged, never enforced** — the verdict is computed before it from structural+editorial only.
 
 So: the machinery is built and unit-tested; it is the **Phase-2 connections** that are missing. This is a wiring gap, not a greenfield build — which is exactly why it's high-leverage.
 
@@ -33,12 +33,12 @@ Three connections, each independently shippable, smallest first:
 - Add a `run_acceptance_suite()` entrypoint (mirror `scripts/proofs/daemon_memory_quality_eval.py`) run in CI with a temp data dir. This is the "bar at the eval" beachhead.
 
 **S2 — Wire `coding_packet_rubric` into the auto-ship gate (output-eval, Phase 2).**
-- **CORRECTED by review:** there is no `release_safety_gate` function (the first-pass audit's grep matched prose, not a def). The real structural gate is `workflow.auto_ship.validate_ship_request` (`workflow/auto_ship.py:271`), reached via `_action_validate_ship_packet` (`workflow/api/auto_ship_actions.py:110` → `:165`). It **already** enforces child score < 9 (`auto_ship.py:377-392`) and required fields incl. `stable_evidence_handle` (`:71-78`). Only the rubric-**only** checks are missing — `child_candidate_patch_packet`, `release_evidence_bundle_complete`, contradictory-child-claim detection (`coding_packet_rubric.py:181,209,239`).
+- **CORRECTED by review:** there is no `release_safety_gate` function (the first-pass audit's grep matched prose, not a def). The real structural gate is `workflow.auto_ship.validate_ship_request` (`tinyassets/auto_ship.py:271`), reached via `_action_validate_ship_packet` (`tinyassets/api/auto_ship_actions.py:110` → `:165`). It **already** enforces child score < 9 (`auto_ship.py:377-392`) and required fields incl. `stable_evidence_handle` (`:71-78`). Only the rubric-**only** checks are missing — `child_candidate_patch_packet`, `release_evidence_bundle_complete`, contradictory-child-claim detection (`coding_packet_rubric.py:181,209,239`).
 - Add just those missing checks, and update the **plugin mirror** copy (`packaging/claude-plugin/.../coding_packet_rubric.py:116`, per the mirror-parity rule). **Update packet producers + `tests/test_auto_ship.py:26-41` FIRST** — today's passing packets lack the rubric-only fields, so naive composition would flip valid packets to blocked.
 
 **S3 — Feed trajectory failures into the coding verdict (trajectory-eval enforcement).**
 - The prose loop's `process.py` pattern, ported to the coding lane: a `tool_use` / `grounding_quality` trajectory failure should be able to force a re-draft or block, instead of only being written to audit notes.
-- **CORRECTED by review:** do NOT reuse `workflow/evaluation/process.py` directly — it is scene-loop specific (scene IDs, beats, `story_search`, `canon_breach`: `process.py:142-158,195-205,285`). Define a **coding-specific trajectory schema + thresholds + false-positive behavior** first, then gate. Lowest-confidence slice; do it last.
+- **CORRECTED by review:** do NOT reuse `tinyassets/evaluation/process.py` directly — it is scene-loop specific (scene IDs, beats, `story_search`, `canon_breach`: `process.py:142-158,195-205,285`). Define a **coding-specific trajectory schema + thresholds + false-positive behavior** first, then gate. Lowest-confidence slice; do it last.
 
 ## Why this is gated, not done here
 
@@ -71,8 +71,8 @@ Gate status: build remains blocked pending navigator design that incorporates th
 ## S2 — warn-only mode landed (2026-06-25)
 
 The safe half of S2 is on main: the coding-packet rubric is wired into
-`validate_ship_request` (`workflow/auto_ship.py`) behind
-`WORKFLOW_AUTO_SHIP_RUBRIC_MODE` (default **`warn`**). Warn mode computes the
+`validate_ship_request` (`tinyassets/auto_ship.py`) behind
+`TINYASSETS_AUTO_SHIP_RUBRIC_MODE` (default **`warn`**). Warn mode computes the
 rubric and attaches `rubric_warnings` to the decision dict but **never changes
 pass/block behavior**, and the call is **fail-open** (a rubric exception yields
 no warnings and never breaks the envelope gate). The enforce set is scoped to
@@ -88,7 +88,7 @@ Plugin mirror rebuilt. **Zero production block-behavior change.**
    and set each field **only where it is truthfully determinable**, never blindly
    (code-read 2026-06-25):
    - `child_run_status="completed"` IS truthful at the child-attachment producer
-     `attach_existing_child_run` (`workflow/runs.py:~1330`, which already sets
+     `attach_existing_child_run` (`tinyassets/runs.py:~1330`, which already sets
      `selected_child_status="attached_completed"`). Add it there (+ receipt/return
      mirrors + plugin mirror), and verify it actually flows into the assembled
      ship packet the gate sees.
@@ -107,9 +107,9 @@ Plugin mirror rebuilt. **Zero production block-behavior change.**
    new floor.
 3. **Watched warn period**: leave the flag unset (`warn`); query the auto-ship
    ledger for decisions carrying `rubric_warnings` to measure the real failure
-   rate (reuse `WORKFLOW_AUTO_SHIP_OBSERVATION_WINDOW_SECONDS`).
+   rate (reuse `TINYASSETS_AUTO_SHIP_OBSERVATION_WINDOW_SECONDS`).
 4. **Host flip**: once the warn rate is acceptable and opposite-provider review
-   re-confirms, set `WORKFLOW_AUTO_SHIP_RUBRIC_MODE=enforce`. `off` is the
+   re-confirms, set `TINYASSETS_AUTO_SHIP_RUBRIC_MODE=enforce`. `off` is the
    instant kill-switch.
 5. **Widen later**: re-add `child_output_evidence_missing` (the
    `child_candidate_patch_packet` half only) + `contradictory_child_claim`
@@ -121,7 +121,7 @@ The third verification leg from the whitepaper — *was the execution **path**
 sound?* — now has a coding-lane implementation, addressing the Codex ADAPT
 point (don't reuse the scene evaluator; define a coding-specific schema +
 thresholds + false-positive behavior first). **What landed is pure and
-unwired** (`workflow/evaluation/coding_process.py`, imported only by its test) —
+unwired** (`tinyassets/evaluation/coding_process.py`, imported only by its test) —
 zero behavior change, the same harmless beachhead state `coding_packet_rubric.py`
 itself started in. Gating is deferred (host-gated, like the enforce flip).
 
@@ -129,7 +129,7 @@ itself started in. Gating is deferred (host-gated, like the enforce flip).
 The coding lane emits **no `quality_trace`** (that is prose-lane only). Its path
 data is assembled from a run record + `run_events` + `provider_calls` +
 `child_failures` + `__system__` telemetry, all keyed by `run_id`
-(`workflow/runs.py`). So this is genuinely new, not a port. Real signals scored:
+(`tinyassets/runs.py`). So this is genuinely new, not a port. Real signals scored:
 `recursion_limit_applied` (runs.py ~2328), `provider_calls[].attempts/degraded`
 (~2223), `failure_class` from `_classify_failure` (~4006) + `ACTIONABLE_BY`,
 `child_failures[].failure_class` (`ChildFailure`, ~1953), receipt-waiting gate
@@ -177,7 +177,7 @@ de-overlap the S2 enforce-set narrowing taught us. Two source normalizers exist:
 Same warn→enforce ladder as S2, on a separate channel:
 1. **Warn-only — LANDED.** `validate_ship_request` computes
    `evaluate_coding_trajectory(coding_trajectory_from_packet(packet))` behind
-   `WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE` (default `warn`; `off` skips). It attaches
+   `TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE` (default `warn`; `off` skips). It attaches
    `trajectory_warnings` to BOTH decision dicts and NEVER touches `violations`;
    one record per failing applicable check, emitted only when the eval is
    conclusive AND verdict==`fail` (= what enforce blocks, so the warn rate
@@ -189,7 +189,7 @@ Same warn→enforce ladder as S2, on a separate channel:
    `check`, mirrors `summarize_rubric_warnings`) to measure the real path-failure
    rate before any gating discussion.
 3. **Enforce PATH — LANDED 2026-06-25 (Codex SHIP, thread `019f00f9`).**
-   `WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE=enforce` promotes a CONCLUSIVE path-quality
+   `TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE=enforce` promotes a CONCLUSIVE path-quality
    FAIL to ONE blocking violation `{rule_id: trajectory_path_unsound}` on its own
    channel (mirrors §6.4 rubric enforce; distinct axis from the output rubric, so
    no same-rule double-report). Default `warn`; invalid → `warn`; `off` is the
@@ -214,8 +214,8 @@ ledger observability SHIP'd next (zero block-behavior change). **Enforce path
 LANDED 2026-06-25** (Codex SHIP, thread `019f00f9`, no blocking findings) — S3 at
 full off/warn/enforce parity with S2. **ENFORCE FLIP LIVE + verified 2026-06-25**
 (host-approved, overriding the warn-period gate): the running droplet daemon has
-`WORKFLOW_AUTO_SHIP_{RUBRIC,TRAJECTORY}_MODE=enforce` (`docker exec ... printenv`),
-durable in systemd's `/opt/workflow/compose.yml`, daemon `healthy`, loopback +
+`TINYASSETS_AUTO_SHIP_{RUBRIC,TRAJECTORY}_MODE=enforce` (`docker exec ... printenv`),
+durable in systemd's `/opt/tinyassets/compose.yml`, daemon `healthy`, loopback +
 public canary green; repo config flipped to match (`deploy/compose.yml` +
 `workflow-env.template`, 3836d073). Because the gate is the on-demand
 `validate_ship_packet` MCP action (not an autonomous-loop gate), enforce blocks

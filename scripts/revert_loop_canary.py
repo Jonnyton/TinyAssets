@@ -28,10 +28,10 @@ Exit codes (per spec Q4):
      CRITICAL.
 
 Env overrides (per spec Q3):
-  WORKFLOW_REVERT_CANARY_N          WARN threshold (default 3)
-  WORKFLOW_REVERT_CANARY_T_MIN      WARN window minutes (default 10)
-  WORKFLOW_REVERT_CANARY_N_CRITICAL CRITICAL threshold (default 5)
-  WORKFLOW_REVERT_CANARY_T_CRITICAL CRITICAL window minutes (default 20)
+  TINYASSETS_REVERT_CANARY_N          WARN threshold (default 3)
+  TINYASSETS_REVERT_CANARY_T_MIN      WARN window minutes (default 10)
+  TINYASSETS_REVERT_CANARY_N_CRITICAL CRITICAL threshold (default 5)
+  TINYASSETS_REVERT_CANARY_T_CRITICAL CRITICAL window minutes (default 20)
 
 Stdlib only.
 """
@@ -326,37 +326,37 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"Per-request timeout seconds (default: {DEFAULT_TIMEOUT})")
 
     default_warn_window = int(os.environ.get(
-        "WORKFLOW_REVERT_CANARY_T_MIN", DEFAULT_WARN_WINDOW_MIN,
+        "TINYASSETS_REVERT_CANARY_T_MIN", DEFAULT_WARN_WINDOW_MIN,
     ))
     default_warn_threshold = int(os.environ.get(
-        "WORKFLOW_REVERT_CANARY_N", DEFAULT_WARN_THRESHOLD,
+        "TINYASSETS_REVERT_CANARY_N", DEFAULT_WARN_THRESHOLD,
     ))
     default_critical_window = int(os.environ.get(
-        "WORKFLOW_REVERT_CANARY_T_CRITICAL", DEFAULT_CRITICAL_WINDOW_MIN,
+        "TINYASSETS_REVERT_CANARY_T_CRITICAL", DEFAULT_CRITICAL_WINDOW_MIN,
     ))
     default_critical_threshold = int(os.environ.get(
-        "WORKFLOW_REVERT_CANARY_N_CRITICAL", DEFAULT_CRITICAL_THRESHOLD,
+        "TINYASSETS_REVERT_CANARY_N_CRITICAL", DEFAULT_CRITICAL_THRESHOLD,
     ))
 
     ap.add_argument(
         "--warn-window-min", type=int, default=default_warn_window,
         help=f"WARN window in minutes (default: {default_warn_window}; "
-             "env: WORKFLOW_REVERT_CANARY_T_MIN)",
+             "env: TINYASSETS_REVERT_CANARY_T_MIN)",
     )
     ap.add_argument(
         "--warn-threshold", type=int, default=default_warn_threshold,
         help=f"WARN REVERT count threshold (default: {default_warn_threshold}; "
-             "env: WORKFLOW_REVERT_CANARY_N)",
+             "env: TINYASSETS_REVERT_CANARY_N)",
     )
     ap.add_argument(
         "--critical-window-min", type=int, default=default_critical_window,
         help=f"CRITICAL window in minutes (default: {default_critical_window}; "
-             "env: WORKFLOW_REVERT_CANARY_T_CRITICAL)",
+             "env: TINYASSETS_REVERT_CANARY_T_CRITICAL)",
     )
     ap.add_argument(
         "--critical-threshold", type=int, default=default_critical_threshold,
         help=f"CRITICAL REVERT count threshold (default: {default_critical_threshold}; "
-             "env: WORKFLOW_REVERT_CANARY_N_CRITICAL)",
+             "env: TINYASSETS_REVERT_CANARY_N_CRITICAL)",
     )
     ap.add_argument("--verbose", action="store_true",
                     help="Echo the canary classification summary.")

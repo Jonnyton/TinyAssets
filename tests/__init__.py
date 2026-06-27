@@ -1,1 +1,1 @@
-"""Tests for the Workflow system."""
+"""Tests for the TinyAssets system."""

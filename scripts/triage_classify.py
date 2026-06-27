@@ -8,8 +8,8 @@ workflow uses the classification to pick the right repair branch.
 Classes (narrow-by-design per task #11 spec, each detected by a single
 non-overlapping regex match):
 
-  env_unreadable      /etc/workflow/env perms regressed (Task #3 marker).
-                      Repair: chown root:workflow + chmod 640.
+  env_unreadable      /etc/tinyassets/env perms regressed (Task #3 marker).
+                      Repair: chown root:tinyassets + chmod 640.
   oom                 OOM killer triggered on the daemon container.
                       Repair: compose restart. Bump-once memory cap
                       is documented but NOT auto-applied to prevent
@@ -23,7 +23,7 @@ non-overlapping regex match):
                       manual-only so the workflow opens a distinct issue
                       and pages priority=2.
   watchdog_hotloop    systemd reports >20 restarts in <5min on the
-                      workflow-daemon unit. Repair: stop → sleep 60 →
+                      tinyassets-daemon unit. Repair: stop → sleep 60 →
                       start, to let the start-limit counter reset.
   unknown             None of the above matched. Repair path: generic
                       compose restart (the existing workflow behavior).
@@ -166,7 +166,7 @@ _DETECTORS: list[tuple[str, re.Pattern, bool, bool, str]] = [
         ),
         True,
         False,
-        "systemd start-limit-hit on workflow-daemon; stop + sleep + start",
+        "systemd start-limit-hit on tinyassets-daemon; stop + sleep + start",
     ),
 ]
 

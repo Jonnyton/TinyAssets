@@ -18,7 +18,7 @@ Refs:
 - `docs/audits/user-chat-intelligence/2026-04-19-p0-uptime-canary-probe.md` §2.2
 - `docs/design-notes/2026-04-19-shared-account-tier2-ux.md`
 
-The directives live in `workflow.api.prompts._CONTROL_STATION_PROMPT`.
+The directives live in `tinyassets.api.prompts._CONTROL_STATION_PROMPT`.
 These tests catch silent removal or accidental regression of key phrases.
 """
 
@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import re
 
-from workflow.api.prompts import _CONTROL_STATION_PROMPT
-from workflow.universe_server import control_station
+from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
+from tinyassets.universe_server import control_station
 
 
 def _prompt_text() -> str:

@@ -15,7 +15,7 @@
   import Term from '$lib/components/Term.svelte';
   import Tick from '$lib/components/Tick.svelte';
 
-  const REPO_URL = 'https://github.com/Jonnyton/Workflow';
+  const REPO_URL = 'https://github.com/Jonnyton/TinyAssets';
 
   // Live repo pulse — fetched, never baked. Until the read lands the strip
   // says it's reading; afterwards every value carries its read-stamp.
@@ -54,8 +54,8 @@
   // Door-two repo steps. Each links to a real file/page on GitHub.
   const REPO_STEPS = [
     {
-      cmd: 'git clone https://github.com/Jonnyton/Workflow',
-      note: 'Clone the platform repo; the GitHub path is still in compatibility naming during migration.',
+      cmd: 'git clone https://github.com/Jonnyton/TinyAssets',
+      note: 'Clone the platform repo from the canonical TinyAssets GitHub path.',
       href: REPO_URL,
       label: 'TinyAssets on GitHub'
     },
@@ -84,7 +84,7 @@
   <title>Build me — two doors into contributing to Tiny</title>
   <meta
     name="description"
-    content="Two doors into building TinyAssets: improve Tiny through your chatbot without ever cloning code, or clone the compatibility-era GitHub repository and work on it directly. Both end in the same loop — evidence gates, cross-family review, a human merge key."
+    content="Two doors into building TinyAssets: improve Tiny through your chatbot without ever cloning code, or clone the TinyAssets GitHub repository and work on it directly. Both end in the same loop — evidence gates, cross-family review, a human merge key."
   />
 </svelte:head>
 

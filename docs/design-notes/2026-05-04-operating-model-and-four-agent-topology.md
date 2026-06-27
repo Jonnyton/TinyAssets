@@ -88,7 +88,7 @@ Coordination surfaces are tools for arriving at shared understanding. They're no
 
 Action surfaces are the things that change the platform's actual state. They include:
 
-- Direct code commits to `workflow/`, `scripts/`, `tests/`, etc.
+- Direct code commits to `tinyassets/`, `scripts/`, `tests/`, etc.
 - Direct wiki writes (`file_bug`, `wiki write/promote`) without going through chatbot.
 - Direct GitHub PR opens without chatbot mediation.
 - Anything that takes a step the loop should be taking.
@@ -113,7 +113,7 @@ Every cheat we ship should leave behind a primitive that makes the user-as-loop-
 Examples of cheats that produced primitives meeting this bar:
 - `scripts/fuse_safe_write.py` — atomic FUSE-resistant writer. Future agents call it instead of learning the FUSE-truncation trap by hand.
 - `scripts/fuse_safe_commit.py` — safe git plumbing wrapper. Future agents call it instead of learning the stale-index trap by hand. (Built today after incident #3 caused a 730-file regression.)
-- `workflow/auto_ship_ledger.py` (PR #226 + #228) — append-only attempt store. Future loop iterations call it instead of inventing their own audit shape.
+- `tinyassets/auto_ship_ledger.py` (PR #226 + #228) — append-only attempt store. Future loop iterations call it instead of inventing their own audit shape.
 - `extensions.validate_ship_packet` action (PR #224) — MCP-callable safety envelope. Chatbots and the loop's release_safety_gate use it.
 
 Examples of cheats that DID NOT produce primitives meeting this bar (lessons):

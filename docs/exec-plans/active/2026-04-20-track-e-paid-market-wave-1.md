@@ -30,20 +30,20 @@ This keeps Wave 1 small enough for one dev-day.
 
 ## 2. Files
 
-New package `workflow/paid_market/` mirroring `workflow/host_pool/` structure (Track D Wave 1 precedent). Stdlib-only, urllib.request, no supabase-py dep.
+New package `tinyassets/paid_market/` mirroring `tinyassets/host_pool/` structure (Track D Wave 1 precedent). Stdlib-only, urllib.request, no supabase-py dep.
 
 | Path | Purpose | LOC target |
 |---|---|---|
-| `workflow/paid_market/__init__.py` | Package exports: `PaidMarketClient`, `PaidMarketError`, `Request`, `Bid`, `submit_request`, `list_requests`, `place_bid`, `list_bids`. | ~40 |
-| `workflow/paid_market/client.py` | Supabase REST wrapper. `PaidMarketClient` with 4 verbs + `_HttpClient` protocol injection seam + service-role auth via env. `Request` + `Bid` dataclasses matching Track A schema row shapes. | ~250 |
-| `workflow/paid_market/requests.py` | `submit_request` + `list_requests` convenience wrappers over the client. Handles capability_id lookup (split `node_type:llm_model` → resolve `capabilities.id` → FK into `requests.capability_id`). | ~80 |
-| `workflow/paid_market/bids.py` | `place_bid` + `list_bids` convenience wrappers. Validates price floor against the request's `max_price`. | ~80 |
+| `tinyassets/paid_market/__init__.py` | Package exports: `PaidMarketClient`, `PaidMarketError`, `Request`, `Bid`, `submit_request`, `list_requests`, `place_bid`, `list_bids`. | ~40 |
+| `tinyassets/paid_market/client.py` | Supabase REST wrapper. `PaidMarketClient` with 4 verbs + `_HttpClient` protocol injection seam + service-role auth via env. `Request` + `Bid` dataclasses matching Track A schema row shapes. | ~250 |
+| `tinyassets/paid_market/requests.py` | `submit_request` + `list_requests` convenience wrappers over the client. Handles capability_id lookup (split `node_type:llm_model` → resolve `capabilities.id` → FK into `requests.capability_id`). | ~80 |
+| `tinyassets/paid_market/bids.py` | `place_bid` + `list_bids` convenience wrappers. Validates price floor against the request's `max_price`. | ~80 |
 | `tests/test_paid_market_client.py` | Client config, each verb, error paths, capability-id resolution, price-floor validation, state-filter semantics. Target: 20+ tests. | ~400 |
 
 **Deferred to Wave 2 (named now to prevent scope creep):**
-- `workflow/paid_market/claim.py` — SELECT FOR UPDATE SKIP LOCKED claim semantics. Needs a Postgres-function RPC call (Supabase REST doesn't natively expose SKIP LOCKED). Wave 2.
-- `workflow/paid_market/settle.py` — ledger write + 1% treasury fee + settlement-mode enum dispatch. Blocked on testnet wallet-connect (not Wave 1 scope).
-- `workflow/paid_market/realtime.py` — Supabase Realtime WebSocket subscription to `bids:<capability_id>`. Wave 2 with claim.
+- `tinyassets/paid_market/claim.py` — SELECT FOR UPDATE SKIP LOCKED claim semantics. Needs a Postgres-function RPC call (Supabase REST doesn't natively expose SKIP LOCKED). Wave 2.
+- `tinyassets/paid_market/settle.py` — ledger write + 1% treasury fee + settlement-mode enum dispatch. Blocked on testnet wallet-connect (not Wave 1 scope).
+- `tinyassets/paid_market/realtime.py` — Supabase Realtime WebSocket subscription to `bids:<capability_id>`. Wave 2 with claim.
 
 ---
 
@@ -96,7 +96,7 @@ class Bid:
     created_at: str
 ```
 
-**Pattern match:** same shape as `workflow/host_pool/client.py` (verifier already cleared Track D Wave 1). `_HttpClient` protocol seam for tests. No outbound async; Track E Wave 1 is synchronous REST. Async wrapping (if needed) comes when realtime ships in Wave 2.
+**Pattern match:** same shape as `tinyassets/host_pool/client.py` (verifier already cleared Track D Wave 1). `_HttpClient` protocol seam for tests. No outbound async; Track E Wave 1 is synchronous REST. Async wrapping (if needed) comes when realtime ships in Wave 2.
 
 **Errors:** `PaidMarketError` raises on non-2xx responses or JSON parse failures. Fail-loud per AGENTS.md Hard Rule 8. No silent fallbacks.
 
@@ -199,9 +199,9 @@ The actual transaction completes in Wave 2 (claim + execute + settle). Wave 1 pr
 
 ## 9. Dispatchability
 
-- **Collision check:** `workflow/paid_market/` is a new package. No overlap with Track D Wave 1 (`workflow/host_pool/`). No overlap with ongoing cutover work (infra side). Safe to dispatch parallel to anything.
+- **Collision check:** `tinyassets/paid_market/` is a new package. No overlap with Track D Wave 1 (`tinyassets/host_pool/`). No overlap with ongoing cutover work (infra side). Safe to dispatch parallel to anything.
 - **Schema dependency:** Track A (`98055aa`) already landed. `requests` / `bids` / `capabilities` tables exist with correct shape.
-- **Foundation dependency:** `workflow/host_pool/` pattern (Track D Wave 1) sets the idiom Wave 1 mirrors. Dev can copy shape.
+- **Foundation dependency:** `tinyassets/host_pool/` pattern (Track D Wave 1) sets the idiom Wave 1 mirrors. Dev can copy shape.
 - **Effort:** ~1 dev-day single contributor, based on Track D Wave 1's similar scope landing in ~1 dev-day.
 - **Test floor:** hard. 20 tests minimum; verifier gate.
 
@@ -213,7 +213,7 @@ Wave 1 is complete when all of:
 
 1. Four CRUD verbs return correct shapes end-to-end against a fake `_HttpClient`.
 2. Test suite ≥20 tests passes green.
-3. Ruff clean on `workflow/paid_market/` + `tests/test_paid_market_client.py`.
+3. Ruff clean on `tinyassets/paid_market/` + `tests/test_paid_market_client.py`.
 4. `PaidMarketError` raised on every documented failure case.
 5. Capability-id resolution works from either `capability_id` or `(node_type, llm_model)` strings.
 6. `list_requests(state='pending')` excludes `state='flagged'` rows (moderation hook respected without Wave 1 shipping the flag verbs).
@@ -236,7 +236,7 @@ Wave 1 is complete when all of:
 ## 12. Summary for dispatcher
 
 - **4 CRUD verbs, ~1 dev-day, ~20 tests, stdlib-only, mirrors Track D Wave 1 idiom.**
-- **New package `workflow/paid_market/` — 4 files + test file.**
+- **New package `tinyassets/paid_market/` — 4 files + test file.**
 - **Schema consumption is read-only additive** over Track A `98055aa`.
 - **Foundation-end-state on the client class + dataclass shapes + state enum;** feature-iteration latitude on convenience wrappers + error copy + test depth.
 - **Unblocks Wave 2 (claim + settle + realtime) and then Wave 3 (tray UX).**

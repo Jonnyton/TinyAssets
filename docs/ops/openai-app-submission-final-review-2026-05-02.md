@@ -88,7 +88,7 @@ Post-rebase freshness check 2026-05-02T15:46-07:00:
 
 2026-05-02T15:37-07:00 ChatGPT Settings audit:
 
-- Enabled `Workflow DEV` is connected to `https://tinyassets.io/mcp`.
+- Enabled `TinyAssets DEV` is connected to `https://tinyassets.io/mcp`.
 - It exposes legacy actions including `get_status`.
 - A fresh ChatGPT web prompt invoked legacy `get_status` and returned raw
   diagnostics.
@@ -100,7 +100,7 @@ Do not use current ChatGPT web output as final directory-safe proof.
 
 Recommended release notes:
 
-`Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe Workflow MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+`Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 
 Recommended final choices, pending host review:
 

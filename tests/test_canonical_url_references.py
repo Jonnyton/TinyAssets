@@ -22,7 +22,7 @@ _WATCHED: list[str] = [
     "deploy/README.md",
     "deploy/cloudflare-worker/README.md",
     "deploy/cloudflared-README.md",
-    "docs/ops/workflow-probe-reference.md",
+    "docs/ops/tinyassets-probe-reference.md",
     "docs/ops/launch-readiness-checklist.md",
     "docs/ops/anthropic-connector-catalog-submission.md",
     ".claude/skills/ui-test/SKILL.md",

@@ -30,7 +30,7 @@ The decisive turn (22:26:03) names the phrases Claude.ai claimed to see:
 
 ## 2. Where those phrases actually live
 
-All three phrases are present in `workflow/universe_server.py` —
+All three phrases are present in `tinyassets/universe_server.py` —
 transmitted to Claude.ai as MCP metadata at handshake / tool-list time,
 NOT injected by the user:
 
@@ -49,7 +49,7 @@ metadata — confirmed via grep.
 The hallucinated-injection mode is **Claude.ai-side**, not a server-side
 injection. Mechanism:
 
-1. Claude.ai loads the Workflow Server's tool descriptions and server
+1. Claude.ai loads the TinyAssets Server's tool descriptions and server
    instructions into its working context at the start of the
    conversation. These fields include heavy prescriptive prose,
    all-caps directives (`NO SIMULATION`, `AFFIRMATIVE CONSENT`), and
@@ -90,7 +90,7 @@ content AND (b) prior conversation context includes heavy tool
 metadata**. Fresh chats start with only the tool metadata, no
 reasoning history tying it to user turns.
 
-## 5. Mitigations on the Workflow Server side
+## 5. Mitigations on the TinyAssets Server side
 
 None of these eliminate the Claude.ai behavior — it's a vendor-side
 safety heuristic we don't control. They reduce the lexical-surface
@@ -109,7 +109,7 @@ its I/O is**, not **how the bot should behave**.
 
 Candidate changes (all text-only):
 
-- `workflow/universe_server.py:3700-3772` — `extensions` tool
+- `tinyassets/universe_server.py:3700-3772` — `extensions` tool
   docstring. Strip the NO SIMULATION / AFFIRMATIVE CONSENT / INTENT
   DISAMBIGUATION / CROSS-UNIVERSE blocks. Replace with a short
   factual description of what `register` / `build_branch` /
@@ -170,14 +170,14 @@ Two prompt-hardening directives must land in the `control_station` prompt body (
 
 ### 5.5.3 Implementation note
 
-Both directives belong in the `control_station` prompt body (the `prompts/*` surface under the rewrite spec #27 §3.3; legacy `workflow/universe_server.py` control_station text pre-rewrite). Neither goes into tool descriptions — that's §5.1's discipline. Together they're ~0.15d of prompt-engineering work when #15 implementation lands.
+Both directives belong in the `control_station` prompt body (the `prompts/*` surface under the rewrite spec #27 §3.3; legacy `tinyassets/universe_server.py` control_station text pre-rewrite). Neither goes into tool descriptions — that's §5.1's discipline. Together they're ~0.15d of prompt-engineering work when #15 implementation lands.
 
 ---
 
 ## 6. Out-of-scope (this investigation)
 
 - File renames (task #8) will eventually rename
-  `workflow/universe_server.py` to something else; text edits to
+  `tinyassets/universe_server.py` to something else; text edits to
   the docstrings should sequence AFTER #8 to avoid churn.
 - The `extensions` tool is the hot spot, but `universe`, `wiki`,
   `goals`, `gates` descriptions should get the same factual-pass
@@ -192,7 +192,7 @@ Add concern:
 
 > [2026-04-18] Claude.ai hallucinated injection-refusal on Mission 10
 > (2026-04-17 22:26) traces to tool-metadata phrase density in
-> `workflow/universe_server.py` — behavioral prose in tool `description`
+> `tinyassets/universe_server.py` — behavioral prose in tool `description`
 > fields gets misattributed to user turns. Mitigation scoped in
 > `docs/design-notes/2026-04-18-claude-ai-injection-hallucination.md`
 > §5 (move directives to prompts, de-dup phrases, shorter descriptions).
@@ -206,5 +206,5 @@ Add concern:
   Mission 10 blocked`.
 - Activity log: `.agents/activity.log` `2026-04-17T23:55` session wrap
   (logs #12 as a product bug from Mission 10).
-- Current tool metadata: `workflow/universe_server.py:83, 809, 1003,
+- Current tool metadata: `tinyassets/universe_server.py:83, 809, 1003,
   3700-3772`.

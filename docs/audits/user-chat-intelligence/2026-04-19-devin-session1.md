@@ -98,8 +98,8 @@ Every proposal named with the chain-break it strengthens.
 
 Response to LIVE-F7's memory-bleed risk. Audit and mitigate project-internal vocabulary in every user-adjacent surface:
 
-- **Tool descriptions** in `workflow/universe_server.py` (post-#15) + future spec #27 gateway `tools/*`.
-- **Wiki pages** (`workflow/wiki`).
+- **Tool descriptions** in `tinyassets/universe_server.py` (post-#15) + future spec #27 gateway `tools/*`.
+- **Wiki pages** (`tinyassets/wiki`).
 - **Connector description + metadata** in the Claude.ai MCP connector catalog submission (Q21-nav, task #49).
 - **Landing page copy** on `tinyassets.io/` + `/connect` + `/host` + `/contribute`.
 - **Tray UI copy** (spec #30).
@@ -131,7 +131,7 @@ get_status() -> {
 
 Chatbot calls `get_status()` when user asks a privacy-critical question; returns concrete evidence (not inference). Devin's session would have ended at exchange 3 with a "yes, confidential tier is bound to Ollama on :11434, hard-fail-on-cloud is ON" — trust built, session continues.
 
-**Interim-ship scope:** expose the primitive even before the full rewrite ships. In the existing `workflow/universe_server.py` surface, add a factual read-only tool `get_status` that reports current routing config. No new schema, no new storage — it reads what's already in the daemon config. Estimated ~0.5 dev-day.
+**Interim-ship scope:** expose the primitive even before the full rewrite ships. In the existing `tinyassets/universe_server.py` surface, add a factual read-only tool `get_status` that reports current routing config. No new schema, no new storage — it reads what's already in the daemon config. Estimated ~0.5 dev-day.
 
 **This is the single highest-ROI item in this report.** It unblocks Scenario B + C4 (Devin's two flagship use cases) + makes the tier-2 pitch cashable.
 
@@ -148,7 +148,7 @@ Both low-stakes; navigator drafts.
 ### §3.4 Host §11 Q additions
 
 **Q27-nav — OPEN (interim `get_status` primitive — ship now or wait for rewrite).** Proposal T-7. Options:
-- **(a) Ship interim `get_status` in the legacy `workflow/universe_server.py` surface.** ~0.5d. Unblocks tier-2 confidential-tier pitch at current state. Reusable: transplant verbatim into spec #27 gateway when rewrite lands.
+- **(a) Ship interim `get_status` in the legacy `tinyassets/universe_server.py` surface.** ~0.5d. Unblocks tier-2 confidential-tier pitch at current state. Reusable: transplant verbatim into spec #27 gateway when rewrite lands.
 - **(b) Wait for the full tray observability rewrite (task #79 + spec #30 amendment).** Saves ~0.5d of interim work. Costs: continuing tier-2 bounce during the ~4-week MVP window + lost persona signal from future Devin live sessions that can't actually trust-verify.
 
 Recommend **(a)** — the ROI is clearly positive. The dev-days saved by (b) are dwarfed by the lost tier-2 funnel during the window.

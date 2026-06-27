@@ -9,7 +9,7 @@ OpenAI submission prep packet.
 - App shown as: `Workflow Dev`.
 - Historical expectation: `https://tinyassets.io/mcp-directory`.
 - Current verified setting, 2026-05-02T15:37-07:00: the enabled ChatGPT
-  `Workflow DEV` app is still connected to `https://tinyassets.io/mcp`, not
+  `TinyAssets DEV` app is still connected to `https://tinyassets.io/mcp`, not
   `/mcp-directory`.
 - Related prep doc: `docs/ops/openai-app-submission-prep-2026-05-02.md`.
 
@@ -155,7 +155,7 @@ Current proof boundary:
   ChatGPT-rendered approval-card proof, and direct `/mcp-directory` search/get
   still verifies the created goal.
 - This is not final directory-safe ChatGPT web proof because a later settings
-  audit found the enabled `Workflow DEV` app is connected to the legacy
+  audit found the enabled `TinyAssets DEV` app is connected to the legacy
   `/mcp` endpoint.
 - Remaining OpenAI submission proof gaps are directory-safe ChatGPT web,
   ChatGPT mobile, final submission form/legal/publisher approval, and post-fix
@@ -163,7 +163,7 @@ Current proof boundary:
 
 ## 2026-05-02T15:37-07:00 Settings Audit
 
-In-app browser inspected ChatGPT Settings -> Apps -> `Workflow DEV`.
+In-app browser inspected ChatGPT Settings -> Apps -> `TinyAssets DEV`.
 
 Observed:
 

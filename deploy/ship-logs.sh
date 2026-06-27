@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Row K — offsite log archiving for the self-hosted Workflow daemon.
+# Row K — offsite log archiving for the self-hosted TinyAssets daemon.
 #
 # Ships Docker container logs to an rclone-compatible offsite destination
 # (e.g. Hetzner Storage Box via SFTP, DO Spaces via S3). Complements the
@@ -8,18 +8,18 @@
 # for long-retention storage.
 #
 # Usage:
-#   LOG_DEST=sftp:storagebox/workflow-logs bash deploy/ship-logs.sh
+#   LOG_DEST=sftp:storagebox/tinyassets-logs bash deploy/ship-logs.sh
 #
 # Environment variables:
 #   LOG_DEST          rclone destination URL  (REQUIRED unless DRY_RUN=1)
 #   LOG_CONTAINERS    space-separated container names to archive
-#                     default: "workflow-daemon workflow-tunnel"
+#                     default: "tinyassets-daemon tinyassets-tunnel"
 #   LOG_SINCE         docker logs --since window  default: 24h
 #   LOG_RETAIN_DAYS   delete remote archives older than N days  default: 30
 #   DRY_RUN           set to 1 to validate env + print plan without touching anything
-#   LOG_DIR           local scratch dir for log files  default: /tmp/workflow-logs-$$
+#   LOG_DIR           local scratch dir for log files  default: /tmp/tinyassets-logs-$$
 #
-# Retention: archives named workflow-logs-YYYY-MM-DDTHH-MM-SS.tar.gz;
+# Retention: archives named tinyassets-logs-YYYY-MM-DDTHH-MM-SS.tar.gz;
 #   any remote archive older than LOG_RETAIN_DAYS days is deleted.
 #
 # Requires: bash, docker, rclone, tar (all present on the Hetzner Droplet).
@@ -31,14 +31,14 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 LOG_DEST="${LOG_DEST:-}"
-LOG_CONTAINERS="${LOG_CONTAINERS:-workflow-daemon workflow-tunnel}"
+LOG_CONTAINERS="${LOG_CONTAINERS:-tinyassets-daemon tinyassets-tunnel}"
 LOG_SINCE="${LOG_SINCE:-24h}"
 LOG_RETAIN_DAYS="${LOG_RETAIN_DAYS:-30}"
 DRY_RUN="${DRY_RUN:-0}"
-LOG_DIR="${LOG_DIR:-/tmp/workflow-logs-$$}"
+LOG_DIR="${LOG_DIR:-/tmp/tinyassets-logs-$$}"
 
 TIMESTAMP="$(date -u +%Y-%m-%dT%H-%M-%S)"
-ARCHIVE_NAME="workflow-logs-${TIMESTAMP}.tar.gz"
+ARCHIVE_NAME="tinyassets-logs-${TIMESTAMP}.tar.gz"
 
 # ---------------------------------------------------------------------------
 # Dry-run path — validate env, print plan, exit 0
@@ -59,7 +59,7 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ -z "${LOG_DEST}" ]]; then
-    echo "ERROR: LOG_DEST is required (e.g. sftp:storagebox/workflow-logs or s3://bucket/logs)" >&2
+    echo "ERROR: LOG_DEST is required (e.g. sftp:storagebox/tinyassets-logs or s3://bucket/logs)" >&2
     exit 1
 fi
 
@@ -122,7 +122,7 @@ CUTOFF_TS="$(date -d "-${LOG_RETAIN_DAYS} days" +%s 2>/dev/null \
 rclone lsf --format "tp" "${LOG_DEST}/" 2>/dev/null \
     | sort \
     | while IFS=";" read -r _size path; do
-        # Extract timestamp from workflow-logs-YYYY-MM-DDTHH-MM-SS.tar.gz
+        # Extract timestamp from tinyassets-logs-YYYY-MM-DDTHH-MM-SS.tar.gz
         ts_str=$(echo "${path}" | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}' || true)
         if [[ -z "${ts_str}" ]]; then
             continue

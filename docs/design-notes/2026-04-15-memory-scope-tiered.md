@@ -31,7 +31,7 @@ Row-tagging `universe_id` is necessary but insufficient. The engine needs a **sc
 | Node-scope declaration site | (not addressed) | Separate manifest file per branch (host-chosen 2026-04-15) — `<branch>/node_scope.yaml`. |
 | Actor identity | "user or daemon string" (loose) | User login only; daemons inherit (host-chosen 2026-04-15). |
 | Stage 1 relation | Stage 2 = schema extension of Stage 1 | Stage 2 = **broader interface reshape**; Stage 1's post-query assertion remains and becomes one of N tier assertions |
-| Flag name | `WORKFLOW_ROW_SCOPED_ARCHIVAL` | `WORKFLOW_TIERED_SCOPE` |
+| Flag name | `TINYASSETS_ROW_SCOPED_ARCHIVAL` | `TINYASSETS_TIERED_SCOPE` |
 
 ## 1. The five tiers
 
@@ -83,7 +83,7 @@ This is why membership is binary while breadth is graded. A narrow-slice node re
 
 ## 3. Proposed `MemoryScope` redesign
 
-Current (`workflow/memory/scoping.py`):
+Current (`tinyassets/memory/scoping.py`):
 
 ```python
 @dataclass(frozen=True)
@@ -269,13 +269,13 @@ The answer to host's Q ("is this a tiered-ACL problem, not a row-tag problem?"):
 
 ## 6. Stage 2 shape — concrete proposal
 
-Ship behind `WORKFLOW_TIERED_SCOPE` flag. Three sub-stages:
+Ship behind `TINYASSETS_TIERED_SCOPE` flag. Three sub-stages:
 
 **2a — Schema + ACL foundation.** Add the 4 scope columns to archival tables. Add `universe_acl` table. Migrate existing data (all NULL except `universe_id`). Update Stage 1's post-query assertion to check all 5 tiers. No behavior change for callers that still pass only `universe_id`. Backward-compatible; flag-gated.
 
 **2b — `MemoryScope` redesign + write-site threading.** New `MemoryScope` shape (5 tiers, orthogonal composition). `NodeScope` type and `node_scope_mode` declaration site in node configs. Every archival write site threads the caller's full `MemoryScope`. Read sites compose the predicate. No new enforcement yet — rows still return at broadest scope by default.
 
-**2c — Enforcement on.** Flip `WORKFLOW_TIERED_SCOPE` default. Private universes actually reject cross-universe reads. Node narrow-slice actually narrows retrieval. Stage 1 assertion becomes hard-fail instead of warn-and-drop.
+**2c — Enforcement on.** Flip `TINYASSETS_TIERED_SCOPE` default. Private universes actually reject cross-universe reads. Node narrow-slice actually narrows retrieval. Stage 1 assertion becomes hard-fail instead of warn-and-drop.
 
 Each sub-stage is independently shippable and testable. 2a is mostly schema work; 2b is API work; 2c is a one-line flag flip after sustained observation on a clean universe and a stress universe.
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from workflow.utils.json_parsing import parse_llm_json
+from tinyassets.utils.json_parsing import parse_llm_json
 
 
 class TestParseLlmJson:

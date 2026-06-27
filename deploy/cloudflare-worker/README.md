@@ -6,7 +6,7 @@ to the tunnel origin at `mcp.tinyassets.io`, while leaving the GitHub Pages
 landing intact for all other paths.
 
 **After deploy:** the canonical public MCP URL returns to
-`https://tinyassets.io/mcp`. Installed Workflow chatbot connectors pointing
+`https://tinyassets.io/mcp`. Installed TinyAssets chatbot connectors pointing
 at that URL start working again without any user action.
 
 ---
@@ -16,8 +16,8 @@ at that URL start working again without any user action.
 Before the Worker:
 
 - `tinyassets.io` apex serves GitHub Pages (landing page).
-- `mcp.tinyassets.io` serves the Cloudflare Tunnel → Workflow daemon.
-- Installed Workflow chatbot connectors point at `https://tinyassets.io/mcp`.
+- `mcp.tinyassets.io` serves the Cloudflare Tunnel → TinyAssets daemon.
+- Installed TinyAssets chatbot connectors point at `https://tinyassets.io/mcp`.
 - `tinyassets.io/mcp` has no route rule → falls through to the landing origin's 404
   → Claude.ai reports "Session terminated." This was the 2026-04-19 P0.
 
@@ -114,7 +114,7 @@ Post-deploy:
 
 | URL | Purpose |
 |---|---|
-| `https://tinyassets.io/mcp` | **Canonical — installed Workflow chatbot connectors.** Worker routes to tunnel. |
+| `https://tinyassets.io/mcp` | **Canonical — installed TinyAssets chatbot connectors.** Worker routes to tunnel. |
 | `https://mcp.tinyassets.io/mcp` | Direct-tunnel origin — Access-gated, not user-facing. Use only for internal Access/service-token debugging. |
 | `https://tinyassets.io/` | GitHub Pages landing (unchanged). |
 

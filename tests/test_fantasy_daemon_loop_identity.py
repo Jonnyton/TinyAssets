@@ -8,14 +8,14 @@ from fantasy_daemon.__main__ import (
     _record_loop_daemon_signal,
     _resolve_loop_daemon_context,
 )
-from workflow import daemon_registry, daemon_wiki
+from tinyassets import daemon_registry, daemon_wiki
 
 
 def test_loop_identity_prefers_project_default_soul_daemon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     universe_path = tmp_path / "default-universe"
     universe_path.mkdir()
     daemon = daemon_registry.create_daemon(
@@ -45,8 +45,8 @@ def test_loop_identity_env_override_fails_loudly_for_unknown_daemon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("WORKFLOW_LOOP_DAEMON_ID", "daemon::missing")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_LOOP_DAEMON_ID", "daemon::missing")
     universe_path = tmp_path / "default-universe"
     universe_path.mkdir()
 
@@ -58,7 +58,7 @@ def test_loop_signal_records_into_soul_daemon_wiki(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     universe_path = tmp_path / "default-universe"
     universe_path.mkdir()
     daemon = daemon_registry.create_daemon(

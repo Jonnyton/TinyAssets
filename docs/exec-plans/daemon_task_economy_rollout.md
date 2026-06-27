@@ -29,13 +29,13 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 **Goal:** clear the semantic fog so §3's three-axes model is not papered-over in names. Explorer's §1 identified **three** disjoint "branch" concepts in the repo — rename the non-user-facing ones.
 
 **Scope:**
-- Delete `universe.branches.json` dead-stub code paths. `_action_list_branches` at `workflow/universe_server.py:1873` returns a hardcoded `[{"id":"main"}]` from a stub file nothing writes; retire the path.
+- Delete `universe.branches.json` dead-stub code paths. `_action_list_branches` at `tinyassets/universe_server.py:1873` returns a hardcoded `[{"id":"main"}]` from a stub file nothing writes; retire the path.
 - **Rename concept #2 (SQL `branches` table at `author_server.py:195 / :829` — git-style in-universe fork)** → `universe_fork` across SQL schema (backward-compatible migration), MCP tool params, docstrings, error messages, tests.
 - **Concept #1 (`BranchDefinition`)** keeps the public-facing "Branch" name — it's the user-primitive in PLAN.md and the Multi-User Evolutionary Design section.
 - **Concept #3 (LangGraph internal conditional edges)** — out of scope. That's LangGraph's term, not ours.
-- `workflow/universe_server.py` surface: `list_branches` becomes ambiguous; split into `list_universe_forks` (concept #2) vs `list_branch_defs` (concept #1).
+- `tinyassets/universe_server.py` surface: `list_branches` becomes ambiguous; split into `list_universe_forks` (concept #2) vs `list_branch_defs` (concept #1).
 
-**Files:** `workflow/author_server.py`, `workflow/universe_server.py`, relevant `tests/test_community_branches_*.py`, any domain references.
+**Files:** `tinyassets/author_server.py`, `tinyassets/universe_server.py`, relevant `tests/test_community_branches_*.py`, any domain references.
 
 **Depends on:** — (first phase).
 
@@ -46,7 +46,7 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 **Work table row:**
 | Task | Files | Depends | Status | Notes |
 |---|---|---|---|---|
-| **Phase A:** kill `universe.branches.json` stub + `universe_fork` vs `branch_def` rename | `workflow/author_server.py`, `workflow/universe_server.py`, `tests/test_community_branches_*.py` | — | pending | Pure rename + dead-code delete. No feature flag. Test suite locks the contract. |
+| **Phase A:** kill `universe.branches.json` stub + `universe_fork` vs `branch_def` rename | `tinyassets/author_server.py`, `tinyassets/universe_server.py`, `tests/test_community_branches_*.py` | — | pending | Pure rename + dead-code delete. No feature flag. Test suite locks the contract. |
 
 ---
 
@@ -58,7 +58,7 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 - Already in-flight as Task #18 (dev). Verify it lands: `requests.json` reads are wired into the daemon loop as a BranchTask producer with `origin=host_request` (or `user_request` once external submission is possible).
 - In the context of the rollout plan, this phase's value is establishing the **producer pattern** — the shape that Phase C will generalize.
 
-**Files:** per #18 — `workflow/universe_server.py`, relevant daemon loop.
+**Files:** per #18 — `tinyassets/universe_server.py`, relevant daemon loop.
 
 **Depends on:** — (parallel to A).
 
@@ -69,7 +69,7 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 **Work table row:**
 | Task | Files | Depends | Status | Notes |
 |---|---|---|---|---|
-| **Phase B:** wire `submit_request` producer (rolls up #18) | `workflow/universe_server.py`, daemon loop | — | claimed:dev | #18. Producer pattern for Phase C. |
+| **Phase B:** wire `submit_request` producer (rolls up #18) | `tinyassets/universe_server.py`, daemon loop | — | claimed:dev | #18. Producer pattern for Phase C. |
 
 ---
 
@@ -78,25 +78,25 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 **Goal:** the daemon no longer runs one hardcoded "authorial review" selection. It runs a **list of producers**, each producing candidate Tasks, merged + scored.
 
 **Scope:**
-- Define a `TaskProducer` protocol: `produce(universe, config) -> list[BranchTask]`. Implementations live in `workflow/producers/`.
+- Define a `TaskProducer` protocol: `produce(universe, config) -> list[BranchTask]`. Implementations live in `tinyassets/producers/`.
 - Convert `choose_authorial_targets` into `FantasyAuthorialProducer(TaskProducer)`. Move from `domains/fantasy_author/phases/` into a producer-shaped wrapper.
 - Convert `foundation_priority_review` selection into `FoundationBlockerProducer(TaskProducer)`. Hard-blocker work becomes a special producer that pre-empts tier ordering.
-- **Genericize `execution_kind`** — today `workflow/work_targets.py:49-51` exposes `EXECUTION_KIND_NOTES / BOOK / CHAPTER / SCENE`. BOOK/CHAPTER/SCENE leak fantasy into generic infrastructure. Replace with `execution_scope: str` (free-form) OR move the enum to `domains/fantasy_author/` and have the generic module accept any string. Recommend: move to domain — cheaper, safer.
+- **Genericize `execution_kind`** — today `tinyassets/work_targets.py:49-51` exposes `EXECUTION_KIND_NOTES / BOOK / CHAPTER / SCENE`. BOOK/CHAPTER/SCENE leak fantasy into generic infrastructure. Replace with `execution_scope: str` (free-form) OR move the enum to `domains/fantasy_author/` and have the generic module accept any string. Recommend: move to domain — cheaper, safer.
 - Add `origin` field on WorkTarget (§4.6 checklist item).
 - Tests: a second trivial producer ("index-rebuild housekeeping") proves the interface isn't fantasy-shaped.
 
-**Files:** `workflow/work_targets.py`, new `workflow/producers/__init__.py` + `workflow/producers/fantasy_*.py`, `domains/fantasy_author/phases/authorial_priority_review.py`, `domains/fantasy_author/phases/foundation_priority_review.py`, fantasy `__init__` (register producers), tests.
+**Files:** `tinyassets/work_targets.py`, new `tinyassets/producers/__init__.py` + `tinyassets/producers/fantasy_*.py`, `domains/fantasy_author/phases/authorial_priority_review.py`, `domains/fantasy_author/phases/foundation_priority_review.py`, fantasy `__init__` (register producers), tests.
 
 **Depends on:** A (naming settled before we scatter `branch_def` refs), B (producer pattern reference from `submit_request` wiring).
 
-**Feature flag:** `WORKFLOW_PRODUCER_INTERFACE=on` (default on). If off, fall back to direct `choose_authorial_targets` call path. This is load-bearing — if the interface misbehaves, host can revert without a redeploy.
+**Feature flag:** `TINYASSETS_PRODUCER_INTERFACE=on` (default on). If off, fall back to direct `choose_authorial_targets` call path. This is load-bearing — if the interface misbehaves, host can revert without a redeploy.
 
 **If we stop here:** users can register their own TaskProducer (Python) and have the daemon pull candidate tasks from it. The fantasy daemon continues to work identically. The builder surface GAINS a Python-level extension point below the Branch level. **First time a user can extend the daemon's attention without writing a Branch.**
 
 **Work table row:**
 | Task | Files | Depends | Status | Notes |
 |---|---|---|---|---|
-| **Phase C:** pluggable `TaskProducer` interface + genericize `execution_kind` + `origin` field on WorkTarget | `workflow/work_targets.py`, new `workflow/producers/`, `domains/fantasy_author/phases/*priority_review.py`, tests | A, B | pending | Feature flag `WORKFLOW_PRODUCER_INTERFACE`. BOOK/CHAPTER/SCENE enum moves to fantasy domain. |
+| **Phase C:** pluggable `TaskProducer` interface + genericize `execution_kind` + `origin` field on WorkTarget | `tinyassets/work_targets.py`, new `tinyassets/producers/`, `domains/fantasy_author/phases/*priority_review.py`, tests | A, B | pending | Feature flag `TINYASSETS_PRODUCER_INTERFACE`. BOOK/CHAPTER/SCENE enum moves to fantasy domain. |
 
 ---
 
@@ -105,27 +105,27 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 **Goal:** the fantasy daemon's autonomous graph becomes a regular Branch. Unifies the two execution paths (autonomous vs user-registered) through the same compiler + executor.
 
 **Scope:**
-- **Primary path: opaque-node wrapping (memo §3.4 option b).** Express the fantasy universe-cycle as a single-node `BranchDefinition(domain_id="fantasy_author", name="universe-cycle", ...)` whose one node invokes the existing `build_universe_graph()` StateGraph unchanged. No per-phase sandbox audit needed. Unification lands at the queue + inspection layer; per-phase legibility stays what it is today. Lower migration cost, ships the UX win sooner. **Implementation hint** (explorer): the single node's `NodeDefinition.approved` flag is set to `True` at registration time using the existing domain-trusted precedent at `workflow/universe_server.py:2577` (which already flips `approved=True` programmatically). No new approval mechanism required; `compile_branch` lets the approved node through without sandbox audit.
+- **Primary path: opaque-node wrapping (memo §3.4 option b).** Express the fantasy universe-cycle as a single-node `BranchDefinition(domain_id="fantasy_author", name="universe-cycle", ...)` whose one node invokes the existing `build_universe_graph()` StateGraph unchanged. No per-phase sandbox audit needed. Unification lands at the queue + inspection layer; per-phase legibility stays what it is today. Lower migration cost, ships the UX win sooner. **Implementation hint** (explorer): the single node's `NodeDefinition.approved` flag is set to `True` at registration time using the existing domain-trusted precedent at `tinyassets/universe_server.py:2577` (which already flips `approved=True` programmatically). No new approval mechanism required; `compile_branch` lets the approved node through without sandbox audit.
 - **Deferred to future phase: trusted-domain carve-out (memo §3.4 option a).** A `trusted_domain` attribute on `BranchDefinition` that exempts domain-registered graphs from sandbox approval when `domain_id` matches a host's trusted-domain list. Unlocks per-phase inspection and per-phase user extensions. Revisit when a second domain lands OR when users actively want to extend fantasy at the phase level.
 - `DaemonController` invokes via the unified executor path; the outer loop becomes "run this Branch forever" where "this Branch" is the registered single-node fantasy-cycle.
-- **Risk:** breaking the autonomous loop is high-blast-radius. Feature-flag it: `WORKFLOW_UNIFIED_EXECUTION=off` by default. When off, fantasy uses the old `StateGraph` path directly. When on, it runs via the registered single-node Branch through `execute_branch`. Tests must pass under both settings; live-run at least one full user-sim mission on ON before flipping the default.
+- **Risk:** breaking the autonomous loop is high-blast-radius. Feature-flag it: `TINYASSETS_UNIFIED_EXECUTION=off` by default. When off, fantasy uses the old `StateGraph` path directly. When on, it runs via the registered single-node Branch through `execute_branch`. Tests must pass under both settings; live-run at least one full user-sim mission on ON before flipping the default.
 
-**Files:** `domains/fantasy_author/graphs/universe.py` (unchanged — just invoked by the wrapping node), new `domains/fantasy_author/branches/universe_cycle.yaml` (single-node Branch def), `domains/fantasy_author/__main__.py` (DaemonController wiring to invoke via registered Branch when flag on), tests. `workflow/branches.py` is NOT touched in Phase D — the `trusted_domain` attribute lands with option (a) when future demand materializes.
+**Files:** `domains/fantasy_author/graphs/universe.py` (unchanged — just invoked by the wrapping node), new `domains/fantasy_author/branches/universe_cycle.yaml` (single-node Branch def), `domains/fantasy_author/__main__.py` (DaemonController wiring to invoke via registered Branch when flag on), tests. `tinyassets/branches.py` is NOT touched in Phase D — the `trusted_domain` attribute lands with option (a) when future demand materializes.
 
 **Depends on:** C (producer interface — Phase D's universe-cycle Branch reads Tasks via producers, not via direct `choose_authorial_targets`).
 
-**Feature flag:** `WORKFLOW_UNIFIED_EXECUTION=off` by default. Host opts in per-universe. Live tests under both settings for at least one full user-sim mission before flipping the default.
+**Feature flag:** `TINYASSETS_UNIFIED_EXECUTION=off` by default. Host opts in per-universe. Live tests under both settings for at least one full user-sim mission before flipping the default.
 
 **If we stop here:** nothing changes for the user unless the flag is on. Under the flag, a user can inspect the fantasy daemon's running graph the same way they inspect their own Branches. **The builder surface and the autonomous surface have met.** This is the memo's load-bearing claim delivered.
 
 **Work table row:**
 | Task | Files | Depends | Status | Notes |
 |---|---|---|---|---|
-| **Phase D:** fantasy universe-cycle as registered Branch (opaque-node wrap) | `domains/fantasy_author/__main__.py`, new `domains/fantasy_author/branches/universe_cycle.yaml`, tests | C | pending | Feature flag `WORKFLOW_UNIFIED_EXECUTION` (default off). Single-node Branch wraps existing StateGraph unchanged — no per-phase sandbox audit. Trusted-domain carve-out deferred to future phase. High blast radius — live-test under both settings before flipping default. |
+| **Phase D:** fantasy universe-cycle as registered Branch (opaque-node wrap) | `domains/fantasy_author/__main__.py`, new `domains/fantasy_author/branches/universe_cycle.yaml`, tests | C | pending | Feature flag `TINYASSETS_UNIFIED_EXECUTION` (default off). Single-node Branch wraps existing StateGraph unchanged — no per-phase sandbox audit. Trusted-domain carve-out deferred to future phase. High blast radius — live-test under both settings before flipping default. |
 
 **Release notes (for the flag default flip):**
 
-- **Body-less nodes now hard-fail at compile.** Phase D tightened `_build_node` so any `NodeDefinition` with empty `prompt_template` AND empty `source_code` AND no matching `(domain_id, node_id)` in the domain-trusted registry raises `CompilerError` instead of silently returning `_passthrough`. Low-probability impact on live user data — but if any user-registered Branches in the prod SQLite `branch_definitions` registry were accidentally saved with body-less nodes, they will fail to compile on load after the flag flips. Mitigation: the error message names the offending `(domain_id, node_id)` pair so host can add a body or delete the node. See `workflow/graph_compiler.py:_build_node` for the new error path.
+- **Body-less nodes now hard-fail at compile.** Phase D tightened `_build_node` so any `NodeDefinition` with empty `prompt_template` AND empty `source_code` AND no matching `(domain_id, node_id)` in the domain-trusted registry raises `CompilerError` instead of silently returning `_passthrough`. Low-probability impact on live user data — but if any user-registered Branches in the prod SQLite `branch_definitions` registry were accidentally saved with body-less nodes, they will fail to compile on load after the flag flips. Mitigation: the error message names the offending `(domain_id, node_id)` pair so host can add a body or delete the node. See `tinyassets/graph_compiler.py:_build_node` for the new error path.
 
 ---
 
@@ -140,18 +140,18 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 - Existing fantasy daemon invocation stays identical (default `branch_def_id=fantasy_author/universe-cycle`).
 - Writes `branch_tasks.json` per universe (§4.6 checklist item). Reads it via Phase B's producer pattern.
 
-**Files:** `domains/fantasy_author/__main__.py` (DaemonController rewrite), new `workflow/dispatcher.py`, new `workflow/branch_tasks.py` (queue plumbing), tests.
+**Files:** `domains/fantasy_author/__main__.py` (DaemonController rewrite), new `tinyassets/dispatcher.py`, new `tinyassets/branch_tasks.py` (queue plumbing), tests.
 
 **Depends on:** D (unified execution so the dispatcher has one path to route through).
 
-**Feature flag:** inherits Phase D's flag. Tier enforcement goes live when `WORKFLOW_UNIFIED_EXECUTION=on`.
+**Feature flag:** inherits Phase D's flag. Tier enforcement goes live when `TINYASSETS_UNIFIED_EXECUTION=on`.
 
 **If we stop here:** user can submit multiple BranchTasks via MCP to their daemon and see them run in tier + priority order. Queue is visible via an MCP inspection action. **First time user can see + steer a daemon queue.**
 
 **Work table row:**
 | Task | Files | Depends | Status | Notes |
 |---|---|---|---|---|
-| **Phase E:** tier-aware `DaemonController` + BranchTask queue | new `workflow/dispatcher.py`, new `workflow/branch_tasks.py`, `domains/fantasy_author/__main__.py`, tests | D | pending | Inherits `WORKFLOW_UNIFIED_EXECUTION` flag. Dispatcher + queue plumbing. NodeBid executor is stubbed. |
+| **Phase E:** tier-aware `DaemonController` + BranchTask queue | new `tinyassets/dispatcher.py`, new `tinyassets/branch_tasks.py`, `domains/fantasy_author/__main__.py`, tests | D | pending | Inherits `TINYASSETS_UNIFIED_EXECUTION` flag. Dispatcher + queue plumbing. NodeBid executor is stubbed. |
 
 ---
 
@@ -167,18 +167,18 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 - Post-to-pool MCP action: `post_to_goal_pool(goal_id, branch_def_id, inputs, bid?)`.
 - Default: on fresh install, daemon subscribes to a curated "maintenance" pool (index rebuilds, KG consolidations — the opportunistic tier materialized as public pool work anyone can pick up).
 
-**Files:** `workflow/universe_server.py` (subscribe + post actions), new `workflow/producers/goal_pool.py`, new `goal_pool/` directory convention, tests.
+**Files:** `tinyassets/universe_server.py` (subscribe + post actions), new `tinyassets/producers/goal_pool.py`, new `goal_pool/` directory convention, tests.
 
 **Depends on:** C (producer interface), E (dispatcher reading from producers).
 
-**Feature flag:** `WORKFLOW_GOAL_POOL=off` by default. Host flips on when they want their daemon to touch external work.
+**Feature flag:** `TINYASSETS_GOAL_POOL=off` by default. Host flips on when they want their daemon to touch external work.
 
 **If we stop here:** a user's idle daemon starts doing useful maintenance across public Branches they've forked. Goal-pool submission is live. **First time the daemon leaves the universe boundary.** Still no monetary layer — that's Phase G.
 
 **Work table row:**
 | Task | Files | Depends | Status | Notes |
 |---|---|---|---|---|
-| **Phase F:** Goal subscription + pool producer | `workflow/universe_server.py`, new `workflow/producers/goal_pool.py`, `goal_pool/` dir, tests | C, E | pending | Feature flag `WORKFLOW_GOAL_POOL`. Default maintenance pool subscription. |
+| **Phase F:** Goal subscription + pool producer | `tinyassets/universe_server.py`, new `tinyassets/producers/goal_pool.py`, `goal_pool/` dir, tests | C, E | pending | Feature flag `TINYASSETS_GOAL_POOL`. Default maintenance pool subscription. |
 
 ---
 
@@ -194,18 +194,18 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 - **No real monetary integration.** Bids are token-denominated and accounted, but wallet/crypto integration is a later phase. This phase ships the priority-function slot so the market can grow into it.
 - Ties to #56 outcome gates: NodeBid completion requires `evidence_url`. Sybil-prevention stub.
 
-**Files:** new `workflow/node_bid.py`, new `workflow/executors/node_bid.py`, `workflow/producers/node_bid.py`, `workflow/dispatcher.py` (scorer), `bids/` dir convention, tests.
+**Files:** new `tinyassets/node_bid.py`, new `tinyassets/executors/node_bid.py`, `tinyassets/producers/node_bid.py`, `tinyassets/dispatcher.py` (scorer), `bids/` dir convention, tests.
 
 **Depends on:** E (dispatcher), F (producer pattern at pool scale). #56 spec should be in Phase 6.2+ at this point.
 
-**Feature flag:** `WORKFLOW_PAID_MARKET=off` by default. Host opts in.
+**Feature flag:** `TINYASSETS_PAID_MARKET=off` by default. Host opts in.
 
 **If we stop here:** the priority scorer handles bids correctly in-process (host can manually submit zero-bid NodeBids and watch sort order). No external market yet. But the structural slot exists — the daemon will never need a scorer retrofit when the real market lands.
 
 **Work table row:**
 | Task | Files | Depends | Status | Notes |
 |---|---|---|---|---|
-| **Phase G:** NodeBid executor + paid priority weights | new `workflow/node_bid.py`, new `workflow/executors/node_bid.py`, `workflow/producers/node_bid.py`, dispatcher scorer, `bids/` dir, tests | E, F, #56 spec Phase 6.2+ | pending | Feature flag `WORKFLOW_PAID_MARKET`. No real wallet integration — priority slot only. |
+| **Phase G:** NodeBid executor + paid priority weights | new `tinyassets/node_bid.py`, new `tinyassets/executors/node_bid.py`, `tinyassets/producers/node_bid.py`, dispatcher scorer, `bids/` dir, tests | E, F, #56 spec Phase 6.2+ | pending | Feature flag `TINYASSETS_PAID_MARKET`. No real wallet integration — priority slot only. |
 
 ---
 
@@ -215,11 +215,11 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 
 **Scope:**
 - Dashboard: tier toggles (accept_external, accept_goal_pool, accept_paid, allow_opportunistic). Per-Goal subscribe list. Earnings table. Accepted vs declined bid list with reasons. Active Task + recent Task history.
-- MCP inspection actions: `inspect_daemon_queue`, `inspect_tier_config`, `inspect_earnings` (gated by `WORKFLOW_PAID_MARKET`).
+- MCP inspection actions: `inspect_daemon_queue`, `inspect_tier_config`, `inspect_earnings` (gated by `TINYASSETS_PAID_MARKET`).
 - Chatbot-side affordances: "pause tier X", "promote Task Y", "subscribe to Goal Z."
 - UX-doctrine acceptance test: a user new to Workflow who runs a daemon for the first time should see the full tier ladder with explanatory text, and be able to toggle any tier in one click. No hidden state.
 
-**Files:** dashboard surface (Qt or equivalent host-side), `workflow/universe_server.py` (new MCP inspect actions), tests.
+**Files:** dashboard surface (Qt or equivalent host-side), `tinyassets/universe_server.py` (new MCP inspect actions), tests.
 
 **Depends on:** E, F, G (everything the dashboard surfaces must exist).
 
@@ -230,7 +230,7 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 **Work table row:**
 | Task | Files | Depends | Status | Notes |
 |---|---|---|---|---|
-| **Phase H:** host dashboard + MCP inspect surfaces | host dashboard app, `workflow/universe_server.py` new inspect actions, tests | E, F, G | pending | No feature flag — purely additive. UX-primary delivery vehicle. |
+| **Phase H:** host dashboard + MCP inspect surfaces | host dashboard app, `tinyassets/universe_server.py` new inspect actions, tests | E, F, G | pending | No feature flag — purely additive. UX-primary delivery vehicle. |
 
 ---
 
@@ -240,11 +240,11 @@ A and B run in parallel (disjoint files). Everything else is sequential.
 - **Every feature flag defaults OFF except where explicitly noted** (Phase C's producer interface defaults on because it's the smallest-risk refactor and subsequent phases depend on it).
 - **Flag lifecycle — when a restart is required.** Not every flag behaves the same at flip-time. Two classes:
   - **Registration-gate flags** are read once at module import in a `register_if_enabled()` side-effect. Flipping the env var on a live daemon has no effect until the process restarts. These are the flags that add producers/nodes to a registry at startup.
-    - `WORKFLOW_GOAL_POOL` — `workflow/producers/goal_pool.py:334-355` (`register_if_enabled()` + module-level call). **Restart required.**
-    - `WORKFLOW_PAID_MARKET` — `workflow/producers/node_bid.py:38-41, 207-228` (`paid_market_enabled()` + `register_if_enabled()` + module-level call). **Restart required.**
+    - `TINYASSETS_GOAL_POOL` — `tinyassets/producers/goal_pool.py:334-355` (`register_if_enabled()` + module-level call). **Restart required.**
+    - `TINYASSETS_PAID_MARKET` — `tinyassets/producers/node_bid.py:38-41, 207-228` (`paid_market_enabled()` + `register_if_enabled()` + module-level call). **Restart required.**
   - **Behavior-gate flags** are read at call time inside a helper. Flipping the env var takes effect on the next cycle — no restart.
-    - `WORKFLOW_UNIFIED_EXECUTION` — `fantasy_author/__main__.py:126-129` (`_workflow_unified_execution_enabled()`, called from `_run_graph`). **No restart needed.** The `universe_cycle_wrapper` is registered unconditionally at `fantasy_author/branch_registrations.py:111`; the flag only routes between Branch-compile and direct paths.
-    - `WORKFLOW_DISPATCHER_ENABLED` (Phase E) — read at call time. **No restart needed.**
+    - `TINYASSETS_UNIFIED_EXECUTION` — `fantasy_author/__main__.py:126-129` (`_workflow_unified_execution_enabled()`, called from `_run_graph`). **No restart needed.** The `universe_cycle_wrapper` is registered unconditionally at `fantasy_author/branch_registrations.py:111`; the flag only routes between Branch-compile and direct paths.
+    - `TINYASSETS_DISPATCHER_ENABLED` (Phase E) — read at call time. **No restart needed.**
 
   Operators flipping a default should know which class applies. Tests that `monkeypatch.setenv` a registration-gate flag must call `register_if_enabled()` explicitly or re-import the module — setting the env alone won't change the live registry.
 - **No phase merges without user-sim validation** on at least one clean universe. Sporemarch / ashwater stress-tests follow.

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from domains.fantasy_daemon.phases.orient import orient
 from domains.fantasy_daemon.phases.writer_tools import select_and_run_writer_tools
-from workflow.notes import add_note, list_notes
-from workflow.universe_soul import write_universe_soul
+from tinyassets.notes import add_note, list_notes
+from tinyassets.universe_soul import write_universe_soul
 
 
 def _state_with_context(tmp_path) -> dict:

@@ -102,14 +102,14 @@ The `_wiki_file_bug` helper lands the entry with `status: open`.
 Tasks #1's fix has already landed, so:
 
 1. Change `status: open` → `status: fixed-in-version: <sha-of-task-1-fix>`
-   in the frontmatter. Find the sha via `git log --oneline --all -- workflow/universe_server.py | head` — look for the commit
+   in the frontmatter. Find the sha via `git log --oneline --all -- tinyassets/universe_server.py | head` — look for the commit
    message mentioning `changes_json` / `input_keys` / `patch_branch` fix.
 2. Replace `_none yet_` under `## Related` with:
    ```
    - First seen 2026-04-19 (user chat, research_paper_7node v2 patching)
    - Task #1 in task system
-   - Source: workflow/universe_server.py:5404-5407 (patch path), :4160-4161 (add_node)
-   - Mirror: packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/universe_server.py
+   - Source: tinyassets/universe_server.py:5404-5407 (patch path), :4160-4161 (add_node)
+   - Mirror: packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py
    ```
 
 ---
@@ -123,10 +123,10 @@ wiki action=file_bug
   component="storage.wiki_path"
   severity="major"
   title="WIKI_PATH Windows-style value leaks into Linux container as /app/C:\\..."
-  repro="Deploy the Workflow MCP server in Docker with WORKFLOW_WIKI_PATH=C:\\Users\\Jonathan\\Projects\\Wiki (or legacy WIKI_PATH) inherited from a Windows host's env. Call any wiki action inside the container."
+  repro="Deploy the TinyAssets MCP server in Docker with TINYASSETS_WIKI_PATH=C:\\Users\\Jonathan\\Projects\\Wiki (or legacy WIKI_PATH) inherited from a Windows host's env. Call any wiki action inside the container."
   observed="Server replies \"Wiki not found at /app/C:\\Users\\Jonathan\\Projects\\Wiki\". Linux Path(\"/app\") / \"C:\\\\Users\\\\...\" treats the Windows absolute path as relative (no drive-letter detection), so /app prefixes the Windows path instead of replacing it."
-  expected="Per hard-rule #8 (fail loudly), the resolver should detect a Windows-style path on a Linux runtime and either reject with a clear error (\"WORKFLOW_WIKI_PATH=... is a Windows path but we're on Linux — refusing\") or fall back to $WORKFLOW_DATA_DIR/wiki with a loud warning. Silent join is the failure mode."
-  workaround="Set WORKFLOW_WIKI_PATH=/data/wiki (or another POSIX absolute path) explicitly in the container's environment overrides. Do not inherit the host-machine value."
+  expected="Per hard-rule #8 (fail loudly), the resolver should detect a Windows-style path on a Linux runtime and either reject with a clear error (\"TINYASSETS_WIKI_PATH=... is a Windows path but we're on Linux — refusing\") or fall back to $TINYASSETS_DATA_DIR/wiki with a loud warning. Silent join is the failure mode."
+  workaround="Set TINYASSETS_WIKI_PATH=/data/wiki (or another POSIX absolute path) explicitly in the container's environment overrides. Do not inherit the host-machine value."
 ```
 
 ### Expected file at `pages/bugs/BUG-002-wiki-path-windows-style-value-leaks-into-linux-container.md`
@@ -158,15 +158,15 @@ Server replies "Wiki not found at /app/C:\Users\Jonathan\Projects\Wiki". Linux P
 
 ## What was expected
 
-Per hard-rule #8 (fail loudly), the resolver should detect a Windows-style path on a Linux runtime and either reject with a clear error ("WORKFLOW_WIKI_PATH=... is a Windows path but we're on Linux — refusing") or fall back to $WORKFLOW_DATA_DIR/wiki with a loud warning. Silent join is the failure mode.
+Per hard-rule #8 (fail loudly), the resolver should detect a Windows-style path on a Linux runtime and either reject with a clear error ("TINYASSETS_WIKI_PATH=... is a Windows path but we're on Linux — refusing") or fall back to $TINYASSETS_DATA_DIR/wiki with a loud warning. Silent join is the failure mode.
 
 ## Repro
 
-Deploy the Workflow MCP server in Docker with WORKFLOW_WIKI_PATH=C:\Users\Jonathan\Projects\Wiki (or legacy WIKI_PATH) inherited from a Windows host's env. Call any wiki action inside the container.
+Deploy the TinyAssets MCP server in Docker with TINYASSETS_WIKI_PATH=C:\Users\Jonathan\Projects\Wiki (or legacy WIKI_PATH) inherited from a Windows host's env. Call any wiki action inside the container.
 
 ## Workaround
 
-Set WORKFLOW_WIKI_PATH=/data/wiki (or another POSIX absolute path) explicitly in the container's environment overrides. Do not inherit the host-machine value.
+Set TINYASSETS_WIKI_PATH=/data/wiki (or another POSIX absolute path) explicitly in the container's environment overrides. Do not inherit the host-machine value.
 
 ## First seen
 
@@ -180,7 +180,7 @@ _none yet_
 ### Post-landing edits
 
 1. Change `status: open` → `status: fixed-in-version: <sha-of-task-2-fix>`.
-   `git log --oneline --all -- workflow/storage/__init__.py | head` —
+   `git log --oneline --all -- tinyassets/storage/__init__.py | head` —
    look for the commit after `5b2a282` that added Windows-on-Linux
    detection.
 2. Replace `_none yet_` under `## Related` with:
@@ -188,8 +188,8 @@ _none yet_
    - First seen 2026-04-19 (user chat, in-container wiki probe)
    - Task #2 in task system
    - Earlier partial fix: 5b2a282 "wiki_path resolver: Row-B pattern applied to WIKI_PATH" — did not cover cross-OS leakage
-   - Source: workflow/storage/__init__.py
-   - Mirror: packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/storage/__init__.py
+   - Source: tinyassets/storage/__init__.py
+   - Mirror: packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/storage/__init__.py
    ```
 
 ---

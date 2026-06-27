@@ -27,7 +27,7 @@ Why this is safer than Write/Edit:
   - Explicit failure rather than silent success.
 
 Spec reference: WebSite/HOOKS_FUSE_QUIRKS.md (auto-iterate ladder rung 4,
-2026-05-02, after workflow/api/status.py truncation incident).
+2026-05-02, after tinyassets/api/status.py truncation incident).
 """
 
 from __future__ import annotations

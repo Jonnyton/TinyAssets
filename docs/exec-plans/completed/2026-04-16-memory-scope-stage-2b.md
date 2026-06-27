@@ -3,7 +3,7 @@
 **Status:** Design resolved 2026-04-16 (navigator + lead on §9.2 defaults). Promotion-ready; dev claims when task #4 is picked up.
 **Design reference:** `docs/design-notes/2026-04-15-memory-scope-tiered.md` §3 (MemoryScope redesign), §4 (write/read-site behavior), §9.3 (resolution block).
 **Depends:** Stage 2a (`969b9c3` — schema + universe_acl + node_scope loader) — **landed**.
-**Flag:** `WORKFLOW_TIERED_SCOPE` (gates enforcement; off until Stage 2c).
+**Flag:** `TINYASSETS_TIERED_SCOPE` (gates enforcement; off until Stage 2c).
 **Scope boundary:** Interface reshape + write-site threading. **No enforcement flip** (that's 2c). Stage 2b must be semantically a no-op when the flag is off.
 
 ## Goal
@@ -14,10 +14,10 @@ Reshape `MemoryScope` to the 5-tier orthogonal-composition model and thread it t
 
 - No predicate enforcement on reads (that is 2c).
 - No change to Stage 1's post-query assertion beyond extending its field list.
-- No node-scope manifest loader rewrite — Stage 2a already shipped `workflow/memory/node_scope.py`.
+- No node-scope manifest loader rewrite — Stage 2a already shipped `tinyassets/memory/node_scope.py`.
 - No removal of the existing `author_id` / `session_id` fields until the rename (§Compatibility).
 
-## 1. `MemoryScope` redesign (`workflow/memory/scoping.py`)
+## 1. `MemoryScope` redesign (`tinyassets/memory/scoping.py`)
 
 Per design-note §3. Target shape:
 
@@ -63,20 +63,20 @@ Every archival write path must accept a `MemoryScope` argument and populate the 
 
 | File | Function(s) | Notes |
 |---|---|---|
-| `workflow/knowledge/knowledge_graph.py` | `add_entity` (L186), `add_edge` (L263), `add_facts` (L338) | Already has `universe_id` threading from Stage 1. Extend to `goal_id`/`branch_id`/`user_id`. `INSERT INTO entities/edges/facts` statements need the new columns. |
-| `workflow/retrieval/vector_store.py` | `index` (L128) | LanceDB `prose_chunks` seeded with scope fields in Stage 2a (defaults `""`). Populate from caller's scope at index time. |
-| `workflow/memory/episodic.py` | `store_summary` (L112), `store_fact` (L171), `store_observation` (L264), `store_reflection` (L308) | Scope columns need adding to episodic tables (`scene_summaries`, `episodic_facts`, `style_observations`, `reflections`) — **check whether Stage 2a covered these; if not, schema-migration is in-scope for 2b**. Design §4 only names "archival tables"; episodic may or may not be "archival." Navigator call: include episodic in 2b to keep the write-site surface coherent. |
-| `workflow/ingestion/indexer.py` | `index_text` (L23) | Upload entry point. Calls `kg.add_entity`, `kg.add_edge`, `kg.add_facts`, `vector_store.index` (L186/L194/L208/L268/L302). Must accept and forward a `MemoryScope`. |
+| `tinyassets/knowledge/knowledge_graph.py` | `add_entity` (L186), `add_edge` (L263), `add_facts` (L338) | Already has `universe_id` threading from Stage 1. Extend to `goal_id`/`branch_id`/`user_id`. `INSERT INTO entities/edges/facts` statements need the new columns. |
+| `tinyassets/retrieval/vector_store.py` | `index` (L128) | LanceDB `prose_chunks` seeded with scope fields in Stage 2a (defaults `""`). Populate from caller's scope at index time. |
+| `tinyassets/memory/episodic.py` | `store_summary` (L112), `store_fact` (L171), `store_observation` (L264), `store_reflection` (L308) | Scope columns need adding to episodic tables (`scene_summaries`, `episodic_facts`, `style_observations`, `reflections`) — **check whether Stage 2a covered these; if not, schema-migration is in-scope for 2b**. Design §4 only names "archival tables"; episodic may or may not be "archival." Navigator call: include episodic in 2b to keep the write-site surface coherent. |
+| `tinyassets/ingestion/indexer.py` | `index_text` (L23) | Upload entry point. Calls `kg.add_entity`, `kg.add_edge`, `kg.add_facts`, `vector_store.index` (L186/L194/L208/L268/L302). Must accept and forward a `MemoryScope`. |
 
 ### Call-site updates
 
 Every caller of the above sites passes a `MemoryScope`. Primary call-sites (grep surface):
 
-- `workflow/universe_server.py` — ingestion tool-call paths.
-- `workflow/author_server.py` — writer commit path emitting fact packets.
-- `workflow/graph_compiler.py` — node-level memory writes.
-- `workflow/evaluation/structural.py` — eval-time writes (if any).
-- `workflow/desktop/launcher.py` — seeding paths.
+- `tinyassets/universe_server.py` — ingestion tool-call paths.
+- `tinyassets/author_server.py` — writer commit path emitting fact packets.
+- `tinyassets/graph_compiler.py` — node-level memory writes.
+- `tinyassets/evaluation/structural.py` — eval-time writes (if any).
+- `tinyassets/desktop/launcher.py` — seeding paths.
 
 Dev enumerates the actual list via `grep -rn 'add_entity\|add_edge\|add_facts\|vector_store\.index\|episodic\.store_'` once work begins. Design note §4 says "every archival write site accepts a `MemoryScope`"; the list above is the starting set, not exhaustive.
 
@@ -86,7 +86,7 @@ Stage 1 shipped `assert_scope_match(row, caller_scope)` for `universe_id` only. 
 
 ## 4. Flag gating
 
-`WORKFLOW_TIERED_SCOPE`:
+`TINYASSETS_TIERED_SCOPE`:
 - **Off (default in 2b):** write sites still tag rows with scope. Reads ignore scope columns (broadest-visibility semantics, same as today). Assertion runs in warn mode.
 - **On (2c):** reads filter by composed predicate. Assertion hard-fails. Private universes reject cross-universe reads at Layer 1.
 
@@ -97,7 +97,7 @@ In 2b, ensure the flag gates only the read-side filtering — writes always tag 
 - **Unit:** `tests/test_memory_scoping.py` rewritten to the orthogonal model; add tests for `compose_predicate`, `NodeScope.universe_member=False` with `external_sources`, `breadth=narrow_slice` with `slice_spec`.
 - **Integration:** a fantasy-universe test fixture that runs a full ingestion + query cycle, asserts rows land with correct scope columns.
 - **Private-universe fixture:** a test universe with `universe_acl` rows, asserts Layer 1 rejection path exists (even though flag is off — the ACL function is testable independently).
-- **Regression:** full test suite pre- and post-change. 2b must not shift any existing test behavior when `WORKFLOW_TIERED_SCOPE=0`.
+- **Regression:** full test suite pre- and post-change. 2b must not shift any existing test behavior when `TINYASSETS_TIERED_SCOPE=0`.
 
 ## 6. Shape + stages
 
@@ -105,7 +105,7 @@ Roughly three dev sessions, in order:
 
 - **2b.1 — API reshape.** Rewrite `scoping.py` to the new dataclasses + helpers. All call-sites adapter-updated (old 5-tier field shape → new 5-tier field shape). Tests green.
 - **2b.2 — Write-site threading.** Thread `MemoryScope` through KG + vector + episodic + ingestion write sites. New rows carry scope columns.
-- **2b.3 — Assertion + flag wiring.** Extend Stage-1 assertion. Wire `WORKFLOW_TIERED_SCOPE` as a read-side gate (does nothing in 2b when off).
+- **2b.3 — Assertion + flag wiring.** Extend Stage-1 assertion. Wire `TINYASSETS_TIERED_SCOPE` as a read-side gate (does nothing in 2b when off).
 
 If 2b.1 turns out larger than one session (likely — author_id removal has reach), split it further rather than bundling.
 
@@ -115,7 +115,7 @@ If 2b.1 turns out larger than one session (likely — author_id removal has reac
 - [ ] All write sites in §2 accept and use `MemoryScope`.
 - [ ] New writes populate all four scope columns (NULL allowed for tiers the caller doesn't specify).
 - [ ] Stage-1 assertion checks all four columns.
-- [ ] Full test suite green with `WORKFLOW_TIERED_SCOPE=0`.
+- [ ] Full test suite green with `TINYASSETS_TIERED_SCOPE=0`.
 - [ ] Zero behavioral change for current fantasy-author usage (checked via sporemarch + ashwater test runs).
 - [ ] `docs/exec-plans/active/2026-04-16-memory-scope-stage-2b.md` moved to `landed/` after merge.
 

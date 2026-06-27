@@ -10,7 +10,7 @@ Workflow uses a two-layer logging strategy on the self-hosted Droplet:
 
 | Layer | Tool | What it does |
 |-------|------|--------------|
-| Real-time forwarding | Vector sidecar (`deploy/vector.yaml`) | Tails `workflow-daemon` + `workflow-tunnel` container stdout via Docker socket; ships to Better Stack when `BETTERSTACK_SOURCE_TOKEN` is set; always echoes to compose stdout (journald) |
+| Real-time forwarding | Vector sidecar (`deploy/vector.yaml`) | Tails `tinyassets-daemon` + `workflow-tunnel` container stdout via Docker socket; ships to Better Stack when `BETTERSTACK_SOURCE_TOKEN` is set; always echoes to compose stdout (journald) |
 | Offsite archiving | `deploy/ship-logs.sh` + systemd timer | Pulls last 24 h of container logs, archives as `.tar.gz`, uploads to `LOG_DEST` (Hetzner Storage Box or DO Spaces), prunes archives older than 30 days |
 
 ---
@@ -22,7 +22,7 @@ Workflow uses a two-layer logging strategy on the self-hosted Droplet:
 1. Create a free account at `logs.betterstack.com`.
 2. Create a new **Source** → **HTTP** type.
 3. Copy the ingest token.
-4. Add to `/etc/workflow/env`:
+4. Add to `/etc/tinyassets/env`:
 
 ```
 BETTERSTACK_SOURCE_TOKEN=<your-token>
@@ -31,16 +31,16 @@ BETTERSTACK_SOURCE_TOKEN=<your-token>
 5. Reload the logs sidecar:
 
 ```bash
-docker compose -f /opt/workflow/deploy/compose.yml restart logs
+docker compose -f /opt/tinyassets/deploy/compose.yml restart logs
 ```
 
-Logs from `workflow-daemon` and `workflow-tunnel` will appear in Better Stack within seconds.
+Logs from `tinyassets-daemon` and `workflow-tunnel` will appear in Better Stack within seconds.
 
 ### 2. Offsite archive via ship-logs.sh
 
 `ship-logs.sh` uses rclone. Configure the same remote as Row J backups (see `docs/ops/backup-restore-runbook.md`).
 
-Add to `/etc/workflow/env`:
+Add to `/etc/tinyassets/env`:
 
 ```
 # rclone URL for log archives — can share the same remote as backups
@@ -52,23 +52,23 @@ LOG_DEST=sftp:storagebox/workflow-logs
 Install the systemd units (ship-logs + disk-watch together):
 
 ```bash
-cp /opt/workflow/deploy/workflow-ship-logs.service  /etc/systemd/system/
-cp /opt/workflow/deploy/workflow-ship-logs.timer    /etc/systemd/system/
-cp /opt/workflow/deploy/workflow-disk-watch.service /etc/systemd/system/
-cp /opt/workflow/deploy/workflow-disk-watch.timer   /etc/systemd/system/
+cp /opt/tinyassets/deploy/tinyassets-ship-logs.service  /etc/systemd/system/
+cp /opt/tinyassets/deploy/tinyassets-ship-logs.timer    /etc/systemd/system/
+cp /opt/tinyassets/deploy/tinyassets-disk-watch.service /etc/systemd/system/
+cp /opt/tinyassets/deploy/tinyassets-disk-watch.timer   /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now workflow-ship-logs.timer workflow-disk-watch.timer
+systemctl enable --now tinyassets-ship-logs.timer tinyassets-disk-watch.timer
 ```
 
 Verify the timers are scheduled:
 
 ```bash
-systemctl list-timers workflow-ship-logs.timer workflow-disk-watch.timer
+systemctl list-timers tinyassets-ship-logs.timer tinyassets-disk-watch.timer
 ```
 
 **Disk-watch** (`scripts/disk_watch.py`) fires daily at 04:30 UTC and opens a
 `disk-pressure` GH Issue when `/var/lib/docker` exceeds `DISK_WARN_PCT` (default
-80%). Requires `GITHUB_TOKEN` in `/etc/workflow/env` with `issues: write` scope.
+80%). Requires `GITHUB_TOKEN` in `/etc/tinyassets/env` with `issues: write` scope.
 Optional env vars: `DISK_WATCH_PATH`, `DISK_WARN_PCT`, `GITHUB_REPOSITORY`.
 
 ---
@@ -79,21 +79,21 @@ Optional env vars: `DISK_WATCH_PATH`, `DISK_WARN_PCT`, `GITHUB_REPOSITORY`.
 
 ```bash
 # Last hour — daemon only
-docker logs workflow-daemon --since 1h
+docker logs tinyassets-daemon --since 1h
 
 # Last 24 h — both services
-docker logs workflow-daemon --since 24h
+docker logs tinyassets-daemon --since 24h
 docker logs workflow-tunnel --since 24h
 
 # Tail live
-docker logs workflow-daemon -f
+docker logs tinyassets-daemon -f
 ```
 
 ### Query via journald (compose captures Vector's stdout)
 
 ```bash
 # All workflow containers via compose labels
-journalctl -u docker -t workflow-daemon --since today
+journalctl -u docker -t tinyassets-daemon --since today
 
 # Or via the compose project (if started via systemd)
 journalctl -u docker-compose@workflow --since "1 hour ago"
@@ -132,7 +132,7 @@ tar -xzf /tmp/workflow-logs-2026-04-20T02-00-00.tar.gz -C /tmp/log-restore
 
 # Inspect
 ls /tmp/log-restore/
-grep "ERROR" /tmp/log-restore/workflow-daemon.log
+grep "ERROR" /tmp/log-restore/tinyassets-daemon.log
 ```
 
 ### Pull a date range (multiple archives)
@@ -152,13 +152,13 @@ rclone copy --include "workflow-logs-2026-04-1*.tar.gz" "${LOG_DEST}/" /tmp/log-
 To trigger an ad-hoc archive (e.g. before a deploy):
 
 ```bash
-LOG_DEST="${LOG_DEST}" LOG_SINCE=4h bash /opt/workflow/deploy/ship-logs.sh
+LOG_DEST="${LOG_DEST}" LOG_SINCE=4h bash /opt/tinyassets/deploy/ship-logs.sh
 ```
 
 Dry-run to confirm env without touching anything:
 
 ```bash
-DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/workflow/deploy/ship-logs.sh
+DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets/deploy/ship-logs.sh
 ```
 
 ---
@@ -167,9 +167,9 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/workflow/deploy/ship-logs.sh
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| No logs in Better Stack | Token not set or wrong | Check `BETTERSTACK_SOURCE_TOKEN` in `/etc/workflow/env`; restart `logs` container |
+| No logs in Better Stack | Token not set or wrong | Check `BETTERSTACK_SOURCE_TOKEN` in `/etc/tinyassets/env`; restart `logs` container |
 | Vector container not running | Depends-on daemon unhealthy | Check `docker logs workflow-logs`; confirm daemon healthcheck passes |
-| ship-logs.sh exits 1 | `LOG_DEST` missing | Set `LOG_DEST` in `/etc/workflow/env` |
+| ship-logs.sh exits 1 | `LOG_DEST` missing | Set `LOG_DEST` in `/etc/tinyassets/env` |
 | rclone upload fails | Remote misconfigured | Run `rclone lsd "${LOG_DEST}/"` to test connectivity |
 | Archives not being pruned | Clock skew or naming mismatch | Check archive names match `workflow-logs-YYYY-MM-DDTHH-MM-SS.tar.gz` pattern |
 | `docker logs` shows nothing | Container hasn't started | `docker ps -a` to check container state |
@@ -185,4 +185,4 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/workflow/deploy/ship-logs.sh
 | Offsite archive | 30 days | `LOG_DEST` (Hetzner/DO Spaces) |
 | journald (compose stdout) | Disk-size-limited, typically 1–7 days | Droplet local disk |
 
-To adjust offsite retention, set `LOG_RETAIN_DAYS` in `/etc/workflow/env`.
+To adjust offsite retention, set `LOG_RETAIN_DAYS` in `/etc/tinyassets/env`.

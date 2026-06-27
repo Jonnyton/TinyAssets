@@ -13,7 +13,7 @@ spec" or "planned", not "works".
 
 - Public endpoint proof starts with `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp`.
 - Directory endpoint proof also requires `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp-directory`.
-- Hosted chatbot proof must use the real chatbot UI with the Workflow connector
+- Hosted chatbot proof must use the real chatbot UI with the TinyAssets connector
   enabled, then log the trace in `output/claude_chat_trace.md` or the matching
   host trace file.
 - Developer/IDE proof must include a host-specific config plus a tool-list or
@@ -29,7 +29,7 @@ spec" or "planned", not "works".
 |---|---|---|---|
 | Public MCP endpoint | live-green | 2026-05-02T15:46-07:00: `mcp_public_canary.py --url https://tinyassets.io/mcp --timeout 15 --verbose` OK; `mcp_tool_canary.py --url https://tinyassets.io/mcp --timeout 20 --verbose` OK | Legacy custom connector surface remains available |
 | Directory-safe MCP endpoint | live-green; strict privacy hardening deployed | 2026-05-02T15:46-07:00: `mcp_public_canary.py --url https://tinyassets.io/mcp-directory --timeout 15 --verbose` OK; `mcp_tool_canary.py --url https://tinyassets.io/mcp-directory --timeout 20 --verbose` OK; strict live status redaction probe OK; descriptor listing showed 11 expected tools at 15:27 | Use for host-directory review and ChatGPT app submission proof |
-| Official MCP Registry metadata | published-live | 2026-05-01: `mcp-publisher` v1.7.6 published `io.github.Jonnyton/workflow-universe-server` 0.1.0; registry API search returned status `active` | Points clients at `https://tinyassets.io/mcp-directory` |
+| Official MCP Registry metadata | published-live | 2026-05-01: `mcp-publisher` v1.7.6 published `io.github.Jonnyton/tinyassets-universe-server` 0.1.0; registry API search returned status `active` | Points clients at `https://tinyassets.io/mcp-directory` |
 | OpenAI Apps domain verification | verified | 2026-05-02T14:40-07:00: PR #204 merged; deploy-site run `25262547528` passed; `https://tinyassets.io/.well-known/openai-apps-challenge` returned the OpenAI token. 2026-05-02T14:50-07:00: host approved `Verify Domain`; dashboard changed to `Domain verified`. Screenshot: `output/openai-submission-assets/openai-dashboard-domain-verified-2026-05-02.png` | Keep challenge file published while draft is under review |
 | AI-readable web docs | live | `WebSite/site/static/llms.txt` live from PR #134; update in progress for registry publication | Needs periodic source freshness check |
 | `/connect` customer chooser | live | PR #134 deployed; Playwright desktop/mobile smoke on 2026-05-01 | Copy separates registry live from Claude/ChatGPT directory acceptance |
@@ -78,9 +78,9 @@ spec" or "planned", not "works".
   11 directory tools from `/mcp-directory`.
 - `mcp-publisher` v1.7.6 was installed to a temp tools dir, validated
   `packaging/registry/server.json`, authenticated via the local GitHub session,
-  and published `io.github.Jonnyton/workflow-universe-server` version `0.1.0`.
+  and published `io.github.Jonnyton/tinyassets-universe-server` version `0.1.0`.
 - Registry API verification passed:
-  `https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Jonnyton/workflow-universe-server`
+  `https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Jonnyton/tinyassets-universe-server`
   returned one active latest server pointing at `https://tinyassets.io/mcp-directory`.
 - Public MCP diagnostics after one local HTTP 502: 5 consecutive
   `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --timeout 15 --verbose`
@@ -107,10 +107,10 @@ spec" or "planned", not "works".
 
 | Host surface | Customer path | Status | Proof / blocker |
 |---|---|---|---|
-| Official MCP Registry | Registry-aware MCP hosts | published-live | 2026-05-01 proof: `mcp-publisher publish packaging/registry/server.json`; API search returned `io.github.Jonnyton/workflow-universe-server` active/latest |
+| Official MCP Registry | Registry-aware MCP hosts | published-live | 2026-05-01 proof: `mcp-publisher publish packaging/registry/server.json`; API search returned `io.github.Jonnyton/tinyassets-universe-server` active/latest |
 | Claude.ai custom connector | verified: read-only UI | 2026-05-02T14:44-07:00 in-app browser Claude.ai chat `3959f3de-0244-4488-aa24-87a396e465c2`: naive connector prompt loaded Workflow tools and returned daemon status; screenshot `output/openai-submission-assets/claude-ai-workflow-connector-status-2026-05-02.png` | Read-only proof only; directory form submit still separate |
 | Claude Connectors Directory | Logged-in Claude users/admins | form-reached; submit blocked on contact/final-submit approval | 2026-05-02: in-app browser reached Google Form page 2 from official Claude submission docs; stopped before entering required contact/org fields because submission records Google identity and transmits contact data. Closeout packet: `docs/ops/claude-directory-submission-closeout-2026-05-02.md` |
-| ChatGPT custom MCP / developer mode | Logged-in eligible ChatGPT user/workspace | stale app registration | 2026-05-02T15:37-07:00 settings audit: enabled `Workflow DEV` points to legacy `https://tinyassets.io/mcp`; fresh ChatGPT web prompt called legacy `get_status` and returned raw diagnostics. Re-register to `/mcp-directory` before final web/mobile proof |
+| ChatGPT custom MCP / developer mode | Logged-in eligible ChatGPT user/workspace | stale app registration | 2026-05-02T15:37-07:00 settings audit: enabled `TinyAssets DEV` points to legacy `https://tinyassets.io/mcp`; fresh ChatGPT web prompt called legacy `get_status` and returned raw diagnostics. Re-register to `/mcp-directory` before final web/mobile proof |
 | ChatGPT App Directory | app draft; submit blocked | `chatgpt-app-submission.json` covers the 11 directory tools with 10 positive and 4 negative tests; 2026-05-02 dashboard draft uses `/mcp-directory`, `No Auth`, 11 complete justification rows, `Domain verified`, 5+3 dashboard tests, optional screenshots for non-UI app; direct `/mcp-directory` proof is green; final submit remains blocked on ChatGPT DEV re-register + web/mobile proof, legal/publisher assertions, optional uploads, and action-time host approval |
 | ChatGPT guest | No logged-in chatbot account | unsupported by ChatGPT path | Route to local/self-hosted/no-chatbot-login options |
 | Mistral Le Chat MCP connector | Logged-in Mistral user/admin | planned | Need connector config proof and directory/submission research |
@@ -140,7 +140,7 @@ Use host-specific wording, but each host should prove at least one of these:
 Detailed execution queue: `docs/ops/mcp-directory-rollout-action-queue.md`.
 
 - Monitor the official MCP Registry listing and add registry-aware client proof
-  as clients consume `io.github.Jonnyton/workflow-universe-server`.
+  as clients consume `io.github.Jonnyton/tinyassets-universe-server`.
 - Submit the Claude directory packet through Anthropic's review flow after the
   live Claude.ai proof and host approval gates in
   `docs/ops/claude-directory-submission-closeout-2026-05-02.md`.

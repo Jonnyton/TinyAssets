@@ -16,7 +16,7 @@ Asserted contracts:
 
 from __future__ import annotations
 
-from workflow.work_targets import WorkTarget
+from tinyassets.work_targets import WorkTarget
 
 
 def test_legacy_worktarget_loads_with_unknown_origin():

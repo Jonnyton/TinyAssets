@@ -24,7 +24,7 @@ Track G is the bridge between Postgres-canonical live content and the two GitHub
 Repo root:
 ```
 Workflow/
-├── workflow/                  # engine package
+├── tinyassets/                  # engine package
 ├── domains/                   # domain-specific workflow shells
 ├── fantasy_daemon/            # reference domain
 ├── tests/
@@ -309,7 +309,7 @@ async def export_batcher():
             branch="main",
             diffs=diffs,
             message=message,
-            author=WORKFLOW_CATALOG_BOT,
+            author=TINYASSETS_CATALOG_BOT,
         )
     except GithubRateLimitError as e:
         # Leave rows in pending_export; next cron retries. Log + alert.

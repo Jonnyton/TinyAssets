@@ -22,9 +22,9 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -65,7 +65,7 @@ def _patch(us, bid: str, ops: list) -> dict:
 
 
 def _load(us, base: Path, bid: str) -> dict:
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition
 
     return get_branch_definition(base, branch_def_id=bid)
 

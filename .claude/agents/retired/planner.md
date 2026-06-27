@@ -1,6 +1,6 @@
 ---
 name: planner
-description: Strategic thinker for the Workflow daemon. Use when you need to figure out WHAT to build, WHERE the project should go, or WHETHER a component is still earning its complexity. Not for implementation details — the developer is smart enough to figure those out.
+description: Strategic thinker for the TinyAssets daemon. Use when you need to figure out WHAT to build, WHERE the project should go, or WHETHER a component is still earning its complexity. Not for implementation details — the developer is smart enough to figure those out.
 tools: Read, Grep, Glob, Bash
 model: opus
 permissionMode: plan

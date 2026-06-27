@@ -18,10 +18,10 @@ related:
 ## Problem
 
 GROQ_API_KEY, GEMINI_API_KEY, XAI_API_KEY, and DO_API_TOKEN currently live in
-`/etc/workflow/env` on the droplet. They persist on disk indefinitely. When a key
+`/etc/tinyassets/env` on the droplet. They persist on disk indefinitely. When a key
 leaks (or a chat transcript captures it — the 2026-04-24 rotation trigger), the
 remediation is a manual host chore: rotate the key in four places (provider
-dashboard, GH Actions secrets, `/etc/workflow/env`, restart daemon). That chore
+dashboard, GH Actions secrets, `/etc/tinyassets/env`, restart daemon). That chore
 will recur on every rotation event for as long as keys live on disk.
 
 The goal is to eliminate the chore by making keys non-persistent: they flow
@@ -32,7 +32,7 @@ restart beyond what's strictly necessary.
 **DO_API_TOKEN is a separate, simpler case.** It's an ops-only credential for
 droplet management (resizing, snapshots, firewall rules). It should never be
 on the droplet itself — an attacker who compromises the droplet gets no
-additional lever. Remove it outright from `/etc/workflow/env`; keep it only in
+additional lever. Remove it outright from `/etc/tinyassets/env`; keep it only in
 GH Actions secrets (where it already lives for deploy-prod.yml). No boot-time
 injection needed.
 
@@ -44,7 +44,7 @@ simply unavailable. Claude/codex/ollama keep working. This is the correct
 degraded-but-alive posture.
 
 `docker-entrypoint.sh` checks that at least one of `{CLOUDFLARE_TUNNEL_TOKEN,
-SUPABASE_DB_URL, WORKFLOW_IMAGE}` is set before allowing the container to
+SUPABASE_DB_URL, TINYASSETS_IMAGE}` is set before allowing the container to
 start — these three never move to vault (they're structural, not rotatable
 secrets). The entrypoint sentinel check is unaffected.
 
@@ -65,16 +65,16 @@ at reboot?
 
 **How it works:** `deploy-prod.yml` already SSHs the droplet with `DO_SSH_KEY`.
 The deploy job adds a step that writes GROQ/GEMINI/XAI from GH Actions secrets
-directly into `/etc/workflow/env` (replacing the current manual provision).
+directly into `/etc/tinyassets/env` (replacing the current manual provision).
 The keys never live in the repo; they live in GH Actions secrets (same trust
 boundary they're already in post-rotation). On reboot without a new deploy,
-the keys remain in `/etc/workflow/env` until explicitly purged.
+the keys remain in `/etc/tinyassets/env` until explicitly purged.
 
 **Upside:** zero new infrastructure. No vault service needed on the droplet.
 Host rotates a key by updating the GH Actions secret + triggering a deploy
 (or the next normal deploy picks it up). One place to update.
 
-**Downside:** keys still persist on the droplet filesystem in `/etc/workflow/env`
+**Downside:** keys still persist on the droplet filesystem in `/etc/tinyassets/env`
 between deploys. The file is `root:workflow 640` so it's not readable by
 attackers without root, but it exists on disk. This doesn't achieve "no key
 on disk" — it achieves "one place to rotate instead of four."
@@ -89,15 +89,15 @@ the right answer.
 **How it works:** a Bitwarden-compatible CLI (Vaultwarden self-hosted, or
 the official `bw` CLI against Bitwarden cloud) is installed on the droplet
 with a machine account. A long-lived session token is stored at a restricted
-path (e.g. `/etc/workflow/bw-session`). `deploy/load-boot-secrets.sh` runs
-at compose-up time: it calls `bw list items --session $(cat /etc/workflow/bw-session)`,
+path (e.g. `/etc/tinyassets/bw-session`). `deploy/load-boot-secrets.sh` runs
+at compose-up time: it calls `bw list items --session $(cat /etc/tinyassets/bw-session)`,
 extracts GROQ/GEMINI/XAI, and injects them into the container environment
-via `--env` flags on `docker compose up`. No keys ever touch `/etc/workflow/env`.
+via `--env` flags on `docker compose up`. No keys ever touch `/etc/tinyassets/env`.
 
 **Upside:** genuinely no provider keys on disk. Rotation = one vault edit
 propagates everywhere on next reboot/deploy.
 
-**Downside:** the session token IS on disk (`/etc/workflow/bw-session`). The
+**Downside:** the session token IS on disk (`/etc/tinyassets/bw-session`). The
 security gain vs. Option A is: a compromised droplet gets the session token
 (scoped to read the vault) rather than the raw keys. For free-tier API keys
 whose worst-case breach is provider account compromise (not financial
@@ -133,10 +133,10 @@ problem as Option B). Overkill for free-tier API keys.
 
 **Phase 1 (ship now, dev task):** Option A + DO_API_TOKEN removal.
 
-1. Remove DO_API_TOKEN from `/etc/workflow/env` + `workflow-env.template` entirely.
+1. Remove DO_API_TOKEN from `/etc/tinyassets/env` + `workflow-env.template` entirely.
 2. Add a deploy-prod.yml step that writes GROQ_API_KEY, GEMINI_API_KEY,
-   XAI_API_KEY from GH Actions secrets into `/etc/workflow/env` on the droplet
-   (SSH step, same as the existing `sed -i` pattern for WORKFLOW_IMAGE). Follow
+   XAI_API_KEY from GH Actions secrets into `/etc/tinyassets/env` on the droplet
+   (SSH step, same as the existing `sed -i` pattern for TINYASSETS_IMAGE). Follow
    with `chown root:workflow + chmod 640` + readability assertion (existing pattern).
 3. Remove manual provider-key provisioning from the ops runbook.
 4. Add a pre-commit invariant or CI lint that checks `workflow-env.template`
@@ -160,9 +160,9 @@ classes (they still read `os.environ.get`), no new scripts.
 
 **Key invariant:** after the deploy step writes keys, the same `chown + chmod
 640 + sudo -u workflow test -r` assertion that already exists for
-WORKFLOW_IMAGE must gate the provider-key write. Re-use the existing pattern.
+TINYASSETS_IMAGE must gate the provider-key write. Re-use the existing pattern.
 
-**Reboot behavior (no new deploy):** keys persist in `/etc/workflow/env` between
+**Reboot behavior (no new deploy):** keys persist in `/etc/tinyassets/env` between
 deploys as today. The improvement is that rotation requires only updating
 4 GH Actions secrets (GROQ/GEMINI/XAI + CLOUDFLARE_API_TOKEN) + triggering
 a deploy. No SSH manual edit. No drift between GH secrets and droplet state.
@@ -178,14 +178,14 @@ is a silent skip, not a deploy failure.)
 
 **Q2 — Rotation timing:** after dev ships the deploy step, will host rotate
 all three provider keys once to validate the end-to-end path before removing
-the manual `/etc/workflow/env` edit from the ops runbook? This is the
+the manual `/etc/tinyassets/env` edit from the ops runbook? This is the
 acceptance test for the whole change.
 
 **Q3 — Bitwarden session token (future):** if Option B is ever revisited,
-where should the machine session token live on the droplet? `/etc/workflow/bw-session`
+where should the machine session token live on the droplet? `/etc/tinyassets/bw-session`
 (root:workflow 640, same pattern) seems right. Noting for future reference.
 
-**Q4 — WORKFLOW_PIN_WRITER:** if all three free-tier providers are absent at
+**Q4 — TINYASSETS_PIN_WRITER:** if all three free-tier providers are absent at
 boot (unreachable vault or keys not yet injected), the writer chain falls
 through to ollama-local. Is that an acceptable degraded posture during the
 transition period, or should there be a warning log that surfaces "provider
@@ -196,8 +196,8 @@ worth a one-line log in deploy-prod.yml after the inject step confirms success.)
 
 | Component | Today | After |
 |---|---|---|
-| GROQ/GEMINI/XAI on droplet | Manual provision in `/etc/workflow/env` | Written by `deploy-prod.yml` each deploy |
-| DO_API_TOKEN on droplet | Present in `/etc/workflow/env` | Removed entirely |
+| GROQ/GEMINI/XAI on droplet | Manual provision in `/etc/tinyassets/env` | Written by `deploy-prod.yml` each deploy |
+| DO_API_TOKEN on droplet | Present in `/etc/tinyassets/env` | Removed entirely |
 | Rotation chore | Edit 4 places + SSH + restart | Update GH Actions secret + next deploy |
 | Keys on disk between deploys | Yes (same as today) | Yes (until Option B if warranted) |
 | Provider fail-loud behavior | Unchanged | Unchanged |

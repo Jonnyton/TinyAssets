@@ -9,8 +9,8 @@ Branch: `claude/defantasy-tierb-soulloop`
 Tier B of `docs/audits/2026-06-24-fantasy-architecture-residue-audit.md`
 identified two production spawn paths that still privileged the fantasy daemon:
 
-- `workflow/__main__.py` allowed only `--domain fantasy_author` to execute.
-- `workflow/cloud_worker.py` default-spawned `python -m fantasy_daemon` for
+- `tinyassets/__main__.py` allowed only `--domain fantasy_author` to execute.
+- `tinyassets/cloud_worker.py` default-spawned `python -m fantasy_daemon` for
   every universe.
 
 `docs/design-notes/2026-06-03-soul-loop-dispatch-activation-plan.md` identified
@@ -18,10 +18,10 @@ the intended execution path: a universe with `soul.md` and a declared
 `loop_branch_def_id` should run that branch through `workflow.runs.execute_branch`
 instead of building a second runner. The existing implementation in
 `fantasy_daemon/__main__.py::_try_execute_soul_loop` is gated by
-`WORKFLOW_SOUL_LOOP_DISPATCH`, so this branch wires production spawning to that
+`TINYASSETS_SOUL_LOOP_DISPATCH`, so this branch wires production spawning to that
 dark path without changing the default.
 
-This PR does not flip `WORKFLOW_SOUL_LOOP_DISPATCH` on.
+This PR does not flip `TINYASSETS_SOUL_LOOP_DISPATCH` on.
 
 ## Assessment Of The Existing Dark Path
 
@@ -54,7 +54,7 @@ What is not production-ready yet:
   `_try_execute_soul_loop`, which also falls through to the fantasy cycle. A
   default-on rollout needs fail-closed behavior for malformed or unreadable
   souled universes.
-- `workflow/__main__.py` still delegates to `fantasy_daemon.DaemonController`;
+- `tinyassets/__main__.py` still delegates to `fantasy_daemon.DaemonController`;
   the runtime is not fully extracted. This branch only relaxes the non-fantasy
   gate when the flag is on and the universe resolves to a declared non-legacy
   soul loop.
@@ -63,33 +63,33 @@ What is not production-ready yet:
 
 The scaffold adds routing, not a new executor:
 
-- `workflow/cloud_worker.py` now chooses `python -m workflow` only when
-  `WORKFLOW_SOUL_LOOP_DISPATCH` is truthy and `_universe_loop_dispatch(universe)`
+- `tinyassets/cloud_worker.py` now chooses `python -m tinyassets` only when
+  `TINYASSETS_SOUL_LOOP_DISPATCH` is truthy and `_universe_loop_dispatch(universe)`
   returns a real non-legacy branch id.
 - Flag off, no soul, no loop declaration, or the legacy fantasy loop all keep the
   existing `python -m fantasy_daemon` subprocess path and call shape.
-- `workflow/__main__.py` accepts `--provider` so cloud-worker provider pinning
+- `tinyassets/__main__.py` accepts `--provider` so cloud-worker provider pinning
   remains valid when the generic module route is selected.
-- `workflow/__main__.py` keeps rejecting non-fantasy domains unless the same
+- `tinyassets/__main__.py` keeps rejecting non-fantasy domains unless the same
   flag-on declared-soul-loop condition is true.
 
-The selected `python -m workflow` process still delegates into
+The selected `python -m tinyassets` process still delegates into
 `DaemonController`, so the existing dark `_try_execute_soul_loop` path is the
 only soul-loop executor used by this branch.
 
 ## Staged Rollout Plan
 
-1. Land this flag-gated scaffold with `WORKFLOW_SOUL_LOOP_DISPATCH` off in all
+1. Land this flag-gated scaffold with `TINYASSETS_SOUL_LOOP_DISPATCH` off in all
    production environments.
 2. Run a local dry-run universe with `soul.md`, a declared `loop_branch_def_id`,
    and empty `effect_authority`.
 3. Run the AGENTS.md Section 14 concurrency/load proof against cloud-worker and
    host-worker overlap, including pending child BranchTasks, producer pumping,
    restart/backoff behavior, and failure paths. This proof MUST cover signal
-   handling for the `python -m workflow` subprocess: unlike the legacy
+   handling for the `python -m tinyassets` subprocess: unlike the legacy
    `fantasy_daemon` entrypoint (which installs a SIGTERM handler that sets
    `_stop_event` for a graceful checkpoint flush — `fantasy_daemon/__main__.py`),
-   `workflow/__main__.py` installs no SIGINT/SIGTERM handler. The supervisor
+   `tinyassets/__main__.py` installs no SIGINT/SIGTERM handler. The supervisor
    stops subprocesses with `proc.terminate()` (SIGTERM) before `proc.kill()`
    (`cloud_worker.py`), so without a handler a supervisor-initiated restart
    exits rc=-15. The always-true consequence is that the graceful checkpoint
@@ -117,5 +117,5 @@ only soul-loop executor used by this branch.
 - Explicit reconciliation of the souled-but-no-loop behavior so daemon and MCP
   semantics do not diverge.
 
-Until those gates are satisfied, `WORKFLOW_SOUL_LOOP_DISPATCH` remains an
+Until those gates are satisfied, `TINYASSETS_SOUL_LOOP_DISPATCH` remains an
 opt-in flag and fantasy/soulless universes keep the current production default.

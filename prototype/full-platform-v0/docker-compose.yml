@@ -29,7 +29,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      WORKFLOW_V0_DSN: "postgresql://workflow:workflow_v0_dev@postgres:5432/workflow_v0"
+      TINYASSETS_V0_DSN: "postgresql://workflow:workflow_v0_dev@postgres:5432/workflow_v0"
     # Run gateway in HTTP transport mode for in-container debugging.
     command: >
       python -c "from gateway import mcp; mcp.run(transport='streamable-http', host='0.0.0.0', port=8002)"

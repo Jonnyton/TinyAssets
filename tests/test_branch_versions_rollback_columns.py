@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.branch_versions import (
+from tinyassets.branch_versions import (
     DEFAULT_WATCH_WINDOW_SECONDS,
     BranchVersion,
     _resolve_watch_window,
@@ -29,7 +29,7 @@ from workflow.branch_versions import (
     is_within_watch_window,
     publish_branch_version,
 )
-from workflow.runs import runs_db_path
+from tinyassets.runs import runs_db_path
 
 
 def _seed_branch_dict(branch_def_id="b1"):

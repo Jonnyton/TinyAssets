@@ -12,12 +12,12 @@ import pytest
 def gates_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite")
-    from workflow import universe_server as us
-    from workflow.catalog import backend as backend_mod
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
+    from tinyassets import universe_server as us
+    from tinyassets.catalog import backend as backend_mod
 
     backend_mod.invalidate_backend_cache()
     importlib.reload(us)

@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from workflow.daemon_brain import (
+from tinyassets.daemon_brain import (
     capture_daemon_memory,
     evaluate_daemon_memory_quality,
     memory_observability_status,
 )
-from workflow.daemon_registry import create_daemon
+from tinyassets.daemon_registry import create_daemon
 
 
 def _create_daemon(base: Path) -> dict:

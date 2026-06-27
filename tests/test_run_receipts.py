@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.runs import (
+from tinyassets.runs import (
     _connect,
     create_run,
     initialize_runs_db,
@@ -174,7 +174,7 @@ def test_receipt_payload_size_is_capped(
     monkeypatch,
 ) -> None:
     run_id = _seed_run(tmp_path)
-    monkeypatch.setenv("WORKFLOW_RECEIPT_PAYLOAD_MAX_BYTES", "128")
+    monkeypatch.setenv("TINYASSETS_RECEIPT_PAYLOAD_MAX_BYTES", "128")
 
     with pytest.raises(ValueError, match="payload exceeds max 128 bytes"):
         record_run_receipt(
@@ -300,10 +300,10 @@ def test_mcp_actions_record_and_list_run_receipts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     run_id = _seed_run(tmp_path)
 
-    from workflow.universe_server import extensions
+    from tinyassets.universe_server import extensions
 
     recorded = json.loads(extensions(
         action="record_run_receipt",

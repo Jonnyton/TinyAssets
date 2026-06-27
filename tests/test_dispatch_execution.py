@@ -13,7 +13,7 @@ keyword behavior so those don't regress.
 from __future__ import annotations
 
 from domains.fantasy_daemon.phases.dispatch_execution import _determine_task
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     PUBLISH_STAGE_NONE,
     PUBLISH_STAGE_PROVISIONAL,
     ROLE_NOTES,

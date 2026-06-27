@@ -189,10 +189,10 @@ extensions action=dispatch_bounty_pool
   → returns {pool_id, status, distributions, treasury_take, bounty_pool_recursion, distributable}
 ```
 
-Authority: gates on new `check_dispatch_authority(actor_id)` in `workflow/storage/authority.py` (per #69 pattern). Host-only per `project_monetization_crypto_1pct` "Treasury = host-controlled for now."
+Authority: gates on new `check_dispatch_authority(actor_id)` in `tinyassets/storage/authority.py` (per #69 pattern). Host-only per `project_monetization_crypto_1pct` "Treasury = host-controlled for now."
 
 ```python
-# workflow/storage/authority.py — new check function
+# tinyassets/storage/authority.py — new check function
 def check_dispatch_authority(base_path, actor_id) -> None:
     if actor_id != _host_actor():
         raise AuthorizationError(
@@ -239,7 +239,7 @@ The pool was funded at the rates active when funded. The pool is dispatched at t
 
 ### How it's implemented
 
-`extensions action=create_bounty_pool` reads system defaults at creation time (`os.environ.get("WORKFLOW_PLATFORM_FEE_PCT", "0.01")` etc.) and copies them into the pool row. The pool row is the source of truth from then on. Dispatch reads from the pool row, not from env.
+`extensions action=create_bounty_pool` reads system defaults at creation time (`os.environ.get("TINYASSETS_PLATFORM_FEE_PCT", "0.01")` etc.) and copies them into the pool row. The pool row is the source of truth from then on. Dispatch reads from the pool row, not from env.
 
 This is the kind of "obvious-to-implementer-non-obvious-to-future-reader" decision that should be documented up front so a future maintainer doesn't "fix" the redundancy by removing the per-pool columns.
 
@@ -269,7 +269,7 @@ This composes with the project memory `project_chatbot_assumes_workflow_ux` — 
 
 ### Task #82 substrate
 
-Dispatcher CALLS `bounty_calc_query_template(...)` from `workflow/attribution/bounty_calc.py` directly. No string-construct SQL. Substrate stays currency-agnostic per #82 §11 Q5; dispatcher applies `pool_total_currency × share / total_share` for each distribution. Hard dependency.
+Dispatcher CALLS `bounty_calc_query_template(...)` from `tinyassets/attribution/bounty_calc.py` directly. No string-construct SQL. Substrate stays currency-agnostic per #82 §11 Q5; dispatcher applies `pool_total_currency × share / total_share` for each distribution. Hard dependency.
 
 ### Task #77 outcome events
 
@@ -374,5 +374,5 @@ These invariants drive integration tests; design must enforce all 5 at SQL + han
 - Existing dispatch + auth patterns (engine integration points):
   - `_action_extensions_*` registry for `dispatch_bounty_pool` / `create_bounty_pool` / `get_pool` / `list_pools`.
   - `_current_actor()` for `funder_actor_id` server-set per #74 precedent.
-  - `_host_actor()` from `workflow/storage/authority.py` per #69 pattern (after #69 ships).
+  - `_host_actor()` from `tinyassets/storage/authority.py` per #69 pattern (after #69 ships).
 - Adopts grep-anchored references per #77 line-drift fix lesson — this proposal cites docs by section, not exact line numbers.

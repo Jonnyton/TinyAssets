@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from workflow.enrichment_signals import (
+from tinyassets.enrichment_signals import (
     ENRICHMENT_SIGNALS_FILENAME,
     LEGACY_WORLDBUILD_SIGNALS_FILENAME,
     append_enrichment_signals,

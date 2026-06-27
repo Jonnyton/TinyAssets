@@ -1,2 +1,2 @@
-"""Shim: use workflow.packets instead."""
-from workflow.packets import *  # noqa: F401,F403
+"""Shim: use tinyassets.packets instead."""
+from tinyassets.packets import *  # noqa: F401,F403

@@ -1,16 +1,16 @@
 ---
-title: Step 9 prep — workflow/api/universe.py extraction scope
+title: Step 9 prep — tinyassets/api/universe.py extraction scope
 date: 2026-04-26
 author: navigator
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md (audit's "100-LOC routing shell" target — Steps 9+10 are post-original-8-step extension); docs/exec-plans/completed/2026-04-26-decomp-step-8-prep.md §10.2
-target_task: Decomp post-Step-8 — Extract workflow/api/universe.py (the `universe()` MCP tool body + 28 `_action_*` handlers + WRITE_ACTIONS + ledger dispatcher + daemon-liveness telemetry)
-gates_on: Step 8 (`branches.py`, ~2,673 LOC) MUST land first. Step 8 + Step 9 both edit `workflow/universe_server.py` re-export shim block. Step 9 is otherwise independent of Step 8 (no symbol overlap — branches.py owns `_BRANCH_ACTIONS` table; universe.py owns the `universe()` tool dispatch table).
+target_task: Decomp post-Step-8 — Extract tinyassets/api/universe.py (the `universe()` MCP tool body + 28 `_action_*` handlers + WRITE_ACTIONS + ledger dispatcher + daemon-liveness telemetry)
+gates_on: Step 8 (`branches.py`, ~2,673 LOC) MUST land first. Step 8 + Step 9 both edit `tinyassets/universe_server.py` re-export shim block. Step 9 is otherwise independent of Step 8 (no symbol overlap — branches.py owns `_BRANCH_ACTIONS` table; universe.py owns the `universe()` tool dispatch table).
 ---
 
 # Step 9 (`universe.py`) pre-flight scope
 
-Read-only scope for extracting the `universe()` MCP tool surface from `workflow/universe_server.py` into a new `workflow/api/universe.py`. **Second-largest extraction by LOC** (~2,580 moveable LOC) and the most semantically self-contained: every symbol in scope is wired through one MCP tool dispatch table. Same freshness-check protocol as Steps 1-8 prep.
+Read-only scope for extracting the `universe()` MCP tool surface from `tinyassets/universe_server.py` into a new `tinyassets/api/universe.py`. **Second-largest extraction by LOC** (~2,580 moveable LOC) and the most semantically self-contained: every symbol in scope is wired through one MCP tool dispatch table. Same freshness-check protocol as Steps 1-8 prep.
 
 This step is NOT in the original 8-step audit plan. Per Step 8 prep §10.2, the audit's "~100-LOC routing shell" target requires extracting `universe()` + `_action_*` handlers (this step) AND the preamble engine helpers (Step 10) on top of the planned 8 extractions. Lead-and-host approval required to proceed.
 
@@ -205,8 +205,8 @@ This helper sits inside the L1497-L3832 universe-action range but is preamble-st
 
 `universe()` IS an `@mcp.tool()` registration. Same Pattern A2 question as Step 8's `@mcp.prompt`:
 
-- **Option A** (recommended, consistent with Step 8 §3.6 + #6/#7 Pattern A2): Move the `universe()` body to `workflow/api/universe.py` as a plain function `_universe_impl(action, **kwargs) -> str`. Preserve `@mcp.tool() def universe(...)` decorator + 23-arg signature in `workflow/universe_server.py` wrapping a delegation to `_universe_impl`. ~25-line wrapper.
-- **Option B**: Move `@mcp.tool()` decoration WITH the `universe()` body to `workflow/api/universe.py`. Requires `mcp` instance import in `universe.py` (back-edge `from workflow.universe_server import mcp` — same leaf-module concern from audit §6).
+- **Option A** (recommended, consistent with Step 8 §3.6 + #6/#7 Pattern A2): Move the `universe()` body to `tinyassets/api/universe.py` as a plain function `_universe_impl(action, **kwargs) -> str`. Preserve `@mcp.tool() def universe(...)` decorator + 23-arg signature in `tinyassets/universe_server.py` wrapping a delegation to `_universe_impl`. ~25-line wrapper.
+- **Option B**: Move `@mcp.tool()` decoration WITH the `universe()` body to `tinyassets/api/universe.py`. Requires `mcp` instance import in `universe.py` (back-edge `from workflow.universe_server import mcp` — same leaf-module concern from audit §6).
 
 **Recommendation: Option A** — consistent with how `goals`, `gates`, `wiki`, `get_status`, and Step 8's `@mcp.prompt` Branch Design Guide are handled. Avoids the leaf-module question entirely. Wrapper preservation is small (~25 LOC for the decorator + signature + delegation).
 
@@ -235,7 +235,7 @@ This helper sits inside the L1497-L3832 universe-action range but is preamble-st
 
 **Total estimated: ~35-45 test imports across ~10-15 test files.** Materially smaller surface than Step 8 (75+ imports across 25+ files) because the universe-tool surface is older and more stable than branch-CRUD.
 
-**Strategy: back-compat re-export shim** (audit §7 Strategy 1) preserves all imports. Re-export block in `workflow/universe_server.py` after Step 9:
+**Strategy: back-compat re-export shim** (audit §7 Strategy 1) preserves all imports. Re-export block in `tinyassets/universe_server.py` after Step 9:
 
 ```python
 from workflow.api.universe import (  # noqa: E402, F401
@@ -331,7 +331,7 @@ from workflow.api.universe import (  # noqa: E402, F401
 | Back-compat re-export block added to universe_server.py | ~50 |
 | `@mcp.tool() def universe(...)` decorator + 23-arg signature wrapper preserved (Option A) | ~50 (decorator + sig + delegation; body is in universe.py) |
 | **Net reduction in universe_server.py** | **~2,959** |
-| New `workflow/api/universe.py` size | **~3,150** (with imports + module docstring + Pattern A2 docstring) |
+| New `tinyassets/api/universe.py` size | **~3,150** (with imports + module docstring + Pattern A2 docstring) |
 
 **Materially larger than Step 8 (~2,593 net reduction).** universe.py becomes the largest single API submodule.
 
@@ -345,7 +345,7 @@ Estimated wall time: **150-210 min** (largest extraction by LOC; multi-range del
 2. **AST scan for external symbol set.** Identify exact set of universe_server-internal preamble symbols that the moved code references. Lazy-import each in the consuming function. **Expect 10-15 affected functions** with `from workflow.universe_server import _current_actor, _append_ledger, _truncate, _storage_backend, _format_dirty_file_conflict, _upload_whitelist_prefixes`.
 3. **Verify `_parse_activity_line` is consumed only by `_action_get_recent_events`** (grep all callers). If single caller, move with universe.py.
 4. **Verify `_daemon_liveness` callers are exactly 3 universe-action handlers** (`_action_list_universes`, `_action_inspect_universe`, `_action_daemon_overview`). If any other module imports it, add to re-export shim.
-5. **Create `workflow/api/universe.py`:**
+5. **Create `tinyassets/api/universe.py`:**
    - Module docstring referencing audit + extraction date + the source ranges (5 sub-ranges) + Pattern A2 explanation for `@mcp.tool() universe()`.
    - Imports: `from workflow.api.helpers import _base_path, _default_universe, _universe_dir, _read_json, _read_text` + std-lib + typing + `logging.getLogger("universe_server.universe")`.
    - Move L508-L713 verbatim (WRITE_ACTIONS extractors + table).
@@ -354,7 +354,7 @@ Estimated wall time: **150-210 min** (largest extraction by LOC; multi-range del
    - Move L3502 `_parse_activity_line` (alongside its caller).
    - Move L1497-L3832 verbatim (28 `_action_*` handlers).
    - For Option A: extract `universe()` body as `def _universe_impl(action: str, **kwargs: Any) -> str` exposing the dispatch logic; the `@mcp.tool()` decorator stays in universe_server.py.
-6. **Update `workflow/universe_server.py`:**
+6. **Update `tinyassets/universe_server.py`:**
    - Delete L508-L713 (WRITE_ACTIONS).
    - Delete L857-L959 (dispatcher trio).
    - Delete L1060-L1238 (`universe()` body — replaced by Pattern A2 wrapper).
@@ -369,18 +369,18 @@ Estimated wall time: **150-210 min** (largest extraction by LOC; multi-range del
    - `pytest tests/test_inspect_cross_surface_hint.py tests/test_phase_e_dispatcher.py tests/test_canonical_branch_mcp.py -q` → green.
    - `pytest -k "universe or action or daemon" -q` → cross-cutting smoke.
    - `pytest -q` → full suite green (essential — universe.py is the largest single extraction; touches ledger surface).
-   - `ruff check workflow/api/universe.py workflow/universe_server.py` → clean.
-   - **Visual check:** `git diff workflow/universe_server.py | grep -c "^-def _action_"` should equal **28**.
-   - **Visual check:** `git diff workflow/universe_server.py | grep -c "^-def _extract_"` should equal **13** (14 entries, but `_extract_set_tier_config` is the last — count shows 13 deleted plus the dict literal).
+   - `ruff check tinyassets/api/universe.py tinyassets/universe_server.py` → clean.
+   - **Visual check:** `git diff tinyassets/universe_server.py | grep -c "^-def _action_"` should equal **28**.
+   - **Visual check:** `git diff tinyassets/universe_server.py | grep -c "^-def _extract_"` should equal **13** (14 entries, but `_extract_set_tier_config` is the last — count shows 13 deleted plus the dict literal).
    - **MCP probe:** `python scripts/mcp_probe.py --tool universe --args '{"action":"list"}'` → returns valid universe list. Validates Pattern A2 wrapper.
 
 **Files in eventual Step 9 SHIP handoff:**
-- `workflow/api/universe.py` (NEW, ~3,150 LOC — largest single-file extraction)
-- `workflow/universe_server.py` (~3,059 LOC removed + ~50 re-export added + ~50 universe-wrapper preservation = net ~−2,959)
+- `tinyassets/api/universe.py` (NEW, ~3,150 LOC — largest single-file extraction)
+- `tinyassets/universe_server.py` (~3,059 LOC removed + ~50 re-export added + ~50 universe-wrapper preservation = net ~−2,959)
 - `tests/test_api_universe.py` (NEW, 70-100 tests recommended)
 - 1 existing test file with monkeypatch-target update (`test_inspect_cross_surface_hint.py`)
-- `packaging/claude-plugin/.../workflow/api/universe.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
+- `packaging/claude-plugin/.../tinyassets/api/universe.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
 
 5-7 files, +3,200 / −2,950 LOC net.
 

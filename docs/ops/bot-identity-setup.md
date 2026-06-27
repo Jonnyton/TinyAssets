@@ -4,12 +4,12 @@ The community patch loop must use a GitHub identity that is separate from `@Jonn
 
 ## GitHub App setup
 
-Create a GitHub App owned by the account or organization that controls `Jonnyton/Workflow`.
+Create a GitHub App owned by the account or organization that controls `Jonnyton/TinyAssets`.
 
 Settings:
 
 - Webhook: disabled.
-- Repository access: only `Jonnyton/Workflow`.
+- Repository access: only `Jonnyton/TinyAssets`.
 - Repository permissions:
   - Contents: Read and write.
   - Pull requests: Read and write.
@@ -18,16 +18,16 @@ Settings:
 
 After creating the App:
 
-1. Install it on `Jonnyton/Workflow` only.
+1. Install it on `Jonnyton/TinyAssets` only.
 2. Record the App ID and installation ID.
-3. Generate a private key and place it on the droplet at `/etc/workflow/github-app-private-key.pem` with `root:root` ownership and `0600` mode.
-4. Create `/etc/workflow/github-app-token-refresher.env` with:
+3. Generate a private key and place it on the droplet at `/etc/tinyassets/github-app-private-key.pem` with `root:root` ownership and `0600` mode.
+4. Create `/etc/tinyassets/github-app-token-refresher.env` with:
 
 ```bash
 GITHUB_APP_ID=<app-id>
 GITHUB_APP_INSTALLATION_ID=<installation-id>
-GITHUB_APP_PRIVATE_KEY_FILE=/etc/workflow/github-app-private-key.pem
-WORKFLOW_GITHUB_PR_CAPABILITIES_REPO=Jonnyton/Workflow
+GITHUB_APP_PRIVATE_KEY_FILE=/etc/tinyassets/github-app-private-key.pem
+TINYASSETS_GITHUB_PR_CAPABILITIES_REPO=Jonnyton/TinyAssets
 ```
 
 Then run:
@@ -36,13 +36,13 @@ Then run:
 sudo systemctl daemon-reload
 sudo systemctl enable --now github-app-token-refresher.timer
 sudo systemctl start github-app-token-refresher.service
-sudo systemctl restart workflow-daemon.service
+sudo systemctl restart tinyassets-daemon.service
 ```
 
-The refresher writes this value into `/etc/workflow/env` through `deploy/install-workflow-env.sh`:
+The refresher writes this value into `/etc/tinyassets/env` through `deploy/install-workflow-env.sh`:
 
 ```json
-{"Jonnyton/Workflow":"<installation-token>"}
+{"Jonnyton/TinyAssets":"<installation-token>"}
 ```
 
 ## Branch protection pairing

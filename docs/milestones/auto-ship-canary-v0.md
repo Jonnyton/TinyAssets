@@ -56,7 +56,7 @@ docs/autoship-canaries/first-loop-autoship.md
 or:
 
 ```
-workflow/autoship_canaries/last_success.json
+tinyassets/autoship_canaries/last_success.json
 ```
 
 This is a real repo change but low-risk and mechanically reversible.
@@ -212,18 +212,18 @@ Allowed paths:
 
 ```
 docs/autoship-canaries/**
-workflow/autoship_canaries/**
+tinyassets/autoship_canaries/**
 tests/fixtures/autoship_canaries/**
 ```
 
 Forbidden paths:
 
 ```
-workflow/runtime/**
-workflow/providers/**
-workflow/api/**
-workflow/wiki/**
-workflow/dispatcher/**
+tinyassets/runtime/**
+tinyassets/providers/**
+tinyassets/api/**
+tinyassets/wiki/**
+tinyassets/dispatcher/**
 .github/**
 scripts/deploy/**
 migrations/**
@@ -349,7 +349,7 @@ A wiki evidence page may also be written for human readability, but the source o
 Suggested committed artifact:
 
 ```
-workflow/autoship_canaries/evidence/<YYYY-MM-DD>-<request_id>.json
+tinyassets/autoship_canaries/evidence/<YYYY-MM-DD>-<request_id>.json
 ```
 
 Example:
@@ -629,7 +629,7 @@ This proves the loop can ship without weakening the safety posture of the canoni
 ## Source
 
 This milestone doc was authored by the dev-partner chat (ChatGPT gpt-5) with the
-Workflow MCP connector installed, on 2026-05-02. The Cowork session captured
+TinyAssets MCP connector installed, on 2026-05-02. The Cowork session captured
 the chat and wrote the doc verbatim. Conversation: https://chatgpt.com/c/69f64b8d-fa04-83e8-b4d3-bb6e95b16475
 
 The dev-partner chatbot was invoked as a senior engineering peer to spec the

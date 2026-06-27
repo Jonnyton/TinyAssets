@@ -18,9 +18,9 @@
 
   const MCP_URL = 'https://tinyassets.io/mcp';
   const MCP_BARE = MCP_URL.replace('https://', '');
-  const GH_REPO = 'https://github.com/Jonnyton/Workflow';
-  const GH_ISSUES = 'https://github.com/Jonnyton/Workflow/issues';
-  const GH_CONTRIBUTING = 'https://github.com/Jonnyton/Workflow/blob/main/CONTRIBUTING.md';
+  const GH_REPO = 'https://github.com/Jonnyton/TinyAssets';
+  const GH_ISSUES = 'https://github.com/Jonnyton/TinyAssets/issues';
+  const GH_CONTRIBUTING = 'https://github.com/Jonnyton/TinyAssets/blob/main/CONTRIBUTING.md';
 
   // ── Copyable MCP URL chip (same idiom as home's urlchip). ──
   let copied = $state(false);

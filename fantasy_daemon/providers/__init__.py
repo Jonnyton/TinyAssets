@@ -1,2 +1,2 @@
-"""Shim: use workflow.providers instead."""
-from workflow.providers import *  # noqa: F401,F403
+"""Shim: use tinyassets.providers instead."""
+from tinyassets.providers import *  # noqa: F401,F403

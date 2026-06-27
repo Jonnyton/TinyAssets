@@ -10,7 +10,7 @@ Panes per window (Phase H):
 
 - **DispatcherPane** — tier status + toggle controls.
 - **QueuePane** — top-N pending BranchTasks, tier-color-coded.
-- **EarningsPane** — settlements count, open bids, recent completion rate. Hidden when `WORKFLOW_PAID_MARKET=off`.
+- **EarningsPane** — settlements count, open bids, recent completion rate. Hidden when `TINYASSETS_PAID_MARKET=off`.
 - **SettlementsPane** — settlements ledger table (optional; merges into EarningsPane in the compact layout).
 
 All panes consume the same `daemon_overview` MCP response via a refresh timer (default 2s cadence).

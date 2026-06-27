@@ -41,7 +41,7 @@ This is NOT a complete spec — it's a strategic design proposal. After host app
 | **Run state (in-flight + checkpoints)** | Per-host `output/<universe>/.author_server.db` (post-rename `.workflow.db`) | **HOST-RESIDENT only** | A run includes the user's actual inputs (Maya's invoices, Priya's species data). Always host-resident. |
 | **Run outputs (artifacts: CSVs, PDFs, methods paragraphs)** | Per-host `output/<universe>/<run_id>/...` | **Choice: host-resident or published commons** | Published with user intent → commons (e.g. exemplary repro-script). Default → host-resident. |
 | **Canon / knowledge graph / LanceDB** | Per-host `output/<universe>/{lancedb, knowledge.db, ...}` | **HOST-RESIDENT** | User-uploaded source material. Always host-resident. (Public canon is a separate concept — published commons knowledge.) |
-| **Attribution events (commits, ledger entries)** | `workflow/contribution_events.py` | **COMMONS** (publicly trackable), private actions also-host | Public-action events: commons. Private host-only actions: host. |
+| **Attribution events (commits, ledger entries)** | `tinyassets/contribution_events.py` | **COMMONS** (publicly trackable), private actions also-host | Public-action events: commons. Private host-only actions: host. |
 | **Soul files (per-daemon identity)** | `output/<universe>/<daemon_name>/soul.md` per `project_daemon_souls_and_summoning` | **Choice: published or host-resident** | Soul files publish to commons IF user wants — they're remix material. Default host. |
 | **Bug reports + wiki pages** | Wiki | **COMMONS** | Already commons-shaped. |
 | **Goals (shared workflow intent)** | Catalog | **COMMONS** | Public by definition; private goals are an oxymoron. |
@@ -54,7 +54,7 @@ This is NOT a complete spec — it's a strategic design proposal. After host app
 **Per host:**
 
 ```
-$WORKFLOW_DATA_DIR/
+$TINYASSETS_DATA_DIR/
 ├── universes/                              # HOST-RESIDENT
 │   └── <universe_id>/
 │       ├── .workflow.db                    # SQLite — branch/run/goal state for this universe
@@ -229,7 +229,7 @@ MIGRATION TARGET:
 ### §3.2 — Migration sequencing (recommended: greenfield + grandfathering per Q2)
 
 **Phase 1 — Future-proof (forward-compat):**
-- Stop accepting `visibility: 'private'` for new branches/goals via MCP (gate at `workflow/api/branches.py`).
+- Stop accepting `visibility: 'private'` for new branches/goals via MCP (gate at `tinyassets/api/branches.py`).
 - Replace with one of: `publish=true` (commons publish) or `host_only=true` (host-resident, doesn't enter commons catalog).
 - New private branches go straight to host-resident; never enter platform catalog.
 
@@ -244,7 +244,7 @@ MIGRATION TARGET:
 - Catalog becomes public-only; presence implies publication.
 
 **Phase 4 — Post-cutover validation:**
-- `WORKFLOW_LEGACY_PRIVATE_AUDIT=1` returns zero rows on every host.
+- `TINYASSETS_LEGACY_PRIVATE_AUDIT=1` returns zero rows on every host.
 - Pre-commit invariant: `visibility` field doesn't exist on any catalog row YAML.
 - Wiki page documenting the migration's completion + how privacy works post-cutover.
 
@@ -368,9 +368,9 @@ For READ-MOSTLY private data (e.g. canon docs that change rarely), the user's ch
 - `docs/design-notes/2026-04-27-discovery-similarity-remix-substrate.md` — sibling, the discover side
 - `docs/design-notes/2026-04-26-engine-primitive-substrate.md` — E3 (checkpoint) is the host-resident substrate
 - `docs/design-notes/2026-04-27-author-server-db-filename-migration.md` — Phase 6 closes data-layer naming
-- `workflow/storage/__init__.py` — `data_dir()` resolver (host-resident root)
-- `workflow/catalog/` — git-native catalog (commons substrate)
-- `workflow/branches.py:729` — `visibility` field that retires
+- `tinyassets/storage/__init__.py` — `data_dir()` resolver (host-resident root)
+- `tinyassets/catalog/` — git-native catalog (commons substrate)
+- `tinyassets/branches.py:729` — `visibility` field that retires
 
 ### Web research citations
 

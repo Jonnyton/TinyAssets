@@ -2,7 +2,7 @@
 import json
 from unittest.mock import patch
 
-from workflow.api.branches import _resolve_branch_id
+from tinyassets.api.branches import _resolve_branch_id
 
 _BRANCH_A = {
     "branch_def_id": "uuid-abc-123",
@@ -25,10 +25,10 @@ def _patch_lookup(exists_ids=("uuid-abc-123",), all_branches=(_BRANCH_A, _BRANCH
         raise KeyError(branch_def_id)
 
     return (
-        patch("workflow.daemon_server.get_branch_definition", side_effect=get_branch_def),
-        patch("workflow.daemon_server.list_branch_definitions", return_value=list(all_branches)),
-        patch("workflow.api.engine_helpers._current_actor", return_value="user"),
-        patch("workflow.api.engine_helpers._current_actor", return_value="user"),
+        patch("tinyassets.daemon_server.get_branch_definition", side_effect=get_branch_def),
+        patch("tinyassets.daemon_server.list_branch_definitions", return_value=list(all_branches)),
+        patch("tinyassets.api.engine_helpers._current_actor", return_value="user"),
+        patch("tinyassets.api.engine_helpers._current_actor", return_value="user"),
     )
 
 
@@ -92,19 +92,19 @@ class TestDescribeBranchAcceptsName:
                 return branch_dict
             raise KeyError(branch_def_id)
 
-        from workflow.api.branches import _ext_branch_describe
+        from tinyassets.api.branches import _ext_branch_describe
 
         with (
-            patch("workflow.daemon_server.get_branch_definition", side_effect=get_def),
-            patch("workflow.daemon_server.list_branch_definitions", return_value=[_BRANCH_A]),
-            patch("workflow.api.engine_helpers._current_actor", return_value="user"),
-            patch("workflow.api.engine_helpers._current_actor", return_value="user"),
-            patch("workflow.api.helpers._base_path", return_value="/fake"),
-            patch("workflow.api.branches._related_wiki_pages",
+            patch("tinyassets.daemon_server.get_branch_definition", side_effect=get_def),
+            patch("tinyassets.daemon_server.list_branch_definitions", return_value=[_BRANCH_A]),
+            patch("tinyassets.api.engine_helpers._current_actor", return_value="user"),
+            patch("tinyassets.api.engine_helpers._current_actor", return_value="user"),
+            patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+            patch("tinyassets.api.branches._related_wiki_pages",
                   return_value={"items": [], "truncated_count": 0}),
-            patch("workflow.branch_versions.list_branch_versions", return_value=[]),
-            patch("workflow.daemon_server.list_branch_definitions", return_value=[_BRANCH_A]),
-            patch("workflow.branches.BranchDefinition.validate", return_value=[]),
+            patch("tinyassets.branch_versions.list_branch_versions", return_value=[]),
+            patch("tinyassets.daemon_server.list_branch_definitions", return_value=[_BRANCH_A]),
+            patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
         ):
             result = json.loads(_ext_branch_describe(
                 {"branch_def_id": "Town Climate Claim Checker"}

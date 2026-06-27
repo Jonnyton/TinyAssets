@@ -18,7 +18,7 @@ import pytest
 
 
 def _reload_stub():
-    mod_name = "workflow.providers.call"
+    mod_name = "tinyassets.providers.call"
     if mod_name in sys.modules:
         del sys.modules[mod_name]
     return importlib.import_module(mod_name)
@@ -26,7 +26,7 @@ def _reload_stub():
 
 @pytest.fixture
 def reset_stub():
-    mod_name = "workflow.providers.call"
+    mod_name = "tinyassets.providers.call"
     saved = sys.modules.pop(mod_name, None)
     yield
     sys.modules.pop(mod_name, None)
@@ -36,31 +36,31 @@ def reset_stub():
 
 class TestIsAvailableClassmethod:
     def test_claude_unavailable_when_binary_absent(self, monkeypatch):
-        import workflow.providers.claude_provider as _cp
+        import tinyassets.providers.claude_provider as _cp
         monkeypatch.setattr(_cp.shutil, "which", lambda name: None)
-        from workflow.providers.claude_provider import ClaudeProvider
+        from tinyassets.providers.claude_provider import ClaudeProvider
         assert ClaudeProvider.is_available() is False
 
     def test_claude_available_when_binary_present(self, monkeypatch):
-        import workflow.providers.claude_provider as _cp
+        import tinyassets.providers.claude_provider as _cp
         monkeypatch.setattr(_cp.shutil, "which", lambda name: "/usr/local/bin/claude")
-        from workflow.providers.claude_provider import ClaudeProvider
+        from tinyassets.providers.claude_provider import ClaudeProvider
         assert ClaudeProvider.is_available() is True
 
     def test_codex_unavailable_when_binary_absent(self, monkeypatch):
-        import workflow.providers.codex_provider as _cdp
+        import tinyassets.providers.codex_provider as _cdp
         monkeypatch.setattr(_cdp.shutil, "which", lambda name: None)
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
         assert CodexProvider.is_available() is False
 
     def test_codex_available_when_binary_present(self, monkeypatch):
-        import workflow.providers.codex_provider as _cdp
+        import tinyassets.providers.codex_provider as _cdp
         monkeypatch.setattr(_cdp.shutil, "which", lambda name: "/usr/local/bin/codex")
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
         assert CodexProvider.is_available() is True
 
     def test_base_provider_defaults_to_true(self):
-        from workflow.providers.base import BaseProvider
+        from tinyassets.providers.base import BaseProvider
 
         class _Dummy(BaseProvider):
             name = "dummy"
@@ -76,7 +76,7 @@ class TestStubSkipsWhenBinaryAbsent:
     def test_claude_not_registered_when_binary_absent(
         self, monkeypatch, reset_stub
     ):
-        import workflow.providers.claude_provider as _cp
+        import tinyassets.providers.claude_provider as _cp
         monkeypatch.setattr(_cp.ClaudeProvider, "is_available", classmethod(lambda cls: False))
 
         stub = _reload_stub()
@@ -87,7 +87,7 @@ class TestStubSkipsWhenBinaryAbsent:
     def test_codex_not_registered_when_binary_absent(
         self, monkeypatch, reset_stub
     ):
-        import workflow.providers.codex_provider as _cdp
+        import tinyassets.providers.codex_provider as _cdp
         monkeypatch.setattr(_cdp.CodexProvider, "is_available", classmethod(lambda cls: False))
 
         stub = _reload_stub()
@@ -98,7 +98,7 @@ class TestStubSkipsWhenBinaryAbsent:
     def test_claude_registered_when_binary_present(
         self, monkeypatch, reset_stub
     ):
-        import workflow.providers.claude_provider as _cp
+        import tinyassets.providers.claude_provider as _cp
         monkeypatch.setattr(_cp.ClaudeProvider, "is_available", classmethod(lambda cls: True))
 
         stub = _reload_stub()

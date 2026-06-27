@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from workflow.universe_soul import read_pinned_universe_soul
+from tinyassets.universe_soul import read_pinned_universe_soul
 
 
 @pytest.fixture
 def us(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
-    import workflow.api.universe as module
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    import tinyassets.api.universe as module
 
     importlib.reload(module)
     yield module

@@ -3,7 +3,7 @@
 # Wraps the full fantasy universe graph (`build_universe_graph()`) as
 # a single-node registered Branch so the engine can drive fantasy
 # through the standard Branch compile path under
-# `WORKFLOW_UNIFIED_EXECUTION=1`.
+# `TINYASSETS_UNIFIED_EXECUTION=1`.
 #
 # The single node `universe_cycle_wrapper` is a domain-trusted opaque
 # callable registered by `fantasy_author/branch_registrations.py`.

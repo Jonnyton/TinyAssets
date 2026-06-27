@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-tunnel.sh — start a Cloudflare tunnel pointing at the local Workflow daemon.
+# run-tunnel.sh — start a Cloudflare tunnel pointing at the local TinyAssets daemon.
 #
 # Per docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md Row C.
 # Provider-agnostic: runs on any Linux host (Docker, systemd, direct exec).
@@ -67,13 +67,13 @@ missing=()
 [[ -z "${TUNNEL_CREDENTIALS_FILE:-}" ]] && missing+=("TUNNEL_CREDENTIALS_FILE")
 # HOSTNAME specifically — force the caller to set it rather than
 # silently using the bash-default machine hostname.
-if [[ -z "${WORKFLOW_PUBLIC_HOSTNAME:-}" ]] && [[ "${HOSTNAME:-}" == "$(hostname 2>/dev/null || echo "")" ]]; then
-  missing+=("HOSTNAME (or WORKFLOW_PUBLIC_HOSTNAME — bash's default HOSTNAME is the machine name, not the public URL)")
+if [[ -z "${TINYASSETS_PUBLIC_HOSTNAME:-}" ]] && [[ "${HOSTNAME:-}" == "$(hostname 2>/dev/null || echo "")" ]]; then
+  missing+=("HOSTNAME (or TINYASSETS_PUBLIC_HOSTNAME — bash's default HOSTNAME is the machine name, not the public URL)")
 fi
 # Prefer the explicit var if provided; fall back to HOSTNAME if the
 # caller did set it to a domain (e.g. mcp.tinyassets.io).
-if [[ -n "${WORKFLOW_PUBLIC_HOSTNAME:-}" ]]; then
-  HOSTNAME="${WORKFLOW_PUBLIC_HOSTNAME}"
+if [[ -n "${TINYASSETS_PUBLIC_HOSTNAME:-}" ]]; then
+  HOSTNAME="${TINYASSETS_PUBLIC_HOSTNAME}"
 fi
 
 if (( ${#missing[@]} > 0 )); then

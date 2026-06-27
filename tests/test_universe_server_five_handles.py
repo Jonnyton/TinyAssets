@@ -1,6 +1,6 @@
 """PR-178: the live /mcp surface advertises exactly the five canonical handles.
 
-Forward-ported from the /mcp-directory surface onto workflow.universe_server
+Forward-ported from the /mcp-directory surface onto tinyassets.universe_server
 (the process behind https://tinyassets.io/mcp). The legacy fat tools stay
 registered + callable for one migration release but are hidden from tools/list
 and logged on call by the _DeprecatedToolVisibility middleware.
@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 
-from workflow.universe_server import (
+from tinyassets.universe_server import (
     _DEPRECATED_TOOL_NAMES,
     mcp,
     read_graph,
@@ -88,10 +88,10 @@ def test_unknown_target_is_reported() -> None:
 
 def test_goal_write_and_read_round_trip(monkeypatch, tmp_path) -> None:
     """write_graph(goal) routes to the same handler read_graph(goals) reads."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "five-handle-test")
 
-    from workflow.catalog import invalidate_backend_cache
+    from tinyassets.catalog import invalidate_backend_cache
 
     invalidate_backend_cache()
     try:
@@ -117,9 +117,9 @@ def test_goal_write_and_read_round_trip(monkeypatch, tmp_path) -> None:
 
 def test_deprecated_legacy_tool_callable_and_logged(monkeypatch, tmp_path, caplog) -> None:
     """A hidden legacy tool still dispatches by plain name and logs deprecation."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
-    from workflow.catalog import invalidate_backend_cache
+    from tinyassets.catalog import invalidate_backend_cache
 
     invalidate_backend_cache()
     try:

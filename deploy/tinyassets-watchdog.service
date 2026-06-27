@@ -1,0 +1,57 @@
+# TinyAssets daemon watchdog — one-shot probe + restart.
+#
+# Self-host migration Row L per
+# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+#
+# Triggered by tinyassets-watchdog.timer every 2 min. Runs a single
+# probe-tick via scripts/watchdog.py and exits. State persists at
+# /var/lib/tinyassets-watchdog/state.json across ticks.
+#
+# Install (handled by hetzner-bootstrap.sh):
+#   sudo cp deploy/tinyassets-watchdog.service /etc/systemd/system/
+#   sudo cp deploy/tinyassets-watchdog.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tinyassets-watchdog.timer
+
+[Unit]
+Description=TinyAssets daemon watchdog (probe + restart on 3 consecutive reds)
+Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/deploy/HETZNER-DEPLOY.md
+After=tinyassets-daemon.service
+# Don't race the daemon's own startup at boot. Give daemon 60s to bind.
+
+[Service]
+Type=oneshot
+User=tinyassets
+Group=tinyassets
+WorkingDirectory=/opt/tinyassets
+
+# /var/lib/tinyassets-watchdog needs to be writable by the tinyassets user.
+# systemd creates + chowns it on first start.
+StateDirectory=tinyassets-watchdog
+StateDirectoryMode=0750
+
+# /var/log/tinyassets needs to be writable by the tinyassets user. systemd
+# creates + chowns it on first start. Houses the structured alarm log
+# (`uptime_alarms.log`) that scripts/watchdog.py writes via the
+# TINYASSETS_WATCHDOG_ALARM_LOG env-var (default = /var/log/tinyassets/uptime_alarms.log).
+# Pre-2026-04-26 the alarm log lived at the repo-relative
+# `.agents/uptime_alarms.log` which collided with test writes; see
+# docs/audits/2026-04-26-restart-loop-correlation.md.
+LogsDirectory=tinyassets
+LogsDirectoryMode=0750
+
+# Need sudo to issue systemctl restart. The tinyassets user gets a
+# tightly-scoped sudoers rule installed by the bootstrap (see
+# HETZNER-DEPLOY.md): tinyassets ALL=(root) NOPASSWD:/usr/bin/systemctl
+# restart tinyassets-daemon.service
+#
+# scripts/watchdog.py calls `systemctl restart tinyassets-daemon.service`
+# when threshold is crossed. That command hits the sudoers allowlist.
+
+ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/watchdog.py
+
+# One-shot exit; timer handles cadence. Fail fast if script errors.
+TimeoutStartSec=60s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tinyassets-watchdog

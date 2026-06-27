@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.exceptions import ContextBundleOverflowError
-from workflow.memory.manager import (
+from tinyassets.exceptions import ContextBundleOverflowError
+from tinyassets.memory.manager import (
     MAX_CONTEXT_TOKENS,
     MemoryManager,
     _estimate_bundle_tokens,
@@ -135,7 +135,7 @@ class TestTrimRaisesOnIrreducibleOverflow:
 
             msg = str(exc_info.value)
             assert "tokens after" in msg
-            assert "WORKFLOW_DEBUG_CONTEXT" in msg
+            assert "TINYASSETS_DEBUG_CONTEXT" in msg
         finally:
             mgr.close()
 

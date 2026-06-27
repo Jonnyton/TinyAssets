@@ -10,7 +10,7 @@ from domains.fantasy_daemon.work_kinds import (
     EXECUTION_KIND_CHAPTER,
     EXECUTION_KIND_SCENE,
 )
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     create_provisional_target,
     get_target,
     mark_target_for_discard,
@@ -258,7 +258,7 @@ def max_scene_attempts() -> int:
     """Overridable ceiling. Env var wins; default = 3."""
     import os
 
-    raw = os.environ.get("WORKFLOW_MAX_SCENE_ATTEMPTS", "").strip()
+    raw = os.environ.get("TINYASSETS_MAX_SCENE_ATTEMPTS", "").strip()
     if raw:
         try:
             value = int(raw)

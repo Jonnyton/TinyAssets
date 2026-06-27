@@ -1,2 +1,2 @@
-"""Shim: use workflow.desktop.host_tray instead."""
-from workflow.desktop.host_tray import *  # noqa: F401,F403
+"""Shim: use tinyassets.desktop.host_tray instead."""
+from tinyassets.desktop.host_tray import *  # noqa: F401,F403

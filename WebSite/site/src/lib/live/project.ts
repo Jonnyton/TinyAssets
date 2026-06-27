@@ -177,8 +177,8 @@ export async function refreshMcpSnapshot(current: Snapshot = initialMcpSnapshot)
 
 export async function refreshRepoSnapshot(current: RepoSnapshot = initialRepoSnapshot): Promise<RepoSnapshot> {
   const [repoRes, branchesRes] = await Promise.all([
-    fetch('https://api.github.com/repos/Jonnyton/Workflow'),
-    fetch('https://api.github.com/repos/Jonnyton/Workflow/branches?per_page=100')
+    fetch('https://api.github.com/repos/Jonnyton/TinyAssets'),
+    fetch('https://api.github.com/repos/Jonnyton/TinyAssets/branches?per_page=100')
   ]);
   if (!repoRes.ok) throw new Error(`repo ${repoRes.status}`);
   if (!branchesRes.ok) throw new Error(`branches ${branchesRes.status}`);

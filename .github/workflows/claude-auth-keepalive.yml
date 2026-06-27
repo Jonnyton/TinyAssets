@@ -1,7 +1,7 @@
 name: claude-auth-keepalive
 
 # Keep the Claude-subscription session fresh on the Droplet. Claude Code stores
-# login state under CLAUDE_CONFIG_DIR; the workflow-data volume preserves
+# login state under CLAUDE_CONFIG_DIR; the tinyassets-data volume preserves
 # /data/.claude across redeploys.
 on:
   schedule:
@@ -44,5 +44,5 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            'sudo docker exec -e CLAUDE_CONFIG_DIR=/data/.claude workflow-daemon claude -p "Reply with the single word OK." >/dev/null'
+            'sudo docker exec -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude -p "Reply with the single word OK." >/dev/null'
           echo "Claude keepalive OK; subscription session exercised."

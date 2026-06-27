@@ -14,14 +14,14 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     ConditionalEdge,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.catalog.serializer import (
+from tinyassets.catalog.serializer import (
     branch_from_yaml_payload,
     branch_to_yaml_payload,
     goal_from_yaml_payload,
@@ -347,7 +347,7 @@ def test_node_from_yaml_rejects_str_input_keys():
     `list(payload.get(...) or [])`. Now passes through to
     NodeDefinition's read-side validator which rejects with
     NodeDefinitionValidationError."""
-    from workflow.branches import NodeDefinitionValidationError
+    from tinyassets.branches import NodeDefinitionValidationError
 
     payload = {
         "id": "x", "display_name": "X",
@@ -361,7 +361,7 @@ def test_node_from_yaml_rejects_str_input_keys():
 
 def test_node_from_yaml_rejects_str_output_keys():
     """Same gap on the output_keys side (Mara's 2026-04-26 case)."""
-    from workflow.branches import NodeDefinitionValidationError
+    from tinyassets.branches import NodeDefinitionValidationError
 
     payload = {
         "id": "x", "display_name": "X",

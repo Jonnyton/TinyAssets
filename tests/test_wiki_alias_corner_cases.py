@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.api.wiki import (
+from tinyassets.api.wiki import (
     _resolve_filed_page_canonical,
     _wiki_write,
 )
@@ -55,7 +55,7 @@ def wiki_dir(tmp_path, monkeypatch):
     wiki_root = tmp_path / "Wiki"
     (wiki_root / "pages" / "bugs").mkdir(parents=True)
     (wiki_root / "drafts" / "bugs").mkdir(parents=True)
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
     return wiki_root
 
 

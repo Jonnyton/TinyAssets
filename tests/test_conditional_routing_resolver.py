@@ -25,14 +25,14 @@ from typing import Any
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     ConditionalEdge,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import compile_branch
+from tinyassets.graph_compiler import compile_branch
 
 
 def _mk_gate_node(node_id: str, output_key: str = "gate_out") -> NodeDefinition:

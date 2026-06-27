@@ -17,7 +17,7 @@
         alternateName: 'Tiny',
         url: 'https://tinyassets.io/',
         logo: 'https://tinyassets.io/logo-mark.png',
-        sameAs: ['https://github.com/Jonnyton/Workflow']
+        sameAs: ['https://github.com/Jonnyton/TinyAssets']
       },
       {
         '@type': 'WebSite',

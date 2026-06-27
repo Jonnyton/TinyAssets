@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-import workflow.api.universe as us
+import tinyassets.api.universe as us
 
 
 @pytest.fixture
 def universe_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     return base
 
 

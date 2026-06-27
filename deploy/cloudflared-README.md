@@ -3,7 +3,7 @@
 Self-host migration Row C per
 `docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`.
 
-The Workflow MCP daemon binds `0.0.0.0:8001` locally. To expose it
+The TinyAssets MCP daemon binds `0.0.0.0:8001` locally. To expose it
 through the canonical public endpoint (`https://tinyassets.io/mcp`)
 without opening a port through the host's NAT, run a Cloudflare tunnel
 that connects outbound from the container to Cloudflare's edge and
@@ -38,7 +38,7 @@ through the Worker at `https://tinyassets.io/mcp`.
 **Setup:**
 
 1. Dashboard → Networks → Tunnels → Create tunnel.
-2. Pick a name (e.g. `workflow-daemon-prod`). Dashboard issues a token;
+2. Pick a name (e.g. `tinyassets-daemon-prod`). Dashboard issues a token;
    copy it. Never commit the token to the repo.
 3. Under the new tunnel's Public Hostnames tab, add:
    - Hostname: your tunnel-origin hostname (for example, `mcp.tinyassets.io`;
@@ -79,7 +79,7 @@ reviewable at commit time.
 
 1. Run `cloudflared tunnel login` once per machine; saves
    `~/.cloudflared/cert.pem`.
-2. `cloudflared tunnel create workflow-daemon-prod` → emits a tunnel
+2. `cloudflared tunnel create tinyassets-daemon-prod` → emits a tunnel
    UUID + a credentials JSON at `~/.cloudflared/<UUID>.json`.
 3. Route DNS:
    ```bash
@@ -91,18 +91,18 @@ reviewable at commit time.
 ```bash
 export TUNNEL_ID="<UUID-from-step-2>"
 export TUNNEL_CREDENTIALS_FILE="$HOME/.cloudflared/${TUNNEL_ID}.json"
-export WORKFLOW_PUBLIC_HOSTNAME="mcp.tinyassets.io"    # tunnel origin, not public connector URL
+export TINYASSETS_PUBLIC_HOSTNAME="mcp.tinyassets.io"    # tunnel origin, not public connector URL
 export ORIGIN_PORT=8001                                # optional; default 8001
 
 ./scripts/run-tunnel.sh
 ```
 
-**Why `WORKFLOW_PUBLIC_HOSTNAME` instead of plain `HOSTNAME`?** Bash
+**Why `TINYASSETS_PUBLIC_HOSTNAME` instead of plain `HOSTNAME`?** Bash
 defines `HOSTNAME` implicitly as the machine's hostname (e.g.
 `DESKTOP-KCPMGP3`). If you export nothing, the script would silently
 try to route traffic to a tunnel for your laptop's local name — which
 would either fail (no such Cloudflare DNS record) or worse, match some
-other zone by accident. `WORKFLOW_PUBLIC_HOSTNAME` is explicit; the
+other zone by accident. `TINYASSETS_PUBLIC_HOSTNAME` is explicit; the
 script falls back to `HOSTNAME` only if you clearly overrode bash's
 default.
 

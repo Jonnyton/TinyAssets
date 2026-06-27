@@ -18,10 +18,10 @@ from pathlib import Path
 
 import pytest
 
-import workflow.api.universe as us
-from workflow.auth.middleware import auth_middleware, set_provider
-from workflow.auth.provider import AuthProvider, DevAuthProvider, Identity
-from workflow.daemon_server import grant_universe_access
+import tinyassets.api.universe as us
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+from tinyassets.daemon_server import grant_universe_access
 
 
 class _StaticAuthProvider(AuthProvider):
@@ -62,7 +62,7 @@ class _StaticAuthProvider(AuthProvider):
 def universe_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     return base
 
 
@@ -80,9 +80,9 @@ def _authenticate(user_id: str, scopes: list[str] | None = None) -> None:
         user_id=user_id,
         username=user_id,
         capabilities=scopes or [
-            "workflow.universe.read",
-            "workflow.universe.write",
-            "workflow.universe.admin",
+            "tinyassets.universe.read",
+            "tinyassets.universe.write",
+            "tinyassets.universe.admin",
         ],
     )
     set_provider(_StaticAuthProvider(identity))
@@ -201,7 +201,7 @@ class TestUniverseAclEnforcement:
             granted_by="owner",
         )
 
-        _authenticate("intruder", ["workflow.universe.read"])
+        _authenticate("intruder", ["tinyassets.universe.read"])
 
         inspect_out = json.loads(us._universe_impl(
             action="inspect",
@@ -228,7 +228,7 @@ class TestUniverseAclEnforcement:
             granted_by="owner",
         )
 
-        _authenticate("reader", ["workflow.universe.write"])
+        _authenticate("reader", ["tinyassets.universe.write"])
 
         out = json.loads(us._universe_impl(
             action="set_premise",
@@ -250,7 +250,7 @@ class TestUniverseAclEnforcement:
             granted_by="owner",
         )
 
-        _authenticate("writer", ["workflow.universe.write"])
+        _authenticate("writer", ["tinyassets.universe.write"])
 
         out = json.loads(us._universe_impl(
             action="set_premise",
@@ -274,7 +274,7 @@ class TestUniverseAclEnforcement:
             granted_by="owner",
         )
 
-        _authenticate("intruder", ["workflow.universe.read"])
+        _authenticate("intruder", ["tinyassets.universe.read"])
 
         out = json.loads(us._universe_impl(action="list"))
 

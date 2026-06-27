@@ -17,7 +17,7 @@ Verifies:
   ``local_edit_conflict`` response (caught once in
   ``_dispatch_branch_action``); SQLite stays untouched on refusal.
 - ``force=True`` overrides the dirty refusal.
-- ``WORKFLOW_STORAGE_BACKEND=sqlite_only`` and "no git repo" both keep
+- ``TINYASSETS_STORAGE_BACKEND=sqlite_only`` and "no git repo" both keep
   the legacy behavior — handlers still work, no YAML, no commits.
 
 Mirrors the H2 fixture shape in ``test_phase7_h2_goals_cutover.py``.
@@ -62,16 +62,16 @@ def repo_env(tmp_path, monkeypatch):
     _init_repo(tmp_path)
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    monkeypatch.delenv("WORKFLOW_STORAGE_BACKEND", raising=False)
-    monkeypatch.delenv("WORKFLOW_GIT_AUTHOR", raising=False)
+    monkeypatch.delenv("TINYASSETS_STORAGE_BACKEND", raising=False)
+    monkeypatch.delenv("TINYASSETS_GIT_AUTHOR", raising=False)
     # Re-anchor the cached backend at the tmp repo by changing cwd.
     monkeypatch.chdir(tmp_path)
 
-    from workflow.catalog import invalidate_backend_cache
+    from tinyassets.catalog import invalidate_backend_cache
     invalidate_backend_cache()
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
 
     yield us, tmp_path, base
@@ -85,14 +85,14 @@ def no_git_env(tmp_path, monkeypatch):
     """No git repo at parent — backend auto-probes to SqliteOnly."""
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    monkeypatch.delenv("WORKFLOW_STORAGE_BACKEND", raising=False)
+    monkeypatch.delenv("TINYASSETS_STORAGE_BACKEND", raising=False)
     monkeypatch.chdir(tmp_path)
 
-    from workflow.catalog import invalidate_backend_cache
+    from tinyassets.catalog import invalidate_backend_cache
     invalidate_backend_cache()
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
 
     yield us, tmp_path, base
@@ -107,14 +107,14 @@ def sqlite_only_env(tmp_path, monkeypatch):
     _init_repo(tmp_path)
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite_only")
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_only")
     monkeypatch.chdir(tmp_path)
 
-    from workflow.catalog import invalidate_backend_cache
+    from tinyassets.catalog import invalidate_backend_cache
     invalidate_backend_cache()
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
 
     yield us, tmp_path, base

@@ -1,4 +1,4 @@
-# Demonstrates host scenario A: end-to-end A/P ingestion workflow.
+# Demonstrates host scenario A: end-to-end A/P ingestion tinyassets.
 # Shows (a) two-way connector integration (reads invoice files from
 # owner's host, pushes structured rows to Voyager-style accounting
 # system), (b) private-instance guarantee (file paths + charge codes

@@ -18,7 +18,7 @@ Landing-first SvelteKit static site for the TinyAssets platform, deploying to Gi
 Requires Node.js 20+. Install + run:
 
 ```powershell
-cd C:\Users\Jonathan\Projects\Workflow\WebSite\site
+cd C:\Users\Jonathan\Projects\TinyAssets\WebSite\site
 npm install
 npm run dev          # http://localhost:5173
 ```
@@ -71,13 +71,12 @@ src/
 │   │   │   ├── Button.svelte           primary/secondary/ghost/link
 │   │   │   ├── RitualLabel.svelte      small-caps mono kicker
 │   │   │   └── StatusPill.svelte       live/idle/paid/self/error pill
-│   │   ├── WorkflowMark.svelte          TinyAssets brand mark; filename retained during migration
+│   │   ├── TinyAssetsMark.svelte        TinyAssets brand mark
 │   │   ├── TopNav.svelte                sticky-translucent nav
 │   │   ├── Footer.svelte                footer chrome + contact
 │   │   ├── ChatDemo.svelte              faux Claude.ai transcript (hero showcase)
 │   │   ├── Hero.svelte                  landing hero (copy + ChatDemo)
 │   │   ├── ThreeLayer.svelte            Goal · Branch · Daemon trinity
-│   │   ├── WhyWorkflow.svelte           four why-points; filename retained during migration
 │   │   └── TokenStrip.svelte            tinyassets economy + 3-chain addresses
 │   ├── content/
 │   │   └── token-info.json              single source of truth for ta token (BASE/PulseChain/BSC)
@@ -87,8 +86,8 @@ src/
 │       └── tokens.css                   canonical design tokens (Ink/Violet/Ember/Bone palette)
 └── static/
     ├── logo-mark.png                    TinyAssets raster brand mark
-    ├── workflow-mark.svg                compatibility favicon / static brand mark
-    ├── workflow-mark.png                compatibility raster fallback for the static brand mark
+    ├── tinyassets-mark.svg              favicon / static brand mark
+    ├── tinyassets-mark.png              raster fallback for the static brand mark
     ├── CNAME                            tinyassets.io custom domain
     └── .nojekyll                        disable GitHub Jekyll processing
 ```

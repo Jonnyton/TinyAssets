@@ -24,14 +24,14 @@ import pytest
 
 @pytest.fixture
 def us_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "output"))
     (tmp_path / "output").mkdir()
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.setenv("GATES_ENABLED", "1")
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite")
-    from workflow.catalog import backend as backend_mod
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
+    from tinyassets.catalog import backend as backend_mod
     backend_mod.invalidate_backend_cache()
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, tmp_path / "output"
     backend_mod.invalidate_backend_cache()

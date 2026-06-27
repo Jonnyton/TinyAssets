@@ -45,7 +45,7 @@ Isolated registration command:
 
 ```powershell
 $tempRoot = Join-Path $env:TEMP 'workflow-cursor-mcp-proof'
-$json = '{\"name\":\"workflow\",\"type\":\"streamable-http\",\"url\":\"https://tinyassets.io/mcp-directory\"}'
+$json = '{\"name\":\"tinyassets\",\"type\":\"streamable-http\",\"url\":\"https://tinyassets.io/mcp-directory\"}'
 cursor --user-data-dir $tempRoot --add-mcp $json --new-window --disable-extensions --log trace
 ```
 
@@ -82,7 +82,7 @@ Output:
 Before public copy says Cursor is verified, run Cursor with this MCP server
 enabled and record:
 
-- Workflow appears in Cursor's MCP tools/settings surface.
+- TinyAssets appears in Cursor's MCP tools/settings surface.
 - Cursor lists Workflow tools from `https://tinyassets.io/mcp-directory`.
 - Cursor completes one safe read-only call, preferably `get_workflow_status`.
 - The trace includes the Cursor version, transport, config, and visible result.

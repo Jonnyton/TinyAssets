@@ -12,7 +12,7 @@
 
 **What it was.** A 20-line file at repo root with four "standing directives" (Built ≠ Done, Build Toward Future, Universal Ingestion, Living Documents) that the daemon read at session start. Original purpose: a small steady-state directive surface for the daemon to consult before acting, separate from STATUS.md (live state) and PLAN.md (architecture).
 
-**When it was load-bearing.** Single commit on this file: `36f097a` ("Initial commit: Workflow engine + Fantasy Author daemon"). It has not been edited since. Both `workflow/notes.py` and `packaging/.../runtime/workflow/notes.py` carry a docstring saying literally *"Notes replace STEERING.md, editorial output, and verdict routing."* That replacement happened in the unified-notes refactor (per `notes.py` docstring §2-6). The STEERING.md file has been functionally orphaned since `notes.json` became the per-universe directive surface.
+**When it was load-bearing.** Single commit on this file: `36f097a` ("Initial commit: Workflow engine + Fantasy Author daemon"). It has not been edited since. Both `tinyassets/notes.py` and `packaging/.../runtime/tinyassets/notes.py` carry a docstring saying literally *"Notes replace STEERING.md, editorial output, and verdict routing."* That replacement happened in the unified-notes refactor (per `notes.py` docstring §2-6). The STEERING.md file has been functionally orphaned since `notes.json` became the per-universe directive surface.
 
 **Why it should leave now.** It contradicts the Three Living Files rule in `AGENTS.md` ("AGENTS.md owns process truth, PLAN.md owns design truth, STATUS.md owns live-state truth"). STEERING.md presents itself as a fourth directive surface but its content has migrated — three of its four directives now live in canonical files (Built ≠ Done → AGENTS.md "How to Work"; Living Documents → AGENTS.md "Three Living Files"; Build Toward Future → PLAN.md cross-cutting principles), and Universal Ingestion is product-design content that belongs in PLAN.md if it isn't already. Leaving STEERING.md in place perpetuates a stale fourth source of truth.
 
@@ -29,12 +29,12 @@ Eight non-worktree references total:
 | `docs/launch-prompt-audit.md:65` | Historical audit reference (mentions STEERING.md as one of several files story-author writes to) | Leave as-is; this is an audit record of past state, not active doc. **No action.** |
 | `.claude/agents/retired/story-author.md:19,31` | Retired agent definition; references STEERING.md as a directive surface the agent used. | Leave as-is; the agent is in `retired/` precisely because that role has been retired. **No action.** |
 | `.claude/agent-memory/critic/evaluator_blind_spots.md:14` | Persona memory item ("Wilderness encounter when STEERING explicitly directed village fallout"). Historical example in a fantasy-author context. | Leave as-is; persona memory file. **No action.** |
-| `workflow/notes.py:3-4` | Module docstring saying *"Notes replace STEERING.md, editorial output, and verdict routing."* + `:253` "These are the user's steering inputs..." | Trim docstring reference to STEERING.md (the historical "what this replaces" is now obsolete; the unified-notes paragraph stands on its own). Keep `:253` "steering inputs" — that's a generic English usage. (Commit 2.) |
-| `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/notes.py:3-4` | Mirror of above; must stay byte-equal. | Same trim as canonical. (Commit 2.) |
-| `packaging/dist/workflow-universe-server-src/workflow/notes.py:3` | Stale pre-rename dist staging output. | Will regenerate on next packaging build; **no action**. |
-| `workflow/mcp_server.py:76` | `tags={"notes", "steering", "direction"}` on an MCP tool. "steering" here is a tag value, generic English usage. | Leave as-is. **No action.** |
+| `tinyassets/notes.py:3-4` | Module docstring saying *"Notes replace STEERING.md, editorial output, and verdict routing."* + `:253` "These are the user's steering inputs..." | Trim docstring reference to STEERING.md (the historical "what this replaces" is now obsolete; the unified-notes paragraph stands on its own). Keep `:253` "steering inputs" — that's a generic English usage. (Commit 2.) |
+| `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/notes.py:3-4` | Mirror of above; must stay byte-equal. | Same trim as canonical. (Commit 2.) |
+| `packaging/dist/tinyassets-universe-server-src/tinyassets/notes.py:3` | Stale pre-rename dist staging output. | Will regenerate on next packaging build; **no action**. |
+| `tinyassets/mcp_server.py:76` | `tags={"notes", "steering", "direction"}` on an MCP tool. "steering" here is a tag value, generic English usage. | Leave as-is. **No action.** |
 
-**Net write surface:** 4 files (`STEERING.md` deleted, `INDEX.md` trimmed, `workflow/notes.py` docstring trimmed, plugin-mirror `notes.py` docstring trimmed). Plus the 30+ worktree copies, addressed separately in §6.
+**Net write surface:** 4 files (`STEERING.md` deleted, `INDEX.md` trimmed, `tinyassets/notes.py` docstring trimmed, plugin-mirror `notes.py` docstring trimmed). Plus the 30+ worktree copies, addressed separately in §6.
 
 ---
 
@@ -45,8 +45,8 @@ I originally scoped 2-3 commits per the parent task. Reading the surface, **2 co
 ### Commit 1 — `docs: drop STEERING.md docstring reference from notes.py`
 
 **Files:**
-- `workflow/notes.py` — trim line 3-4 docstring reference to STEERING.md.
-- `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/notes.py` — same trim.
+- `tinyassets/notes.py` — trim line 3-4 docstring reference to STEERING.md.
+- `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/notes.py` — same trim.
 
 **Suggested message:**
 ```
@@ -60,7 +60,7 @@ informative. Removing in advance of STEERING.md file deletion.
 
 **Discipline:**
 - Pure docstring change. No semantic change.
-- Mirror byte-equal to canonical. Verify with `diff workflow/notes.py packaging/.../runtime/workflow/notes.py`.
+- Mirror byte-equal to canonical. Verify with `diff tinyassets/notes.py packaging/.../runtime/tinyassets/notes.py`.
 - `ruff check` on touched files (no-op for docstring change but practice).
 
 ### Commit 2 — `docs: delete STEERING.md (superseded by notes.json + AGENTS.md + PLAN.md)`
@@ -98,8 +98,8 @@ INDEX.md trim removes the dangling link.
 ## 4. Behavior-change check — is this a breaking commit?
 
 **No runtime behavior change.** Verified by grep:
-- `workflow/notes.py` references STEERING.md only in module docstring (lines 3-4); never reads the file.
-- `workflow/mcp_server.py:76` has `"steering"` as a tag string (generic English usage); no file dependency.
+- `tinyassets/notes.py` references STEERING.md only in module docstring (lines 3-4); never reads the file.
+- `tinyassets/mcp_server.py:76` has `"steering"` as a tag string (generic English usage); no file dependency.
 - No `Path("STEERING.md")` / `open("STEERING.md")` / `read_text` of STEERING.md anywhere in canonical or mirror tree.
 - No agent config reads STEERING.md at session start (none of the active `.claude/agents/*.md` files reference it; only the retired `story-author.md` did, and that agent is in `retired/`).
 

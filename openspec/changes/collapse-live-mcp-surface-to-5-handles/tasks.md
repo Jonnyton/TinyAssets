@@ -1,13 +1,13 @@
 ## 1. Recover prior implementation
 
 - [x] 1.1 Locate the #617 / PR-047 merge SHA via the PR-047 wiki audit pages and `git log` — merge `cfd724bd` ("Collapse directory MCP surface to five handles")
-- [x] 1.2 `git show <sha>:workflow/directory_server.py` and recover its 5-handle router + `shape=` dispatch — recovered; current `workflow/directory_server.py` is the live-current descendant (per-universe substrate update) and was used as the forward-port source
+- [x] 1.2 `git show <sha>:tinyassets/directory_server.py` and recover its 5-handle router + `shape=` dispatch — recovered; current `tinyassets/directory_server.py` is the live-current descendant (per-universe substrate update) and was used as the forward-port source
 - [x] 1.3 Recover the #617 tests; catalog which `api/*` handler each handle/shape mapped to — `tests/test_directory_server.py`; fold-map: read.graph→universe/market/status/extensions, write.graph→market/universe, run.graph→extensions(run_branch), read.page/write.page→wiki
 
 ## 2. Implement handles on the live server
 
-- [x] 2.1 Add `read.graph`, `write.graph`, `run.graph`, `read.page`, `write.page` as `@mcp.tool` registrations in `workflow/universe_server.py`
-- [x] 2.2 Implement the `shape=`/`target=` dispatcher routing each handle to the CURRENT `workflow/api/*` handlers (rebound to present-day signatures; read.graph target=status uses the full unredacted live status)
+- [x] 2.1 Add `read.graph`, `write.graph`, `run.graph`, `read.page`, `write.page` as `@mcp.tool` registrations in `tinyassets/universe_server.py`
+- [x] 2.2 Implement the `shape=`/`target=` dispatcher routing each handle to the CURRENT `tinyassets/api/*` handlers (rebound to present-day signatures; read.graph target=status uses the full unredacted live status)
 - [x] 2.3 Ensure `run.graph` is the only run-producing verb; map `read.page`/`write.page` to the `wiki` read/write handlers
 - [x] 2.4 Keep legacy tools registered but hidden from `tools/list` + callable for one release; `_DeprecatedToolVisibility` middleware logs every deprecated-tool call
 - [x] 2.5 Mirror all handler/registration changes into `packaging/claude-plugin` (byte-parity; `build_plugin.py` + `invariants_run.py --check mirror-parity` OK)
@@ -32,5 +32,5 @@
 
 ## 6. Consumer migration + cleanup
 
-- [ ] 6.1 Update the Polsia handoff doc + any connector manifests to the 5-handle surface — GATED on deploy (the "live" flip is only true post-deploy); `WORKFLOW_DESIGN_HANDOFF_FOR_POLSIA.md` not present in this checkout — locate/confirm with host
-- [ ] 6.2 After the migration window, open a follow-up change to remove the deprecated legacy tools and retire `workflow/directory_server.py` — FOLLOW-UP change
+- [ ] 6.1 Update the Polsia handoff doc + any connector manifests to the 5-handle surface — GATED on deploy (the "live" flip is only true post-deploy); `TINYASSETS_DESIGN_HANDOFF_FOR_POLSIA.md` not present in this checkout — locate/confirm with host
+- [ ] 6.2 After the migration window, open a follow-up change to remove the deprecated legacy tools and retire `tinyassets/directory_server.py` — FOLLOW-UP change

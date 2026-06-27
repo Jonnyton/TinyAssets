@@ -14,12 +14,12 @@ Phase H is where the user first *feels* everything Phases C-G built. Until now, 
 
 - `docs/exec-plans/daemon_task_economy_rollout.md` §Phase H (lines 208-233) + §Cross-phase notes + §What-does-not + §Reviewer-audit checklist.
 - All four prior preflights (`phase_d_preflight.md`, `phase_e_preflight.md`, `phase_f_preflight.md`, `phase_g_preflight.md`) — invariant continuity, flag-matrix discipline, load-bearing-contracts pattern.
-- Live code: `workflow/desktop/dashboard.py` (`DashboardMetrics`, `DashboardHandler` at lines 20 + 123) + `workflow/desktop/tray.py` (`TrayApp`). Both exist and are wired through `fantasy_author/__main__.py:DaemonController._tray` + `_dashboard`. Phase H EXTENDS these; it does not rebuild them from zero.
+- Live code: `tinyassets/desktop/dashboard.py` (`DashboardMetrics`, `DashboardHandler` at lines 20 + 123) + `tinyassets/desktop/tray.py` (`TrayApp`). Both exist and are wired through `fantasy_author/__main__.py:DaemonController._tray` + `_dashboard`. Phase H EXTENDS these; it does not rebuild them from zero.
 - `fantasy_author/__main__.py:_run_graph` — dispatcher wire-up from Phase F + G routing. Phase H adds observability taps, not new routing.
-- `workflow/dispatcher.py` — `tier_status_map()` already returns self-documenting tier states (Phase F).
-- `workflow/branch_tasks.py` — `read_queue`, `read_archive`, `get_archive_summary` helpers exist (Phase E GC landing).
-- `workflow/subscriptions.py` — `list_subscriptions_with_drift` exists (Phase F drift detection).
-- `workflow/universe_server.py` — existing MCP actions to consolidate: `queue_list` + `queue_cancel` (Phase E), `subscribe_goal` / `unsubscribe_goal` / `list_subscriptions` / `post_to_goal_pool` (Phase F), `submit_node_bid` / `list_open_bids` / `cancel_node_bid` / `list_daemon_llm_capabilities` (Phase G).
+- `tinyassets/dispatcher.py` — `tier_status_map()` already returns self-documenting tier states (Phase F).
+- `tinyassets/branch_tasks.py` — `read_queue`, `read_archive`, `get_archive_summary` helpers exist (Phase E GC landing).
+- `tinyassets/subscriptions.py` — `list_subscriptions_with_drift` exists (Phase F drift detection).
+- `tinyassets/universe_server.py` — existing MCP actions to consolidate: `queue_list` + `queue_cancel` (Phase E), `subscribe_goal` / `unsubscribe_goal` / `list_subscriptions` / `post_to_goal_pool` (Phase F), `submit_node_bid` / `list_open_bids` / `cancel_node_bid` / `list_daemon_llm_capabilities` (Phase G).
 - `memory/project_paid_requests_model.md` — earnings dashboard implication: "a host running a daemon sees a dashboard of incoming offers, earnings per hour, and can promote/demote request classes."
 - STATUS.md Concerns (lines 37-85) — ~19 active Concerns across Phases D/E/F/G/6.x. Phase H audits which become observable surfaces versus remain backlog (§4.9 Q9 decision log).
 
@@ -28,8 +28,8 @@ Phase H is where the user first *feels* everything Phases C-G built. Until now, 
 Understanding existing surfaces matters more for Phase H than prior phases because it's mostly extension work.
 
 **Already live (after Phase G.2):**
-- `workflow/desktop/dashboard.py:DashboardHandler` — receives `{"type": "phase_start", ...}`/`{"type": "draft_progress", ...}`/etc. events from `_run_graph` stream loop. Tracks `DashboardMetrics` (words/hour, chapters complete, current scene, last verdict).
-- `workflow/desktop/tray.py:TrayApp` — system tray icon with Start/Pause/Resume/Restart/Exit menu. Per-daemon instance; host can run multiple tray apps for multiple universes (one tray per daemon process).
+- `tinyassets/desktop/dashboard.py:DashboardHandler` — receives `{"type": "phase_start", ...}`/`{"type": "draft_progress", ...}`/etc. events from `_run_graph` stream loop. Tracks `DashboardMetrics` (words/hour, chapters complete, current scene, last verdict).
+- `tinyassets/desktop/tray.py:TrayApp` — system tray icon with Start/Pause/Resume/Restart/Exit menu. Per-daemon instance; host can run multiple tray apps for multiple universes (one tray per daemon process).
 - Runtime status JSON at `<universe>/.runtime_status.json` — heartbeat file the tray polls (~5s cadence). Contains `{universe_id, phase, status, last_verdict, ...}`.
 - Activity log at `<universe>/activity.log` — per-node event stream. Append-only. Tail-readable.
 - `status.json` at `<universe>/status.json` — slower-cadence (~30s) summary file.
@@ -38,8 +38,8 @@ Understanding existing surfaces matters more for Phase H than prior phases becau
 **Phase H adds:**
 - **`daemon_overview` MCP action on `universe` tool** — the aggregated view. One call returns: dispatcher config + tier_status_map, top-N pending BranchTasks from queue with tier labels, subscriptions list with drift flag, active bids summary (count per status), recent settlements summary, gate claims on this universe's bound Goal (if any), active-Branch identity + run state, recent activity.log tail (last N lines). Designed to render as one glance-view in any MCP client.
 - **Tier-toggle MCP actions** — `set_tier_config(tier, enabled)` covering `accept_external_requests`, `accept_goal_pool`, `accept_paid_bids`, `allow_opportunistic`. Writes `<universe>/dispatcher_config.yaml`. Read-through via `daemon_overview`.
-- **Dashboard extensions** (`workflow/desktop/dashboard.py`): add `DispatcherPane` (tier status + toggles) + `QueuePane` (top-N pending with tier badges) + `EarningsPane` (settlements count + bid outcomes, gated by paid market flag). Feed from the same `daemon_overview` response.
-- **Tray menu additions** (`workflow/desktop/tray.py`): "Show Dashboard" submenu per-universe (matches PLAN.md "one tray, many dashboards"), "Toggle tier X" submenu per tier, "Pause all tiers" emergency switch. Emergency pause sets all four accept flags to false via `set_tier_config`.
+- **Dashboard extensions** (`tinyassets/desktop/dashboard.py`): add `DispatcherPane` (tier status + toggles) + `QueuePane` (top-N pending with tier badges) + `EarningsPane` (settlements count + bid outcomes, gated by paid market flag). Feed from the same `daemon_overview` response.
+- **Tray menu additions** (`tinyassets/desktop/tray.py`): "Show Dashboard" submenu per-universe (matches PLAN.md "one tray, many dashboards"), "Toggle tier X" submenu per tier, "Pause all tiers" emergency switch. Emergency pause sets all four accept flags to false via `set_tier_config`.
 - **`node_lookup_fn` wiring for G.1 follow-up #1** — Phase G's `NodeBidProducer(node_lookup_fn=None)` default means producer-side sandbox layers 1+2 are no-ops (executor catches at run time). Phase H wires the lookup function at daemon startup so the producer rejects pre-pick — as originally intended. See R4.
 - **Activity.log byte-parity automation (Phase D follow-up #4)** — a pytest fixture that runs a cycle under flag-off and flag-on in the same universe and diffs activity.log. Manual verification becomes automated; Phase D's flag-default-flip gate becomes re-runnable. See R6.
 - **Multi-daemon git race stress test (G.1 follow-up #3)** — adversarial claim race test harness. Two daemon processes target the same bid via real git worktrees. Not a user-sim mission — an engineering test. See R5.
@@ -67,14 +67,14 @@ Understanding existing surfaces matters more for Phase H than prior phases becau
 | R3 | Dashboard pane corruption — Phase H extends existing `DashboardHandler` with new panes. A bad event shape from one pane crashes the PyQt/tkinter UI thread, takes out ALL dashboard panes (not just the misbehaving one) | Medium — daemon keeps running (graph thread separate) but user loses visibility | Yes (tray "Restart Dashboard" button already exists) | Pane-level exception isolation: every new pane's `handle_event` wrapped in try/except that logs + returns. Existing `DashboardHandler.handle_event` should adopt the same pattern (small refactor, separate commit). Dashboard-thread crash surfaces as "Dashboard not responding" tray badge; daemon keeps writing status.json + activity.log so MCP surfaces stay live. Invariant 2 tests pane isolation. |
 | R4 | **`node_lookup_fn` wiring for G.1 follow-up #1** — producer-side sandbox layers 1+2 are currently no-ops because `NodeBidProducer(node_lookup_fn=None)` default was accepted to keep G.1 shippable. Phase H wires it. If wired wrong (fn returns wrong node, or raises), producer silently drops ALL bids | Medium — paid market appears dead under flag-on; user-perceived "submitted bid but daemon never picks" | Yes | Narrow contract: `node_lookup_fn: Callable[[str], NodeDefinition | None]` — returns None on missing (don't raise). Producer catches exceptions: on any raise, log WARN + skip the bid (fail-CLOSED, reason=`"node_lookup_error"`). **Spec updated 2026-04-14 post-Phase-H reviewer audit:** shipped behavior is fail-closed. Reviewer + lead concur: under disk-walk lookup, transient failures are rare, and dropping the bid until recovery is preferable to flooding the executor with unvalidated bids during a transient outage. Test (updated, invariant 5): seed bids; `node_lookup_fn` raises for one; assert producer SKIPS the raiser with `reason="node_lookup_error"` and emits the others. |
 | R5 | **Multi-daemon git race stress (G.1 follow-up #3)** — claim atomicity is "partially resolved" via git-rename + push. Stress test needs TWO daemon processes on the same repo via real git worktrees racing real pushes. Previous coverage was single-process push-fail simulation only. If Phase H's stress test finds a real race the simulation missed, R5 regresses to full R13 unresolved | Medium-high (reveals a market-trust bug) — not a blast-on-land risk, but a confidence-in-landing risk | Yes (flag off on discovery) | Stress test in `tests/test_phase_h_claim_stress.py` using pytest `tmp_path_factory` + two subprocess daemons + same repo checkout via two worktrees. Race semantics tested: both start → both local-rename → both attempt push → one wins, other reverts. Subprocess harness pattern (won't be fast, ~10s per test). Accept slow — the correctness is worth it. Invariant 6. |
-| R6 | **Activity.log byte-parity automation (Phase D follow-up #4)** — current gate is manual user-sim mission verification. Phase H automates it so flag-default flip doesn't regress under future refactor | Low (existing gate is manual) | Yes | Pytest fixture: seed a universe, run one cycle under `WORKFLOW_UNIFIED_EXECUTION=off` capturing activity.log, restart fresh, run the same cycle under `WORKFLOW_UNIFIED_EXECUTION=on`, diff the activity.log with timestamp/UUID normalization. Normalization regex list in fixture (timestamps `\d{4}-\d{2}-\d{2}T...`, UUIDs, branch_task_id hashes). Document the acceptable diff surface (heartbeats can differ in count; `dispatcher_observational:` lines only under flag-on). Test assertion is "no non-normalized differences." Invariant 7. |
+| R6 | **Activity.log byte-parity automation (Phase D follow-up #4)** — current gate is manual user-sim mission verification. Phase H automates it so flag-default flip doesn't regress under future refactor | Low (existing gate is manual) | Yes | Pytest fixture: seed a universe, run one cycle under `TINYASSETS_UNIFIED_EXECUTION=off` capturing activity.log, restart fresh, run the same cycle under `TINYASSETS_UNIFIED_EXECUTION=on`, diff the activity.log with timestamp/UUID normalization. Normalization regex list in fixture (timestamps `\d{4}-\d{2}-\d{2}T...`, UUIDs, branch_task_id hashes). Document the acceptable diff surface (heartbeats can differ in count; `dispatcher_observational:` lines only under flag-on). Test assertion is "no non-normalized differences." Invariant 7. |
 | R7 | Tier-toggle persistence — a user toggles `accept_paid_bids` via dashboard; daemon restarts; toggle state resets to YAML config file value. User's toggle "didn't stick." | Medium — UX confusion ("I turned it off, why did it come back?") | Yes | `set_tier_config` MCP action WRITES the YAML, not just in-memory state. Toggle persists across restarts because it's the config file. Dashboard tier pane reads from `load_dispatcher_config` at refresh, shows the on-disk state. Invariant 4 tests persistence across synthetic "restart." |
 | R8 | Concerns audit drift — §4.9 Q9 classifies all 19 STATUS Concerns. If the audit happens once in preflight then never revisited, Concerns accumulate during Phase H landing itself and become un-audited | Low (document hygiene) | Yes (re-audit cadence) | Preflight §4.9 Q9 table classifies each Concern at preflight-write time. Dev re-audits at land time (preflight explicitly instructs: "re-audit Concerns at land, remove any addressed, add any new from H landing itself"). Reviewer verifies the audit happened. Explicit reviewer-checklist item. |
 | R9 | MCP client overload — adding `daemon_overview` + `set_tier_config` + dashboard WebSocket events creates 3 new MCP actions AND the aggregated view is 6+ disparate data sources bundled into one JSON. Claude.ai dialogs re-prompting tool approvals, UX thrash | Low (first-time approval tax) | Yes | Consolidate: `daemon_overview` is ONE new action, not six. `set_tier_config` is ONE new action, not four per-tier. Keep MCP surface minimal. "Always allow" toggle (already live, STATUS Concern "MCP always-allow toggle") makes first-time tax a one-time event. No new tools, just new actions on existing `universe` tool. §4.1 #1 + #2. |
 | R10 | Flag-default-flip done wrong — if Phase H's flag-flip commit lands without user-sim mission green, a fresh-install daemon starts with paid market on + goal pool on + wrapper on and may encounter real-world regressions before the host notices | High (fresh-install default regression) | Yes (flag-off revert) | Flip is a SEPARATE commit, not part of Phase H landing. Phase H preflight + landing document the flip criteria (§4.5) but do not perform it. Host or lead flips defaults after Mission X passes. Audit of Mission X exit-criteria lives in the Concern that gates the flip. |
 | R11 | `bid_ledger.py` rename to `bid_execution_log.py` breaks imports in places we don't expect | Low (find-and-replace) | Yes (git revert) | Rename lands in its own commit, not part of the dashboard work. Imports swept via `grep -rn "bid_ledger"`; tests reveal missed sites; reviewer spot-checks. Same discipline as prior rename work. §4.7. |
 | R12 | Private-branch visibility surfacing in dashboard gives the illusion of solving task #8 when the design question is still open | Low (UX tidiness, not correctness) | Yes | Dashboard shows "private branches: N (see host settings for visibility policy)" WITHOUT resolving the Goal-vs-Branch inheritance question. The surface exists; the design decision still waits for host input. §4.9 Q8. |
-| R14 | **`daemon_overview` response exceeds MCP token budget at high queue/bid counts.** Aggregation bundles queue + bids + settlements + gates + activity.log tail + run state; a daemon with 500 queue items + 200 bids + 50 settlements + 100 gate claims + 50-line activity tail can serialize to >40KB. MCP clients (Claude.ai) truncate responses that exceed their token budget — response arrives corrupted or with a `[truncated]` marker that loses structured data. | Medium — unreliable observability; user sees partial truth | Yes (response-size cap) | **`DAEMON_OVERVIEW_MAX_BYTES = 32_768` constant** in `workflow/universe_server.py`. Serialization is staged: build response dict, `json.dumps` it, check byte length, trim in priority order if over cap — **activity_tail first** (most verbose, least structured), then **settlements.recent** (keep counts), then **bids.top_open** (keep counts), then **queue.top** (keep counts). Gates + dispatcher + subscriptions never trimmed — they are load-bearing per reviewer. When any trim lands, the response gets a single top-level `truncated: true` marker (counters like `*_count` remain authoritative over the trimmed lists); client falls back to per-surface MCP actions if it needs untrimmed data. **Spec updated 2026-04-15 post-Phase-H landing:** shipped behavior uses one top-level `truncated` flag rather than per-field `_trimmed` + `_response_too_large` markers — simpler contract, same information (counters disambiguate which fields were trimmed). Test (new, invariant 10): seed daemon with 1000+ items across every surface; call `daemon_overview`; assert response ≤ cap; assert `truncated: true` when any trim occurred; assert counts correct despite trimmed arrays. |
+| R14 | **`daemon_overview` response exceeds MCP token budget at high queue/bid counts.** Aggregation bundles queue + bids + settlements + gates + activity.log tail + run state; a daemon with 500 queue items + 200 bids + 50 settlements + 100 gate claims + 50-line activity tail can serialize to >40KB. MCP clients (Claude.ai) truncate responses that exceed their token budget — response arrives corrupted or with a `[truncated]` marker that loses structured data. | Medium — unreliable observability; user sees partial truth | Yes (response-size cap) | **`DAEMON_OVERVIEW_MAX_BYTES = 32_768` constant** in `tinyassets/universe_server.py`. Serialization is staged: build response dict, `json.dumps` it, check byte length, trim in priority order if over cap — **activity_tail first** (most verbose, least structured), then **settlements.recent** (keep counts), then **bids.top_open** (keep counts), then **queue.top** (keep counts). Gates + dispatcher + subscriptions never trimmed — they are load-bearing per reviewer. When any trim lands, the response gets a single top-level `truncated: true` marker (counters like `*_count` remain authoritative over the trimmed lists); client falls back to per-surface MCP actions if it needs untrimmed data. **Spec updated 2026-04-15 post-Phase-H landing:** shipped behavior uses one top-level `truncated` flag rather than per-field `_trimmed` + `_response_too_large` markers — simpler contract, same information (counters disambiguate which fields were trimmed). Test (new, invariant 10): seed daemon with 1000+ items across every surface; call `daemon_overview`; assert response ≤ cap; assert `truncated: true` when any trim occurred; assert counts correct despite trimmed arrays. |
 
 ### Reversibility summary
 
@@ -84,7 +84,7 @@ Everything in Phase H is additive or cosmetic. No new flag. No new execution pat
 
 ### 4.1 Deliverables
 
-1. **`workflow/universe_server.py` — `daemon_overview` action.** Aggregated read-through. Response shape:
+1. **`tinyassets/universe_server.py` — `daemon_overview` action.** Aggregated read-through. Response shape:
    ```
    {
      "universe_id": <str>,
@@ -124,23 +124,23 @@ Everything in Phase H is additive or cosmetic. No new flag. No new execution pat
    - Returns `{"status": "ok", "tier": <tier>, "enabled": <bool>, "takes_effect": "next_dispatcher_cycle"}`.
    - R2 invariant: does not abort in-flight tasks.
 
-3. **Dashboard pane extensions (`workflow/desktop/dashboard.py`).**
+3. **Dashboard pane extensions (`tinyassets/desktop/dashboard.py`).**
    - `DispatcherPane` — shows tier_status_map as row list (tier / status / toggle button). Toggle calls `set_tier_config` via subprocess-MCP-client OR via direct function import (see §4.9 Q1).
    - `QueuePane` — top-10 pending BranchTasks; tier color-coded; click-to-expand shows full BranchTask details.
-   - `EarningsPane` — visible only when `WORKFLOW_PAID_MARKET=on`; shows settlements count, open bids count, recent completion rate. Hidden pane when flag off.
+   - `EarningsPane` — visible only when `TINYASSETS_PAID_MARKET=on`; shows settlements count, open bids count, recent completion rate. Hidden pane when flag off.
    - `SettlementsPane` (optional, or merge with EarningsPane): settlements table with `settled: false / true` flag, so user can see the audit trail.
    - All panes consume the same `daemon_overview` response via a 2s refresh timer.
    - Every pane's event handler wrapped in try/except (R3); logs + returns, never propagates up to the UI thread.
 
-4. **Tray menu extensions (`workflow/desktop/tray.py`).**
+4. **Tray menu extensions (`tinyassets/desktop/tray.py`).**
    - "Show Dashboard" entry — opens per-universe dashboard window. Multiple universes → multiple dashboards. Matches PLAN.md "one tray, many dashboards."
    - "Toggle Tier" submenu — 4 entries (external / pool / paid / opportunistic); click calls `set_tier_config`. Visually shows ON/OFF state.
    - "Pause All Tiers" emergency switch — calls `set_tier_config` for all four in sequence. Visual "EMERGENCY OFF" badge on tray icon.
    - Existing Start/Pause/Resume/Restart/Exit entries unchanged.
 
 5. **`node_lookup_fn` wiring (G.1 follow-up #1, R4).** In `fantasy_author/__main__.py:_run_graph` (or earlier at `DaemonController.start`), construct the lookup function and pass it to `NodeBidProducer`:
-   - `def _make_node_lookup_fn() -> Callable[[str], NodeDefinition | None]`: reads from `<repo_root>/branches/*.yaml` + extracts node_defs, OR delegates to the existing SQLite registry in `workflow/author_server.py` (same disk-walk path the executor uses, per Phase G Concern "node lookup uses disk walk, not SQLite registry").
-   - Attach to `NodeBidProducer(node_lookup_fn=_make_node_lookup_fn())` at registration time (when `WORKFLOW_PAID_MARKET=on`).
+   - `def _make_node_lookup_fn() -> Callable[[str], NodeDefinition | None]`: reads from `<repo_root>/branches/*.yaml` + extracts node_defs, OR delegates to the existing SQLite registry in `tinyassets/author_server.py` (same disk-walk path the executor uses, per Phase G Concern "node lookup uses disk walk, not SQLite registry").
+   - Attach to `NodeBidProducer(node_lookup_fn=_make_node_lookup_fn())` at registration time (when `TINYASSETS_PAID_MARKET=on`).
    - Exception isolation: lookup raises → WARN log + bid skipped (fail-CLOSED, reason=`"node_lookup_error"`, R4).
    - Test: seeded bid with unknown node_def_id → producer rejects pre-pick; seeded bid with known node → emits.
 
@@ -169,7 +169,7 @@ Everything in Phase H is additive or cosmetic. No new flag. No new execution pat
 
 8. **`bid_ledger.py` → `bid_execution_log.py` rename (G.2 #4).** Separate commit. File rename + import sweep + test renames. No behavior change.
 
-9. **Docstring reconcile for `list_subscriptions` (Phase F follow-up).** Fix `workflow/subscriptions.py:123` docstring — actual behavior is insertion-order-preserving dedupe, not sorted. Preflight calls for docstring fix; implementation unchanged.
+9. **Docstring reconcile for `list_subscriptions` (Phase F follow-up).** Fix `tinyassets/subscriptions.py:123` docstring — actual behavior is insertion-order-preserving dedupe, not sorted. Preflight calls for docstring fix; implementation unchanged.
 
 10. **Concerns audit doc pass (R8, §4.9 Q9).** Preflight §4.9 Q9 classifies all 19 Concerns; dev re-audits at land. Classification categories: *dashboard-surfaced* / *daemon_overview-field* / *backlog-tracked* / *resolved-delete*. Every Concern touched during Phase H.
 
@@ -183,10 +183,10 @@ Everything in Phase H is additive or cosmetic. No new flag. No new execution pat
 ### 4.2 Flags
 
 No new flag in Phase H. Existing flags unchanged:
-- `WORKFLOW_UNIFIED_EXECUTION` (Phase D) — defaults off, flip target for §4.5 rollout after user-sim Mission green.
-- `WORKFLOW_DISPATCHER_ENABLED` (Phase E) — defaults on.
-- `WORKFLOW_GOAL_POOL` (Phase F) — defaults off, flip target.
-- `WORKFLOW_PAID_MARKET` (Phase G) — defaults off, flip target.
+- `TINYASSETS_UNIFIED_EXECUTION` (Phase D) — defaults off, flip target for §4.5 rollout after user-sim Mission green.
+- `TINYASSETS_DISPATCHER_ENABLED` (Phase E) — defaults on.
+- `TINYASSETS_GOAL_POOL` (Phase F) — defaults off, flip target.
+- `TINYASSETS_PAID_MARKET` (Phase G) — defaults off, flip target.
 
 Phase H rollout plan (§4.5) is the sequencing doc for flipping all three defaults. Phase H LANDING does not include the flips; flips are separate commits.
 
@@ -234,9 +234,9 @@ Aim: ~43 tests. Stress + parity tests explicitly slow-marked (declared in `pypro
 **Landing state:** Phase H lands with no flag changes. Dashboard + MCP additions are additive. The landing commit is inert for anyone not running a daemon with a dashboard attached.
 
 **Flag-default-flip as separate commits, gated on user-sim missions:**
-1. **`WORKFLOW_UNIFIED_EXECUTION=on` (Phase D flip)** — gated on user-sim Mission 8 (Sporemarch queue drainage + dispatch routing) AND activity.log parity test (invariant 7) green in CI. The parity test automates what was previously manual (Phase D follow-up #4).
-2. **`WORKFLOW_GOAL_POOL=on` (Phase F flip)** — gated on user-sim Mission 9 (end-to-end pool post-and-pick) passing.
-3. **`WORKFLOW_PAID_MARKET=on` (Phase G flip)** — gated on claim-race stress test (invariant 6) passing + user-sim Mission 10 adversarial bid-market test.
+1. **`TINYASSETS_UNIFIED_EXECUTION=on` (Phase D flip)** — gated on user-sim Mission 8 (Sporemarch queue drainage + dispatch routing) AND activity.log parity test (invariant 7) green in CI. The parity test automates what was previously manual (Phase D follow-up #4).
+2. **`TINYASSETS_GOAL_POOL=on` (Phase F flip)** — gated on user-sim Mission 9 (end-to-end pool post-and-pick) passing.
+3. **`TINYASSETS_PAID_MARKET=on` (Phase G flip)** — gated on claim-race stress test (invariant 6) passing + user-sim Mission 10 adversarial bid-market test.
 
 Each flip is a ~3-line commit: the `os.environ.get("...", "on")` default changes in the flag-reader. Commit message: "Flip Phase X default to on after Mission Y green."
 
@@ -246,7 +246,7 @@ Each flip is a ~3-line commit: the `os.environ.get("...", "on")` default changes
 3. **Full rollback:** revert Phase H landing commit. MCP actions `daemon_overview` + `set_tier_config` go away; existing per-surface actions (queue_list, list_subscriptions, list_open_bids) remain.
 
 **If a flag-flip destabilizes in live:**
-1. **Immediate:** revert the flag-flip commit (3-line change). Restart the Workflow daemon. Flag reverts to off.
+1. **Immediate:** revert the flag-flip commit (3-line change). Restart the TinyAssets daemon. Flag reverts to off.
 2. Re-run user-sim mission with the failing fix applied.
 
 **Do NOT:**
@@ -275,14 +275,14 @@ Each flip is a ~3-line commit: the `os.environ.get("...", "on")` default changes
 
 | File | Change | Size estimate |
 |------|--------|---------------|
-| `workflow/universe_server.py` | EDIT — add `daemon_overview` + `set_tier_config` actions to `universe` tool dispatcher | ~300 lines added |
-| `workflow/desktop/dashboard.py` | EDIT — add DispatcherPane, QueuePane, EarningsPane, SettlementsPane; exception-wrap existing handle_event | ~250 lines added |
-| `workflow/desktop/tray.py` | EDIT — add Show Dashboard, Toggle Tier submenu, Pause All Tiers; multi-universe support | ~150 lines added |
-| `workflow/producers/node_bid.py` | EDIT — `node_lookup_fn` wired into startup path; fail-CLOSED on exception (spec updated 2026-04-14) | ~20 lines |
+| `tinyassets/universe_server.py` | EDIT — add `daemon_overview` + `set_tier_config` actions to `universe` tool dispatcher | ~300 lines added |
+| `tinyassets/desktop/dashboard.py` | EDIT — add DispatcherPane, QueuePane, EarningsPane, SettlementsPane; exception-wrap existing handle_event | ~250 lines added |
+| `tinyassets/desktop/tray.py` | EDIT — add Show Dashboard, Toggle Tier submenu, Pause All Tiers; multi-universe support | ~150 lines added |
+| `tinyassets/producers/node_bid.py` | EDIT — `node_lookup_fn` wired into startup path; fail-CLOSED on exception (spec updated 2026-04-14) | ~20 lines |
 | `fantasy_author/__main__.py` | EDIT — pass `node_lookup_fn` into `NodeBidProducer`; wire up dashboard multi-pane refresh | ~40 lines |
-| `workflow/bid_ledger.py` → `workflow/bid_execution_log.py` | RENAME (G.2 #4) + import sweep | small |
-| `workflow/subscriptions.py:123` | EDIT — docstring reconcile (Phase F follow-up) | 2 lines |
-| `workflow/config.py` or dispatcher_config loader | EDIT — `set_tier_config` calls into this; round-trip YAML preserving other fields | ~30 lines |
+| `tinyassets/bid_ledger.py` → `tinyassets/bid_execution_log.py` | RENAME (G.2 #4) + import sweep | small |
+| `tinyassets/subscriptions.py:123` | EDIT — docstring reconcile (Phase F follow-up) | 2 lines |
+| `tinyassets/config.py` or dispatcher_config loader | EDIT — `set_tier_config` calls into this; round-trip YAML preserving other fields | ~30 lines |
 | `tests/test_phase_h_dashboard.py` | NEW — `daemon_overview`, `set_tier_config`, pane isolation, node_lookup, concerns audit, MCP surface tests | ~600 lines |
 | `tests/test_phase_h_claim_stress.py` | NEW — multi-daemon race stress (6 scenarios, `@pytest.mark.slow`, `multiprocessing.Barrier`-based deterministic sync) | ~240 lines |
 | `pyproject.toml` | EDIT — declare `slow` marker under `[tool.pytest.ini_options]` | ~3 lines |
@@ -314,7 +314,7 @@ No schema changes. No new MCP tools. No new flags. Net ~1,800 lines, heavily wei
 ### 4.9 Decision log
 
 **Q1. Dashboard form factor — tray + per-universe dashboards, or MCP inspect only + GUI later?**
-A. Both. Tray + per-universe dashboards ALREADY EXIST (`workflow/desktop/tray.py`, `workflow/desktop/dashboard.py`); Phase H extends them with new panes (DispatcherPane, QueuePane, EarningsPane, SettlementsPane). MCP inspect surfaces land in parallel via `daemon_overview` + `set_tier_config`. Rationale: PLAN.md "one tray, many dashboards" is already scaffolded; separating them creates drift. The tray/dashboard remains optional (`no_tray=True` still works); MCP surfaces work regardless.
+A. Both. Tray + per-universe dashboards ALREADY EXIST (`tinyassets/desktop/tray.py`, `tinyassets/desktop/dashboard.py`); Phase H extends them with new panes (DispatcherPane, QueuePane, EarningsPane, SettlementsPane). MCP inspect surfaces land in parallel via `daemon_overview` + `set_tier_config`. Rationale: PLAN.md "one tray, many dashboards" is already scaffolded; separating them creates drift. The tray/dashboard remains optional (`no_tray=True` still works); MCP surfaces work regardless.
 
 **Q2. MCP inspect consolidation — separate per-surface actions or one aggregated `daemon_overview`?**
 A. `daemon_overview` aggregated + retain per-surface actions. Rationale: aggregated view is the UX payoff (one glance); individual actions remain for programmatic use and backward compatibility. No deprecation of per-surface actions. `daemon_overview` is ONE new action, not 6+ (R9 scope discipline).
@@ -329,7 +329,7 @@ A. Phase H test suite (`tests/test_phase_h_claim_stress.py`) with `@pytest.mark.
 A. Separate commit within Phase H landing sequence. Pure rename + import sweep, zero behavior change. Rationale: rename is disambiguation work flagged by G.2; folding into the dashboard commit conflates cosmetic-with-behavioral. Separate commit = clean git blame trail.
 
 **Q6. Activity.log byte-parity automation — Phase H or defer?**
-A. Phase H. The manual gate at Phase D follow-up #4 blocks the `WORKFLOW_UNIFIED_EXECUTION` default flip; automating removes a human step from the flag-flip rollout. Test file: `tests/test_phase_h_activity_log_parity.py`. Rationale: flag-flip rollout (§4.5) is itself scope-adjacent to Phase H; finishing the gate's automation there keeps it synchronous.
+A. Phase H. The manual gate at Phase D follow-up #4 blocks the `TINYASSETS_UNIFIED_EXECUTION` default flip; automating removes a human step from the flag-flip rollout. Test file: `tests/test_phase_h_activity_log_parity.py`. Rationale: flag-flip rollout (§4.5) is itself scope-adjacent to Phase H; finishing the gate's automation there keeps it synchronous.
 
 **Q7. Flag defaults flip — Phase H responsibility or separate?**
 A. Phase H preflight DOCUMENTS the sequencing (§4.5); flip COMMITS are separate, each gated on a specific user-sim mission. Rationale: mixing flag-flips with Phase H landing creates blast-radius the preflight's "no new flags" principle explicitly avoids. Each flip is ~3 lines; commits them one at a time with clear rollback per R10.
@@ -375,7 +375,7 @@ Checkpoint: no new checkpoint state. `set_tier_config` writes YAML on disk; daem
 
 Phase G's three structural safeguards (flag kill switch, no-real-money, public audit) continue to apply. Phase H adds:
 - **Dashboard makes the audit trail visible.** SettlementsPane shows `settled: false` count prominently so the host sees the pre-token ledger growing.
-- **Emergency pause-all-tiers extends the kill switch.** Host can disable all tiers in one click without restarting the daemon. Faster response than `WORKFLOW_PAID_MARKET=off` + restart.
+- **Emergency pause-all-tiers extends the kill switch.** Host can disable all tiers in one click without restarting the daemon. Faster response than `TINYASSETS_PAID_MARKET=off` + restart.
 - **`node_lookup_fn` wiring completes the three-layer sandbox defense** that was partially stubbed in G.1. Defense-in-depth now complete at production level.
 
 Reviewer audit items from Phase G §4.13 remain: all three safeguards should still be visible in the codebase post-Phase-H.

@@ -4,18 +4,18 @@ PHASE 3.1 & 3.2 IMPLEMENTATION - ABSOLUTE FILE PATHS
 CORE IMPLEMENTATION
 ───────────────────
 
-/sessions/hopeful-upbeat-davinci/mnt/Workflow/workflow/context/compaction.py
+/sessions/hopeful-upbeat-davinci/mnt/Workflow/tinyassets/context/compaction.py
   Lines: 548
   Classes: HandoffArtifact, CompactionService, HandoffStore
   Description: Durable handoff artifacts and compression services
 
-/sessions/hopeful-upbeat-davinci/mnt/Workflow/workflow/context/guardrails.py
+/sessions/hopeful-upbeat-davinci/mnt/Workflow/tinyassets/context/guardrails.py
   Lines: 454
   Classes: FilterGuardrail, PaginationGuardrail, SummarizationGuardrail, GuardrailPipeline
   Functions: build_retrieval_pipeline()
   Description: Tool result filtering, pagination, and summarization guardrails
 
-/sessions/hopeful-upbeat-davinci/mnt/Workflow/workflow/context/__init__.py
+/sessions/hopeful-upbeat-davinci/mnt/Workflow/tinyassets/context/__init__.py
   Lines: 40
   Description: Public interface exports for context module
 
@@ -30,7 +30,7 @@ TEST SUITE
 /sessions/hopeful-upbeat-davinci/mnt/Workflow/tests/test_context_guardrails.py
   Lines: 444
   Test Methods: 28
-  Classes: TestFilterGuardrail, TestPaginationGuardrail, TestSummarizationGuardrail, 
+  Classes: TestFilterGuardrail, TestPaginationGuardrail, TestSummarizationGuardrail,
            TestGuardrailPipeline, TestBuildRetrievalPipeline
 
 DOCUMENTATION

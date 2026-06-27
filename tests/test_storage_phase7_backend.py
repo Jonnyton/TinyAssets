@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from workflow.branches import BranchDefinition, NodeDefinition
-from workflow.catalog import (
+from tinyassets.branches import BranchDefinition, NodeDefinition
+from tinyassets.catalog import (
     SqliteCachedBackend,
     SqliteOnlyBackend,
     YamlRepoLayout,
@@ -28,15 +28,15 @@ from workflow.catalog import (
 def base_path(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     # Ensure the daemon DB is live before the backend touches it.
-    from workflow.daemon_server import initialize_author_server
+    from tinyassets.daemon_server import initialize_author_server
 
     initialize_author_server(base)
     # Also reload universe_server so any @mcp decoration lands fresh
     # (not strictly needed here, but matches other test fixtures).
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield base
 
@@ -73,7 +73,7 @@ def test_sqlite_only_backend_persists_branch_via_daemon_server(base_path):
 
     assert saved["name"] == "Bulk-patch probe"
     # Round-trip via daemon_server directly — no YAML side-effect.
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition
 
     row = get_branch_definition(
         base_path, branch_def_id=saved["branch_def_id"],
@@ -91,7 +91,7 @@ def test_sqlite_only_backend_persists_goal_via_daemon_server(base_path):
     })
     assert saved["name"] == "Produce academic paper"
 
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
 
     row = get_goal(base_path, goal_id=saved["goal_id"])
     assert row["name"] == saved["name"]
@@ -124,7 +124,7 @@ def test_cached_backend_writes_branch_yaml_and_sqlite(base_path, tmp_path):
     saved = backend.save_branch(_make_branch())
 
     # SQLite side intact.
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition
     row = get_branch_definition(
         base_path, branch_def_id=saved["branch_def_id"],
     )
@@ -164,7 +164,7 @@ def test_cached_backend_writes_goal_yaml_and_sqlite(base_path, tmp_path):
         "tags": ["research"],
     })
 
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     assert get_goal(base_path, goal_id=saved["goal_id"])["name"] == (
         "Produce academic paper"
     )
@@ -203,7 +203,7 @@ def test_cached_backend_sqlite_write_short_circuits_on_failure(
         raise RuntimeError("sqlite write refused")
 
     monkeypatch.setattr(
-        "workflow.daemon_server.save_branch_definition", _boom,
+        "tinyassets.daemon_server.save_branch_definition", _boom,
     )
     with pytest.raises(RuntimeError):
         backend.save_branch(_make_branch())

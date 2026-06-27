@@ -1,16 +1,16 @@
 ---
-title: Step 5 prep — workflow/api/evaluation.py extraction scope
+title: Step 5 prep — tinyassets/api/evaluation.py extraction scope
 date: 2026-04-26
 author: navigator
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md §4.2 (`evaluation.py`), §8 step 5
-target_task: Decomp audit Step 5 — Extract workflow/api/evaluation.py
+target_task: Decomp audit Step 5 — Extract tinyassets/api/evaluation.py
 gates_on: #8 (helpers) ✅ landed (4f98654); #9 (wiki.py) in flight; #10 (status.py) queued; Step 4 (runs.py) queued. Step 5 is sequenced AFTER Step 4 per audit §8.
 ---
 
 # Step 5 (`evaluation.py`) pre-flight scope
 
-Read-only scope for extracting the multi-criteria evaluation surface (Phase 4 judgment + iteration hooks) and branch-versioning handlers from `workflow/universe_server.py` into a new `workflow/api/evaluation.py`. Same freshness-check protocol as #9/#10/Step 4 prep.
+Read-only scope for extracting the multi-criteria evaluation surface (Phase 4 judgment + iteration hooks) and branch-versioning handlers from `tinyassets/universe_server.py` into a new `tinyassets/api/evaluation.py`. Same freshness-check protocol as #9/#10/Step 4 prep.
 
 ---
 
@@ -88,7 +88,7 @@ Read-only scope for extracting the multi-criteria evaluation surface (Phase 4 ju
 
 **Yes:** `_action_compare_runs`, `_action_get_node_output`, `_action_list_node_versions`, `_action_rollback_node` use `_universe_dir`, `_default_universe`, `_base_path` (per import patterns observed in surrounding code).
 
-After #8 lands (already done — 4f98654), evaluation.py imports these from `workflow/api/helpers.py`.
+After #8 lands (already done — 4f98654), evaluation.py imports these from `tinyassets/api/helpers.py`.
 
 ### 3.3 Does evaluation.py call into other future submodules?
 
@@ -98,7 +98,7 @@ After #8 lands (already done — 4f98654), evaluation.py imports these from `wor
 
 `_dispatch_judgment_action` calls `_append_global_ledger` + `_truncate` (L10229, L10232). These are preamble helpers. **Risk:** if `_append_global_ledger` is in universe_server.py preamble (not yet extracted to helpers.py), evaluation.py needs `from workflow.universe_server import _append_global_ledger, _truncate` — which works but creates a soft back-edge. **Need to verify:** whether `_append_global_ledger` will move to `helpers.py` in a future #8-style extraction OR stays in preamble until full universe_server shim cleanup.
 
-**Recommended verification at extraction time:** `grep -n "_append_global_ledger\|_truncate" workflow/api/helpers.py` — if absent, import from `workflow.universe_server` is the back-compat path.
+**Recommended verification at extraction time:** `grep -n "_append_global_ledger\|_truncate" tinyassets/api/helpers.py` — if absent, import from `workflow.universe_server` is the back-compat path.
 
 ### 3.4 Does evaluation.py share dispatch surface with `extensions()`?
 
@@ -148,7 +148,7 @@ Tests touching the evaluation public action names go through the `extensions` MC
 | `tests/test_branch_versions_rollback_columns.py` | `extensions` (likely) | Via MCP tool |
 | `tests/test_run_branch_version.py` | `_action_run_branch_version` (Step 4 scope, NOT here) | Via direct import |
 
-**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After Step 5 lands, `workflow/universe_server.py` adds:
+**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After Step 5 lands, `tinyassets/universe_server.py` adds:
 ```python
 # Phase-1 evaluation extraction — back-compat re-exports.
 from workflow.api.evaluation import (  # noqa: F401
@@ -174,7 +174,7 @@ Searched for evidence that any evaluation-scope symbols already shipped to a sub
 
 Adjacent partial moves: only the 5+ helpers in #8 (`_base_path`, etc.) — `_action_compare_runs` and friends already use them; after #8 (already landed) they're `helpers.py` imports.
 
-Note: there IS no `workflow/evaluation.py` (storage layer) — unlike Step 4's `workflow/runs.py` storage namespace collision. Cleaner namespace.
+Note: there IS no `tinyassets/evaluation.py` (storage layer) — unlike Step 4's `tinyassets/runs.py` storage namespace collision. Cleaner namespace.
 
 ---
 
@@ -187,7 +187,7 @@ Note: there IS no `workflow/evaluation.py` (storage layer) — unlike Step 4's `
 | **Total moved out of universe_server.py** | **~852** |
 | Back-compat re-export block added to universe_server.py | ~16 |
 | **Net reduction in universe_server.py** | **~836** |
-| New `workflow/api/evaluation.py` size | **~880** (with imports + module docstring) |
+| New `tinyassets/api/evaluation.py` size | **~880** (with imports + module docstring) |
 
 **Audit said ~895.** Reality ~852. About 5% under (audit slightly over-estimated).
 
@@ -202,8 +202,8 @@ Note: there IS no `workflow/evaluation.py` (storage layer) — unlike Step 4's `
    - L9282–9471 attribution (market.py)
 
 2. **`_append_global_ledger` import path uncertainty** (§3.3). If it's still in universe_server.py preamble at Step 5 time, evaluation.py needs `from workflow.universe_server import _append_global_ledger, _truncate`. This is back-edge but not circular (universe_server.py imports evaluation.py via re-export shim AT MODULE END; evaluation.py imports `_append_global_ledger` AT MODULE TOP — order of operations works as long as the re-export is at end-of-file).
-   
-   **Recommended verification at extraction time:** check `workflow/api/helpers.py` for `_append_global_ledger`. If absent, the back-edge import is the path. Document this as a follow-up cleanup item for a future helpers.py expansion.
+
+   **Recommended verification at extraction time:** check `tinyassets/api/helpers.py` for `_append_global_ledger`. If absent, the back-edge import is the path. Document this as a follow-up cleanup item for a future helpers.py expansion.
 
 3. **`_dispatch_judgment_action` ledger writes** (L10200) call `_append_global_ledger` + `_truncate` — same dependency as #2. Both move with the function.
 
@@ -228,9 +228,9 @@ Estimated wall time: 45-75 min (smaller than Step 4 because zero direct test imp
 1. **Confirm #8, #9, #10, Step 4 have all landed.**
 2. **Confirm `mcp` instance pattern from #9** — inherited; not strictly needed for evaluation.py (no `@mcp.tool` decorator inside).
 3. **Verify `_append_global_ledger` location** at extraction time:
-   - If in `workflow/api/helpers.py`: import from there.
-   - If in `workflow/universe_server.py`: import via back-edge `from workflow.universe_server import _append_global_ledger, _truncate` (tolerated as long as re-export shim is at module END).
-4. **Create `workflow/api/evaluation.py`:**
+   - If in `tinyassets/api/helpers.py`: import from there.
+   - If in `tinyassets/universe_server.py`: import via back-edge `from workflow.universe_server import _append_global_ledger, _truncate` (tolerated as long as re-export shim is at module END).
+4. **Create `tinyassets/api/evaluation.py`:**
    - Module docstring referencing audit + extraction date + the two non-contiguous source-range list.
    - Imports: `from workflow.api.helpers import _base_path, _default_universe, _universe_dir` + storage layer imports (`workflow.branch_versions`, `workflow.daemon_server`) + ledger imports per §3 verification + std-lib + typing.
    - Move symbols **in this order** (logical not source order — evaluation handlers first, then branch-versioning handlers as a separate section, then dispatch tables):
@@ -251,7 +251,7 @@ Estimated wall time: 45-75 min (smaller than Step 4 because zero direct test imp
      15. `_JUDGMENT_ACTIONS` (L10185)
      16. `_JUDGMENT_WRITE_ACTIONS` (L10195)
      17. `_dispatch_judgment_action` (L10200)
-5. **Update `workflow/universe_server.py`:**
+5. **Update `tinyassets/universe_server.py`:**
    - Delete the 2 source ranges in reverse order to avoid line-shift confusion:
      - L9472–10241 (Phase 4 block + dispatch tables)
      - L8758–8839 (branch-versioning block)
@@ -274,14 +274,14 @@ Estimated wall time: 45-75 min (smaller than Step 4 because zero direct test imp
    - `pytest tests/test_publish_version.py tests/test_rollback.py tests/test_branch_evaluation_iteration.py tests/test_branch_versions_rollback_columns.py -q` → green (covers branch-versioning + judgment surface).
    - `pytest tests/test_run_branch_version.py -q` → green (sanity: Step 4's `_action_run_branch_version` did NOT accidentally move).
    - `pytest -q` → full suite green.
-   - `ruff check workflow/api/evaluation.py workflow/universe_server.py` → clean.
-   - **Visual check:** `git diff workflow/universe_server.py | grep -c "^-def _action_"` should equal 10 (3 branch-version + 7 judgment handlers). Anything else means an accidental pull.
+   - `ruff check tinyassets/api/evaluation.py tinyassets/universe_server.py` → clean.
+   - **Visual check:** `git diff tinyassets/universe_server.py | grep -c "^-def _action_"` should equal 10 (3 branch-version + 7 judgment handlers). Anything else means an accidental pull.
 
 **Files in eventual Step 5 SHIP handoff:**
-- `workflow/api/evaluation.py` (NEW, ~880 LOC)
-- `workflow/universe_server.py` (~836 LOC removed + ~16 re-export added)
-- `packaging/claude-plugin/.../workflow/api/evaluation.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
+- `tinyassets/api/evaluation.py` (NEW, ~880 LOC)
+- `tinyassets/universe_server.py` (~836 LOC removed + ~16 re-export added)
+- `packaging/claude-plugin/.../tinyassets/api/evaluation.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
 
 4 files, +896 / -836 LOC net.
 
@@ -289,7 +289,7 @@ Estimated wall time: 45-75 min (smaller than Step 4 because zero direct test imp
 
 ## 10. Decision asks for the lead
 
-1. **`_append_global_ledger` import path** (§3.3, §8 risk #2) — accept the back-edge `from workflow.universe_server import _append_global_ledger, _truncate` for now, OR pre-extract `_append_global_ledger` into `workflow/api/helpers.py` as a tiny prep step before Step 5? Recommendation: accept back-edge for Step 5; promote `_append_global_ledger` to helpers.py during eventual full universe_server shim cleanup (later than Step 8).
+1. **`_append_global_ledger` import path** (§3.3, §8 risk #2) — accept the back-edge `from workflow.universe_server import _append_global_ledger, _truncate` for now, OR pre-extract `_append_global_ledger` into `tinyassets/api/helpers.py` as a tiny prep step before Step 5? Recommendation: accept back-edge for Step 5; promote `_append_global_ledger` to helpers.py during eventual full universe_server shim cleanup (later than Step 8).
 2. **Sequencing** — Step 4 (runs.py) lands BEFORE Step 5 to avoid confusion about which action handler goes where. Recommendation: confirmed yes, stick with audit order.
 3. **`mcp` instance import** in evaluation.py — strictly not needed (no `@mcp.tool` decorator); recommend omitting consistent with Step 4 recommendation.
 

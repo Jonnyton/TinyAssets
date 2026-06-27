@@ -1,16 +1,16 @@
 ---
-title: Step 11 prep — workflow/api/extensions.py extraction scope
+title: Step 11 prep — tinyassets/api/extensions.py extraction scope
 date: 2026-04-26
 author: navigator
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md (audit's "100-LOC routing shell" target — Steps 9+10+11 are post-original-8-step extension); docs/exec-plans/completed/2026-04-26-decomp-step-{9,10}-prep.md
-target_task: Decomp post-Step-10 — Extract workflow/api/extensions.py (the `extensions()` MCP tool body + standalone-node infrastructure: NodeRegistration class + `_load_nodes`/`_save_nodes` + `_ext_*` handlers). FINAL extraction in the planned decomposition; lands the audit's "~100-LOC routing shell" target.
+target_task: Decomp post-Step-10 — Extract tinyassets/api/extensions.py (the `extensions()` MCP tool body + standalone-node infrastructure: NodeRegistration class + `_load_nodes`/`_save_nodes` + `_ext_*` handlers). FINAL extraction in the planned decomposition; lands the audit's "~100-LOC routing shell" target.
 gates_on: Steps 8 + 9 + 10 MUST land first. Step 11 depends on Step 9 (universe.py) for the Pattern A2 pattern proof, and on Steps 4-8 for the dispatch-table extractions that `extensions()` consumes.
 ---
 
 # Step 11 (`extensions.py`) pre-flight scope
 
-Read-only scope for extracting the `extensions()` MCP tool surface from `workflow/universe_server.py` into a new `workflow/api/extensions.py`. **Second-largest extraction** by LOC after universe.py (~786 moveable LOC); **the most cross-tool-coupled** (extensions() body dispatches into 11 dispatch tables from Steps 4-8). Same freshness-check protocol as Steps 1-10 prep.
+Read-only scope for extracting the `extensions()` MCP tool surface from `tinyassets/universe_server.py` into a new `tinyassets/api/extensions.py`. **Second-largest extraction** by LOC after universe.py (~786 moveable LOC); **the most cross-tool-coupled** (extensions() body dispatches into 11 dispatch tables from Steps 4-8). Same freshness-check protocol as Steps 1-10 prep.
 
 This step is NOT in the original 8-step audit plan. Per Step 10 prep §6.4 + §9.2: lead approves Step 11 if going for the audit's "~100-LOC routing shell" target. Final residual after Step 11: **~1,300 LOC** — still ~13× the audit's 100-LOC target but materially closer than today's 7,778. The audit's literal 100-LOC target requires "Step 11+ retarget sweep" of 150-200 test imports across the codebase — recommend deferring that as a separate scope decision (see §9.7).
 
@@ -166,8 +166,8 @@ from workflow.api.engine_helpers import _current_actor, _append_global_ledger  #
 
 `extensions()` IS an `@mcp.tool()` registration. Same Pattern A2 question as Step 9 (universe.py):
 
-- **Option A** (recommended, consistent with Step 9 §4 + Step 8 + #6/#7): Move the `extensions()` body to `workflow/api/extensions.py` as a plain function `_extensions_impl(action: str, **kwargs: Any) -> str`. Preserve `@mcp.tool() def extensions(...)` decorator + 80+ arg signature in `workflow/universe_server.py` wrapping a delegation to `_extensions_impl`. ~120-line wrapper (largest Pattern A2 wrapper so far — extensions has the most arguments).
-- **Option B**: Move `@mcp.tool()` decoration WITH the body to `workflow/api/extensions.py`. Requires `mcp` instance import in extensions.py (back-edge `from workflow.universe_server import mcp` — same leaf-module concern).
+- **Option A** (recommended, consistent with Step 9 §4 + Step 8 + #6/#7): Move the `extensions()` body to `tinyassets/api/extensions.py` as a plain function `_extensions_impl(action: str, **kwargs: Any) -> str`. Preserve `@mcp.tool() def extensions(...)` decorator + 80+ arg signature in `tinyassets/universe_server.py` wrapping a delegation to `_extensions_impl`. ~120-line wrapper (largest Pattern A2 wrapper so far — extensions has the most arguments).
+- **Option B**: Move `@mcp.tool()` decoration WITH the body to `tinyassets/api/extensions.py`. Requires `mcp` instance import in extensions.py (back-edge `from workflow.universe_server import mcp` — same leaf-module concern).
 
 **Recommendation: Option A** — consistent with how `goals`, `gates`, `wiki`, `get_status`, Step 8's `@mcp.prompt` Branch Design Guide, and Step 9's `@mcp.tool() universe()` are handled. Avoids the leaf-module question entirely. Wrapper preservation cost ~120 LOC is the price of consistency.
 
@@ -188,7 +188,7 @@ from workflow.api.engine_helpers import _current_actor, _append_global_ledger  #
 
 **Test files with extensions-tool dependencies** (sampled from grep): `test_attribution_mcp.py`, `test_continue_branch.py`, `test_cross_run_state_query.py`, `test_dry_inspect_node.py`, `test_gate_event_mcp.py`, `test_node_registry_migration.py`, `test_outcome_mcp.py`, `test_payments_escrow_mcp.py`, `test_project_memory.py`, `test_publish_version.py`, plus 5-10 others. **Total estimated: ~50-70 test imports across ~15-20 test files.**
 
-**Strategy: back-compat re-export shim** preserves all imports. Re-export block in `workflow/universe_server.py` after Step 11:
+**Strategy: back-compat re-export shim** preserves all imports. Re-export block in `tinyassets/universe_server.py` after Step 11:
 
 ```python
 from workflow.api.extensions import (  # noqa: E402, F401
@@ -252,7 +252,7 @@ from workflow.api.extensions import (  # noqa: E402, F401
 | Back-compat re-export block added to universe_server.py | ~25 |
 | `@mcp.tool() def extensions(...)` decorator + 80-arg signature wrapper preserved (Option A) | ~120 (decorator + sig + delegation; body is in extensions.py) |
 | **Net reduction in universe_server.py** | **~510** |
-| New `workflow/api/extensions.py` size | **~800** (with imports + module docstring + Pattern A2 docstring) |
+| New `tinyassets/api/extensions.py` size | **~800** (with imports + module docstring + Pattern A2 docstring) |
 
 **Materially smaller than Step 9 (~2,959 net reduction)** — extensions.py is a routing module, so the body LOC count is much smaller than universe.py's 28-handler suite.
 
@@ -265,7 +265,7 @@ Estimated wall time: **120-180 min** (largest Pattern A2 wrapper preservation; c
 1. **Confirm Steps 8 + 9 + 10 landed.** Step 11 should ideally serialize after Step 10 for clean engine_helpers.py imports.
 2. **AST scan for circular-import risk** (per §3.1 + §6.3). Run `python -c "import workflow.api.extensions"` against a stub before authoring extensions.py.
 3. **Verify dispatch-table extraction landed in Steps 4-8.** All 12 dispatch tables (`_BRANCH_ACTIONS`, `_RUN_ACTIONS`, `_JUDGMENT_ACTIONS`, `_PROJECT_MEMORY_ACTIONS`, `_BRANCH_VERSION_ACTIONS`, `_MESSAGING_ACTIONS`, `_ESCROW_ACTIONS`, `_GATE_EVENT_ACTIONS`, `_INSPECT_DRY_ACTIONS`, `_SCHEDULER_ACTIONS`, `_OUTCOME_ACTIONS`, `_ATTRIBUTION_ACTIONS`) must be importable from their canonical api/ paths.
-4. **Create `workflow/api/extensions.py`:**
+4. **Create `tinyassets/api/extensions.py`:**
    - Module docstring referencing audit + extraction date + the source ranges + Pattern A2 explanation for `@mcp.tool() extensions()` + circular-import-risk note + audit-target reflection.
    - **Top-of-module imports** (not lazy):
      ```python
@@ -281,7 +281,7 @@ Estimated wall time: **120-180 min** (largest Pattern A2 wrapper preservation; c
    - Move L3700-L3830 verbatim (TOOL 2 banner + standalone-node infrastructure).
    - Move L3833-L4350 verbatim (`extensions()` body) → rename to `_extensions_impl(action, **kwargs)` for Pattern A2.
    - Move L4353-L4489 verbatim (`_ext_*` handlers).
-5. **Update `workflow/universe_server.py`:**
+5. **Update `tinyassets/universe_server.py`:**
    - Delete L3700-L4489 (single contiguous range).
    - Add back-compat shim block (~12 symbols re-exported).
    - Add `@mcp.tool(...) def extensions(action, ..., since_days) -> str: return _extensions_impl(action, ..., since_days)` Pattern A2 wrapper. Preserve full 80+ arg signature + decorator + `title="Graph Extensions"` + tags + ToolAnnotations + ~140-line docstring.
@@ -291,18 +291,18 @@ Estimated wall time: **120-180 min** (largest Pattern A2 wrapper preservation; c
    - `pytest tests/test_node_registry_migration.py tests/test_publish_version.py tests/test_attribution_mcp.py tests/test_dry_inspect_node.py tests/test_gate_event_mcp.py tests/test_outcome_mcp.py tests/test_payments_escrow_mcp.py tests/test_project_memory.py -q` → green.
    - `pytest -k "extensions or ext_ or node_registry" -q` → cross-cutting smoke.
    - `pytest -q` → full suite green (essential — Step 11 wires the chatbot-facing dispatch surface).
-   - `ruff check workflow/api/extensions.py workflow/universe_server.py` → clean.
-   - **Visual check:** `git diff workflow/universe_server.py | grep -c "^-def _ext_"` should equal **4** (`_ext_register`, `_ext_list`, `_ext_inspect`, `_ext_manage`).
+   - `ruff check tinyassets/api/extensions.py tinyassets/universe_server.py` → clean.
+   - **Visual check:** `git diff tinyassets/universe_server.py | grep -c "^-def _ext_"` should equal **4** (`_ext_register`, `_ext_list`, `_ext_inspect`, `_ext_manage`).
    - **MCP probe:** `python scripts/mcp_probe.py --tool extensions --args '{"action":"list"}'` → returns valid node list. Validates Pattern A2 wrapper.
    - **Circular-import check:** `python -c "import workflow.api.extensions; import workflow.universe_server"` → both succeed cleanly.
 
 **Files in eventual Step 11 SHIP handoff:**
-- `workflow/api/extensions.py` (NEW, ~800 LOC)
-- `workflow/universe_server.py` (~655 LOC removed + ~25 re-export added + ~120 wrapper preservation = net ~−510)
+- `tinyassets/api/extensions.py` (NEW, ~800 LOC)
+- `tinyassets/universe_server.py` (~655 LOC removed + ~25 re-export added + ~120 wrapper preservation = net ~−510)
 - `tests/test_api_extensions.py` (NEW, 50-80 tests recommended)
 - 3-4 existing test files with monkeypatch-target mirror updates
-- `packaging/claude-plugin/.../workflow/api/extensions.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
+- `packaging/claude-plugin/.../tinyassets/api/extensions.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
 
 5-7 files, +850 / −510 LOC net.
 

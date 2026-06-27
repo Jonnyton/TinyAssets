@@ -1,7 +1,7 @@
 # DEPLOY — first ship of `tinyassets.io` on the new SvelteKit site
 
 Walks through the cutover from the legacy GoDaddy "Asset Backed Currency"
-landing to the new Workflow site, with no `/mcp` downtime.
+landing to the new TinyAssets site, with no `/mcp` downtime.
 
 ## What ships
 
@@ -38,7 +38,7 @@ After cutover, `/` is replaced by GitHub Pages. The Worker route on
 ### 1. Push the prepared bundle from Windows
 
 ```powershell
-cd C:\Users\Jonathan\Projects\Workflow\WebSite
+cd C:\Users\Jonathan\Projects\TinyAssets\WebSite
 .\ship.ps1
 ```
 

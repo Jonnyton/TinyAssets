@@ -17,8 +17,8 @@ import json
 
 import pytest
 
-from workflow.branch_versions import publish_branch_version
-from workflow.runs import (
+from tinyassets.branch_versions import publish_branch_version
+from tinyassets.runs import (
     SnapshotSchemaDrift,
     _connect,
     execute_branch_async,
@@ -31,13 +31,13 @@ from workflow.runs import (
 
 
 def _seed_branch(base_path, branch_id: str = "b1"):
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
         NodeDefinition,
     )
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         initialize_author_server,
         save_branch_definition,
     )
@@ -124,8 +124,8 @@ class TestExecuteBranchVersionAsync:
         keys (defaults to empty lists), so we plant a structurally
         broken graph_nodes list to trigger reconstruction failure.
         """
-        from workflow.branch_versions import _connect as bv_connect
-        from workflow.branch_versions import initialize_branch_versions_db
+        from tinyassets.branch_versions import _connect as bv_connect
+        from tinyassets.branch_versions import initialize_branch_versions_db
 
         initialize_branch_versions_db(tmp_path)
         bvid = "fake_branch@drift123"
@@ -165,7 +165,7 @@ class TestExecuteBranchVersionAsync:
     def test_immutable_against_def_edit(self, tmp_path):
         """Publish v1, edit live def, run v1 — run uses the snapshot, not
         the edited def. Critical immutability invariant."""
-        from workflow.daemon_server import (
+        from tinyassets.daemon_server import (
             get_branch_definition,
             update_branch_definition,
         )
@@ -255,21 +255,21 @@ class TestCancellationVersionRuns:
 
 class TestActionRunBranchVersionWiring:
     def test_action_in_run_actions_registry(self):
-        from workflow.api.runs import _RUN_ACTIONS
+        from tinyassets.api.runs import _RUN_ACTIONS
         assert "run_branch_version" in _RUN_ACTIONS
 
     def test_action_in_run_write_actions(self):
-        from workflow.api.runs import _RUN_WRITE_ACTIONS
+        from tinyassets.api.runs import _RUN_WRITE_ACTIONS
         assert "run_branch_version" in _RUN_WRITE_ACTIONS
 
     def test_missing_branch_version_id_returns_error(self):
-        from workflow.api.runs import _action_run_branch_version
+        from tinyassets.api.runs import _action_run_branch_version
         result = json.loads(_action_run_branch_version({}))
         assert "error" in result
         assert "branch_version_id" in result["error"]
 
     def test_invalid_inputs_json_returns_error(self):
-        from workflow.api.runs import _action_run_branch_version
+        from tinyassets.api.runs import _action_run_branch_version
         result = json.loads(_action_run_branch_version({
             "branch_version_id": "x@y",
             "inputs_json": "not valid json {",
@@ -278,7 +278,7 @@ class TestActionRunBranchVersionWiring:
         assert "inputs_json" in result["error"]
 
     def test_inputs_json_must_be_object(self):
-        from workflow.api.runs import _action_run_branch_version
+        from tinyassets.api.runs import _action_run_branch_version
         result = json.loads(_action_run_branch_version({
             "branch_version_id": "x@y",
             "inputs_json": "[1, 2, 3]",  # array, not object
@@ -287,7 +287,7 @@ class TestActionRunBranchVersionWiring:
         assert "JSON object" in result["error"]
 
     def test_recursion_limit_must_be_integer(self):
-        from workflow.api.runs import _action_run_branch_version
+        from tinyassets.api.runs import _action_run_branch_version
         result = json.loads(_action_run_branch_version({
             "branch_version_id": "x@y",
             "recursion_limit_override": "not-a-number",
@@ -296,7 +296,7 @@ class TestActionRunBranchVersionWiring:
         assert "integer" in result["error"]
 
     def test_recursion_limit_out_of_range(self):
-        from workflow.api.runs import _action_run_branch_version
+        from tinyassets.api.runs import _action_run_branch_version
         result = json.loads(_action_run_branch_version({
             "branch_version_id": "x@y",
             "recursion_limit_override": "1",  # below 10
@@ -306,8 +306,8 @@ class TestActionRunBranchVersionWiring:
 
     def test_unknown_branch_version_id_returns_error(self, tmp_path, monkeypatch):
         """Live invocation against an unknown bvid surfaces KeyError as JSON error."""
-        from workflow.api import engine_helpers as eh
-        from workflow.api import runs as runs_mod
+        from tinyassets.api import engine_helpers as eh
+        from tinyassets.api import runs as runs_mod
         monkeypatch.setattr(runs_mod, "_base_path", lambda: tmp_path)
         monkeypatch.setattr(eh, "_current_actor", lambda: "alice")
         # Initialize the runs DB so _ensure_runs_recovery doesn't blow up.
@@ -329,10 +329,10 @@ class TestActionHandlesSnapshotDrift:
     ):
         """Plant a drifted snapshot, invoke the handler, confirm the JSON
         response carries failure_class + suggested_action from the class."""
-        from workflow.api import engine_helpers as eh
-        from workflow.api import runs as runs_mod
-        from workflow.branch_versions import _connect as bv_connect
-        from workflow.branch_versions import initialize_branch_versions_db
+        from tinyassets.api import engine_helpers as eh
+        from tinyassets.api import runs as runs_mod
+        from tinyassets.branch_versions import _connect as bv_connect
+        from tinyassets.branch_versions import initialize_branch_versions_db
 
         monkeypatch.setattr(eh, "_current_actor", lambda: "alice")
         monkeypatch.setattr(runs_mod, "_base_path", lambda: tmp_path)

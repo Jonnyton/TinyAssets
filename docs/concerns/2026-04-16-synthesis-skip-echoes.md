@@ -114,7 +114,7 @@ Propose: **Fix F — REVERT streak halt.** In `run_book` (between scenes), if th
 
 ### Q (lead) — can I use notes.json `399af5d2` as the signal?
 
-No — that note is the `grounding_quality` ProcessCheck firing AFTER a scene commit (code at `workflow/evaluation/process.py:272`). It's a lagging evaluator signal, not a leading precondition. By the time the note fires, a scene has already been drafted on no canon. Good diagnostic; bad gate.
+No — that note is the `grounding_quality` ProcessCheck firing AFTER a scene commit (code at `tinyassets/evaluation/process.py:272`). It's a lagging evaluator signal, not a leading precondition. By the time the note fires, a scene has already been drafted on no canon. Good diagnostic; bad gate.
 
 The correct leading precondition is what critic and my Fix A both point at: **block `run_book` when unconsumed `synthesize_source` signals exist for files whose `synthesized_docs == []`**. That check runs BEFORE any scene drafts, at `dispatch_execution` or at `run_book` entry.
 

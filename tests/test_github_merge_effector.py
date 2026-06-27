@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from workflow import effectors
-from workflow.credential_vault import write_credential_vault
-from workflow.effectors import github_merge
+from tinyassets import effectors
+from tinyassets.credential_vault import write_credential_vault
+from tinyassets.effectors import github_merge
 
-_DEST = "Jonnyton/Workflow"
+_DEST = "Jonnyton/TinyAssets"
 _HEAD = "a" * 40
 _OTHER_HEAD = "b" * 40
 
@@ -41,7 +41,7 @@ def _run(run_state=None, base_path=None):
 
 def _with_capability(monkeypatch):
     monkeypatch.setenv(
-        "WORKFLOW_GITHUB_PR_CAPABILITIES",
+        "TINYASSETS_GITHUB_PR_CAPABILITIES",
         json.dumps({_DEST: "capability-token"}),
     )
 
@@ -123,7 +123,7 @@ def test_successful_merge_is_bound_to_expected_head_sha(monkeypatch):
 
 
 def test_missing_capability_returns_dry_run(monkeypatch):
-    monkeypatch.delenv("WORKFLOW_GITHUB_PR_CAPABILITIES", raising=False)
+    monkeypatch.delenv("TINYASSETS_GITHUB_PR_CAPABILITIES", raising=False)
     fake = _scripted_api([])
     monkeypatch.setattr(github_merge, "_github_api", fake)
     result = _run()
@@ -134,7 +134,7 @@ def test_missing_capability_returns_dry_run(monkeypatch):
 
 def test_vault_capability_overrides_env_when_base_path_is_bound(tmp_path, monkeypatch):
     monkeypatch.setenv(
-        "WORKFLOW_GITHUB_PR_CAPABILITIES",
+        "TINYASSETS_GITHUB_PR_CAPABILITIES",
         json.dumps({_DEST: "env-token"}),
     )
     write_credential_vault(
@@ -166,7 +166,7 @@ def test_vault_capability_overrides_env_when_base_path_is_bound(tmp_path, monkey
 
 
 def test_operator_kill_switch_returns_dry_run(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", "1")
+    monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", "1")
     fake = _scripted_api([])
     monkeypatch.setattr(github_merge, "_github_api", fake)
     result = _run()

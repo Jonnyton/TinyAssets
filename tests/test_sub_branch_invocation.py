@@ -19,18 +19,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import (
+from tinyassets.graph_compiler import (
     CompilerError,
     _build_await_branch_run_node,
     _build_invoke_branch_node,
 )
-from workflow.runs import (
+from tinyassets.runs import (
     MAX_INVOKE_BRANCH_DEPTH,
     ChildRunAwaitTimeout,
     poll_child_run_status,
@@ -135,7 +135,7 @@ class TestValidateAwaitRunSpec:
 
 class TestCompileBranchMissingBasePath:
     def test_invoke_branch_node_without_base_path_raises(self):
-        from workflow.graph_compiler import compile_branch
+        from tinyassets.graph_compiler import compile_branch
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -156,7 +156,7 @@ class TestCompileBranchMissingBasePath:
             compile_branch(b)
 
     def test_await_run_node_without_base_path_raises(self):
-        from workflow.graph_compiler import compile_branch
+        from tinyassets.graph_compiler import compile_branch
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -177,7 +177,7 @@ class TestCompileBranchMissingBasePath:
 
 class TestInvokeBranchBlocking:
     def test_blocking_populates_output_mapping(self, tmp_path, monkeypatch):
-        from workflow.runs import RUN_STATUS_COMPLETED, RunOutcome
+        from tinyassets.runs import RUN_STATUS_COMPLETED, RunOutcome
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -201,9 +201,9 @@ class TestInvokeBranchBlocking:
 
         _child_raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
         with (
-            patch("workflow.daemon_server.get_branch_definition", return_value=_child_raw),
-            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("workflow.runs.execute_branch", return_value=child_outcome) as mock_exec,
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=_child_raw),
+            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.runs.execute_branch", return_value=child_outcome) as mock_exec,
         ):
             fn = _build_invoke_branch_node(nd, base_path=tmp_path, event_sink=None)
             result = fn({"parent_q": "what is 6x7?"})
@@ -216,7 +216,7 @@ class TestInvokeBranchBlocking:
 
 class TestInvokeBranchAsync:
     def test_async_writes_run_id(self, tmp_path, monkeypatch):
-        from workflow.runs import RUN_STATUS_QUEUED, RunOutcome
+        from tinyassets.runs import RUN_STATUS_QUEUED, RunOutcome
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -240,9 +240,9 @@ class TestInvokeBranchAsync:
 
         _child_raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
         with (
-            patch("workflow.daemon_server.get_branch_definition", return_value=_child_raw),
-            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("workflow.runs.execute_branch_async", return_value=queued_outcome),
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=_child_raw),
+            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.runs.execute_branch_async", return_value=queued_outcome),
         ):
             fn = _build_invoke_branch_node(nd, base_path=tmp_path, event_sink=None)
             result = fn({})
@@ -254,7 +254,7 @@ class TestInvokeBranchAsync:
 
 class TestAwaitBranchRunNode:
     def test_populates_output_from_completed_child(self, tmp_path):
-        from workflow.runs import RUN_STATUS_COMPLETED
+        from tinyassets.runs import RUN_STATUS_COMPLETED
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -271,7 +271,7 @@ class TestAwaitBranchRunNode:
             "output": {"answer": "hello"},
         }
 
-        with patch("workflow.runs.poll_child_run_status", return_value=child_record) as mock_poll:
+        with patch("tinyassets.runs.poll_child_run_status", return_value=child_record) as mock_poll:
             fn = _build_await_branch_run_node(nd, base_path=tmp_path, event_sink=None)
             result = fn({"child_run_id": "child-99"})
 
@@ -299,7 +299,7 @@ class TestAwaitBranchRunNode:
                 "timeout_seconds": 0.01,
             },
         )
-        with patch("workflow.runs.poll_child_run_status", side_effect=TimeoutError("timed out")):
+        with patch("tinyassets.runs.poll_child_run_status", side_effect=TimeoutError("timed out")):
             fn = _build_await_branch_run_node(nd, base_path=tmp_path, event_sink=None)
             with pytest.raises(TimeoutError):
                 fn({"child_run_id": "some-run"})
@@ -346,7 +346,7 @@ class TestRecursionDepthCap:
 
 class TestPollChildRunStatus:
     def test_returns_immediately_for_completed_run(self, tmp_path):
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
             create_run,
             initialize_runs_db,
@@ -369,14 +369,14 @@ class TestPollChildRunStatus:
         assert record["run_id"] == run_id
 
     def test_raises_key_error_for_unknown_run(self, tmp_path):
-        from workflow.runs import initialize_runs_db
+        from tinyassets.runs import initialize_runs_db
 
         initialize_runs_db(tmp_path)
         with pytest.raises(KeyError, match="not found"):
             poll_child_run_status(tmp_path, "nonexistent-run", timeout_seconds=1.0)
 
     def test_raises_timeout_for_stuck_run(self, tmp_path):
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_RUNNING,
             create_run,
             initialize_runs_db,
@@ -398,7 +398,7 @@ class TestPollChildRunStatus:
             poll_child_run_status(tmp_path, run_id, timeout_seconds=0.05, poll_interval=0.01)
 
     def test_timeout_carries_reclaim_context_for_still_running_child(self, tmp_path):
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_RUNNING,
             create_run,
             initialize_runs_db,
@@ -428,7 +428,7 @@ class TestPollChildRunStatus:
         assert exc.timeout_seconds == 0.05
 
     def test_await_timeout_promotes_parent_to_receipt_waiting(self, tmp_path):
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_INTERRUPTED,
             RUN_STATUS_RUNNING,
             create_run,
@@ -590,7 +590,7 @@ class TestCompileInvokeBranchVersionNode:
     """Compiler-level wiring for the new sibling builder."""
 
     def test_compile_succeeds_with_valid_version_spec(self, tmp_path):
-        from workflow.graph_compiler import compile_branch
+        from tinyassets.graph_compiler import compile_branch
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -613,7 +613,7 @@ class TestCompileInvokeBranchVersionNode:
         assert compiled is not None
 
     def test_invoke_version_node_without_base_path_raises(self):
-        from workflow.graph_compiler import compile_branch
+        from tinyassets.graph_compiler import compile_branch
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -634,7 +634,7 @@ class TestCompileInvokeBranchVersionNode:
     def test_build_invoke_version_node_blocking_mode(self, tmp_path):
         """Blocking mode loads the snapshot via execute_branch_version_async,
         polls for terminal status, then maps output to parent state."""
-        from workflow.graph_compiler import _build_invoke_branch_version_node
+        from tinyassets.graph_compiler import _build_invoke_branch_version_node
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -649,8 +649,8 @@ class TestCompileInvokeBranchVersionNode:
             nd, base_path=tmp_path, event_sink=None,
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="run-xyz")
             mock_poll.return_value = {
                 "status": "completed",
@@ -667,7 +667,7 @@ class TestCompileInvokeBranchVersionNode:
     def test_build_invoke_version_node_async_mode_writes_run_id(self, tmp_path):
         """Async mode writes the child run_id into the first output_mapping
         target and returns immediately (no polling)."""
-        from workflow.graph_compiler import _build_invoke_branch_version_node
+        from tinyassets.graph_compiler import _build_invoke_branch_version_node
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -682,7 +682,7 @@ class TestCompileInvokeBranchVersionNode:
             nd, base_path=tmp_path, event_sink=None,
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec:
             mock_exec.return_value = MagicMock(run_id="async-run-xyz")
             updates = node_fn({})
 
@@ -691,7 +691,7 @@ class TestCompileInvokeBranchVersionNode:
 
     def test_build_invoke_version_node_recursion_cap(self, tmp_path):
         """Recursion-cap works through the version-spec path too."""
-        from workflow.graph_compiler import _build_invoke_branch_version_node
+        from tinyassets.graph_compiler import _build_invoke_branch_version_node
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -717,7 +717,7 @@ class TestChildFailurePolicy:
     since it's the simpler mocking surface."""
 
     def test_propagate_default_raises_child_failed_error(self, tmp_path):
-        from workflow.graph_compiler import (
+        from tinyassets.graph_compiler import (
             ChildFailedError,
             _build_invoke_branch_version_node,
         )
@@ -735,21 +735,21 @@ class TestChildFailurePolicy:
             nd, base_path=tmp_path, event_sink=None,
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="run-fail")
             mock_poll.return_value = {"status": "failed", "output": {}}
             with pytest.raises(ChildFailedError) as exc_info:
                 node_fn({})
 
-        from workflow.runs import ChildFailure
+        from tinyassets.runs import ChildFailure
         assert isinstance(exc_info.value.failure, ChildFailure)
         assert exc_info.value.failure.failure_class == "child_failed"
         assert exc_info.value.failure.run_id == "run-fail"
         assert exc_info.value.failure.child_status == "failed"
 
     def test_default_policy_substitutes_default_outputs(self, tmp_path):
-        from workflow.graph_compiler import _build_invoke_branch_version_node
+        from tinyassets.graph_compiler import _build_invoke_branch_version_node
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -765,8 +765,8 @@ class TestChildFailurePolicy:
             nd, base_path=tmp_path, event_sink=None,
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="run-fail")
             mock_poll.return_value = {"status": "failed", "output": {}}
             updates = node_fn({})
@@ -775,7 +775,7 @@ class TestChildFailurePolicy:
         assert updates == {"parent_out": "fallback-value"}
 
     def test_default_policy_no_default_outputs_uses_none(self, tmp_path):
-        from workflow.graph_compiler import _build_invoke_branch_version_node
+        from tinyassets.graph_compiler import _build_invoke_branch_version_node
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -791,8 +791,8 @@ class TestChildFailurePolicy:
             nd, base_path=tmp_path, event_sink=None,
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="run-fail")
             mock_poll.return_value = {"status": "failed", "output": {}}
             updates = node_fn({})
@@ -803,7 +803,7 @@ class TestChildFailurePolicy:
     def test_retry_succeeds_within_budget(self, tmp_path, monkeypatch):
         """retry budget=2: first attempt fails, second succeeds → completed
         outputs returned, no propagate."""
-        from workflow.graph_compiler import (
+        from tinyassets.graph_compiler import (
             _build_invoke_branch_version_node,
             _retry_budget_reset,
         )
@@ -811,7 +811,7 @@ class TestChildFailurePolicy:
         # Reset the threadlocal to ensure clean budget state.
         _retry_budget_reset()
         # Generous global cap to not interfere.
-        monkeypatch.setenv("WORKFLOW_MAX_CHILD_RETRIES_TOTAL", "10")
+        monkeypatch.setenv("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "10")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -832,8 +832,8 @@ class TestChildFailurePolicy:
             {"status": "failed", "output": {}},
             {"status": "completed", "output": {"child_out": "ok"}},
         ]
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="run-attempt")
             mock_poll.side_effect = poll_returns
             updates = node_fn({})
@@ -844,13 +844,13 @@ class TestChildFailurePolicy:
 
     def test_retry_exhausted_falls_through_to_propagate(self, tmp_path, monkeypatch):
         """retry_budget=1: one retry, then exhausts → propagate raises."""
-        from workflow.graph_compiler import (
+        from tinyassets.graph_compiler import (
             ChildFailedError,
             _build_invoke_branch_version_node,
             _retry_budget_reset,
         )
         _retry_budget_reset()
-        monkeypatch.setenv("WORKFLOW_MAX_CHILD_RETRIES_TOTAL", "10")
+        monkeypatch.setenv("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "10")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -866,8 +866,8 @@ class TestChildFailurePolicy:
             nd, base_path=tmp_path, event_sink=None,
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="run-fail")
             mock_poll.return_value = {"status": "failed", "output": {}}
             with pytest.raises(ChildFailedError):
@@ -879,13 +879,13 @@ class TestChildFailurePolicy:
     def test_global_cap_overrides_per_spec_budget(self, tmp_path, monkeypatch):
         """Per-spec retry_budget=10 + global cap=1 → only 1 retry across
         the parent run, then propagate."""
-        from workflow.graph_compiler import (
+        from tinyassets.graph_compiler import (
             ChildFailedError,
             _build_invoke_branch_version_node,
             _retry_budget_reset,
         )
         _retry_budget_reset()
-        monkeypatch.setenv("WORKFLOW_MAX_CHILD_RETRIES_TOTAL", "1")
+        monkeypatch.setenv("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "1")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -901,8 +901,8 @@ class TestChildFailurePolicy:
             nd, base_path=tmp_path, event_sink=None,
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="run-fail")
             mock_poll.return_value = {"status": "failed", "output": {}}
             with pytest.raises(ChildFailedError):
@@ -913,7 +913,7 @@ class TestChildFailurePolicy:
 
     def test_failure_class_classification(self, tmp_path):
         """Each child terminal status maps to the correct failure_class."""
-        from workflow.graph_compiler import (
+        from tinyassets.graph_compiler import (
             ChildFailedError,
             _build_invoke_branch_version_node,
         )
@@ -934,8 +934,8 @@ class TestChildFailurePolicy:
             node_fn = _build_invoke_branch_version_node(
                 nd, base_path=tmp_path, event_sink=None,
             )
-            with patch("workflow.runs.execute_branch_version_async") as m_exec, \
-                 patch("workflow.runs.poll_child_run_status") as m_poll:
+            with patch("tinyassets.runs.execute_branch_version_async") as m_exec, \
+                 patch("tinyassets.runs.poll_child_run_status") as m_poll:
                 m_exec.return_value = MagicMock(run_id="r")
                 m_poll.return_value = {"status": child_status, "output": {}}
                 with pytest.raises(ChildFailedError) as exc_info:
@@ -1042,7 +1042,7 @@ class TestChildActorHonoring:
     "anonymous" when unset."""
 
     def test_invoke_branch_threads_child_actor_blocking(self, tmp_path):
-        from workflow.runs import RUN_STATUS_COMPLETED, RunOutcome
+        from tinyassets.runs import RUN_STATUS_COMPLETED, RunOutcome
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -1063,9 +1063,9 @@ class TestChildActorHonoring:
         _raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
 
         with (
-            patch("workflow.daemon_server.get_branch_definition", return_value=_raw),
-            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("workflow.runs.execute_branch", return_value=child_outcome) as mock_exec,
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=_raw),
+            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.runs.execute_branch", return_value=child_outcome) as mock_exec,
         ):
             fn = _build_invoke_branch_node(nd, base_path=tmp_path, event_sink=None)
             fn({})
@@ -1073,7 +1073,7 @@ class TestChildActorHonoring:
         assert mock_exec.call_args.kwargs["actor"] == "alice"
 
     def test_invoke_branch_default_actor_anonymous(self, tmp_path):
-        from workflow.runs import RUN_STATUS_COMPLETED, RunOutcome
+        from tinyassets.runs import RUN_STATUS_COMPLETED, RunOutcome
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -1094,9 +1094,9 @@ class TestChildActorHonoring:
         _raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
 
         with (
-            patch("workflow.daemon_server.get_branch_definition", return_value=_raw),
-            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("workflow.runs.execute_branch", return_value=child_outcome) as mock_exec,
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=_raw),
+            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.runs.execute_branch", return_value=child_outcome) as mock_exec,
         ):
             fn = _build_invoke_branch_node(nd, base_path=tmp_path, event_sink=None)
             fn({})
@@ -1120,9 +1120,9 @@ class TestChildActorHonoring:
         _raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
 
         with (
-            patch("workflow.daemon_server.get_branch_definition", return_value=_raw),
-            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("workflow.runs.execute_branch_async") as mock_async,
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=_raw),
+            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.runs.execute_branch_async") as mock_async,
         ):
             mock_async.return_value = MagicMock(run_id="async-r1")
             fn = _build_invoke_branch_node(
@@ -1136,7 +1136,7 @@ class TestChildActorHonoring:
 
     def test_blocking_invoke_branch_inherits_parent_actor_and_threads_depth(self, tmp_path):
         """Blocking child runs inherit parent actor unless child_actor overrides."""
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
             RunOutcome,
             _prepare_run,
@@ -1180,9 +1180,9 @@ class TestChildActorHonoring:
         _raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
 
         with (
-            patch("workflow.daemon_server.get_branch_definition", return_value=_raw),
-            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("workflow.runs.execute_branch", return_value=child_outcome) as mock_exec,
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=_raw),
+            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.runs.execute_branch", return_value=child_outcome) as mock_exec,
         ):
             fn = _build_invoke_branch_node(
                 nd,
@@ -1200,7 +1200,7 @@ class TestChildActorHonoring:
 
     def test_invoke_branch_version_threads_child_actor_and_depth(self, tmp_path):
         """invoke_branch_version_spec passes child_actor + _invocation_depth."""
-        from workflow.graph_compiler import _build_invoke_branch_version_node
+        from tinyassets.graph_compiler import _build_invoke_branch_version_node
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -1216,8 +1216,8 @@ class TestChildActorHonoring:
             nd, base_path=tmp_path, event_sink=None, depth=1,
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="r-x")
             mock_poll.return_value = {
                 "status": "completed",
@@ -1231,8 +1231,8 @@ class TestChildActorHonoring:
 
     def test_invoke_branch_version_inherits_parent_actor(self, tmp_path):
         """Version-pinned child runs use the same parent-actor default."""
-        from workflow.graph_compiler import _build_invoke_branch_version_node
-        from workflow.runs import _prepare_run, initialize_runs_db
+        from tinyassets.graph_compiler import _build_invoke_branch_version_node
+        from tinyassets.runs import _prepare_run, initialize_runs_db
 
         initialize_runs_db(tmp_path)
         parent_branch = BranchDefinition(
@@ -1268,8 +1268,8 @@ class TestChildActorHonoring:
             parent_run_id=parent_run_id,
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="r-x")
             mock_poll.return_value = {
                 "status": "completed",
@@ -1289,7 +1289,7 @@ class TestTwoPoolIsolation:
     """
 
     def test_get_executor_returns_distinct_pools_per_depth(self):
-        from workflow.runs import _get_executor, shutdown_executor
+        from tinyassets.runs import _get_executor, shutdown_executor
 
         # Reset global pool state so the assertion holds independent of
         # earlier tests in this session.
@@ -1303,8 +1303,8 @@ class TestTwoPoolIsolation:
         shutdown_executor()
 
     def test_shutdown_executor_drains_both_pools(self):
-        import workflow.runs as _runs_mod
-        from workflow.runs import (
+        import tinyassets.runs as _runs_mod
+        from tinyassets.runs import (
             _get_executor,
             shutdown_executor,
         )
@@ -1320,19 +1320,19 @@ class TestTwoPoolIsolation:
         assert _runs_mod._child_pool is None
 
     def test_runtime_max_invocation_depth_env_override(self, monkeypatch):
-        from workflow.runs import _runtime_max_invocation_depth
+        from tinyassets.runs import _runtime_max_invocation_depth
 
-        monkeypatch.setenv("WORKFLOW_INVOCATION_MAX_DEPTH", "9")
+        monkeypatch.setenv("TINYASSETS_INVOCATION_MAX_DEPTH", "9")
         assert _runtime_max_invocation_depth() == 9
 
-        monkeypatch.delenv("WORKFLOW_INVOCATION_MAX_DEPTH", raising=False)
+        monkeypatch.delenv("TINYASSETS_INVOCATION_MAX_DEPTH", raising=False)
         # Default should be MAX_INVOKE_BRANCH_DEPTH (5).
         assert _runtime_max_invocation_depth() == MAX_INVOKE_BRANCH_DEPTH
 
     def test_runtime_depth_cap_used_in_compile(self, tmp_path, monkeypatch):
         """Compile-time cap reads runtime helper, so env override
         flips the cap without a code-change."""
-        monkeypatch.setenv("WORKFLOW_INVOCATION_MAX_DEPTH", "2")
+        monkeypatch.setenv("TINYASSETS_INVOCATION_MAX_DEPTH", "2")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -1360,7 +1360,7 @@ class TestInvokeBranchDesignUsedEmit:
     author. Skipped on empty/anonymous author. Only fires on success."""
 
     def _seed_child_def(self, base_path, *, author="alice"):
-        from workflow.daemon_server import (
+        from tinyassets.daemon_server import (
             initialize_author_server,
             save_branch_definition,
         )
@@ -1379,13 +1379,13 @@ class TestInvokeBranchDesignUsedEmit:
         )
 
     def test_emits_design_used_on_blocking_success(self, tmp_path):
-        from workflow.contribution_events import (
+        from tinyassets.contribution_events import (
             _connect as ce_connect,
         )
-        from workflow.contribution_events import (
+        from tinyassets.contribution_events import (
             initialize_contribution_events_db,
         )
-        from workflow.runs import RUN_STATUS_COMPLETED, RunOutcome
+        from tinyassets.runs import RUN_STATUS_COMPLETED, RunOutcome
 
         initialize_contribution_events_db(tmp_path)
         self._seed_child_def(tmp_path, author="alice")
@@ -1407,8 +1407,8 @@ class TestInvokeBranchDesignUsedEmit:
         child_branch_mock.validate.return_value = []
 
         with (
-            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("workflow.runs.execute_branch", return_value=child_outcome),
+            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.runs.execute_branch", return_value=child_outcome),
         ):
             fn = _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None,
@@ -1430,13 +1430,13 @@ class TestInvokeBranchDesignUsedEmit:
         assert ev["source_artifact_id"] == "child"
 
     def test_skips_emit_when_author_anonymous(self, tmp_path):
-        from workflow.contribution_events import (
+        from tinyassets.contribution_events import (
             _connect as ce_connect,
         )
-        from workflow.contribution_events import (
+        from tinyassets.contribution_events import (
             initialize_contribution_events_db,
         )
-        from workflow.runs import RUN_STATUS_COMPLETED, RunOutcome
+        from tinyassets.runs import RUN_STATUS_COMPLETED, RunOutcome
 
         initialize_contribution_events_db(tmp_path)
         self._seed_child_def(tmp_path, author="anonymous")
@@ -1457,8 +1457,8 @@ class TestInvokeBranchDesignUsedEmit:
         child_branch_mock = MagicMock()
         child_branch_mock.validate.return_value = []
         with (
-            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("workflow.runs.execute_branch", return_value=child_outcome),
+            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.runs.execute_branch", return_value=child_outcome),
         ):
             fn = _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None,
@@ -1474,13 +1474,13 @@ class TestInvokeBranchDesignUsedEmit:
         assert rows == []
 
     def test_no_emit_on_child_failure(self, tmp_path):
-        from workflow.contribution_events import (
+        from tinyassets.contribution_events import (
             _connect as ce_connect,
         )
-        from workflow.contribution_events import (
+        from tinyassets.contribution_events import (
             initialize_contribution_events_db,
         )
-        from workflow.runs import RunOutcome
+        from tinyassets.runs import RunOutcome
 
         initialize_contribution_events_db(tmp_path)
         self._seed_child_def(tmp_path, author="alice")
@@ -1503,8 +1503,8 @@ class TestInvokeBranchDesignUsedEmit:
         child_branch_mock = MagicMock()
         child_branch_mock.validate.return_value = []
         with (
-            patch("workflow.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("workflow.runs.execute_branch", return_value=child_outcome),
+            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.runs.execute_branch", return_value=child_outcome),
         ):
             fn = _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None,
@@ -1525,21 +1525,21 @@ class TestInvokeBranchVersionDesignUsedEmit:
     branch_def_id (since branch_version snapshot is topology-only)."""
 
     def test_emits_design_used_for_version_blocking_success(self, tmp_path):
-        from workflow.branch_versions import (
+        from tinyassets.branch_versions import (
             initialize_branch_versions_db,
             publish_branch_version,
         )
-        from workflow.contribution_events import (
+        from tinyassets.contribution_events import (
             _connect as ce_connect,
         )
-        from workflow.contribution_events import (
+        from tinyassets.contribution_events import (
             initialize_contribution_events_db,
         )
-        from workflow.daemon_server import (
+        from tinyassets.daemon_server import (
             initialize_author_server,
             save_branch_definition,
         )
-        from workflow.graph_compiler import _build_invoke_branch_version_node
+        from tinyassets.graph_compiler import _build_invoke_branch_version_node
 
         initialize_contribution_events_db(tmp_path)
         initialize_author_server(tmp_path)
@@ -1584,8 +1584,8 @@ class TestInvokeBranchVersionDesignUsedEmit:
             parent_run_id="parent-run-7",
         )
 
-        with patch("workflow.runs.execute_branch_version_async") as mock_exec, \
-             patch("workflow.runs.poll_child_run_status") as mock_poll:
+        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
+             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
             mock_exec.return_value = MagicMock(run_id="r-x")
             mock_poll.return_value = {
                 "status": "completed",

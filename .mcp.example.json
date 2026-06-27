@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "workflow": {
+    "tinyassets": {
       "command": "python",
-      "args": ["-m", "workflow.mcp_server"]
+      "args": ["-m", "tinyassets.mcp_server"]
     }
   }
 }

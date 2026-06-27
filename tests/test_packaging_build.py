@@ -4,10 +4,10 @@ Covers task #26 / planner's design-note
 ``2026-04-14-packaging-mirror-decision.md`` Option 1.
 
 The load-bearing checks:
-1. ``build_bundle.py`` stages the live ``workflow/`` package into the
+1. ``build_bundle.py`` stages the live ``tinyassets/`` package into the
    bundle source dir (no shim, no fantasy_author/).
 2. The staged bundle's ``server.py`` imports
-   ``workflow.universe_server`` cleanly (subprocess probe).
+   ``tinyassets.universe_server`` cleanly (subprocess probe).
 3. The mirror script ``build_plugin.py`` does the same for the
    claude-plugin runtime tree.
 4. Excluded patterns (``__pycache__``, ``*.db``, ``*.log``) don't end
@@ -27,14 +27,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MCPB_BUILD = REPO_ROOT / "packaging" / "mcpb" / "build_bundle.py"
 PLUGIN_BUILD = REPO_ROOT / "packaging" / "claude-plugin" / "build_plugin.py"
 DIST_STAGE = (
-    REPO_ROOT / "packaging" / "dist" / "workflow-universe-server-src"
+    REPO_ROOT / "packaging" / "dist" / "tinyassets-universe-server-src"
 )
 PLUGIN_RUNTIME = (
     REPO_ROOT
     / "packaging"
     / "claude-plugin"
     / "plugins"
-    / "workflow-universe-server"
+    / "tinyassets-universe-server"
     / "runtime"
 )
 
@@ -49,15 +49,15 @@ def _run(script: Path, args: list[str] | None = None) -> subprocess.CompletedPro
 # ─── build_bundle.py ─────────────────────────────────────────────────
 
 
-def test_build_bundle_stages_workflow_package(tmp_path):
-    """Stage step copies workflow/ into the bundle and probe passes."""
+def test_build_bundle_stages_tinyassets_package(tmp_path):
+    """Stage step copies tinyassets/ into the bundle and probe passes."""
     result = _run(MCPB_BUILD)
     assert result.returncode == 0, (
         f"build_bundle.py failed:\nstdout={result.stdout}\n"
         f"stderr={result.stderr}"
     )
-    assert (DIST_STAGE / "workflow" / "universe_server.py").is_file(), (
-        "Staged bundle must contain workflow/universe_server.py"
+    assert (DIST_STAGE / "tinyassets" / "universe_server.py").is_file(), (
+        "Staged bundle must contain tinyassets/universe_server.py"
     )
     assert (DIST_STAGE / "server.py").is_file()
     assert (DIST_STAGE / "manifest.json").is_file()
@@ -72,21 +72,21 @@ def test_build_bundle_stages_workflow_package(tmp_path):
 def test_build_bundle_excludes_pycache_and_dbs(tmp_path):
     """Excludes prevent runtime artifacts from polluting the bundle."""
     _run(MCPB_BUILD)
-    # No pycache directories anywhere under staged workflow/.
+    # No pycache directories anywhere under staged tinyassets/.
     pycache_hits = list(DIST_STAGE.rglob("__pycache__"))
     assert not pycache_hits, f"__pycache__ found in staged bundle: {pycache_hits}"
     db_hits = list(DIST_STAGE.rglob("*.db"))
     assert not db_hits, f"*.db files leaked into staged bundle: {db_hits}"
 
 
-def test_bundle_server_imports_workflow_package():
+def test_bundle_server_imports_tinyassets_package():
     """Direct import probe — same shape build_bundle's --skip-probe bypasses."""
     _run(MCPB_BUILD)
     probe = subprocess.run(
         [
             sys.executable, "-c",
             f"import sys; sys.path.insert(0, {str(DIST_STAGE)!r}); "
-            "import workflow.universe_server as us; "
+            "import tinyassets.universe_server as us; "
             "assert callable(us.main); print('ok')",
         ],
         capture_output=True, text=True, check=False,
@@ -101,14 +101,14 @@ def test_bundle_server_imports_workflow_package():
 # ─── build_plugin.py ─────────────────────────────────────────────────
 
 
-def test_build_plugin_stages_workflow_package():
-    """Plugin build re-stages workflow/ next to runtime/server.py."""
+def test_build_plugin_stages_tinyassets_package():
+    """Plugin build re-stages tinyassets/ next to runtime/server.py."""
     result = _run(PLUGIN_BUILD)
     assert result.returncode == 0, (
         f"build_plugin.py failed:\nstdout={result.stdout}\n"
         f"stderr={result.stderr}"
     )
-    assert (PLUGIN_RUNTIME / "workflow" / "universe_server.py").is_file()
+    assert (PLUGIN_RUNTIME / "tinyassets" / "universe_server.py").is_file()
     assert (PLUGIN_RUNTIME / "server.py").is_file()
     assert "probe-ok" in result.stdout
 
@@ -137,7 +137,7 @@ def test_plugin_server_imports_workflow_package():
         [
             sys.executable, "-c",
             f"import sys; sys.path.insert(0, {str(PLUGIN_RUNTIME)!r}); "
-            "import workflow.universe_server as us; "
+            "import tinyassets.universe_server as us; "
             "assert callable(us.main); print('ok')",
         ],
         capture_output=True, text=True, check=False,
@@ -152,7 +152,7 @@ def test_plugin_server_imports_workflow_package():
 
 
 def test_bundle_and_plugin_workflow_trees_match():
-    """Both build scripts stage the same set of files from workflow/."""
+    """Both build scripts stage the same set of files from tinyassets/."""
     _run(MCPB_BUILD)
     _run(PLUGIN_BUILD)
     bundle_files = {
@@ -167,5 +167,5 @@ def test_bundle_and_plugin_workflow_trees_match():
     }
     diff = bundle_files.symmetric_difference(plugin_files)
     assert not diff, (
-        f"Bundle and plugin workflow/ trees diverged: {sorted(diff)}"
+        f"Bundle and plugin tinyassets/ trees diverged: {sorted(diff)}"
     )

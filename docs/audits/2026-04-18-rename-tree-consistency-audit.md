@@ -10,7 +10,7 @@
 **Goal:** every `.py` in the 64-file `fantasy_daemon/` + `domains/fantasy_daemon/` dirty set has `fantasy_author.*` imports rewritten to `fantasy_daemon.*` and `workflow.author_server` rewritten to `workflow.daemon_server`.
 
 - `grep -rn -E "^\s*(from|import)\s+fantasy_author(\.|$|\s)" fantasy_daemon/ domains/fantasy_daemon/` → **0 hits in tracked code.**
-- `grep -rn "workflow\.author_server\|from workflow import author_server" fantasy_daemon/ domains/fantasy_daemon/` → **0 hits.**
+- `grep -rn "tinyassets\.author_server\|from workflow import author_server" fantasy_daemon/ domains/fantasy_daemon/` → **0 hits.**
 
 **Only anomaly:** `fantasy_daemon/work_targets.py.truncated` (untracked, 26 KB, mtime 2026-04-05) contains two stale `from fantasy_author ...` lines. Not in git (`git status` ignores it as untracked), not imported by Python, but a leftover from an aborted edit. **Recommendation:** lead or next session delete it once rename lands — out of scope for dev in the current commit window.
 
@@ -18,18 +18,18 @@ Verdict: **PASS** for tracked files. Untracked leftover flagged but harmless.
 
 ## 2. Shim-pattern consistency (§2)
 
-All 4 untracked shim files share the same `WORKFLOW_AUTHOR_RENAME_COMPAT`-gated `sys.modules[__name__] = <target>` rebind pattern:
+All 4 untracked shim files share the same `TINYASSETS_AUTHOR_RENAME_COMPAT`-gated `sys.modules[__name__] = <target>` rebind pattern:
 
 | Shim | Gate | Rebind target |
 |---|---|---|
 | `fantasy_author/__init__.py` | `rename_compat_enabled()` | `fantasy_daemon` |
 | `domains/fantasy_author/__init__.py` | `rename_compat_enabled()` | `domains.fantasy_daemon` |
-| `workflow/author_server.py` | `rename_compat_enabled()` | `workflow.daemon_server` |
-| `packaging/.../workflow/author_server.py` | `rename_compat_enabled()` | `workflow.daemon_server` |
+| `tinyassets/author_server.py` | `rename_compat_enabled()` | `workflow.daemon_server` |
+| `packaging/.../tinyassets/author_server.py` | `rename_compat_enabled()` | `workflow.daemon_server` |
 
 All four emit `DeprecationWarning` with the same migrate-to message. All import `workflow._rename_compat.rename_compat_enabled`.
 
-`packaging/.../workflow/_rename_compat.py` **exists** in the mirror and is **byte-identical** to `workflow/_rename_compat.py` — the plugin shim will load correctly on a fresh install.
+`packaging/.../tinyassets/_rename_compat.py` **exists** in the mirror and is **byte-identical** to `tinyassets/_rename_compat.py` — the plugin shim will load correctly on a fresh install.
 
 Verdict: **PASS.**
 
@@ -52,7 +52,7 @@ This is a **star-import snapshot re-export**, not a sys.modules rebind. Module-l
 
 ## 4. Packaging-mirror spot-check (§4)
 
-Byte-equality via `diff -q` between `workflow/<path>` and `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/<path>`:
+Byte-equality via `diff -q` between `tinyassets/<path>` and `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/<path>`:
 
 | File | Result |
 |---|---|
@@ -66,11 +66,11 @@ Byte-equality via `diff -q` between `workflow/<path>` and `packaging/claude-plug
 
 All 7 spot-checked files byte-equal. Auto-build pipeline (`packaging/claude-plugin/build_plugin.py`) is doing its job.
 
-**Brand-residue flag (per lead's ask for future work beyond #8):** the plugin directory is still `workflow-universe-server/` — legacy brand. Rename to `workflow-server/` or similar belongs in a future task that touches the claude-plugin manifest + `build_plugin.py`'s `PLUGIN_ROOT` constant. Not task #8 (which is only the tray + bat renames at repo root).
+**Brand-residue flag (per lead's ask for future work beyond #8):** the plugin directory is still `tinyassets-universe-server/` — legacy brand. Rename to `workflow-server/` or similar belongs in a future task that touches the claude-plugin manifest + `build_plugin.py`'s `PLUGIN_ROOT` constant. Not task #8 (which is only the tray + bat renames at repo root).
 
 ## 5. Summary + recommendations
 
 - **PASS:** tracked tree has zero straggler imports; shim pattern consistent; packaging mirror byte-equal where sampled.
 - **POSITION (no change):** `fantasy_daemon/author_server.py` snapshot re-export is inconsistent with the other 4 shims. Recommend switching to sys.modules rebind — trivial diff, same flag gate.
 - **CLEANUP (out of scope):** untracked `fantasy_daemon/work_targets.py.truncated` should be deleted post-rename.
-- **FUTURE BRAND SWEEP:** `packaging/claude-plugin/plugins/workflow-universe-server/` directory name still carries the legacy brand. Not blocking task #2.
+- **FUTURE BRAND SWEEP:** `packaging/claude-plugin/plugins/tinyassets-universe-server/` directory name still carries the legacy brand. Not blocking task #2.

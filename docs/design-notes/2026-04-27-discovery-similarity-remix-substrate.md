@@ -125,7 +125,7 @@ Each action returns a list of catalog entries (branch defs / goal defs / etc.) w
 **SIMILAR_TO (semantic + structural):**
 - Two distinct similarity axes:
   - **Structural similarity:** graph topology (node count, edge shape, state-schema overlap). Cheap; runs locally.
-  - **Semantic similarity:** embedding-based (sentence-embed branch description + node prompts; cosine similarity). Uses existing `workflow/retrieval/` substrate (E5).
+  - **Semantic similarity:** embedding-based (sentence-embed branch description + node prompts; cosine similarity). Uses existing `tinyassets/retrieval/` substrate (E5).
 - Backend: LanceDB (already in tree per E5 substrate) holds embeddings of public commons content. Each chatbot's host (or anchor host for browser-only) queries against it.
 
 **RECOMMEND (collaborative-filtering shape):**
@@ -353,7 +353,7 @@ Per `project_user_capability_axis` + MCP roadmap (per primary primitive-set prop
 - Faceted filter (domain / author / license)
 - Result ranking by raw text-relevance + recency
 
-**Effort:** ~1-2 weeks. Mostly mechanical — backends exist (`workflow/api/wiki.py`'s search is the seed pattern).
+**Effort:** ~1-2 weeks. Mostly mechanical — backends exist (`tinyassets/api/wiki.py`'s search is the seed pattern).
 
 **Gates on:** `commons` primitive (5+2 → 6+2 reframe lands)
 
@@ -506,8 +506,8 @@ Per sibling design note §2.5: browser-only users buying private hosting. Differ
 - `docs/design-notes/2026-04-27-host-resident-private-data-design.md` — sibling, data architecture
 - `docs/design-notes/2026-04-26-minimal-primitive-set-proposal.md` — F21 update needed
 - `docs/design-notes/2026-04-26-engine-primitive-substrate.md` — E5 retrieval substrate is the seed for `discover`
-- `workflow/retrieval/router.py` + LanceDB substrate — Phase 3 SIMILAR_TO backend
-- `workflow/contribution_events.py` — attribution event substrate
+- `tinyassets/retrieval/router.py` + LanceDB substrate — Phase 3 SIMILAR_TO backend
+- `tinyassets/contribution_events.py` — attribution event substrate
 
 ### Web research citations
 

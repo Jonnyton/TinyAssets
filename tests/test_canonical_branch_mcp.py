@@ -1,7 +1,7 @@
 """Tests for goals action=set_canonical MCP wiring.
 
 Spec: docs/vetted-specs.md §canonical_branch.
-Implementation: workflow/universe_server.py _action_goal_set_canonical().
+Implementation: tinyassets/universe_server.py _action_goal_set_canonical().
 Depends on canonical_branch storage layer (Task #43 / daemon_server.py).
 """
 
@@ -22,10 +22,10 @@ def env(tmp_path, monkeypatch):
     """
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("_FORCE_MOCK", "true")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
     importlib.reload(us)
@@ -60,8 +60,8 @@ def _seed_published_branch(us, base, name="canonical-target"):
     # action exists but goes through extensions(), so use the lower-level
     # function for a deterministic version_id without depending on extension
     # plumbing for the seed step.
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import get_branch_definition
     branch_dict = get_branch_definition(base, branch_def_id=bid)
     version = publish_branch_version(base, branch_dict, publisher="alice")
     return version.branch_version_id
@@ -74,15 +74,15 @@ class TestSetCanonicalResponseShape:
     """Shape tests that don't require live universe_server state."""
 
     def test_set_canonical_action_in_goal_available_actions(self):
-        from workflow.api.market import _GOAL_ACTIONS
+        from tinyassets.api.market import _GOAL_ACTIONS
         assert "set_canonical" in _GOAL_ACTIONS
 
     def test_set_canonical_in_goal_write_actions(self):
-        from workflow.api.market import _GOAL_WRITE_ACTIONS
+        from tinyassets.api.market import _GOAL_WRITE_ACTIONS
         assert "set_canonical" in _GOAL_WRITE_ACTIONS
 
     def test_set_canonical_in_all_goal_actions(self):
-        from workflow.api.market import (
+        from tinyassets.api.market import (
             _GOAL_ACTIONS,
             _GOAL_WRITE_ACTIONS,
         )
@@ -96,7 +96,7 @@ class TestSetCanonicalResponseShape:
         framework dropped it before reaching `goal_kwargs`, and the
         `set_canonical` handler always saw `branch_version_id=None`.
         """
-        from workflow.universe_server import goals
+        from tinyassets.universe_server import goals
         params = inspect.signature(goals).parameters
         assert "branch_version_id" in params, (
             "goals() must accept branch_version_id; otherwise "
@@ -115,19 +115,19 @@ class TestRunBranchVersionWiring:
     """Phase A item 6 (Task #65b) — sibling-action runs the canonical bvid."""
 
     def test_run_branch_version_action_wired(self):
-        from workflow.api.runs import _RUN_ACTIONS
+        from tinyassets.api.runs import _RUN_ACTIONS
         assert "run_branch_version" in _RUN_ACTIONS
 
     def test_run_branch_version_in_run_write_actions(self):
-        from workflow.api.runs import _RUN_WRITE_ACTIONS
+        from tinyassets.api.runs import _RUN_WRITE_ACTIONS
         assert "run_branch_version" in _RUN_WRITE_ACTIONS
 
     def test_set_canonical_and_run_version_actions_compose(self):
         """End-to-end wiring: a set_canonical -> run_branch_version pipeline
         depends on both actions being registered together. Confirms the
         action namespace pair that gate-routing (Task #53) will rely on."""
-        from workflow.api.market import _GOAL_ACTIONS
-        from workflow.api.runs import _RUN_ACTIONS
+        from tinyassets.api.market import _GOAL_ACTIONS
+        from tinyassets.api.runs import _RUN_ACTIONS
         assert "set_canonical" in _GOAL_ACTIONS
         assert "run_branch_version" in _RUN_ACTIONS
 

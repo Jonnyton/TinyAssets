@@ -17,7 +17,7 @@ Phase G public-facing reference.
     <node_bid_id>__<daemon_id>.yaml
 ```
 
-Bids live at repo root, alongside `goal_pool/`. Resolution of `repo_root` uses the same contract as Phase F (`WORKFLOW_REPO_ROOT` env → git-detect upward → `RuntimeError`).
+Bids live at repo root, alongside `goal_pool/`. Resolution of `repo_root` uses the same contract as Phase F (`TINYASSETS_REPO_ROOT` env → git-detect upward → `RuntimeError`).
 
 ## YAML shape
 
@@ -25,10 +25,10 @@ See `bids/README.md` for the user-facing post format.
 
 ## Sandbox model
 
-Three-layer defense in `workflow/executors/node_bid.py`:
+Three-layer defense in `tinyassets/executors/node_bid.py`:
 
 1. **Registration + approval.** `node_def_id` must resolve in the local node registry with `approved=True`. Unknown or unapproved → `CompilerError`.
-2. **Source-pattern rejection.** The approved node's `source_code` must NOT contain any pattern in `_BID_DANGEROUS_PATTERNS` (from `workflow/graph_compiler.py`): `os.system`, `subprocess`, `eval(`, `exec(`, `__import__`, `compile(`, `open(`, `importlib`, `pickle`, `marshal`. This is a strict superset of the wrapper-node list (`_DANGEROUS_PATTERNS`). Network patterns (urllib, requests, socket, http.client) are intentionally NOT rejected — approved nodes may legitimately call LLM APIs.
+2. **Source-pattern rejection.** The approved node's `source_code` must NOT contain any pattern in `_BID_DANGEROUS_PATTERNS` (from `tinyassets/graph_compiler.py`): `os.system`, `subprocess`, `eval(`, `exec(`, `__import__`, `compile(`, `open(`, `importlib`, `pickle`, `marshal`. This is a strict superset of the wrapper-node list (`_DANGEROUS_PATTERNS`). Network patterns (urllib, requests, socket, http.client) are intentionally NOT rejected — approved nodes may legitimately call LLM APIs.
 3. **Inputs flat-dict re-validation.** Producer-side already filtered; executor re-validates as defense-in-depth.
 
 Also: `required_llm_type` hard filter, `timeout_seconds` wrapping, `evidence_url` shape validation (http/https/file schemes only).
@@ -65,4 +65,4 @@ Records are **immutable in v1**. A future token-launch phase reads this ledger, 
 
 ## Flag gating
 
-`WORKFLOW_PAID_MARKET=off` by default. Import-time registration; flipping at runtime requires a Workflow daemon restart.
+`TINYASSETS_PAID_MARKET=off` by default. Import-time registration; flipping at runtime requires a TinyAssets daemon restart.

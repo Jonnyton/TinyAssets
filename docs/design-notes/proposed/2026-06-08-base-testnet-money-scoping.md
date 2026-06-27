@@ -13,15 +13,15 @@ supersedes-storage-model-of: docs/specs/2026-04-18-paid-market-crypto-settlement
 
 Three+ disbursement surfaces existed, **none of which actually wrote the money ledger**:
 
-- `workflow/gates/actions.py` — gate-bonus stake/unstake/release on `gate_claims`
+- `tinyassets/gates/actions.py` — gate-bonus stake/unstake/release on `gate_claims`
   columns. `compute_bonus_payout` computed the 1% take but **discarded it** (returned
   in the response, wrote nothing). `#1219`-hardened (retracted claims rejected).
-- `workflow/payments/escrow.py` (`escrow_locks`) — market-action lock/release/refund;
+- `tinyassets/payments/escrow.py` (`escrow_locks`) — market-action lock/release/refund;
   **no fee at all**.
-- `workflow/payments/schema.py` (`escrow_balance`/`pending_settlement`/`settlement_batch`/
-  `transaction_log`) + `workflow/treasury/` (`treasury_balance`/`bounty_pool`/`royalty`) —
+- `tinyassets/payments/schema.py` (`escrow_balance`/`pending_settlement`/`settlement_batch`/
+  `transaction_log`) + `tinyassets/treasury/` (`treasury_balance`/`bounty_pool`/`royalty`) —
   the full settlement+treasury ledger, **written by nobody**.
-- `workflow/treasury/status.py` `treasury_status` (`#906`) — **reads** exactly those
+- `tinyassets/treasury/status.py` `treasury_status` (`#906`) — **reads** exactly those
   unwritten tables.
 
 Net: the write side filled tables the read surface ignores, the read surface read tables
@@ -30,14 +30,14 @@ nothing wrote. That gap is why "money isn't a thing yet."
 `docs/specs/2026-04-18-paid-market-crypto-settlement.md` is the older spec but assumes
 Postgres + RLS + Realtime; the live platform is SQLite. Its flow + on/off-chain reasoning
 holds (Option A: off-chain ledger is source of truth, batched on-chain settlement later);
-its data-model section is stale. Build on `workflow/payments/` + `workflow/treasury/`.
+its data-model section is stale. Build on `tinyassets/payments/` + `tinyassets/treasury/`.
 
 ## 2. Slice 0 — the final-shaped foundation (this PR)
 
 Per "build toward the final implementation": the final money loop needs **one
 disbursement-ledger write primitive** every path calls. Built:
 
-`workflow/payments/settlement_ledger.py`:
+`tinyassets/payments/settlement_ledger.py`:
 - `record_settlement(...)` — splits gross into net-to-recipient + 1% take (via
   `treasury.distribution.split_take`, the single split-math source: 50% treasury /
   50% bounty pool), writes `pending_settlement` + `treasury_balance` +

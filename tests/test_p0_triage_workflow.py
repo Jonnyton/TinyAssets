@@ -129,18 +129,18 @@ def test_restart_uses_force_recreate_daemon_only():
 
 
 def test_restart_uses_env_file():
-    assert "--env-file /etc/workflow/env" in _text()
+    assert "--env-file /etc/tinyassets/env" in _text()
 
 
 def test_triage_uses_live_systemd_compose_file():
     text = _text()
-    assert "/opt/workflow/compose.yml" in text
-    assert "/opt/workflow/deploy/compose.yml" not in text
+    assert "/opt/tinyassets/compose.yml" in text
+    assert "/opt/tinyassets/deploy/compose.yml" not in text
 
 
 def test_image_pull_repair_uses_immutable_release_state_rollback_target():
     text = _text()
-    assert "ghcr.io/jonnyton/workflow-daemon:latest" not in text
+    assert "ghcr.io/jonnyton/tinyassets-daemon:latest" not in text
     assert "release-state.json" in text
     assert "rollback_target" in text
     assert "*@sha256:*" in text

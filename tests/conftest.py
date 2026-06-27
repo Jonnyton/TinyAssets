@@ -1,4 +1,4 @@
-"""Shared fixtures for Workflow tests.
+"""Shared fixtures for TinyAssets tests.
 
 Provides checkpointer, compiled graphs, and default state dicts
 that all test modules can reuse.
@@ -14,7 +14,7 @@ import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 # Force mock provider responses in all tests to avoid real API calls
-from workflow.providers import call as _provider_call
+from tinyassets.providers import call as _provider_call
 
 _provider_call.set_force_mock(True)
 
@@ -26,7 +26,7 @@ def _reset_runtime():
     The pre-test reset catches cases where a prior test's background thread
     (e.g. LangGraph executor) sets the global after the prior test's teardown.
     """
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     runtime.reset()
     yield
@@ -40,7 +40,7 @@ def _isolate_storage_backend(monkeypatch):
     Phase 7 Rationale: the module-global :class:`SqliteCachedBackend`
     anchors to ``Path.cwd()`` on first use and, once cached, keeps
     writing to the real repo ``branches/`` / ``goals/`` / ``nodes/``
-    directories even when later tests point ``WORKFLOW_DATA_DIR``
+    directories even when later tests point ``TINYASSETS_DATA_DIR``
     at a tmp dir. That causes (a) pollution of the working tree and
     (b) spurious ``DirtyFileError`` as tests fight over the same
     slug paths.
@@ -50,8 +50,8 @@ def _isolate_storage_backend(monkeypatch):
     re-setting the env var via their own ``monkeypatch``. See
     ``tests/test_storage_phase7_backend.py`` and future ``test_phase7_h3_*``.
     """
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite_only")
-    from workflow import catalog as _catalog
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_only")
+    from tinyassets import catalog as _catalog
 
     _catalog.invalidate_backend_cache()
     yield

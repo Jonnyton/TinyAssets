@@ -121,7 +121,7 @@ def test_workflow_uses_wrangler_supported_node_version():
 # ---------------------------------------------------------------------------
 
 EXPECTED_WORKER_NAME = "tinyassets-mcp-proxy"
-STALE_WORKER_NAME = "workflow-mcp-router"
+STALE_WORKER_NAME = "tinyassets-mcp-router"
 
 
 def test_wrangler_toml_name_is_correct():
@@ -132,7 +132,7 @@ def test_wrangler_toml_name_is_correct():
 
 
 def test_wrangler_toml_no_stale_name():
-    """Stale name 'workflow-mcp-router' must not appear in wrangler.toml."""
+    """Stale name 'tinyassets-mcp-router' must not appear in wrangler.toml."""
     text = _load_wrangler_text()
     assert STALE_WORKER_NAME not in text, \
         f"Stale Worker name {STALE_WORKER_NAME!r} still in wrangler.toml"

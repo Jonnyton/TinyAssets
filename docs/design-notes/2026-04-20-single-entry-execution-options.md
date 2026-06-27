@@ -86,7 +86,7 @@ Worker compromise.
 **What it does.**
 Instead of a public DNS CNAME, the tunnel uses a private hostname routed only
 through Cloudflare's Zero Trust network. The Worker references an internal
-hostname (e.g., `workflow-daemon.internal`). Only Zero Trust-enrolled clients
+hostname (e.g., `tinyassets-daemon.internal`). Only Zero Trust-enrolled clients
 (the Worker via service token, or the host via WARP) can resolve and reach it.
 The hostname is never in public DNS.
 
@@ -212,19 +212,19 @@ Option 4 is noise. Don't use it alone.
 **Host-side (Cloudflare dashboard):**
 
 1. Zero Trust → Access → Service Auth → Service Tokens → **Create Service Token**.
-   Name: `workflow-mcp-worker`. Copy the generated `client_id` + `client_secret`
+   Name: `tinyassets-mcp-worker`. Copy the generated `client_id` + `client_secret`
    (client_secret shown once only).
 
 2. Zero Trust → Access → Applications → **Add application** → Self-hosted.
-   - Application name: `workflow-daemon-tunnel`
+   - Application name: `tinyassets-daemon-tunnel`
    - Application domain: `mcp.tinyassets.io` (subdomain: `mcp`, domain: `tinyassets.io`)
    - Session duration: 24 hours (service token sessions renew automatically; this
      is a session timeout for human fallback access if ever needed)
    - Policy: Create a policy `worker-only` — Action: Service Auth, Include:
-     Service Token = `workflow-mcp-worker`.
+     Service Token = `tinyassets-mcp-worker`.
    - Save.
 
-3. Workers & Pages → `workflow-mcp-router` → Settings → Variables and Secrets:
+3. Workers & Pages → `tinyassets-mcp-router` → Settings → Variables and Secrets:
    - Add secret: `CF_ACCESS_CLIENT_ID` = value from step 1.
    - Add secret: `CF_ACCESS_CLIENT_SECRET` = value from step 1.
 

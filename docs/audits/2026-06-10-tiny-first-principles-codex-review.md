@@ -1,8 +1,8 @@
 # Codex review - Tiny first-principles companions
 
-Review date: 2026-06-10  
-Reviewer: codex-gpt5-desktop  
-Reviewed commit: `origin/main` `3ed9fa58` (`TINY first-principles spec + research companions`)  
+Review date: 2026-06-10
+Reviewer: codex-gpt5-desktop
+Reviewed commit: `origin/main` `3ed9fa58` (`TINY first-principles spec + research companions`)
 Reviewed docs:
 
 - `docs/specs/2026-06-10-tiny-first-principles-spec.md`
@@ -54,7 +54,7 @@ multi-writer Brain v2 writes. The review leaves specific pre-build gates below.
 
 5. **Turn state-law L4 into a concrete bug before depending on merge reducers.**
    The audit correctly identifies the current right-biased merge reducer, but
-   the line reference is stale: `workflow/graph_compiler.py` currently defines
+   the line reference is stale: `tinyassets/graph_compiler.py` currently defines
    `_dict_merge` around lines 351-355, mirrored in the plugin runtime. File this
    as a targeted reducer-law task before any cross-run merge semantics depend on
    CRDT-lawful behavior.
@@ -117,7 +117,7 @@ spec. They are not a full reproduction of the Fable research sweep.
 - `python scripts/docview.py stat docs/specs/2026-06-10-tiny-first-principles-spec.md`
 - `python scripts/docview.py stat docs/specs/2026-06-10-brain-v2-research-implications.md`
 - `python scripts/docview.py stat docs/specs/2026-06-10-primitive-basis-audit.md`
-- `python scripts/docview.py lines --start 345 --end 365 workflow/graph_compiler.py`
+- `python scripts/docview.py lines --start 345 --end 365 tinyassets/graph_compiler.py`
 - GitHub API spot checks with `gh repo view` for `MemPalace/mempalace`,
   `NousResearch/hermes-agent`, `openclaw/openclaw`, and
   `NateBJones-Projects/OB1`.

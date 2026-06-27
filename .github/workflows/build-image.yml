@@ -13,7 +13,7 @@ on:
       - '.dockerignore'
       - 'pyproject.toml'
       - 'PLAN.md'
-      - 'workflow/**'
+      - 'tinyassets/**'
       - 'domains/**'
       - 'fantasy_daemon/**'
       - 'data/world_rules.lp'
@@ -31,7 +31,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: workflow-daemon
+  IMAGE_NAME: tinyassets-daemon
 
 jobs:
   build-and-push:
@@ -79,8 +79,8 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.image.outputs.short_sha }}
-          cache-from: type=gha,scope=workflow-daemon
-          cache-to: type=gha,mode=max,scope=workflow-daemon
+          cache-from: type=gha,scope=tinyassets-daemon
+          cache-to: type=gha,mode=max,scope=tinyassets-daemon
 
       - name: Publish image summary
         run: |

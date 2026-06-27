@@ -73,7 +73,7 @@ def run_scene(state: dict[str, Any]) -> dict[str, Any]:
     Task #63 plateau-escape: bumps a scene-attempt counter on the
     originating WorkTarget before scene execution. If the count has
     reached ``max_scene_attempts()`` (default 3, env-overridable via
-    ``WORKFLOW_MAX_SCENE_ATTEMPTS``), short-circuits to a force-accept
+    ``TINYASSETS_MAX_SCENE_ATTEMPTS``), short-circuits to a force-accept
     verdict and advances the target — the chapter-level guard that the
     scene-level one-revise cap can't provide because the scene subgraph
     re-enters with ``second_draft_used=False`` on every dispatch.
@@ -348,7 +348,7 @@ def should_continue_chapter(state: ChapterState) -> str:
         # to stand as a chapter.  The daemon's narrative beats determine
         # whether this is a good stopping point.
         try:
-            from workflow import runtime_singletons as runtime
+            from tinyassets import runtime_singletons as runtime
 
             min_words = runtime.universe_config.min_words_per_scene * 2
         except Exception:

@@ -22,7 +22,7 @@ Six MUST items, two OPTIONAL. Do MUST in order; OPTIONAL any time.
   - Image: Distributions → **Debian 12**.
   - Size: Basic → Regular SSD → **$6/mo** (1 vCPU, 1 GB RAM). Bump to $12/mo if you want headroom for paid-market day-one.
   - Authentication: SSH Key → select the one you just added. Do NOT enable password auth.
-  - Hostname: `workflow-daemon-prod-01`.
+  - Hostname: `tinyassets-daemon-prod-01`.
   - Firewall: attach or create — Inbound SSH (22) from your admin IP only, ICMP, everything else closed. Outbound: all.
   - **Create Droplet.**
 - Wait for status → green (~60 s). Copy the public IPv4 from the Droplet detail page.
@@ -78,7 +78,7 @@ GITHUB_OAUTH_CLIENT_SECRET=abcdef0123456789...
 **Then the tunnel token:**
 
 - `https://one.dash.cloudflare.com` → your account → **Networks → Tunnels.**
-- If `workflow-daemon-prod` tunnel does not exist: **Create a tunnel → Cloudflared → name `workflow-daemon-prod` → Save.** Click the tunnel → **Connectors → Install connector** → copy the **Token** field (long JWT-looking string). Skip the "install on this machine" page; just copy.
+- If `tinyassets-daemon-prod` tunnel does not exist: **Create a tunnel → Cloudflared → name `tinyassets-daemon-prod` → Save.** Click the tunnel → **Connectors → Install connector** → copy the **Token** field (long JWT-looking string). Skip the "install on this machine" page; just copy.
 - **Public Hostname tab → Add a public hostname:** hostname = `mcp.tinyassets.io` (the Access-gated tunnel origin, not the user-facing connector URL), service = `http://localhost:8001`, save.
 
 **Paste back to me:**
@@ -104,7 +104,7 @@ STORAGE_BOX_PASSWORD=<the generated password>
 ### 6. Better Stack source token — OPTIONAL but recommended (~2 min)
 
 - `https://betterstack.com/users/sign-up`. Free tier.
-- **Sources → Connect source → Vector.** Platform: Linux. Name: `workflow-daemon`.
+- **Sources → Connect source → Vector.** Platform: Linux. Name: `tinyassets-daemon`.
 - Copy the source token.
 
 **Paste back to me:**
@@ -148,7 +148,7 @@ Then bootstrap:
 
 ```bash
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> \
-    'curl -fsSL https://raw.githubusercontent.com/Jonnyton/Workflow/main/deploy/hetzner-bootstrap.sh | sudo bash'
+    'curl -fsSL https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/deploy/hetzner-bootstrap.sh | sudo bash'
 # Expected trailing line: "[bootstrap] bootstrap complete."
 ```
 
@@ -156,14 +156,14 @@ Next trigger: your §1.2-§1.5 pastes.
 
 ### 2.2 On each credential paste — compose and push env file
 
-Once all MUST items arrive I compose `/etc/workflow/env`:
+Once all MUST items arrive I compose `/etc/tinyassets/env`:
 
 ```bash
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> \
-    'sudo tee /etc/workflow/env > /dev/null' <<'EOF'
-WORKFLOW_IMAGE=ghcr.io/jonnyton/workflow-daemon:latest
+    'sudo tee /etc/tinyassets/env > /dev/null' <<'EOF'
+TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon:latest
 CLOUDFLARE_TUNNEL_TOKEN=<your paste>
-WORKFLOW_MCP_CANARY_URL=https://tinyassets.io/mcp
+TINYASSETS_MCP_CANARY_URL=https://tinyassets.io/mcp
 SUPABASE_DB_URL=<your paste>
 SUPABASE_SERVICE_ROLE_KEY=<your paste>
 GITHUB_OAUTH_CLIENT_ID=<your paste>
@@ -172,7 +172,7 @@ BETTERSTACK_SOURCE_TOKEN=<your paste or empty>
 EOF
 
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> \
-    'sudo chown root:workflow /etc/workflow/env && sudo chmod 640 /etc/workflow/env'
+    'sudo chown root:workflow /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env'
 # Expected: no output.
 ```
 
@@ -182,9 +182,9 @@ After §1.5 paste:
 
 ```bash
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> bash -s <<'SSHEOF'
-sudo mkdir -p /etc/workflow/backup
+sudo mkdir -p /etc/tinyassets/backup
 OBSCURED=$(echo -n '<STORAGE_BOX_PASSWORD>' | rclone obscure -)
-sudo tee /etc/workflow/backup/rclone.conf > /dev/null <<EOF
+sudo tee /etc/tinyassets/backup/rclone.conf > /dev/null <<EOF
 [storagebox]
 type = sftp
 host = <STORAGE_BOX_HOST>
@@ -192,8 +192,8 @@ user = <STORAGE_BOX_USER>
 pass = $OBSCURED
 port = 23
 EOF
-sudo chown root:workflow /etc/workflow/backup/rclone.conf
-sudo chmod 600 /etc/workflow/backup/rclone.conf
+sudo chown root:workflow /etc/tinyassets/backup/rclone.conf
+sudo chmod 600 /etc/tinyassets/backup/rclone.conf
 SSHEOF
 # Expected: no output.
 ```
@@ -220,10 +220,10 @@ gh variable set SECRETS_EXPIRY_METADATA_JSON \
 
 ```bash
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> bash -s <<'SSHEOF'
-sudo systemctl start workflow-daemon
-sudo systemctl status workflow-daemon --no-pager | head -20
-sudo systemctl enable --now workflow-watchdog.timer
-sudo systemctl enable --now workflow-backup.timer
+sudo systemctl start tinyassets-daemon
+sudo systemctl status tinyassets-daemon --no-pager | head -20
+sudo systemctl enable --now tinyassets-watchdog.timer
+sudo systemctl enable --now tinyassets-backup.timer
 SSHEOF
 # Expected: "active (running)" + timer lists with next fire time.
 ```
@@ -232,8 +232,8 @@ First backup (sanity):
 
 ```bash
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> \
-    'sudo systemctl start workflow-backup.service && \
-     sudo journalctl -u workflow-backup.service --since "2 minutes ago" --no-pager | tail -20'
+    'sudo systemctl start tinyassets-backup.service && \
+     sudo journalctl -u tinyassets-backup.service --since "2 minutes ago" --no-pager | tail -20'
 # Expected: rsync completed, snapshot path logged.
 ```
 
@@ -359,7 +359,7 @@ Rules of the road:
 
 If anything goes red between §2.5 and §2.8 (home machine still up), rollback is additive-clean:
 
-- Lead runs: `ssh ... 'sudo systemctl stop workflow-daemon'` on Hetzner.
+- Lead runs: `ssh ... 'sudo systemctl stop tinyassets-daemon'` on Hetzner.
 - Home cloudflared is still running. The Worker keeps serving canonical `https://tinyassets.io/mcp` while `mcp.tinyassets.io` resolves back to the home tunnel origin.
 - Lead re-verifies canary on home tunnel + opens a GitHub issue titled `Cutover rollback: <date>` with the red output. Troubleshoot + retry later.
 

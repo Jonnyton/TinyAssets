@@ -2,21 +2,21 @@
 money loop end-to-end through the treasury_status read surface.
 
 Slice 0 (Base-testnet money, off-chain): proves a disbursement actually credits
-the treasury + bounty pool and is reflected by workflow.treasury.status.
+the treasury + bounty pool and is reflected by tinyassets.treasury.status.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-from workflow.gates.actions import release_bonus
-from workflow.payments.settlement_ledger import (
+from tinyassets.gates.actions import release_bonus
+from tinyassets.payments.settlement_ledger import (
     ensure_ledger_schema,
     record_refund,
     record_settlement,
 )
-from workflow.storage import DB_FILENAME
-from workflow.treasury.status import treasury_status
+from tinyassets.storage import DB_FILENAME
+from tinyassets.treasury.status import treasury_status
 
 NOW = "2026-06-08T00:00:00+00:00"
 

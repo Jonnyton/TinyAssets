@@ -3,7 +3,7 @@
 This is the version-independent guard behind PR-178's labelled tool
 surface. FastMCP's own docstring->schema extraction is version-dependent
 (absent in fastmcp 3.2.0, present in 3.4.x), so without
-``workflow.mcp_schema_utils`` the live ``/mcp`` surface would advertise
+``tinyassets.mcp_schema_utils`` the live ``/mcp`` surface would advertise
 unlabelled parameters on some installs and labelled ones on others.
 
 The test asserts the *outcome* (every advertised parameter carries a
@@ -20,8 +20,8 @@ from typing import Annotated
 import pytest
 from pydantic import Field
 
-from workflow import directory_server, universe_server
-from workflow.mcp_schema_utils import describe_signature, parse_docstring_args
+from tinyassets import directory_server, universe_server
+from tinyassets.mcp_schema_utils import describe_signature, parse_docstring_args
 
 
 def _advertised(mcp) -> list:

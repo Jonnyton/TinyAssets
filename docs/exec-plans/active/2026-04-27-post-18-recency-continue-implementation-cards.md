@@ -10,14 +10,14 @@ primitive. Do not add standalone `my_recent*` or `continue_branch` action
 verbs. Add one optional `resume_from=<run_id>` parameter to existing
 `extensions action=run_branch`.
 
-Implementation stamp: Cards A-B are present in `workflow/api/runs.py`; Card C
+Implementation stamp: Cards A-B are present in `tinyassets/api/runs.py`; Card C
 removed the standalone `continue_branch` dispatch route and prompt routing on
 2026-05-02. Keep Card D until live MCP proof covers both default `run_branch`
 and `run_branch resume_from=<run_id>`.
 
 ## Card A - Add Optional `resume_from`
 
-- **Files:** `workflow/api/runs.py`, `tests/`
+- **Files:** `tinyassets/api/runs.py`, `tests/`
 - **Goal:** teach the existing `run_branch` handler to accept
   `resume_from=<run_id>` while preserving exact behavior when the parameter is
   absent.
@@ -30,7 +30,7 @@ and `run_branch resume_from=<run_id>`.
 
 ## Card B - Source-Run Visibility And Carryover
 
-- **Files:** `workflow/api/runs.py`, `tests/`
+- **Files:** `tinyassets/api/runs.py`, `tests/`
 - **Goal:** resolve the source run under caller scope and carry only supported
   continuation context into the new run.
 - **Done when:** success, not-found, forbidden, invalid-state, and branch
@@ -38,7 +38,7 @@ and `run_branch resume_from=<run_id>`.
 
 ## Card C - Retire Stale Action Paths
 
-- **Files:** `workflow/api/runs.py`, `workflow/api/market.py`, tests touching
+- **Files:** `tinyassets/api/runs.py`, `tinyassets/api/market.py`, tests touching
   action routing
 - **Goal:** avoid adding `_action_my_recent_runs`, `_action_my_recent`, or
   `_action_continue_branch` from the superseded 2026-04-27 plan.

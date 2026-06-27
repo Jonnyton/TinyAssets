@@ -6,14 +6,14 @@ import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from workflow.branches import NodeDefinition
-from workflow.effectors import (
+from tinyassets.branches import NodeDefinition
+from tinyassets.effectors import (
     EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME,
     run_effects_for_branch,
     run_windows_desktop_effector,
 )
-from workflow.storage.effector_consents import grant_consent
-from workflow.storage.external_write_receipts import (
+from tinyassets.storage.effector_consents import grant_consent
+from tinyassets.storage.external_write_receipts import (
     STATUS_SUCCEEDED,
     lookup_receipt,
     record_receipt,
@@ -22,7 +22,7 @@ from workflow.storage.external_write_receipts import (
 
 def _packet(**overrides):
     packet = {
-        "schema": "workflow.external_effect_packet.v1",
+        "schema": "tinyassets.external_effect_packet.v1",
         "effect_type": EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME,
         "strict_contract": "tiberian_sun_host_local_effect_packet_v2",
         "idempotency_key": (

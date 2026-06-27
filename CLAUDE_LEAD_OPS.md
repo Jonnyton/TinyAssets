@@ -126,7 +126,7 @@ Never have both claude-side devs idle at once. Never have even one dev idle when
 Default operating mode while user-sim is in a test loop:
 
 - **Merge on green.** When verifier clears a change (verdict: SHIP), it lands. Don't batch fixes for some "release point" — there isn't one.
-- **Restart the Workflow MCP server when new code needs to go live.** Lead has authority (kill MCP process; tray auto-restart reliable ~2s). Don't wait for host.
+- **Restart the TinyAssets MCP server when new code needs to go live.** Lead has authority (kill MCP process; tray auto-restart reliable ~2s). Don't wait for host.
 - **user-sim absorbs disruption cheaply.** The UI isn't directly coupled; restarts drop the tunnel for a couple seconds, that's it. If a test fails across a restart, user-sim new-chats and resumes.
 - **Findings -> cheap fix -> ship -> user-sim re-tests** is the loop. Minutes, not sessions.
 - **Don't queue work if capacity exists.** Both devs idle = pending bug that matches either file area.

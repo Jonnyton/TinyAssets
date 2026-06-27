@@ -23,12 +23,12 @@ Exit codes
 
 Targets
 -------
-Primary: ``workflow.storage`` (the 2026-04-19 P0 surface). This is the
-minimum coverage; missing the ``workflow.storage`` smoke means the P0
+Primary: ``tinyassets.storage`` (the 2026-04-19 P0 surface). This is the
+minimum coverage; missing the ``tinyassets.storage`` smoke means the P0
 class can recur.
 
-Extended: any module under ``workflow/`` that declares ``__all__`` gets
-exercised. Lightweight discovery — walks ``workflow/**/__init__.py`` and
+Extended: any module under ``tinyassets/`` that declares ``__all__`` gets
+exercised. Lightweight discovery — walks ``tinyassets/**/__init__.py`` and
 opt-in imports each one.
 
 Usage
@@ -47,14 +47,14 @@ import traceback
 from pathlib import Path
 
 # Load-bearing packages — these MUST import cleanly and every ``__all__``
-# name must resolve. The 2026-04-19 P0 involved ``workflow.storage``; the
+# name must resolve. The 2026-04-19 P0 involved ``tinyassets.storage``; the
 # others are the main consumer surfaces.
 PRIMARY_TARGETS = [
-    "workflow.storage",
-    "workflow.daemon_server",
-    "workflow.universe_server",
-    "workflow.bid",
-    "workflow.catalog",
+    "tinyassets.storage",
+    "tinyassets.daemon_server",
+    "tinyassets.universe_server",
+    "tinyassets.bid",
+    "tinyassets.catalog",
 ]
 
 
@@ -103,14 +103,14 @@ def _check_module(module_path: str, *, verbose: bool) -> list[str]:
 
 
 def _extended_targets(repo_root: Path) -> list[str]:
-    """Discover extra modules under ``workflow/`` that declare ``__all__``.
+    """Discover extra modules under ``tinyassets/`` that declare ``__all__``.
 
-    Heuristic: walk ``workflow/**/__init__.py`` + top-level ``*.py``; the
+    Heuristic: walk ``tinyassets/**/__init__.py`` + top-level ``*.py``; the
     per-package smoke is the load-bearing part. Skip ``_private`` paths
     and ``__pycache__``.
     """
     out: set[str] = set(PRIMARY_TARGETS)
-    wf_root = repo_root / "workflow"
+    wf_root = repo_root / "tinyassets"
     if not wf_root.is_dir():
         return sorted(out)
 

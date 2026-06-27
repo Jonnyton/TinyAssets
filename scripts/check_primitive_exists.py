@@ -74,19 +74,19 @@ def _git(*args: str, repo_root: Path | None = None) -> str:
 
 
 # Action-map files we expect to find dispatch tables / handler functions in.
-# Hardcoded list — narrower than `workflow/api/*.py` because not every module
+# Hardcoded list — narrower than `tinyassets/api/*.py` because not every module
 # defines actions, and broader-than-needed glob inflates false-positive rate.
 _ACTION_MAP_FILES = (
-    "workflow/api/branches.py",
-    "workflow/api/runs.py",
-    "workflow/api/extensions.py",
-    "workflow/api/wiki.py",
-    "workflow/api/goals.py",
-    "workflow/api/universe.py",
-    "workflow/api/status.py",
-    "workflow/api/evaluation.py",
-    "workflow/api/market.py",
-    "workflow/api/prompts.py",
+    "tinyassets/api/branches.py",
+    "tinyassets/api/runs.py",
+    "tinyassets/api/extensions.py",
+    "tinyassets/api/wiki.py",
+    "tinyassets/api/goals.py",
+    "tinyassets/api/universe.py",
+    "tinyassets/api/status.py",
+    "tinyassets/api/evaluation.py",
+    "tinyassets/api/market.py",
+    "tinyassets/api/prompts.py",
 )
 
 

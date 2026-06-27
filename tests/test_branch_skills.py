@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from workflow.branches import BranchDefinition, EdgeDefinition, NodeDefinition
-from workflow.daemon_server import (
+from tinyassets.branches import BranchDefinition, EdgeDefinition, NodeDefinition
+from tinyassets.daemon_server import (
     get_branch_definition,
     initialize_author_server,
     save_branch_definition,
@@ -24,9 +24,9 @@ from workflow.daemon_server import (
 def branch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "skill-tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base

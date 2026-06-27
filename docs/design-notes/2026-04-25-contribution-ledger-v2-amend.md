@@ -41,8 +41,8 @@ The `actor_id` field has different semantic interpretations across event types w
 3. **Orphan-row prevention.** A `design_used` event with `actor_id="anonymous"` is an orphan: no future "claim my credits" flow can ever attach it to a real actor. The ledger should not accumulate orphans by default.
 
 **Implementation reference:** the asymmetry is already correctly encoded in the production implementation:
-- `workflow/runs.py:428` — `execute_step` emit: `actor_id=row["actor"] or "anonymous"` (allows anonymous).
-- `workflow/runs.py:1254` — `design_used` emit: `if not node_def_id or not author or author == "anonymous": return` (skips anonymous).
+- `tinyassets/runs.py:428` — `execute_step` emit: `actor_id=row["actor"] or "anonymous"` (allows anonymous).
+- `tinyassets/runs.py:1254` — `design_used` emit: `if not node_def_id or not author or author == "anonymous": return` (skips anonymous).
 
 This amend documents the existing implementation's correct asymmetry as the canonical design contract. Future emit-sites for `code_committed`, `feedback_provided`, and `caused_regression` should follow the SHOULD NOT rule for those event types.
 
@@ -61,7 +61,7 @@ This amend documents the existing implementation's correct asymmetry as the cano
 
 - Source #48: `docs/design-notes/2026-04-25-contribution-ledger-proposal.md` §1.4 (this amend slots in as §1.4.1).
 - Origin pair-read: `docs/audits/2026-04-25-impl-71-72-75-vs-48-convergence.md` cross-check 5 (anonymous-author skip widening).
-- Sibling implementation reference: `workflow/runs.py:1254` (design_used skip) + `:428` (execute_step allow).
+- Sibling implementation reference: `tinyassets/runs.py:1254` (design_used skip) + `:428` (execute_step allow).
 - Composition with sybil resistance: `docs/design-notes/2026-04-25-attribution-layer-specs.md` §5 (sybil sketches A/B/C).
 - Composition with #55 PR bridge: `docs/design-notes/2026-04-25-external-pr-bridge-proposal.md` §5 (handle linkage opt-in primitive).
 

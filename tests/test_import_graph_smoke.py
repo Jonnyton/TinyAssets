@@ -3,9 +3,9 @@
 Includes positive smoke (current tree is green) AND negative coverage:
 a synthetic package whose ``__all__`` declares a name that doesn't exist
 must make the smoke exit 1 with the regression in stderr. That's the
-"ALL_CAPABILITIES missing from workflow.storage" scenario generalized.
+"ALL_CAPABILITIES missing from tinyassets.storage" scenario generalized.
 
-Also exercises the lazy-``__getattr__`` surface on ``workflow.storage``
+Also exercises the lazy-``__getattr__`` surface on ``tinyassets.storage``
 directly to prove the Option-A change is observable.
 """
 
@@ -123,13 +123,13 @@ def test_missing_package_raises(tmp_path):
     assert "FAILED" in result.stdout
 
 
-# ---- lazy-__getattr__ surface on workflow.storage -------------------------
+# ---- lazy-__getattr__ surface on tinyassets.storage -------------------------
 
 
 def test_workflow_storage_lazy_getattr_resolves():
     """Option A: from-import a lazy name + confirm it's the accounts submodule's."""
-    import workflow.storage as ws
-    import workflow.storage.accounts as wsa
+    import tinyassets.storage as ws
+    import tinyassets.storage.accounts as wsa
 
     # Lazy names the Option A commit routes via __getattr__.
     for name in [
@@ -146,7 +146,7 @@ def test_workflow_storage_lazy_getattr_resolves():
 
 def test_workflow_storage_lazy_getattr_caches():
     """Repeat access hits the cached global, not the importlib roundtrip."""
-    import workflow.storage as ws
+    import tinyassets.storage as ws
 
     first = ws.ensure_host_account
     second = ws.ensure_host_account
@@ -155,18 +155,18 @@ def test_workflow_storage_lazy_getattr_caches():
 
 def test_workflow_storage_dir_enumerates_lazy_names():
     """__dir__ must expose lazy names so static analyzers + import* work."""
-    import workflow.storage as ws
+    import tinyassets.storage as ws
 
     names = dir(ws)
     for lazy in [
         "ensure_host_account", "create_or_update_account",
         "grant_capabilities", "resolve_bearer_token",
     ]:
-        assert lazy in names, f"dir(workflow.storage) missing {lazy}"
+        assert lazy in names, f"dir(tinyassets.storage) missing {lazy}"
 
 
 def test_workflow_storage_unknown_attr_raises_attribute_error():
-    import workflow.storage as ws
+    import tinyassets.storage as ws
 
     with pytest.raises(AttributeError, match="no attribute"):
         ws.definitely_not_an_exported_name  # noqa: B018
@@ -177,7 +177,7 @@ def test_workflow_storage_unknown_attr_raises_attribute_error():
 
 def test_all_capabilities_accessible_via_package():
     """Direct regression guard for 2026-04-19 P0 failure mode."""
-    from workflow.storage import ALL_CAPABILITIES
+    from tinyassets.storage import ALL_CAPABILITIES
     assert isinstance(ALL_CAPABILITIES, tuple)
     assert len(ALL_CAPABILITIES) >= 1
     # Sanity: the expected scope of caps shouldn't drop to zero silently.
@@ -185,7 +185,7 @@ def test_all_capabilities_accessible_via_package():
 
 
 def test_daemon_server_ALL_CAPABILITIES_still_reachable():
-    """Consumer surface: workflow.daemon_server re-exports from workflow.storage."""
-    from workflow.daemon_server import ALL_CAPABILITIES as AC_daemon
-    from workflow.storage import ALL_CAPABILITIES as AC_storage
+    """Consumer surface: tinyassets.daemon_server re-exports from tinyassets.storage."""
+    from tinyassets.daemon_server import ALL_CAPABILITIES as AC_daemon
+    from tinyassets.storage import ALL_CAPABILITIES as AC_storage
     assert AC_daemon is AC_storage

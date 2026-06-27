@@ -1,7 +1,7 @@
 """Phase B post-rollback goal-canonical re-point tests (Task #22).
 
 Spec: docs/design-notes/2026-04-25-surgical-rollback-proposal.md §2.4 +
-cross-DB refinement note in workflow/rollback.py module docstring.
+cross-DB refinement note in tinyassets/rollback.py module docstring.
 
 Covers:
 - Cascading walk-up: when both the canonical and its parent are in the
@@ -14,14 +14,14 @@ Covers:
 
 from __future__ import annotations
 
-from workflow.branch_versions import publish_branch_version
-from workflow.daemon_server import (
+from tinyassets.branch_versions import publish_branch_version
+from tinyassets.daemon_server import (
     get_goal,
     initialize_author_server,
     save_goal,
     set_canonical_branch,
 )
-from workflow.rollback import (
+from tinyassets.rollback import (
     execute_rollback_set,
     repoint_goals_after_rollback,
     rollback_merge_orchestrator,
@@ -215,7 +215,7 @@ def _seed_goal_with_selector(tmp_path, goal_id, selector_bvid):
     save_goal(tmp_path, goal={
         "goal_id": goal_id, "name": f"Goal {goal_id}", "author": "alice",
     })
-    from workflow.daemon_server import update_goal
+    from tinyassets.daemon_server import update_goal
     update_goal(
         tmp_path,
         goal_id=goal_id,
@@ -232,7 +232,7 @@ class TestSelectorRepoint:
     fallback at the next leaderboard read."""
 
     def test_clears_selector_pointer_on_rollback(self, tmp_path):
-        from workflow.rollback import repoint_selectors_after_rollback
+        from tinyassets.rollback import repoint_selectors_after_rollback
         selector_v = _publish(tmp_path, "selector-v1")
         _seed_goal_with_selector(tmp_path, "g-sel", selector_v)
         execute_rollback_set(
@@ -251,7 +251,7 @@ class TestSelectorRepoint:
         assert goal["selector_branch_version_id"] is None
 
     def test_unaffected_goal_left_alone(self, tmp_path):
-        from workflow.rollback import repoint_selectors_after_rollback
+        from tinyassets.rollback import repoint_selectors_after_rollback
         rolled = _publish(tmp_path, "rolled-selector")
         other = _publish(tmp_path, "other-selector")
         _seed_goal_with_selector(tmp_path, "g-rolled", rolled)
@@ -271,7 +271,7 @@ class TestSelectorRepoint:
         )["selector_branch_version_id"] == other
 
     def test_no_bindings_no_op(self, tmp_path):
-        from workflow.rollback import repoint_selectors_after_rollback
+        from tinyassets.rollback import repoint_selectors_after_rollback
         bvid = _publish(tmp_path, "lonely-version")
         execute_rollback_set(tmp_path, [bvid], reason="t", set_by="alice")
         # No Goals bound to it → repoint is a clean no-op.
@@ -282,7 +282,7 @@ class TestSelectorRepoint:
         assert result["repoints"] == []
 
     def test_empty_version_set_short_circuits(self, tmp_path):
-        from workflow.rollback import repoint_selectors_after_rollback
+        from tinyassets.rollback import repoint_selectors_after_rollback
         initialize_author_server(tmp_path)
         result = repoint_selectors_after_rollback(
             tmp_path, [], set_by="alice",
@@ -296,7 +296,7 @@ class TestSelectorRepoint:
         bvid = _publish(tmp_path, "dual-pointer-version")
         _seed_goal(tmp_path, "g-dual", canonical_bvid=bvid)
         # ALSO bind it as selector via the column write path.
-        from workflow.daemon_server import update_goal
+        from tinyassets.daemon_server import update_goal
         update_goal(
             tmp_path,
             goal_id="g-dual",

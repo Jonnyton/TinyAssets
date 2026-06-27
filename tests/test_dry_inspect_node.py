@@ -22,8 +22,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from workflow.branches import BranchDefinition, NodeDefinition
-from workflow.graph_compiler import inspect_node_dry
+from tinyassets.branches import BranchDefinition, NodeDefinition
+from tinyassets.graph_compiler import inspect_node_dry
 
 
 def _make_branch(
@@ -189,12 +189,12 @@ class TestMcpDryInspectNode:
         return branch.to_dict()
 
     def test_action_with_branch_def_id(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_node
+        from tinyassets.api.runtime_ops import _action_dry_inspect_node
 
         branch_dict = self._make_branch_dict(prompt_template="Say {word}")
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         with patch(
-            "workflow.daemon_server.get_branch_definition",
+            "tinyassets.daemon_server.get_branch_definition",
             return_value=branch_dict,
         ):
             result = json.loads(_action_dry_inspect_node({
@@ -205,10 +205,10 @@ class TestMcpDryInspectNode:
         assert "placeholder_validation" in result
 
     def test_action_with_branch_spec_json(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_node
+        from tinyassets.api.runtime_ops import _action_dry_inspect_node
 
         branch_dict = self._make_branch_dict(prompt_template="Write {topic}")
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_dry_inspect_node({
             "branch_spec_json": json.dumps(branch_dict),
             "node_id": "n1",
@@ -216,12 +216,12 @@ class TestMcpDryInspectNode:
         assert result["node_id"] == "n1"
 
     def test_action_no_node_id_returns_all_nodes(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_node
+        from tinyassets.api.runtime_ops import _action_dry_inspect_node
 
         nd1 = NodeDefinition(node_id="n1", display_name="n1")
         nd2 = NodeDefinition(node_id="n2", display_name="n2")
         branch = BranchDefinition(branch_def_id="b1", name="t", node_defs=[nd1, nd2])
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_dry_inspect_node({
             "branch_spec_json": json.dumps(branch.to_dict()),
         }))
@@ -231,10 +231,10 @@ class TestMcpDryInspectNode:
     def test_action_nonexistent_node_id_returns_error(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_node
+        from tinyassets.api.runtime_ops import _action_dry_inspect_node
 
         branch_dict = self._make_branch_dict()
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_dry_inspect_node({
             "branch_spec_json": json.dumps(branch_dict),
             "node_id": "nonexistent",
@@ -244,11 +244,11 @@ class TestMcpDryInspectNode:
     def test_action_missing_branch_returns_error(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_node
+        from tinyassets.api.runtime_ops import _action_dry_inspect_node
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         with patch(
-            "workflow.daemon_server.get_branch_definition",
+            "tinyassets.daemon_server.get_branch_definition",
             side_effect=KeyError("b99"),
         ):
             result = json.loads(_action_dry_inspect_node({"branch_def_id": "b99"}))
@@ -257,17 +257,17 @@ class TestMcpDryInspectNode:
     def test_action_invalid_spec_json_returns_error(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_node
+        from tinyassets.api.runtime_ops import _action_dry_inspect_node
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_dry_inspect_node({"branch_spec_json": "not-json"}))
         assert "error" in result
 
     def test_no_provider_calls(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_node
+        from tinyassets.api.runtime_ops import _action_dry_inspect_node
 
         branch_dict = self._make_branch_dict(prompt_template="Say {word}")
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
         result = json.loads(_action_dry_inspect_node({
             "branch_spec_json": json.dumps(branch_dict),
@@ -288,9 +288,9 @@ class TestMcpDryInspectPatch:
         return branch.to_dict()
 
     def test_add_node_op_visible_in_result(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_patch
+        from tinyassets.api.runtime_ops import _action_dry_inspect_patch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         ops = [{"op": "add_node", "node_id": "n2", "display_name": "n2", "phase": "custom"}]
         result = json.loads(_action_dry_inspect_patch({
             "branch_spec_json": json.dumps(self._base_branch_dict()),
@@ -302,9 +302,9 @@ class TestMcpDryInspectPatch:
         assert "n2" in node_ids
 
     def test_update_node_op_reflected(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_patch
+        from tinyassets.api.runtime_ops import _action_dry_inspect_patch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         ops = [{"op": "update_node", "node_id": "n1", "display_name": "Updated"}]
         result = json.loads(_action_dry_inspect_patch({
             "branch_spec_json": json.dumps(self._base_branch_dict()),
@@ -314,9 +314,9 @@ class TestMcpDryInspectPatch:
         assert result["node_def"]["display_name"] == "Updated"
 
     def test_add_state_field_expands_schema(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_patch
+        from tinyassets.api.runtime_ops import _action_dry_inspect_patch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         ops = [{"op": "add_state_field", "field_name": "new_field", "field_type": "str"}]
         result = json.loads(_action_dry_inspect_patch({
             "branch_spec_json": json.dumps(self._base_branch_dict()),
@@ -329,9 +329,9 @@ class TestMcpDryInspectPatch:
     def test_missing_changes_json_returns_error(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_patch
+        from tinyassets.api.runtime_ops import _action_dry_inspect_patch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_dry_inspect_patch({
             "branch_spec_json": json.dumps(self._base_branch_dict()),
         }))
@@ -340,9 +340,9 @@ class TestMcpDryInspectPatch:
     def test_invalid_changes_json_returns_error(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        from workflow.api.runtime_ops import _action_dry_inspect_patch
+        from tinyassets.api.runtime_ops import _action_dry_inspect_patch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(_action_dry_inspect_patch({
             "branch_spec_json": json.dumps(self._base_branch_dict()),
             "changes_json": "not-json",
@@ -352,10 +352,10 @@ class TestMcpDryInspectPatch:
 
 class TestExtensionsRoutingDryInspect:
     def test_extensions_routes_dry_inspect_node(self, tmp_path: Path, monkeypatch) -> None:
-        from workflow.universe_server import extensions
+        from tinyassets.universe_server import extensions
         nd = NodeDefinition(node_id="n1", display_name="n1")
         branch = BranchDefinition(branch_def_id="b1", name="t", node_defs=[nd])
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(extensions(
             action="dry_inspect_node",
             branch_spec_json=json.dumps(branch.to_dict()),
@@ -366,10 +366,10 @@ class TestExtensionsRoutingDryInspect:
     def test_extensions_routes_dry_inspect_patch(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        from workflow.universe_server import extensions
+        from tinyassets.universe_server import extensions
         nd = NodeDefinition(node_id="n1", display_name="n1", phase="custom")
         branch = BranchDefinition(branch_def_id="b1", name="t", node_defs=[nd])
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         ops = [{"op": "add_node", "node_id": "n2", "display_name": "n2", "phase": "custom"}]
         result = json.loads(extensions(
             action="dry_inspect_patch",
@@ -381,8 +381,8 @@ class TestExtensionsRoutingDryInspect:
     def test_unknown_action_lists_dry_inspect_actions(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        from workflow.universe_server import extensions
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        from tinyassets.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = json.loads(extensions(action="nonexistent_xyz_dry"))
         available = result.get("available_actions", [])
         assert "dry_inspect_node" in available

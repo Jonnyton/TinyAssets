@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.branch_versions import (
+from tinyassets.branch_versions import (
     BranchVersion,
     compute_content_hash,
     get_branch_version,
@@ -18,7 +18,7 @@ from workflow.branch_versions import (
     list_branch_versions,
     publish_branch_version,
 )
-from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
 
 
 def _make_branch_dict(branch_id: str = "b1", name: str = "Test") -> dict:
@@ -46,7 +46,7 @@ def _make_branch_dict(branch_id: str = "b1", name: str = "Test") -> dict:
 class TestComputeContentHash:
     def test_deterministic_for_same_input(self):
         d = _make_branch_dict()
-        from workflow.branch_versions import _canonical_snapshot
+        from tinyassets.branch_versions import _canonical_snapshot
         snap = _canonical_snapshot(d)
         assert compute_content_hash(snap) == compute_content_hash(snap)
 
@@ -54,7 +54,7 @@ class TestComputeContentHash:
         d1 = _make_branch_dict()
         d2 = _make_branch_dict()
         d2["entry_point"] = "n2"
-        from workflow.branch_versions import _canonical_snapshot
+        from tinyassets.branch_versions import _canonical_snapshot
         h1 = compute_content_hash(_canonical_snapshot(d1))
         h2 = compute_content_hash(_canonical_snapshot(d2))
         assert h1 != h2
@@ -63,14 +63,14 @@ class TestComputeContentHash:
         """Only topology fields contribute to the hash, not name/author."""
         d1 = _make_branch_dict(name="Version Alpha")
         d2 = _make_branch_dict(name="Version Beta")
-        from workflow.branch_versions import _canonical_snapshot
+        from tinyassets.branch_versions import _canonical_snapshot
         h1 = compute_content_hash(_canonical_snapshot(d1))
         h2 = compute_content_hash(_canonical_snapshot(d2))
         assert h1 == h2
 
     def test_hash_is_64_hex_chars(self):
         d = _make_branch_dict()
-        from workflow.branch_versions import _canonical_snapshot
+        from tinyassets.branch_versions import _canonical_snapshot
         h = compute_content_hash(_canonical_snapshot(d))
         assert len(h) == 64
         assert all(c in "0123456789abcdef" for c in h)
@@ -268,7 +268,7 @@ class TestBranchDefinitionForkFrom:
 
 class TestPublishVersionMcpActions:
     def _seed_branch(self, base_path: Path, branch_id: str = "b1") -> None:
-        from workflow.daemon_server import initialize_author_server, save_branch_definition
+        from tinyassets.daemon_server import initialize_author_server, save_branch_definition
         initialize_author_server(base_path)
         nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")
         branch = BranchDefinition(
@@ -283,26 +283,26 @@ class TestPublishVersionMcpActions:
         save_branch_definition(base_path, branch_def=branch.to_dict())
 
     def test_publish_version_action(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._seed_branch(tmp_path)
-        from workflow.universe_server import extensions
+        from tinyassets.universe_server import extensions
         result = json.loads(extensions(action="publish_version", branch_def_id="b1"))
         assert "branch_version_id" in result
         assert "content_hash" in result
         assert result["branch_version_id"].startswith("b1@")
 
     def test_publish_version_missing_branch(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-        from workflow.daemon_server import initialize_author_server
-        from workflow.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        from tinyassets.daemon_server import initialize_author_server
+        from tinyassets.universe_server import extensions
         initialize_author_server(tmp_path)
         result = json.loads(extensions(action="publish_version", branch_def_id="nonexistent"))
         assert "error" in result
 
     def test_get_branch_version_action(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._seed_branch(tmp_path)
-        from workflow.universe_server import extensions
+        from tinyassets.universe_server import extensions
         pub_result = json.loads(extensions(action="publish_version", branch_def_id="b1"))
         version_id = pub_result["branch_version_id"]
         get_result = json.loads(extensions(
@@ -311,9 +311,9 @@ class TestPublishVersionMcpActions:
         assert get_result["branch_version_id"] == version_id
 
     def test_list_branch_versions_action(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._seed_branch(tmp_path)
-        from workflow.universe_server import extensions
+        from tinyassets.universe_server import extensions
         extensions(action="publish_version", branch_def_id="b1")
         list_result = json.loads(extensions(
             action="list_branch_versions", branch_def_id="b1",
@@ -322,17 +322,17 @@ class TestPublishVersionMcpActions:
         assert list_result["versions"][0]["branch_def_id"] == "b1"
 
     def test_publish_version_is_idempotent(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._seed_branch(tmp_path)
-        from workflow.universe_server import extensions
+        from tinyassets.universe_server import extensions
         r1 = json.loads(extensions(action="publish_version", branch_def_id="b1"))
         r2 = json.loads(extensions(action="publish_version", branch_def_id="b1"))
         assert r1["branch_version_id"] == r2["branch_version_id"]
 
     def test_unknown_action_lists_version_actions(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-        from workflow.daemon_server import initialize_author_server
-        from workflow.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        from tinyassets.daemon_server import initialize_author_server
+        from tinyassets.universe_server import extensions
         initialize_author_server(tmp_path)
         result = json.loads(extensions(action="nonexistent_xyz"))
         available = result.get("available_actions", [])

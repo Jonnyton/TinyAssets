@@ -7,26 +7,26 @@ status: active
 **Status:** draft r6, 2026-04-12 (pin mechanism corrected to env var — verified against landed code)
 **Owner:** planner (spec) / dev (impl)
 **Paired with:** Task A (status bridge, dev-owned)
-**Scope:** `universe_tray.py`, `fantasy_author/__main__.py`, `workflow/providers/router.py`, `workflow/preferences.py`
+**Scope:** `universe_tray.py`, `fantasy_author/__main__.py`, `tinyassets/providers/router.py`, `tinyassets/preferences.py`
 
 **Revision notes (r2):**
 - CLI entry point corrected: flag lives on `fantasy_author.__main__` (already
-  landed at line 1500). Top-level CLI entry point is `workflow-cli` /
-  `python -m workflow`; the `--provider` flag is on the domain module. Kept
+  landed at line 1500). Top-level CLI entry point is `tinyassets-cli` /
+  `python -m tinyassets`; the `--provider` flag is on the domain module. Kept
   the fantasy_author path because Task B daemons are fantasy_author daemons.
-- Preferences file: `~/.workflow/preferences.json` (LANDED in
-  `workflow/preferences.py` at `_WORKFLOW_USER_DIR = Path.home() /
+- Preferences file: `~/.tinyassets/preferences.json` (LANDED in
+  `tinyassets/preferences.py` at `_TINYASSETS_USER_DIR = Path.home() /
   ".workflow"`). NOT `~/.claude/workflow_preferences.json` and NOT
   repo-local. Reason: Claude Code owns `~/.claude/` exclusively (it
   rewrites settings.json, keybindings.json, teams/, tasks/ on updates)
-  and bundled updates could collide. `~/.workflow/` is a dedicated
+  and bundled updates could collide. `~/.tinyassets/` is a dedicated
   user-scope dir for this project. Per-host-operator scope, orthogonal
   to per-universe `config.yaml`. Team-lead override 2026-04-12.
   (r2 incorrectly stated repo-local `output/.tray_preferences.json`;
   planner misread the landed module header. Corrected in r3.)
-- Pin mechanism: `WORKFLOW_PIN_WRITER` env var. `fantasy_author/__main__.py:1530`
-  sets `os.environ["WORKFLOW_PIN_WRITER"] = args.provider`;
-  `workflow/providers/router.py:128` reads it per-call and, when set for
+- Pin mechanism: `TINYASSETS_PIN_WRITER` env var. `fantasy_author/__main__.py:1530`
+  sets `os.environ["TINYASSETS_PIN_WRITER"] = args.provider`;
+  `tinyassets/providers/router.py:128` reads it per-call and, when set for
   the writer role, narrows the chain to `[pin_writer]` with no fallback.
   Verified against landed code 2026-04-12.
   (r2 incorrectly claimed dict mutation was landed — planner read a stale
@@ -72,16 +72,16 @@ python -m fantasy_author --universe <name> --provider <provider-name> [...]
 ```
 
 Valid `<provider-name>` values (writer-role registry keys in
-`workflow/providers/router.py:FALLBACK_CHAINS["writer"]`):
+`tinyassets/providers/router.py:FALLBACK_CHAINS["writer"]`):
 `claude-code`, `codex`, `gemini-free`, `groq-free`, `grok-free`, `ollama-local`.
 
 **Semantics (as landed at `fantasy_author/__main__.py:1515-1534` and
-`workflow/providers/router.py:125-131`):**
+`tinyassets/providers/router.py:125-131`):**
 - When `--provider X` is passed, `__main__` validates `X` against
   `set().union(*FALLBACK_CHAINS.values())` (union of all role chains —
   includes every known provider name across writer, judge, and extract).
-  Then sets `os.environ["WORKFLOW_PIN_WRITER"] = X`.
-- The router consults `WORKFLOW_PIN_WRITER` per call. For writer-role
+  Then sets `os.environ["TINYASSETS_PIN_WRITER"] = X`.
+- The router consults `TINYASSETS_PIN_WRITER` per call. For writer-role
   calls with the env var set, it narrows the chain to `[pin_writer]` and
   skips the per-universe preference path. For other roles the env var has
   no effect, so judge/extract continue using their default fallback chains.
@@ -92,7 +92,7 @@ Valid `<provider-name>` values (writer-role registry keys in
   as any other single-provider exhaustion path. Honors hard rule #8.
 - **Writer role only for now.** Future `--judge-provider` /
   `--extract-provider` would follow the same pattern with
-  `WORKFLOW_PIN_JUDGE` / `WORKFLOW_PIN_EXTRACT`. Out of scope; see Open Q #3.
+  `TINYASSETS_PIN_JUDGE` / `TINYASSETS_PIN_EXTRACT`. Out of scope; see Open Q #3.
 
 ### Why env var over dict mutation
 
@@ -188,7 +188,7 @@ self.default_provider: str = self._load_default_provider()
 - Mutations happen on the tray thread only; reads from the menu-build thread
   are safe because `dict` copies are atomic for read in CPython.
 
-### Constants (LANDED in `workflow/preferences.py`)
+### Constants (LANDED in `tinyassets/preferences.py`)
 
 ```python
 # Imported from workflow.preferences — do NOT redefine in universe_tray.py
@@ -219,8 +219,8 @@ Avoids `RuntimeError: dictionary changed size during iteration`.
 
 ### Default provider persistence (LANDED)
 
-**File:** `~/.workflow/preferences.json` (landed in `workflow/preferences.py`
-at `_WORKFLOW_USER_DIR = Path.home() / ".workflow"`).
+**File:** `~/.tinyassets/preferences.json` (landed in `tinyassets/preferences.py`
+at `_TINYASSETS_USER_DIR = Path.home() / ".workflow"`).
 Shape:
 
 ```json
@@ -237,18 +237,18 @@ via the menu. This reinforces the "fail loudly" principle — if a pinned
 subscription daemon exhausts, it's because the operator deliberately
 chose it, not because an auto-start silently burned quota.
 
-**Why `~/.workflow/`, not `~/.claude/` or repo-local:**
+**Why `~/.tinyassets/`, not `~/.claude/` or repo-local:**
 - Not `~/.claude/`: Claude Code owns that directory exclusively and rewrites
   settings.json, keybindings.json, teams/, tasks/ on its own updates;
   bundled updates could collide.
 - Not repo-local: preferences are per-host-operator, not per-repo-checkout.
   A single operator running two worktrees should share one set of
   preferences.
-- `~/.workflow/` is a new dedicated user-scope dir for this project, clean
+- `~/.tinyassets/` is a new dedicated user-scope dir for this project, clean
   of external ownership.
 
 **Directory creation:** `preferences.py` must `mkdir(parents=True,
-exist_ok=True)` on `~/.workflow/` before first write. Missing dir on first
+exist_ok=True)` on `~/.tinyassets/` before first write. Missing dir on first
 load is not an error — falls back to defaults. (Verify landed module
 handles this; if not, file a follow-up.)
 
@@ -307,7 +307,7 @@ Quit
   triggers it correctly.
 - **Default providers submenu** lets the operator tick which providers
   auto-start on tray launch. Writes straight to
-  `~/.workflow/preferences.json:default_providers`.
+  `~/.tinyassets/preferences.json:default_providers`.
 
 ### Status labels
 
@@ -406,7 +406,7 @@ self.daemon_procs[provider_name] = proc
 
 Per-provider log files let the menu's "View log" action open the right one.
 
-**Env var handling:** the tray does NOT set `WORKFLOW_PIN_WRITER` itself.
+**Env var handling:** the tray does NOT set `TINYASSETS_PIN_WRITER` itself.
 The daemon sets it from `--provider` inside its own process at
 `fantasy_author/__main__.py:1530`, so the pin is scoped to that subprocess
 and never leaks into the tray's env or sibling daemons. Keeping this
@@ -444,7 +444,7 @@ returns non-None (detected in the 1s tray tick).
 
 1. ~~Dev adds `--provider` flag~~ **LANDED** at
    `fantasy_author/__main__.py:1500`. Uses direct `FALLBACK_CHAINS` mutation.
-2. ~~Dev builds `workflow/preferences.py`~~ **LANDED**. Exports
+2. ~~Dev builds `tinyassets/preferences.py`~~ **LANDED**. Exports
    `ALL_PROVIDERS`, `SUBSCRIPTION_PROVIDERS`, `LOCAL_PROVIDERS`,
    `load_prefs()`, `save_prefs()`.
 3. Dev adds per-provider status file writer to the daemon startup path
@@ -483,7 +483,7 @@ returns non-None (detected in the 1s tray tick).
 4. **Crash visibility.** Currently a crashed daemon just disappears from the
    menu. Consider a transient toast or a `[crashed]` sticky state until the
    user clicks "Clear." Low priority.
-   **Related preferences-dir note:** `~/.workflow/` must exist before the
+   **Related preferences-dir note:** `~/.tinyassets/` must exist before the
    preferences module's first write. Landed module handles this at
    `preferences.py:109` (`path.parent.mkdir(parents=True, exist_ok=True)`).
    Missing dir on first load falls back to `_DEFAULTS` — not an error. If

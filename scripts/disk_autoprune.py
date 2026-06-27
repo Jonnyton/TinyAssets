@@ -61,7 +61,7 @@ def _disk_usage_pct(path: str) -> float:
 def _host_disk_reclaim(timeout: float = 180.0) -> tuple[int, str, str]:
     """Run disposable host cleanup. Returns (rc, stdout, stderr).
 
-    This intentionally does not pass ``--volumes`` to Docker. Workflow data
+    This intentionally does not pass ``--volumes`` to Docker. TinyAssets data
     lives in volumes/bind mounts and needs explicit retention policy, not a
     generic emergency prune.
     """

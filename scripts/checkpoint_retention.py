@@ -1,4 +1,4 @@
-"""Prune LangGraph checkpoint databases under a Workflow data directory.
+"""Prune LangGraph checkpoint databases under a TinyAssets data directory.
 
 Use this for one-time maintenance after the runtime retention patch lands.
 Run with the affected daemon stopped if ``--vacuum`` is set; VACUUM rewrites
@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from workflow.checkpointing import (  # noqa: E402
+from tinyassets.checkpointing import (  # noqa: E402
     DEFAULT_CHECKPOINT_RETENTION_KEEP_LAST,
     prune_checkpoint_history,
 )
@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--data-dir",
         type=Path,
         required=True,
-        help="Workflow data directory containing <universe>/checkpoints.db files.",
+        help="TinyAssets data directory containing <universe>/checkpoints.db files.",
     )
     parser.add_argument(
         "--db",

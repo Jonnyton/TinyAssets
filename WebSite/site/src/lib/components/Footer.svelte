@@ -4,7 +4,7 @@
   line is one honest sentence pointing at disclosures, not a wallet rack.
 -->
 <script lang="ts">
-  import TinyAssetsMark from './WorkflowMark.svelte';
+  import TinyAssetsMark from './TinyAssetsMark.svelte';
   import legal from '$lib/content/legal-info.json';
 
   const year = new Date().getFullYear();
@@ -18,9 +18,8 @@
         <strong>TinyAssets</strong> is the platform. <strong>Tiny</strong> is the
         intelligence you meet inside it: a working persona shaped by the
         founder's will and pointed at real multi-step work. He lives at
-        <span class="ev">tinyassets.io</span>; the code still lives on
-        <a href="https://github.com/Jonnyton/Workflow" target="_blank" rel="noreferrer">GitHub</a>
-        while the repository rename migrates.
+        <span class="ev">tinyassets.io</span>; the code lives on
+        <a href="https://github.com/Jonnyton/TinyAssets" target="_blank" rel="noreferrer">GitHub</a>.
       </p>
     </div>
   </div>
@@ -49,8 +48,8 @@
       <ul>
         <li><a href="/build">Contribute</a></li>
         <li><a href="/soul">Fork the pattern — souls</a></li>
-        <li><a href="https://github.com/Jonnyton/Workflow" target="_blank" rel="noreferrer">GitHub ↗</a></li>
-        <li><a href="https://github.com/Jonnyton/Workflow/blob/main/PLAN.md" target="_blank" rel="noreferrer">PLAN.md ↗</a></li>
+        <li><a href="https://github.com/Jonnyton/TinyAssets" target="_blank" rel="noreferrer">GitHub ↗</a></li>
+        <li><a href="https://github.com/Jonnyton/TinyAssets/blob/main/PLAN.md" target="_blank" rel="noreferrer">PLAN.md ↗</a></li>
       </ul>
     </div>
     <div class="col">

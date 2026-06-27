@@ -1,16 +1,16 @@
 ---
-title: Task #?? prep — workflow/api/runs.py extraction scope
+title: Task #?? prep — tinyassets/api/runs.py extraction scope
 date: 2026-04-26
 author: navigator
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md §4.2 (`runs.py`), §8 step 4
-target_task: Decomp audit Step 4 — Extract workflow/api/runs.py
+target_task: Decomp audit Step 4 — Extract tinyassets/api/runs.py
 gates_on: #8 (universe_helpers) ships first; #9 (wiki.py) and #10 (status.py) land order independent of #?? but #?? assumes the `mcp` instance pattern picked in #9.
 ---
 
 # Step 4 (`runs.py`) pre-flight scope
 
-Read-only scope for extracting the run-execution subsystem from `workflow/universe_server.py` into a new `workflow/api/runs.py`. Same freshness-check protocol as #9/#10 prep — verify audit prescription against current code before trusting the spec.
+Read-only scope for extracting the run-execution subsystem from `tinyassets/universe_server.py` into a new `tinyassets/api/runs.py`. Same freshness-check protocol as #9/#10 prep — verify audit prescription against current code before trusting the spec.
 
 ---
 
@@ -120,7 +120,7 @@ Read-only scope for extracting the run-execution subsystem from `workflow/univer
 
 ### 3.3 Does runs.py depend on shared #8 helpers?
 
-**Yes:** `_action_run_branch` and friends call `_universe_dir`, `_default_universe`, `_base_path`, `_read_json`, `_read_text` — all extracted in #8 to `workflow/api/helpers.py`. After #8 lands, runs.py imports these.
+**Yes:** `_action_run_branch` and friends call `_universe_dir`, `_default_universe`, `_base_path`, `_read_json`, `_read_text` — all extracted in #8 to `tinyassets/api/helpers.py`. After #8 lands, runs.py imports these.
 
 **Indirect via run helpers:** `_classify_run_error` calls `_classify_run_outcome_error` and `_actionable_by` — all wholly internal to runs.py.
 
@@ -132,7 +132,7 @@ Read-only scope for extracting the run-execution subsystem from `workflow/univer
 - Logically: this audits the **memory scope router** (`workflow.retrieval.router`) — it's a status/observability primitive about the retrieval layer, not about runs.
 - Practically: it's registered in `_RUN_ACTIONS`, dispatched via `extensions get_memory_scope_status`, and lives next to runs because `extensions()` doesn't have a separate router-tooling group.
 
-**Recommendation:** Move with `_RUN_ACTIONS` to runs.py for now (preserves the dispatch table location). It can graduate to a `workflow/api/retrieval.py` or `workflow/api/router_status.py` in a later refactor when a tier-gated router-tooling submodule is justified. **No test edits required either way** — it's not currently in the import-fan-in below.
+**Recommendation:** Move with `_RUN_ACTIONS` to runs.py for now (preserves the dispatch table location). It can graduate to a `tinyassets/api/retrieval.py` or `tinyassets/api/router_status.py` in a later refactor when a tier-gated router-tooling submodule is justified. **No test edits required either way** — it's not currently in the import-fan-in below.
 
 ### 3.5 Sequencing constraint on `extensions()` body
 
@@ -171,7 +171,7 @@ All via `from workflow.universe_server import ...` — none via `workflow.api.ru
 | `tests/test_run_branch_failure_taxonomy.py:9` | `_classify_run_error, _classify_run_outcome_error` | 1 (top-level) + 3 inline `_action_run_branch` imports |
 | `tests/test_run_branch_version.py` | `_RUN_ACTIONS`, `_action_run_branch_version` | ~12 |
 
-**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After #?? lands, `workflow/universe_server.py` adds:
+**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After #?? lands, `tinyassets/universe_server.py` adds:
 ```python
 # Phase-1 runs extraction — back-compat re-exports for tests.
 from workflow.api.runs import (  # noqa: F401
@@ -198,7 +198,7 @@ from workflow.api.runs import (  # noqa: F401
 
 Searched for evidence that any run-scope symbols already shipped to a submodule (e.g. `workflow.api.runs`, `workflow.runs`). **None found in the API layer.**
 
-Note: there IS a `workflow/runs.py` (not `workflow/api/runs.py`) — that's the **storage/persistence layer** for run rows (the `runs.recover_in_flight_runs`, `runs.query_runs`, etc. that handlers import). The new file lives at `workflow/api/runs.py` — a different namespace. Confirm no name confusion at extraction time. Suggest the dev double-check the import statements after move (`from workflow.runs import ...` continues to work; `from workflow.api.runs import ...` is the new path).
+Note: there IS a `tinyassets/runs.py` (not `tinyassets/api/runs.py`) — that's the **storage/persistence layer** for run rows (the `runs.recover_in_flight_runs`, `runs.query_runs`, etc. that handlers import). The new file lives at `tinyassets/api/runs.py` — a different namespace. Confirm no name confusion at extraction time. Suggest the dev double-check the import statements after move (`from workflow.runs import ...` continues to work; `from workflow.api.runs import ...` is the new path).
 
 The only adjacent partial moves are the 5 helpers in #8 (`_base_path`, etc.) — `_action_run_branch` already uses them; after #8 lands they're `helpers.py` imports.
 
@@ -216,7 +216,7 @@ The only adjacent partial moves are the 5 helpers in #8 (`_base_path`, etc.) —
 | **Total moved out of universe_server.py** | **~1,410** |
 | Back-compat re-export block added to universe_server.py | ~25 |
 | **Net reduction in universe_server.py** | **~1,385** |
-| New `workflow/api/runs.py` size | **~1,460** (with imports + module docstring) |
+| New `tinyassets/api/runs.py` size | **~1,460** (with imports + module docstring) |
 
 **Audit said ~1,311.** Reality ~1,410. About 7% over due to the 6 handlers added since the audit (`run_branch_version`, `rollback_merge`, `get_rollback_history`, `get_memory_scope_status`, plus richer `_classify_run_outcome_error` taxonomy from BUG-029 fix in 0f5ccc4).
 
@@ -229,7 +229,7 @@ The only adjacent partial moves are the 5 helpers in #8 (`_base_path`, etc.) —
    - `_INSPECT_DRY_*` L8223–8360 (runtime_ops.py)
    - `_ESCROW_*` L8363–8472 (market.py)
    - `_action_publish_version`/`get_branch_version`/`list_branch_versions` L8764+ (audit §4.2 puts these in evaluation.py with `_BRANCH_VERSION_ACTIONS`)
-   
+
    **Higher chance of accidentally pulling adjacent code.** Recommend dev does a dry `git diff` review before commit, line-by-line, against this prep doc's enumeration.
 
 2. **`_action_get_memory_scope_status` placement is judgment call** (§3.4). Default to runs.py with the dispatch table; revisit when retrieval-tooling submodule is justified.
@@ -240,7 +240,7 @@ The only adjacent partial moves are the 5 helpers in #8 (`_base_path`, etc.) —
 
 5. **`extensions()` body at L3992/4026/4108** dispatches into 3 tables. After runs.py extracts `_RUN_ACTIONS` only (the other two stay), the `extensions()` body in universe_server.py needs **one new import line** at top of file. **Trivial; not a refactor of `extensions()` body.**
 
-6. **`workflow/runs.py` (storage layer) name collision.** New `workflow/api/runs.py` is a sibling namespace, not a duplicate. Inside the new file, imports stay as `from workflow.runs import recover_in_flight_runs, query_runs, ...` (storage layer). No rename needed. Just confirm no test or script does `from workflow.api.runs import recover_in_flight_runs` (should be `from workflow.runs`).
+6. **`tinyassets/runs.py` (storage layer) name collision.** New `tinyassets/api/runs.py` is a sibling namespace, not a duplicate. Inside the new file, imports stay as `from workflow.runs import recover_in_flight_runs, query_runs, ...` (storage layer). No rename needed. Just confirm no test or script does `from workflow.api.runs import recover_in_flight_runs` (should be `from workflow.runs`).
 
 7. **Pre-commit canonical-vs-plugin parity check** — same as #9/#10. Run `python packaging/claude-plugin/build_plugin.py`.
 
@@ -256,7 +256,7 @@ Estimated wall time: 75-105 min (larger than #9 because of non-contiguous source
 
 1. **Confirm #8, #9, #10 have all landed.**
 2. **Confirm `mcp` instance pattern from #9** — runs.py doesn't strictly need it (no `@mcp.tool` decorator inside), but pick a pattern for the module header consistency anyway.
-3. **Create `workflow/api/runs.py`:**
+3. **Create `tinyassets/api/runs.py`:**
    - Module docstring referencing audit + extraction date + the non-contiguous source-range list.
    - Imports: `from workflow.api.helpers import _base_path, _default_universe, _universe_dir, _read_json, _read_text` (the 5 it actually uses) + `from workflow.runs import recover_in_flight_runs, query_runs, _VALID_AGGREGATES` (+ whatever else `_action_query_runs` etc. import) + std-lib + typing.
    - Move symbols **in this order** (matching source order to minimize diff confusion):
@@ -274,7 +274,7 @@ Estimated wall time: 75-105 min (larger than #9 because of non-contiguous source
      12. `_action_run_branch_version` (L8473)
      13. `_action_rollback_merge` + `_action_get_rollback_history` (L8589, L8654)
      14. `_RUN_ACTIONS` + `_RUN_WRITE_ACTIONS` + `_dispatch_run_action` (L8692, L8710, L8716)
-4. **Update `workflow/universe_server.py`:**
+4. **Update `tinyassets/universe_server.py`:**
    - Delete the 5 source ranges enumerated in §8 risk #1 (in reverse order to avoid line-shift confusion):
      - L8692–8758 (dispatch glue)
      - L8589–8689 (rollback handlers)
@@ -308,14 +308,14 @@ Estimated wall time: 75-105 min (larger than #9 because of non-contiguous source
    - `pytest tests/test_run_branch_failure_taxonomy.py tests/test_query_runs.py tests/test_canonical_branch_mcp.py tests/test_run_branch_version.py -q` → green.
    - `pytest tests/test_dry_inspect_node.py tests/test_project_memory.py -q` → green (these touch sibling sections that did NOT move; sanity check no accidental pulls).
    - `pytest -q` → full suite green.
-   - `ruff check workflow/api/runs.py workflow/universe_server.py` → clean.
-   - **Visual check:** `git diff workflow/universe_server.py | grep -c "^-def _action_"` should equal 15 (the 15 handlers moved). Anything else means an accidental pull.
+   - `ruff check tinyassets/api/runs.py tinyassets/universe_server.py` → clean.
+   - **Visual check:** `git diff tinyassets/universe_server.py | grep -c "^-def _action_"` should equal 15 (the 15 handlers moved). Anything else means an accidental pull.
 
 **Files in eventual #?? SHIP handoff:**
-- `workflow/api/runs.py` (NEW, ~1,460 LOC)
-- `workflow/universe_server.py` (~1,385 LOC removed + ~25 re-export added)
-- `packaging/claude-plugin/.../workflow/api/runs.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
+- `tinyassets/api/runs.py` (NEW, ~1,460 LOC)
+- `tinyassets/universe_server.py` (~1,385 LOC removed + ~25 re-export added)
+- `packaging/claude-plugin/.../tinyassets/api/runs.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
 
 4 files, +1,485 / -1,385 LOC net.
 
@@ -323,7 +323,7 @@ Estimated wall time: 75-105 min (larger than #9 because of non-contiguous source
 
 ## 10. Decision asks for the lead
 
-1. **`_action_get_memory_scope_status` placement** (§3.4) — runs.py for now, or split immediately into a `workflow/api/router_status.py`? Recommendation: runs.py for now; revisit with audit step 6 (runtime_ops.py) when `_PROJECT_MEMORY_ACTIONS` move out together.
+1. **`_action_get_memory_scope_status` placement** (§3.4) — runs.py for now, or split immediately into a `tinyassets/api/router_status.py`? Recommendation: runs.py for now; revisit with audit step 6 (runtime_ops.py) when `_PROJECT_MEMORY_ACTIONS` move out together.
 2. **Sequencing** — strict #8 → #9 → #10 → Step 4 → audit step 5+? Recommendation: yes, stick with audit's `wiki → status → runs → evaluation → runtime_ops → market → branches` order. Each step is a clean refactor with a back-compat shim; running them concurrently risks merge conflicts on the shim block.
 3. **`mcp` instance import** in runs.py — strictly not needed (no `@mcp.tool` decorator), but pick a convention for module-header parity with #9/#10. Recommendation: omit the `mcp` import in runs.py since unused; audit it on next pass.
 

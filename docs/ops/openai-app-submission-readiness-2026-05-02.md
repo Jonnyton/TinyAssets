@@ -44,7 +44,7 @@ Verdict: not ready for final submit yet.
 Source packet is review-aligned and deployed, direct `/mcp-directory` proof is
 clean, and the repo-side legal/asset closeout has landed. A fresh
 2026-05-02T15:37-07:00 browser audit reopened the ChatGPT user-testing
-boundary: the enabled ChatGPT `Workflow DEV` app is still registered to
+boundary: the enabled ChatGPT `TinyAssets DEV` app is still registered to
 `https://tinyassets.io/mcp`, while the OpenAI dashboard draft is correctly
 configured to `https://tinyassets.io/mcp-directory`. Final submission should
 wait for the OpenAI-specific blockers below:
@@ -174,7 +174,7 @@ Parallel Claude gap narrowed 2026-05-02T14:44-07:00:
 
 - Claude.ai in-app browser read-only proof succeeded in chat
   `3959f3de-0244-4488-aa24-87a396e465c2`.
-- Prompt used naive connector language and Claude returned Workflow daemon
+- Prompt used naive connector language and Claude returned TinyAssets daemon
   status after loading tools.
 - This closes the fresh rendered Claude read proof; Claude directory form
   contact/org fields and final submit remain action-time host gates.
@@ -208,7 +208,7 @@ Fresh final-readiness validation 2026-05-02T15:27-07:00 from
 
 ChatGPT web caveat discovered 2026-05-02T15:37-07:00:
 
-- ChatGPT Settings -> Apps -> `Workflow DEV` currently shows URL
+- ChatGPT Settings -> Apps -> `TinyAssets DEV` currently shows URL
   `https://tinyassets.io/mcp` and legacy actions including `get_status`.
 - A fresh ChatGPT web prompt in a new chat invoked legacy `get_status` and
   returned raw `activity_log_tail`, `last_n_calls`, `policy_hash`,
@@ -255,7 +255,7 @@ OpenAI dashboard re-audit 2026-05-02T15:35-07:00:
 Next dashboard action should be one explicit approval bundle, not piecemeal
 guessing:
 
-- Fill release notes with: `Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe Workflow MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+- Fill release notes with: `Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 - Re-register ChatGPT Developer Mode to `https://tinyassets.io/mcp-directory`
   and rerun web/mobile golden prompts before treating ChatGPT user proof as
   clean.
@@ -283,7 +283,7 @@ Fresh command/live validation 2026-05-02T15:07-07:00 from
 
 ## Tool Hint Audit
 
-Source audited: `workflow/directory_server.py`.
+Source audited: `tinyassets/directory_server.py`.
 
 Result: 11 source tools match `chatgpt-app-submission.json` exactly for
 `readOnlyHint`, `openWorldHint`, and `destructiveHint`.

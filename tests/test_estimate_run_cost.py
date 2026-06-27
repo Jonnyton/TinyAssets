@@ -23,10 +23,10 @@ import pytest
 
 @pytest.fixture
 def run_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
 
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, tmp_path
     importlib.reload(us)
@@ -61,7 +61,7 @@ def _create_branch_with_nodes(us, n_llm: int = 1, n_code: int = 0) -> str:
 
 def _seed_completed_runs(tmp_path: Path, bid: str, count: int) -> None:
     """Directly insert completed runs into the runs DB for confidence tests."""
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         create_run,
         initialize_runs_db,
@@ -175,5 +175,5 @@ class TestEstimateRunCostReadOnly:
         assert r1 == r2
 
     def test_not_in_write_actions(self):
-        from workflow.api.runs import _RUN_WRITE_ACTIONS
+        from tinyassets.api.runs import _RUN_WRITE_ACTIONS
         assert "estimate_run_cost" not in _RUN_WRITE_ACTIONS

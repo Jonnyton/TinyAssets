@@ -19,9 +19,9 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host-user")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -54,7 +54,7 @@ def _build_source_branch(us) -> str:
 
 
 def _node(base: Path, branch_def_id: str) -> dict:
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition
 
     branch = get_branch_definition(base, branch_def_id=branch_def_id)
     return next(n for n in branch["node_defs"] if n["node_id"] == "code_node")
@@ -116,9 +116,9 @@ def test_source_code_edit_revokes_approval_metadata(ext_env):
 
 
 def test_approve_source_code_requires_extensions_admin_scope_when_auth_enabled():
-    from workflow.auth.provider import action_scope_for
+    from tinyassets.auth.provider import action_scope_for
 
     metadata = action_scope_for("extensions", "approve_source_code")
     assert metadata is not None
-    assert metadata.oauth_scope == "workflow.extensions.admin"
+    assert metadata.oauth_scope == "tinyassets.extensions.admin"
     assert metadata.effect == "admin"

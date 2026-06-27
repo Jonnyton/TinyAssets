@@ -1,4 +1,4 @@
-# Workflow Codex Routing
+# TinyAssets Codex Routing
 
 Read [STATUS.md](STATUS.md) first, then [AGENTS.md](AGENTS.md).
 Load [PLAN.md](PLAN.md) by the scope rules in AGENTS.md: full for planning,

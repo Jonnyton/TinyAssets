@@ -20,8 +20,8 @@ Single commit ships:
 - All internal call-sites switched to canonical names.
 - All test fixtures updated to canonical names.
 - All compat aliases removed (`Author = Daemon`, `register_author = register_daemon`).
-- All shims removed (`workflow/author_server.py`, `fantasy_author/`, `domains/fantasy_author/`).
-- `WORKFLOW_AUTHOR_RENAME_COMPAT` flag removed (along with its conditional code paths in `_rename_compat.py`).
+- All shims removed (`tinyassets/author_server.py`, `fantasy_author/`, `domains/fantasy_author/`).
+- `TINYASSETS_AUTHOR_RENAME_COMPAT` flag removed (along with its conditional code paths in `_rename_compat.py`).
 - DB schema rename (`author_definitions` → `daemon_definitions`, etc.) + ID-prefix backfill (`"author::"` → `"daemon::"`).
 - Brand-pass copy in MCP tool descriptions, error strings, README.
 
@@ -51,7 +51,7 @@ Preserved here for context only. **Path A is the path.**
 
 - Operationally cheaper short-term but accumulates conceptual debt: every new dev encounters two identifier systems and must learn the convention.
 - The brand pass alone (~0.5 dev-day) is path-agnostic; it ships either way.
-- Locks in the deep-submodule alias loader as permanent infrastructure — `workflow/_rename_compat.py` becomes load-bearing for the project's lifetime.
+- Locks in the deep-submodule alias loader as permanent infrastructure — `tinyassets/_rename_compat.py` becomes load-bearing for the project's lifetime.
 
 ### Realistic Path A dev-day estimate (atomic = no bailout)
 
@@ -60,7 +60,7 @@ Per host's framing — "atomic and final means no bailout points" — the estima
 - **Test fixture sweep** must be one mechanical pass: every `monkeypatch.setattr("workflow.author_server.X", Y)` retargets to `workflow.daemon_server.X`; every `assert author_id == "author::..."` retargets to `daemon::`; every test fixture creating `Author()` instances retargets. **~69 test files** touch the rename surface (per grep). Mechanical but voluminous.
 - **DB migration must be idempotent + tested fresh + tested upgrade.** Schema changes touch `author_definitions`, `author_forks`, `author_runtime_instances`, plus `author_id` columns on `branch_definitions`, `goals`, etc. Per Phase 0 audit, content-authorship sites are zero, so the migration is additive-no-backfill; still needs proper test coverage on both fresh-DB and upgrade-DB paths.
 - **ID-prefix backfill** is one SQL statement (`UPDATE … SET id = REPLACE(id, 'author::', 'daemon::')`) but must be transactional + tested.
-- **Brand-pass copy** in MCP tool descriptions, error strings, README — ~10-15 user-facing strings; can review by grep (`"author"` case-sensitive in `workflow/universe_server.py` + `workflow/daemon_server.py` + `README.md`).
+- **Brand-pass copy** in MCP tool descriptions, error strings, README — ~10-15 user-facing strings; can review by grep (`"author"` case-sensitive in `tinyassets/universe_server.py` + `tinyassets/daemon_server.py` + `README.md`).
 - **No shim back-compat after this commit.** Anything that imports `from fantasy_author.X import Y` outside this commit's sweep breaks immediately. Means the commit also has to:
   - Update every external script in `scripts/` (small surface).
   - Update every doc cross-reference (~20-30 doc files mention the old names).
@@ -83,7 +83,7 @@ Per host's framing — "atomic and final means no bailout points" — the estima
 
 ## 3. Sequencing relative to other in-flight work
 
-- **Independent of refactor R1-R13.** R2 (bid promotion), R3 (compat deletion), R7 (storage split) all touch different files. R7 (storage split) renames `daemon_server.py` to `workflow/storage/daemons.py`; the rename end-state commit can absorb that move if R7 hasn't shipped, OR follow R7 if R7 ships first. **Recommend:** R7 ships first (~2 dev-days), then rename end-state commits with the new module locations already established.
+- **Independent of refactor R1-R13.** R2 (bid promotion), R3 (compat deletion), R7 (storage split) all touch different files. R7 (storage split) renames `daemon_server.py` to `tinyassets/storage/daemons.py`; the rename end-state commit can absorb that move if R7 hasn't shipped, OR follow R7 if R7 ships first. **Recommend:** R7 ships first (~2 dev-days), then rename end-state commits with the new module locations already established.
 - **Cancels remaining §5 sequence (A1-D2) in `docs/exec-plans/completed/2026-04-19-author-to-daemon-rename-status.md`.** Update that doc to mark §5 as superseded by this one.
 - **Layer-3 universe→workflow rename (Q10-Q12) follows the same pattern.** Per host directive on Path A, the layer-3 rename should also collapse to one end-state commit. Recommend separate exec plan for layer-3 end-state — same shape, different surface.
 

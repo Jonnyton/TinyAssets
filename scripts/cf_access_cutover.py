@@ -5,7 +5,7 @@ Two auth schemes supported:
   - Global Key (CLOUDFLARE_EMAIL + CLOUDFLARE_GLOBAL_KEY) — unscoped full access
 
 Steps:
-  1. POST /accounts/{acct}/access/service_tokens  (mint workflow-mcp-worker)
+  1. POST /accounts/{acct}/access/service_tokens  (mint tinyassets-mcp-worker)
   2. POST /accounts/{acct}/access/apps            (self-hosted app for mcp.tinyassets.io)
   3. POST /accounts/{acct}/access/apps/{uuid}/policies  (Service Auth = token)
   4. PUT  /accounts/{acct}/workers/scripts/{script}/secrets  (two secrets)
@@ -31,9 +31,9 @@ from emergency_dns_flip import (  # noqa: E402
     make_cloudflare_client,
 )
 
-SERVICE_TOKEN_NAME = "workflow-mcp-worker"
+SERVICE_TOKEN_NAME = "tinyassets-mcp-worker"
 APP_DOMAIN = "mcp.tinyassets.io"
-APP_NAME = "workflow-mcp-worker-gate"
+APP_NAME = "tinyassets-mcp-worker-gate"
 POLICY_NAME = "worker-only"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 

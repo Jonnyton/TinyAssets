@@ -48,7 +48,7 @@ Depth: lead memory `project_community_build_over_platform_build.md`.
 
 **Why:** Per host directive 2026-04-26: for well-known sensitive categories (invoices, medical, legal, financial, PII), the chatbot uses community-evolved best practices — wiki pages, remixable node compositions, soul-policy templates. For complex/novel sensitive workflows, the community is BETTER at evolving patterns than the platform — they meet the user in their own vocabulary, with their own judgment about what matters. Platform-built privacy features ship a frozen taxonomy; user threat models are open-ended.
 
-**How to apply:** When a sensitive-workflow request comes in (privacy mode, redaction, threat-model preset), the FIRST response is "the chatbot composes this from existing primitives + community best practices." Design-note recommendation: a how-to-compose guide, plus a pointer to community-evolved templates. Platform action ONLY if a primitive is structurally missing — and then ship the smallest primitive, not the policy. The platform DOES still own primitive enforcement boundaries: `WORKFLOW_UPLOAD_WHITELIST`, local-LLM-only routing, file-path enforcement at write time, MCP approval surface. Those are primitives, not policies.
+**How to apply:** When a sensitive-workflow request comes in (privacy mode, redaction, threat-model preset), the FIRST response is "the chatbot composes this from existing primitives + community best practices." Design-note recommendation: a how-to-compose guide, plus a pointer to community-evolved templates. Platform action ONLY if a primitive is structurally missing — and then ship the smallest primitive, not the policy. The platform DOES still own primitive enforcement boundaries: `TINYASSETS_UPLOAD_WHITELIST`, local-LLM-only routing, file-path enforcement at write time, MCP approval surface. Those are primitives, not policies.
 
 Depth: lead memory `project_privacy_via_community_composition.md`.
 
@@ -80,9 +80,9 @@ Depth: lead memory `project_user_capability_axis.md`; host matrix `docs/design-n
 
 ### Canonical Naming Boundary
 
-**Status: canonical as of 2026-06-27.** `Tiny` is the personified intelligence users and developers interact with: the acting persona shaped as an extension of the founder's will. `TinyAssets` is the website, platform, distribution, GitHub/repository, and app/listing brand. `Workflow` / `workflow` is a migration-only compatibility name from the engineering discovery phase and must retire after each surface has a replacement, migration path, and verification gate.
+**Status: canonical as of 2026-06-27.** `Tiny` is the personified intelligence users and developers interact with: the acting persona shaped as an extension of the founder's will. `TinyAssets` is the website, platform, distribution, GitHub/repository, package, and app/listing brand. `Workflow` / `workflow` was the engineering discovery name and is retired as a product, repository, connector, package, or durable namespace.
 
-This boundary does not retire the generic English noun "workflow" when it literally describes a user's process, graph, or branch. It does retire `Workflow` as a product/repository/connector name and `workflow` as a durable namespace label. New public copy, connector metadata, package names, env vars, data paths, and docs must prefer `TinyAssets` for the platform and `Tiny` for the acting persona. Any remaining `Workflow`/`workflow` reference must be classified as historical context, temporary compatibility, or a migration blocker with a planned removal.
+This boundary does not retire the generic English noun "workflow" when it literally describes a user's process, graph, or branch. It does retire `Workflow` as a product/repository/connector name and `workflow` as a durable namespace label. Current public copy, connector metadata, package names, env vars, data paths, and active docs use `TinyAssets` for the platform and `Tiny` for the acting persona. Any remaining old-name reference must be ordinary English or clearly historical.
 
 The six base concepts describe durable work at the graph layer:
 
@@ -133,7 +133,7 @@ These principles apply to every module. They do not own a module each; they cons
 
 **Evals grade process and outcome.** Final quality isn't enough. Inspect retrieval choices, tool usage, stopping behavior, handoff quality, grounding, artifacts. When a run fails, traces should explain why.
 
-**Module shape is part of the architecture.** A flat namespace of 35 modules at `workflow/` root signals "no opinion about boundaries." A god-module of 10k lines signals "boundaries deferred indefinitely." Both are forms of architectural debt. The Module Map below codifies the target shape; the per-module sections that follow codify what each owns.
+**Module shape is part of the architecture.** A flat namespace of 35 modules at `tinyassets/` root signals "no opinion about boundaries." A god-module of 10k lines signals "boundaries deferred indefinitely." Both are forms of architectural debt. The Module Map below codifies the target shape; the per-module sections that follow codify what each owns.
 
 **Cleanup operations against scene-attributed data must scope across all DBs that hold scene-attributed rows.** Generalizes the Fix E lesson (task #49): a cleanup path that prunes one DB but not its sibling leaves orphan derivatives that masquerade as canon on the next retrieval cycle. When a new DELETE or mutation operates on rows keyed to scene_id (or any cross-store attribution), scope it against both `knowledge.db` and `story.db` from the start, or explicitly document the opt-out with reason. Per the migration-audit follow-up at `docs/audits/2026-04-19-schema-migration-followups.md`.
 
@@ -172,31 +172,31 @@ PLAN.md itself stays clean — the audit machinery lives in the skill + the scri
 
 The codebase target shape, with each PLAN.md module mapped to its primary code package(s). Where the current state diverges from this target, the gap is in-flight work — not architectural disagreement. Anchored by the spaghetti audit at `docs/audits/2026-04-19-project-folder-spaghetti.md`.
 
-`workflow/` is the engine package. Domain packages (`fantasy_daemon/`, future `research_daemon/`, etc.) consume from it.
+`tinyassets/` is the engine package. Domain packages (`fantasy_daemon/`, future `research_daemon/`, etc.) consume from it.
 
 | PLAN.md Module | Primary code package(s) |
 |---|---|
-| Engine & Domains | `workflow/`, `domains/<name>/` |
-| Daemon Platform | `workflow/identity.py`, `workflow/discovery.py`, `workflow/branch_tasks.py`, `workflow/runtime/` |
-| **Brain** | `workflow/memory/`, `workflow/retrieval/`, `workflow/knowledge/`, `workflow/storage/__init__.py` (memory_kinds), `workflow/learning/` |
-| Goals & Gates | `workflow/storage/goals_gates.py`, `workflow/api/market.py` (goals + gates actions) |
-| Evolution & Evaluation | `workflow/evaluation/`, `workflow/learning/`, autoresearch surface |
-| Providers | `workflow/providers/` |
-| API & MCP Interface | `workflow/api/` (mounted submodules per cluster), `workflow/servers/` |
-| Distribution & Discoverability | `packaging/`, `workflow/directory_server.py`, MCP registry |
+| Engine & Domains | `tinyassets/`, `domains/<name>/` |
+| Daemon Platform | `tinyassets/identity.py`, `tinyassets/discovery.py`, `tinyassets/branch_tasks.py`, `tinyassets/runtime/` |
+| **Brain** | `tinyassets/memory/`, `tinyassets/retrieval/`, `tinyassets/knowledge/`, `tinyassets/storage/__init__.py` (memory_kinds), `tinyassets/learning/` |
+| Goals & Gates | `tinyassets/storage/goals_gates.py`, `tinyassets/api/market.py` (goals + gates actions) |
+| Evolution & Evaluation | `tinyassets/evaluation/`, `tinyassets/learning/`, autoresearch surface |
+| Providers | `tinyassets/providers/` |
+| API & MCP Interface | `tinyassets/api/` (mounted submodules per cluster), `tinyassets/servers/` |
+| Distribution & Discoverability | `packaging/`, `tinyassets/directory_server.py`, MCP registry |
 | Harness & Coordination | `AGENTS.md`, `STATUS.md`, `scripts/claim_check.py`, `scripts/worktree_status.py`, `scripts/provider_context_feed.py`, `.agents/`, `.claude/agents/` |
 | Uptime & Alarms | `deploy/`, `.github/workflows/uptime-canary.yml`, `.github/workflows/p0-outage-triage.yml`, `scripts/uptime_canary.py` |
-| Constraints | `workflow/constraints/`, `data/world_rules.lp` |
+| Constraints | `tinyassets/constraints/`, `data/world_rules.lp` |
 
 Engine subpackage target shape (the durable commitment — anything new must fit one of these or earn its root spot with a one-line explanation):
 
 | Subpackage | Responsibility |
 |---|---|
-| `workflow/api/` | MCP tool surfaces. Mounted submodules per capability cluster (FastMCP `mount()`). **No god-modules.** |
-| `workflow/storage/` | Schema + bounded-context storage layers. Shared `_connect()` + migrations in `__init__.py`. |
-| `workflow/runtime/` | Run scheduling primitives — runs, work_targets, dispatcher, branch_tasks, subscriptions, producers, executors. |
-| `workflow/bid/` | Per-node paid-market mechanics — node_bid, bid_execution_log, bid_ledger, settlements. |
-| `workflow/servers/` | Entry-point shells. Routes to `api/` submodules. **Not the place action logic lives.** |
+| `tinyassets/api/` | MCP tool surfaces. Mounted submodules per capability cluster (FastMCP `mount()`). **No god-modules.** |
+| `tinyassets/storage/` | Schema + bounded-context storage layers. Shared `_connect()` + migrations in `__init__.py`. |
+| `tinyassets/runtime/` | Run scheduling primitives — runs, work_targets, dispatcher, branch_tasks, subscriptions, producers, executors. |
+| `tinyassets/bid/` | Per-node paid-market mechanics — node_bid, bid_execution_log, bid_ledger, settlements. |
+| `tinyassets/servers/` | Entry-point shells. Routes to `api/` submodules. **Not the place action logic lives.** |
 
 Existing subpackages already conforming: `auth/`, `catalog/`, `checkpointing/`, `constraints/`, `context/`, `evaluation/`, `ingestion/`, `knowledge/`, `learning/`, `memory/`, `planning/`, `providers/`, `retrieval/`, `desktop/`, `testing/`, `utils/`. Correctly-flat root modules (small typed surfaces with no clear sibling): `protocols.py`, `exceptions.py`, `notes.py`, `packets.py`, `config.py`, `identity.py`, `discovery.py`, `singleton_lock.py`, `domain_registry.py`, `registry.py`, `preferences.py`, `compat.py` (post-Phase-5).
 
@@ -220,7 +220,7 @@ Every module section below follows the same shape so PLAN.md reads as reference:
 
 ## Module: Engine & Domains
 
-**Purpose:** `workflow/` is reusable infrastructure that any domain can adopt; `domains/*` own their graph topology and import what they need.
+**Purpose:** `tinyassets/` is reusable infrastructure that any domain can adopt; `domains/*` own their graph topology and import what they need.
 
 **In scope:** Engine-shared primitives (state, edges, runs, triggers), the engine/domain seam, domain registration, scene/chapter/book/universe timescale hierarchy as a generic shape.
 
@@ -228,11 +228,11 @@ Every module section below follows the same shape so PLAN.md reads as reference:
 
 **Principles:**
 - *Extract infrastructure first, prove topology second.* A second domain pressures the engine to prove it's actually domain-agnostic — fantasy is the benchmark, not the trunk.
-- *Engine = `workflow/`. Domains = `domains/<name>/`.* The engine-vs-domain seam is named. Once the separation lands, every action lives in exactly one of: shared engine API (`workflow/api/`) or a domain API (`domains/<name>/api/`). No third location.
+- *Engine = `tinyassets/`. Domains = `domains/<name>/`.* The engine-vs-domain seam is named. Once the separation lands, every action lives in exactly one of: shared engine API (`tinyassets/api/`) or a domain API (`domains/<name>/api/`). No third location.
 - *State transitions are the core abstraction.* Orient → plan → draft → commit → learn → reflect → enrich → task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
 - *Scene Loop is a state-transition pattern, not a fiction-specific concept.* Orient → plan → draft → commit is useful only if each step adds value; flatten the loop when a stronger model + better tools can do equivalent work in fewer steps.
 
-**Substrate:** `workflow/` (engine package), `domains/fantasy_daemon/` (only live domain today), `workflow/domain_registry.py`, `workflow/registry.py`, `workflow/protocols.py`. Pending engine/domain API separation: `docs/design-notes/2026-04-17-engine-domain-api-separation.md`. Fantasy domain keeps scene/chapter/book/universe names in its own graph; shared `workflow/` infrastructure uses domain-agnostic names.
+**Substrate:** `tinyassets/` (engine package), `domains/fantasy_daemon/` (only live domain today), `tinyassets/domain_registry.py`, `tinyassets/registry.py`, `tinyassets/protocols.py`. Pending engine/domain API separation: `docs/design-notes/2026-04-17-engine-domain-api-separation.md`. Fantasy domain keeps scene/chapter/book/universe names in its own graph; shared `tinyassets/` infrastructure uses domain-agnostic names.
 
 **Open evolution:** Second domain adoption (research_daemon, journalism_daemon) is the unblocking proof that the engine is domain-agnostic. Until then, every "engine" decision risks fantasy-shaped bias.
 
@@ -259,7 +259,7 @@ _Last audited: 2026-05-19_
 - *Soul-guided dispatch.* A soul-bearing daemon returns to a decision step listing eligible work + soul policy + domain requirements + required capability + offer. The daemon may choose money, interests, reputation, public-good impact, or refusal per its soul. Soulless daemons use the default platform dispatcher.
 - *Two coexisting executors, one file-locked claim.* Cloud-side `cloud_worker` (identity `cloud-droplet`) + opt-in host-tray (identity `host`); both call `branch_tasks.claim_task`; file-lock sidecar guarantees no double-claim.
 
-**Substrate:** `workflow/identity.py`, `workflow/discovery.py`, `workflow/branch_tasks.py`, `workflow/runtime/`, `workflow/singleton_lock.py`. Soul/fork machinery currently lives in the `author_definitions` substrate transitioning to a domain-agnostic daemon registry (content provenance retains `author_id` + `author_kind` discriminator). Host pool registry: `docs/design-notes/2026-04-18-full-platform-architecture.md §5`. Soul-guided dispatch read path landed via open-brain v2 slice B 2026-05-19.
+**Substrate:** `tinyassets/identity.py`, `tinyassets/discovery.py`, `tinyassets/branch_tasks.py`, `tinyassets/runtime/`, `tinyassets/singleton_lock.py`. Soul/fork machinery currently lives in the `author_definitions` substrate transitioning to a domain-agnostic daemon registry (content provenance retains `author_id` + `author_kind` discriminator). Host pool registry: `docs/design-notes/2026-04-18-full-platform-architecture.md §5`. Soul-guided dispatch read path landed via open-brain v2 slice B 2026-05-19.
 
 **Open evolution:** Cross-host node-execution hopping is not supported (cross-host software donation IS, see Distribution). N-of-M multi-actor approval as a generic primitive (founder vote, treasury multisig, scientific publication co-signature) is unscoped.
 
@@ -290,7 +290,7 @@ _Last audited: 2026-05-19_
 - *Learning is write-back compression.* Stable lessons get promoted into the typed catalog; transcripts are not memory.
 - *Brain conditions every authority decision.* Permissive by default — Brain logs and hints. Per-Goal opt-in to strict mode where Brain may refuse to authorize a contradicting write.
 
-**Substrate:** `workflow/memory/`, `workflow/retrieval/`, `workflow/knowledge/`, `workflow/learning/`, `workflow/storage/__init__.py` (memory_kinds + promotion state). Open-brain v2 slices landed 2026-05-19: A=memory_kinds registry, B=soul-guided dispatch read, C=treasury status read, D=bounded autonomous spend. Companion artifacts on main: #903 amendment-verdict carrier, #870 wiki-bug body inclusion, #866 dedup safety net.
+**Substrate:** `tinyassets/memory/`, `tinyassets/retrieval/`, `tinyassets/knowledge/`, `tinyassets/learning/`, `tinyassets/storage/__init__.py` (memory_kinds + promotion state). Open-brain v2 slices landed 2026-05-19: A=memory_kinds registry, B=soul-guided dispatch read, C=treasury status read, D=bounded autonomous spend. Companion artifacts on main: #903 amendment-verdict carrier, #870 wiki-bug body inclusion, #866 dedup safety net.
 
 **Open evolution:** Authority-condition strict-mode rollout (per the 2026-05-19 design note open questions). Brain's role in N-of-M multi-actor approval state. Brain ↔ Evolution feedback — which Brain-snapshotted attributions feed back into evaluator training signal? Cross-universe Brain federation (shared scientific corpus across Goals).
 
@@ -320,7 +320,7 @@ _Last audited: 2026-05-19_
 - *Two review gates, one target registry.* Foundation review hard-blocks; authorial review chooses.
 - *Diverse-by-default.* 100 different research-paper workflows from 100 users is a feature, not duplication. Consolidation into "the best" workflow is an anti-pattern.
 
-**Substrate:** `workflow/storage/goals_gates.py`, `workflow/api/market.py` (goals actions: propose, update, bind, list, get, search, leaderboard, common_nodes, archive_consultation, set_canonical). `BranchTask.rung_claim_recommendations` field landed via PR #899.
+**Substrate:** `tinyassets/storage/goals_gates.py`, `tinyassets/api/market.py` (goals actions: propose, update, bind, list, get, search, leaderboard, common_nodes, archive_consultation, set_canonical). `BranchTask.rung_claim_recommendations` field landed via PR #899.
 
 **Open evolution:** Parent-rank scoring formula as an evolvable workflow node (see follow-up #913) — formula competes via autoresearch, not as a fixed platform constant. Tracking of outcome gates (self-report first, automated later via DOI / court-docket / sales / awards). Per-piece privacy: concept-public default, instance-private when user data involved, chatbot-judged per piece (refines earlier branch-private framing).
 
@@ -345,7 +345,7 @@ _Last audited: 2026-05-19_
 - *Safety model.* Candidate generators cannot edit the evaluator or the locked harness they are being judged by. Optimization runs declare editable surface, evaluator chain, budget, stop conditions, merge policy, provenance, and visibility up front. Private instance data must not be promoted into reusable cognition unless privacy layer permits.
 - *Acceptance Scenario Packs.* Host-approved 2026-05-02 direction (pending opposite-provider review): TinyAssets grows reusable long-horizon scenario packs combining user simulation, rubric checks, MCP/API or browser evidence, and artifact capture into `EvalResult` evidence. No vendoring of AgencyBench or its harness — define TinyAssets-native scenario contracts.
 
-**Substrate:** `workflow/evaluation/`, `workflow/learning/`. `EvalResult` evidence/artifact/cost/freshness contract landed 2026-05-02. Canonical rationale: `docs/audits/2026-05-02-asi-evolve-architecture-implications.md`; integration design: `docs/design-notes/2026-05-02-community-evolvable-optimization-integration.md`.
+**Substrate:** `tinyassets/evaluation/`, `tinyassets/learning/`. `EvalResult` evidence/artifact/cost/freshness contract landed 2026-05-02. Canonical rationale: `docs/audits/2026-05-02-asi-evolve-architecture-implications.md`; integration design: `docs/design-notes/2026-05-02-community-evolvable-optimization-integration.md`.
 
 **Open evolution:** `OptimizationRun` substrate spec (review-blocked on opposite-provider verdicts for ExperiencePool + GroupEvolutionRun, Acceptance Scenario Packs, Private Trace Commons, Origin Quantum Q0/Q1 — see STATUS Work table). Quality-diversity vs. linear ranking — the parent-rank formula divergence in Goals & Gates is a special case of this same evolvable-formula question.
 
@@ -357,7 +357,7 @@ _Last audited: 2026-05-19_
 
 **Purpose:** Pick the best provider per role and preserve role separation without hiding failure.
 
-**In scope:** Provider registry, fallback chains, parallel diversity, the writer-pin override (`WORKFLOW_PIN_WRITER`), local-LLM endpoint binding (`OLLAMA_HOST`, `ANTHROPIC_BASE_URL`), provider-specific config.
+**In scope:** Provider registry, fallback chains, parallel diversity, the writer-pin override (`TINYASSETS_PIN_WRITER`), local-LLM endpoint binding (`OLLAMA_HOST`, `ANTHROPIC_BASE_URL`), provider-specific config.
 
 **Out of scope:** What a provider is asked to do (the requesting module); evaluation of provider output (Evolution & Evaluation).
 
@@ -366,7 +366,7 @@ _Last audited: 2026-05-19_
 - *Fallback chain correctness is a first-class invariant.* Every provider named in a fallback chain must be either registered AND reachable at startup, or explicitly excluded with a logged reason. Phantom chain entries are a bug. A chain that reads `[claude-code, codex, gemini-free, ...]` but whose first entry's CLI binary is absent silently degrades the whole chain; operators reading config see one chain, the runtime iterates a different one. Register-and-probe at startup; emit structured evidence of the effective chain via `get_status`; refuse to advertise unreachable providers. (Corroborated by BUG-025 + 2026-04-21 prod-LLM-binding incident + 2026-04-23 revert-loop P0.)
 - *Required files must be probed at startup and fail loud if missing.* When code declares a required on-disk artifact (ASP rule files, schema definitions, seeded fixtures, vendored configs), startup must probe for it and refuse to start if absent — not log a WARNING and continue with an empty fallback. Silent substrate-degradation from missing artifacts produces runs that report success while behaving as no-ops; that violates Hard Rule #8 at an earlier lifecycle phase. (Corroborated by BUG-026: `data/world_rules.lp` absent silently reduced the ASP constraint engine to a no-op.)
 
-**Substrate:** `workflow/providers/`. Required-files probe lives at startup; chain probe emits via `get_status`.
+**Substrate:** `tinyassets/providers/`. Required-files probe lives at startup; chain probe emits via `get_status`.
 
 **Open evolution:** Auth-parity work for non-Claude/ChatGPT providers in the MCP-host customer matrix.
 
@@ -387,9 +387,9 @@ _Last audited: 2026-05-19_
 - *Tools publish explicit titles, tags, and behavior hints.* The daemon exposes a small number of coarse-grained tools; discoverability metadata is part of the interface contract.
 - *Trust-critical tools are self-auditing.* Tools that touch privacy, cost, routing, scope, or moderation expose structured evidence + structured caveats; the chatbot composes the user-facing narrative on top. Caveats are part of the tool's contract. (See `docs/design-notes/2026-04-19-self-auditing-tools.md`.)
 - *Release state is a status contract.* `get_status.release_state` reads the deploy-published receipt that ties the live daemon to source SHA, image tag/digest, build/deploy runs, config hash, canary status, deployment time, rollback target, and actor metadata. Missing receipts surface as caveats, not probe failures.
-- *Module shape rule.* API surfaces live in `workflow/api/` as mounted submodules per capability cluster. Server shells in `workflow/servers/` route to them. **No god-modules.**
+- *Module shape rule.* API surfaces live in `tinyassets/api/` as mounted submodules per capability cluster. Server shells in `tinyassets/servers/` route to them. **No god-modules.**
 
-**Substrate:** `workflow/api/` (helpers, wiki, status, runs, evaluation, runtime_ops, market, branches), `workflow/servers/` (workflow_server, daemon_server, mcp_server). Universe-server decomposition is in-flight per `docs/audits/2026-04-25-universe-server-decomposition.md` — universe_server.py is down from 14k peak to 972 LOC live in main.
+**Substrate:** `tinyassets/api/` (helpers, wiki, status, runs, evaluation, runtime_ops, market, branches), `tinyassets/servers/` (workflow_server, daemon_server, mcp_server). Universe-server decomposition is in-flight per `docs/audits/2026-04-25-universe-server-decomposition.md` — universe_server.py is down from 14k peak to 972 LOC live in main.
 
 **Open evolution:** Final cluster extraction completion. ChatGPT-host first-response UX caveat (large MCP responses → "something went wrong"; see memory `project_chatgpt_response_too_large_failure.md`) — SUMMARY-by-default response shape with `verbose=true` opt-in is unscoped.
 
@@ -409,10 +409,10 @@ _Last audited: 2026-05-28_
 - *Keep the core portable; add platform wrappers around it.* MCPB packages, Claude Code plugins, registry metadata, and future `.cnw.zip` packaging are distribution layers over the same daemon and tool surface, not replacement architectures.
 - *MCP host coverage is matrix-driven.* Claude and ChatGPT are P0 launch gates, but every MCP-capable host is a possible customer surface. Caveats + acceptance proofs live in `docs/design-notes/2026-05-01-mcp-host-customer-matrix.md`.
 - *Install-readiness is continuous.* Main is a downloadable release at all times. Every change preserves flawless first-install — packaging auto-builds via CI (import probe + plugin drift check), user-facing copy is branded and unambiguous, broken install is a production bug.
-- *Discovery via entry points, not filesystem scan.* Domain discovery uses `importlib.metadata.entry_points(group="workflow.domains")`. Filesystem scan of `domains/*/skill.py` is a dev-mode fallback for editable worktrees only. Compat aliases stay out of discovery — compat lives in import shims, not in the domain registry contract.
+- *Discovery via entry points, not filesystem scan.* Domain discovery uses `importlib.metadata.entry_points(group="tinyassets.domains")`. Filesystem scan of `domains/*/skill.py` is a dev-mode fallback for editable worktrees only. Old-name aliases stay out of discovery and are not part of the domain registry contract.
 - *Software surface is declarative and multi-layer-authorized.* Nodes declare `required_capabilities`. Per-host capability registry resolves what's installed. Missing software auto-installs (host-policy gated). Daemons can invoke arbitrary local software via a dedicated `external_tool_node` type that bypasses the Python sandbox but layers security: bundled handler signatures, binary signature verification, universe-level allow-list, per-software host approval, subprocess isolation. Any single layer fails, the others hold. Cross-host software donation supported; cross-host node-execution hopping is not.
 
-**Substrate:** `packaging/`, `workflow/directory_server.py`, MCP Registry surface, ChatGPT app submission packet, no-login deployment packs for Open WebUI / LibreChat.
+**Substrate:** `packaging/`, `tinyassets/directory_server.py`, MCP Registry surface, ChatGPT app submission packet, no-login deployment packs for Open WebUI / LibreChat.
 
 **Open evolution:** First-user evidence after no-dev-mode acceptance proofs land. ChatGPT-mobile proof.
 
@@ -453,9 +453,9 @@ _Last audited: 2026-05-19_
 
 **Principles:**
 - *Defense in depth, and the alarm path itself is host-independent.* Every self-heal layer assumes the layers below it will fail; the alarm ladder assumes every self-heal layer will fail. None run on a host machine.
-- *Three self-heal layers, each catches a different class.* 1. Container restart (`systemd Restart=always` + `workflow-watchdog.timer`) — transient crashes, OOM recovery, hung-but-not-crashed. 2. GHA `p0-outage-triage.yml` auto-repair — six classes covered (OOM, disk-full, image-pull, watchdog-hot-loop, tunnel-token-manual, env-unreadable). 3. Deploy-side invariants — `deploy-prod.yml` asserts `/etc/workflow/env` is readable by the daemon user post-mutation and post-restart, then publishes `/data/release-state.json` for live status reconciliation.
+- *Three self-heal layers, each catches a different class.* 1. Container restart (`systemd Restart=always` + `tinyassets-watchdog.timer`) — transient crashes, OOM recovery, hung-but-not-crashed. 2. GHA `p0-outage-triage.yml` auto-repair — six classes covered (OOM, disk-full, image-pull, watchdog-hot-loop, tunnel-token-manual, env-unreadable). 3. Deploy-side invariants — `deploy-prod.yml` asserts `/etc/tinyassets/env` is readable by the daemon user post-mutation and post-restart, then publishes `/data/release-state.json` for live status reconciliation.
 - *Alarm ladder, host-phone-independent.* Pushover paging from GHA `alarm-sink` at threshold-cross (2 consecutive reds ≈ 10 min outage), `priority=2` + vibrate-tier initial, escalating re-page at 1h / 4h / 24h if `p0-outage` issue stays open with no human comment. Probe-without-paging is not an alarm path (2026-04-21 lesson).
-- *DR validated end-to-end.* Weekly drill provisions a fresh VM, bootstraps, restores `/etc/workflow/env` + data volume from offsite, starts daemon, asserts canary-green within SLA. Decoupled restore + start, exit-code propagation, SSH-tunnel probe; no host keystrokes bridge any step.
+- *DR validated end-to-end.* Weekly drill provisions a fresh VM, bootstraps, restores `/etc/tinyassets/env` + data volume from offsite, starts daemon, asserts canary-green within SLA. Decoupled restore + start, exit-code propagation, SSH-tunnel probe; no host keystrokes bridge any step.
 - *Loop-uptime-maintenance is the authorized escape.* Skill at `.agents/skills/loop-uptime-maintenance/SKILL.md` handles failure classes not yet graduated to layers 1-3. Entry condition: the loop is too broken to self-heal via its own loop. Success metric: usage trends to zero — every incident graduates a failure class out of the skill into layers 1-3.
 - *Public-surface canary is required evidence, not final proof.* MCP/chatbot-facing changes also require live Claude.ai `ui-test` for final acceptance (Hard Rule #11).
 
@@ -479,7 +479,7 @@ _Last audited: 2026-05-28_
 - *Neurosymbolic methods are optional leverage.* Universe-specific rules are the only version likely to earn ongoing complexity; generic boilerplate constraints are not enough.
 - *Required-files probe applies.* `data/world_rules.lp` (or equivalent) must be probed at startup — silent absence reducing the engine to a no-op violates Hard Rule #8.
 
-**Substrate:** `workflow/constraints/`, `data/world_rules.lp` (universe-specific rule packs).
+**Substrate:** `tinyassets/constraints/`, `data/world_rules.lp` (universe-specific rule packs).
 
 **Open evolution:** Second universe's rule pack as the test that constraint engine is domain-agnostic.
 
@@ -559,13 +559,13 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 - **Swarm runtime.** No universe-wide single active daemon. Runtime capacity and daemon identity are separate resources.
 - **GitHub is an export sink, not the canonical store.** Canonical state lives in Postgres (Supabase-hosted at launch). GitHub receives a periodic flat-YAML export of public goals/branches/nodes; contributions via GitHub PR are accepted via a round-trip YAML → webhook → Postgres import path. One-way-door decision (host-approved 2026-04-18).
 - **Local-first execution, git-native sync (bridge state).** DO Droplet self-host is the current bridge. Postgres-canonical replaces local-first when the control-plane backend ships.
-- **User-controllable state architecture.** Users should eventually inspect, steer, and redesign workflow/state structure conversationally.
+- **User-controllable state architecture.** Users should eventually inspect, steer, and redesign tinyassets/state structure conversationally.
 - **Multi-host is the destination.** Local-host is important, but end-state is a network of hosts contributing model capacity to shared projects.
 - **The system must evolve itself.** Stagnation is the worst failure mode.
 - **Context is tools, not pre-assembly.** The writer should query through tools. Pre-assembly is transitional.
 - **Bad decisions are data.** When the daemon decides poorly, improve goals/tools/state/evals. Don't reflexively add rules.
 - **Human control belongs at irreversible boundaries.** Bounded loops for autonomy; pause/stop/takeover/confirmation at the edge.
-- **Engine is infrastructure, not topology.** `workflow/` is a shared library plus optional profiles. Each domain owns its own graph.
+- **Engine is infrastructure, not topology.** `tinyassets/` is a shared library plus optional profiles. Each domain owns its own graph.
 - **Currency naming + test rail.** Real currency reference is `Destiny (tiny)` with symbol `tiny`. Current paid-market tests use `test tiny` on Base Sepolia only. Mainnet Destiny/tiny settlement, staking, DAO voting, and treasury flows are deferred. See `docs/design-notes/2026-04-29-token-naming-and-test-currency.md`.
 
 ---
@@ -576,7 +576,7 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 - **Structural scaffolding should shrink** as models improve — hard maxima and routing thresholds only survive if evals prove they help.
 - **Hybrid memory must become one policy.** Retrieval and memory may be separate implementations but should behave like one coherent decision system from the daemon's perspective (Brain Module is the convergence point).
 - **State contract mismatches are bugs.** TypedDicts, node outputs, and downstream consumers must agree.
-- **God-module decomposition is in-flight, not done.** `workflow/universe_server.py` is down from 14k peak to 972 LOC live in main; remaining cluster extractions sequenced per `docs/audits/2026-04-25-universe-server-decomposition.md`.
+- **God-module decomposition is in-flight, not done.** `tinyassets/universe_server.py` is down from 14k peak to 972 LOC live in main; remaining cluster extractions sequenced per `docs/audits/2026-04-25-universe-server-decomposition.md`.
 - **Postgres-canonical vs GitHub-canonical is the largest unresolved architectural decision.** Until host answers, two design shapes coexist in this document. Decision should land soon to avoid further documentation divergence.
 - **External-write authority + idempotency + reward release.** Per the 2026-05-19 design note draft, the holistic model is awaiting host steering on 6 open questions before implementation begins.
 - **Per-Goal strict-mode rollout for Brain authority-condition policy.** Permissive by default; strict-mode opt-in is unscoped.

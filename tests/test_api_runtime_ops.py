@@ -1,9 +1,9 @@
-"""Task #13 — direct tests for `workflow.api.runtime_ops` after decomp Step 6.
+"""Task #13 — direct tests for `tinyassets.api.runtime_ops` after decomp Step 6.
 
 The legacy test files (test_dry_inspect_node.py, test_project_memory.py,
 test_teammate_message.py, test_scheduler*.py) import via
-`workflow.universe_server` to cover chatbot-facing MCP wrappers. This file
-exercises `workflow.api.runtime_ops` directly to lock in the canonical
+`tinyassets.universe_server` to cover chatbot-facing MCP wrappers. This file
+exercises `tinyassets.api.runtime_ops` directly to lock in the canonical
 implementation surface.
 """
 
@@ -13,8 +13,8 @@ import json
 
 import pytest
 
-from workflow.api import runtime_ops as rt_mod
-from workflow.api.runtime_ops import (
+from tinyassets.api import runtime_ops as rt_mod
+from tinyassets.api.runtime_ops import (
     _INSPECT_DRY_ACTIONS,
     _MESSAGING_ACTIONS,
     _PROJECT_MEMORY_ACTIONS,

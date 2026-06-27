@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.evaluation import EvalResult
-from workflow.evaluation.scenario_runner import (
+from tinyassets.evaluation import EvalResult
+from tinyassets.evaluation.scenario_runner import (
     AcceptanceScenario,
     register_dispatcher,
     registered_dispatchers,

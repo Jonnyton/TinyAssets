@@ -6,7 +6,7 @@
 
 **Lens:** identify *other* code paths that may have the same shape — code that was updated for the new schema but leaves the legacy schema in an inconsistent or stale state. Dev #49 handles the acute Fix E symptom; this audit asks "is the same gap latent elsewhere?"
 
-**Method:** Walked all `workflow/`, `domains/`, `fantasy_daemon/` modules referencing `story.db` and/or `knowledge.db`. Cross-referenced against the Fix E commit (`05ce779`) + the dual-source pattern at `workflow/universe_server.py:2797-2890` (`_query_world_db`).
+**Method:** Walked all `tinyassets/`, `domains/`, `fantasy_daemon/` modules referencing `story.db` and/or `knowledge.db`. Cross-referenced against the Fix E commit (`05ce779`) + the dual-source pattern at `tinyassets/universe_server.py:2797-2890` (`_query_world_db`).
 
 ---
 
@@ -24,11 +24,11 @@ The 04-17 → 04-19 migration is more accurately described as *bifurcation*: `st
 
 | Code path | Touches | Operation | Class | Notes |
 |---|---|---|---|---|
-| `workflow/universe_server.py:2797-2890` `_query_world_db` | both | READ (probe-priority) | 1 | Dual-source bridge; explicitly tries `story.db::extracted_facts` first, falls back to `knowledge.db::facts`. Same shape for `characters`. **Working as designed.** |
-| `workflow/universe_server.py:1345` | story.db | READ (path construction) | 1 | `db_path = udir / "story.db"` for individual universe. Standard read access. |
-| `workflow/memory/archival.py:131` | knowledge.db | READ (path construction) | 1 | `kg_path = str(Path(db_path).parent / "knowledge.db")` — derives KG path from world-state db path. Read-side only. |
-| `workflow/memory/manager.py:294,330` | (state-shape) | READ (state field `extracted_facts`) | 1 | Reads the state.extracted_facts field passed in by the commit pipeline; not direct DB access. |
-| `workflow/evaluation/structural.py:723,780,923,1009` | (state-shape) | READ (state field `extracted_facts`) | 1 | Same — state-shape consumer, not direct DB. |
+| `tinyassets/universe_server.py:2797-2890` `_query_world_db` | both | READ (probe-priority) | 1 | Dual-source bridge; explicitly tries `story.db::extracted_facts` first, falls back to `knowledge.db::facts`. Same shape for `characters`. **Working as designed.** |
+| `tinyassets/universe_server.py:1345` | story.db | READ (path construction) | 1 | `db_path = udir / "story.db"` for individual universe. Standard read access. |
+| `tinyassets/memory/archival.py:131` | knowledge.db | READ (path construction) | 1 | `kg_path = str(Path(db_path).parent / "knowledge.db")` — derives KG path from world-state db path. Read-side only. |
+| `tinyassets/memory/manager.py:294,330` | (state-shape) | READ (state field `extracted_facts`) | 1 | Reads the state.extracted_facts field passed in by the commit pipeline; not direct DB access. |
+| `tinyassets/evaluation/structural.py:723,780,923,1009` | (state-shape) | READ (state field `extracted_facts`) | 1 | Same — state-shape consumer, not direct DB. |
 | `domains/fantasy_daemon/phases/drift_cleanup.py` | knowledge.db | DELETE | **3** | **Fix E. Scope explicitly facts-only on knowledge.db. Does NOT touch story.db::extracted_facts, story.db::character_states, or story.db::promises.** Dev #49 in flight. |
 | `domains/fantasy_daemon/phases/orient.py:36` | story.db | path-policy comment | 1 | Comment about default path removal; no operation. |
 | `domains/fantasy_daemon/phases/world_state_db.py:4` | story.db | (module — full impl) | 1 | World-state DB module. Full WRITE pipeline for `story.db` tables. **Does NOT also write to knowledge.db** — KG pipeline owns that side. |

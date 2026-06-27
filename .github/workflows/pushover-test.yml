@@ -10,7 +10,7 @@ name: Pushover test page
 #   - Migrating phones / revoking app tokens.
 #   - Pre-flight before relying on paging for real.
 #
-# Run via Actions tab → "Pushover test page" → Run workflow.
+# Run via Actions tab → "Pushover test page" → Run tinyassets.
 
 on:
   workflow_dispatch:
@@ -65,7 +65,7 @@ jobs:
               kwargs["sound"] = "vibrate"
 
           ok, body = send_pushover(
-              title=f"[TEST p{priority}] Workflow paging",
+              title=f"[TEST p{priority}] TinyAssets paging",
               message=os.environ.get("TEST_MESSAGE") or "One-shot validation.",
               **kwargs,
           )

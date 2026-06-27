@@ -29,7 +29,7 @@ Usage (called by pre-commit hook):
     python scripts/pre_commit_invariant_actionlint.py
 
     # Explicit path(s) for manual invocation / tests:
-    python scripts/pre_commit_invariant_actionlint.py path/to/workflow.yml
+    python scripts/pre_commit_invariant_actionlint.py path/to/tinyassets.yml
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-_WORKFLOW_PREFIX = ".github/workflows/"
+_TINYASSETS_PREFIX = ".github/workflows/"
 
 
 def _staged_workflow_files() -> list[str]:
@@ -57,7 +57,7 @@ def _staged_workflow_files() -> list[str]:
     return [
         line
         for line in result.stdout.splitlines()
-        if line.startswith(_WORKFLOW_PREFIX)
+        if line.startswith(_TINYASSETS_PREFIX)
         and (line.endswith(".yml") or line.endswith(".yaml"))
     ]
 

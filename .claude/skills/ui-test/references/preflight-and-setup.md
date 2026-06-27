@@ -10,7 +10,7 @@ and stop on a blocker; the CDP-down stop rule); this file holds the details.
 When Codex runs `ui-test`, check these before the first prompt and log the result:
 
 - The visible in-app browser tab is `https://claude.ai/` or an existing `claude.ai/chat/...` conversation.
-- The conversation can use the Workflow connector at `https://tinyassets.io/mcp`.
+- The conversation can use the TinyAssets connector at `https://tinyassets.io/mcp`.
 - The host-visible tab is the same one Codex is reading and typing into.
 
 If login, connector installation, or the in-app browser itself is unavailable, stop the mission and name that exact harness blocker. Do not report `claude_chat.py status` or CDP failure as a blocker for the Codex route.
@@ -33,7 +33,7 @@ For the Claude Code route, the host launches Chrome with:
 powershell -Command "Start-Process 'C:\\Users\\Jonathan\\AppData\\Local\\ms-playwright\\chromium-1208\\chrome-win64\\chrome.exe' -ArgumentList '--user-data-dir=C:\\Users\\Jonathan\\.claude-ai-profile','--remote-debugging-port=9222','--no-first-run','--disable-blink-features=AutomationControlled','https://claude.ai/new'"
 ```
 
-logs into claude.ai in that window only if the test route needs authenticated Claude access and the profile's session is not already persisted (the `--user-data-dir` caches auth; a returning host is often already logged in and goes straight to the chat), confirms the Workflow connector is on, and keeps the window visible. Before you act, verify with:
+logs into claude.ai in that window only if the test route needs authenticated Claude access and the profile's session is not already persisted (the `--user-data-dir` caches auth; a returning host is often already logged in and goes straight to the chat), confirms the TinyAssets connector is on, and keeps the window visible. Before you act, verify with:
 
 ```bash
 python scripts/claude_chat.py status

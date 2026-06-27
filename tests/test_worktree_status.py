@@ -381,7 +381,7 @@ def test_memory_refs_read_provider_agnostic_memory_block(tmp_path: Path) -> None
             [
                 "Purpose: demo",
                 "Memory refs:",
-                "- .cursor/rules/workflow.mdc",
+                "- .cursor/rules/tinyassets.mdc",
                 "- .codex/session-notes.md",
                 "Related implications:",
                 "- docs/audits/demo.md",
@@ -391,7 +391,7 @@ def test_memory_refs_read_provider_agnostic_memory_block(tmp_path: Path) -> None
     )
 
     assert worktree_status._memory_refs(tmp_path) == [
-        ".cursor/rules/workflow.mdc",
+        ".cursor/rules/tinyassets.mdc",
         ".codex/session-notes.md",
     ]
 

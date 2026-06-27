@@ -63,7 +63,7 @@ def _make_branch_dict(branch_def_id="b1", name="test-branch", entry_point="n1",
 
 
 def _call_build(spec_dict, verbose=None):
-    from workflow.api.branches import _ext_branch_build
+    from tinyassets.api.branches import _ext_branch_build
 
     saved = _make_branch_dict(
         branch_def_id="b_built",
@@ -78,16 +78,16 @@ def _call_build(spec_dict, verbose=None):
         kwargs["verbose"] = str(verbose).lower()
 
     with (
-        patch("workflow.daemon_server.save_branch_definition", save_mock),
-        patch("workflow.api.helpers._base_path", return_value="/fake"),
-        patch("workflow.branches.BranchDefinition.validate", return_value=[]),
+        patch("tinyassets.daemon_server.save_branch_definition", save_mock),
+        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+        patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
     ):
         result = _ext_branch_build(kwargs)
     return json.loads(result)
 
 
 def _call_patch(branch_before, branch_after, changes_json, verbose=None):
-    from workflow.api.branches import _ext_branch_patch
+    from tinyassets.api.branches import _ext_branch_patch
 
     save_mock = MagicMock(return_value=branch_after)
 
@@ -106,12 +106,12 @@ def _call_patch(branch_before, branch_after, changes_json, verbose=None):
     # auth check. Auth-gate semantics are covered in
     # test_patch_branch_auth_gate.py.
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_before),
-        patch("workflow.daemon_server.save_branch_definition", save_mock),
-        patch("workflow.api.helpers._base_path", return_value="/fake"),
-        patch("workflow.branches.BranchDefinition.validate", return_value=[]),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_before),
+        patch("tinyassets.daemon_server.save_branch_definition", save_mock),
+        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+        patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
         patch(
-            "workflow.api.engine_helpers._current_actor",
+            "tinyassets.api.engine_helpers._current_actor",
             return_value=branch_before.get("author", "tester"),
         ),
     ):
@@ -162,14 +162,14 @@ class TestBuildBranchSummaryDefault:
         assert "branch" not in result
 
     def test_verbose_string_true_includes_branch(self):
-        from workflow.api.branches import _ext_branch_build
+        from tinyassets.api.branches import _ext_branch_build
         spec = self._spec()
         saved = _make_branch_dict(name=spec["name"])
         save_mock = MagicMock(return_value=saved)
         with (
-            patch("workflow.daemon_server.save_branch_definition", save_mock),
-            patch("workflow.api.helpers._base_path", return_value="/fake"),
-            patch("workflow.branches.BranchDefinition.validate", return_value=[]),
+            patch("tinyassets.daemon_server.save_branch_definition", save_mock),
+            patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+            patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
         ):
             result = json.loads(_ext_branch_build(
                 {"spec_json": json.dumps(spec), "verbose": "true"}
@@ -264,7 +264,7 @@ class TestPatchBranchSummaryDefault:
 # ── add_node ──────────────────────────────────────────────────────────────────
 
 def _call_add_node(branch_dict, node_kwargs, verbose=None):
-    from workflow.api.branches import _ext_branch_add_node
+    from tinyassets.api.branches import _ext_branch_add_node
 
     branch_mock = MagicMock()
     node_mock = MagicMock()
@@ -277,14 +277,14 @@ def _call_add_node(branch_dict, node_kwargs, verbose=None):
         kwargs["verbose"] = str(verbose).lower()
 
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("workflow.branches.BranchDefinition.from_dict", return_value=branch_mock),
-        patch("workflow.api.branches._apply_node_spec", return_value=""),
-        patch("workflow.api.engine_helpers._storage_backend") as sb_mock,
-        patch("workflow.api.engine_helpers._storage_backend", new=sb_mock),
-        patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-        patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-        patch("workflow.identity.git_author", return_value="tester <t@t>"),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+        patch("tinyassets.branches.BranchDefinition.from_dict", return_value=branch_mock),
+        patch("tinyassets.api.branches._apply_node_spec", return_value=""),
+        patch("tinyassets.api.engine_helpers._storage_backend") as sb_mock,
+        patch("tinyassets.api.engine_helpers._storage_backend", new=sb_mock),
+        patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+        patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+        patch("tinyassets.identity.git_author", return_value="tester <t@t>"),
     ):
         sb_mock.return_value.save_branch_and_commit = MagicMock()
         result = _ext_branch_add_node(kwargs)
@@ -322,7 +322,7 @@ class TestAddNodeSummaryDefault:
 # ── connect_nodes ─────────────────────────────────────────────────────────────
 
 def _call_connect_nodes(branch_dict, from_node, to_node, verbose=None):
-    from workflow.api.branches import _ext_branch_connect_nodes
+    from tinyassets.api.branches import _ext_branch_connect_nodes
 
     branch_mock = MagicMock()
     branch_mock.edges = []
@@ -336,12 +336,12 @@ def _call_connect_nodes(branch_dict, from_node, to_node, verbose=None):
         kwargs["verbose"] = str(verbose).lower()
 
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("workflow.branches.BranchDefinition.from_dict", return_value=branch_mock),
-        patch("workflow.branches.EdgeDefinition", return_value=MagicMock()),
-        patch("workflow.api.engine_helpers._storage_backend") as sb_mock,
-        patch("workflow.api.engine_helpers._storage_backend", new=sb_mock),
-        patch("workflow.identity.git_author", return_value="tester <t@t>"),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+        patch("tinyassets.branches.BranchDefinition.from_dict", return_value=branch_mock),
+        patch("tinyassets.branches.EdgeDefinition", return_value=MagicMock()),
+        patch("tinyassets.api.engine_helpers._storage_backend") as sb_mock,
+        patch("tinyassets.api.engine_helpers._storage_backend", new=sb_mock),
+        patch("tinyassets.identity.git_author", return_value="tester <t@t>"),
     ):
         sb_mock.return_value.save_branch_and_commit = MagicMock()
         result = _ext_branch_connect_nodes(kwargs)
@@ -372,7 +372,7 @@ class TestConnectNodesSummaryDefault:
 # ── set_entry_point ───────────────────────────────────────────────────────────
 
 def _call_set_entry_point(branch_dict, node_id, verbose=None):
-    from workflow.api.branches import _ext_branch_set_entry_point
+    from tinyassets.api.branches import _ext_branch_set_entry_point
 
     branch_mock = MagicMock()
     branch_mock.node_defs = []
@@ -382,11 +382,11 @@ def _call_set_entry_point(branch_dict, node_id, verbose=None):
         kwargs["verbose"] = str(verbose).lower()
 
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("workflow.branches.BranchDefinition.from_dict", return_value=branch_mock),
-        patch("workflow.api.engine_helpers._storage_backend") as sb_mock,
-        patch("workflow.api.engine_helpers._storage_backend", new=sb_mock),
-        patch("workflow.identity.git_author", return_value="tester <t@t>"),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+        patch("tinyassets.branches.BranchDefinition.from_dict", return_value=branch_mock),
+        patch("tinyassets.api.engine_helpers._storage_backend") as sb_mock,
+        patch("tinyassets.api.engine_helpers._storage_backend", new=sb_mock),
+        patch("tinyassets.identity.git_author", return_value="tester <t@t>"),
     ):
         sb_mock.return_value.save_branch_and_commit = MagicMock()
         result = _ext_branch_set_entry_point(kwargs)
@@ -416,7 +416,7 @@ class TestSetEntryPointSummaryDefault:
 # ── add_state_field ───────────────────────────────────────────────────────────
 
 def _call_add_state_field(branch_dict, field_name, field_type="str", verbose=None):
-    from workflow.api.branches import _ext_branch_add_state_field
+    from tinyassets.api.branches import _ext_branch_add_state_field
 
     branch_mock = MagicMock()
     branch_mock.state_schema = []
@@ -430,11 +430,11 @@ def _call_add_state_field(branch_dict, field_name, field_type="str", verbose=Non
         kwargs["verbose"] = str(verbose).lower()
 
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("workflow.branches.BranchDefinition.from_dict", return_value=branch_mock),
-        patch("workflow.api.engine_helpers._storage_backend") as sb_mock,
-        patch("workflow.api.engine_helpers._storage_backend", new=sb_mock),
-        patch("workflow.identity.git_author", return_value="tester <t@t>"),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+        patch("tinyassets.branches.BranchDefinition.from_dict", return_value=branch_mock),
+        patch("tinyassets.api.engine_helpers._storage_backend") as sb_mock,
+        patch("tinyassets.api.engine_helpers._storage_backend", new=sb_mock),
+        patch("tinyassets.identity.git_author", return_value="tester <t@t>"),
     ):
         sb_mock.return_value.save_branch_and_commit = MagicMock()
         result = _ext_branch_add_state_field(kwargs)

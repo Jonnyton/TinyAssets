@@ -5,9 +5,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from workflow.payments import migrate_settlement_schema
-from workflow.storage import DB_FILENAME
-from workflow.treasury import migrate_treasury_schema, treasury_status
+from tinyassets.payments import migrate_settlement_schema
+from tinyassets.storage import DB_FILENAME
+from tinyassets.treasury import migrate_treasury_schema, treasury_status
 
 
 def _connect_db(base_path: Path) -> sqlite3.Connection:

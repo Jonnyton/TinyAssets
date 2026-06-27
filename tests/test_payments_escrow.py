@@ -1,4 +1,4 @@
-"""Tests for workflow.payments.escrow — gate bonus escrow primitives.
+"""Tests for tinyassets.payments.escrow — gate bonus escrow primitives.
 
 Spec: docs/vetted-specs.md §Gate bonuses invariants:
   * bonus_stake locked when claim made; release to node's last-claimer on pass
@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from workflow.payments import (
+from tinyassets.payments import (
     DuplicateLockError,
     EscrowLock,
     LockAlreadyResolvedError,
@@ -120,7 +120,7 @@ class TestLockBonus:
 
     def test_negative_amount_raises(self):
         conn = _fresh_conn()
-        from workflow.payments.escrow import EscrowError
+        from tinyassets.payments.escrow import EscrowError
         with pytest.raises(EscrowError, match="amount"):
             lock_bonus(
                 conn,

@@ -3,7 +3,7 @@ title: MCP tool description clarity audit — chatbot cold-read pass
 date: 2026-04-25
 author: dev-2
 status: active
-scope: workflow/universe_server.py — all 6 public @mcp.tool decorators + server instructions
+scope: tinyassets/universe_server.py — all 6 public @mcp.tool decorators + server instructions
 ---
 
 # MCP tool description clarity audit
@@ -12,7 +12,7 @@ A cold-read pass from a chatbot's perspective: given only the MCP tool
 listing, can the model pick the right tool, pick the right action, and
 form correct calls on the first attempt?
 
-Tested against: `workflow/universe_server.py` as of 2026-04-25.
+Tested against: `tinyassets/universe_server.py` as of 2026-04-25.
 
 ---
 

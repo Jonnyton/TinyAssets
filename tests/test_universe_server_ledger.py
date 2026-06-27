@@ -4,7 +4,7 @@ PLAN.md Design Decision: "Private chats, public actions." Every universe-
 affecting write must land in the per-universe ledger with author + action
 + target + timestamp + summary.
 
-The enforcement point is `_dispatch_with_ledger` in `workflow/universe_server.py`:
+The enforcement point is `_dispatch_with_ledger` in `tinyassets/universe_server.py`:
 a shared write-wrapper funnels every action listed in `WRITE_ACTIONS` through
 a ledger append on success. These tests exercise the wrapper via the internal
 dispatch shape, not the per-handler functions directly, because bypassing the
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-import workflow.api.universe as us
+import tinyassets.api.universe as us
 
 
 def _call(action: str, **kwargs) -> dict:
@@ -69,7 +69,7 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     base = tmp_path / "output"
     uid = "test-uni"
     (base / uid).mkdir(parents=True)
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "test-user")
     return uid
@@ -289,7 +289,7 @@ def test_actor_defaults_to_anonymous_without_env(
 ) -> None:
     base = tmp_path / "output"
     (base / "u").mkdir(parents=True)
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "u")
     monkeypatch.delenv("UNIVERSE_SERVER_USER", raising=False)
 

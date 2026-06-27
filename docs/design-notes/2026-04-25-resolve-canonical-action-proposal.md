@@ -170,4 +170,4 @@ Auxiliary: error shapes (missing goal_id, goal not found) follow existing `goals
 - Schema: `canonical_bindings` table per Task #47 §1, implemented in Task #61 Step 0+1.
 - Privacy filter: Task #47 §1 (visibility column on canonical_bindings) + §3 (SQL clause).
 - Ledger discipline: `docs/design-notes/2026-04-25-contribution-ledger-proposal.md` (Task #48) §1 — reads don't emit events.
-- Existing read-only goal actions (pattern reference): `workflow/universe_server.py:10247-10328` (`_action_goal_get`) + `:10218-10245` (`_action_goal_list`).
+- Existing read-only goal actions (pattern reference): `tinyassets/universe_server.py:10247-10328` (`_action_goal_get`) + `:10218-10245` (`_action_goal_list`).

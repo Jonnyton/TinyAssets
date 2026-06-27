@@ -16,7 +16,7 @@ Escalation (Layer 1)
 
 Invocation
 ----------
-Windows Task Scheduler entry ``Workflow-Alarm`` runs this every 2 min,
+Windows Task Scheduler entry ``TinyAssets-Alarm`` runs this every 2 min,
 decoupled from the probe job (design-note §5). Decoupling means the
 alarm still fires even if the probe job lands slightly out-of-cadence.
 

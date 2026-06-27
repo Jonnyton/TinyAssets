@@ -1,2 +1,2 @@
-"""Shim: use workflow.checkpointing instead."""
-from workflow.checkpointing import *  # noqa: F401,F403
+"""Shim: use tinyassets.checkpointing instead."""
+from tinyassets.checkpointing import *  # noqa: F401,F403

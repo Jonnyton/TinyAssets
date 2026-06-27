@@ -5,7 +5,7 @@ shipped_in: 052985a (Option A — lazy __getattr__ co-shipped with R7), 0bad5b4 
 status_detail: Options A + B shipped per §4 recommendation; C and D explicitly deferred in the doc and remain so.
 ---
 
-# `workflow/storage/__init__.py` — Stale-Bytecode Mitigation Scoping
+# `tinyassets/storage/__init__.py` — Stale-Bytecode Mitigation Scoping
 
 **Date:** 2026-04-19 (post-P0)
 **Author:** dev
@@ -19,7 +19,7 @@ status_detail: Options A + B shipped per §4 recommendation; C and D explicitly 
 2026-04-19 P0 had two independent contributing factors. Layer 1 was the URL mismatch (Cloudflare tunnel hostname ≠ installed connector URL). Layer 2 — the one this doc addresses — was a **stale-bytecode import failure**: the running MCP server (PID 2412, started 15:12:06) had loaded `workflow.storage` from a snapshot that predated the R7a split (file mtime 16:34:46). When tools invoked paths reaching `from workflow.storage import ALL_CAPABILITIES`, Python raised `ImportError: cannot import name 'ALL_CAPABILITIES'` because the cached module didn't carry the symbol.
 
 This is a distinct class from the tunnel-routing issue and recurs every time a refactor:
-1. Moves symbols between `workflow/storage/__init__.py` and its submodules.
+1. Moves symbols between `tinyassets/storage/__init__.py` and its submodules.
 2. Changes re-export lists.
 3. Lands without a server process restart.
 
@@ -29,11 +29,11 @@ The primary defense today is "restart the server after touching storage imports.
 
 ## 2. Why the current shape is fragile
 
-`workflow/storage/__init__.py` has three structural properties that amplify the failure:
+`tinyassets/storage/__init__.py` has three structural properties that amplify the failure:
 
 **a. Body-level circular-import pattern.** Line 206 performs `from workflow.storage.accounts import ...` at the END of `__init__.py`. `accounts.py` line 25 performs `from workflow.storage import DEFAULT_USER_CAPABILITIES, SESSION_PREFIX, ...` AT MODULE TOP. This only works because Python returns the partial module from `sys.modules` during circular imports and the dependents happen to be bound before the circular re-entry — a property that holds today but is sensitive to any reordering of the `__init__.py` body.
 
-**b. Wide re-export surface.** `__all__` on line 154 lists 36 names. Callers (`workflow/daemon_server.py` line 20 pulls 35 of them) depend on `workflow.storage.<flat>` access for all of them. Any missing symbol at import time is an `ImportError`, not a `None` lookup — which is correct (fail-loudly) but means the blast radius of a partial refactor is "entire process can't start" not "one function returns None."
+**b. Wide re-export surface.** `__all__` on line 154 lists 36 names. Callers (`tinyassets/daemon_server.py` line 20 pulls 35 of them) depend on `workflow.storage.<flat>` access for all of them. Any missing symbol at import time is an `ImportError`, not a `None` lookup — which is correct (fail-loudly) but means the blast radius of a partial refactor is "entire process can't start" not "one function returns None."
 
 **c. Long-running process holds the snapshot.** The tray launches `universe_server.py` as a subprocess; that subprocess loads `workflow.storage` ONCE at startup. A code change + tray unrestarted = the process permanently executes the old bytecode until manually bounced. There is no SIGHUP-style reload path and adding one is out of scope here (service reload ≠ import safety).
 
@@ -48,7 +48,7 @@ The mitigation goal is: **detect the stale-snapshot class of failure at the comm
 **Shape.** Replace the body-level re-export block (lines 206-217) with a module-level `__getattr__` that imports the bounded-context submodule on demand:
 
 ```python
-# workflow/storage/__init__.py (end of file)
+# tinyassets/storage/__init__.py (end of file)
 
 _LAZY_IMPORTS = {
     "_account_id_for_username": ("accounts", "_account_id_for_username"),
@@ -95,7 +95,7 @@ def __getattr__(name):
 
 Three delivery surfaces:
 
-- **Pre-commit hook** — runs on every commit touching `workflow/storage/`. Fast (<2s). Catches missing-symbol regressions before landing.
+- **Pre-commit hook** — runs on every commit touching `tinyassets/storage/`. Fast (<2s). Catches missing-symbol regressions before landing.
 - **tier-3 GHA** — already shipped in task #6. Add the import-graph smoke as a step. Catches regressions that slip past pre-commit (e.g., pre-commit disabled, merge-commit).
 - **Server-startup self-check** — optionally, the MCP server's boot path asserts its own imports are clean. Rejected below (see option C contrast).
 
@@ -117,7 +117,7 @@ Three delivery surfaces:
 
 ### Option C — Server-startup import-graph self-check + auto-restart hint
 
-**Shape.** In `workflow/universe_server.py` startup, after FastMCP is constructed but before serving, verify the critical import graph:
+**Shape.** In `tinyassets/universe_server.py` startup, after FastMCP is constructed but before serving, verify the critical import graph:
 
 ```python
 def _verify_import_graph():
@@ -142,7 +142,7 @@ Called as the first step after imports. Server refuses to start if the check fai
 
 **What it fixes.**
 - Catches the exact P0 mechanism AT SERVER START rather than at first tool call.
-- Tray can observe the startup-crash, surface a tray-notification "Workflow MCP failed to start: stale bytecode. Restart machine or run `pip install -e .`."
+- Tray can observe the startup-crash, surface a tray-notification "TinyAssets MCP failed to start: stale bytecode. Restart machine or run `pip install -e .`."
 - If paired with tray auto-restart (separate scope), becomes fully self-healing for this failure class.
 
 **What it does NOT fix.**
@@ -159,13 +159,13 @@ Called as the first step after imports. Server refuses to start if the check fai
 
 ### Option D — Tray-level mtime watcher auto-restarts MCP on source change
 
-**Shape.** Tray spawns a lightweight watcher thread that polls mtimes of canonical workflow paths every ~5s (or uses `watchdog`'s filesystem events where available). When any of `workflow/**/*.py`, `domains/**/*.py`, or the packaged-plugin mirror changes, tray gracefully restarts the MCP subprocess (SIGTERM + respawn).
+**Shape.** Tray spawns a lightweight watcher thread that polls mtimes of canonical workflow paths every ~5s (or uses `watchdog`'s filesystem events where available). When any of `tinyassets/**/*.py`, `domains/**/*.py`, or the packaged-plugin mirror changes, tray gracefully restarts the MCP subprocess (SIGTERM + respawn).
 
 ```python
 # tray/mtime_watcher.py (conceptual)
 _WATCH_ROOTS = [
     "workflow", "domains",
-    "packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow",
+    "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/workflow",
 ]
 
 def poll_once(last_mtime: float) -> tuple[bool, float]:
@@ -217,7 +217,7 @@ Ship **A + B together**; defer C and D as follow-ons.
 ## 5. What this doc does NOT decide
 
 - **Whether to also lazily import the constants** (`CAP_*`, `DEFAULT_USER_CAPABILITIES`, `DB_FILENAME`). Recommend NO — they're cheap + always referenced; lazy-ing them would complicate static analysis without structural benefit. Keep them as direct module-level assignments.
-- **Whether to split `workflow/storage/__init__.py` further** (e.g., move the constants into `workflow/storage/_constants.py`). Recommend NO for this commit — that's a distinct refactor, not a mitigation. Current `__init__.py` placement works once option A lands.
+- **Whether to split `tinyassets/storage/__init__.py` further** (e.g., move the constants into `tinyassets/storage/_constants.py`). Recommend NO for this commit — that's a distinct refactor, not a mitigation. Current `__init__.py` placement works once option A lands.
 - **Tray auto-restart policy.** Separate design question. Option C hints at it; a full policy doc belongs elsewhere.
 - **Hot reload.** Out of scope. Fixing hot-reload is hard in Python and not what any P0 class benefits from right now.
 
@@ -225,7 +225,7 @@ Ship **A + B together**; defer C and D as follow-ons.
 
 ## 6. Open questions (raise in review)
 
-1. **Option A — does `__getattr__` break any of the existing `from workflow.storage import (...)` block imports in `workflow/daemon_server.py`?** Should not, because `from X import Y, Z` triggers `__getattr__` for each of `Y, Z`. Verify with a scratch test before committing: spawn `python -c "from workflow.daemon_server import ALL_CAPABILITIES; print(ALL_CAPABILITIES)"` on a lazy-`__getattr__` branch.
+1. **Option A — does `__getattr__` break any of the existing `from workflow.storage import (...)` block imports in `tinyassets/daemon_server.py`?** Should not, because `from X import Y, Z` triggers `__getattr__` for each of `Y, Z`. Verify with a scratch test before committing: spawn `python -c "from workflow.daemon_server import ALL_CAPABILITIES; print(ALL_CAPABILITIES)"` on a lazy-`__getattr__` branch.
 2. **Option B — how does the smoke test handle intentional symbol removals?** When someone drops `grant_capabilities` on purpose (R7 completion migrates it away), the smoke test fails and blocks the commit. Mitigation: derive the expected set from `__all__`, so the smoke tests "what's declared is importable" rather than "a hardcoded list is importable."
 3. **Option C — tray notification pathway.** Tray currently has no cross-process notification channel from the MCP server. Adding one is out of this doc's scope but relevant for the auto-restart leg.
 4. **Python-version sensitivity.** `__getattr__` on modules is 3.7+ (no concern). Pre-3.7 compat isn't a goal per Hard Rule 7.
@@ -234,7 +234,7 @@ Ship **A + B together**; defer C and D as follow-ons.
 
 ## 7. Summary for dispatcher
 
-- **Primary:** Option A (lazy `__getattr__` on `workflow/storage/__init__.py` re-export block). ~15 LOC. Fixes circular-import fragility.
+- **Primary:** Option A (lazy `__getattr__` on `tinyassets/storage/__init__.py` re-export block). ~15 LOC. Fixes circular-import fragility.
 - **Secondary:** Option B (import-graph smoke in pre-commit + tier-3 GHA). ~55 LOC. Catches missing-symbol regressions at commit/install time.
 - **Deferred:** Option C (server-startup import-graph check). ~30 LOC. Useful after A+B; not load-bearing for this class.
 - **Deferred (highest blast radius):** Option D (tray mtime watcher auto-restart). ~80 LOC + tray refactor. Catches the live-process leg directly but needs opt-in UX and doesn't fix the underlying fragility that A+B address.

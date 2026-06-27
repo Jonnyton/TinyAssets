@@ -1,8 +1,8 @@
-"""Mirror-parity invariant: canonical `workflow/**` == plugin mirror.
+"""Mirror-parity invariant: canonical `tinyassets/**` == plugin mirror.
 
-Iterates every canonical file under `workflow/` and compares bytes
+Iterates every canonical file under `tinyassets/` and compares bytes
 against the paired plugin-mirror path under
-`packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/`.
+`packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/`.
 Mismatch → VIOLATED with a list of diverged paths.
 
 Pre-commit scope (hook invokes it on staged-only set). Non-pre-commit
@@ -19,15 +19,15 @@ from pathlib import Path
 from . import CheckResult, HealResult, Invariant, Status
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-CANONICAL_ROOT = REPO_ROOT / "workflow"
+CANONICAL_ROOT = REPO_ROOT / "tinyassets"
 MIRROR_ROOT = (
     REPO_ROOT
     / "packaging"
     / "claude-plugin"
     / "plugins"
-    / "workflow-universe-server"
+    / "tinyassets-universe-server"
     / "runtime"
-    / "workflow"
+    / "tinyassets"
 )
 
 SCAN_SUFFIXES = (".py", ".md", ".json", ".toml")
@@ -35,7 +35,7 @@ SCAN_SUFFIXES = (".py", ".md", ".json", ".toml")
 
 class MirrorParityInvariant(Invariant):
     name = "mirror-parity"
-    description = "Canonical workflow/ == plugin-mirror byte-for-byte."
+    description = "Canonical tinyassets/ == plugin-mirror byte-for-byte."
     pre_commit_scope = True
     poll_interval_s = None  # diagnostic / pre-commit only
     auto_heal = False

@@ -13,15 +13,15 @@ from pathlib import Path
 
 
 def _init(base_path: Path) -> None:
-    from workflow.daemon_server import initialize_author_server
+    from tinyassets.daemon_server import initialize_author_server
     initialize_author_server(base_path)
 
 
 def _ext(monkeypatch, tmp_path, *, user: str = "alice", paid_market: bool = True, **kwargs):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on" if paid_market else "off")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on" if paid_market else "off")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", user)
-    from workflow.universe_server import extensions
+    from tinyassets.universe_server import extensions
     return json.loads(extensions(**kwargs))
 
 
@@ -64,7 +64,7 @@ class TestMoneyLoopE2E:
         assert bob["spendable"] == 990_000
 
         # treasury_status reflects the settlement + the platform take.
-        from workflow.treasury.status import treasury_status
+        from tinyassets.treasury.status import treasury_status
         status = treasury_status(str(tmp_path))
         assert status["cost_ledger"]["settlements"]["treasury_fee_total"] == 10_000
         assert status["cost_ledger"]["settlements"]["net_amount_total"] == 990_000
@@ -89,7 +89,7 @@ class TestMoneyLoopE2E:
         assert bal["spendable"] == 1_000_000
 
         # No settlement / no treasury fee on a refund.
-        from workflow.treasury.status import treasury_status
+        from tinyassets.treasury.status import treasury_status
         status = treasury_status(str(tmp_path))
         assert status["cost_ledger"]["settlements"]["count_total"] == 0
         assert status["treasury"]["fee_collected_total"] == 0

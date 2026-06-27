@@ -58,7 +58,7 @@ DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 20.0
 
 _CANARY_FILENAME = "uptime-probe"
-# `notes` is in _WIKI_CATEGORIES on the server (workflow/universe_server.py
+# `notes` is in _WIKI_CATEGORIES on the server (tinyassets/universe_server.py
 # `_WIKI_CATEGORIES`); `canary` is not. The previous value silently failed
 # the server's category validation, masking real wiki-write breakage.
 _CANARY_CATEGORY = "notes"
@@ -67,7 +67,7 @@ _CANARY_CATEGORY = "notes"
 # characters like em-dash to \uNNNN sequences. A substring check on the
 # raw response text would then fail. Keep the canary content ASCII so
 # the roundtrip check stays a simple substring match.
-_CANARY_CONTENT = "Workflow wiki uptime canary - automated write-roundtrip probe."
+_CANARY_CONTENT = "TinyAssets wiki uptime canary - automated write-roundtrip probe."
 
 _INIT_PAYLOAD = _init_payload("wiki-canary")
 _PROBE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")

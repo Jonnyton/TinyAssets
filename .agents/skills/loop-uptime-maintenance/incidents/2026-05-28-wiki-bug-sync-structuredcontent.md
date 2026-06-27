@@ -2,8 +2,8 @@
 date: 2026-05-28
 severity: P0
 status: pending-merge
-related_issue: https://github.com/Jonnyton/Workflow/issues/1118
-related_run: https://github.com/Jonnyton/Workflow/actions/runs/26605636623
+related_issue: https://github.com/Jonnyton/TinyAssets/issues/1118
+related_run: https://github.com/Jonnyton/TinyAssets/actions/runs/26605636623
 ---
 
 # Wiki bug sync structuredContent incident

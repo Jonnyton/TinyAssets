@@ -6,7 +6,7 @@ end-to-end `wiki(action="file_bug", ...)` dispatch.
 
 Pre-staged while Task #3 awaits deploy + severity-rubric reconcile.
 Until patch (e) lands, the symbols below do not exist in
-`workflow.universe_server`. A module-level `importorskip` keeps the full
+`tinyassets.universe_server`. A module-level `importorskip` keeps the full
 pytest suite green (collection skips cleanly) — the guard goes away the
 moment the symbols exist.
 """
@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-import workflow.universe_server as _us
+import tinyassets.universe_server as _us
 
 _required = (
     "_wiki_file_bug",
@@ -34,13 +34,13 @@ if _missing:
         allow_module_level=True,
     )
 
-from workflow.api.wiki import (  # noqa: E402
+from tinyassets.api.wiki import (  # noqa: E402
     _next_bug_id,
     _render_bug_markdown,
     _slugify_title,
     _wiki_file_bug,
 )
-from workflow.universe_server import wiki  # noqa: E402
+from tinyassets.universe_server import wiki  # noqa: E402
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def wiki_dir(tmp_path, monkeypatch):
     )
     (wiki_root / "log.md").write_text("# Wiki Log\n", encoding="utf-8")
     (wiki_root / "WIKI.md").write_text("# Wiki Schema\n", encoding="utf-8")
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
     return wiki_root
 
 
@@ -231,7 +231,7 @@ class TestFileBugCollisionRetry:
             return real_open(path, mode, *args, **kwargs)
 
         with patch(
-            "workflow.api.wiki.open", side_effect=fake_open, create=True
+            "tinyassets.api.wiki.open", side_effect=fake_open, create=True
         ):
             out = json.loads(
                 _wiki_file_bug(
@@ -260,7 +260,7 @@ class TestFileBugViaWikiDispatch:
 
     def test_bugs_in_valid_categories(self):
         """Smoke test that 'bugs' is registered via patch (a)."""
-        from workflow.api.wiki import _WIKI_CATEGORIES
+        from tinyassets.api.wiki import _WIKI_CATEGORIES
         assert "bugs" in _WIKI_CATEGORIES
 
 
@@ -604,7 +604,7 @@ class TestFileBugKindRouting:
 
     def test_cosign_feature_routes_to_feature_requests_dir(self, wiki_dir):
         """cosign_bug must derive dir from the bug_id prefix (FEAT- → feature-requests)."""
-        from workflow.universe_server import wiki
+        from tinyassets.universe_server import wiki
         f = json.loads(_wiki_file_bug(
             component="x", severity="minor", title="add feature Q", kind="feature",
         ))
@@ -624,7 +624,7 @@ class TestFileBugKindRouting:
         assert "me too — important" in body
 
     def test_cosign_design_routes_to_design_proposals_dir(self, wiki_dir):
-        from workflow.universe_server import wiki
+        from tinyassets.universe_server import wiki
         d = json.loads(_wiki_file_bug(
             component="x", severity="minor", title="design prop K", kind="design",
         ))
@@ -637,7 +637,7 @@ class TestFileBugKindRouting:
 
     def test_cosign_bug_unknown_prefix_falls_back_to_bugs_dir(self, wiki_dir):
         """Unrecognized prefix → bugs/ fallback (backward compat)."""
-        from workflow.universe_server import (
+        from tinyassets.universe_server import (
             wiki,  # File a regular bug to give cosign something to find
         )
         b = json.loads(_wiki_file_bug(

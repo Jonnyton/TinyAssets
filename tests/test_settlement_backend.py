@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.payments.settlement_backend import (
+from tinyassets.payments.settlement_backend import (
     BASE_SEPOLIA_CHAIN_ID,
     BaseSepoliaBackend,
     InternalBackend,
@@ -61,11 +61,11 @@ class TestBaseSepoliaBackend:
 
 class TestBackendSelection:
     def test_default_internal(self, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_SETTLEMENT_BACKEND", raising=False)
+        monkeypatch.delenv("TINYASSETS_SETTLEMENT_BACKEND", raising=False)
         assert get_settlement_backend().name == "internal"
 
     def test_base_sepolia_selected(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_SETTLEMENT_BACKEND", "base_sepolia")
+        monkeypatch.setenv("TINYASSETS_SETTLEMENT_BACKEND", "base_sepolia")
         backend = get_settlement_backend()
         assert backend.name == "base_sepolia"
         # Slice 1a: base_sepolia uses the mock client (no network).

@@ -1,7 +1,7 @@
 """End-to-end test for the mcp_call dispatcher (Slice 3 of the lane).
 
 Tests the full AcceptanceScenario path against a real platform action
-handler — `_action_goal_propose` from `workflow.api.market`. The
+handler — `_action_goal_propose` from `tinyassets.api.market`. The
 scenario specifies a Goal-propose invocation; the dispatcher invokes
 the handler; the evaluator chain confirms the response shape; the
 runner wraps the result into a standard EvalResult.
@@ -16,12 +16,12 @@ import json
 
 import pytest
 
-from workflow.api.market import _action_goal_propose
-from workflow.evaluation.scenario_dispatchers.mcp_call import (
+from tinyassets.api.market import _action_goal_propose
+from tinyassets.evaluation.scenario_dispatchers.mcp_call import (
     mcp_call_dispatcher,
     register as register_mcp_call_dispatcher,
 )
-from workflow.evaluation.scenario_runner import (
+from tinyassets.evaluation.scenario_runner import (
     AcceptanceScenario,
     registered_dispatchers,
     run_scenario,
@@ -135,8 +135,8 @@ def test_dispatcher_requires_action_handler() -> None:
 
 
 def test_dispatcher_uses_default_status_check_when_no_evaluators(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
 
     scenario = _goals_propose_scenario()
     raw = mcp_call_dispatcher(
@@ -155,8 +155,8 @@ def test_dispatcher_uses_default_status_check_when_no_evaluators(tmp_path, monke
 
 
 def test_dispatcher_rejects_missing_name_via_evaluator(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
 
     scenario = _goals_propose_scenario(scenario_id="scenario:goals-propose-missing-name-v1")
     raw = mcp_call_dispatcher(
@@ -178,8 +178,8 @@ def test_end_to_end_goals_propose_passes(tmp_path, monkeypatch) -> None:
     Verifies that AcceptanceScenario actually exercises a real platform
     action and produces a standard EvalResult with PASS verdict.
     """
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
 
     # Universe-side startup: register the dispatcher.
     register_mcp_call_dispatcher()
@@ -223,8 +223,8 @@ def test_end_to_end_goals_propose_passes(tmp_path, monkeypatch) -> None:
 
 def test_end_to_end_goals_propose_fails_on_missing_name(tmp_path, monkeypatch) -> None:
     """The same scenario but with a malformed invocation: must FAIL cleanly."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
 
     register_mcp_call_dispatcher()
     scenario = _goals_propose_scenario(scenario_id="scenario:goals-propose-fail-v1")
@@ -245,7 +245,7 @@ def test_end_to_end_goals_propose_fails_on_missing_name(tmp_path, monkeypatch) -
 
 def test_dispatcher_records_handler_exception_as_minus_one(tmp_path, monkeypatch) -> None:
     """When the action handler itself raises, score is -1.0 and reason is recorded."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     scenario = _goals_propose_scenario(scenario_id="scenario:goals-propose-crash-v1")
 

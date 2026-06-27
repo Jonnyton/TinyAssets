@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import compile_branch
+from tinyassets.graph_compiler import compile_branch
 
 # ════════════════════════════════════════════════════════════════════
 # Helpers
@@ -370,19 +370,19 @@ class TestCheckpointIdempotency:
 
 class TestCheckpointHelper:
     def test_checkpoint_helper_returns_marker_dict(self):
-        from workflow.idempotency import checkpoint as ckpt_helper
+        from tinyassets.idempotency import checkpoint as ckpt_helper
         result = ckpt_helper("my_id", state={})
         assert "__checkpoint__" in result
         assert "my_id" in result["__checkpoint__"]
 
     def test_checkpoint_helper_accumulates_multiple_calls(self):
-        from workflow.idempotency import checkpoint as ckpt_helper
+        from tinyassets.idempotency import checkpoint as ckpt_helper
         d1 = ckpt_helper("a", state={})
         d2 = ckpt_helper("b", state={**d1})
         assert set(d2["__checkpoint__"]) == {"a", "b"}
 
     def test_checkpoint_helper_does_not_duplicate(self):
-        from workflow.idempotency import checkpoint as ckpt_helper
+        from tinyassets.idempotency import checkpoint as ckpt_helper
         state = {"__checkpoint__": ["already"]}
         d = ckpt_helper("new_one", state=state)
         assert "already" in d["__checkpoint__"]

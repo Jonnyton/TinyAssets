@@ -12,7 +12,7 @@
 
 Produce the concrete domain/engine classification that Phase 2 execution needs:
 
-1. Which actions in `workflow/universe_server.py` are domain-specific (fantasy world state)?
+1. Which actions in `tinyassets/universe_server.py` are domain-specific (fantasy world state)?
 2. Which are engine primitives (shared across any domain)?
 3. What is the extraction target (`domains/fantasy_daemon/api/`) and what does it receive?
 4. What sequencing constraints block or gate this work?
@@ -21,7 +21,7 @@ Produce the concrete domain/engine classification that Phase 2 execution needs:
 
 ## 2. Current state
 
-`workflow/universe_server.py` (13,067 LOC as of 2026-04-25) is a single file containing:
+`tinyassets/universe_server.py` (13,067 LOC as of 2026-04-25) is a single file containing:
 
 - 5 top-level MCP tools: `universe()`, `extensions()`, `goals()`, `gates()`, `wiki()`, `get_status()`
 - 19 action groups, each with a `_ACTION_*` dispatch dict and associated `_action_*` handlers
@@ -55,7 +55,7 @@ These actions read/write fantasy world state (`story.db`, `knowledge.db`, `udir/
 
 The `universe()` MCP tool's docstring would change: domain actions (`query_world`, premise, canon, submit_request, give_direction) would be removed from its action list and their usage would route through a new domain-registered tool.
 
-### 3.2 Engine actions (keep in `workflow/universe_server.py`)
+### 3.2 Engine actions (keep in `tinyassets/universe_server.py`)
 
 These are platform substrate: any second domain (research, journalism, etc.) would use them unchanged.
 
@@ -142,7 +142,7 @@ Before extraction, confirm each domain handler's imports. Key shared helpers use
 | `_ingest_canon(...)` | `add_canon_from_path` | Domain-specific |
 | `_query_world_db(udir, ...)` | `query_world` | Domain-specific (reads story.db, knowledge.db) |
 
-**Implication:** Domain handlers need to `from workflow.universe_server import _universe_dir, _default_universe, _read_json` or these helpers need to be promoted to a stable `workflow.universe` module. The decomposition audit (companion doc) recommends promoting them to `workflow/api/universe_helpers.py`.
+**Implication:** Domain handlers need to `from workflow.universe_server import _universe_dir, _default_universe, _read_json` or these helpers need to be promoted to a stable `workflow.universe` module. The decomposition audit (companion doc) recommends promoting them to `tinyassets/api/universe_helpers.py`.
 
 ---
 
@@ -152,8 +152,8 @@ Before extraction, confirm each domain handler's imports. Key shared helpers use
 |------|--------|--------|
 | Rename Phase 1 Part 2 commit | See STATUS.md | `domains/fantasy_daemon/` must be the real domain package, not just a shim, before adding `api/` inside it |
 | Rename Phases 2–4 | Not started | Identifier renames inside domain handlers should not happen twice — wait for Phase 2 to clean identifiers before moving the handlers |
-| universe_server.py decomposition (#29 / companion audit) | Audit pending | The universe_server decomposition must align seam boundaries with this classification — shared helpers extracted to `workflow/api/universe_helpers.py` before domain handlers can safely import them |
-| Universe-to-Workflow-Server rename (`docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md`) | Blocked on host §5 answers | If the file moves to `workflow/workflow_server.py`, do the extraction against the new path. No-op if extracted first, but two renames on the same handlers in quick succession adds noise. |
+| universe_server.py decomposition (#29 / companion audit) | Audit pending | The universe_server decomposition must align seam boundaries with this classification — shared helpers extracted to `tinyassets/api/universe_helpers.py` before domain handlers can safely import them |
+| Universe-to-Workflow-Server rename (`docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md`) | Blocked on host §5 answers | If the file moves to `tinyassets/workflow_server.py`, do the extraction against the new path. No-op if extracted first, but two renames on the same handlers in quick succession adds noise. |
 
 **Recommended order:**
 1. Land decomposition audit (#29) and agree on extraction boundaries → this shapes which helpers move vs stay.
@@ -183,6 +183,6 @@ The pressure test is PLAN.md's stated criterion: *can a second domain adopt the 
 
 1. **Tool shape after extraction:** Should domain actions remain accessible via `universe(action="query_world")` (engine delegates to domain) or surface as a separate domain-registered MCP tool (e.g. `fantasy(action="query_world")`)? The latter is cleaner long-term; the former is safer for existing chatbot flows that use `universe action=query_world` today.
 
-2. **Other domain candidates:** `add_canon_from_path` has a server-filesystem-access security surface (`WORKFLOW_UPLOAD_WHITELIST`). Should it stay in the engine with policy enforcement, or move to the domain with the whitelist check delegated? Current code has the whitelist check inline in `_action_add_canon_from_path`.
+2. **Other domain candidates:** `add_canon_from_path` has a server-filesystem-access security surface (`TINYASSETS_UPLOAD_WHITELIST`). Should it stay in the engine with policy enforcement, or move to the domain with the whitelist check delegated? Current code has the whitelist check inline in `_action_add_canon_from_path`.
 
 3. **Registration hook:** Should domain registration happen at import time (declarative, simple) or via an explicit `register(mcp)` call in the engine's startup sequence (more controlled)?

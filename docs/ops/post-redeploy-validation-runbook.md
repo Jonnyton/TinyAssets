@@ -30,7 +30,7 @@ Restart-only ops (no code change): `docs/ops/cloud-daemon-restart.md`.
 | Sub-branch invocation Phase A (`a12e284`) | recent commit | §6.1 |
 | Bounty-calc query template substrate (`373df03`) | recent commit | §6.2 |
 | Dispatcher request_type substrate | landed `d06a6d7`/`79a3c28`/`218d9ec`/`c686b48` | §6.3 |
-| Watchdog observation | journald (`journalctl -u workflow-watchdog.service`); structured alarms at `/var/log/workflow/uptime_alarms.log` per Task #20 | §7 |
+| Watchdog observation | journald (`journalctl -u tinyassets-watchdog.service`); structured alarms at `/var/log/tinyassets/uptime_alarms.log` per Task #20 | §7 |
 
 ---
 
@@ -55,15 +55,15 @@ respond can mask a no-op deploy.
 ### §1.1 Image-tag confirmation
 
 ```bash
-# Expected tag = ghcr.io/jonnyton/workflow-daemon:<short-SHA>
+# Expected tag = ghcr.io/jonnyton/tinyassets-daemon:<short-SHA>
 # where <short-SHA> matches `git rev-parse --short=12 origin/main`.
 EXPECTED_TAG=$(git rev-parse --short=12 origin/main)
-echo "Expected image tag: ghcr.io/jonnyton/workflow-daemon:${EXPECTED_TAG}"
+echo "Expected image tag: ghcr.io/jonnyton/tinyassets-daemon:${EXPECTED_TAG}"
 ```
 
 Then ask host to confirm via either:
 - DO dashboard → Droplet console → `docker ps --format '{{.Image}}'` → look
-  for `ghcr.io/jonnyton/workflow-daemon:${EXPECTED_TAG}`.
+  for `ghcr.io/jonnyton/tinyassets-daemon:${EXPECTED_TAG}`.
 - The deploy-prod GitHub Actions run summary — it prints "Target image" as
   the final-step output.
 
@@ -78,7 +78,7 @@ sudo docker ps --filter name=workflow- --format \
   'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 ```
 
-**Green criteria:** `workflow-daemon`, `workflow-tunnel`, `workflow-logs`
+**Green criteria:** `tinyassets-daemon`, `workflow-tunnel`, `workflow-logs`
 all show `Up <X> seconds` (recent — confirms restart) and the image column
 matches §1.1's expected tag.
 
@@ -147,7 +147,7 @@ canary fix landed.
 python scripts/mcp_tool_canary.py --url https://tinyassets.io/mcp --verbose
 ```
 
-**Green:** exit 0 — initialize + initialized + tools/list non-empty + 
+**Green:** exit 0 — initialize + initialized + tools/list non-empty +
 `universe action=inspect` returns valid `universe_id`.
 
 **Red:** exit 4 (tools/list empty) or exit 5 (inspect failed) — tool
@@ -165,7 +165,7 @@ hey i want to use the tool i set up to design a workflow for writing a research
 paper on deep space population — can you walk me through it?
 ```
 
-**Green criteria (per probe catalog):** chatbot invokes ≥1 Workflow MCP
+**Green criteria (per probe catalog):** chatbot invokes ≥1 TinyAssets MCP
 tool, response references real daemon state, settle <150s, no "Session
 terminated" errors.
 
@@ -180,13 +180,13 @@ Quick sanity that the canonical and packaging mirrors match — drift here
 would indicate dev-side packaging-sync didn't run before the build.
 
 ```bash
-cmp -s workflow/universe_server.py \
-       packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/universe_server.py \
+cmp -s tinyassets/universe_server.py \
+       packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py \
   && echo "universe_server.py mirrors MATCH" \
   || echo "WARN: universe_server.py mirrors DIFFER"
 
-cmp -s workflow/runs.py \
-       packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/runs.py \
+cmp -s tinyassets/runs.py \
+       packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/runs.py \
   && echo "runs.py mirrors MATCH" \
   || echo "WARN: runs.py mirrors DIFFER"
 ```
@@ -266,7 +266,7 @@ echo "Manual step: file the bug above via Claude.ai chat. Note the BUG-NNN id."
 - New page slug has uppercase characters or BUG-028 warning is logged →
   alias logic regressed.
 - No dispatcher request enqueued → bug_investigation auto-trigger broken.
-  Confirm `WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID` env var is set on the
+  Confirm `TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID` env var is set on the
   droplet (see §5.6 for the canonical-bind step).
 
 ### §5.2 `goals action=set_canonical` (Mark-canonical decision unblock)
@@ -414,8 +414,8 @@ sudo /tmp/install-workflow-env.sh # OR via the helper from deploy/install-workfl
 # Specifically:
 #    scp deploy/install-workflow-env.sh root@<droplet>:/tmp/
 #    echo "fd5c66b1d87d" | ssh root@<droplet> \
-#        "sudo bash /tmp/install-workflow-env.sh set WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID"
-#    ssh root@<droplet> "sudo systemctl restart workflow-daemon"
+#        "sudo bash /tmp/install-workflow-env.sh set TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID"
+#    ssh root@<droplet> "sudo systemctl restart tinyassets-daemon"
 ```
 
 (The env-var helper is the Task #9 helper that lands with the install/640
@@ -431,7 +431,7 @@ chain documented in `docs/ops/host-independence-runbook.md` §rotate-secret.)
   the run's expected duration.
 
 **Red:** any step fails → split into two questions: was it the env var
-(re-confirm with `ssh ... 'sudo grep WORKFLOW_BUG_INVESTIGATION /etc/workflow/env'`)
+(re-confirm with `ssh ... 'sudo grep TINYASSETS_BUG_INVESTIGATION /etc/tinyassets/env'`)
 or the dispatcher routing (host shares dispatcher logs from `journalctl`).
 
 ---
@@ -444,14 +444,14 @@ deployed image if §1.1 image tag is older than them. Quick spot-check.
 ### §6.1 Sub-branch invocation Phase A item 5 close-out (`a12e284`)
 
 **What's in it:** two-pool concurrent-runs model, env-tunable
-`WORKFLOW_CHILD_POOL_SIZE`, `_invocation_depth` runtime threading,
+`TINYASSETS_CHILD_POOL_SIZE`, `_invocation_depth` runtime threading,
 `MAX_INVOKE_BRANCH_DEPTH=5`.
 
 **Validate (quick):**
 
 ```bash
 # Confirm the env var is honored (or its default applies). Host:
-ssh root@<droplet> "sudo grep WORKFLOW_CHILD_POOL_SIZE /etc/workflow/env || echo 'not set (default 4 applies)'"
+ssh root@<droplet> "sudo grep TINYASSETS_CHILD_POOL_SIZE /etc/tinyassets/env || echo 'not set (default 4 applies)'"
 ```
 
 For the deeper validation, build a parent branch that invokes a child
@@ -488,16 +488,16 @@ is live in the deployed image.
 `.agents/uptime_alarms.log` (a repo-relative path). Audit
 `docs/audits/2026-04-26-restart-loop-correlation.md` proved that file
 was test-pollution, not production telemetry. **Task #20 R2 moved the
-production alarm path to `/var/log/workflow/uptime_alarms.log`** (env
-var `WORKFLOW_WATCHDOG_ALARM_LOG` overrideable; systemd creates the
-dir via `LogsDirectory=workflow` in `deploy/workflow-watchdog.service`).
+production alarm path to `/var/log/tinyassets/uptime_alarms.log`** (env
+var `TINYASSETS_WATCHDOG_ALARM_LOG` overrideable; systemd creates the
+dir via `LogsDirectory=workflow` in `deploy/tinyassets-watchdog.service`).
 Local `.agents/uptime_alarms.log` is now `.gitignore`d and produced
 only by tests against tmp paths.
 
 The right surface for production observation is journald
-(`journalctl -u workflow-watchdog.service`) — `SyslogIdentifier=workflow-watchdog`
+(`journalctl -u tinyassets-watchdog.service`) — `SyslogIdentifier=tinyassets-watchdog`
 in the .service unit pipes both stdout + stderr there. The structured
-alarm-log file at `/var/log/workflow/uptime_alarms.log` is secondary.
+alarm-log file at `/var/log/tinyassets/uptime_alarms.log` is secondary.
 
 ### §7.1 Observation window
 
@@ -506,13 +506,13 @@ clock** with no other manual interventions.
 
 ```bash
 # Host-side via SSH:
-ssh root@<droplet> "journalctl -u workflow-watchdog.service -f --since '5 minutes ago'"
+ssh root@<droplet> "journalctl -u tinyassets-watchdog.service -f --since '5 minutes ago'"
 ```
 
 Optional secondary surface (the structured alarm file):
 
 ```bash
-ssh root@<droplet> "tail -F /var/log/workflow/uptime_alarms.log"
+ssh root@<droplet> "tail -F /var/log/tinyassets/uptime_alarms.log"
 ```
 
 **Green:** Zero new `WATCHDOG_RESTART` entries during the 5-min window,
@@ -534,9 +534,9 @@ P0 task; do NOT mark redeploy "clean" in STATUS. Run §7.2 triage.
 
 ```bash
 # Host-side: what's the watchdog actually probing?
-ssh root@<droplet> "journalctl -u workflow-watchdog -n 50 --no-pager"
+ssh root@<droplet> "journalctl -u tinyassets-watchdog -n 50 --no-pager"
 # What's the daemon doing right before each restart?
-ssh root@<droplet> "journalctl -u workflow-daemon -n 100 --no-pager"
+ssh root@<droplet> "journalctl -u tinyassets-daemon -n 100 --no-pager"
 ```
 
 Compare against `.agents/uptime.log` to find the GREEN→RED→GREEN flap
@@ -570,7 +570,7 @@ STATUS.md rows can be deleted (the redeploy resolved them):
   exercised AND host confirmed the binding is intentional. Flip to
   "decided" rather than delete if the latter.
 - "#28 + #29 audit-doc review" — host-review item, separate from deploy.
-- "/etc/workflow/env mode flip — Fix A awaits host review" — Task #9 is
+- "/etc/tinyassets/env mode flip — Fix A awaits host review" — Task #9 is
   in verifier's queue; STAYS until that lands.
 - "Layer-3 design session", "Memory-scope Stage 2c flag", "Remove provider
   + DO keys from persistent uptime surfaces", arch-audit rows — all

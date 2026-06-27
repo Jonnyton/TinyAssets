@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import json
 
-from workflow.effectors import github_search as gs
+from tinyassets.effectors import github_search as gs
 
-_DEST = "Jonnyton/Workflow"
+_DEST = "Jonnyton/TinyAssets"
 
 _REPO_API = f"https://api.github.com/repos/{_DEST}"
 
@@ -62,17 +62,17 @@ def _run(state, monkeypatch, http=None, env=None):
 
 def test_happy_substring_match_and_ranking(monkeypatch):
     http = _fake_http(tree=_tree(
-        "workflow/api/wiki.py",
+        "tinyassets/api/wiki.py",
         "tests/test_wiki.py",
         "docs/wiki-notes.md",
-        "workflow/api/runs.py",
+        "tinyassets/api/runs.py",
     ))
     matched, status = _run(
         {"search_destination": _DEST, "search_query": "wiki.py"}, monkeypatch, http
     )
     # basename "wiki.py" exact/prefix should outrank the docs/tests substring hits
-    assert matched[0] == "workflow/api/wiki.py"
-    assert "workflow/api/runs.py" not in matched
+    assert matched[0] == "tinyassets/api/wiki.py"
+    assert "tinyassets/api/runs.py" not in matched
     assert status["error"] is None
     assert status["matched"] >= 1
     assert status["ref"] == "main"
@@ -83,61 +83,61 @@ def test_exact_path_term_outranks_basename_flood(monkeypatch):
     # must surface the exact file at the top, not let a crowd of same-basename
     # files truncate it out under the result cap.
     flood = [f"pkg{i}/__init__.py" for i in range(40)]
-    http = _fake_http(tree=_tree("workflow/api/__init__.py", *flood))
+    http = _fake_http(tree=_tree("tinyassets/api/__init__.py", *flood))
     matched, status = _run(
         {"search_destination": _DEST,
-         "search_query": "workflow/api/__init__.py __init__.py"},
-        monkeypatch, http, env={"WORKFLOW_GITHUB_SEARCH_MAX_RESULTS": "5"},
+         "search_query": "tinyassets/api/__init__.py __init__.py"},
+        monkeypatch, http, env={"TINYASSETS_GITHUB_SEARCH_MAX_RESULTS": "5"},
     )
     # Even capped at 5 of 41 matches, the exact-path file ranks first.
-    assert matched[0] == "workflow/api/__init__.py"
+    assert matched[0] == "tinyassets/api/__init__.py"
 
 
 def test_path_suffix_term_ranks_above_basename(monkeypatch):
     http = _fake_http(tree=_tree(
-        "workflow/api/runs.py", "tests/test_runs.py", "other/runs.py",
+        "tinyassets/api/runs.py", "tests/test_runs.py", "other/runs.py",
     ))
     matched, _status = _run(
         {"search_destination": _DEST, "search_query": "api/runs.py runs.py"},
         monkeypatch, http,
     )
-    assert matched[0] == "workflow/api/runs.py"
+    assert matched[0] == "tinyassets/api/runs.py"
 
 
 def test_rank_exact_path_beats_suffix_beats_basename():
     # Unit check on the rank tiers for a path-like term.
-    terms = ["workflow/api/wiki.py"]
-    assert gs._match_rank("workflow/api/wiki.py", terms) == 6      # exact
-    assert gs._match_rank("x/workflow/api/wiki.py", terms) == 5    # suffix
-    assert gs._match_rank("workflow/api/wiki.py.bak", terms) == 4  # contains
+    terms = ["tinyassets/api/wiki.py"]
+    assert gs._match_rank("tinyassets/api/wiki.py", terms) == 6      # exact
+    assert gs._match_rank("x/tinyassets/api/wiki.py", terms) == 5    # suffix
+    assert gs._match_rank("tinyassets/api/wiki.py.bak", terms) == 4  # contains
     # basename-only candidate: a path-like term does not match it at all.
     assert gs._match_rank("other/wiki.py", terms) == 0
 
 
 def test_dotted_module_matches_slash_path(monkeypatch):
-    http = _fake_http(tree=_tree("workflow/api/wiki.py", "workflow/api/runs.py"))
+    http = _fake_http(tree=_tree("tinyassets/api/wiki.py", "tinyassets/api/runs.py"))
     matched, _status = _run(
-        {"search_destination": _DEST, "search_query": "workflow.api.wiki"},
+        {"search_destination": _DEST, "search_query": "tinyassets.api.wiki"},
         monkeypatch,
         http,
     )
-    assert "workflow/api/wiki.py" in matched
+    assert "tinyassets/api/wiki.py" in matched
 
 
 def test_glob_term_matches(monkeypatch):
     http = _fake_http(tree=_tree(
-        "workflow/effectors/github_pr.py",
-        "workflow/effectors/github_read.py",
-        "workflow/api/wiki.py",
+        "tinyassets/effectors/github_pr.py",
+        "tinyassets/effectors/github_read.py",
+        "tinyassets/api/wiki.py",
     ))
     matched, _status = _run(
-        {"search_destination": _DEST, "search_query": "workflow/effectors/*.py"},
+        {"search_destination": _DEST, "search_query": "tinyassets/effectors/*.py"},
         monkeypatch,
         http,
     )
     assert set(matched) == {
-        "workflow/effectors/github_pr.py",
-        "workflow/effectors/github_read.py",
+        "tinyassets/effectors/github_pr.py",
+        "tinyassets/effectors/github_read.py",
     }
 
 
@@ -169,7 +169,7 @@ def test_result_cap_truncates(monkeypatch):
         {"search_destination": _DEST, "search_query": "wiki"},
         monkeypatch,
         http,
-        env={"WORKFLOW_GITHUB_SEARCH_MAX_RESULTS": "3"},
+        env={"TINYASSETS_GITHUB_SEARCH_MAX_RESULTS": "3"},
     )
     assert len(matched) == 3
     assert status["returned"] == 3
@@ -178,7 +178,7 @@ def test_result_cap_truncates(monkeypatch):
 
 
 def test_no_match_returns_empty(monkeypatch):
-    http = _fake_http(tree=_tree("workflow/api/runs.py"))
+    http = _fake_http(tree=_tree("tinyassets/api/runs.py"))
     matched, status = _run(
         {"search_destination": _DEST, "search_query": "nonexistentterm"},
         monkeypatch,
@@ -229,8 +229,8 @@ def test_falls_back_to_read_destination(monkeypatch):
 
 def test_search_token_uses_read_map_not_write_map(monkeypatch):
     # Write map present, read map absent -> search stays unauthenticated.
-    monkeypatch.setenv("WORKFLOW_GITHUB_PR_CAPABILITIES", json.dumps({_DEST: "WRITETOKEN"}))
-    monkeypatch.delenv("WORKFLOW_GITHUB_READ_CAPABILITIES", raising=False)
+    monkeypatch.setenv("TINYASSETS_GITHUB_PR_CAPABILITIES", json.dumps({_DEST: "WRITETOKEN"}))
+    monkeypatch.delenv("TINYASSETS_GITHUB_READ_CAPABILITIES", raising=False)
     http = _fake_http(tree=_tree("a/wiki.py"))
     _run({"search_destination": _DEST, "search_query": "wiki"}, monkeypatch, http)
     assert all(tok == "" for _url, tok in http.calls)  # unauthenticated
@@ -238,7 +238,7 @@ def test_search_token_uses_read_map_not_write_map(monkeypatch):
 
 def test_search_token_resolved_from_read_map(monkeypatch):
     monkeypatch.setenv(
-        "WORKFLOW_GITHUB_READ_CAPABILITIES", json.dumps({_DEST: "READTOKEN"})
+        "TINYASSETS_GITHUB_READ_CAPABILITIES", json.dumps({_DEST: "READTOKEN"})
     )
     http = _fake_http(tree=_tree("a/wiki.py"))
     _run({"search_destination": _DEST, "search_query": "wiki"}, monkeypatch, http)
@@ -246,7 +246,7 @@ def test_search_token_resolved_from_read_map(monkeypatch):
 
 
 def test_registration_resolves_in_domain_registry():
-    from workflow.domain_registry import resolve_domain_callable
+    from tinyassets.domain_registry import resolve_domain_callable
 
     gs.register_search_repo_files()
     assert resolve_domain_callable("workflow", "search_repo_files") is gs.search_repo_files

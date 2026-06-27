@@ -23,7 +23,7 @@ superseded_by: docs/design-notes/2026-04-18-full-platform-architecture.md
 - *Distribution horizon: weeks, not months* (project memory). Recommend the minimum viable always-on piece for v1; defer the rest.
 - *Paid-request bid model exists* (project memory: requester sets node+LLM+price; daemons prefer higher bids). Integrate, don't duplicate.
 - *Daemon is the user-facing brand* (project memory). Design copy keeps daemon vocabulary.
-- *Rebrand in-flight: Universe Server → Workflow Server.* This note uses "Workflow Server" and "Workflow control plane."
+- *Rebrand in-flight: Universe Server → TinyAssets Server.* This note uses "TinyAssets Server" and "Workflow control plane."
 
 **Prior research this supersedes / builds on:**
 - `docs/research/always_on_hosting_and_federation.md` — hosting-option and federation patterns (hosting matrix, multi-tenant MCP patterns, Cloudflare-only path).
@@ -42,13 +42,13 @@ User (Claude.ai webchat)
   -> MCP connector at https://tinyassets.io/mcp
      -> Cloudflare DNS + named tunnel (token hardcoded in universe_tray.py:50)
         -> cloudflared on Jonathan's laptop
-           -> FastMCP on localhost:8001 (workflow/universe_server.py)
+           -> FastMCP on localhost:8001 (tinyassets/universe_server.py)
               -> per-universe files under output/<universe>/ (SQLite + LanceDB + notes.json)
               -> per-host SQLite: ledger, bid_ledger, settlements
               -> one or more Daemon processes (fantasy_daemon.__main__)
 ```
 
-`universe_tray.py` starts three things: N provider-pinned Daemon processes, the Workflow Server (FastMCP on :8001), and cloudflared routing `tinyassets.io` → `localhost:8001`.
+`universe_tray.py` starts three things: N provider-pinned Daemon processes, the TinyAssets Server (FastMCP on :8001), and cloudflared routing `tinyassets.io` → `localhost:8001`.
 
 **What breaks when the host laptop is off (today, reproducible):**
 - `tinyassets.io/mcp` returns HTTP 530 (no-origin). The MCP connector in every Claude.ai account is dead until the laptop is back.

@@ -1,16 +1,16 @@
 ---
-title: Step 10 prep — workflow/api/engine_helpers.py extraction scope
+title: Step 10 prep — tinyassets/api/engine_helpers.py extraction scope
 date: 2026-04-26
 author: navigator
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md (audit's "100-LOC routing shell" target — Steps 9+10 are post-original-8-step extension); docs/exec-plans/completed/2026-04-26-decomp-step-9-prep.md
-target_task: Decomp post-Step-9 — Extract workflow/api/engine_helpers.py (preamble engine functions: ledger trio, upload-whitelist, dirty-file/commit error formatters, branch-visibility filters, MCP-prompt registrations)
+target_task: Decomp post-Step-9 — Extract tinyassets/api/engine_helpers.py (preamble engine functions: ledger trio, upload-whitelist, dirty-file/commit error formatters, branch-visibility filters, MCP-prompt registrations)
 gates_on: Step 8 (`branches.py`) + Step 9 (`universe.py`) MUST land first. Step 10 is the LAST extraction in the planned decomposition. After Step 10, residual universe_server.py is the projected ~650-LOC routing shell — close to (but not identical to) audit's "~100-LOC routing shell" target.
 ---
 
 # Step 10 (`engine_helpers.py`) pre-flight scope
 
-Read-only scope for extracting the preamble engine helpers from `workflow/universe_server.py` into a new `workflow/api/engine_helpers.py`. **Smallest extraction by LOC** (~600 moveable LOC) but **highest test-monkeypatch-target surface** (`_current_actor` patched 7×, `_storage_backend` patched 4× across the test suite). Same freshness-check protocol as Steps 1-9 prep.
+Read-only scope for extracting the preamble engine helpers from `tinyassets/universe_server.py` into a new `tinyassets/api/engine_helpers.py`. **Smallest extraction by LOC** (~600 moveable LOC) but **highest test-monkeypatch-target surface** (`_current_actor` patched 7×, `_storage_backend` patched 4× across the test suite). Same freshness-check protocol as Steps 1-9 prep.
 
 This step is NOT in the original 8-step audit plan. Per Step 9 prep §4, Step 10 lands after Step 9 to validate the Pattern A2 wrapper for `@mcp.tool() universe()` first, then extracts the preamble engine helpers Step 9 lazy-imports from. After Step 10, the audit's "~100-LOC routing shell" target is materially closer (residual ~650 LOC) — still ~6× the audit target but ~12× smaller than today's 7,778.
 
@@ -44,7 +44,7 @@ This step is NOT in the original 8-step audit plan. Per Step 9 prep §4, Step 10
 - `_daemon_liveness`, `_compute_accept_rate_from_db`, `_compute_word_count_from_files`, `_last_activity_at`, `_staleness_bucket`, `_phase_human`, `_parse_activity_line` — moved to **universe.py in Step 9** (L1240-L1490 + L3502).
 - `WRITE_ACTIONS` table + 14 `_extract_*` extractor closures — moved to **universe.py in Step 9** (L508-L713).
 - `_append_global_ledger`, `_ensure_author_server_db`, `_resolve_branch_id`, `_apply_node_spec`, `_split_csv`, `_coerce_node_keys`, `_resolve_udir` — moved to **branches.py in Step 8** (L4435-L7110 range).
-- `_gates_enabled` — already lives in **`workflow/api/market.py:1469`** (extracted in Step 7); re-exported from `workflow/universe_server.py:274`. Test patch at `test_describe_branch_approval.py:71` (`patch("workflow.universe_server._gates_enabled", ...)`) is a Step-7 follow-up, not a Step-10 concern. (Verified 2026-04-27 via grep of all `_gates_enabled` callers.)
+- `_gates_enabled` — already lives in **`tinyassets/api/market.py:1469`** (extracted in Step 7); re-exported from `tinyassets/universe_server.py:274`. Test patch at `test_describe_branch_approval.py:71` (`patch("workflow.universe_server._gates_enabled", ...)`) is a Step-7 follow-up, not a Step-10 concern. (Verified 2026-04-27 via grep of all `_gates_enabled` callers.)
 
 **Critical excluded items (stay in universe_server.py post-Step-10):**
 - Module imports (L29-L48) — the cross-module re-export shims need them.
@@ -70,7 +70,7 @@ Module imports + FastMCP instance creation + the `@mcp.custom_route("/")` HTTP h
 
 | Symbol | Line | LOC | Notes |
 |---|---|---|---|
-| `_upload_whitelist_prefixes` | 353 | ~25 | Reads `WORKFLOW_UPLOAD_WHITELIST` env var; resolves to absolute path list. |
+| `_upload_whitelist_prefixes` | 353 | ~25 | Reads `TINYASSETS_UPLOAD_WHITELIST` env var; resolves to absolute path list. |
 | `_split_whitelist_entry` | 380 | ~36 | Cross-platform path-list split (handles Windows drive-letter colons). |
 | `_warn_if_no_upload_whitelist` | 418 | ~14 | Logs warning at module-import time. **Called at L437 module-import time** — see §3.5. |
 | `_warn_if_no_upload_whitelist()` call | 437 | 1 | Module-import-time invocation. **Migrates to engine_helpers.py module load** — but universe_server.py needs the import side-effect preserved. |
@@ -193,7 +193,7 @@ engine_helpers.py does NOT register any `@mcp.tool()` or `@mcp.prompt()` decorat
 
 **Total: 13 patch sites + 2 import sites = 15 test interactions** with preamble engine helpers.
 
-**Strategy: back-compat re-export shim** preserves all imports (per audit §7 Strategy 1). Re-export block in `workflow/universe_server.py` after Step 10:
+**Strategy: back-compat re-export shim** preserves all imports (per audit §7 Strategy 1). Re-export block in `tinyassets/universe_server.py` after Step 10:
 
 ```python
 from workflow.api.engine_helpers import (  # noqa: E402, F401
@@ -225,7 +225,7 @@ from workflow.api.engine_helpers import (  # noqa: E402, F401
 
 3. **`_warn_if_no_upload_whitelist()` import-time side effect** — see §3.5. Recommend Option B (preserve the call at universe_server.py module-load via lazy-import).
 
-4. **`extensions()` body + `@mcp.tool()` wrapper STAY in universe_server.py.** The `extensions()` body is ~600 LOC of dispatch logic (calls into `_BRANCH_ACTIONS`, `_RUN_ACTIONS`, `_JUDGMENT_ACTIONS`, etc. — all already extracted to Steps 4-8). Pattern A2 wrapper preservation would be ~80 LOC (decorator + 80-arg signature + delegation). **Question: should there be a Step 11 for `extensions.py` extraction?** The `extensions()` body is similar in shape to `universe()`'s — large dispatch table funneling kwargs to action handlers. Step 11 would extract `extensions()` body to `workflow/api/extensions.py` via Pattern A2, mirroring Step 9. Final residual would drop another ~600 LOC to **~50 LOC** — actually achieving the audit's "~100-LOC routing shell" target. **Decision deferred to lead in §9.**
+4. **`extensions()` body + `@mcp.tool()` wrapper STAY in universe_server.py.** The `extensions()` body is ~600 LOC of dispatch logic (calls into `_BRANCH_ACTIONS`, `_RUN_ACTIONS`, `_JUDGMENT_ACTIONS`, etc. — all already extracted to Steps 4-8). Pattern A2 wrapper preservation would be ~80 LOC (decorator + 80-arg signature + delegation). **Question: should there be a Step 11 for `extensions.py` extraction?** The `extensions()` body is similar in shape to `universe()`'s — large dispatch table funneling kwargs to action handlers. Step 11 would extract `extensions()` body to `tinyassets/api/extensions.py` via Pattern A2, mirroring Step 9. Final residual would drop another ~600 LOC to **~50 LOC** — actually achieving the audit's "~100-LOC routing shell" target. **Decision deferred to lead in §9.**
 
 5. **`control_station` + `extension_guide` MCP prompts stay in universe_server.py.** Per §2.5: they're already as small as possible; extracting them doubles the LOC. **Confirmed: leave in universe_server.py.**
 
@@ -253,7 +253,7 @@ from workflow.api.engine_helpers import (  # noqa: E402, F401
 | Back-compat re-export block added to universe_server.py | ~20 |
 | `_warn_if_no_upload_whitelist()` lazy-import + call preserved | ~3 |
 | **Net reduction in universe_server.py** | **~245** |
-| New `workflow/api/engine_helpers.py` size | **~350** (with imports + module docstring) |
+| New `tinyassets/api/engine_helpers.py` size | **~350** (with imports + module docstring) |
 
 **Smallest extraction by net LOC reduction (~245 vs Step 9's ~2,959).** But largest by test-patch impact and dependency-graph re-routing.
 
@@ -266,13 +266,13 @@ Estimated wall time: **120-180 min** (smallest LOC extraction; largest cross-mod
 1. **Confirm Steps 8 + 9 landed.** Both must SHIP before Step 10 starts.
 2. **AST scan for external symbol set.** Confirm no preamble-engine-helper symbol is referenced from outside the L353-L832 range (excluding the cross-module re-export shims at L184-L350).
 3. **Verify `_warn_if_no_upload_whitelist()` is the only import-time side effect** in the moved range (no other module-level function calls).
-4. **Create `workflow/api/engine_helpers.py`:**
+4. **Create `tinyassets/api/engine_helpers.py`:**
    - Module docstring referencing audit + extraction date + the source ranges + dependency-inversion note.
    - Imports: `from workflow.api.helpers import _base_path` + `from workflow.catalog import get_backend, StorageBackend` + `from workflow.storage import DirtyFileError` + std-lib + typing + `logging.getLogger("universe_server.engine_helpers")`.
    - Move L353-L437 verbatim (upload-whitelist trio).
    - Move L451-L506 verbatim (public action ledger trio + section banner).
    - Move L716-L832 verbatim (storage + error formatters).
-5. **Update `workflow/universe_server.py`:**
+5. **Update `tinyassets/universe_server.py`:**
    - Delete L353-L437 (upload-whitelist trio).
    - Delete L451-L506 (ledger trio).
    - Delete L716-L832 (storage + error formatters).
@@ -290,19 +290,19 @@ Estimated wall time: **120-180 min** (smallest LOC extraction; largest cross-mod
 9. **Verification:**
    - `pytest tests/test_branch_name_resolution.py tests/test_build_branch_summary_response.py tests/test_describe_branch_approval.py tests/test_run_branch_failure_taxonomy.py tests/test_run_branch_version.py -q` → green.
    - `pytest -q` → full suite green (essential — Step 10 retargets ~50-80 lazy imports across all 9 prior submodules).
-   - `ruff check workflow/api/engine_helpers.py workflow/universe_server.py workflow/api/*.py` → clean.
-   - **Visual check:** `git diff workflow/universe_server.py | grep -c "^-def _"` should equal **11** (3 upload-whitelist + 3 ledger trio + 5 storage/formatter).
-   - **Plugin parity:** `diff -r workflow/ packaging/claude-plugin/.../workflow/` → empty.
+   - `ruff check tinyassets/api/engine_helpers.py tinyassets/universe_server.py tinyassets/api/*.py` → clean.
+   - **Visual check:** `git diff tinyassets/universe_server.py | grep -c "^-def _"` should equal **11** (3 upload-whitelist + 3 ledger trio + 5 storage/formatter).
+   - **Plugin parity:** `diff -r tinyassets/ packaging/claude-plugin/.../tinyassets/` → empty.
 
 **Files in eventual Step 10 SHIP handoff:**
-- `workflow/api/engine_helpers.py` (NEW, ~350 LOC — smallest single-file extraction)
-- `workflow/universe_server.py` (~268 LOC removed + ~20 re-export added + ~3 lazy-import preserve = net ~−245)
-- `workflow/api/{runs,evaluation,runtime_ops,market,branches,universe,wiki,status,helpers}.py` — touched for ~50-80 lazy-import retargets (mechanical)
+- `tinyassets/api/engine_helpers.py` (NEW, ~350 LOC — smallest single-file extraction)
+- `tinyassets/universe_server.py` (~268 LOC removed + ~20 re-export added + ~3 lazy-import preserve = net ~−245)
+- `tinyassets/api/{runs,evaluation,runtime_ops,market,branches,universe,wiki,status,helpers}.py` — touched for ~50-80 lazy-import retargets (mechanical)
 - `tests/test_api_engine_helpers.py` (NEW, 30-50 tests recommended — preamble helpers were never tested in isolation)
 - 5 existing test files with monkeypatch-target mirror additions
-- `packaging/claude-plugin/.../workflow/api/engine_helpers.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
-- `packaging/claude-plugin/.../workflow/api/*.py` (mirrors with retargeted lazy imports)
+- `packaging/claude-plugin/.../tinyassets/api/engine_helpers.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
+- `packaging/claude-plugin/.../tinyassets/api/*.py` (mirrors with retargeted lazy imports)
 
 15-25 files, +400 / −250 LOC net (one-step view); the lazy-import retargets across submodules are LOC-neutral (sed-style replacements).
 

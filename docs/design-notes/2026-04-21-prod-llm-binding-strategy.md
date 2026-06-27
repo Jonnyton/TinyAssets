@@ -5,7 +5,7 @@ author: navigator
 status: superseded
 status_detail: Superseded 2026-04-30 by PLAN.md subscription-first provider auth policy.
 related:
-  - workflow/providers/router.py
+  - tinyassets/providers/router.py
   - domains/fantasy_daemon/phases/_provider_stub.py
   - PLAN.md § Providers
 ---
@@ -72,7 +72,7 @@ except ProviderError as exc:
     self._quota.cooldown(provider_name, COOLDOWN_OTHER)
 ```
 
-`COOLDOWN_OTHER` duration (from `workflow/providers/quota.py` — need to verify):
+`COOLDOWN_OTHER` duration (from `tinyassets/providers/quota.py` — need to verify):
 typically 30–60s. During cooldown, `quota.available("codex")` returns False, the
 router skips codex, finds no other registered providers, and raises
 `AllProvidersExhaustedError`. The daemon's node gets an exception, which propagates
@@ -105,7 +105,7 @@ for judge role.
 startup registration (same pattern as Codex). One try/except block, ~6 lines.
 
 **Host touchpoint:** mint a free Gemini API key at `aistudio.google.com` (~2 min) +
-add `GEMINI_API_KEY` to `/etc/workflow/env` on the Droplet. No OAuth device flow;
+add `GEMINI_API_KEY` to `/etc/tinyassets/env` on the Droplet. No OAuth device flow;
 Google AI Studio API keys are a simple web form.
 
 ### Candidate B: Groq free tier
@@ -152,14 +152,14 @@ the most friction of the three; skip for now.
 **Minimum host touchpoint for two-provider stance:**
 1. `aistudio.google.com` → Create API key → copy `GEMINI_API_KEY`.
 2. `console.groq.com` → Create API key → copy `GROQ_API_KEY`.
-3. SSH to Droplet → `echo "GEMINI_API_KEY=..." >> /etc/workflow/env` × 2.
+3. SSH to Droplet → `echo "GEMINI_API_KEY=..." >> /etc/tinyassets/env` × 2.
 4. `docker compose restart` to reload env.
 
 Total: ~10 min. No CLI tooling needed; pure web + SSH.
 
 ---
 
-## Question 4: Remote LLM via another Workflow daemon (host pool path)
+## Question 4: Remote LLM via another TinyAssets daemon (host pool path)
 
 **Design state (PLAN.md § Multiplayer Daemon Platform):**
 
@@ -217,7 +217,7 @@ a 2-week implementation.
 
 1. Mint Gemini key: `aistudio.google.com` → API keys → Create.
 2. Mint Groq key: `console.groq.com` → API keys → Create.
-3. On Droplet: append both to `/etc/workflow/env`.
+3. On Droplet: append both to `/etc/tinyassets/env`.
 4. `docker compose restart`.
 5. Probe: `python scripts/mcp_probe.py` → confirm `llm_endpoint_bound` changes from
    `unset`.

@@ -16,9 +16,9 @@ This is the load-bearing phase of the daemon-task-economy rollout. It unifies th
 - `docs/planning/daemon_task_economy.md` §3.4 "What changes" (lines 196-204) and §3.2 "BranchTask vs NodeBid" (144-195).
 - Current `fantasy_author/graphs/universe.py` — the existing StateGraph this phase wraps.
 - Current `fantasy_author/__main__.py:402-548` — the DaemonController that builds and runs the graph today.
-- `workflow/branches.py` `NodeDefinition` (101-196), `BranchDefinition` (339+).
-- `workflow/graph_compiler.py` `compile_branch` (506-592), `_validate_source_code` (323-338), `_build_source_code_node` (341-415).
-- `workflow/runs.py` `execute_branch_async` (1318-1371).
+- `tinyassets/branches.py` `NodeDefinition` (101-196), `BranchDefinition` (339+).
+- `tinyassets/graph_compiler.py` `compile_branch` (506-592), `_validate_source_code` (323-338), `_build_source_code_node` (341-415).
+- `tinyassets/runs.py` `execute_branch_async` (1318-1371).
 - C.5 landing `a228797` (authorial_priority_review wired through producer dispatcher) — confirms Phase C contract is live.
 
 ## 2. Risk map
@@ -29,17 +29,17 @@ This is the load-bearing phase of the daemon-task-economy rollout. It unifies th
 | R2 | SqliteSaver checkpointing is wired into `_run_graph` via `graph.compile(checkpointer=...)`. The Branch compiler does `StateGraph(state_type)` and returns `CompiledBranch.graph` uncompiled — caller must attach the checkpointer. If dev misses this, all daemon restarts lose resume capability | Silent regression: every restart starts at 0 words | Yes (flag off) | Contract §4 locks in: the wrapped path MUST preserve `SqliteSaver.from_conn_string(...)` + `graph.compile(checkpointer=...)`. Add a test that asserts checkpoint recovery works in the flag-on path. |
 | R3 | `compile_branch` synthesizes a `state_type` TypedDict from `BranchDefinition.state_schema`. The fantasy `UniverseState` has ~20 fields with custom reducers (`workflow_instructions`, `quality_trace`, `health`, `cross_series_facts`, etc.). A schema mismatch silently drops state fields | Daemon runs but with degraded state propagation — feels like flaky memory | Partial (requires running both paths side-by-side to detect) | Hard contract: the opaque-wrap node's internal graph uses the real `UniverseState` TypedDict. The OUTER Branch's `state_schema` is minimal (just what the wrapper reads/writes at the boundary). Do NOT try to reconstruct `UniverseState` as a Branch `state_schema`. |
 | R4 | `graph_compiler._validate_source_code` rejects any source containing `exec(`, `__import__`, `subprocess`, `os.system`, `eval(` (lines 108-110). A wrapper that imports `build_universe_graph` and invokes it cannot be expressed as `source_code` | Rollout-plan option (b) as written is uncompilable | N/A (caught at compile time) | See §3 decision. Solution: the wrapper node is NOT a `source_code` NodeDefinition. It is a Python callable registered via a new domain-graph escape hatch. |
-| R5 | `NodeDefinition.approved=True` precedent at `workflow/universe_server.py:2577` is the `_ext_manage` MCP action `approve` — it flips a stored registry node's approved flag. The rollout plan's "set approved=True at registration time" is valid for source_code nodes, but if the wrapper is NOT source_code, the `approved` flag becomes irrelevant | None (the precedent simply doesn't apply) | N/A | Contract §4 clarifies: the domain-trusted wrapper is not a source_code node. No approval gate applies. |
+| R5 | `NodeDefinition.approved=True` precedent at `tinyassets/universe_server.py:2577` is the `_ext_manage` MCP action `approve` — it flips a stored registry node's approved flag. The rollout plan's "set approved=True at registration time" is valid for source_code nodes, but if the wrapper is NOT source_code, the `approved` flag becomes irrelevant | None (the precedent simply doesn't apply) | N/A | Contract §4 clarifies: the domain-trusted wrapper is not a source_code node. No approval gate applies. |
 | R6 | Two execution paths (flag-off direct StateGraph, flag-on wrapped-Branch) drift over time — bug fixes land in one but not the other | Medium — masked regressions only visible when flag state flips | Yes (delete flag-off path once flag-on is proven) | Test matrix: every Phase D test runs BOTH paths. Living together is explicitly temporary — STATUS.md gets a Concern entry to delete the flag-off path after one user-sim mission green on flag-on. |
 | R7 | `DaemonController._run_graph` uses `compiled.stream(...)` iterator to handle pause/stop, dashboard events, heartbeat, and cross-universe switches (`fantasy_author/__main__.py:506-548`). Any wrapping that replaces `stream` breaks all of this | Catastrophic — daemon loses all operator controls | Yes (flag off) | The wrap is structural, not executional. `build_universe_graph()` stays the same. What changes is: the graph comes from `compile_branch(branch_def).graph` instead of `build_universe_graph()` — iff flag on AND the compile succeeds. Everything downstream of "graph in hand" is unchanged. |
-| R8 | Feature flag `WORKFLOW_UNIFIED_EXECUTION` does not exist yet. Naming / placement matters for cross-session legibility | Low, but will frustrate future sessions if inconsistent | Yes | Contract §4: define the flag in a single location (`workflow/config.py` or `fantasy_author/__main__.py` module-level), read via `os.environ.get(...)`, document in STATUS.md when flag is referenced. |
-| R9 | Live-toggle of the flag (user sets `WORKFLOW_UNIFIED_EXECUTION=1` on a running universe) — the daemon is already in `_run_graph`; flag read must be at graph-construction time, not per-node | Unclear UX — user may expect instant toggle | Yes (restart required) | Document: flag takes effect on next `_run_graph` call (i.e., next daemon restart or universe switch). No mid-run toggle. Matches how other flags behave. |
+| R8 | Feature flag `TINYASSETS_UNIFIED_EXECUTION` does not exist yet. Naming / placement matters for cross-session legibility | Low, but will frustrate future sessions if inconsistent | Yes | Contract §4: define the flag in a single location (`tinyassets/config.py` or `fantasy_author/__main__.py` module-level), read via `os.environ.get(...)`, document in STATUS.md when flag is referenced. |
+| R9 | Live-toggle of the flag (user sets `TINYASSETS_UNIFIED_EXECUTION=1` on a running universe) — the daemon is already in `_run_graph`; flag read must be at graph-construction time, not per-node | Unclear UX — user may expect instant toggle | Yes (restart required) | Document: flag takes effect on next `_run_graph` call (i.e., next daemon restart or universe switch). No mid-run toggle. Matches how other flags behave. |
 | R10 | Phase C.5 `authorial_priority_review` producer wiring is live. Phase D does not change producer semantics, but if the wrapped graph re-imports Phase C machinery through a different path, producer-registration singletons could double-register | Runtime RuntimeError or silent duplicate producer output | Yes (flag off) | Hard rule: wrapped graph imports from the SAME module paths as the direct graph. No copy-paste import aliases. One source of truth for `build_universe_graph`. |
 | R11 | `compile_branch(branch)` raises under flag-on (registry miss, malformed seed YAML, state_schema validation error, etc.). If the error is caught and the daemon silently falls through to the direct path, flag-on becomes a no-op that masks broken config. Next user-sim mission passes "with flag on" while actually running flag-off | Silent regression — looks correct but isn't; subsequent tests pass on a lie | Yes (flag off) | Hard-fail. Any exception from `compile_branch` OR from the registry resolution re-raises out of `_run_graph` with a clear error message. The daemon stops (not degrades). Host sees the error, fixes the config or flips the flag off, and restarts. See §4.8 success criterion. Do NOT try/except around the wrapped path. |
 
 ### Reversibility summary
 
-Everything on the list is reversible by flipping `WORKFLOW_UNIFIED_EXECUTION=off`. The only non-reversible action in this phase is the initial landing of the wrapper code itself — and that is inert when the flag is off. If the flag stays off indefinitely, Phase D is a no-op plus ~200 lines of dead-but-tested code, which is a survivable outcome.
+Everything on the list is reversible by flipping `TINYASSETS_UNIFIED_EXECUTION=off`. The only non-reversible action in this phase is the initial landing of the wrapper code itself — and that is inert when the flag is off. If the flag stays off indefinitely, Phase D is a no-op plus ~200 lines of dead-but-tested code, which is a survivable outcome.
 
 ## 3. Option (a) vs option (b) — decision
 
@@ -57,9 +57,9 @@ Add a `trusted_domain: str = ""` field to `BranchDefinition`. `compile_branch` e
 
 Express the fantasy universe-cycle as a single-node BranchDefinition whose one node invokes the existing `build_universe_graph()` StateGraph unchanged. The internal state machine is opaque to the Branch layer.
 
-**Original framing (memo + rollout):** "set `NodeDefinition.approved=True` at registration time using the existing domain-trusted precedent at `workflow/universe_server.py:2577`" — implies a `source_code` node carrying code that calls `build_universe_graph()`.
+**Original framing (memo + rollout):** "set `NodeDefinition.approved=True` at registration time using the existing domain-trusted precedent at `tinyassets/universe_server.py:2577`" — implies a `source_code` node carrying code that calls `build_universe_graph()`.
 
-**Problem:** `_validate_source_code` at `workflow/graph_compiler.py:108-110` blocks `__import__`, which means a `source_code` node cannot import the real `build_universe_graph`. The node would have to inline the entire fantasy graph as a literal source string. That defeats the "invokes the existing StateGraph unchanged" promise.
+**Problem:** `_validate_source_code` at `tinyassets/graph_compiler.py:108-110` blocks `__import__`, which means a `source_code` node cannot import the real `build_universe_graph`. The node would have to inline the entire fantasy graph as a literal source string. That defeats the "invokes the existing StateGraph unchanged" promise.
 
 **Revised approach:** Introduce a **"domain-trusted node"** concept in `compile_branch`. A NodeDefinition with `domain_id` matching a registered trusted domain AND `source_code == ""` AND `prompt_template == ""` is resolved to a Python callable via a domain-registered callable lookup. This is cleaner than adding a `trusted_domain` field on `BranchDefinition` (option a) because:
 - It's node-level, not branch-level — composes with future mixed branches.
@@ -82,17 +82,17 @@ Scope boundaries, signatures, invariants, and non-goals. Dev fills in HOW.
 
 1. **Two-module registry pattern — engine-agnostic dict + domain-local entries.** Decoupled to preserve PLAN.md's engine/domain separation. Engine side never imports domain side.
 
-   - **New `workflow/domain_registry.py`** — domain-agnostic infrastructure. Holds the `(domain_id, node_id) → Callable[[dict], dict]` dict plus `register_domain_callable(domain_id, node_id, fn)` and `resolve_domain_callable(domain_id, node_id) -> Callable | None` helpers. Imported by `workflow/graph_compiler.py`. Knows nothing about fantasy.
+   - **New `tinyassets/domain_registry.py`** — domain-agnostic infrastructure. Holds the `(domain_id, node_id) → Callable[[dict], dict]` dict plus `register_domain_callable(domain_id, node_id, fn)` and `resolve_domain_callable(domain_id, node_id) -> Callable | None` helpers. Imported by `tinyassets/graph_compiler.py`. Knows nothing about fantasy.
    - **New `fantasy_author/branch_registrations.py`** — domain-side. On import, calls `register_domain_callable("fantasy_author", "universe_cycle_wrapper", _wrapper_fn)` with a thin wrapper that invokes `build_universe_graph()` and returns its compiled result. No classes, no registry state of its own — module-level side-effect registration.
    - **Side-effect import in `fantasy_author/__main__.py`** — `import fantasy_author.branch_registrations  # noqa: F401  # registers domain callables` near the other domain imports. Must run before the first `compile_branch` call under flag-on. `noqa: F401` to silence unused-import warnings; the import *is* the registration.
 
-   This pattern resolves dev's correct concern that the original wording ("registry lives in `fantasy_author/branch_registrations.py`") would force `workflow/graph_compiler.py` to import from `fantasy_author/`, violating the engine/domain decoupling. Under this pattern, the dict + helpers are engine-agnostic; only the entries (the `(domain_id, node_id, callable)` triples) are domain-local.
+   This pattern resolves dev's correct concern that the original wording ("registry lives in `fantasy_author/branch_registrations.py`") would force `tinyassets/graph_compiler.py` to import from `fantasy_author/`, violating the engine/domain decoupling. Under this pattern, the dict + helpers are engine-agnostic; only the entries (the `(domain_id, node_id, callable)` triples) are domain-local.
 
-2. **Compiler extension in `workflow/graph_compiler.py`** — `_build_node` gains a third branch (after `has_template` and `has_source`): if `(domain_id, node.node_id)` resolves to a registered opaque callable, use it. The callable receives the node's inputs as `state: dict` and returns `dict`. No approval gate (domain-trusted registry is host-controlled at registration time, not per-invocation).
+2. **Compiler extension in `tinyassets/graph_compiler.py`** — `_build_node` gains a third branch (after `has_template` and `has_source`): if `(domain_id, node.node_id)` resolves to a registered opaque callable, use it. The callable receives the node's inputs as `state: dict` and returns `dict`. No approval gate (domain-trusted registry is host-controlled at registration time, not per-invocation).
 
-   **Threading contract (Option B, reviewer-confirmed).** `NodeDefinition` does NOT have a `domain_id` field — `domain_id` lives on `BranchDefinition` (`workflow/branches.py:360`). Do not read `node.domain_id`; it will `AttributeError` at compile time. Instead, thread `domain_id` as an explicit parameter:
+   **Threading contract (Option B, reviewer-confirmed).** `NodeDefinition` does NOT have a `domain_id` field — `domain_id` lives on `BranchDefinition` (`tinyassets/branches.py:360`). Do not read `node.domain_id`; it will `AttributeError` at compile time. Instead, thread `domain_id` as an explicit parameter:
    - `_build_node(node, *, domain_id: str = "", provider_call, event_sink)` — new kwarg, default empty string.
-   - `compile_branch(branch, ...)` passes `domain_id=branch.domain_id` into every `_build_node` call (one site, `workflow/graph_compiler.py:559-561`).
+   - `compile_branch(branch, ...)` passes `domain_id=branch.domain_id` into every `_build_node` call (one site, `tinyassets/graph_compiler.py:559-561`).
    - Opaque-node resolution: `if not has_template and not has_source and domain_id: lookup = resolve_domain_callable(domain_id, node.node_id); if lookup: return _build_opaque_node(lookup, node, event_sink=event_sink)`.
    - Empty `domain_id` OR unregistered `(domain_id, node_id)` with no source/template → existing `CompilerError("Node must have either prompt_template or source_code")`. Preserves the current error shape for user Branches that omit both.
 
@@ -106,9 +106,9 @@ Scope boundaries, signatures, invariants, and non-goals. Dev fills in HOW.
 
 ### 4.2 Flag
 
-- Name: `WORKFLOW_UNIFIED_EXECUTION`. Same name as the rollout plan so future sessions find it.
+- Name: `TINYASSETS_UNIFIED_EXECUTION`. Same name as the rollout plan so future sessions find it.
 - Default: off (empty or `"0"` or `"false"`).
-- Read: at the start of `_run_graph`, one call to `os.environ.get("WORKFLOW_UNIFIED_EXECUTION", "").strip().lower() in {"1", "true", "yes", "on"}`. Same pattern as `_gates_enabled()` at `workflow/universe_server.py:6621-6625`.
+- Read: at the start of `_run_graph`, one call to `os.environ.get("TINYASSETS_UNIFIED_EXECUTION", "").strip().lower() in {"1", "true", "yes", "on"}`. Same pattern as `_gates_enabled()` at `tinyassets/universe_server.py:6621-6625`.
 - Scope: process-level. Takes effect on next `_run_graph` call (daemon restart or universe switch). No mid-run toggle.
 
 ### 4.3 Invariants (must hold across both flag states)
@@ -140,10 +140,10 @@ Aim: ~24 new tests. If dev hits a test that's ambiguous about what "identical be
 
 **Landing state:** flag off by default. Merging is safe. If the flag is never flipped, nothing changes for any user.
 
-**Flag-on rollout gate:** user-sim must complete one full mission (write at least one scene, restart at least once, see dashboard liveness) with `WORKFLOW_UNIFIED_EXECUTION=1` before the flag default flips to on. Lead enforces this gate.
+**Flag-on rollout gate:** user-sim must complete one full mission (write at least one scene, restart at least once, see dashboard liveness) with `TINYASSETS_UNIFIED_EXECUTION=1` before the flag default flips to on. Lead enforces this gate.
 
 **If flag-on breaks in live:** three escalating steps, in order:
-1. **Immediate:** host sets `WORKFLOW_UNIFIED_EXECUTION=0` (or unsets it) in the tray/environment and restarts the Workflow daemon. Daemon resumes on the direct path. No data loss; SqliteSaver checkpoint is shared between paths by design.
+1. **Immediate:** host sets `TINYASSETS_UNIFIED_EXECUTION=0` (or unsets it) in the tray/environment and restarts the TinyAssets daemon. Daemon resumes on the direct path. No data loss; SqliteSaver checkpoint is shared between paths by design.
 2. **Short-term:** git revert of the `fantasy_author/__main__.py` flag-gate edit if the flag itself is not holding. Wrapper module + compiler extension stay in place — they're inert without the caller.
 3. **Full rollback:** revert the Phase D landing commit entirely. Reverts wrapper, compiler extension, seed YAML, tests. Flag stays defined but unreferenced — no harm.
 
@@ -151,7 +151,7 @@ The SqliteSaver database format is unchanged by Phase D, so downgrade safety is 
 
 **Flag-on hard-fail paths share the same contract, different exception types.** Per R11, the wrapped-Branch path propagates failure out of `_run_graph` without falling back to the direct path. Two distinct failure modes raise distinct exception types but both trigger the same "daemon stops, host fixes config, restarts" recovery: a missing seed YAML (`fantasy_author/branches/universe_cycle.yaml` absent) raises `FileNotFoundError`; a registry miss (no `(domain_id, node_id)` match when the YAML loads but the domain-trusted callable isn't registered) raises `CompilerError`. Either error surfaces clearly in the tray/log — flip flag off, restart, investigate.
 
-**Do NOT:** schema-migrate anything, rewrite any existing checkpoint, touch `workflow/branches.py`'s `BranchDefinition` dataclass fields, or change any storage-layer shape. If dev finds they need any of those, the scope has drifted — raise it before implementing.
+**Do NOT:** schema-migrate anything, rewrite any existing checkpoint, touch `tinyassets/branches.py`'s `BranchDefinition` dataclass fields, or change any storage-layer shape. If dev finds they need any of those, the scope has drifted — raise it before implementing.
 
 ### 4.6 Non-goals (explicit)
 
@@ -159,7 +159,7 @@ The SqliteSaver database format is unchanged by Phase D, so downgrade safety is 
 - Moving `fantasy_author/` to `domains/fantasy_author/`. The rollout plan's path assumes a rename that hasn't happened. Preserve current paths; STATUS.md work-row should be edited to reflect `fantasy_author/__main__.py` (no `domains/` prefix).
 - Changing `UniverseState` shape, fields, or reducers.
 - Routing through `execute_branch_async`. Explicitly rejected per R1.
-- Touching `workflow/branches.py` (no new fields on `BranchDefinition`).
+- Touching `tinyassets/branches.py` (no new fields on `BranchDefinition`).
 - Modifying Phase C producer contract. Phase D is a wrapping layer, not a producer-path change.
 - Exposing the wrapped universe_cycle Branch to user-registered fork paths. The seed YAML is `published=False`. If users accidentally fork it, they get an opaque-node-with-no-registry entry — a clean error, not a silent failure.
 - NodeBid path (§3.2). That's Phase G.
@@ -171,10 +171,10 @@ The SqliteSaver database format is unchanged by Phase D, so downgrade safety is 
 
 | File | Change | Size estimate |
 |------|--------|---------------|
-| `workflow/domain_registry.py` | NEW — engine-agnostic dict + `register_domain_callable` + `resolve_domain_callable` helpers. Knows nothing about fantasy. | ~40 lines |
+| `tinyassets/domain_registry.py` | NEW — engine-agnostic dict + `register_domain_callable` + `resolve_domain_callable` helpers. Knows nothing about fantasy. | ~40 lines |
 | `fantasy_author/branch_registrations.py` | NEW — module-level side-effect registration: imports `register_domain_callable` + the fantasy wrapper callable, calls register at import time | ~40 lines |
 | `fantasy_author/branches/universe_cycle.yaml` | NEW — single-node Branch seed | ~30 lines |
-| `workflow/graph_compiler.py` | EDIT `_build_node` signature (`domain_id` kwarg) + add opaque-node branch via `resolve_domain_callable` + pass `domain_id=branch.domain_id` at the single `_build_node` call site in `compile_branch` (~line 559) | ~45 lines added / 2 edited |
+| `tinyassets/graph_compiler.py` | EDIT `_build_node` signature (`domain_id` kwarg) + add opaque-node branch via `resolve_domain_callable` + pass `domain_id=branch.domain_id` at the single `_build_node` call site in `compile_branch` (~line 559) | ~45 lines added / 2 edited |
 | `fantasy_author/__main__.py` | EDIT `_run_graph` — flag gate on graph construction + side-effect import of `fantasy_author.branch_registrations` | ~22 lines changed |
 | `tests/test_phase_d_unified_execution.py` | NEW — ~20 tests | ~400 lines |
 | `docs/exec-plans/daemon_task_economy_rollout.md` | EDIT — mark Phase D done when landed, note the revised option-(b) shape | ~10 lines |
@@ -193,7 +193,7 @@ No new subsystems, no new schemas, no new MCP tools. ~550 lines net, most of whi
 
 ### 4.9 Open design questions (non-blocking, flag up as they surface)
 
-1. **Registry location — resolved.** Engine-agnostic dict + helpers live in `workflow/domain_registry.py`; domain-local entries live in `fantasy_author/branch_registrations.py` via module-level side-effect registration. This preserves PLAN.md's engine/domain decoupling: `workflow/graph_compiler.py` imports `resolve_domain_callable` from `workflow/domain_registry.py`, never from any domain. See §4.1 #1 for the full pattern.
+1. **Registry location — resolved.** Engine-agnostic dict + helpers live in `tinyassets/domain_registry.py`; domain-local entries live in `fantasy_author/branch_registrations.py` via module-level side-effect registration. This preserves PLAN.md's engine/domain decoupling: `tinyassets/graph_compiler.py` imports `resolve_domain_callable` from `tinyassets/domain_registry.py`, never from any domain. See §4.1 #1 for the full pattern.
 2. **Should the wrapper callable emit per-node events into the Branch layer's `event_sink` so the Branch inspection surface sees "universe_cycle is running"?** Recommend: v1 emit a single `running` event at wrapper start and a single `completed` event at wrapper end. Richer per-phase event surfacing is option (a) territory — don't overreach here.
 3. **Does the seed YAML go under VCS, or is it generated at startup?** Recommend: VCS. It's a tiny static file; keeping it in-repo makes the "fantasy universe-cycle is a registered Branch" claim inspectable in the tree.
 

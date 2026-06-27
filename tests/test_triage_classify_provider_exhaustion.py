@@ -104,7 +104,7 @@ class TestPriorityOrdering:
     """
 
     def test_env_unreadable_beats_provider_exhaustion(self):
-        diag = "ENV-UNREADABLE: /etc/workflow/env not readable\n" + "".join(
+        diag = "ENV-UNREADABLE: /etc/tinyassets/env not readable\n" + "".join(
             _revert(i) for i in range(1, 6)
         )
         assert (
@@ -192,5 +192,5 @@ class TestSanityUnchanged:
         )
 
     def test_watchdog_hotloop_unchanged(self):
-        diag = "workflow-daemon.service: start request repeated too quickly\n"
+        diag = "tinyassets-daemon.service: start request repeated too quickly\n"
         assert tc.classify(diag)["class"] == tc.TriageClass.WATCHDOG_HOTLOOP

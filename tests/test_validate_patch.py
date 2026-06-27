@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from workflow.effectors.validate_patch import (
+from tinyassets.effectors.validate_patch import (
     DOMAIN_ID,
     NODE_ID,
     register_validate_patch,
@@ -118,7 +118,7 @@ def test_duplicate_path_in_edits_and_changes_is_invalid():
 
 def test_registered_as_opaque_domain_callable():
     register_validate_patch()
-    from workflow.domain_registry import resolve_domain_callable
+    from tinyassets.domain_registry import resolve_domain_callable
 
     fn = resolve_domain_callable(DOMAIN_ID, NODE_ID)
     assert fn is validate_patch

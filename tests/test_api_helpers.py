@@ -1,4 +1,4 @@
-"""Tests for workflow/api/helpers.py — extracted universe-server path helpers."""
+"""Tests for tinyassets/api/helpers.py — extracted universe-server path helpers."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.api.helpers import (
+from tinyassets.api.helpers import (
     _base_path,
     _default_universe,
     _find_all_pages,
@@ -24,16 +24,16 @@ from workflow.api.helpers import (
 
 class TestBasePath:
     def test_returns_path(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = _base_path()
         assert isinstance(result, Path)
 
     def test_honours_workflow_data_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         assert _base_path() == tmp_path
 
     def test_absolute(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         assert _base_path().is_absolute()
 
 
@@ -43,29 +43,29 @@ class TestBasePath:
 
 class TestUniverseDir:
     def test_returns_child_of_base(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = _universe_dir("my-universe")
         assert result.parent == tmp_path.resolve()
 
     def test_correct_name(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = _universe_dir("my-universe")
         assert result.name == "my-universe"
 
     def test_path_traversal_raises(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         with pytest.raises(ValueError, match="Invalid universe_id"):
             _universe_dir("../../etc/passwd")
 
     def test_path_traversal_absolute_raises(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         # An absolute path that escapes base also raises
         with pytest.raises(ValueError, match="Invalid universe_id"):
             _universe_dir("/tmp/outside")
 
     def test_nested_name_stays_inside(self, tmp_path, monkeypatch):
         # A simple subdirectory within base is fine
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = _universe_dir("valid")
         assert result.is_relative_to(tmp_path)
 
@@ -76,12 +76,12 @@ class TestUniverseDir:
 
 class TestDefaultUniverse:
     def test_env_var_overrides(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
         assert _default_universe() == "my-default"
 
     def test_active_marker_overrides_env_default(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
         (tmp_path / "my-default").mkdir()
         (tmp_path / "active-now").mkdir()
@@ -89,39 +89,39 @@ class TestDefaultUniverse:
         assert _default_universe() == "active-now"
 
     def test_invalid_active_marker_ignored(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
         (tmp_path / "my-default").mkdir()
         (tmp_path / ".active_universe").write_text("../outside", encoding="utf-8")
         assert _default_universe() == "my-default"
 
     def test_first_subdir_if_no_env(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / "alpha").mkdir()
         (tmp_path / "beta").mkdir()
         assert _default_universe() == "alpha"
 
     def test_skips_dotdirs(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / ".hidden").mkdir()
         (tmp_path / "visible").mkdir()
         assert _default_universe() == "visible"
 
     def test_fallback_when_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         assert _default_universe() == "default-universe"
 
     def test_fallback_when_no_base(self, tmp_path, monkeypatch):
         nonexistent = tmp_path / "nonexistent"
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(nonexistent))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(nonexistent))
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         assert _default_universe() == "default-universe"
 
     def test_skips_files(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / "afile.txt").write_text("x")
         (tmp_path / "zdir").mkdir()
@@ -204,11 +204,11 @@ class TestReadText:
 class TestWikiRoot:
     def test_honours_workflow_wiki_path(self, tmp_path, monkeypatch):
         target = tmp_path / "wiki-root"
-        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(target))
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(target))
         assert _wiki_root() == target.resolve()
 
     def test_returns_path(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(tmp_path))
         assert isinstance(_wiki_root(), Path)
 
 
@@ -218,15 +218,15 @@ class TestWikiRoot:
 
 class TestWikiSubdirs:
     def test_pages_dir_under_root(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(tmp_path))
         assert _wiki_pages_dir() == _wiki_root() / "pages"
 
     def test_drafts_dir_under_root(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(tmp_path))
         assert _wiki_drafts_dir() == _wiki_root() / "drafts"
 
     def test_pages_drafts_distinct(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(tmp_path))
         assert _wiki_pages_dir() != _wiki_drafts_dir()
 
 

@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.api.market import _action_goal_propose
-from workflow.evaluation.scenario_dispatchers.mcp_call import (
+from tinyassets.api.market import _action_goal_propose
+from tinyassets.evaluation.scenario_dispatchers.mcp_call import (
     register as register_mcp_call_dispatcher,
 )
-from workflow.evaluation.scenario_runner import (
+from tinyassets.evaluation.scenario_runner import (
     AcceptanceScenario,
     registered_dispatchers,
     run_scenario,
@@ -40,11 +40,11 @@ def _suite_local_dispatcher(tmp_path, monkeypatch):
     Suite-local register + teardown keeps the production registry empty, so the
     daemon's ``run_scenario`` still returns ``skip`` outside CI.
     """
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     # sqlite_only is the explicit, fully-isolated backend (no YAML writes); the
     # bare "sqlite" value is NOT recognized by the factory and falls through to
     # git auto-probe, which is not guaranteed isolated (Codex review 2026-06-25).
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite_only")
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_only")
     register_mcp_call_dispatcher()
     yield
     for target_surface in list(registered_dispatchers().keys()):

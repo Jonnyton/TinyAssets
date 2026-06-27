@@ -18,8 +18,8 @@
 
   const GENERAL = legal.contact.general;
   const SECURITY = legal.contact.security;
-  const GH_REPO = 'https://github.com/Jonnyton/Workflow';
-  const GH_ISSUES = 'https://github.com/Jonnyton/Workflow/issues';
+  const GH_REPO = 'https://github.com/Jonnyton/TinyAssets';
+  const GH_ISSUES = 'https://github.com/Jonnyton/TinyAssets/issues';
 
   // Four real channels. Each card carries one real action — a route, a GitHub
   // surface, or a mailto to a real address. No fake form, no booked call, no

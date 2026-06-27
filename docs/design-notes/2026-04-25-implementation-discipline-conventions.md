@@ -23,7 +23,7 @@ When defining a structured exception that the MCP layer or a downstream caller n
 ### Example (in production)
 
 ```python
-# workflow/runs.py — landed via #65b
+# tinyassets/runs.py — landed via #65b
 class SnapshotSchemaDrift(Exception):
     """Raised when a published version's snapshot can't be reconstructed."""
 
@@ -91,7 +91,7 @@ When wrapping a parse, load, or `from_dict`-style call in a structured exception
 ### Example (in production)
 
 ```python
-# workflow/runs.py:1854-1860 — landed via #65b
+# tinyassets/runs.py:1854-1860 — landed via #65b
 try:
     branch = BranchDefinition.from_dict(bv.snapshot)
 except (AttributeError, KeyError, TypeError, ValueError) as exc:
@@ -208,9 +208,9 @@ Refactor-as-separate-dispatch per pair-read #59 §3 (`docs/audits/2026-04-25-pai
   - `docs/design-notes/2026-04-25-shared-helper-convention.md` (def/version sibling pattern).
   - `docs/design-notes/2026-04-25-design-proposal-pattern-convention.md` (Task #68, dev-2-2 — design-proposal pattern).
 - Substrate references:
-  - `workflow/runs.py:1789-1802` (`SnapshotSchemaDrift` example).
-  - `workflow/runs.py:1854-1860` (specific-exception catch example).
-  - `workflow/contribution_events.py:30` (`_EMIT_FAILURES` counter — same architectural shape as class-level attrs in spirit: state cleanly readable without instantiation).
+  - `tinyassets/runs.py:1789-1802` (`SnapshotSchemaDrift` example).
+  - `tinyassets/runs.py:1854-1860` (specific-exception catch example).
+  - `tinyassets/contribution_events.py:30` (`_EMIT_FAILURES` counter — same architectural shape as class-level attrs in spirit: state cleanly readable without instantiation).
 
 ---
 

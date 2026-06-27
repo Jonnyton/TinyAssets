@@ -2,13 +2,13 @@
 audit: get_status key-level audit per minimal-primitives
 date: 2026-04-28
 author: navigator
-scope: workflow/api/status.py:get_status() response shape — every top-level + nested key
+scope: tinyassets/api/status.py:get_status() response shape — every top-level + nested key
 lens: project_minimal_primitives_principle, project_community_build_over_platform_build
 companion:
   - docs/audits/2026-04-28-commons-first-tool-surface-audit.md (parent — §6 listed this as opt-in follow-up)
   - PLAN.md "Scoping Rules" §1 minimal-primitives (cross-provider source)
-  - workflow/api/status.py (canonical implementation)
-  - workflow/api/universe.py:_action_get_recent_events (primitive that obviates 3 evidence sub-keys)
+  - tinyassets/api/status.py (canonical implementation)
+  - tinyassets/api/universe.py:_action_get_recent_events (primitive that obviates 3 evidence sub-keys)
 status: findings ready; awaits lead dispatch decision
 ---
 
@@ -32,7 +32,7 @@ The `get_status` response shape ships **14 top-level keys + 5 evidence sub-keys 
 
 ## 1. Methodology
 
-For each key in the `get_status` response (`workflow/api/status.py:340-361`), apply the minimal-primitives test from PLAN.md §"Scoping Rules" §1:
+For each key in the `get_status` response (`tinyassets/api/status.py:340-361`), apply the minimal-primitives test from PLAN.md §"Scoping Rules" §1:
 
 1. **Is this fundamentally NEW capability, or convenience over existing capability?**
 2. **Could you build THIS from a smaller combination of existing primitives?** If yes, document the composition pattern instead.
@@ -74,7 +74,7 @@ For each retire candidate, name the primitive it duplicates and the composition 
 
 ### 3.2 RETIRE CANDIDATES — convenience over `get_recent_events` (3 keys)
 
-The platform ships `get_recent_events(universe_id, tag, limit)` at `workflow/api/universe.py:2673` as the canonical activity-log inspection primitive. It returns structured `events` + `source` + `caveats` per the self-auditing-tools pattern. **Three evidence sub-keys in `get_status` duplicate this primitive's surface:**
+The platform ships `get_recent_events(universe_id, tag, limit)` at `tinyassets/api/universe.py:2673` as the canonical activity-log inspection primitive. It returns structured `events` + `source` + `caveats` per the self-auditing-tools pattern. **Three evidence sub-keys in `get_status` duplicate this primitive's surface:**
 
 | Key | Why retire | Chatbot composition (post-retire) |
 |---|---|---|
@@ -146,12 +146,12 @@ missing_data_files, universe_id, universe_exists
 **Title:** `get_status` key-level slim — retire 5 convenience keys per minimal-primitives.
 
 **Files:**
-- `workflow/api/status.py` — delete activity-tail block (L107-145), session_boundary block (L264-303), actionable_next_steps construction (L196-215), and remove the 3 evidence sub-keys + 2 top-level keys from `response` dict (L340-361).
-- `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/api/status.py` — plugin mirror, same edits.
+- `tinyassets/api/status.py` — delete activity-tail block (L107-145), session_boundary block (L264-303), actionable_next_steps construction (L196-215), and remove the 3 evidence sub-keys + 2 top-level keys from `response` dict (L340-361).
+- `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/status.py` — plugin mirror, same edits.
 - `tests/test_get_status_primitive.py` — adjust assertions for retired keys; add deprecation pin.
 - `pages/plans/composition-patterns.md` (wiki, navigator-authored post-SHIP) — add the 3 composition patterns.
 
-**Depends:** Task #18 (universe_server.py decomp Step 7/10 in flight; `workflow/api/status.py` is in dev's lock-set per STATUS Work-table row).
+**Depends:** Task #18 (universe_server.py decomp Step 7/10 in flight; `tinyassets/api/status.py` is in dev's lock-set per STATUS Work-table row).
 
 **Effort:** ~30-45 min dev for code changes + ~15 min navigator for wiki composition patterns post-SHIP.
 
@@ -161,7 +161,7 @@ missing_data_files, universe_id, universe_exists
 - `python scripts/mcp_probe.py status` returns the slimmed shape.
 - Manual sanity: response byte size shrinks ~25-40% on a populated universe.
 
-**Anti-coordination guard:** This task touches `workflow/api/status.py` which is in dev's #18 lock-set. **Cannot dispatch until #18 SHIPs.** Block via `Depends: #18 SHIP`.
+**Anti-coordination guard:** This task touches `tinyassets/api/status.py` which is in dev's #18 lock-set. **Cannot dispatch until #18 SHIPs.** Block via `Depends: #18 SHIP`.
 
 ---
 
@@ -180,7 +180,7 @@ missing_data_files, universe_id, universe_exists
 - PLAN.md "Scoping Rules" §2 community-build-over-platform-build — the rule that 4 of 5 retire candidates fail.
 - `docs/audits/2026-04-28-commons-first-tool-surface-audit.md` §6 — parent audit listing this as opt-in follow-up.
 - `pages/plans/composition-patterns.md` — wiki composition catalog (F4); post-SHIP additions go here.
-- `workflow/api/universe.py:_action_get_recent_events` — the primitive that absorbs 3 of the 5 retired keys.
-- `workflow/api/status.py:get_status` — canonical implementation under audit.
+- `tinyassets/api/universe.py:_action_get_recent_events` — the primitive that absorbs 3 of the 5 retired keys.
+- `tinyassets/api/status.py:get_status` — canonical implementation under audit.
 - `tests/test_get_status_primitive.py` — test surface to adjust.
 - `tests/test_get_recent_events.py` — primitive that absorbs the load.

@@ -6,7 +6,7 @@ status: REFRAMED community-build per host directive 2026-04-26
 status_detail: platform will NOT ship methods-prose evaluator subtypes as primitives; chatbot composes correctness checks from the existing Evaluator surface + wiki-published rubrics. Pre-reframe content preserved below as historical context.
 type: design-note
 companion:
-  - workflow/evaluation/__init__.py (existing Evaluator Protocol — the user-callable primitive surface)
+  - tinyassets/evaluation/__init__.py (existing Evaluator Protocol — the user-callable primitive surface)
   - .claude/agent-memory/lead/project_community_build_over_platform_build.md
   - .claude/agent-memory/lead/project_privacy_via_community_composition.md (sibling case — same reframe pattern)
   - .claude/agent-memory/lead/project_minimal_primitives_principle.md
@@ -25,7 +25,7 @@ audience: lead, host, future dev/spec author
 
 What ships instead:
 
-- **The existing `Evaluator` Protocol at `workflow/evaluation/__init__.py:60`** is the user-callable primitive. It already has `EvaluatorKind = "custom"` and the inputs/outputs needed for prose correctness checks (run state, artifact paths, package manifest, generated text).
+- **The existing `Evaluator` Protocol at `tinyassets/evaluation/__init__.py:60`** is the user-callable primitive. It already has `EvaluatorKind = "custom"` and the inputs/outputs needed for prose correctness checks (run state, artifact paths, package manifest, generated text).
 - **The chatbot composes prose-correctness checks for the user** by chaining existing primitives: read run state → diff against drafted prose → call existing custom evaluator(s) → present mismatch report. No new platform code.
 - **Community-published rubrics on the wiki** — e.g. "methods-section reproducibility check for ecology MaxEnt sweeps" — give chatbots a recipe to pull, parameterize, and run. Discovery + remix is the feature engine, not platform-shipped subtypes.
 
@@ -49,7 +49,7 @@ The remainder of this note is the original platform-primitive proposal, preserve
 
 Priya signal #2 (2026-04-20) surfaced a chain-break: when the chatbot generates publication-grade methods prose ("Sensitivity sweeps were performed using `maxnet` v0.1.4 with kernels {linear, quadratic, hinge} × regmult {0.5, 1.0, 2.0}, evaluated by 5-fold spatial cross-validation, mean AUC ranked..."), nothing on the platform verifies the prose is correct. This is a **cross-layer chain-break (pitch-vs-product gap):** the platform's positioning ("evaluator-driven workflows") promises correctness verification at every step, but methods-section prose has no first-class evaluator.
 
-This note proposes adding **methods-prose evaluator subtypes** to the existing `Evaluator` Protocol at `workflow/evaluation/__init__.py:60` — NOT a parallel system. The Protocol's `EvaluatorKind` literal already includes `"custom"`; this note recommends extending it with named subtypes (`prose-citation`, `prose-versions`, `prose-completeness`, `prose-reproducibility`) and shipping reference implementations.
+This note proposes adding **methods-prose evaluator subtypes** to the existing `Evaluator` Protocol at `tinyassets/evaluation/__init__.py:60` — NOT a parallel system. The Protocol's `EvaluatorKind` literal already includes `"custom"`; this note recommends extending it with named subtypes (`prose-citation`, `prose-versions`, `prose-completeness`, `prose-reproducibility`) and shipping reference implementations.
 
 **Recommendation: APPROVE in principle, scope tightly for v1.** Ship two of the four subtypes (versions + reproducibility) — they have clean deterministic signals. Defer the other two (citation + completeness) to v2 because they require external API integration (citation) or LLM judgment (completeness) without obvious bounded cost. Concrete path: spec → 2 dev tasks → ~2 weeks wall-time.
 
@@ -180,7 +180,7 @@ Per task description, scope four subtypes:
 
 **Rationale:**
 
-1. **The platform already has the substrate.** `Evaluator` Protocol exists at `workflow/evaluation/__init__.py:60`; `EvaluatorKind` includes `"custom"`. Adding two new kinds is mechanical.
+1. **The platform already has the substrate.** `Evaluator` Protocol exists at `tinyassets/evaluation/__init__.py:60`; `EvaluatorKind` includes `"custom"`. Adding two new kinds is mechanical.
 2. **Priya's two highest-stake signals are version-accuracy + reproducibility.** PRIYA-W4 ("AUC matches to within 5-fold CV variance") and PRIYA-W6 ("repro script runs locally and matches") are both v1 wins for these subtypes.
 3. **Citation + completeness need separate scope decisions.** Citation needs an external-API contract; completeness needs a domain-aware required-mention table. Neither is unsolvable — they just need their own design notes when the host wants to scope them.
 4. **Chain-break framing.** Option 2 closes the chain at the highest-stake surface (versions + reproducibility) without committing to external dependencies the platform doesn't yet need.
@@ -192,7 +192,7 @@ Per task description, scope four subtypes:
 
 ### 4.1 New evaluator subtypes
 
-In `workflow/evaluation/__init__.py`:
+In `tinyassets/evaluation/__init__.py`:
 
 ```python
 EvaluatorKind = Literal[
@@ -204,8 +204,8 @@ EvaluatorKind = Literal[
 ### 4.2 New evaluator modules
 
 ```
-workflow/evaluation/prose_versions.py    # ~150 LOC
-workflow/evaluation/prose_reproducibility.py  # ~200 LOC
+tinyassets/evaluation/prose_versions.py    # ~150 LOC
+tinyassets/evaluation/prose_reproducibility.py  # ~200 LOC
 tests/test_prose_versions_evaluator.py    # ~30 tests
 tests/test_prose_reproducibility_evaluator.py  # ~25 tests
 ```
@@ -267,8 +267,8 @@ Add to `control_station` prompt (per `project_evaluation_layers_unifying_frame`)
 - `priya_ramaswamy/sessions.md` Session 1 + Session 2 — the source signals.
 - `priya_ramaswamy/wins.md` PRIYA-W4 + PRIYA-W6 — the wins this evaluator pair preserves at scale.
 - `priya_ramaswamy/grievances.md` PRIYA-R1 (vocabulary gap) — adjacent but separate concern; not solved here.
-- `workflow/evaluation/__init__.py:60` — existing `Evaluator` Protocol that this note extends.
-- `workflow/evaluation/structural.py` — existing reference implementation pattern to mirror.
+- `tinyassets/evaluation/__init__.py:60` — existing `Evaluator` Protocol that this note extends.
+- `tinyassets/evaluation/structural.py` — existing reference implementation pattern to mirror.
 - `ideas/INBOX.md` 2026-04-27 entry — capture row that this note responds to.
 - `project_real_world_effect_engine` — Q21 product-soul check; reproducibility evaluator IS the Q21 surface for academic users.
 

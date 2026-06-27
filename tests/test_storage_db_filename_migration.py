@@ -1,4 +1,4 @@
-"""Tests for the `.workflow.db` filename migration."""
+"""Tests for the `.tinyassets.db` filename migration."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from workflow.storage import DB_FILENAME, _connect, db_path
+from tinyassets.storage import DB_FILENAME, _connect, db_path
 
 LEGACY_DB_FILENAME = ".author_server.db"
 
@@ -86,7 +86,7 @@ def test_db_path_prefers_workflow_db_and_backs_up_legacy(
     _seed_sqlite(legacy, "legacy")
     (tmp_path / f"{LEGACY_DB_FILENAME}-wal").write_bytes(b"legacy-wal")
 
-    with caplog.at_level(logging.WARNING, logger="workflow.storage"):
+    with caplog.at_level(logging.WARNING, logger="tinyassets.storage"):
         resolved = db_path(tmp_path)
 
     backups = _backup_primary_files(tmp_path)
@@ -112,8 +112,8 @@ def test_db_path_migration_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_db_path_is_exported_from_storage() -> None:
-    import workflow.storage
+    import tinyassets.storage
 
-    assert "db_path" in workflow.storage.__all__
-    assert "author_server_db_path" not in workflow.storage.__all__
-    assert callable(workflow.storage.db_path)
+    assert "db_path" in tinyassets.storage.__all__
+    assert "author_server_db_path" not in tinyassets.storage.__all__
+    assert callable(tinyassets.storage.db_path)

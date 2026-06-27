@@ -19,9 +19,9 @@ PLAN = """# Workflow - Plan
 
 | Subpackage | Responsibility |
 |---|---|
-| `workflow/api/` | MCP tool surfaces. Landed today: `api/wiki.py`. |
-| `workflow/storage/` | Schema layers (`storage/accounts.py`). |
-| `workflow/runtime/` | Run scheduling primitives. |
+| `tinyassets/api/` | MCP tool surfaces. Landed today: `api/wiki.py`. |
+| `tinyassets/storage/` | Schema layers (`storage/accounts.py`). |
+| `tinyassets/runtime/` | Run scheduling primitives. |
 
 Correctly-flat modules at root (small typed surfaces with no clear sibling):
 `protocols.py`, `config.py`, `__init__.py`, `__main__.py`.
@@ -34,7 +34,7 @@ sibling's responsibility, it gets a subpackage.
 def write_repo(root: Path, plan: str = PLAN) -> None:
     (root / "PLAN.md").write_text(plan, encoding="utf-8")
     workflow = root / "workflow"
-    workflow.mkdir()
+    tinyassets.mkdir()
     (workflow / "__init__.py").write_text("", encoding="utf-8")
 
 
@@ -49,8 +49,8 @@ def test_parse_plan_commitments_extracts_mechanical_targets():
         "protocols.py",
     )
     assert commitments.mentioned_workflow_files == (
-        "workflow/api/wiki.py",
-        "workflow/storage/accounts.py",
+        "tinyassets/api/wiki.py",
+        "tinyassets/storage/accounts.py",
     )
 
 
@@ -84,10 +84,10 @@ def test_detect_plan_drift_reports_missing_and_oversized_root_modules(tmp_path: 
     issues = cpd.detect_plan_drift(tmp_path, root_module_loc_threshold=3)
     issue_keys = {(issue.code, issue.path) for issue in issues}
 
-    assert ("missing-canonical-subpackage", "workflow/runtime/") in issue_keys
-    assert ("missing-canonical-subpackage", "workflow/storage/") in issue_keys
-    assert ("missing-plan-mentioned-file", "workflow/storage/accounts.py") in issue_keys
-    assert ("oversized-root-module", "workflow/runs.py") in issue_keys
+    assert ("missing-canonical-subpackage", "tinyassets/runtime/") in issue_keys
+    assert ("missing-canonical-subpackage", "tinyassets/storage/") in issue_keys
+    assert ("missing-plan-mentioned-file", "tinyassets/storage/accounts.py") in issue_keys
+    assert ("oversized-root-module", "tinyassets/runs.py") in issue_keys
 
 
 def test_cli_emits_report_and_nonzero_on_drift(tmp_path: Path):

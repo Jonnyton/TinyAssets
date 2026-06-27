@@ -29,7 +29,7 @@ The structured fields are stored in the existing `metadata_json` column. Free-fo
 | `artifact_refs` | list[string] | optional | URIs of raw artifacts the summary cites: `evalresult://<eval-id>`, `output://claude_chat_trace.md`, `wiki://bug-NNN`, `run://<run-id>`, etc. The summary REFERENCES; the raw artifacts stay where they are. |
 | `attribution_refs` | list[string] | optional | Actors involved: `author::<id>`, `daemon::<id>`. Uses existing `author_id`/`author_kind` discriminator. |
 | `evidence_tier` | enum | optional | One of: `direct` (summary author saw the session), `secondary` (summary derived from artifacts only), `synthesized` (multi-session merge). Helps reviewer judge trustworthiness. |
-| `visibility` | enum | required | One of the existing `VALID_VISIBILITIES` values from `workflow/daemon_brain.py`: `host_private` (default; stays host-side unless promoted via the universe's own gate composition), `borrowable_role_context` (readable by other branches inside the universe), `published` (already promoted to commons wiki). Universe-specific promotion gates are community-composed; see `pages/plans/composing-session-trace-summaries.md`. |
+| `visibility` | enum | required | One of the existing `VALID_VISIBILITIES` values from `tinyassets/daemon_brain.py`: `host_private` (default; stays host-side unless promoted via the universe's own gate composition), `borrowable_role_context` (readable by other branches inside the universe), `published` (already promoted to commons wiki). Universe-specific promotion gates are community-composed; see `pages/plans/composing-session-trace-summaries.md`. |
 | `privacy_notes` | string | optional | Free-text note about redaction state, sensitive fields touched, reviewer cautions. Replaces the rejected `TracePrivacyReview` typed surface. |
 | `cost_estimate` | object | optional | Optional cost data: `{tokens: <int>, provider_cost_usd: <float|null>, wall_time_seconds: <int>}`. Aligns with cost-ledger READ surface (#906/04b5e86). |
 | `superseded_by` | string | optional | Set on `superseded` state transitions; references the entry_id of the newer summary. |
@@ -83,7 +83,7 @@ The canonical composition pattern lives at `pages/plans/composing-session-trace-
 
 The initial Slice 1 draft of this spec (landed via #931) proposed: "when a write attempts to set state=`promoted` on an entry with visibility=`host_only`, the platform refuses the write." Slice 2 implementation (#933 / 65087dc) discovered two reasons to retract:
 
-1. **Implementation conflict.** The default visibility for new memories is `host_private` (per `workflow/daemon_brain.py:446`). Every normal promotion flow today walks through `host_private → promoted`. Enforcing the proposed rule would break universal promotion behavior for all memory_kinds, not just `session_trace_summary`. The existing `test_daemon_brain_smoke_roundtrip` smoke test failed against the enforcement.
+1. **Implementation conflict.** The default visibility for new memories is `host_private` (per `tinyassets/daemon_brain.py:446`). Every normal promotion flow today walks through `host_private → promoted`. Enforcing the proposed rule would break universal promotion behavior for all memory_kinds, not just `session_trace_summary`. The existing `test_daemon_brain_smoke_roundtrip` smoke test failed against the enforcement.
 
 2. **Scoping rules.** Per Scoping Rule 2 (community-build over platform-build) and Rule 3 (no platform privacy taxonomy), visibility enforcement IS the kind of policy community evolves per Goal. The platform ships the tag; the universe composes the gate. Even my own ADAPT-narrowed proposal overshipped here.
 
@@ -93,7 +93,7 @@ The retraction is itself a worked example of Scoping-Rule-2 discipline: spec pro
 
 The Brain Module section of PLAN.md (per PR #915, 41569b5) declares:
 
-> **Substrate:** `workflow/memory/`, `workflow/retrieval/`, `workflow/knowledge/`, `workflow/learning/`, `workflow/storage/__init__.py` (memory_kinds + promotion state). Open-brain v2 slices landed 2026-05-19: A=memory_kinds registry, B=soul-guided dispatch read, C=treasury status read, D=bounded autonomous spend.
+> **Substrate:** `tinyassets/memory/`, `tinyassets/retrieval/`, `tinyassets/knowledge/`, `tinyassets/learning/`, `tinyassets/storage/__init__.py` (memory_kinds + promotion state). Open-brain v2 slices landed 2026-05-19: A=memory_kinds registry, B=soul-guided dispatch read, C=treasury status read, D=bounded autonomous spend.
 
 `session_trace_summary` is additive to the registry. No substrate change.
 
@@ -137,8 +137,8 @@ A complete example for the Markovic worked-example from the design note:
 
 A Slice 1 implementation passes acceptance when:
 
-- [x] `session_trace_summary` appears in `workflow/daemon_brain.py::MEMORY_KIND_REGISTRY` with one-line description. *(Shipped via #933 / 65087dc.)*
-- [x] Plugin mirror at `packaging/claude-plugin/.../runtime/workflow/daemon_brain.py` has the identical entry. *(Shipped via #933.)*
+- [x] `session_trace_summary` appears in `tinyassets/daemon_brain.py::MEMORY_KIND_REGISTRY` with one-line description. *(Shipped via #933 / 65087dc.)*
+- [x] Plugin mirror at `packaging/claude-plugin/.../runtime/tinyassets/daemon_brain.py` has the identical entry. *(Shipped via #933.)*
 - [x] Existing promotion state machine accepts the new kind unchanged. *(Verified via the new lifecycle test.)*
 - [x] At least one test in `tests/test_daemon_brain.py` covers candidate → accepted → promoted lifecycle on the new kind. *(Shipped via #933: `test_session_trace_summary_is_recognized_kind_with_full_lifecycle`.)*
 - [ ] No new MCP actions added.

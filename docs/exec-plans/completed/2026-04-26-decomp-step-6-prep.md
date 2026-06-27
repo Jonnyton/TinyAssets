@@ -1,16 +1,16 @@
 ---
-title: Step 6 prep — workflow/api/runtime_ops.py extraction scope
+title: Step 6 prep — tinyassets/api/runtime_ops.py extraction scope
 date: 2026-04-26
 author: navigator
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md §4.2 (`runtime_ops.py`), §8 step 6
-target_task: Decomp audit Step 6 — Extract workflow/api/runtime_ops.py
+target_task: Decomp audit Step 6 — Extract tinyassets/api/runtime_ops.py
 gates_on: #8 (helpers) ✅ landed (4f98654); #9 (wiki.py) in flight; #10 (status.py) queued; Step 4 (runs.py) queued; Step 5 (evaluation.py) queued. Step 6 sequenced AFTER Step 5 per audit §8 (concurrent universe_server.py edits risk shim-block conflicts).
 ---
 
 # Step 6 (`runtime_ops.py`) pre-flight scope
 
-Read-only scope for extracting four small-to-medium runtime-coordination action groups (project memory, dry-inspect, messaging, scheduler) from `workflow/universe_server.py` into a new `workflow/api/runtime_ops.py`. Same freshness-check protocol as #9/#10/Step 4/Step 5 prep.
+Read-only scope for extracting four small-to-medium runtime-coordination action groups (project memory, dry-inspect, messaging, scheduler) from `tinyassets/universe_server.py` into a new `tinyassets/api/runtime_ops.py`. Same freshness-check protocol as #9/#10/Step 4/Step 5 prep.
 
 ---
 
@@ -100,9 +100,9 @@ Read-only scope for extracting four small-to-medium runtime-coordination action 
 
 ### 3.2 Does runtime_ops.py depend on shared #8 helpers?
 
-**Yes:** Most handlers use `_base_path` (helpers.py) and `_current_actor` (preamble L295). After #8 lands (already done — 4f98654), runtime_ops.py imports `_base_path` from `workflow/api/helpers.py`.
+**Yes:** Most handlers use `_base_path` (helpers.py) and `_current_actor` (preamble L295). After #8 lands (already done — 4f98654), runtime_ops.py imports `_base_path` from `tinyassets/api/helpers.py`.
 
-`_current_actor` is **NOT in helpers.py** — it lives in universe_server.py preamble. Same back-edge concern as Step 5's `_append_global_ledger`. **Verification at extraction time:** check `workflow/api/helpers.py` for `_current_actor`. If absent, runtime_ops.py needs `from workflow.universe_server import _current_actor` (back-edge tolerated as long as re-export shim is at module END).
+`_current_actor` is **NOT in helpers.py** — it lives in universe_server.py preamble. Same back-edge concern as Step 5's `_append_global_ledger`. **Verification at extraction time:** check `tinyassets/api/helpers.py` for `_current_actor`. If absent, runtime_ops.py needs `from workflow.universe_server import _current_actor` (back-edge tolerated as long as re-export shim is at module END).
 
 ### 3.3 `_apply_patch_ops` placement — audit conflict
 
@@ -140,7 +140,7 @@ from workflow.api.runtime_ops import (
 )
 ```
 
-Also note: `extensions()` at L4029-4030 references `_PROJECT_MEMORY_WRITE_ACTIONS` for ledger-write tracking (per the dispatch loop snippet — `if action in _PROJECT_MEMORY_WRITE_ACTIONS: _append_global_ledger(...)`). This is the only WRITE_ACTIONS frozenset in scope; the other 3 dispatch tables don't have separate write-action sets in current code. **Verify at extraction time** by `grep -n "_PROJECT_MEMORY_WRITE_ACTIONS\|_MESSAGING_WRITE_ACTIONS\|_INSPECT_DRY_WRITE_ACTIONS\|_SCHEDULER_WRITE_ACTIONS" workflow/universe_server.py` — only `_PROJECT_MEMORY_WRITE_ACTIONS` should appear.
+Also note: `extensions()` at L4029-4030 references `_PROJECT_MEMORY_WRITE_ACTIONS` for ledger-write tracking (per the dispatch loop snippet — `if action in _PROJECT_MEMORY_WRITE_ACTIONS: _append_global_ledger(...)`). This is the only WRITE_ACTIONS frozenset in scope; the other 3 dispatch tables don't have separate write-action sets in current code. **Verify at extraction time** by `grep -n "_PROJECT_MEMORY_WRITE_ACTIONS\|_MESSAGING_WRITE_ACTIONS\|_INSPECT_DRY_WRITE_ACTIONS\|_SCHEDULER_WRITE_ACTIONS" tinyassets/universe_server.py` — only `_PROJECT_MEMORY_WRITE_ACTIONS` should appear.
 
 **Structurally identical** to Step 4 (`_RUN_ACTIONS`) and Step 5 (`_JUDGMENT_ACTIONS` + `_BRANCH_VERSION_ACTIONS`) patterns. **Trivial; not a refactor of `extensions()` body.**
 
@@ -168,7 +168,7 @@ runtime_ops.py does NOT register any `@mcp.tool()` decorator directly (just like
 | `tests/test_teammate_message.py:365,380,395,412,420` | `extensions` | 5 (via tool surface) |
 | `tests/test_mcp_dispatch_docstring_parity.py` | (uses `_SCHEDULER_ACTIONS` etc. via introspection — back-compat shim covers) | (introspection) |
 
-**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After Step 6 lands, `workflow/universe_server.py` adds:
+**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After Step 6 lands, `tinyassets/universe_server.py` adds:
 ```python
 # Phase-1 runtime_ops extraction — back-compat re-exports.
 from workflow.api.runtime_ops import (  # noqa: F401
@@ -220,7 +220,7 @@ The only adjacent partial moves are the helpers in #8 (already landed) — `_bas
 | **Total moved out of universe_server.py** | **~491** |
 | Back-compat re-export block added to universe_server.py | ~22 |
 | **Net reduction in universe_server.py** | **~469** |
-| New `workflow/api/runtime_ops.py` size | **~525** (with imports + module docstring) |
+| New `tinyassets/api/runtime_ops.py` size | **~525** (with imports + module docstring) |
 
 **Audit said ~444.** Reality ~491 (~11% over). Drift driven by Option-B inclusion of `_apply_patch_ops` (~64 LOC) + `_load_branch_for_inspect` (~28 LOC) — neither was in audit's audit-time enumeration. If Option A is chosen instead, total drops to ~427 LOC (closer to audit estimate but with a back-edge import).
 
@@ -233,7 +233,7 @@ The only adjacent partial moves are the helpers in #8 (already landed) — `_bas
    - L8223–L8361 (dry-inspect) — sandwiched between query_runs and escrow (market.py future)
    - L8842–L8934 (messaging) — sandwiched between branch_versioning (Step 5) and scheduler
    - L8936–L9126 (scheduler) — sandwiched between messaging and outcomes (market.py)
-   
+
    **Highest accidental-pull risk of any step so far.** Recommend dev does line-by-line `git diff` review against the §2 enumeration before commit, especially around the L8842-9126 block where messaging and scheduler are physically adjacent but scheduler immediately precedes outcomes (which goes to market.py in Step 7).
 
 2. **`_current_actor` back-edge import** (§3.2). Same pattern as Step 5's `_append_global_ledger`. Tolerated; back-edge is fine as long as re-export shim at module END.
@@ -264,7 +264,7 @@ Estimated wall time: 60-90 min (4 non-contiguous source ranges + 26 direct test 
 2. **Confirm `_current_actor` location** — if in helpers.py, import from there; if still in universe_server.py preamble, accept back-edge import.
 3. **Lead decision: Option A or Option B for `_apply_patch_ops`** (§3.3). Recommend Option B (move with consumer to runtime_ops.py).
 4. **Confirm `mcp` instance pattern from #9** — inherited; not strictly needed for runtime_ops.py.
-5. **Create `workflow/api/runtime_ops.py`:**
+5. **Create `tinyassets/api/runtime_ops.py`:**
    - Module docstring referencing audit + extraction date + the four non-contiguous source ranges.
    - Imports: `from workflow.api.helpers import _base_path` + storage layer imports (`workflow.memory.project`, `workflow.runs`, `workflow.graph_compiler`, `workflow.branches`, `workflow.scheduler` per verification) + back-edge `_current_actor` per §3.2 + std-lib + typing.
    - Move symbols **in this order** (logical grouping by sub-domain — project memory, dry-inspect, messaging, scheduler):
@@ -272,7 +272,7 @@ Estimated wall time: 60-90 min (4 non-contiguous source ranges + 26 direct test 
      2. **Dry-inspect section** — banner + `_load_branch_for_inspect` + `_action_dry_inspect_node` + (Option B) `_apply_patch_ops` + `_action_dry_inspect_patch` + `_INSPECT_DRY_ACTIONS`
      3. **Messaging section** — banner + 3 handlers + `_MESSAGING_ACTIONS`
      4. **Scheduler section** — banner + 8 handlers + `_SCHEDULER_ACTIONS`
-6. **Update `workflow/universe_server.py`:**
+6. **Update `tinyassets/universe_server.py`:**
    - Delete the 4 source ranges in reverse order to avoid line-shift confusion:
      - L8936–L9126 (scheduler block)
      - L8842–L8934 (messaging block)
@@ -287,14 +287,14 @@ Estimated wall time: 60-90 min (4 non-contiguous source ranges + 26 direct test 
    - `pytest tests/test_scheduler.py tests/test_scheduler_edge_cases.py -q` → green (storage-layer-only tests, sanity check).
    - `pytest tests/test_mcp_dispatch_docstring_parity.py -q` → green (introspection-based parity test).
    - `pytest -q` → full suite green.
-   - `ruff check workflow/api/runtime_ops.py workflow/universe_server.py` → clean.
-   - **Visual check:** `git diff workflow/universe_server.py | grep -c "^-def _action_"` should equal 16 (3 project memory + 2 dry-inspect + 3 messaging + 8 scheduler). Anything else means an accidental pull.
+   - `ruff check tinyassets/api/runtime_ops.py tinyassets/universe_server.py` → clean.
+   - **Visual check:** `git diff tinyassets/universe_server.py | grep -c "^-def _action_"` should equal 16 (3 project memory + 2 dry-inspect + 3 messaging + 8 scheduler). Anything else means an accidental pull.
 
 **Files in eventual Step 6 SHIP handoff:**
-- `workflow/api/runtime_ops.py` (NEW, ~525 LOC)
-- `workflow/universe_server.py` (~469 LOC removed + ~22 re-export added)
-- `packaging/claude-plugin/.../workflow/api/runtime_ops.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
+- `tinyassets/api/runtime_ops.py` (NEW, ~525 LOC)
+- `tinyassets/universe_server.py` (~469 LOC removed + ~22 re-export added)
+- `packaging/claude-plugin/.../tinyassets/api/runtime_ops.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
 
 4 files, +547 / -469 LOC net.
 

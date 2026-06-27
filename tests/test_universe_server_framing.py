@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import re
 
-from workflow.universe_server import mcp
+from tinyassets.universe_server import mcp
 
 
 def _list_tools():
@@ -140,7 +140,7 @@ def test_control_station_prompt_carries_the_rules() -> None:
     to sentence-case + dropped 'Silently simulating breaks user trust'
     distinctive lexical fingerprint).
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     # Broad framing.
     assert "workflow builder" in text or "workflow" in text
@@ -163,7 +163,7 @@ def test_control_station_promotes_chatbot_builder_behaviors_page() -> None:
     """Navigator D8: build-branch-adjacent work should start from the
     canonical chatbot-builder behavior guide, not stale memory.
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     text = _CONTROL_STATION_PROMPT.lower()
     assert "chatbot-builder-behaviors.md" in text
@@ -174,7 +174,7 @@ def test_control_station_promotes_chatbot_builder_behaviors_page() -> None:
 
 def test_control_station_routes_daemon_memory_actions() -> None:
     """Daemon mini-brain actions must be discoverable from control_station."""
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     text = _CONTROL_STATION_PROMPT
     for action in [
@@ -202,7 +202,7 @@ def test_universe_schema_exposes_daemon_id_for_daemon_memory_actions() -> None:
 
 def test_control_station_routes_treasury_status_as_read_only() -> None:
     """Treasury/cost-ledger status must be discoverable as a read-only route."""
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     text = _CONTROL_STATION_PROMPT
     assert "treasury_status" in text
@@ -216,7 +216,7 @@ def test_extension_guide_prompt_points_to_control_station() -> None:
     canonical behavioral surface. Guide focuses on node/branch authoring;
     runtime rules live in control_station.
     """
-    from workflow.universe_server import _EXTENSION_GUIDE_PROMPT
+    from tinyassets.universe_server import _EXTENSION_GUIDE_PROMPT
     text = _EXTENSION_GUIDE_PROMPT.lower()
     assert "control_station" in text, (
         "extension_guide must direct readers to control_station for "
@@ -231,7 +231,7 @@ def test_control_station_prompts_list_first_for_query_intent() -> None:
     phrase enumeration moved from extensions tool description to
     control_station prompt's canonical Intent-Disambiguation section.
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     # list_branches is the query-intent routing target.
     assert "list_branches" in text
@@ -270,7 +270,7 @@ def test_branch_design_guide_prompt_covers_branch_authoring() -> None:
     guidance is light content in the guide; the guide's primary role is
     teaching the branch-authoring contract.
     """
-    from workflow.api.branches import _BRANCH_DESIGN_GUIDE
+    from tinyassets.api.branches import _BRANCH_DESIGN_GUIDE
     text = _BRANCH_DESIGN_GUIDE.lower()
     # Guide covers branches as the core concept.
     assert "branch" in text
@@ -291,7 +291,7 @@ def test_control_station_pins_register_explicit_ask_rule() -> None:
     (explicit-ask / route-queries-to-list) lives where clients load it
     on orient, not in tool-metadata space.
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     # Intent-disambiguation section carries the rule.
     assert "intent disambiguation" in text or "explicit user" in text
@@ -315,7 +315,7 @@ def test_control_station_pins_build_branch_explicit_ask_rule() -> None:
     consent rule moved to control_station prompt alongside register's.
     Same canonical site — query-intent routes to list_branches.
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     assert "build_branch" in text or "build" in text
     # list_branches as the query-intent alternative.
@@ -344,7 +344,7 @@ def test_control_station_prompt_has_cross_universe_section() -> None:
     across universes. Named section so a future reword can't silently
     drop the whole block.
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     # Named section header.
     assert "cross-universe" in text
@@ -361,7 +361,7 @@ def test_control_station_prompt_has_intent_disambiguation() -> None:
     picking a tool. Query / Build / Run must each have a clear routing
     rule, and ambiguity must route to ASK, not write.
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     assert "intent disambiguation" in text
     # Each intent class must be present with at least one cue phrase.
@@ -393,7 +393,7 @@ def test_control_station_prompt_has_rule_7_assume_workflow() -> None:
     rather than present a disambiguation picker. Rule 7 in control_station
     hard rules.
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     # Aggressive-assume directive present.
     assert "assume workflow" in text or "aggressive assumption is a feature" in text
@@ -414,7 +414,7 @@ def test_control_station_prompt_has_rule_8_no_fabrication() -> None:
     """LIVE-F2 (Maya Yardi BLOCKER): chatbot must not fabricate prior-
     conversation content. Rule 8 in control_station hard rules.
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     # Core fabrication prohibition.
     assert "never fabricate prior-conversation content" in text \
@@ -429,7 +429,7 @@ def test_control_station_prompt_has_rule_9_user_vocabulary() -> None:
     """LIVE-F3 (Maya): chatbot must speak in the user's vocabulary, not
     engine-internal terms. Rule 9 in control_station hard rules.
     """
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     # Core user-vocabulary directive.
     assert "speak in the user's vocabulary" in text

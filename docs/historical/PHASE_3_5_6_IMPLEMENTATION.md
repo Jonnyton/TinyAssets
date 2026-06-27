@@ -13,7 +13,7 @@ Implemented Phase 3.5 (explicit scope handling for multiplayer memory) and Phase
 
 ## Phase 3.5: Explicit Scope Handling
 
-### File: `workflow/memory/scoping.py`
+### File: `tinyassets/memory/scoping.py`
 
 **Purpose:** Enable memory system to understand ownership and visibility in a multiplayer environment where facts belong to universes, branches, authors, users, and sessions.
 
@@ -109,7 +109,7 @@ Wraps a MemoryManager with scope awareness, routing queries and stores through s
 - `store(data: dict, scope: MemoryScope) -> None` — Stores data with scope metadata (placeholder for tier routing)
 
 **Integration Points:**
-- Works with `MemoryManager` from `workflow/memory/manager.py`
+- Works with `MemoryManager` from `tinyassets/memory/manager.py`
 - Will integrate with `consolidation.py` (Phase 3.3) and `temporal.py` (Phase 3.4) once available
 - Designed for use by LangGraph nodes requiring scope-aware memory access
 
@@ -125,7 +125,7 @@ Wraps a MemoryManager with scope awareness, routing queries and stores through s
 
 ## Phase 3.6: Agent-Controlled Memory Tools
 
-### File: `workflow/memory/tools.py`
+### File: `tinyassets/memory/tools.py`
 
 **Purpose:** Provide LangGraph-compatible tools that let the autonomous daemon explicitly manage its own memory through search, promotion, forgetting, consolidation, assertion, and conflict detection.
 
@@ -413,7 +413,7 @@ All tests pass with Python 3.10+ (sandbox runs 3.10.12).
 ### Where Scoping Fits
 
 ```
-MemoryManager (workflow/memory/manager.py)
+MemoryManager (tinyassets/memory/manager.py)
     ├─ CoreMemory (ephemeral, phase-specific)
     ├─ EpisodicMemory (recent facts, SQLite-backed)
     ├─ ArchivalMemory (KG + ASP bridge)
@@ -436,8 +436,8 @@ Memory Tools (Phase 3.6) ⬅️ Daemon-facing interface
 
 **Completes:** Phase 3.5 and 3.6
 **Requires (for full implementation):**
-- `workflow/memory/consolidation.py` (Phase 3.3) — FactConsolidator
-- `workflow/memory/temporal.py` (Phase 3.4) — TemporalFactStore, TemporalIndex
+- `tinyassets/memory/consolidation.py` (Phase 3.3) — FactConsolidator
+- `tinyassets/memory/temporal.py` (Phase 3.4) — TemporalFactStore, TemporalIndex
 
 **Feeds into:** Phase 4 (Minimal Generality Probe), Phase 5 (Full End-to-End Run)
 
@@ -469,12 +469,12 @@ Memory Tools (Phase 3.6) ⬅️ Daemon-facing interface
 
 | File | Change | Status |
 |------|--------|--------|
-| `workflow/memory/scoping.py` | New (500+ lines) | ✓ Created |
-| `workflow/memory/tools.py` | New (450+ lines) | ✓ Created |
-| `workflow/memory/__init__.py` | Updated | ✓ Exports added |
+| `tinyassets/memory/scoping.py` | New (500+ lines) | ✓ Created |
+| `tinyassets/memory/tools.py` | New (450+ lines) | ✓ Created |
+| `tinyassets/memory/__init__.py` | Updated | ✓ Exports added |
 | `tests/test_memory_scoping.py` | New (600+ lines, 35 tests) | ✓ Created |
 
-### Exports Added to `workflow/memory/__init__.py`
+### Exports Added to `tinyassets/memory/__init__.py`
 
 ```python
 from workflow.memory.scoping import (
@@ -527,7 +527,7 @@ __all__ = [
 ## Implementation Notes
 
 - **Python Version:** 3.11+ required (uses modern type hints)
-- **Dependencies:** None beyond existing workflow/ stack
+- **Dependencies:** None beyond existing tinyassets/ stack
 - **Testing:** 35 tests, all passing, no external dependencies needed
 - **Backward Compatibility:** Non-breaking additions; existing memory API unchanged
 - **Code Quality:** AST-verified, PEP 8 compliant, documented

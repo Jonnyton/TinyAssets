@@ -387,7 +387,7 @@ _LATENCY_STATUS_RESP = _sse({
 
 class TestSubcommands:
     def _run(self, monkeypatch, argv, urlopen_seq):
-        monkeypatch.setattr(sys, "argv", ["workflow-probe"] + argv)
+        monkeypatch.setattr(sys, "argv", ["tinyassets-probe"] + argv)
         with patch("mcp_probe.urllib.request.urlopen", side_effect=urlopen_seq):
             return mcp_probe.main()
 
@@ -427,7 +427,7 @@ class TestSubcommands:
             return _fake_resp(_UNIVERSE_RESP, "s1")
 
         monkeypatch.setattr(sys, "argv", [
-            "workflow-probe", "--url", "http://fake", "universe", "concordance"
+            "tinyassets-probe", "--url", "http://fake", "universe", "concordance"
         ])
         with patch("mcp_probe.urllib.request.urlopen", side_effect=capturing_urlopen):
             rc = mcp_probe.main()

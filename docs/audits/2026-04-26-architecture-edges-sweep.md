@@ -25,11 +25,11 @@ audience: lead, host
 |---|---|---|
 | **A. Top-level package layout — engine/domain seam violations** | 3 | LARGE (3) — affects rename arc + decomp arc framing |
 | **B. Naming drift — phased identifiers surviving past their phases** | 4 | MEDIUM (2) — visible-but-non-blocking confusion |
-| **C. Module-pair naming confusion (workflow/X.py vs workflow/api/X.py)** | 2 | SMALL (1) — readability hit, low rewrite cost |
+| **C. Module-pair naming confusion (tinyassets/X.py vs tinyassets/api/X.py)** | 2 | SMALL (1) — readability hit, low rewrite cost |
 | **D. Design-note + spec-doc graveyard** | 4 | MEDIUM (2) — drives §2.3 of branding audit but architecturally relevant |
 | **E. Top-level orphan dirs / files** | 1 | SMALL (1) — `fantasy_author_original/` snapshot deletion-pending |
 
-**Headline:** the highest-leverage architectural finding is **A.1 — top-level `fantasy_daemon/` package** carries 122 .py files including `api.py`, `__main__.py`, `branch_registrations.py`, `author_server.py` shim. It violates AGENTS.md "Engine and Domains" principle — engine code (FastAPI HTTP layer, branch registration, CLI entry) should live in `workflow/`, not in a domain-named top-level package. The domain package proper is `domains/fantasy_daemon/`. The top-level `fantasy_daemon/` is the rename arc's incomplete state — should be unpacked into `workflow/` (engine pieces) + `domains/fantasy_daemon/` (domain pieces).
+**Headline:** the highest-leverage architectural finding is **A.1 — top-level `fantasy_daemon/` package** carries 122 .py files including `api.py`, `__main__.py`, `branch_registrations.py`, `author_server.py` shim. It violates AGENTS.md "Engine and Domains" principle — engine code (FastAPI HTTP layer, branch registration, CLI entry) should live in `tinyassets/`, not in a domain-named top-level package. The domain package proper is `domains/fantasy_daemon/`. The top-level `fantasy_daemon/` is the rename arc's incomplete state — should be unpacked into `tinyassets/` (engine pieces) + `domains/fantasy_daemon/` (domain pieces).
 
 **Recommendation:** treat A.1 as the next major architectural arc after Arc B/C/Phase 6. Sketch the unpack plan as a design note, then execute over multiple commits.
 
@@ -50,7 +50,7 @@ Used `code-simplification` + `improve-codebase-architecture` skill rubrics:
 - Design notes describing systems that no longer exist
 - Top-level packages violating engine/domain seam (per AGENTS.md "Engine and Domains")
 
-Searched: `workflow/`, `domains/`, `tests/`, `fantasy_daemon/`, `fantasy_author/`, top-level `*.py`, `docs/specs/`, `docs/planning/`, `docs/design-notes/`. Excluded `.claude/worktrees/`, `__pycache__`, `output/`, `.venv/`, `fantasy_author_original/` (separate housekeeping per branding audit §2.7), `.git/`.
+Searched: `tinyassets/`, `domains/`, `tests/`, `fantasy_daemon/`, `fantasy_author/`, top-level `*.py`, `docs/specs/`, `docs/planning/`, `docs/design-notes/`. Excluded `.claude/worktrees/`, `__pycache__`, `output/`, `.venv/`, `fantasy_author_original/` (separate housekeeping per branding audit §2.7), `.git/`.
 
 Per host directive: **NO REMOVAL** without explicit approval. Findings recommend refactor / retire-with-archive / annotate, not delete.
 
@@ -69,12 +69,12 @@ Per host directive: **NO REMOVAL** without explicit approval. Findings recommend
 **Size:** 122 tracked .py files. Subdirs: `auth/`, `branches/`, `checkpointing/`, `constraints/`, `desktop/`, `evaluation/`, `graphs/`, `ingestion/`, `knowledge/`, `learning/`, `memory/`, `nodes/`, `phases/`, `planning/`, `producers/`, `providers/`, `retrieval/`, `state/`, `tools/`. Plus top-level `api.py` (FastAPI HTTP layer), `__main__.py` (CLI entry), `author_server.py` (shim), `branch_registrations.py`, `branches.py`, etc.
 
 **What's wrong:** Per AGENTS.md "Engine and Domains" principle (PLAN.md §"Engine And Domains"):
-- ENGINE code (HTTP API, branch registration, CLI entry, sandbox, retrieval, knowledge) lives in `workflow/`
+- ENGINE code (HTTP API, branch registration, CLI entry, sandbox, retrieval, knowledge) lives in `tinyassets/`
 - DOMAIN-SPECIFIC code (story-specific phases, world_state schemas, fantasy nodes) lives in `domains/<domain>/`
 
 The top-level `fantasy_daemon/` violates this seam:
-- `fantasy_daemon/api.py` is a FastAPI HTTP layer ("Multi-universe file-based adapter") — that's ENGINE, should be in `workflow/api/` or `workflow/http/`.
-- `fantasy_daemon/auth/`, `fantasy_daemon/checkpointing/`, `fantasy_daemon/constraints/`, `fantasy_daemon/ingestion/`, `fantasy_daemon/knowledge/`, `fantasy_daemon/memory/`, `fantasy_daemon/retrieval/` — all ENGINE concerns. `workflow/` already has `workflow/checkpointing/`, `workflow/auth/`, `workflow/ingestion/`, `workflow/knowledge/`, `workflow/memory/`, `workflow/retrieval/` — the duplication is real (rename arc moved `fantasy_author/X` → `fantasy_daemon/X` but didn't merge into `workflow/X` where the canonical lives).
+- `fantasy_daemon/api.py` is a FastAPI HTTP layer ("Multi-universe file-based adapter") — that's ENGINE, should be in `tinyassets/api/` or `tinyassets/http/`.
+- `fantasy_daemon/auth/`, `fantasy_daemon/checkpointing/`, `fantasy_daemon/constraints/`, `fantasy_daemon/ingestion/`, `fantasy_daemon/knowledge/`, `fantasy_daemon/memory/`, `fantasy_daemon/retrieval/` — all ENGINE concerns. `tinyassets/` already has `tinyassets/checkpointing/`, `tinyassets/auth/`, `tinyassets/ingestion/`, `tinyassets/knowledge/`, `tinyassets/memory/`, `tinyassets/retrieval/` — the duplication is real (rename arc moved `fantasy_author/X` → `fantasy_daemon/X` but didn't merge into `tinyassets/X` where the canonical lives).
 - `fantasy_daemon/graphs/`, `fantasy_daemon/phases/`, `fantasy_daemon/state/`, `fantasy_daemon/nodes/` — DOMAIN concerns. Should be in `domains/fantasy_daemon/` (some already are).
 - `fantasy_daemon/__main__.py` — CLI entry. This IS legitimately a top-level module per Python conventions (`python -m fantasy_daemon`). Probably stays at top-level but should re-export from `workflow.daemon_server.__main__` once that exists.
 
@@ -85,11 +85,11 @@ The top-level `fantasy_daemon/` violates this seam:
 - ~56 test sites total.
 
 **Recommendation:** REFACTOR over multiple commits.
-1. Inventory the 122 .py files: which are engine, which are domain, which are duplicates of `workflow/`-tree counterparts.
-2. For each engine-flavored subdir (`auth/`, `checkpointing/`, etc.), confirm `workflow/` has the canonical and `fantasy_daemon/` is a duplicate or older snapshot.
-3. Migrate `fantasy_daemon/api.py` → `workflow/http/api.py` (or `workflow/api/http.py`). Update imports.
+1. Inventory the 122 .py files: which are engine, which are domain, which are duplicates of `tinyassets/`-tree counterparts.
+2. For each engine-flavored subdir (`auth/`, `checkpointing/`, etc.), confirm `tinyassets/` has the canonical and `fantasy_daemon/` is a duplicate or older snapshot.
+3. Migrate `fantasy_daemon/api.py` → `tinyassets/http/api.py` (or `tinyassets/api/http.py`). Update imports.
 4. Migrate domain pieces (`graphs/`, `phases/`, `state/`, `nodes/`) → `domains/fantasy_daemon/` if not already there. Reconcile content.
-5. Final state: top-level `fantasy_daemon/` collapses to `__init__.py` + `__main__.py` (CLI entry only), or dies entirely if `python -m workflow` becomes the canonical entrypoint.
+5. Final state: top-level `fantasy_daemon/` collapses to `__init__.py` + `__main__.py` (CLI entry only), or dies entirely if `python -m tinyassets` becomes the canonical entrypoint.
 
 **Blast radius: 3 (LARGE).** Touches 122 .py files + ~56 test sites + AGENTS.md/PLAN.md doc updates + CLI entry-point change. Multi-week arc; sketch as a design note before dispatch.
 
@@ -101,7 +101,7 @@ The top-level `fantasy_daemon/` violates this seam:
 
 **Location:** `/fantasy_author/` (repo root).
 
-**Size:** 2 .py files (`__init__.py` 50 LOC, `__main__.py` ~3 LOC). Per `fantasy_author/__init__.py` docstring: "Fantasy Author — backward compatibility shim. This package re-exports from workflow/ and domains/fantasy_author/."
+**Size:** 2 .py files (`__init__.py` 50 LOC, `__main__.py` ~3 LOC). Per `fantasy_author/__init__.py` docstring: "Fantasy Author — backward compatibility shim. This package re-exports from tinyassets/ and domains/fantasy_author/."
 
 **What's wrong:** Already scheduled for Arc B Phase 3 deletion per `docs/exec-plans/active/2026-04-26-decomp-arc-b-prep.md`. NOT a new finding — flagging here for completeness.
 
@@ -183,17 +183,17 @@ Already covered in B.1. Folds into the same rename pass.
 
 ### C — Module-pair naming confusion
 
-#### C.1 — `workflow/branches.py` (1137 LOC, data models) vs `workflow/api/branches.py` (2821 LOC, MCP dispatcher)
+#### C.1 — `tinyassets/branches.py` (1137 LOC, data models) vs `tinyassets/api/branches.py` (2821 LOC, MCP dispatcher)
 
 **Location:**
-- `workflow/branches.py` — "Community Branches — data models for community-designed LangGraph topologies." Defines `BranchDefinition`, `EdgeDefinition`, etc.
-- `workflow/api/branches.py` — "Branch authoring + node CRUD subsystem — extracted from `workflow/universe_server.py` (Task #15 — decomp Step 8)." 17 `_ext_branch_*` handlers, dispatch tables.
+- `tinyassets/branches.py` — "Community Branches — data models for community-designed LangGraph topologies." Defines `BranchDefinition`, `EdgeDefinition`, etc.
+- `tinyassets/api/branches.py` — "Branch authoring + node CRUD subsystem — extracted from `tinyassets/universe_server.py` (Task #15 — decomp Step 8)." 17 `_ext_branch_*` handlers, dispatch tables.
 
-**What's wrong:** Two modules named `branches.py` with different responsibilities. `workflow/api/branches.py` imports `from workflow.branches import BranchDefinition` 5+ times, which is fine — but a contributor opening the wrong `branches.py` first will be confused.
+**What's wrong:** Two modules named `branches.py` with different responsibilities. `tinyassets/api/branches.py` imports `from workflow.branches import BranchDefinition` 5+ times, which is fine — but a contributor opening the wrong `branches.py` first will be confused.
 
-**Recommendation:** RENAME `workflow/branches.py` → `workflow/branch_models.py` (or `workflow/branch_schema.py`). Mechanical: ~5 import sites + module file rename. ~20 min.
+**Recommendation:** RENAME `tinyassets/branches.py` → `tinyassets/branch_models.py` (or `tinyassets/branch_schema.py`). Mechanical: ~5 import sites + module file rename. ~20 min.
 
-Alternative: move `workflow/branches.py` content into `workflow/api/branches.py` if it's only used by the API module — verify with `git grep "from workflow.branches import"`. Likely cleaner if there's no non-API caller.
+Alternative: move `tinyassets/branches.py` content into `tinyassets/api/branches.py` if it's only used by the API module — verify with `git grep "from workflow.branches import"`. Likely cleaner if there's no non-API caller.
 
 **Blast radius: 1 (SMALL).** Internal rename, test pass green if imports update.
 
@@ -201,15 +201,15 @@ Alternative: move `workflow/branches.py` content into `workflow/api/branches.py`
 
 ---
 
-#### C.2 — `workflow/runs.py` (2884 LOC, run orchestration) vs `workflow/api/runs.py` (1485 LOC, MCP dispatcher)
+#### C.2 — `tinyassets/runs.py` (2884 LOC, run orchestration) vs `tinyassets/api/runs.py` (1485 LOC, MCP dispatcher)
 
 **Location:**
-- `workflow/runs.py` — "Run orchestration for community-designed branches. Stores run metadata and per-step events..."
-- `workflow/api/runs.py` — "Run-execution subsystem — extracted from workflow/universe_server.py (Task #11 — decomp Step 4)."
+- `tinyassets/runs.py` — "Run orchestration for community-designed branches. Stores run metadata and per-step events..."
+- `tinyassets/api/runs.py` — "Run-execution subsystem — extracted from tinyassets/universe_server.py (Task #11 — decomp Step 4)."
 
-**What's wrong:** Same shape as C.1. Two modules named `runs.py` — the MCP-API shell (`workflow/api/runs.py`) imports from the orchestration backend (`workflow/runs.py`) at multiple sites.
+**What's wrong:** Same shape as C.1. Two modules named `runs.py` — the MCP-API shell (`tinyassets/api/runs.py`) imports from the orchestration backend (`tinyassets/runs.py`) at multiple sites.
 
-**Recommendation:** RENAME `workflow/runs.py` → `workflow/run_orchestrator.py` (or `workflow/run_execution.py`). Same as C.1.
+**Recommendation:** RENAME `tinyassets/runs.py` → `tinyassets/run_orchestrator.py` (or `tinyassets/run_execution.py`). Same as C.1.
 
 **Blast radius: 1 (SMALL).**
 
@@ -298,8 +298,8 @@ Already covered in A.3. Folds into housekeeping.
 | B.1 | Phase-named tests rename | Naming drift | 2 | 30 min | DONE for Phase D-H; Phase 7 deferred |
 | B.2 | `docs/specs/phase_*_preflight.md` archive | Doc graveyard | 2 | 1-2h | PARTIAL — gated on R7 for phase7 |
 | B.3 | `docs/specs/phase7_github_as_catalog.md` | Doc graveyard | 1 | 5 min | NO — gated on R7 close |
-| C.1 | `workflow/branches.py` rename | Naming clarity | 1 | 20 min | YES, dev-2 |
-| C.2 | `workflow/runs.py` rename | Naming clarity | 1 | 20 min | YES, dev-2 |
+| C.1 | `tinyassets/branches.py` rename | Naming clarity | 1 | 20 min | YES, dev-2 |
+| C.2 | `tinyassets/runs.py` rename | Naming clarity | 1 | 20 min | YES, dev-2 |
 | D.1 | Methods-prose evaluator note REFRAME | Stale architecture doc | 1 | 30 min | NO — host approval first |
 | D.2 | `docs/design-notes/` status classification | Doc graveyard | 2 | 2-3h | YES, dev-2 |
 | D.3 | `docs/specs/` status classification | Doc graveyard | 2 | (folds into branding §2.3) | PARTIAL |
@@ -315,7 +315,7 @@ Already covered in A.3. Folds into housekeeping.
 ## 4. Recommended dispatch sequence
 
 **Phase 1 — quick wins (current dispatch window):**
-1. **C.1 + C.2** — rename `workflow/branches.py` → `workflow/branch_models.py` and `workflow/runs.py` → `workflow/run_orchestrator.py`. 2 small mechanical tasks; 40 min. Bundle if dev-2 picks up both.
+1. **C.1 + C.2** — rename `tinyassets/branches.py` → `tinyassets/branch_models.py` and `tinyassets/runs.py` → `tinyassets/run_orchestrator.py`. 2 small mechanical tasks; 40 min. Bundle if dev-2 picks up both.
 2. **B.1** — rename phase-named tests. 30 min mechanical.
 3. **D.2** — `docs/design-notes/` status classification. 2-3h. Per-note status front-matter.
 4. **D.4** — `docs/exec-plans/active/` audit + move-to-landed. 1-2h.
@@ -340,7 +340,7 @@ The reason A.1 hasn't been done already: the rename arc was scoped as MODULE-NAM
 
 ## 6. Decision asks for the lead → host
 
-1. **Approve C.1 + C.2 dispatch** (rename `workflow/branches.py` + `workflow/runs.py` to disambiguating names)? Recommend yes — small mechanical wins.
+1. **Approve C.1 + C.2 dispatch** (rename `tinyassets/branches.py` + `tinyassets/runs.py` to disambiguating names)? Recommend yes — small mechanical wins.
 2. **Approve B.1 dispatch** (rename phase-named tests to behavior-named)? Recommend yes — readability win.
 3. **Approve D.2 + D.4 dispatch** (design-note status classification + exec-plan active audit)? Recommend yes — keeps planning surfaces useful.
 4. **D.1 (methods-prose evaluator REFRAME)** — host-approved direction is "community-build" per STATUS Concern 2026-04-26. Confirm reframe-only, no platform shipping. Then I edit the note (or dispatch).
@@ -352,7 +352,7 @@ The reason A.1 hasn't been done already: the rename arc was scoped as MODULE-NAM
 
 ## 7. What's NOT in this audit
 
-- **Code-internal complexity** (e.g., is `workflow/daemon_server.py` at 3551 LOC too large? Is `workflow/graph_compiler.py` at 2126 LOC structured well?). Module-size profiling is a separate concern; covered partially by `docs/design-notes/2026-04-24-architecture-audit.md` and the universe_server.py decomp arc.
+- **Code-internal complexity** (e.g., is `tinyassets/daemon_server.py` at 3551 LOC too large? Is `tinyassets/graph_compiler.py` at 2126 LOC structured well?). Module-size profiling is a separate concern; covered partially by `docs/design-notes/2026-04-24-architecture-audit.md` and the universe_server.py decomp arc.
 - **Test redundancy or coverage gaps.** Test-suite-quality audit is a separate workstream.
 - **Provider-router logic, retrieval router, scheduler internals.** Domain-deep audits are out of scope; this sweep is structural/edges only.
 - **Performance / cost.** Out of scope.
@@ -383,19 +383,19 @@ After the audit landed, lead added two SWEEP 2 heuristics. Re-ran. **Both findin
 
 ### Heuristic 1: Module docstrings starting "Phase X..." where the phase has shipped
 
-**5 modules found in canonical workflow/.** All 5 have docstrings that lead with a project phase identifier:
+**5 modules found in canonical tinyassets/.** All 5 have docstrings that lead with a project phase identifier:
 
 | Module | Docstring opener | Phase status | Recommendation |
 |---|---|---|---|
-| `workflow/bid/settlements.py` | "Phase G cross-host immutable settlement ledger." | Phase G shipped | REWRITE — "Cross-host immutable settlement ledger for the paid-market node-bid surface." |
-| `workflow/branch_tasks.py` | "Phase E durable BranchTask queue." | Phase E shipped | REWRITE — "Durable BranchTask queue." |
-| `workflow/catalog/__init__.py` | "Phase 7 — git-native storage backend." | Phase 7 close-pending | REWRITE — "Git-native catalog backend (branch / node / goal / bid YAML)." |
-| `workflow/dispatcher.py` | "Phase E tier-aware BranchTask dispatcher." | Phase E shipped | REWRITE — "Tier-aware BranchTask dispatcher." |
-| `workflow/identity.py` | "Phase 7.4 v1 — git author identity for commits." | Phase 7.4 shipped | REWRITE — "Git-author identity for commits authored by daemons + users." |
+| `tinyassets/bid/settlements.py` | "Phase G cross-host immutable settlement ledger." | Phase G shipped | REWRITE — "Cross-host immutable settlement ledger for the paid-market node-bid surface." |
+| `tinyassets/branch_tasks.py` | "Phase E durable BranchTask queue." | Phase E shipped | REWRITE — "Durable BranchTask queue." |
+| `tinyassets/catalog/__init__.py` | "Phase 7 — git-native storage backend." | Phase 7 close-pending | REWRITE — "Git-native catalog backend (branch / node / goal / bid YAML)." |
+| `tinyassets/dispatcher.py` | "Phase E tier-aware BranchTask dispatcher." | Phase E shipped | REWRITE — "Tier-aware BranchTask dispatcher." |
+| `tinyassets/identity.py` | "Phase 7.4 v1 — git author identity for commits." | Phase 7.4 shipped | REWRITE — "Git-author identity for commits authored by daemons + users." |
 
 **Two false positives** (look like Phase X but actually describe a behavior pattern, not project phase):
-- `workflow/retrieval/agentic_search.py` "Phase-aware agentic search policy." — "Phase-aware" describes the behavior. KEEP.
-- `workflow/retrieval/phase_context.py` "Phase-aware retrieval configuration." — module name + docstring both describe behavior. KEEP.
+- `tinyassets/retrieval/agentic_search.py` "Phase-aware agentic search policy." — "Phase-aware" describes the behavior. KEEP.
+- `tinyassets/retrieval/phase_context.py` "Phase-aware retrieval configuration." — module name + docstring both describe behavior. KEEP.
 
 **New finding — F.1 (5 sub-items): module-docstring rewrites, ~25 min dev-2 dispatch.**
 
@@ -403,15 +403,15 @@ This reinforces B.1 (phase-named tests rename) and B.2 (phase preflight specs to
 
 ### Heuristic 2: util/helpers/common grab-bags with `from X import *` callers
 
-**Canonical workflow/ + domains/ trees have ZERO `from X import *` patterns.** Checked. No grab-bags depending on glob imports.
+**Canonical tinyassets/ + domains/ trees have ZERO `from X import *` patterns.** Checked. No grab-bags depending on glob imports.
 
-`workflow/api/helpers.py` (142 LOC) is the closest "helpers" module. Inspected:
+`tinyassets/api/helpers.py` (142 LOC) is the closest "helpers" module. Inspected:
 - Has explicit `Public surface (stable contract)` docstring listing 9 named helpers
-- 15 callers, all in `workflow/api/*.py` siblings (legitimate API-tier shared code)
+- 15 callers, all in `tinyassets/api/*.py` siblings (legitimate API-tier shared code)
 - Narrow purpose: path resolvers + safe I/O readers
 - **NOT a grab-bag** by structure — it's a deliberately-designed leaf module per the universe_server.py decomp Bundle 1 plan
 
-`workflow/utils/__init__.py` (1 LOC) and `workflow/utils/json_parsing.py` (70 LOC) — minimal namespace, clean.
+`tinyassets/utils/__init__.py` (1 LOC) and `tinyassets/utils/json_parsing.py` (70 LOC) — minimal namespace, clean.
 
 **No new finding on this axis.** The codebase is structurally clean of glob-import grab-bags.
 
@@ -420,11 +420,11 @@ This reinforces B.1 (phase-named tests rename) and B.2 (phase preflight specs to
 ### Net additions to dispatch from addendum
 
 **1 new finding (5 sub-items):**
-- **F.1.1** — `workflow/bid/settlements.py` docstring rewrite
-- **F.1.2** — `workflow/branch_tasks.py` docstring rewrite
-- **F.1.3** — `workflow/catalog/__init__.py` docstring rewrite
-- **F.1.4** — `workflow/dispatcher.py` docstring rewrite
-- **F.1.5** — `workflow/identity.py` docstring rewrite
+- **F.1.1** — `tinyassets/bid/settlements.py` docstring rewrite
+- **F.1.2** — `tinyassets/branch_tasks.py` docstring rewrite
+- **F.1.3** — `tinyassets/catalog/__init__.py` docstring rewrite
+- **F.1.4** — `tinyassets/dispatcher.py` docstring rewrite
+- **F.1.5** — `tinyassets/identity.py` docstring rewrite
 
 All bundle into one ~25-min dev-2 dispatch — mechanical sed-style docstring edits.
 

@@ -15,7 +15,7 @@
 
 ## §1. Key framing
 
-Codex's audit surfaced three real modularity concerns in the **current legacy code** (`workflow/universe_server.py`, `workflow/discovery.py`, `workflow/daemon_server.py`). The rewrite replaces all three with distinct, greenfield artifacts.
+Codex's audit surfaced three real modularity concerns in the **current legacy code** (`tinyassets/universe_server.py`, `tinyassets/discovery.py`, `tinyassets/daemon_server.py`). The rewrite replaces all three with distinct, greenfield artifacts.
 
 **The integration question is: do we fix the legacy code now, or skip the legacy cleanup because the rewrite replaces it?**
 
@@ -27,7 +27,7 @@ Live user traffic today: one host (Jonathan) + user-sim dogfooding via Claude.ai
 
 ## §2. Concern-by-concern cross-reference
 
-### §2.1 `workflow/universe_server.py` mega-surface (~8.6k lines, 4 dispatch tables)
+### §2.1 `tinyassets/universe_server.py` mega-surface (~8.6k lines, 4 dispatch tables)
 
 **Codex recommendation:** FastMCP `mount()` + capability-surface split (engine universe / extensions-branch / runs / judgments / goals+gates+wiki / domain-mounted fantasy actions).
 
@@ -48,11 +48,11 @@ The legacy `universe` tool with 26-action dispatch + `_BRANCH_ACTIONS` / `_RUN_A
 - Current legacy surface serves one host (Jonathan) + user-sim. No scale pain today.
 - Track C rewrite is ~2 dev-days (per §10 table). Interim-splitting the legacy file for durability is similar effort (likely 1.5–2 dev-days for an honest capability split) and **produces code that ships for ~4 weeks then gets deleted.**
 - The pure-bytes-thrown-away calculation: interim split = ~2d wasted. Interim not-split = existing state, no worse than today. **Skip legacy cleanup.**
-- Task #15 (injection-hallucination text mitigations) does still need to land in the legacy `workflow/universe_server.py` because it's the live surface until cutover. That's bug-fix work, not modularity work. Still must happen.
+- Task #15 (injection-hallucination text mitigations) does still need to land in the legacy `tinyassets/universe_server.py` because it's the live surface until cutover. That's bug-fix work, not modularity work. Still must happen.
 
 **Exception:** if any unforeseen new feature must land in the legacy surface during the rewrite window (e.g. an urgent security fix), that's the moment to reconsider. Until then, hold.
 
-### §2.2 `workflow/discovery.py` — source-tree scan, not a real plugin boundary
+### §2.2 `tinyassets/discovery.py` — source-tree scan, not a real plugin boundary
 
 **Codex recommendation:** `importlib.metadata.entry_points()` group `workflow.domains`; current filesystem scan as dev-mode fallback only; keep rename-compat aliases out of discovery (they belong in import shims).
 
@@ -67,7 +67,7 @@ The legacy `universe` tool with 26-action dispatch + `_BRANCH_ACTIONS` / `_RUN_A
 **Needs new work?** **Yes, small.** Two new things:
 
 1. **Rewrite has no domain-plugin API equivalent documented.** Design note §2.7 introduces "branches as first-class composite workflows" and §27 vibe-coded nodes, but neither names a packaging/distribution mechanism for engine-side plugins (e.g., a third-party shipping a `connector` — §28 — or a `handoff` — §30). Those are the closest-analogs to "domains" in the new world, and they should use entry-points. **Recommended spec addition:** when the Connectors exec spec (task #68) and Handoffs exec spec (task #69) land, they should declare **`workflow.connectors` and `workflow.handoffs` entry-point groups** as the distribution mechanism. Filesystem scan as dev-mode fallback only.
-2. **Legacy `workflow/discovery.py` stays as-is** until the legacy stack is decommissioned. Current rename-compat injection at `:66` is a live-correctness fix, not a modularity refactor. Don't touch it.
+2. **Legacy `tinyassets/discovery.py` stays as-is** until the legacy stack is decommissioned. Current rename-compat injection at `:66` is a live-correctness fix, not a modularity refactor. Don't touch it.
 
 **Legacy cleanup — interim entry-point migration? Decision: NO.** Reasoning:
 
@@ -76,7 +76,7 @@ The legacy `universe` tool with 26-action dispatch + `_BRANCH_ACTIONS` / `_RUN_A
 - Cost: ~1.5 dev-days entry-point refactor + packaging mirror update. Benefit: zero in 4 weeks. **Skip.**
 - **Propagate the pattern to NEW specs instead:** entry-points become the canonical mechanism for §28 connectors and §30 handoffs. This is what Codex's recommendation enables for the right layer of abstraction (distribution-time plugin discovery for connectors) without touching the legacy that's about to be deleted.
 
-### §2.3 `workflow/daemon_server.py` bounded-context mix (~3.2k lines)
+### §2.3 `tinyassets/daemon_server.py` bounded-context mix (~3.2k lines)
 
 **Codex recommendation:** split by storage context (accounts/auth, universes/branches/snapshots, requests/votes/runtime, notes/work-targets/priorities, goals/gates/leaderboards). Shared `_connect()` + migrations; narrow exported surfaces per context.
 
@@ -102,7 +102,7 @@ Additionally: accounts/auth move to Supabase Auth (not our code). Moderation (sp
 - 3.2k lines is a maintainability burden, but it's maintained by one person (Codex) for ~4 more weeks. Interim cleanup cost (~2 dev-days for a clean split) > benefit (zero in 4 weeks).
 - **Skip.**
 
-**Post-launch hygiene note:** once the rewrite replaces the legacy, `workflow/daemon_server.py` becomes dead code. Launch + 2 weeks stabilization window → schedule the legacy-file deletion as a routine cleanup task, not a modularity refactor. Task #17 Rename Phase 2 already handles legacy-directory / brand residue; §§`workflow/daemon_server.py` etc. get deleted in that sweep's successor.
+**Post-launch hygiene note:** once the rewrite replaces the legacy, `tinyassets/daemon_server.py` becomes dead code. Launch + 2 weeks stabilization window → schedule the legacy-file deletion as a routine cleanup task, not a modularity refactor. Task #17 Rename Phase 2 already handles legacy-directory / brand residue; §§`tinyassets/daemon_server.py` etc. get deleted in that sweep's successor.
 
 ---
 
@@ -127,9 +127,9 @@ The three audited files have expected lifetimes tied to the rewrite cutover:
 
 | File | Lifetime | Cutover trigger | Cleanup posture |
 |---|---|---|---|
-| `workflow/universe_server.py` | Live until MCP gateway (canonical `tinyassets.io/mcp`, Worker-routed to tunnel origin `mcp.tinyassets.io`) is stable + Claude.ai connector-catalog listing live | ~4.5 weeks (MVP) | Post-cutover: delete file + remove directory structure per Rename Phase 2 (task #17) |
-| `workflow/discovery.py` | Live until domain-plugin discovery is moot (all node/branch/domain metadata moved to Postgres) | ~4.5 weeks (MVP) | Post-cutover: delete file; pattern re-appears in new Connectors + Handoffs specs via `workflow.connectors` + `workflow.handoffs` entry-point groups |
-| `workflow/daemon_server.py` | Live until Supabase-backed control plane is stable | ~4.5 weeks (MVP) | Post-cutover: delete file; bounded contexts are now Postgres tables + RLS, not Python modules |
+| `tinyassets/universe_server.py` | Live until MCP gateway (canonical `tinyassets.io/mcp`, Worker-routed to tunnel origin `mcp.tinyassets.io`) is stable + Claude.ai connector-catalog listing live | ~4.5 weeks (MVP) | Post-cutover: delete file + remove directory structure per Rename Phase 2 (task #17) |
+| `tinyassets/discovery.py` | Live until domain-plugin discovery is moot (all node/branch/domain metadata moved to Postgres) | ~4.5 weeks (MVP) | Post-cutover: delete file; pattern re-appears in new Connectors + Handoffs specs via `workflow.connectors` + `workflow.handoffs` entry-point groups |
+| `tinyassets/daemon_server.py` | Live until Supabase-backed control plane is stable | ~4.5 weeks (MVP) | Post-cutover: delete file; bounded contexts are now Postgres tables + RLS, not Python modules |
 
 **Two-week stabilization window post-MVP recommended** before deletion, to catch any unforeseen fallback-dependency on the legacy. After that, a single cleanup commit removes all three legacy files and their tests.
 

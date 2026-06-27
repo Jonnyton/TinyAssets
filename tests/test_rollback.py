@@ -1,7 +1,7 @@
 """Phase B surgical-rollback engine tests (Task #22).
 
 Spec: docs/design-notes/2026-04-25-surgical-rollback-proposal.md.
-Implementation: workflow/rollback.py.
+Implementation: tinyassets/rollback.py.
 
 Covers:
 - compute_rollback_set: closure walk over parent_version_id + fork_from.
@@ -24,15 +24,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from workflow.branch_versions import (
+from tinyassets.branch_versions import (
     _connect as _branch_versions_connect,
 )
-from workflow.branch_versions import (
+from tinyassets.branch_versions import (
     get_branch_version,
     publish_branch_version,
 )
-from workflow.contribution_events import initialize_contribution_events_db
-from workflow.rollback import (
+from tinyassets.contribution_events import initialize_contribution_events_db
+from tinyassets.rollback import (
     AUTO_ROLLBACK_WEIGHT_THRESHOLD,
     ROLLBACK_WEIGHTS,
     auto_rollback_on_canary_red,
@@ -77,13 +77,13 @@ def _fork_branch(tmp_path, fork_def_id, fork_from_bvid):
     version of it. Mirrors how `extensions action=fork_tree` would land
     a fork-child but skips the MCP layer for unit-test cleanliness.
     """
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
         NodeDefinition,
     )
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         initialize_author_server,
         save_branch_definition,
     )
@@ -191,7 +191,7 @@ class TestExecuteRollbackSet:
         assert result["status"] == "ok"
         assert len(result["event_ids"]) == 1
         # Confirm the event landed in contribution_events.
-        from workflow.contribution_events import _connect
+        from tinyassets.contribution_events import _connect
         with _connect(tmp_path) as conn:
             row = conn.execute(
                 "SELECT event_type, source_artifact_id, weight, actor_id "
@@ -535,11 +535,11 @@ class TestOrchestrator:
 def env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
     monkeypatch.setenv("UNIVERSE_SERVER_CAPABILITIES", "rollback_branch")
     monkeypatch.setenv("_FORCE_MOCK", "true")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
     importlib.reload(us)
@@ -554,7 +554,7 @@ class TestRollbackMCPAction:
         us, base = env
         # Publish a version directly via the storage layer (faster + the
         # MCP build_branch path drags in domain registries we don't need).
-        from workflow.branch_versions import publish_branch_version
+        from tinyassets.branch_versions import publish_branch_version
 
         v = publish_branch_version(
             base, _seed_branch_dict("mcp-rollback"), publisher="host",
@@ -571,7 +571,7 @@ class TestRollbackMCPAction:
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
         monkeypatch.delenv("UNIVERSE_SERVER_CAPABILITIES", raising=False)
         importlib.reload(us)
-        from workflow.branch_versions import publish_branch_version
+        from tinyassets.branch_versions import publish_branch_version
 
         v = publish_branch_version(
             base, _seed_branch_dict("mcp-non-host"), publisher="alice",
@@ -581,7 +581,7 @@ class TestRollbackMCPAction:
                        reason="should reject")
         assert "missing capability: rollback_branch" in result.get("error", "").lower()
         # Confirm the version was NOT rolled back.
-        from workflow.branch_versions import get_branch_version as _get
+        from tinyassets.branch_versions import get_branch_version as _get
         assert _get(base, v.branch_version_id).status == "active"
 
     def test_rollback_merge_missing_args_rejected(self, env):

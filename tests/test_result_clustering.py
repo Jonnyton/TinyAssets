@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from workflow.knowledge.models import (
+from tinyassets.knowledge.models import (
     FactWithContext,
     SourceType,
 )
-from workflow.retrieval.router import (
+from tinyassets.retrieval.router import (
     _cluster_facts,
     _cluster_texts,
     _cosine_similarity,
@@ -151,9 +151,9 @@ class TestRetrievalResultClustering:
 
     def test_router_clusters_during_query(self, tmp_path):
         """Verify the router applies clustering to its results."""
-        from workflow.knowledge.knowledge_graph import KnowledgeGraph
-        from workflow.knowledge.models import GraphEntity
-        from workflow.retrieval.router import RetrievalRouter
+        from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+        from tinyassets.knowledge.models import GraphEntity
+        from tinyassets.retrieval.router import RetrievalRouter
 
         kg = KnowledgeGraph(str(tmp_path / "test.db"))
         kg.add_entity(
@@ -190,7 +190,7 @@ class TestRetrievalResultClustering:
 
         import asyncio
 
-        from workflow.memory.scoping import MemoryScope
+        from tinyassets.memory.scoping import MemoryScope
         result = asyncio.run(router.query(
             "What are Ryn's relationships?",
             phase="orient",

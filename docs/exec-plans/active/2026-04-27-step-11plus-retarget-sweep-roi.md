@@ -14,7 +14,7 @@ audience: lead, host (final scope decision)
 
 ## TL;DR
 
-After Steps 1-11 land, `workflow/universe_server.py` settles at **~1,400 LOC** — a **90% reduction** from baseline 14,012. The audit's literal "~100-LOC routing shell" target requires one additional mechanical pass: change ~317 test-import + monkeypatch sites across the codebase from `workflow.universe_server.X` to canonical `workflow.api.<module>.X` paths, then delete the back-compat re-export shims (~700 LOC of shim removal).
+After Steps 1-11 land, `tinyassets/universe_server.py` settles at **~1,400 LOC** — a **90% reduction** from baseline 14,012. The audit's literal "~100-LOC routing shell" target requires one additional mechanical pass: change ~317 test-import + monkeypatch sites across the codebase from `workflow.universe_server.X` to canonical `workflow.api.<module>.X` paths, then delete the back-compat re-export shims (~700 LOC of shim removal).
 
 **Recommendation: DEFER until a concrete trigger appears.** The sweep is ~5-7 wall-hours of mechanical work for a 1,250-LOC additional reduction (~9% of baseline). At ~1,400 LOC residual the file is already legible, every MCP tool is one file, every dispatch table is co-located. The marginal benefit of dropping to ~150 LOC is real but small relative to other available work. If a concrete trigger appears later (e.g. a host-visible refactor friction, a new MCP tool that needs a clean slate), revisit.
 
@@ -74,7 +74,7 @@ Surveyed via grep across `tests/` (2026-04-27, post-Step-7 code):
 4. Investigate any breakage (likely 5-10 cases where the symbol → destination map is wrong or the symbol moved more than once across the decomp). ~1-2 hours.
 5. Same for monkeypatch sites — separate sed pass for `patch("workflow.universe_server.X", …)` → canonical path. ~30 min script + 30 min run.
 6. Final full-suite `pytest -q`. ~30-60 min.
-7. Delete the back-compat re-export shims in `workflow/universe_server.py` (~700 LOC of shim block deletions). ~30 min.
+7. Delete the back-compat re-export shims in `tinyassets/universe_server.py` (~700 LOC of shim block deletions). ~30 min.
 8. Re-run full suite. ~30-60 min.
 9. Update the symbol → destination map doc, commit, ship.
 
@@ -86,7 +86,7 @@ Add 1-2 hours for:
 - Symbol-name collisions (a handful of `_action_*` names exist in multiple modules with intentionally different signatures — needs disambiguation).
 - Tests that import a symbol via `import workflow.universe_server as us` then access `us.X` in many places (not caught by the import-line sed; need a separate `us.X` → `<canonical_module>.X` pass).
 - Tests that monkeypatch a symbol that was the back-compat re-export AND a symbol that exists at the canonical path — needs both patches dropped (otherwise double-patching).
-- Plugin-mirror parity check — the `packaging/claude-plugin/.../runtime/workflow/` mirror has the same back-compat shims; need to mirror the deletion. Plus mirror's own test harness.
+- Plugin-mirror parity check — the `packaging/claude-plugin/.../runtime/tinyassets/` mirror has the same back-compat shims; need to mirror the deletion. Plus mirror's own test harness.
 
 **Realistic total: ~6-8 hours.** Step 11 prep §9.7 said ~6h; that estimate stands.
 
@@ -103,7 +103,7 @@ Add 1-2 hours for:
 ### Medium-risk
 
 - **Re-export shim removal is the one-way step.** Once the shims are deleted, anything that still imports from `workflow.universe_server` breaks. Mitigation: run full suite green BEFORE deleting any shim. If green, the shims are unused and safe to delete.
-- **Plugin-mirror drift.** `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/` ships a mirror of `workflow/`. Mirror's test harness lives separately. Risk: mirror passes locally but installed plugin breaks for a chatbot client. Mitigation: post-sweep, run `python packaging/claude-plugin/build_plugin.py` + `pytest packaging/claude-plugin/.../tests -q`.
+- **Plugin-mirror drift.** `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/` ships a mirror of `tinyassets/`. Mirror's test harness lives separately. Risk: mirror passes locally but installed plugin breaks for a chatbot client. Mitigation: post-sweep, run `python packaging/claude-plugin/build_plugin.py` + `pytest packaging/claude-plugin/.../tests -q`.
 - **External callers.** Anyone outside the repo importing `workflow.universe_server.X` would break. Mitigation: this is a private internal module; no external API contract. Document the change in CHANGELOG anyway.
 
 ### High-risk (none identified)
@@ -153,7 +153,7 @@ Add 1-2 hours for:
 
 The sweep is "done" when:
 
-1. `wc -l workflow/universe_server.py` ≤ 200.
+1. `wc -l tinyassets/universe_server.py` ≤ 200.
 2. The file's contents enumerate to:
    - Module imports + setup (~50 LOC).
    - `mcp = FastMCP(...)` instance creation (~20 LOC).
@@ -203,7 +203,7 @@ Trigger conditions that would justify dispatching the sweep:
 1. **Defer the sweep?** Recommend yes. 6 hours of mechanical work for 1,250-LOC reduction (already 90% of baseline shipped); higher-leverage alternatives exist in the queue.
 2. **Capture the deferred state where?** Recommend single line in `ideas/PIPELINE.md` Active Promotions table: state=design-note-landed, next-home=this file, owner=navigator-on-trigger. Alternative: STATUS Concerns row (more visible but consumes board budget).
 3. **Trigger conditions worth committing to?** §6 §1-§4 are illustrative. If host wants explicit "do the sweep when X happens" criteria, list them here so a future session can recognize the trigger.
-4. **Plugin-mirror parity** — confirm the sweep would include `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/universe_server.py` mirror update. (Yes — same shims live there; same deletion needed.)
+4. **Plugin-mirror parity** — confirm the sweep would include `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py` mirror update. (Yes — same shims live there; same deletion needed.)
 
 ---
 

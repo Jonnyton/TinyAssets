@@ -31,7 +31,7 @@ Minor open Q (new): should `run_lineage` ALSO get a `branch_version_id` column f
 
 **#56's claim:** resolver should live one layer below the MCP action so scheduler, dispatcher, and gate-routing nodes (Phase A item 5 = BUG-005) can all share one resolver. Putting it in the action handler duplicates resolution at every call site.
 
-**#54's resolution:** **explicitly honored.** §2 names the helper `execute_branch_version_async` in `workflow/runs.py`, sibling to existing `execute_branch_async`. The MCP handler `_action_run_branch_version` is a thin ~30-line wrapper that calls the helper. §6 explicitly describes Task #53 route-back invoking `execute_branch_version_async` directly — exactly the shared-helper pattern #56 recommended.
+**#54's resolution:** **explicitly honored.** §2 names the helper `execute_branch_version_async` in `tinyassets/runs.py`, sibling to existing `execute_branch_async`. The MCP handler `_action_run_branch_version` is a thin ~30-line wrapper that calls the helper. §6 explicitly describes Task #53 route-back invoking `execute_branch_version_async` directly — exactly the shared-helper pattern #56 recommended.
 
 **Verdict:** **HONORED + sharpened.** #54 takes the shared-helper recommendation and goes one step further: introduces `_execute_branch_core(branch_version_id=...)` as the *common* implementation underneath BOTH `execute_branch_async` (def-based) AND `execute_branch_version_async` (version-based). Both helpers converge to one execution loop. This is cleaner than #56 sketched — minimizes duplication while keeping the two entry points discoverable.
 

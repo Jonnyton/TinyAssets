@@ -1,0 +1,28 @@
+# TinyAssets daemon watchdog — every 30s, starting 60s after boot.
+#
+# Self-host migration Row L per
+# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+#
+# Fires tinyassets-watchdog.service on a steady 30s cadence. The
+# watchdog.py script tracks consecutive-red state across ticks via
+# /var/lib/tinyassets-watchdog/state.json — so the timer doesn't need
+# to do any rate-limiting itself.
+
+[Unit]
+Description=Timer for TinyAssets daemon watchdog
+Requires=tinyassets-watchdog.service
+After=tinyassets-daemon.service
+
+[Timer]
+# First fire 60s after boot — gives daemon time to bind + healthcheck
+# to stabilize. Then every 30s steady.
+OnBootSec=60s
+OnUnitActiveSec=30s
+AccuracySec=5s
+# Persistent=false: no catch-up runs if the box was off; the watchdog
+# is a live-state probe, not a scheduled batch job.
+Persistent=false
+Unit=tinyassets-watchdog.service
+
+[Install]
+WantedBy=timers.target

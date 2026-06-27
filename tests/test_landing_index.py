@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 
-from workflow.universe_server import _landing_index
+from tinyassets.universe_server import _landing_index
 def _run(handler_coro):
     return asyncio.run(handler_coro)
 
@@ -26,7 +26,7 @@ def test_handler_returns_html_response_with_body():
     # Body contains the expected page shell.
     body = response.body.decode("utf-8")
     assert body.startswith("<!doctype html>")
-    assert "<title>Workflow Server</title>" in body
+    assert "<title>TinyAssets Server</title>" in body
 
 
 def test_landing_body_has_required_content():
@@ -35,7 +35,7 @@ def test_landing_body_has_required_content():
     response = _run(_landing_index(request=None))
     body = response.body.decode("utf-8")
 
-    assert "Workflow Server" in body
+    assert "TinyAssets Server" in body
     assert "daemon engine" in body  # 1-line pitch
     # GitHub link present.
     assert re.search(r'https?://github\.com/[^"]+', body) is not None
@@ -70,7 +70,7 @@ def test_no_mcp_dispatch_bypass():
     """
     import inspect
 
-    from workflow import universe_server
+    from tinyassets import universe_server
     source = inspect.getsource(universe_server._landing_index)
     # Crude but effective — the handler body should reference neither
     # the internal dispatcher nor the universe tool surface.

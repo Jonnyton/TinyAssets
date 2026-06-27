@@ -5,12 +5,12 @@ on:
     branches:
       - main
     paths:
-      - "workflow/**"
+      - "tinyassets/**"
       - "packaging/**"
       - ".github/workflows/build-bundle.yml"
   pull_request:
     paths:
-      - "workflow/**"
+      - "tinyassets/**"
       - "packaging/**"
       - ".github/workflows/build-bundle.yml"
   release:
@@ -35,7 +35,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # Install the same dep set as packaging/mcpb/pyproject.toml so
-          # the subprocess import probe can resolve workflow.universe_server.
+          # the subprocess import probe can resolve tinyassets.universe_server.
           python -m pip install \
             "fastmcp>=3.2,<4" \
             "mcp>=1.0" \
@@ -53,18 +53,18 @@ jobs:
       - name: Stage claude-plugin runtime (with import probe)
         run: python packaging/claude-plugin/build_plugin.py
 
-      - name: Verify committed plugin runtime matches live workflow/
+      - name: Verify committed plugin runtime matches live tinyassets/
         # The plugin runtime tree under
-        # packaging/claude-plugin/.../runtime/workflow/ is tracked so
+        # packaging/claude-plugin/.../runtime/tinyassets/ is tracked so
         # marketplace consumers can install from the cloned repo. If a
-        # commit modifies workflow/ but forgets to re-run
+        # commit modifies tinyassets/ but forgets to re-run
         # build_plugin.py, the committed tree goes stale — CI would
         # otherwise pass silently because the build script re-stages
-        # locally on each run. This diff check closes that seam.
+        # locally on each run. This diff check closes that gap.
         run: |
-          if ! git diff --quiet packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow; then
+          if ! git diff --quiet packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets; then
             echo "::error::Committed plugin runtime is stale. Run 'python packaging/claude-plugin/build_plugin.py' and commit the result."
-            git diff --stat packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow
+            git diff --stat packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets
             exit 1
           fi
 
@@ -111,6 +111,6 @@ jobs:
       - name: Upload .mcpb as release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: packaging/dist/workflow-universe-server.mcpb
+          files: packaging/dist/tinyassets-universe-server.mcpb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

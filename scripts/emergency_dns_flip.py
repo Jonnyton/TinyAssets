@@ -411,7 +411,7 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--proxied", type=parse_bool)
     ap.add_argument("--comment")
     ap.add_argument("--pattern", default="tinyassets.io/mcp*", help="Worker route pattern")
-    ap.add_argument("--script", default="workflow-mcp-router", help="Worker script name")
+    ap.add_argument("--script", default="tinyassets-mcp-router", help="Worker script name")
     ap.add_argument("--apply", action="store_true", help="mutate Cloudflare; default is dry-run")
     ap.add_argument("--json", action="store_true", help="print machine-readable result")
     return ap

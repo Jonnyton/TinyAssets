@@ -22,17 +22,17 @@ import pytest
 
 @pytest.fixture
 def wiki_env(tmp_path, monkeypatch):
-    """Isolated wiki root with WORKFLOW_WIKI_PATH."""
+    """Isolated wiki root with TINYASSETS_WIKI_PATH."""
     wiki_root = tmp_path / "wiki"
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    from workflow.api.wiki import _ensure_wiki_scaffold
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.api.wiki import _ensure_wiki_scaffold
     _ensure_wiki_scaffold(wiki_root)
     return wiki_root
 
 
 def _file_bug(wiki_env, **kwargs):  # noqa: ARG001
-    from workflow.universe_server import wiki
+    from tinyassets.universe_server import wiki
     defaults = {
         "action": "file_bug",
         "component": "test.surface",
@@ -51,7 +51,7 @@ def _seed_bug(wiki_env, title: str, observed: str = "") -> dict:
 
 
 def _cosign(wiki_env, bug_id: str, reporter_context: str) -> dict:  # noqa: ARG001
-    from workflow.universe_server import wiki
+    from tinyassets.universe_server import wiki
     return json.loads(wiki(
         action="cosign_bug",
         bug_id=bug_id,

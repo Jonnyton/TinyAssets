@@ -18,7 +18,7 @@ import pytest
 
 class TestAllApiProvidersInCooldown:
     def _tracker(self):
-        from workflow.providers.quota import QuotaTracker
+        from tinyassets.providers.quota import QuotaTracker
         return QuotaTracker()
 
     def test_returns_false_when_no_providers_cooled(self):
@@ -59,7 +59,7 @@ class TestAllApiProvidersInCooldown:
 
 class TestCooldownRemainingDict:
     def _tracker(self):
-        from workflow.providers.quota import QuotaTracker
+        from tinyassets.providers.quota import QuotaTracker
         return QuotaTracker()
 
     def test_returns_zero_for_uncooled_providers(self):
@@ -89,9 +89,9 @@ class TestChainDrainWarning:
         import asyncio
         from unittest.mock import AsyncMock
 
-        from workflow.providers.base import ProviderResponse
-        from workflow.providers.quota import QuotaTracker
-        from workflow.providers.router import FALLBACK_CHAINS, ProviderRouter
+        from tinyassets.providers.base import ProviderResponse
+        from tinyassets.providers.quota import QuotaTracker
+        from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
 
         qt = QuotaTracker()
         providers: dict = {}
@@ -118,8 +118,8 @@ class TestChainDrainWarning:
 
         router = ProviderRouter(providers=providers, quota=qt)
 
-        from workflow.exceptions import AllProvidersExhaustedError
-        with caplog.at_level(logging.WARNING, logger="workflow.providers.router"):
+        from tinyassets.exceptions import AllProvidersExhaustedError
+        with caplog.at_level(logging.WARNING, logger="tinyassets.providers.router"):
             with pytest.raises(AllProvidersExhaustedError):
                 asyncio.run(router.call("writer", "prompt", "system"))
 
@@ -140,10 +140,10 @@ class TestChainDrainWarning:
         import asyncio
         from unittest.mock import AsyncMock
 
-        from workflow.exceptions import AllProvidersExhaustedError
-        from workflow.providers.base import ProviderResponse
-        from workflow.providers.quota import QuotaTracker
-        from workflow.providers.router import ProviderRouter
+        from tinyassets.exceptions import AllProvidersExhaustedError
+        from tinyassets.providers.base import ProviderResponse
+        from tinyassets.providers.quota import QuotaTracker
+        from tinyassets.providers.router import ProviderRouter
 
         qt = QuotaTracker()
         qt.cooldown("claude-code", 120)
@@ -162,7 +162,7 @@ class TestChainDrainWarning:
             providers={"claude-code": claude, "ollama-local": local}, quota=qt,
         )
 
-        with caplog.at_level(logging.WARNING, logger="workflow.providers.router"):
+        with caplog.at_level(logging.WARNING, logger="tinyassets.providers.router"):
             with pytest.raises(AllProvidersExhaustedError):
                 asyncio.run(router.call("writer", "prompt", "system"))
 
@@ -174,14 +174,14 @@ class TestChainDrainWarning:
 class TestGetStatusCooldownField:
     def test_get_status_has_per_provider_cooldown_remaining(self):
         """get_status must include per_provider_cooldown_remaining dict."""
-        from workflow.universe_server import get_status
+        from tinyassets.universe_server import get_status
         payload = json.loads(get_status())
         assert "per_provider_cooldown_remaining" in payload
         assert isinstance(payload["per_provider_cooldown_remaining"], dict)
 
     def test_per_provider_cooldown_remaining_values_are_ints(self):
         """All values in per_provider_cooldown_remaining must be non-negative ints."""
-        from workflow.universe_server import get_status
+        from tinyassets.universe_server import get_status
         remaining = json.loads(get_status())["per_provider_cooldown_remaining"]
         for provider, seconds in remaining.items():
             assert isinstance(seconds, int), f"{provider}: expected int, got {type(seconds)}"
@@ -189,7 +189,7 @@ class TestGetStatusCooldownField:
 
     def test_schema_contract_includes_per_provider_field(self):
         """Contract test: schema_version=1 contract must include the new field."""
-        from workflow.universe_server import get_status
+        from tinyassets.universe_server import get_status
         payload = json.loads(get_status())
         assert "per_provider_cooldown_remaining" in payload, (
             "per_provider_cooldown_remaining not in get_status schema_version=1 response"
@@ -211,8 +211,8 @@ class TestGetStatusCooldownField:
 #      a non-empty `suggested_action` AND that the returned class is in
 #      `ACTIONABLE_BY` (so chatbot can always look up `actionable_by`).
 #
-# Source of truth: `workflow.runs.ACTIONABLE_BY` (canonical map).
-# Helpers under test live at `workflow.api.runs`.
+# Source of truth: `tinyassets.runs.ACTIONABLE_BY` (canonical map).
+# Helpers under test live at `tinyassets.api.runs`.
 
 
 _VALID_ACTIONABLE_BY = frozenset({"host", "chatbot", "user", "none"})
@@ -220,13 +220,13 @@ _VALID_ACTIONABLE_BY = frozenset({"host", "chatbot", "user", "none"})
 
 @pytest.fixture(scope="module")
 def actionable_by_table() -> dict[str, str]:
-    from workflow.runs import ACTIONABLE_BY
+    from tinyassets.runs import ACTIONABLE_BY
     return ACTIONABLE_BY
 
 
 @pytest.fixture(scope="module")
 def actionable_by_helper():
-    from workflow.api.runs import _actionable_by
+    from tinyassets.api.runs import _actionable_by
     return _actionable_by
 
 
@@ -283,7 +283,7 @@ _OUTCOME_ERROR_FIXTURES: tuple[tuple[str, str], ...] = (
 
 @pytest.fixture(scope="module")
 def classify_outcome():
-    from workflow.api.runs import _classify_run_outcome_error
+    from tinyassets.api.runs import _classify_run_outcome_error
     return _classify_run_outcome_error
 
 
@@ -329,6 +329,6 @@ class TestClassifyOutcomeErrorCompleteness:
         actual_class, _ = result
         assert actual_class in actionable_by_table, (
             f"{error_string!r} → {actual_class!r}, but {actual_class!r} is "
-            f"NOT in workflow.runs.ACTIONABLE_BY. Add it to the canonical "
+            f"NOT in tinyassets.runs.ACTIONABLE_BY. Add it to the canonical "
             f"map so chatbot can render a non-default actionable_by."
         )

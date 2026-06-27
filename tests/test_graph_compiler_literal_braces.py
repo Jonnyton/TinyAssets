@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.graph_compiler import _render_template
+from tinyassets.graph_compiler import _render_template
 
 # ─── _render_template unit tests ─────────────────────────────────────────
 
@@ -88,7 +88,7 @@ def test_render_placeholder_substitution_coerces_non_str_values():
 
 
 def _make_branch(template: str, state_keys: list[str]) -> object:
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
@@ -119,7 +119,7 @@ def test_compile_and_run_template_with_json_example():
     example compiles, runs, and produces a prompt with the JSON intact."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     captured: dict[str, str] = {}
 
@@ -145,7 +145,7 @@ def test_compile_and_run_template_with_json_example():
 def test_compile_reports_missing_state_key_cleanly():
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     branch = _make_branch("topic: {topic}", ["topic"])
     compiled = compile_branch(branch, provider_call=lambda *a, **k: "ok")
@@ -165,7 +165,7 @@ def test_empty_provider_response_raises_compiler_error():
     set result='', which would cascade as phantom success downstream."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.graph_compiler import CompilerError, compile_branch
+    from tinyassets.graph_compiler import CompilerError, compile_branch
 
     branch = _make_branch("topic: {topic}", ["topic"])
     compiled = compile_branch(
@@ -188,7 +188,7 @@ def test_jinja_style_double_braces_still_substitute():
     ``{{var}}`` keep working unchanged."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     captured: dict[str, str] = {}
 
@@ -210,7 +210,7 @@ def test_jinja_style_double_braces_still_substitute():
 
 
 def _make_validation_branch(template: str, input_keys: list[str], state_keys: list[str]):
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,

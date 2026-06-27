@@ -1,16 +1,16 @@
-# Contributing to Workflow
+# Contributing to TinyAssets
 
-Thanks for looking at Workflow. This document tells you how to contribute code, content, connectors, and reviews — and what you can expect back from us in return. If anything here is unclear, open an issue.
+Thanks for looking at TinyAssets. This document tells you how to contribute code, content, connectors, and reviews — and what you can expect back from us in return. If anything here is unclear, open an issue.
 
 ---
 
 ## What lives where
 
-- **`Workflow/`** (this repo, platform code) — MIT-licensed Python + prototypes. PRs land here for the MCP gateway, tray, connectors, node authoring surface, infra.
-- **`Workflow-catalog/`** (content repo, CC0-1.0) — node YAMLs, branch definitions, catalogs (node-type / integration-pattern / domain-pattern / privacy / moderation). PRs land here for node + branch + taxonomy contributions.
+- **`TinyAssets/`** (this repo, platform code) — MIT-licensed Python + prototypes. PRs land here for the MCP gateway, tray, connectors, node authoring surface, infra.
+- **`TinyAssets-catalog/`** (content repo, CC0-1.0) — node YAMLs, branch definitions, catalogs (node-type / integration-pattern / domain-pattern / privacy / moderation). PRs land here for node + branch + taxonomy contributions.
 - **`docs/design-notes/`, `docs/specs/`, `docs/catalogs/`** — design documentation. PRs welcome for amendments, counter-proposals, new specs.
 
-**Pick the right repo for your contribution:** connector code → `Workflow/connectors/`. A new node definition → `Workflow-catalog/catalog/nodes/`. A design critique → `docs/design-notes/` in `Workflow/`.
+**Pick the right repo for your contribution:** connector code → `TinyAssets/connectors/`. A new node definition → `TinyAssets-catalog/catalog/nodes/`. A design critique → `docs/design-notes/` in `TinyAssets/`.
 
 ---
 
@@ -35,7 +35,7 @@ If a named maintainer is OOO ≥72 hours, they either (a) hand off to another ad
 
 1. Comment on the PR tagging `@maintainers` after 72h of no first-response.
 2. If still silent after 5 days, email `security@tinyassets.io` with the PR URL. Admin-pool members rotate this inbox.
-3. If still silent after 10 days with no SLA-breach explanation, the PR is eligible for the `stale-maintainer` escalation — file an issue in `Workflow/` titled `SLA breach: PR #N`. Admin pool treats this as a P1 operational flag.
+3. If still silent after 10 days with no SLA-breach explanation, the PR is eligible for the `stale-maintainer` escalation — file an issue in `TinyAssets/` titled `SLA breach: PR #N`. Admin pool treats this as a P1 operational flag.
 
 No single maintainer can make your PR invisible. If one is unresponsive, the admin-pool surface exists to catch it.
 
@@ -64,7 +64,7 @@ Current admin pool (see `SUCCESSION.md` §2 for canonical list):
 
 ## How to contribute
 
-### 1. Platform code (`Workflow/`)
+### 1. Platform code (`TinyAssets/`)
 
 - Fork + branch off `main`.
 - Run `ruff check` + `pytest` locally before pushing — our pre-merge CI runs both.
@@ -72,7 +72,7 @@ Current admin pool (see `SUCCESSION.md` §2 for canonical list):
 - New modules need tests. Nodes must never crash — graceful fallback always.
 - Sign commits with DCO (`Signed-off-by: Your Name <email>`). No CLA required.
 
-### 2. Connectors (`Workflow/connectors/<name>/`)
+### 2. Connectors (`TinyAssets/connectors/<name>/`)
 
 See `docs/specs/2026-04-19-connectors-two-way-tool-integration.md` §9. Required files:
 - `__init__.py` exporting a class matching `ConnectorProtocol`.
@@ -82,14 +82,14 @@ See `docs/specs/2026-04-19-connectors-two-way-tool-integration.md` §9. Required
 
 Review criteria: privacy compliance (no payload logging), auth via shared `OAuth2Handler`, error-taxonomy mapping, tests, documentation, maintainer contact.
 
-### 3. Node + Branch content (`Workflow-catalog/`)
+### 3. Node + Branch content (`TinyAssets-catalog/`)
 
 - Start with an existing node YAML as a template (see `catalog/nodes/example-node.yaml`).
 - License: **CC0-1.0** for all catalog content. No exceptions at launch.
 - Required fields per `docs/catalogs/node-type-taxonomy.md` + `docs/catalogs/integration-patterns.md`.
 - Persona-authenticity test: can you describe this node's use-case in the voice of a real user with a real project? If the answer is "no" or "it's a toy example," rework it before submitting.
 
-### 4. Design notes + specs (`Workflow/docs/`)
+### 4. Design notes + specs (`TinyAssets/docs/`)
 
 - Design-notes go in `docs/design-notes/YYYY-MM-DD-<slug>.md`.
 - Specs (executable feature plans) go in `docs/specs/YYYY-MM-DD-<slug>.md` or the existing INDEX.
@@ -114,11 +114,11 @@ You don't have to be an admin-pool member to review. Drive-by reviews are welcom
 
 ## Getting help
 
-- **General questions:** open a discussion in `Workflow/`.
+- **General questions:** open a discussion in `TinyAssets/`.
 - **Security reports:** email `security@tinyassets.io` (PGP key in `SUCCESSION.md`).
 - **Stuck contributor:** ping `@maintainers` on your PR. If you've been stuck for >72h, use the escalation path above — we want to unblock you.
 
-Thanks for showing up. The forever-rule is "Workflow is always up, always downloadable, always reviewable" — contributors make the third clause real. We owe you the review time you're giving us the code time for.
+Thanks for showing up. The forever-rule is "TinyAssets is always up, always downloadable, always reviewable" — contributors make the third clause real. We owe you the review time you're giving us the code time for.
 
 ---
 

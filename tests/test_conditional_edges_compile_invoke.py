@@ -26,18 +26,18 @@ from typing import Any, Callable
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     ConditionalEdge,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.catalog.serializer import (
+from tinyassets.catalog.serializer import (
     branch_from_yaml_payload,
     branch_to_yaml_payload,
 )
-from workflow.graph_compiler import END, compile_branch
+from tinyassets.graph_compiler import END, compile_branch
 
 # ════════════════════════════════════════════════════════════════════
 # Shared helpers — the canonical compile+invoke pattern

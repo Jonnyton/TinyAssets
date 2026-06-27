@@ -54,8 +54,8 @@ const snapshot = {
   source: 'local git checkout + GitHub remote',
   repo: {
     ...(previous.repo ?? {}),
-    id: 'repo:Workflow',
-    name: 'Workflow',
+    id: 'repo:TinyAssets',
+    name: 'TinyAssets',
     owner: 'Jonnyton',
     remote_url: remote,
     current_branch: currentBranch,

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from workflow.evaluation import (
+from tinyassets.evaluation import (
     EvalResult,
     Evaluator,
     EvalVerdict,
@@ -115,7 +115,7 @@ class TestEvaluatorProtocol:
         assert isinstance(LambdaEvaluator(), Evaluator)
 
     def test_structural_evaluator_satisfies_protocol(self):
-        from workflow.evaluation import StructuralEvaluator
+        from tinyassets.evaluation import StructuralEvaluator
 
         class WrappedStructural:
             def __init__(self) -> None:

@@ -10,7 +10,7 @@ not mutate STATUS.md; alarm escalation is the separate
 
 Invocation
 ----------
-Windows Task Scheduler entry ``Workflow-Canary-L1`` invokes this every 2
+Windows Task Scheduler entry ``TinyAssets-Canary-L1`` invokes this every 2
 minutes. Exit code mirrors the probe's: 0 green, nonzero red with reason
 in the log line.
 
@@ -27,14 +27,14 @@ URL precedence
 --------------
 MCP URL:
 1. ``--url`` CLI arg.
-2. ``WORKFLOW_MCP_CANARY_URL`` env var.
+2. ``TINYASSETS_MCP_CANARY_URL`` env var.
 3. ``https://tinyassets.io/mcp`` default (canonical public endpoint via
    Cloudflare Worker; host directive 2026-04-20 retired the direct-tunnel
    ``mcp.tinyassets.io/mcp`` as a public URL — single entry point only).
 
 Apex URL:
 1. ``--apex-url`` CLI arg.
-2. ``WORKFLOW_APEX_CANARY_URL`` env var.
+2. ``TINYASSETS_APEX_CANARY_URL`` env var.
 3. ``https://tinyassets.io/`` when the MCP URL is the canonical
    production endpoint; disabled for non-production URLs to keep local
    tests offline.
@@ -221,13 +221,13 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Layer-1 uptime canary.")
     ap.add_argument(
         "--url",
-        default=os.environ.get("WORKFLOW_MCP_CANARY_URL", DEFAULT_URL),
-        help=f"MCP endpoint URL (default: env WORKFLOW_MCP_CANARY_URL or {DEFAULT_URL})",
+        default=os.environ.get("TINYASSETS_MCP_CANARY_URL", DEFAULT_URL),
+        help=f"MCP endpoint URL (default: env TINYASSETS_MCP_CANARY_URL or {DEFAULT_URL})",
     )
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     ap.add_argument(
         "--apex-url",
-        default=os.environ.get("WORKFLOW_APEX_CANARY_URL"),
+        default=os.environ.get("TINYASSETS_APEX_CANARY_URL"),
         help=(
             "Optional apex site URL that must return HTTP 200. Defaults to "
             f"{DEFAULT_APEX_URL} only when --url is the canonical production MCP URL."

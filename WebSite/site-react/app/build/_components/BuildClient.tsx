@@ -5,7 +5,7 @@ import Term from "../../../components/Term";
 import Tick from "../../../components/Tick";
 import styles from "../page.module.css";
 
-const REPO_URL = "https://github.com/Jonnyton/Workflow";
+const REPO_URL = "https://github.com/Jonnyton/TinyAssets";
 
 type RepoSnapshot = {
   fetched_at: string;
@@ -19,10 +19,10 @@ type RepoSnapshot = {
 
 const REPO_STEPS = [
   {
-    cmd: "git clone https://github.com/Jonnyton/Workflow",
+    cmd: "git clone https://github.com/Jonnyton/TinyAssets",
     note: "Clone the engine.",
     href: REPO_URL,
-    label: "Workflow on GitHub",
+    label: "TinyAssets on GitHub",
   },
   {
     cmd: "pip install -e .[dev]",
@@ -46,8 +46,8 @@ const REPO_STEPS = [
 
 async function refreshRepoSnapshot(): Promise<RepoSnapshot> {
   const [repoRes, branchesRes] = await Promise.all([
-    fetch("https://api.github.com/repos/Jonnyton/Workflow"),
-    fetch("https://api.github.com/repos/Jonnyton/Workflow/branches?per_page=100"),
+    fetch("https://api.github.com/repos/Jonnyton/TinyAssets"),
+    fetch("https://api.github.com/repos/Jonnyton/TinyAssets/branches?per_page=100"),
   ]);
   if (!repoRes.ok) throw new Error(`repo ${repoRes.status}`);
   if (!branchesRes.ok) throw new Error(`branches ${branchesRes.status}`);
@@ -117,7 +117,7 @@ export default function BuildClient() {
             and a <em>human key</em> that has to turn before anything merges.
           </p>
           <p className="cover__naming">
-            The being is <strong>Tiny</strong>; the engine is <strong>Workflow</strong>.
+            The being is <strong>Tiny</strong>; the engine is <strong>TinyAssets</strong>.
             Contributing to either is contributing to both.
           </p>
         </div>
@@ -200,7 +200,7 @@ export default function BuildClient() {
             {" "}for the architecture and{" "}
             <a href={`${REPO_URL}/blob/main/CONTRIBUTING.md`} target="_blank" rel="noreferrer">CONTRIBUTING.md</a>
             {" "}for how work lands. When you&apos;re ready, open a pull request against{" "}
-            <a href={REPO_URL} target="_blank" rel="noreferrer">Workflow on GitHub ↗</a>.
+            <a href={REPO_URL} target="_blank" rel="noreferrer">TinyAssets on GitHub ↗</a>.
           </p>
         </div>
       </section>

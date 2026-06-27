@@ -1,10 +1,10 @@
-"""Tests for workflow.treasury distribution math — pure functions, edge cases."""
+"""Tests for tinyassets.treasury distribution math — pure functions, edge cases."""
 
 from __future__ import annotations
 
 import pytest
 
-from workflow.treasury import (
+from tinyassets.treasury import (
     BOUNTY_POOL_SHARE_BP,
     PLATFORM_TAKE_BP,
     compute_bounty_allocation,

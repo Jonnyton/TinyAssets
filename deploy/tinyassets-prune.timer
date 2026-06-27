@@ -1,0 +1,18 @@
+# TinyAssets docker image prune — weekly on Sunday 04:00 UTC.
+#
+# Runs after the nightly backup window (02:00–03:00) and before the
+# tier-3 OSS clone (07:17). Persistent=true so a missed prune runs on
+# next boot.
+
+[Unit]
+Description=Timer for TinyAssets docker image prune
+Requires=tinyassets-prune.service
+
+[Timer]
+OnCalendar=Sun 04:00 UTC
+AccuracySec=5min
+Persistent=true
+Unit=tinyassets-prune.service
+
+[Install]
+WantedBy=timers.target

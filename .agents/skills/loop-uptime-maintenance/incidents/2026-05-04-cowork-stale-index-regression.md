@@ -7,9 +7,9 @@ Skill: `.agents/skills/loop-uptime-maintenance/SKILL.md` (entry condition: subst
 
 Pushed commit `66e7c6a` ("activity.log: operating-model reframe + Wave-2 prep refactor + asks for Codex") at 2026-05-04T00:30Z. The commit was intended to add ~35 lines to `.agents/activity.log` and nothing else.
 
-The commit actually **regressed 730 files / -81390 / +35** vs `1b2bf83`. It removed `workflow/auto_ship.py`, `workflow/auto_ship_ledger.py`, `workflow/api/auto_ship_actions.py`, `workflow/daemon_memory.py`, `workflow/daemon_registry.py`, `workflow/daemon_wiki.py`, `workflow/wiki/trigger_receipts.py`, `workflow/providers/diagnostics.py`, and 720+ other recent additions.
+The commit actually **regressed 730 files / -81390 / +35** vs `1b2bf83`. It removed `tinyassets/auto_ship.py`, `tinyassets/auto_ship_ledger.py`, `tinyassets/api/auto_ship_actions.py`, `tinyassets/daemon_memory.py`, `tinyassets/daemon_registry.py`, `tinyassets/daemon_wiki.py`, `tinyassets/wiki/trigger_receipts.py`, `tinyassets/providers/diagnostics.py`, and 720+ other recent additions.
 
-Detected ~5 minutes later while running the PR #229 confirm-test exemplar: `git ls-tree origin/main workflow/api/` returned no `auto_ship_actions.py`, despite earlier reads of the same file content from origin/main. Tracing showed my local `.git/index` was stale and the commit was built from THAT tree rather than from `1b2bf83`'s actual tree.
+Detected ~5 minutes later while running the PR #229 confirm-test exemplar: `git ls-tree origin/main tinyassets/api/` returned no `auto_ship_actions.py`, despite earlier reads of the same file content from origin/main. Tracing showed my local `.git/index` was stale and the commit was built from THAT tree rather than from `1b2bf83`'s actual tree.
 
 The deployed daemon was running pre-66e7c6a code (queue stayed healthy, supervisor warnings stayed clear, get_status kept returning auto_ship_health). No deploy ran from main between push and recovery. No real-world impact beyond risk window.
 

@@ -1,0 +1,41 @@
+# TinyAssets log archiver — hourly offsite log shipping.
+#
+# Self-host migration Row K per
+# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+#
+# Triggered by tinyassets-ship-logs.timer every hour. Invokes
+# deploy/ship-logs.sh to collect Docker container logs + rclone-upload
+# to the configured offsite destination. Pruning of remote archives
+# older than LOG_RETAIN_DAYS is handled in the same run.
+#
+# Runs as root (same reason as tinyassets-backup.service): Docker log
+# paths + docker socket require root or docker-group access; simpler
+# to run as root for a one-shot ops primitive.
+#
+# Credentials (LOG_DEST, rclone config) live in /etc/tinyassets/env.
+# systemd sources it via EnvironmentFile.
+#
+# Install:
+#   sudo cp deploy/tinyassets-ship-logs.service /etc/systemd/system/
+#   sudo cp deploy/tinyassets-ship-logs.timer    /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tinyassets-ship-logs.timer
+
+[Unit]
+Description=TinyAssets log archiver (hourly offsite ship via rclone)
+Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/docs/ops/log-aggregation-runbook.md
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/tinyassets/env
+ExecStart=/bin/bash /opt/tinyassets/deploy/ship-logs.sh
+TimeoutStartSec=15min
+# Don't kill mid-upload — ship-logs.sh uses rclone which manages its
+# own retry/timeout internally.
+
+PrivateTmp=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tinyassets-ship-logs

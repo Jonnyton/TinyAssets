@@ -59,9 +59,9 @@ def _make_wiki(tmp_path: Path) -> Path:
 
 class TestEnqueueInvestigationRequest:
     def _enqueue(self, tmp_path: Path, branch_def_id: str = "def-123") -> str:
-        from workflow.bug_investigation import enqueue_investigation_request
+        from tinyassets.bug_investigation import enqueue_investigation_request
 
-        with patch("workflow.dispatcher.prefers_request_type", return_value=True):
+        with patch("tinyassets.dispatcher.prefers_request_type", return_value=True):
             request_id = enqueue_investigation_request(
                 bug_ref=_SAMPLE_FRONTMATTER,
                 canonical_branch_def_id=branch_def_id,
@@ -125,9 +125,9 @@ class TestEnqueueInvestigationRequest:
         assert tasks[0]["branch_task_id"] == request_id
 
     def test_raises_value_error_when_branch_def_id_empty(self, tmp_path):
-        from workflow.bug_investigation import enqueue_investigation_request
+        from tinyassets.bug_investigation import enqueue_investigation_request
 
-        with patch("workflow.dispatcher.prefers_request_type", return_value=True):
+        with patch("tinyassets.dispatcher.prefers_request_type", return_value=True):
             with pytest.raises(ValueError, match="canonical_branch_def_id"):
                 enqueue_investigation_request(
                     bug_ref=_SAMPLE_FRONTMATTER,
@@ -136,9 +136,9 @@ class TestEnqueueInvestigationRequest:
                 )
 
     def test_raises_runtime_error_when_request_type_not_accepted(self, tmp_path):
-        from workflow.bug_investigation import enqueue_investigation_request
+        from tinyassets.bug_investigation import enqueue_investigation_request
 
-        with patch("workflow.dispatcher.prefers_request_type", return_value=False):
+        with patch("tinyassets.dispatcher.prefers_request_type", return_value=False):
             with pytest.raises(RuntimeError, match="not in"):
                 enqueue_investigation_request(
                     bug_ref=_SAMPLE_FRONTMATTER,
@@ -147,9 +147,9 @@ class TestEnqueueInvestigationRequest:
                 )
 
     def test_priority_weight_passed_through(self, tmp_path):
-        from workflow.bug_investigation import enqueue_investigation_request
+        from tinyassets.bug_investigation import enqueue_investigation_request
 
-        with patch("workflow.dispatcher.prefers_request_type", return_value=True):
+        with patch("tinyassets.dispatcher.prefers_request_type", return_value=True):
             enqueue_investigation_request(
                 bug_ref=_SAMPLE_FRONTMATTER,
                 canonical_branch_def_id="def-123",
@@ -161,10 +161,10 @@ class TestEnqueueInvestigationRequest:
         assert tasks[0]["priority_weight"] == 5.0
 
     def test_missing_bug_ref_keys_default_to_empty_string(self, tmp_path):
-        from workflow.bug_investigation import enqueue_investigation_request
+        from tinyassets.bug_investigation import enqueue_investigation_request
 
         sparse_ref = {"bug_id": "BUG-001", "title": "Sparse bug"}
-        with patch("workflow.dispatcher.prefers_request_type", return_value=True):
+        with patch("tinyassets.dispatcher.prefers_request_type", return_value=True):
             enqueue_investigation_request(
                 bug_ref=sparse_ref,
                 canonical_branch_def_id="def-123",
@@ -184,31 +184,31 @@ class TestEnqueueInvestigationRequest:
 
 class TestFormatInvestigationCommentPaths:
     def test_run_id_path_uses_investigation_run_id_label(self):
-        from workflow.bug_investigation import format_investigation_comment
+        from tinyassets.bug_investigation import format_investigation_comment
 
         result = format_investigation_comment(run_id="run-abc", status="queued")
         assert "investigation_run_id=`run-abc`" in result
 
     def test_request_id_path_uses_dispatcher_request_id_label(self):
-        from workflow.bug_investigation import format_investigation_comment
+        from tinyassets.bug_investigation import format_investigation_comment
 
         result = format_investigation_comment(run_id="", request_id="req-xyz", status="queued")
         assert "dispatcher_request_id=`req-xyz`" in result
 
     def test_request_id_path_does_not_include_run_id_label(self):
-        from workflow.bug_investigation import format_investigation_comment
+        from tinyassets.bug_investigation import format_investigation_comment
 
         result = format_investigation_comment(run_id="", request_id="req-xyz")
         assert "investigation_run_id" not in result
 
     def test_run_id_path_does_not_include_dispatcher_label(self):
-        from workflow.bug_investigation import format_investigation_comment
+        from tinyassets.bug_investigation import format_investigation_comment
 
         result = format_investigation_comment(run_id="run-abc")
         assert "dispatcher_request_id" not in result
 
     def test_status_appears_in_both_paths(self):
-        from workflow.bug_investigation import format_investigation_comment
+        from tinyassets.bug_investigation import format_investigation_comment
 
         r1 = format_investigation_comment(run_id="r1", status="running")
         r2 = format_investigation_comment(run_id="", request_id="rq1", status="running")
@@ -223,9 +223,9 @@ class TestFormatInvestigationCommentPaths:
 
 class TestAttachPatchPacketPipeline:
     def _call(self, bug_id: str, patch_packet: dict, wiki_root: Path) -> dict:
-        from workflow.bug_investigation import attach_patch_packet_comment
+        from tinyassets.bug_investigation import attach_patch_packet_comment
 
-        with patch("workflow.storage.wiki_path", return_value=wiki_root):
+        with patch("tinyassets.storage.wiki_path", return_value=wiki_root):
             return attach_patch_packet_comment(bug_id, patch_packet)
 
     def _page(self, wiki_root: Path) -> Path:
@@ -269,7 +269,7 @@ class TestAttachPatchPacketPipeline:
     def test_patch_packet_size_bytes_matches_encoded_length(self, tmp_path):
         wiki_root = _make_wiki(tmp_path)
         result = self._call("BUG-099", _SAMPLE_PACKET, wiki_root)
-        from workflow.bug_investigation import format_patch_packet_comment
+        from tinyassets.bug_investigation import format_patch_packet_comment
 
         expected_size = len(format_patch_packet_comment(_SAMPLE_PACKET).encode())
         assert result["patch_packet_size_bytes"] == expected_size

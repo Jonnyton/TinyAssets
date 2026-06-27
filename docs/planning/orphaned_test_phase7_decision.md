@@ -7,7 +7,7 @@
 
 `tests/test_phase7.py` contains a `TestDaemonControllerIntegration`
 cluster (lines ~398-512) that references three `DaemonController`
-methods not present in `workflow/__main__.py` and not present in
+methods not present in `tinyassets/__main__.py` and not present in
 any commit on `main`:
 
 - `controller._run_progressive_ingestion("test-universe")` (line 409)
@@ -21,7 +21,7 @@ controller shape that was never merged.
 
 The rest of `test_phase7.py` (`TestProgressiveIngestor`,
 `TestOutputVersionStore`, `TestSeriesPromiseTracker`) tests
-real modules that DO exist in `workflow/memory/` and should stay.
+real modules that DO exist in `tinyassets/memory/` and should stay.
 
 ## Options
 
@@ -96,7 +96,7 @@ Reasons:
    seeding or first-run indexing is broken." The tests exist in
    isolation.
 2. **The codebase already bootstraps universes successfully.**
-   `ensure_seed_targets` in `workflow/work_targets.py` seeds the
+   `ensure_seed_targets` in `tinyassets/work_targets.py` seeds the
    registry when targets are empty. Canon + prose indexing runs
    via retrieval's ingestion path under different triggers.
    Whatever these orphan tests were describing, the working system
@@ -120,7 +120,7 @@ Reasons:
   four methods).
 - Keep `TestProgressiveIngestor`, `TestOutputVersionStore`,
   `TestSeriesPromiseTracker` — those exercise real modules in
-  `workflow/memory/`.
+  `tinyassets/memory/`.
 - Run `pytest tests/test_phase7.py -q` → should pass or reveal any
   real regression.
 - Single commit message: `"Remove orphaned DaemonController

@@ -17,7 +17,7 @@
 | Time | Event | Source |
 |---|---|---|
 | 15:15 | `bf2b634` — `scripts: browser_lock + lead_browser — shared CDP tab` lands. | git log |
-| 15:56 | `269bc79` — `landing: tinyassets.io root serves minimal HTML index`. Adds `@mcp.custom_route("/", methods=["GET"])` inside `workflow/universe_server.py` to serve static HTML at the server root. | git log + commit msg |
+| 15:56 | `269bc79` — `landing: tinyassets.io root serves minimal HTML index`. Adds `@mcp.custom_route("/", methods=["GET"])` inside `tinyassets/universe_server.py` to serve static HTML at the server root. | git log + commit msg |
 | ~16:00–17:00 (estimated) | GoDaddy + Cloudflare dash automation session — `7407bc1` (godaddy-ops skill creation) + `1d498ff` (Cloudflare-dash automation gotchas 15-min lessons). The gotchas memo itself is direct evidence of in-session live-editing of Cloudflare DNS records. | git log + skill content |
 | 16:30 (est) | Cloudflare tunnel or DNS reconfig changes the `api.tinyassets.io` route. Per godaddy-ops skill §"Cloudflare DNS dashboard — automation gotchas": *"Moving a Tunnel public-hostname from apex → subdomain deletes the apex CNAME."* This exact class of atomic-delete likely nuked the `api.tinyassets.io` CNAME. | godaddy-ops skill line 122 |
 | 17:05 | Host live-chat on Claude.ai receives MCP connector errors. First confirmed public detection. | lead report |
@@ -44,7 +44,7 @@ Three candidate causes; evidence scores them.
 ### 2.2 Secondary (contributing, not causal): `269bc79` landing handler
 
 **Evidence:**
-- The commit adds a `@mcp.custom_route("/", methods=["GET"])` handler. Inspection of `workflow/universe_server.py:162-174` shows it correctly returns a static HTMLResponse and does NOT intercept `/mcp` — FastMCP routes are registered by path; `/` does not shadow `/mcp`.
+- The commit adds a `@mcp.custom_route("/", methods=["GET"])` handler. Inspection of `tinyassets/universe_server.py:162-174` shows it correctly returns a static HTMLResponse and does NOT intercept `/mcp` — FastMCP routes are registered by path; `/` does not shadow `/mcp`.
 - Commit's own test suite includes a regression guard (`tests/test_landing_index.py`) specifically asserting the handler does NOT invoke the dispatcher.
 - Localhost:8001 MCP remained healthy throughout; if 269bc79 had clobbered MCP routing, localhost would have 404'd too.
 

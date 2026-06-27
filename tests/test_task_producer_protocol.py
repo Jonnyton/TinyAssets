@@ -12,14 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from workflow.producers import (
+from tinyassets.producers import (
     TaskProducer,
     register,
     registered_producers,
     reset_registry,
     unregister,
 )
-from workflow.work_targets import WorkTarget
+from tinyassets.work_targets import WorkTarget
 
 
 @pytest.fixture(autouse=True)

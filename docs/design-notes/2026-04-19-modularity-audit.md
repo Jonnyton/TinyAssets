@@ -4,8 +4,8 @@ status: research
 
 # Modularity Audit
 
-**Date:** 2026-04-19  
-**Author:** codex  
+**Date:** 2026-04-19
+**Author:** codex
 **Status:** Audit note for lead/navigator review. No design truth changes yet.
 
 ## 1. Scope and verification
@@ -43,13 +43,13 @@ The compat layer now:
 
 ## 3. Spaghetti hotspots
 
-### 3.1 `workflow/universe_server.py` is still a mega-surface
+### 3.1 `tinyassets/universe_server.py` is still a mega-surface
 
 Code evidence:
 
-- `workflow/universe_server.py:1076` defines `universe()` with a 26-action
+- `tinyassets/universe_server.py:1076` defines `universe()` with a 26-action
   dispatch table at `:1154`.
-- `workflow/universe_server.py:3644` defines `extensions()` and then routes
+- `tinyassets/universe_server.py:3644` defines `extensions()` and then routes
   branch actions, run actions, and judgment actions through multiple dispatch
   tables (`:3917-3952`, `_BRANCH_ACTIONS` at `:5883`, `_RUN_ACTIONS` at
   `:6598`, `_JUDGMENT_ACTIONS` at `:7367`).
@@ -86,18 +86,18 @@ Recommendation:
   - judgments surface
   - goals/gates/wiki surfaces
   - domain-mounted servers for fantasy-specific actions
-- Treat `workflow/universe_server.py` as an integration shell, not the place
+- Treat `tinyassets/universe_server.py` as an integration shell, not the place
   where action logic lives.
 
-### 3.2 `workflow/discovery.py` is not a real plugin boundary
+### 3.2 `tinyassets/discovery.py` is not a real plugin boundary
 
 Code evidence:
 
-- `workflow/discovery.py:29-66` discovers domains by scanning the source tree
+- `tinyassets/discovery.py:29-66` discovers domains by scanning the source tree
   for `domains/*/skill.py`.
-- `workflow/discovery.py:66` now injects the rename compat alias
+- `tinyassets/discovery.py:66` now injects the rename compat alias
   `fantasy_author` directly into discovery results.
-- `workflow/discovery.py:101+` constructs import paths from directory names and
+- `tinyassets/discovery.py:101+` constructs import paths from directory names and
   relies on naming conventions to find domain classes.
 
 Why this is architectural debt:
@@ -125,11 +125,11 @@ Recommendation:
 - Keep compat aliases out of discovery; compat belongs in import shims, not in
   the domain registry contract.
 
-### 3.3 `workflow/daemon_server.py` mixes too many bounded contexts
+### 3.3 `tinyassets/daemon_server.py` mixes too many bounded contexts
 
 Code evidence:
 
-- `workflow/daemon_server.py:106-392` builds the host database schema inline.
+- `tinyassets/daemon_server.py:106-392` builds the host database schema inline.
 - The same file also implements author/account/session rules, requests/votes,
   notes/work-targets, branch definitions, goals/gate claims, and search/read
   models such as `goal_leaderboard()` (`:3102`) and `search_nodes()` (`:3311`).

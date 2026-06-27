@@ -21,9 +21,9 @@ _WORKFLOW = Path(__file__).resolve().parent.parent / "workflow"
 if str(_WORKFLOW.parent) not in sys.path:
     sys.path.insert(0, str(_WORKFLOW.parent))
 
-import workflow.cloud_worker as cw  # noqa: E402
-from workflow.api.status import _compute_supervisor_liveness  # noqa: E402
-from workflow.providers.base import subscription_auth_health  # noqa: E402
+import tinyassets.cloud_worker as cw  # noqa: E402
+from tinyassets.api.status import _compute_supervisor_liveness  # noqa: E402
+from tinyassets.providers.base import subscription_auth_health  # noqa: E402
 
 # ---- minimal Popen stand-in (never claims real subprocesses) --------------
 
@@ -147,7 +147,7 @@ def test_supervisor_spawns_when_writer_auth_present(tmp_path, monkeypatch):
 def test_supervisor_does_not_gate_generic_worker(tmp_path, monkeypatch):
     # No --provider and no pin → no resolvable writer → no gate (the worker may
     # legitimately route across the fallback chain), so it spawns normally.
-    monkeypatch.delenv("WORKFLOW_PIN_WRITER", raising=False)
+    monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
     spawn_calls: list[Path] = []
 
     def spawn(universe):
@@ -208,10 +208,10 @@ def test_liveness_partial_writer_warns(tmp_path, monkeypatch):
 
 
 def test_supervisor_quarantines_via_pin_writer_env(tmp_path, monkeypatch):
-    # No --provider; the writer comes from WORKFLOW_PIN_WRITER (Codex #9).
+    # No --provider; the writer comes from TINYASSETS_PIN_WRITER (Codex #9).
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-creds"))
-    monkeypatch.setenv("WORKFLOW_PIN_WRITER", "claude-code")
+    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "claude-code")
     spawn_calls: list[Path] = []
 
     def spawn(universe):

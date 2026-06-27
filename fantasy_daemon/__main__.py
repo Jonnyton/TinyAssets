@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from workflow.universe_soul import premise_from_soul, read_legacy_premise
+from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
 
 # Suppress langchain-core Pydantic V1 deprecation warning on Python 3.14+
 warnings.filterwarnings(
@@ -43,7 +43,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver  # noqa: E402
 # Phase D: importing `branch_registrations` registers
 # ("fantasy_author", "universe_cycle_wrapper") in the workflow domain
 # registry. Must happen before _run_graph under
-# WORKFLOW_UNIFIED_EXECUTION=1 can compile its Branch.
+# TINYASSETS_UNIFIED_EXECUTION=1 can compile its Branch.
 import fantasy_daemon.branch_registrations  # noqa: E402, F401
 import fantasy_daemon.runtime as runtime  # noqa: E402
 from fantasy_daemon.branch_registrations import clear_restartable_soft_stop  # noqa: E402
@@ -62,7 +62,7 @@ from fantasy_daemon.providers.claude_provider import ClaudeProvider  # noqa: E40
 from fantasy_daemon.providers.codex_provider import CodexProvider  # noqa: E402
 from fantasy_daemon.providers.ollama_provider import OllamaProvider  # noqa: E402
 from fantasy_daemon.providers.router import ProviderRouter  # noqa: E402
-from workflow.checkpointing import apply_configured_checkpoint_retention  # noqa: E402
+from tinyassets.checkpointing import apply_configured_checkpoint_retention  # noqa: E402
 
 logger = logging.getLogger("fantasy_author")
 
@@ -88,7 +88,7 @@ def _first_trace(output: dict[str, Any]) -> dict[str, Any]:
 
 def _build_provider_router() -> ProviderRouter:
     """Instantiate a ProviderRouter with all available providers."""
-    from workflow.providers.base import subscription_auth_health
+    from tinyassets.providers.base import subscription_auth_health
 
     # Inject the subscription-login probe so the router skips dead-auth
     # providers in fallback (and fails a dead pinned writer loud) instead of
@@ -143,16 +143,16 @@ def _build_provider_router() -> ProviderRouter:
 
 
 # ---------------------------------------------------------------------------
-# Phase D — WORKFLOW_UNIFIED_EXECUTION flag and unified graph builder
+# Phase D — TINYASSETS_UNIFIED_EXECUTION flag and unified graph builder
 # ---------------------------------------------------------------------------
 
 
 def _workflow_unified_execution_enabled() -> bool:
     """Read the Phase D flag. Mirrors `_gates_enabled()` from
-    `workflow/universe_server.py`.
+    `tinyassets/universe_server.py`.
     """
     return os.environ.get(
-        "WORKFLOW_UNIFIED_EXECUTION", "",
+        "TINYASSETS_UNIFIED_EXECUTION", "",
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -168,7 +168,7 @@ def _soul_loop_dispatch_enabled() -> bool:
     docs/design-notes/2026-06-03-soul-loop-dispatch-activation-plan.md.
     """
     return os.environ.get(
-        "WORKFLOW_SOUL_LOOP_DISPATCH", "",
+        "TINYASSETS_SOUL_LOOP_DISPATCH", "",
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -191,7 +191,7 @@ def _dispatcher_startup(universe_path: Path) -> None:
     expired (a wedged/dead worker), leaving healthy peers untouched.
     """
     try:
-        from workflow.branch_tasks import (
+        from tinyassets.branch_tasks import (
             garbage_collect,
             reclaim_expired_leases,
             reclaim_predecessor_tasks,
@@ -203,15 +203,15 @@ def _dispatcher_startup(universe_path: Path) -> None:
         # our own worker_id is that predecessor's orphan — reclaim it in seconds
         # instead of waiting out the TTL. Scoped to our own id, so unlike the
         # old blanket reset it never steals a live peer's task (2026-06-25 wedge).
-        # Require a genuinely UNIQUE worker id: when WORKFLOW_WORKER_ID is unset,
+        # Require a genuinely UNIQUE worker id: when TINYASSETS_WORKER_ID is unset,
         # cloud_worker materializes the shared DEFAULT_HOST_USER ("cloud-droplet")
         # into the child env, which several manually-started supervisors could
         # share — and reclaiming "our own" non-unique id would steal a live
         # twin's task (Codex review). The compose fleet assigns unique ids
         # (claude-1/codex-2/...), so this only excludes the un-configured default.
-        from workflow.cloud_worker import DEFAULT_HOST_USER
+        from tinyassets.cloud_worker import DEFAULT_HOST_USER
 
-        worker_id = os.environ.get("WORKFLOW_WORKER_ID", "").strip()
+        worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
         if worker_id and worker_id != DEFAULT_HOST_USER:
             reclaim_predecessor_tasks(universe_path, worker_id=worker_id)
         # reclaim_leaseless=True: startup is the one safe place to also reset
@@ -227,14 +227,14 @@ def _dispatcher_startup(universe_path: Path) -> None:
 
 
 def _phase_f_enabled() -> bool:
-    """Read ``WORKFLOW_GOAL_POOL``. Default OFF."""
-    value = os.environ.get("WORKFLOW_GOAL_POOL", "off")
+    """Read ``TINYASSETS_GOAL_POOL``. Default OFF."""
+    value = os.environ.get("TINYASSETS_GOAL_POOL", "off")
     return value.strip().lower() in {"on", "1", "true", "yes"}
 
 
 def _paid_market_enabled() -> bool:
-    """Read ``WORKFLOW_PAID_MARKET``. Default OFF. Phase G flag."""
-    value = os.environ.get("WORKFLOW_PAID_MARKET", "off")
+    """Read ``TINYASSETS_PAID_MARKET``. Default OFF. Phase G flag."""
+    value = os.environ.get("TINYASSETS_PAID_MARKET", "off")
     return value.strip().lower() in {"on", "1", "true", "yes"}
 
 
@@ -258,19 +258,19 @@ def _resolve_loop_daemon_context(
         "daemon_wiki_context": "",
         "daemon_wiki_status": {},
     }
-    env_name = "WORKFLOW_LOOP_DAEMON_ID"
+    env_name = "TINYASSETS_LOOP_DAEMON_ID"
     override = os.environ.get(env_name, "").strip()
     if not override:
-        env_name = "WORKFLOW_DAEMON_ID"
+        env_name = "TINYASSETS_DAEMON_ID"
         override = os.environ.get(env_name, "").strip()
 
     try:
-        from workflow.daemon_registry import (
+        from tinyassets.daemon_registry import (
             get_daemon,
             select_project_loop_daemon,
         )
-        from workflow.daemon_wiki import read_daemon_wiki_context
-        from workflow.storage import data_dir
+        from tinyassets.daemon_wiki import read_daemon_wiki_context
+        from tinyassets.storage import data_dir
 
         base_path = data_dir()
         if override:
@@ -343,8 +343,8 @@ def _record_loop_daemon_signal(
     if not daemon_id:
         return
     try:
-        from workflow.daemon_wiki import record_daemon_signal
-        from workflow.storage import data_dir
+        from tinyassets.daemon_wiki import record_daemon_signal
+        from tinyassets.storage import data_dir
 
         merged_metadata = {
             "loop_daemon": True,
@@ -378,8 +378,8 @@ def _run_branch_task_producers_if_enabled(universe_path: Path) -> int:
     if not _phase_f_enabled():
         return 0
     try:
-        from workflow.dispatcher import run_branch_task_producers_into_queue
-        from workflow.subscriptions import list_subscriptions
+        from tinyassets.dispatcher import run_branch_task_producers_into_queue
+        from tinyassets.subscriptions import list_subscriptions
 
         goals = list_subscriptions(universe_path)
         return run_branch_task_producers_into_queue(
@@ -406,8 +406,8 @@ def _try_dispatcher_pick(
     tolerated by LangGraph's initial_state.
     """
     try:
-        from workflow.branch_tasks import claim_task, reclaim_expired_leases
-        from workflow.dispatcher import (
+        from tinyassets.branch_tasks import claim_task, reclaim_expired_leases
+        from tinyassets.dispatcher import (
             dispatcher_enabled,
             load_dispatcher_config,
             select_next_task,
@@ -437,9 +437,9 @@ def _try_dispatcher_pick(
         picked = select_next_task(universe_path, config=cfg)
         if picked is None:
             return None, {}
-        executor_worker_id = os.environ.get("WORKFLOW_WORKER_ID", "").strip()
+        executor_worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
         executor_runtime_id = os.environ.get(
-            "WORKFLOW_RUNTIME_INSTANCE_ID", "",
+            "TINYASSETS_RUNTIME_INSTANCE_ID", "",
         ).strip()
         claimed = claim_task(
             universe_path,
@@ -475,15 +475,15 @@ def _branch_task_owner_id(claimed_task: Any) -> str:
 
 def _branch_task_heartbeat_interval_seconds() -> float:
     raw = (
-        os.environ.get("WORKFLOW_BRANCH_TASK_HEARTBEAT_INTERVAL_S")
-        or os.environ.get("WORKFLOW_BRANCH_TASK_HEARTBEAT_INTERVAL_SECONDS")
+        os.environ.get("TINYASSETS_BRANCH_TASK_HEARTBEAT_INTERVAL_S")
+        or os.environ.get("TINYASSETS_BRANCH_TASK_HEARTBEAT_INTERVAL_SECONDS")
         or str(_DEFAULT_BRANCH_TASK_HEARTBEAT_INTERVAL_S)
     )
     try:
         return max(1.0, float(raw))
     except ValueError:
         logger.warning(
-            "Invalid WORKFLOW_BRANCH_TASK_HEARTBEAT_INTERVAL_S=%r; using %.1fs",
+            "Invalid TINYASSETS_BRANCH_TASK_HEARTBEAT_INTERVAL_S=%r; using %.1fs",
             raw,
             _DEFAULT_BRANCH_TASK_HEARTBEAT_INTERVAL_S,
         )
@@ -506,7 +506,7 @@ def _build_branch_task_observers(
         if not force and (now_mono - last_heartbeat) < interval:
             return
         try:
-            from workflow.branch_tasks import refresh_task_heartbeat
+            from tinyassets.branch_tasks import refresh_task_heartbeat
 
             refreshed = refresh_task_heartbeat(
                 universe_path,
@@ -526,7 +526,7 @@ def _build_branch_task_observers(
         if not task_id:
             return
         try:
-            from workflow.branch_tasks import mark_task_progress
+            from tinyassets.branch_tasks import mark_task_progress
 
             mark_task_progress(universe_path, task_id)
         except Exception:  # noqa: BLE001
@@ -558,7 +558,7 @@ def _finalize_claimed_task(
     if claimed is None:
         return
     try:
-        from workflow.branch_tasks import mark_status
+        from tinyassets.branch_tasks import mark_status
 
         mark_status(
             universe_path,
@@ -582,7 +582,7 @@ def _node_bid_lookup_factory(repo_root: Path):
     whose ``node_id`` matches. Best-effort: malformed YAMLs and
     missing directories → no match. Safe to call with any repo_root.
     """
-    from workflow.branches import BranchDefinition, NodeDefinition
+    from tinyassets.branches import BranchDefinition, NodeDefinition
 
     def _lookup(node_def_id: str):
         branches_dir = Path(repo_root) / "branches"
@@ -638,19 +638,19 @@ def _try_execute_claimed_node_bid(
       ``<repo_root>/bids/<bid_id>.yaml``.
     """
     try:
-        from workflow.bid.execution_log import append_execution_log_entry
-        from workflow.bid.node_bid import (
+        from tinyassets.bid.execution_log import append_execution_log_entry
+        from tinyassets.bid.node_bid import (
             claim_node_bid,
             git_has_remote,
             read_node_bid,
             update_node_bid_status,
         )
-        from workflow.bid.settlements import (
+        from tinyassets.bid.settlements import (
             SettlementExistsError,
             record_settlement_event,
         )
-        from workflow.executors.node_bid import execute_node_bid
-        from workflow.producers.goal_pool import repo_root_path
+        from tinyassets.executors.node_bid import execute_node_bid
+        from tinyassets.producers.goal_pool import repo_root_path
 
         inputs = dict(claimed_task.inputs or {})
         node_bid_id = str(inputs.get("__node_bid_id", ""))
@@ -664,13 +664,13 @@ def _try_execute_claimed_node_bid(
             return False, f"repo_root_not_resolvable: {exc}"
 
         runtime_instance_id = os.environ.get(
-            "WORKFLOW_RUNTIME_INSTANCE_ID", "",
+            "TINYASSETS_RUNTIME_INSTANCE_ID", "",
         ).strip()
-        worker_id = os.environ.get("WORKFLOW_WORKER_ID", "").strip()
+        worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
         owner_user_id = ""
         try:
-            from workflow.daemon_registry import get_daemon
-            from workflow.storage import data_dir
+            from tinyassets.daemon_registry import get_daemon
+            from tinyassets.storage import data_dir
 
             daemon = get_daemon(data_dir(), daemon_id=daemon_id)
             owner_user_id = str(daemon.get("owner_user_id") or "")
@@ -717,7 +717,7 @@ def _try_execute_claimed_node_bid(
         success = result.status == "succeeded"
 
         # Preflight §4.1 #5b + invariant 8: immutable settlement
-        # record via workflow/settlements.py. `outcome_status` is the
+        # record via tinyassets/settlements.py. `outcome_status` is the
         # authoritative field ("succeeded" | "failed"); v1 records
         # refuse overwrites so the audit trail stays byte-stable
         # across token-launch migrations.
@@ -794,7 +794,7 @@ def _branch_task_inputs_for_execution(claimed_task: Any) -> dict[str, Any]:
     if request_type == "bug_investigation" and not str(
         inputs.get("request_text") or ""
     ).strip():
-        from workflow.bug_investigation import build_run_payload
+        from tinyassets.bug_investigation import build_run_payload
 
         inputs = build_run_payload(inputs)
     return inputs
@@ -857,7 +857,7 @@ def _maybe_attach_bug_investigation_patch_packet(
         return {"status": "skipped", "reason": "missing_patch_packet"}
 
     try:
-        from workflow.bug_investigation import attach_patch_packet_comment
+        from tinyassets.bug_investigation import attach_patch_packet_comment
 
         return attach_patch_packet_comment(bug_id, patch_packet)
     except Exception as exc:  # noqa: BLE001
@@ -879,15 +879,15 @@ def _try_execute_claimed_branch_task(
     queue row is marked terminal.
     """
     try:
-        from workflow.api.branches import _resolve_branch_id
-        from workflow.branches import BranchDefinition
-        from workflow.daemon_server import get_branch_definition
-        from workflow.runs import (
+        from tinyassets.api.branches import _resolve_branch_id
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.daemon_server import get_branch_definition
+        from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
             execute_branch,
             latest_run_by_name,
         )
-        from workflow.storage import data_dir
+        from tinyassets.storage import data_dir
 
         base_path = data_dir()
         requested = str(getattr(claimed_task, "branch_def_id", "") or "")
@@ -1025,7 +1025,7 @@ def _dispatcher_observe(universe_path: Path) -> None:
     §4.1 #4 flag matrix.
     """
     try:
-        from workflow.dispatcher import (
+        from tinyassets.dispatcher import (
             dispatcher_enabled,
             load_dispatcher_config,
             select_next_task,
@@ -1067,8 +1067,8 @@ def _build_unified_graph_builder() -> Any:
     """
     import yaml
 
-    from workflow.branches import BranchDefinition
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.graph_compiler import compile_branch
 
     seed_path = (
         Path(__file__).parent / "branches" / "universe_cycle.yaml"
@@ -1196,7 +1196,7 @@ class DaemonController:
 
         # Inject router into the provider stub module so nodes can use it
         try:
-            from workflow.providers.call import set_provider_router
+            from tinyassets.providers.call import set_provider_router
 
             set_provider_router(self._router)
         except ImportError:
@@ -1254,11 +1254,11 @@ class DaemonController:
         # if the lookup raises, the producer-side helper catches and
         # the bid passes through to executor-side re-validation.
         try:
-            from workflow.producers.goal_pool import repo_root_path
-            from workflow.producers.node_bid import (
+            from tinyassets.producers.goal_pool import repo_root_path
+            from tinyassets.producers.node_bid import (
                 paid_market_enabled,
             )
-            from workflow.producers.node_bid import (
+            from tinyassets.producers.node_bid import (
                 register_if_enabled as _register_node_bid_producer,
             )
             if paid_market_enabled():
@@ -1420,7 +1420,7 @@ class DaemonController:
         """
         universe_path = Path(self._universe_path)
         try:
-            from workflow.api.universe import (
+            from tinyassets.api.universe import (
                 LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
                 _universe_loop_dispatch,
             )
@@ -1438,10 +1438,10 @@ class DaemonController:
             return False
 
         try:
-            from workflow.branches import BranchDefinition
-            from workflow.daemon_server import get_branch_definition
-            from workflow.runs import execute_branch
-            from workflow.storage import data_dir
+            from tinyassets.branches import BranchDefinition
+            from tinyassets.daemon_server import get_branch_definition
+            from tinyassets.runs import execute_branch
+            from tinyassets.storage import data_dir
 
             base_path = data_dir()
             try:
@@ -1511,7 +1511,7 @@ class DaemonController:
     def _run_graph(self, universe_id: str) -> None:
         """Build and execute the universe graph.
 
-        Under ``WORKFLOW_UNIFIED_EXECUTION=1`` (Phase D) the graph is
+        Under ``TINYASSETS_UNIFIED_EXECUTION=1`` (Phase D) the graph is
         built via the standard Branch compile path: load the seed
         ``fantasy_author/branches/universe_cycle.yaml``, call
         ``compile_branch(branch)``, and use its ``graph`` where the
@@ -1532,7 +1532,7 @@ class DaemonController:
         user-built branch via ``execute_branch`` *in place of the fantasy
         cycle* — but ONLY after the normal dispatcher pick has had its chance
         to claim any pending child BranchTasks the driver enqueued (see the
-        no-claim slot below). Gated behind ``WORKFLOW_SOUL_LOOP_DISPATCH``; off
+        no-claim slot below). Gated behind ``TINYASSETS_SOUL_LOOP_DISPATCH``; off
         by default so soulless/legacy universes are unchanged. The queue is
         never starved: pick drains children first, the driver only runs when
         there is nothing to claim.
@@ -1710,7 +1710,7 @@ class DaemonController:
             # Phase G: NodeBid tasks route to execute_node_bid instead
             # of the Branch wrapper stream. Sentinel prefix on
             # branch_def_id is set by the NodeBidProducer.
-            from workflow.producers.node_bid import NODE_BID_SENTINEL_PREFIX
+            from tinyassets.producers.node_bid import NODE_BID_SENTINEL_PREFIX
             if (
                 claimed_task is not None
                 and claimed_task.branch_def_id.startswith(NODE_BID_SENTINEL_PREFIX)
@@ -1808,7 +1808,7 @@ class DaemonController:
                     # "failed") via the claimed_failed_reason=""
                     # branch in the finally block.
                     if claimed_task is not None:
-                        from workflow.branch_tasks import (
+                        from tinyassets.branch_tasks import (
                             is_task_cancel_requested,
                         )
                         if is_task_cancel_requested(
@@ -1878,7 +1878,7 @@ class DaemonController:
                 if claimed_task is not None:
                     if cancel_requested_during_run:
                         try:
-                            from workflow.branch_tasks import mark_status
+                            from tinyassets.branch_tasks import mark_status
                             mark_status(
                                 output_dir,
                                 claimed_task.branch_task_id,
@@ -1983,7 +1983,7 @@ class DaemonController:
 
         # Track the most recently used LLM provider
         try:
-            from workflow.providers.call import get_last_provider
+            from tinyassets.providers.call import get_last_provider
             last_provider = get_last_provider()
             if last_provider:
                 self._last_provider_used = last_provider
@@ -2249,7 +2249,7 @@ class DaemonController:
         active characters, open plot threads, and recent creative
         decisions.  Falls back to the chapter summary alone on failure.
         """
-        from workflow.providers.call import call_provider
+        from tinyassets.providers.call import call_provider
 
         chapter_summary = output.get("chapter_summary", "")
         if not chapter_summary:
@@ -2955,13 +2955,13 @@ def main() -> None:
     parser.add_argument(
         "--universe-server",
         action="store_true",
-        help="Start the Workflow MCP server (remote MCP interface)",
+        help="Start the TinyAssets MCP server (remote MCP interface)",
     )
     parser.add_argument(
         "--mcp-port",
         type=int,
         default=8001,
-        help="Workflow MCP server port (default: 8001)",
+        help="TinyAssets MCP server port (default: 8001)",
     )
     parser.add_argument(
         "--mcp-transport",
@@ -2981,7 +2981,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Apply --provider pin via WORKFLOW_PIN_WRITER env var so the router
+    # Apply --provider pin via TINYASSETS_PIN_WRITER env var so the router
     # consults it per-call instead of mutating FALLBACK_CHAINS at import.
     # Env-var routing survives subprocess boundaries for future multi-
     # daemon tray work and keeps the module shape stable.
@@ -2994,9 +2994,9 @@ def main() -> None:
                 f"--provider {args.provider!r} is not a known provider. "
                 f"Known: {sorted(known)}"
             )
-        os.environ["WORKFLOW_PIN_WRITER"] = args.provider
+        os.environ["TINYASSETS_PIN_WRITER"] = args.provider
         logger.info(
-            "Writer role pinned to provider %s via WORKFLOW_PIN_WRITER",
+            "Writer role pinned to provider %s via TINYASSETS_PIN_WRITER",
             args.provider,
         )
 
@@ -3009,18 +3009,18 @@ def main() -> None:
     )
 
     if args.mcp:
-        os.environ.setdefault("WORKFLOW_UNIVERSE", args.universe)
+        os.environ.setdefault("TINYASSETS_UNIVERSE", args.universe)
         from fantasy_daemon.mcp_server import main as mcp_main
 
         mcp_main()
         return
 
     if args.universe_server:
-        # Set base path for the Workflow MCP server (resolves universe directories)
+        # Set base path for the TinyAssets MCP server (resolves universe directories)
         base = str(Path(args.universe).resolve())
-        os.environ.setdefault("WORKFLOW_DATA_DIR", base)
+        os.environ.setdefault("TINYASSETS_DATA_DIR", base)
         logger.info(
-            "Starting Workflow MCP server on %s:%d (transport=%s, base=%s)",
+            "Starting TinyAssets MCP server on %s:%d (transport=%s, base=%s)",
             args.host, args.mcp_port, args.mcp_transport, base,
         )
 

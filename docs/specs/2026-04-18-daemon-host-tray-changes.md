@@ -13,7 +13,7 @@ status: active
 - `docs/specs/2026-04-18-mcp-gateway-skeleton.md` — OAuth flow + structured error envelope.
 - `docs/specs/2026-04-18-paid-market-crypto-settlement.md` — §5 daemon earnings, §6.1 wallet registration.
 - Memory: `project_user_tiers.md`, `project_daemon_default_behavior.md`, `project_monetization_crypto_1pct.md`, `project_cold_start_and_fulfill_paths.md`.
-- Existing code: `universe_tray.py` (in-flight rebrand via task #7; file-rename via task #8 → will become `workflow_tray.py`), `workflow/singleton_lock.py` (task #6 landed).
+- Existing code: `universe_tray.py` (in-flight rebrand via task #7; file-rename via task #8 → will become `tinyassets_tray.py`), `tinyassets/singleton_lock.py` (task #6 landed).
 
 The tray is tier-2's primary surface. Install-to-productive-daemon budget is <5 minutes per the "main is always downloadable" forever-rule. This spec makes the transition from today's single-box tray (MCP + tunnel + daemon) to the full-platform tray (register host with control plane; opt into paid market; earn) executable without re-research.
 
@@ -251,15 +251,15 @@ User selects "claude" (already 1 running).
     ↓
 Confirmation popup opens:
    ⚠ Launching a 2nd Claude daemon
-   
+
    Expected impact:
    • Rate limits: a 2nd Claude daemon in always-active mode will hit
      concurrent-request limits on the Anthropic API. Work will queue or fail.
    • Suggested plan: Claude Team / Max  (≈ $200/mo)
        Source: provider_plan_tiers table, updated 2026-04-10
-   
+
    Do you have headroom on your Anthropic plan?
-   
+
    [Cancel]  [Launch anyway]
     ↓
 "Launch anyway" → spawn daemon process → tray updates count to "claude (2 running)".
@@ -312,9 +312,9 @@ Per §5.2 end-note: host can switch from active-mode (full cascade) to passive-m
 
 ## 6. Singleton enforcement
 
-Builds on task #6's landed `workflow/singleton_lock.py` (committed earlier this session as part of the tray-singleton fix).
+Builds on task #6's landed `tinyassets/singleton_lock.py` (committed earlier this session as part of the tray-singleton fix).
 
-- **Lock path**: `logs/.tray.lock` (same as today). Post-rename, the lock file is unchanged — singleton_lock module lives in `workflow/`, which isn't part of #8's tray-file rename.
+- **Lock path**: `logs/.tray.lock` (same as today). Post-rename, the lock file is unchanged — singleton_lock module lives in `tinyassets/`, which isn't part of #8's tray-file rename.
 - **Behavior unchanged**: double-click shortcut 2nd time → silent exit with "already running" message.
 - **Scope unchanged**: one tray per host computer. Multi-daemon spawns are all children of the one tray process.
 

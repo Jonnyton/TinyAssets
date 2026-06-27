@@ -6,7 +6,7 @@
 
 Phase 2 of the workflow extraction successfully restructured the codebase into three distinct packages:
 
-- **workflow/** — Shared infrastructure library (79 Python files)
+- **tinyassets/** — Shared infrastructure library (79 Python files)
 - **domains/fantasy_author/** — Domain-specific fantasy author code (39 Python files)
 - **fantasy_author/** — Original package (112 Python files, now transitional)
 
@@ -92,7 +92,7 @@ Extended exports (Phase 1+ additions):
 All three packages parse without errors:
 
 ```
-workflow/: 79 files, 0 syntax errors
+tinyassets/: 79 files, 0 syntax errors
 domains/: 39 files, 0 syntax errors
 fantasy_author/: 112 files, 0 syntax errors
 ```
@@ -125,9 +125,9 @@ Both old and new import paths worked in parallel.
 Full migration completed:
 - All 623 test and script imports migrated from `fantasy_author.*` to `workflow.*` / `domains.fantasy_author.*`
 - `fantasy_author/` converted to thin re-export shims (original backed up in `fantasy_author_original/`)
-- Entry points renamed: `workflow-cli`, `workflow-mcp`, `workflow-universe-server`, `workflow` (GUI)
-- Env vars renamed: `FANTASY_AUTHOR_UNIVERSE` → `WORKFLOW_UNIVERSE`
-- Unextracted modules (auth, branches, node_eval, node_sandbox, packets, universe_server, utils) copied to `workflow/`
+- Entry points renamed: `tinyassets-cli`, `tinyassets-mcp`, `tinyassets-universe-server`, `workflow` (GUI)
+- Env vars renamed: `FANTASY_AUTHOR_UNIVERSE` → `TINYASSETS_UNIVERSE`
+- Unextracted modules (auth, branches, node_eval, node_sandbox, packets, universe_server, utils) copied to `tinyassets/`
 - Zero syntax errors across all migrated files
 
 ### Phase 3 (Future)
@@ -147,14 +147,14 @@ Removal of backward compatibility:
 
 ## Documentation
 
-- `workflow/compat.py` — Compatibility layer documentation
+- `tinyassets/compat.py` — Compatibility layer documentation
 - `IMPORT_COMPATIBILITY.md` — This file
 - `tests/test_import_compatibility.py` — Automated verification
 
 ## Files Modified
 
 1. **pyproject.toml** — Added workflow and domains to packages list
-2. **workflow/compat.py** — New compatibility documentation module
+2. **tinyassets/compat.py** — New compatibility documentation module
 3. **domains/fantasy_author/phases/__init__.py** — Cleaned up exports to match actual functions
 4. **domains/fantasy_author/*/*.py** — Updated internal imports (20 files)
 5. **tests/test_import_compatibility.py** — New backward-compatibility test suite
@@ -173,7 +173,7 @@ Check syntax of all three packages:
 
 ```bash
 python3 -m py_compile fantasy_author/**/*.py
-python3 -m py_compile workflow/**/*.py
+python3 -m py_compile tinyassets/**/*.py
 python3 -m py_compile domains/**/*.py
 ```
 

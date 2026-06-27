@@ -97,7 +97,7 @@ Hard Rule #11 stays in force: chatbot-facing changes require live Claude.ai `ui-
 
 - Goals & Gates owns the outcome ladder. Goal owner declares scenario-pack requirements as gate rung evidence ("rung R3 = 'all scenario X passes'").
 - An `OptimizationRun` (future spec) runs candidate scenarios and emits EvalResult artifacts per the existing contract.
-- The rung claim mechanism (existing in workflow/api/market.py per #899) consumes the EvalResult evidence and advances or refuses the rung claim.
+- The rung claim mechanism (existing in tinyassets/api/market.py per #899) consumes the EvalResult evidence and advances or refuses the rung claim.
 
 Three existing surfaces compose. No new "branch optimization gate" primitive. The scenario pack is the evidence; the gate is the rung; the dispatch is the standard rung-claim flow.
 
@@ -105,7 +105,7 @@ Three existing surfaces compose. No new "branch optimization gate" primitive. Th
 
 Slice 1 (this PR): design + spec.
 
-Slice 2: runtime. A `workflow/evaluation/scenario_runner.py` that takes an `AcceptanceScenario` contract + a candidate target_surface and produces a standard `EvalResult` artifact. The runner is thin — it dispatches to existing primitives (user-sim for ui_test_mission, run_branch for branch_run, MCP tool calls for mcp_call) and bundles their output as the scenario's evidence.
+Slice 2: runtime. A `tinyassets/evaluation/scenario_runner.py` that takes an `AcceptanceScenario` contract + a candidate target_surface and produces a standard `EvalResult` artifact. The runner is thin — it dispatches to existing primitives (user-sim for ui_test_mission, run_branch for branch_run, MCP tool calls for mcp_call) and bundles their output as the scenario's evidence.
 
 Slice 3: one concrete scenario shipped end-to-end. Recommendation: a small MCP scenario for an existing `goals` action (e.g., `goals action=propose` correctly creates a Goal record + binds the chatbot's request). Smallest possible real test of the full contract.
 
@@ -134,7 +134,7 @@ All 5 scoping rules pass:
 
 ## What this PR does NOT change
 
-- `workflow/evaluation/process.py` — unchanged. The existing evaluator process continues to run unchanged.
+- `tinyassets/evaluation/process.py` — unchanged. The existing evaluator process continues to run unchanged.
 - `EvalResult` schema — unchanged. Scenarios emit existing artifacts; no schema migration.
 - `ui-test` skill — unchanged. Slice 4 may compose with it, but no changes to the skill itself.
 

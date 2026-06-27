@@ -22,7 +22,7 @@ The host-ratified TINY brain spec (`docs/specs/2026-06-10-tiny-first-principles-
 ## Impact
 
 - **Ratified narrative spec:** `docs/specs/2026-06-10-tiny-first-principles-spec.md` §5 (store bullet + §5h), §11.2 (redaction propagation order), §13 (build-boundary audit wording), §14 (migration/backup note). Companion `docs/specs/2026-06-10-brain-v2-research-implications.md` already canonicalizes the OpenClaw markdown-source-of-truth model — unchanged; becomes the precedent reference.
-- **Future code (gated — NOT in this change):** the unbuilt `workflow/brain/` package — bundle reader/writer, index-rebuild command, write-through projection, conformance + auto-sync steward. The slice-1 read-only `assemble(lens)` path is unchanged.
+- **Future code (gated — NOT in this change):** the unbuilt `tinyassets/brain/` package — bundle reader/writer, index-rebuild command, write-through projection, conformance + auto-sync steward. The slice-1 read-only `assemble(lens)` path is unchanged.
 - **Durability:** §14 brain-backup (nightly snapshot → git) is reframed — the snapshot IS the canonical bundle, retiring the 2026-06-09 rebuild-mandate "backup was never finished" gap.
 - **Gates:** this is a **design amendment only** — it does not unblock build. It stays under the Codex 6 pre-build gates + cross-provider review; OKF-as-foundation is research-derived, so the amendment requires a **Codex review pass** before it gates any implementation.
 - **Doctrine strengthened (§11):** no-lock-in (wholesale OKF export is the native form), commons (federation is bundle-union), redaction (deletes from the canonical bundle first, then rebuilds the index).

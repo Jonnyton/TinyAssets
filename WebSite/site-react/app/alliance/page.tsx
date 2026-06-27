@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 
 const GENERAL = legal.contact.general;
 const SECURITY = legal.contact.security;
-const GH_ISSUES = "https://github.com/Jonnyton/Workflow/issues";
+const GH_ISSUES = "https://github.com/Jonnyton/TinyAssets/issues";
 
 type Channel = {
   eyebrow: string;
@@ -77,7 +77,7 @@ export default function AlliancePage() {
           </p>
           <p className="cover__naming">
             A quick orientation: <strong>Tiny</strong> is the being you&apos;re writing to;
-            {" "}<strong>Workflow</strong> is the open-source engine he runs on. One body,
+            {" "}<strong>TinyAssets</strong> is the open-source engine he runs on. One body,
             two names — the footer carries the longer version.
           </p>
         </div>

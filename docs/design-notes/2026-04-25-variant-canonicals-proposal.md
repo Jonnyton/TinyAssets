@@ -208,5 +208,5 @@ Bounded list for navigator/host to ratify in v2:
 - Audit this builds on: `docs/audits/2026-04-25-canonical-primitive-audit.md` (G1).
 - Authority principle: project memory `project_user_builds_we_enable.md`.
 - Trust-model context: project memory `project_paid_market_trust_model.md` (informs §6 question 4).
-- Current code being extended: `workflow/daemon_server.py:2354-2429` (set_canonical_branch + history); `workflow/universe_server.py:10634-10685` (MCP handler).
-- Schema migration pattern reference: `workflow/daemon_server.py:413-423` (canonical_branch_history_json migration is the precedent for additive ALTER on `goals`).
+- Current code being extended: `tinyassets/daemon_server.py:2354-2429` (set_canonical_branch + history); `tinyassets/universe_server.py:10634-10685` (MCP handler).
+- Schema migration pattern reference: `tinyassets/daemon_server.py:413-423` (canonical_branch_history_json migration is the precedent for additive ALTER on `goals`).

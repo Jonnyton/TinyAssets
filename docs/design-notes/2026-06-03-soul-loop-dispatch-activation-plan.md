@@ -4,7 +4,7 @@
 **Status:** build-ready plan — one core-daemon slice + a safe activation runbook.
 **Depends on / coordinates with:** PR-139 soul substrate (landed on `main`),
 `docs/design-notes/2026-05-28-souled-universe-effect-authority.md`, the in-node
-enqueue verb (live as of 2026-06-03, `WORKFLOW_NODE_ENQUEUE_ENABLED=on`).
+enqueue verb (live as of 2026-06-03, `TINYASSETS_NODE_ENQUEUE_ENABLED=on`).
 
 ## Why this exists
 
@@ -17,16 +17,16 @@ coordinated with the active PR-139 effort rather than hacked in solo.
 
 ## What is already DONE (PR-139, landed on `main`)
 
-- **Soul substrate** — `workflow/universe_soul.py`: `soul.md` per universe,
+- **Soul substrate** — `tinyassets/universe_soul.py`: `soul.md` per universe,
   `UniverseSoul` dataclass with `loop_branch_def_id` + `effect_authority` +
   `edit_authority`, versioned via `soul_versions/`. `has_soul` == file presence.
   Writable today: `create_universe(branch_def_id=…)` →
   `ensure_universe_soul(...)`; `set_premise` → `write_universe_soul(...)`.
 - **MCP/submit-path soul routing (slice 9)** —
-  `workflow/api/universe.py::_universe_loop_dispatch`: souled + loop declared →
+  `tinyassets/api/universe.py::_universe_loop_dispatch`: souled + loop declared →
   runs that branch; souled + no loop → refuses (`universe_loop_not_declared`);
   no soul → legacy fantasy fallback.
-- **Effect authority "Gate 0"** — `workflow/effectors/authority.py` +
+- **Effect authority "Gate 0"** — `tinyassets/effectors/authority.py` +
   `github_pr.py`: PR effects resolve against the soul's `effect_authority`;
   DENIED → dry-run, UNDECLARED → legacy env-cap/consent fall-through.
 
@@ -44,7 +44,7 @@ hardwired YAML — is the single code change on the critical path.
 Interacting gates to reconcile in the same slice (do not change blindly):
 - `_try_dispatcher_pick` (claims an arbitrary `BranchTask` and runs it via
   `execute_branch`, which threads the enqueue context) is gated behind
-  `WORKFLOW_DISPATCHER_ENABLED` + `WORKFLOW_UNIFIED_EXECUTION` (the latter is a
+  `TINYASSETS_DISPATCHER_ENABLED` + `TINYASSETS_UNIFIED_EXECUTION` (the latter is a
   **superseded Phase-D migration flag**, default off — `docs/specs/phase_d_preflight.md`).
 - The slice-9 de-default only reaches the MCP path; the autonomous loop builder
   is a separate code path.
@@ -62,7 +62,7 @@ Interacting gates to reconcile in the same slice (do not change blindly):
 ## Activation runbook (after the gap-closer lands + is reviewed)
 
 1. Close the autonomous-loop gap (above) as a reviewed slice; keep
-   `WORKFLOW_UNIFIED_EXECUTION` handling explicit.
+   `TINYASSETS_UNIFIED_EXECUTION` handling explicit.
 2. `create_universe` a fresh dedicated universe with
    `loop_branch_def_id=cca3c93b632e` and `effect_authority=()` (dry-run).
    Fresh universe avoids landmine #1 (atomic soul+loop) and isolates the legacy
@@ -75,7 +75,7 @@ Interacting gates to reconcile in the same slice (do not change blindly):
 
 ## Open items to reconcile with the team
 
-- Whether to finish the Phase-D `WORKFLOW_UNIFIED_EXECUTION` flip or leapfrog it
+- Whether to finish the Phase-D `TINYASSETS_UNIFIED_EXECUTION` flip or leapfrog it
   via soul-declared dispatch (this note assumes the latter is the destination).
 - The Tiny / soul-scoped authority model is in
   `2026-05-28-souled-universe-effect-authority.md` + auto-memory but not yet in

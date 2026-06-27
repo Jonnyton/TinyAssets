@@ -65,7 +65,7 @@ not implementation detail.
 
 ### Change 3 — Add backend stack selection to System Shape
 
-**Current PLAN.md System Shape section:** ASCII diagram shows generic "FastAPI + Workflow Server (MCP) control plane" without naming the storage backend.
+**Current PLAN.md System Shape section:** ASCII diagram shows generic "FastAPI + TinyAssets Server (MCP) control plane" without naming the storage backend.
 
 **Proposed addition** (append to System Shape section):
 

@@ -1,11 +1,11 @@
 """Tests for in-flight run recovery part 2 — SqliteSaver-keyed resume.
 
 Covers:
-- resume_run() in workflow/runs.py: auth gate, status gate, idempotency,
+- resume_run() in tinyassets/runs.py: auth gate, status gate, idempotency,
   missing-checkpoint error, branch-version mismatch, successful resume dispatch.
-- _action_resume_run() in workflow/universe_server.py: bad run_id, non-owner,
+- _action_resume_run() in tinyassets/universe_server.py: bad run_id, non-owner,
   wrong status, idempotent RESUMED, missing checkpoint, happy path.
-- workflow/idempotency.py: IdempotencyStore set/get/has round-trip,
+- tinyassets/idempotency.py: IdempotencyStore set/get/has round-trip,
   @idempotent_by_step decorator at-most-once semantics.
 """
 
@@ -25,7 +25,7 @@ import pytest
 
 class TestIdempotencyStore:
     def test_set_and_get_roundtrip(self, tmp_path):
-        from workflow.idempotency import IdempotencyStore
+        from tinyassets.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idempotency.db")
         store.set("run-1", "step-1", {"output": "hello"})
@@ -33,26 +33,26 @@ class TestIdempotencyStore:
         assert result == {"output": "hello"}
 
     def test_get_missing_returns_none(self, tmp_path):
-        from workflow.idempotency import IdempotencyStore
+        from tinyassets.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idempotency.db")
         assert store.get("run-1", "step-1") is None
 
     def test_has_true_after_set(self, tmp_path):
-        from workflow.idempotency import IdempotencyStore
+        from tinyassets.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idempotency.db")
         store.set("run-2", "step-3", "value")
         assert store.has("run-2", "step-3") is True
 
     def test_has_false_before_set(self, tmp_path):
-        from workflow.idempotency import IdempotencyStore
+        from tinyassets.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idempotency.db")
         assert store.has("run-9", "step-9") is False
 
     def test_set_is_ignore_on_conflict(self, tmp_path):
-        from workflow.idempotency import IdempotencyStore
+        from tinyassets.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idempotency.db")
         store.set("run-1", "step-1", "first")
@@ -62,7 +62,7 @@ class TestIdempotencyStore:
 
 class TestIdempotentByStep:
     def test_function_called_once_per_pair(self, tmp_path, monkeypatch):
-        import workflow.idempotency as idm
+        import tinyassets.idempotency as idm
 
         monkeypatch.setattr(idm, "_store", None)
         db = tmp_path / ".idempotency.db"
@@ -81,7 +81,7 @@ class TestIdempotentByStep:
         assert result1 == result2
 
     def test_different_pairs_both_execute(self, tmp_path, monkeypatch):
-        import workflow.idempotency as idm
+        import tinyassets.idempotency as idm
 
         monkeypatch.setattr(idm, "_store", None)
         db = tmp_path / ".idempotency.db"
@@ -99,7 +99,7 @@ class TestIdempotentByStep:
         assert call_count["n"] == 2
 
     def test_decorator_marks_attribute(self):
-        from workflow.idempotency import idempotent_by_step
+        from tinyassets.idempotency import idempotent_by_step
 
         @idempotent_by_step
         def fn(run_id: str, step_id: str) -> None:
@@ -115,10 +115,10 @@ class TestIdempotentByStep:
 
 @pytest.fixture
 def run_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
 
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, tmp_path
     importlib.reload(us)
@@ -126,7 +126,7 @@ def run_env(tmp_path, monkeypatch):
 
 def _setup_interrupted_run(tmp_path: Path, *, actor: str = "tester") -> str:
     """Create an INTERRUPTED run in the runs DB and return its run_id."""
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_INTERRUPTED,
         create_run,
         initialize_runs_db,
@@ -146,13 +146,13 @@ def _setup_interrupted_run(tmp_path: Path, *, actor: str = "tester") -> str:
 
 
 # ---------------------------------------------------------------------------
-# resume_run() unit tests (workflow/runs.py)
+# resume_run() unit tests (tinyassets/runs.py)
 # ---------------------------------------------------------------------------
 
 
 class TestResumeRunFunction:
     def test_not_found_raises(self, tmp_path):
-        from workflow.runs import ResumeError, resume_run
+        from tinyassets.runs import ResumeError, resume_run
 
         with pytest.raises(ResumeError) as exc_info:
             resume_run(
@@ -164,7 +164,7 @@ class TestResumeRunFunction:
         assert exc_info.value.reason == "not_found"
 
     def test_wrong_actor_raises_auth_failed(self, tmp_path):
-        from workflow.runs import ResumeError, resume_run
+        from tinyassets.runs import ResumeError, resume_run
 
         rid = _setup_interrupted_run(tmp_path, actor="owner")
 
@@ -178,7 +178,7 @@ class TestResumeRunFunction:
         assert exc_info.value.reason == "auth_failed"
 
     def test_non_interrupted_status_raises(self, tmp_path):
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
             ResumeError,
             create_run,
@@ -202,7 +202,7 @@ class TestResumeRunFunction:
         assert exc_info.value.current_status == RUN_STATUS_COMPLETED
 
     def test_already_resumed_is_idempotent(self, tmp_path):
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_RESUMED,
             create_run,
             initialize_runs_db,
@@ -224,7 +224,7 @@ class TestResumeRunFunction:
         assert outcome.status == RUN_STATUS_RESUMED
 
     def test_missing_checkpoint_raises(self, tmp_path):
-        from workflow.runs import ResumeError, resume_run
+        from tinyassets.runs import ResumeError, resume_run
 
         rid = _setup_interrupted_run(tmp_path)
 
@@ -238,12 +238,12 @@ class TestResumeRunFunction:
         assert exc_info.value.reason == "no_checkpoint"
 
     def test_branch_version_mismatch_raises(self, tmp_path):
-        from workflow.runs import ResumeError, resume_run
+        from tinyassets.runs import ResumeError, resume_run
 
         rid = _setup_interrupted_run(tmp_path)
 
         with (
-            patch("workflow.runs._has_checkpoint", return_value=True),
+            patch("tinyassets.runs._has_checkpoint", return_value=True),
             pytest.raises(ResumeError) as exc_info,
         ):
             resume_run(
@@ -255,8 +255,8 @@ class TestResumeRunFunction:
         assert exc_info.value.reason == "branch_version_mismatch"
 
     def test_happy_path_dispatches_background_worker(self, tmp_path):
-        from workflow.branches import BranchDefinition, NodeDefinition
-        from workflow.runs import RUN_STATUS_RESUMED, resume_run
+        from tinyassets.branches import BranchDefinition, NodeDefinition
+        from tinyassets.runs import RUN_STATUS_RESUMED, resume_run
 
         rid = _setup_interrupted_run(tmp_path)
 
@@ -269,8 +269,8 @@ class TestResumeRunFunction:
         )
 
         with (
-            patch("workflow.runs._has_checkpoint", return_value=True),
-            patch("workflow.runs._invoke_graph_resume") as mock_invoke,
+            patch("tinyassets.runs._has_checkpoint", return_value=True),
+            patch("tinyassets.runs._invoke_graph_resume") as mock_invoke,
         ):
             mock_invoke.return_value = MagicMock(
                 run_id=rid, status=RUN_STATUS_RESUMED, output={}, error="",
@@ -313,7 +313,7 @@ class TestActionResumeRun:
     def test_completed_run_returns_status_error(self, run_env):
         us, base = run_env
         self._call(us, "create_branch", name="throwaway")
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
             create_run,
             initialize_runs_db,
@@ -339,11 +339,11 @@ class TestActionResumeRun:
         us, base = run_env
         rid = self._setup_run(base, us)
 
-        from workflow.runs import RUN_STATUS_RESUMED, RunOutcome
+        from tinyassets.runs import RUN_STATUS_RESUMED, RunOutcome
 
         dummy_outcome = RunOutcome(run_id=rid, status=RUN_STATUS_RESUMED, output={}, error="")
 
-        with patch("workflow.runs.resume_run", return_value=dummy_outcome):
+        with patch("tinyassets.runs.resume_run", return_value=dummy_outcome):
             result = self._call(us, "resume_run", run_id=rid)
 
         assert result.get("run_id") == rid
@@ -352,7 +352,7 @@ class TestActionResumeRun:
     def test_already_resumed_idempotent(self, run_env):
         us, base = run_env
         self._call(us, "create_branch", name="throwaway")
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_RESUMED,
             create_run,
             initialize_runs_db,

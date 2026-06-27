@@ -2,7 +2,7 @@
 
 The ``universe_cycle_wrapper`` callable runs one full pass of the
 fantasy universe graph. It's invoked by the outer Branch's single
-node under ``WORKFLOW_UNIFIED_EXECUTION=1``. Boundary semantics:
+node under ``TINYASSETS_UNIFIED_EXECUTION=1``. Boundary semantics:
 
 - Input: a dict with the six boundary fields (``universe_id``,
   ``universe_path``, ``premise_kernel``, ``health``, ``total_words``,
@@ -30,7 +30,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from workflow.domain_registry import (
+from tinyassets.domain_registry import (
     register_domain_branch_slug,
     register_domain_callable,
 )
@@ -169,7 +169,7 @@ def _restartable_work_exists(universe_path: Path) -> bool:
         return False
 
     try:
-        from workflow.work_targets import (
+        from tinyassets.work_targets import (
             LIFECYCLE_ACTIVE,
             REQUESTS_FILENAME,
             load_work_targets,
@@ -186,7 +186,7 @@ def _restartable_work_exists(universe_path: Path) -> bool:
             for target in load_work_targets(universe_path)
         ):
             return True
-        from workflow.dispatcher import load_dispatcher_config, select_next_task
+        from tinyassets.dispatcher import load_dispatcher_config, select_next_task
 
         if select_next_task(
             universe_path,

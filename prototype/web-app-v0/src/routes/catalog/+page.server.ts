@@ -13,7 +13,7 @@ type Candidate = {
 };
 
 export const load: PageServerLoad = async ({ fetch }) => {
-  const gatewayUrl = import.meta.env.VITE_WORKFLOW_GATEWAY_URL ?? 'http://localhost:8001/mcp';
+  const gatewayUrl = import.meta.env.VITE_TINYASSETS_GATEWAY_URL ?? 'http://localhost:8001/mcp';
 
   // Stub intent + embedding for v0 — real build computes via Edge Function.
   // In this prototype, if the gateway is up we call it; otherwise fall back

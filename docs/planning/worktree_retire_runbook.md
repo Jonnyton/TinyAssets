@@ -10,7 +10,7 @@ directory + optional branch deletion are destructive.
 
 ## 1. Pre-flight
 
-Run from repo root `C:\Users\Jonathan\Projects\Workflow`.
+Run from repo root `C:\Users\Jonathan\Projects\TinyAssets`.
 
 1. **Confirm branch tip is pushed** (or accept that it won't be —
    this is a discarded branch). `git log claude/inspiring-newton
@@ -19,15 +19,15 @@ Run from repo root `C:\Users\Jonathan\Projects\Workflow`.
 
 2. **Capture the only assets worth keeping** — the
    Custom-GPT-driver testing approach in the worktree's
-   `workflow/testing/gpt_builder.py` + `gpt_harness.py`. Add an
+   `tinyassets/testing/gpt_builder.py` + `gpt_harness.py`. Add an
    `ideas/INBOX.md` pointer entry BEFORE removal:
 
    ```
    - [2026-04-13] gpt_builder.py / gpt_harness.py at
-     b5e75a9:workflow/testing/ — Custom-GPT-driver testing harness
+     b5e75a9:tinyassets/testing/ — Custom-GPT-driver testing harness
      from the pre-Community-Branches worktree. Revive if
      Custom-GPT testing ever earns a second look. Code addressable
-     via `git show b5e75a9:workflow/testing/gpt_builder.py`.
+     via `git show b5e75a9:tinyassets/testing/gpt_builder.py`.
    ```
 
 3. **Confirm no uncommitted changes in the worktree.**
@@ -60,7 +60,7 @@ refusal reason.
 
 1. `git worktree list` shows only the main worktree:
    ```
-   C:/Users/Jonathan/Projects/Workflow   d8125b1 [main]
+   C:/Users/Jonathan/Projects/TinyAssets   d8125b1 [main]
    ```
 2. `ls .claude/worktrees/` directory either empty or absent.
 3. `git branch -a` no longer lists `claude/inspiring-newton` (only

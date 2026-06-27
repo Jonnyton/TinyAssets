@@ -169,7 +169,7 @@ def test_configure_bootstraps_universes_from_filesystem(tmp_path):
     DB. Regression guard for the missing bootstrap call — without it,
     downstream branch/request/runtime endpoints 404 on un-synced universes.
     """
-    import workflow.daemon_server as daemon_server
+    import tinyassets.daemon_server as daemon_server
     from fantasy_daemon.api import configure
 
     # Fresh base dir with a universe directory (no prior configure).
@@ -329,7 +329,7 @@ def test_propose_author_fork_signature_regression():
     ``daemon_server.propose_author_fork`` directly pins the kwargs."""
     import inspect
 
-    import workflow.daemon_server as daemon_server
+    import tinyassets.daemon_server as daemon_server
 
     sig = inspect.signature(daemon_server.propose_author_fork)
     params = sig.parameters

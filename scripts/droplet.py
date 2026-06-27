@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Thin, read-only helper for reaching the live Workflow daemon droplet.
+"""Thin, read-only helper for reaching the live TinyAssets daemon droplet.
 
 Standardizes the SSH incantation that otherwise trips up sessions. The deploy
-key is **non-default-named** (`~/.ssh/workflow_deploy_ed25519`) and there is no
+key is **non-default-named** (`~/.ssh/tinyassets_deploy_ed25519`) and there is no
 `~/.ssh/config` host entry by default, so a bare `ssh root@<ip>` does NOT offer
 it and dies with "Permission denied (publickey)" — which a session can mistake
 for "no access" (this happened 2026-06-25 during the auto-ship enforce flip).
@@ -21,8 +21,8 @@ Usage:
   python scripts/droplet.py ssh           # open an interactive shell
   python scripts/droplet.py ssh -- <cmd>  # run a one-off remote command
 
-Override defaults via env: WORKFLOW_DROPLET_HOST, WORKFLOW_DROPLET_USER,
-WORKFLOW_DROPLET_KEY.
+Override defaults via env: TINYASSETS_DROPLET_HOST, TINYASSETS_DROPLET_USER,
+TINYASSETS_DROPLET_KEY.
 """
 
 from __future__ import annotations
@@ -34,10 +34,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-HOST = os.environ.get("WORKFLOW_DROPLET_HOST", "161.35.237.133")
-USER = os.environ.get("WORKFLOW_DROPLET_USER", "root")
+HOST = os.environ.get("TINYASSETS_DROPLET_HOST", "161.35.237.133")
+USER = os.environ.get("TINYASSETS_DROPLET_USER", "root")
 KEY = os.environ.get(
-    "WORKFLOW_DROPLET_KEY", str(Path.home() / ".ssh" / "workflow_deploy_ed25519")
+    "TINYASSETS_DROPLET_KEY", str(Path.home() / ".ssh" / "tinyassets_deploy_ed25519")
 )
 
 
@@ -102,20 +102,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "status":
         return _run(
             'docker ps --format "{{.Names}}: {{.Status}}"; echo "--- daemon health ---"; '
-            'docker inspect workflow-daemon --format '
+            'docker inspect tinyassets-daemon --format '
             '"{{.State.Health.Status}} (started {{.State.StartedAt}})"',
             interactive=False,
         )
     if args.cmd == "env":
         return _run(
-            'docker exec workflow-daemon printenv '
+            'docker exec tinyassets-daemon printenv '
             '| grep -iE "AUTO_SHIP|OLLAMA|PIN_WRITER|GOAL_POOL" | sort '
             '|| echo "(no matching env — gates run on code defaults)"',
             interactive=False,
         )
     if args.cmd == "canary":
         return _run(
-            'docker exec workflow-daemon python /app/scripts/mcp_public_canary.py '
+            'docker exec tinyassets-daemon python /app/scripts/mcp_public_canary.py '
             '--url http://127.0.0.1:8001/mcp --timeout 10 '
             '&& echo "loopback canary GREEN"',
             interactive=False,

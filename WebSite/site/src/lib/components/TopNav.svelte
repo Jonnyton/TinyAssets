@@ -3,7 +3,7 @@
      Mobile hamburger drawer at <=1000px; items array drives both. -->
 <script lang="ts">
   import { page } from '$app/state';
-  import TinyAssetsMark from './WorkflowMark.svelte';
+  import TinyAssetsMark from './TinyAssetsMark.svelte';
 
   const items = [
     { href: '/start', label: 'start' },

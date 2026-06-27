@@ -13,7 +13,7 @@ import re
 
 import pytest
 
-from workflow.host_pool import (
+from tinyassets.host_pool import (
     BidPoller,
     HeartbeatLoop,
     HostPoolClient,

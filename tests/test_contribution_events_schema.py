@@ -18,8 +18,8 @@ import json
 import time
 import uuid
 
-from workflow.contribution_events import _connect, initialize_contribution_events_db
-from workflow.runs import initialize_runs_db
+from tinyassets.contribution_events import _connect, initialize_contribution_events_db
+from tinyassets.runs import initialize_runs_db
 
 # ── Step 0: schema DDL ────────────────────────────────────────────────────────
 
@@ -194,7 +194,7 @@ class TestBountyCalcQuerySmoke:
           alice gets 0.333 (original, depth 2)
         """
         initialize_runs_db(tmp_path)
-        from workflow.daemon_server import (
+        from tinyassets.daemon_server import (
             initialize_author_server,
             save_branch_definition,
             update_branch_definition,

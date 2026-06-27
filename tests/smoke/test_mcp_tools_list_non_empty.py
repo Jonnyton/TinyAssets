@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def test_mcp_has_registered_tools():
-    from workflow.universe_server import mcp  # FastMCP exposes tools via _tool_manager._tools (private) OR list_tools
+    from tinyassets.universe_server import mcp  # FastMCP exposes tools via _tool_manager._tools (private) OR list_tools
     # (async). For smoke, we just need evidence that at least one tool is
     # registered. The internal dict is the cheapest check; if it ever moves,
     # the fallback exercises the public path.

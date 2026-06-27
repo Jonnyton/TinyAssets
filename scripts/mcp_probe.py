@@ -3,18 +3,18 @@
 Stdlib only. Handles the streamable-http SSE-wrapped responses.
 
 Subcommands (convenience):
-    workflow-probe status               → get_status
-    workflow-probe universes            → universe action=list
-    workflow-probe universe <id>        → universe action=inspect universe_id=<id>
-    workflow-probe wiki                 → wiki action=list
-    workflow-probe tools                → tools/list (same as --list)
-    workflow-probe latency              → time initialize + get_status
+    tinyassets-probe status               → get_status
+    tinyassets-probe universes            → universe action=list
+    tinyassets-probe universe <id>        → universe action=inspect universe_id=<id>
+    tinyassets-probe wiki                 → wiki action=list
+    tinyassets-probe tools                → tools/list (same as --list)
+    tinyassets-probe latency              → time initialize + get_status
 
 Raw call:
-    workflow-probe --tool get_status
-    workflow-probe --tool universe --args '{"action":"list"}'
-    workflow-probe --list
-    workflow-probe --tool universe --args '{"action":"inspect","universe_id":"x"}' --raw
+    tinyassets-probe --tool get_status
+    tinyassets-probe --tool universe --args '{"action":"list"}'
+    tinyassets-probe --list
+    tinyassets-probe --tool universe --args '{"action":"inspect","universe_id":"x"}' --raw
 
 All subcommands accept --url and --raw flags.
 """
@@ -291,8 +291,8 @@ def _add_subcommand_flags(parser: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="workflow-probe",
-        description="Query the Workflow MCP daemon from the command line.",
+        prog="tinyassets-probe",
+        description="Query the TinyAssets MCP daemon from the command line.",
     )
     p.add_argument("--url", default=DEFAULT_URL, help="MCP endpoint URL")
     p.add_argument("--raw", action="store_true", help="print full JSON response")

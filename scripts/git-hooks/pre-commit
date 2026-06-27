@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Workflow pre-commit invariants.
+# TinyAssets pre-commit invariants.
 #
 # Enforces project invariants at commit time so no session has to
 # re-check them by hand:
@@ -9,8 +9,8 @@
 #      refreshed by running scripts/sync-skills.ps1.
 #
 #   2. Plugin-mirror parity. For every staged canonical file at
-#      `workflow/**`, the packaged-plugin copy at
-#      `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/**`
+#      `tinyassets/**`, the packaged-plugin copy at
+#      `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/**`
 #      must be byte-identical. Commits that break parity fail.
 #
 #   3. Mojibake detection. Staged `.md` / `.py` / `.json` / `.toml` /
@@ -18,14 +18,14 @@
 #      (garbled dash sequences and similar). Any match fails the commit
 #      with a file:line report + autofix hint.
 #
-#   4. Import-graph smoke. When any `workflow/**/*.py` is staged, run
+#   4. Import-graph smoke. When any `tinyassets/**/*.py` is staged, run
 #      scripts/import_graph_smoke.py to catch missing-symbol regressions
 #      of the 2026-04-19 P0 class (R7a-style refactor declaring names
-#      that don't resolve at runtime). Only runs on workflow/ touches
+#      that don't resolve at runtime). Only runs on tinyassets/ touches
 #      so non-python commits don't pay the import cost.
 #
 #   5. Path-resolver bypass lint. Staged workflow Python must use
-#      workflow.storage data_dir()/wiki_path() instead of direct env reads.
+#      tinyassets.storage data_dir()/wiki_path() instead of direct env reads.
 #
 #   6. Worker CF Access header invariant. When `deploy/cloudflare-worker/worker.js`
 #      is staged, verify it still contains both `env.CF_ACCESS_CLIENT_ID` and
@@ -35,7 +35,7 @@
 #
 #   7. actionlint on staged GitHub Actions workflow files.
 #
-#   8. Block new imports of the deprecated workflow.author_server shim.
+#   8. Block new imports of the deprecated tinyassets.author_server shim.
 #
 #   9. Cross-provider drift check. Provider-specific rules must not drift
 #      away from AGENTS.md, and referenced guard artifacts must exist.
@@ -93,25 +93,25 @@ fi
 
 # --- 2. Plugin-mirror parity -----------------------------------------
 
-MIRROR_PREFIX="packaging/claude-plugin/plugins/workflow-universe-server/runtime"
+MIRROR_PREFIX="packaging/claude-plugin/plugins/tinyassets-universe-server/runtime"
 
-# List staged canonical paths under workflow/ (excluding subpackaged-only
+# List staged canonical paths under tinyassets/ (excluding subpackaged-only
 # paths that don't have a mirror - currently none, but defensive against
 # future additions).
 STAGED_CANONICAL=$(
   git diff --cached --name-only --diff-filter=ACMR \
-    | grep -E '^workflow/.*\.(py|md|json|toml)$' || true
+    | grep -E '^tinyassets/.*\.(py|md|json|toml)$' || true
 )
 
 if [ -z "${STAGED_CANONICAL}" ]; then
-  echo "${GREEN}pre-commit: no canonical workflow/ changes - mirror parity N/A${RESET}"
+  echo "${GREEN}pre-commit: no canonical tinyassets/ changes - mirror parity N/A${RESET}"
 else
   MIRROR_MISMATCHES=()
   for canon in ${STAGED_CANONICAL}; do
     mirror="${MIRROR_PREFIX}/${canon}"
     if [ ! -f "${mirror}" ]; then
       # Canonical file has no mirror counterpart - acceptable, skip.
-      # (E.g. new workflow/ modules before the plugin build picks them up.)
+      # (E.g. new tinyassets/ modules before the plugin build picks them up.)
       continue
     fi
     if ! cmp -s "${canon}" "${mirror}"; then
@@ -179,15 +179,28 @@ if [ -n "${STAGED_TEXT}" ]; then
     if [ -n "${PYTHON_BIN}" ]; then
       if [ ! -f scripts/fix-mojibake.py ]; then
         echo "${YELLOW}pre-commit: scripts/fix-mojibake.py missing; skipping mojibake scan${RESET}" >&2
-      elif ! ${PYTHON_BIN} scripts/fix-mojibake.py "${EXISTING_PATHS[@]}"; then
-        echo "" >&2
-        echo "${RED}pre-commit: mojibake detected in staged files.${RESET}" >&2
-        echo "Run this to repair in-place, then re-stage:" >&2
-        echo "  ${PYTHON_BIN} scripts/fix-mojibake.py --autofix <paths>" >&2
-        echo "Override with --no-verify if intentional." >&2
-        exit 1
       else
-        echo "${GREEN}pre-commit: mojibake scan clean (${#EXISTING_PATHS[@]} text file(s) checked)${RESET}"
+        MOJIBAKE_FAILED=0
+        MOJIBAKE_CHECKED=0
+        # Large mechanical commits can exceed Windows' process argument
+        # length if every staged path is passed at once.
+        for ((i = 0; i < ${#EXISTING_PATHS[@]}; i += 100)); do
+          BATCH=("${EXISTING_PATHS[@]:i:100}")
+          MOJIBAKE_CHECKED=$((MOJIBAKE_CHECKED + ${#BATCH[@]}))
+          if ! ${PYTHON_BIN} scripts/fix-mojibake.py "${BATCH[@]}"; then
+            MOJIBAKE_FAILED=1
+          fi
+        done
+
+        if [ "${MOJIBAKE_FAILED}" -ne 0 ]; then
+          echo "" >&2
+          echo "${RED}pre-commit: mojibake detected in staged files.${RESET}" >&2
+          echo "Run this to repair in-place, then re-stage:" >&2
+          echo "  ${PYTHON_BIN} scripts/fix-mojibake.py --autofix <paths>" >&2
+          echo "Override with --no-verify if intentional." >&2
+          exit 1
+        fi
+        echo "${GREEN}pre-commit: mojibake scan clean (${MOJIBAKE_CHECKED} text file(s) checked)${RESET}"
       fi
     fi
   fi
@@ -195,13 +208,13 @@ fi
 
 # --- 4. Import-graph smoke ------------------------------------------
 
-STAGED_WORKFLOW_PY=$(
+STAGED_TINYASSETS_PY=$(
   git diff --cached --name-only --diff-filter=ACMRD \
-    | grep -E '^(workflow|packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow)/.*\.py$' \
+    | grep -E '^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/.*\.py$' \
     || true
 )
 
-if [ -n "${STAGED_WORKFLOW_PY}" ]; then
+if [ -n "${STAGED_TINYASSETS_PY}" ]; then
   if command -v python >/dev/null 2>&1; then
     PYTHON_BIN="python"
   elif command -v python3 >/dev/null 2>&1; then
@@ -217,7 +230,7 @@ if [ -n "${STAGED_WORKFLOW_PY}" ]; then
     if ! ${PYTHON_BIN} scripts/import_graph_smoke.py --primary-only; then
       echo "" >&2
       echo "${RED}pre-commit: import-graph regression detected.${RESET}" >&2
-      echo "A staged workflow/ change breaks at-import-time symbol" >&2
+      echo "A staged tinyassets/ change breaks at-import-time symbol" >&2
       echo "resolution - this is the 2026-04-19 P0 class of bug." >&2
       echo "" >&2
       echo "Fix: check __all__ lists in the staged module(s) and make" >&2
@@ -233,33 +246,33 @@ fi
 
 # --- 5. data_dir bypass lint -----------------------------------------
 #
-# Row B established ``workflow.storage.data_dir()`` as the canonical
+# Row B established ``tinyassets.storage.data_dir()`` as the canonical
 # resolver for on-disk state paths. Two sites pre-existing-Row-B
 # bypassed it by reading UNIVERSE_SERVER_BASE directly + defaulting to
 # CWD-relative ``output``, which wrote to /app/output in containers
 # (ephemeral, lost on restart). Fixed in commit ${ROW_B_CLEANUP}.
 #
-# Prevent the regression: any staged python file under workflow/ that
+# Prevent the regression: any staged python file under tinyassets/ that
 # reads UNIVERSE_SERVER_BASE via os.environ.get is suspect - it should
 # route through data_dir() instead. Grep the staged diff; fail on hit.
 #
-# Exempt: ``workflow/storage/__init__.py`` itself defines the resolver
+# Exempt: ``tinyassets/storage/__init__.py`` itself defines the resolver
 # and is allowed to read the legacy env var for backcompat.
 
 STAGED_WF_PY=$(
   git diff --cached --name-only --diff-filter=ACMRD \
-    | grep -E '^(workflow|packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow)/.*\.py$' \
-    | grep -v -E '(workflow|runtime/workflow)/storage/__init__\.py$' \
+    | grep -E '^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/.*\.py$' \
+    | grep -v -E '(tinyassets|runtime/tinyassets)/storage/__init__\.py$' \
     || true
 )
 
 if [ -n "${STAGED_WF_PY}" ]; then
   BYPASS_HITS=()
   # Pattern matches both UNIVERSE_SERVER_BASE (data_dir bypass, Row B)
-  # AND WIKI_PATH / WORKFLOW_WIKI_PATH (wiki_path bypass, Row B-pattern
+  # AND WIKI_PATH / TINYASSETS_WIKI_PATH (wiki_path bypass, Row B-pattern
   # cleanup 2026-04-20). Anything that should route through the
-  # resolvers in workflow/storage/__init__.py.
-  BYPASS_RE='os\.environ\.get\s*\(\s*["'"'"'](UNIVERSE_SERVER_BASE|WIKI_PATH|WORKFLOW_WIKI_PATH)'
+  # resolvers in tinyassets/storage/__init__.py.
+  BYPASS_RE='os\.environ\.get\s*\(\s*["'"'"'](UNIVERSE_SERVER_BASE|WIKI_PATH|TINYASSETS_WIKI_PATH)'
   while IFS= read -r f; do
     [ -z "${f}" ] && continue
     [ -f "${f}" ] || continue
@@ -276,22 +289,22 @@ if [ -n "${STAGED_WF_PY}" ]; then
     echo "${RED}pre-commit: path-resolver bypass detected.${RESET}" >&2
     echo "" >&2
     echo "The following staged lines read UNIVERSE_SERVER_BASE / WIKI_PATH /" >&2
-    echo "WORKFLOW_WIKI_PATH directly instead of routing through the" >&2
-    echo "canonical resolvers in workflow.storage:" >&2
+    echo "TINYASSETS_WIKI_PATH directly instead of routing through the" >&2
+    echo "canonical resolvers in tinyassets.storage:" >&2
     for h in "${BYPASS_HITS[@]}"; do
       echo "  ${h}" >&2
     done
     echo "" >&2
     echo "Fix (choose the right resolver):" >&2
-    echo "  from workflow.storage import data_dir      # state / DBs / per-universe dirs" >&2
-    echo "  from workflow.storage import wiki_path     # knowledge wiki root" >&2
+    echo "  from tinyassets.storage import data_dir      # state / DBs / per-universe dirs" >&2
+    echo "  from tinyassets.storage import wiki_path     # knowledge wiki root" >&2
     echo "" >&2
     echo "Why: Row B (data_dir) + Row B-pattern wiki cleanup established these" >&2
     echo "as the canonical resolvers. Direct env reads bypass them + default" >&2
     echo "to broken fallbacks (CWD-relative \"output\" for data_dir, hardcoded" >&2
     echo "Windows dev path for WIKI_PATH). Both break containerized deploys." >&2
     echo "" >&2
-    echo "Exempt: workflow/storage/__init__.py (defines the resolvers)." >&2
+    echo "Exempt: tinyassets/storage/__init__.py (defines the resolvers)." >&2
     echo "Override with --no-verify if intentional." >&2
     exit 1
   fi
@@ -362,9 +375,9 @@ if git diff --cached --name-only | grep -qE '^\.github/workflows/.+\.ya?ml$'; th
   fi
 fi
 
-# --- 8. Block new workflow.author_server imports ----------------------
+# --- 8. Block new tinyassets.author_server imports --------------------
 #
-# workflow.author_server is a deprecated shim for workflow.daemon_server.
+# tinyassets.author_server is a deprecated shim for tinyassets.daemon_server.
 # 124 existing call sites are grandfathered. This check scans only
 # ADDED lines in the staged diff, so existing sites are never flagged.
 # Delegates to scripts/pre_commit_invariant_author_server.py.
@@ -386,8 +399,8 @@ if git diff --cached --name-only --diff-filter=ACMR | grep -q '\.py$'; then
       echo "${YELLOW}pre-commit: scripts/pre_commit_invariant_author_server.py missing; skipping${RESET}" >&2
     elif ! ${PYTHON_BIN} scripts/pre_commit_invariant_author_server.py; then
       echo "" >&2
-      echo "${RED}pre-commit: workflow.author_server import gate failed.${RESET}" >&2
-      echo "Use workflow.daemon_server in new code." >&2
+      echo "${RED}pre-commit: tinyassets.author_server import gate failed.${RESET}" >&2
+      echo "Use tinyassets.daemon_server in new code." >&2
       echo "Override with --no-verify for the bulk-rename commit itself." >&2
       exit 1
     fi
