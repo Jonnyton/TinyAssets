@@ -211,7 +211,7 @@ investigation.
 
 ## Source
 
-Captured from dev-partner chat (ChatGPT gpt-5) with the Workflow MCP
+Captured from dev-partner chat (ChatGPT gpt-5) with the TinyAssets MCP
 connector installed, on 2026-05-02. The chatbot was asked the second-order
 question: "what's the highest-likelihood + highest-blast-radius silent-
 failure class once auto-ship lands?". Answer: there isn't one specific

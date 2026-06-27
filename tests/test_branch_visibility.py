@@ -26,13 +26,13 @@ import pytest
 def base_path(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    monkeypatch.setenv("WORKFLOW_GATES_ENABLED", "1")
-    from workflow.daemon_server import initialize_author_server
+    monkeypatch.setenv("TINYASSETS_GATES_ENABLED", "1")
+    from tinyassets.daemon_server import initialize_author_server
     initialize_author_server(base)
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
     yield base
@@ -65,7 +65,7 @@ def _make_branch_row(**overrides) -> dict:
 
 
 def test_default_visibility_is_public(base_path):
-    from workflow.daemon_server import get_branch_definition, save_branch_definition
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
 
     saved = save_branch_definition(
         base_path, branch_def=_make_branch_row(branch_def_id="b1"),
@@ -77,7 +77,7 @@ def test_default_visibility_is_public(base_path):
 
 
 def test_explicit_private_round_trips(base_path):
-    from workflow.daemon_server import get_branch_definition, save_branch_definition
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
 
     saved = save_branch_definition(
         base_path,
@@ -88,7 +88,7 @@ def test_explicit_private_round_trips(base_path):
 
 
 def test_unknown_visibility_normalizes_to_public(base_path):
-    from workflow.daemon_server import save_branch_definition
+    from tinyassets.daemon_server import save_branch_definition
 
     saved = save_branch_definition(
         base_path,
@@ -101,7 +101,7 @@ def test_unknown_visibility_normalizes_to_public(base_path):
 
 
 def test_update_visibility_public_to_private(base_path):
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         save_branch_definition,
         update_branch_definition,
     )
@@ -121,7 +121,7 @@ def test_update_visibility_public_to_private(base_path):
 
 
 def test_list_branch_definitions_hides_others_private(base_path):
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         list_branch_definitions,
         save_branch_definition,
     )
@@ -172,7 +172,7 @@ def test_list_branch_definitions_hides_others_private(base_path):
 def _seed_claims_for_filter_tests(base_path: Path):
     """Seed a Goal + 2 Branches (1 public, 1 private-bob) + 1 claim
     each on the same rung. Returns (goal_id, bids, rung_key)."""
-    from workflow.daemon_server import claim_gate, save_branch_definition, save_goal
+    from tinyassets.daemon_server import claim_gate, save_branch_definition, save_goal
 
     goal_saved = save_goal(base_path, goal={
         "goal_id": "g-vis",
@@ -225,8 +225,8 @@ def test_list_claims_hides_private_branch_from_non_owner(
     gid = _seed_claims_for_filter_tests(base_path)
     # Alice looks (non-owner of the private Branch).
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
 
@@ -240,8 +240,8 @@ def test_list_claims_hides_private_branch_from_non_owner(
 def test_list_claims_shows_own_private_to_owner(base_path, monkeypatch):
     gid = _seed_claims_for_filter_tests(base_path)
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
 
@@ -256,8 +256,8 @@ def test_leaderboard_hides_private_branch_from_non_owner(
 ):
     gid = _seed_claims_for_filter_tests(base_path)
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
 
@@ -270,8 +270,8 @@ def test_leaderboard_hides_private_branch_from_non_owner(
 def test_leaderboard_shows_own_private_to_owner(base_path, monkeypatch):
     gid = _seed_claims_for_filter_tests(base_path)
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
 
@@ -289,7 +289,7 @@ def test_private_branch_on_public_goal_is_visible_to_owner(
 ):
     """The collision case planner flagged: a private Branch bound to
     a public Goal. Owner sees their own claim; other users don't."""
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         claim_gate,
         get_goal,
         save_branch_definition,
@@ -326,8 +326,8 @@ def test_private_branch_on_public_goal_is_visible_to_owner(
 
     # Bob owns it — sees his claim on the public leaderboard.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
     r = json.loads(mkt._action_gates_leaderboard({"goal_id": "g-public"}))
@@ -346,8 +346,8 @@ def test_private_branch_on_public_goal_is_visible_to_owner(
 
 def test_branch_create_accepts_visibility(base_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
 
@@ -360,7 +360,7 @@ def test_branch_create_accepts_visibility(base_path, monkeypatch):
 
 
 def test_branch_get_hides_private_from_non_owner(base_path, monkeypatch):
-    from workflow.daemon_server import save_branch_definition
+    from tinyassets.daemon_server import save_branch_definition
 
     save_branch_definition(
         base_path,
@@ -371,8 +371,8 @@ def test_branch_get_hides_private_from_non_owner(base_path, monkeypatch):
 
     # Alice probes for it.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
 
@@ -400,7 +400,7 @@ def test_goal_get_hides_private_branch_from_non_owner(
     `branches_for_goal`, non-owners must not see another user's
     private Branch on a shared public Goal.
     """
-    from workflow.daemon_server import save_branch_definition, save_goal
+    from tinyassets.daemon_server import save_branch_definition, save_goal
 
     goal_saved = save_goal(base_path, goal={
         "goal_id": "g-leak",
@@ -432,8 +432,8 @@ def test_goal_get_hides_private_branch_from_non_owner(
 
     # Alice (non-owner of the private branch) hits goals.get.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
 
@@ -459,7 +459,7 @@ def test_goal_common_nodes_hides_private_branch_from_non_owner(
     node_ids across all Branches under a Goal. Without filtering,
     `first_seen_in` and `branch_ids` would leak private Branch IDs.
     """
-    from workflow.daemon_server import save_branch_definition, save_goal
+    from tinyassets.daemon_server import save_branch_definition, save_goal
 
     goal_saved = save_goal(base_path, goal={
         "goal_id": "g-cn",
@@ -500,8 +500,8 @@ def test_goal_common_nodes_hides_private_branch_from_non_owner(
 
     # Alice asks. min_branches=1 so a single contributor surfaces.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    from workflow.api import branches as br
-    from workflow.api import market as mkt
+    from tinyassets.api import branches as br
+    from tinyassets.api import market as mkt
     importlib.reload(mkt)
     importlib.reload(br)
     result = json.loads(mkt._action_goal_common_nodes({

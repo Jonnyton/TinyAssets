@@ -14,7 +14,7 @@ legal/compliance boxes, assert business/individual verification, or click
 
 2026-05-02T15:37-07:00 truth boundary: the OpenAI dashboard draft is
 configured to `https://tinyassets.io/mcp-directory`, but the enabled ChatGPT
-Developer Mode `Workflow DEV` app is still connected to the legacy
+Developer Mode `TinyAssets DEV` app is still connected to the legacy
 `https://tinyassets.io/mcp` endpoint. Do not treat current ChatGPT web prompts
 through that enabled app as directory-safe proof until the app is
 re-registered/refreshed to `/mcp-directory`.
@@ -78,7 +78,7 @@ Failure history remains documented in
 ## Tool Surface
 
 `chatgpt-app-submission.json` covers the directory-safe source in
-`workflow/directory_server.py`:
+`tinyassets/directory_server.py`:
 
 - `get_workflow_status`
 - `list_workflow_universes`
@@ -185,7 +185,7 @@ Recorded prior dashboard state from 2026-05-02:
 
 2026-05-02T15:37-07:00 ChatGPT Developer Mode audit:
 
-- Settings -> Apps -> `Workflow DEV` shows URL `https://tinyassets.io/mcp`.
+- Settings -> Apps -> `TinyAssets DEV` shows URL `https://tinyassets.io/mcp`.
 - The tool list includes legacy `get_status`, `goals`, `universe`, `wiki`,
   `gates`, and `extensions`.
 - A fresh ChatGPT web prompt in a new chat called legacy `get_status` and
@@ -227,7 +227,7 @@ Not yet complete:
 
 OpenAI Submit-section approval bundle ready for host review:
 
-- Release notes: `Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe Workflow MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+- Release notes: `Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 - Publisher selector: recommend `Business` only if the host confirms the
   TinyAssets publisher/business assertion.
 - Mature/adult-content answer: recommend `No`.
@@ -241,7 +241,7 @@ OpenAI Submit-section approval bundle ready for host review:
 
 Suggested release notes:
 
-`Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe Workflow MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+`Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 
 ## Current Verification Snapshot
 
@@ -380,7 +380,7 @@ Suggested release notes:
 
 2026-05-02T15:37-07:00 ChatGPT web user-test caveat:
 
-- Current enabled `Workflow DEV` app in ChatGPT is stale and points to
+- Current enabled `TinyAssets DEV` app in ChatGPT is stale and points to
   `https://tinyassets.io/mcp`.
 - Fresh ChatGPT web prompt called legacy `get_status` and returned raw
   diagnostics, so the current enabled app cannot be used as final

@@ -1,4 +1,4 @@
-"""Tests for workflow.sandbox.detect — bwrap detection module."""
+"""Tests for tinyassets.sandbox.detect — bwrap detection module."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.sandbox import (
+from tinyassets.sandbox import (
     _BWRAP_FAILURE_PATTERNS,
     SandboxStatus,
     SandboxUnavailableError,

@@ -15,7 +15,7 @@ from starlette.testclient import TestClient
 
 @pytest.fixture
 def app():
-    from workflow.universe_server import create_streamable_http_app
+    from tinyassets.universe_server import create_streamable_http_app
 
     return create_streamable_http_app()
 
@@ -32,7 +32,7 @@ def test_browser_get_mcp_returns_discovery_html(client):
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     body = response.text
-    assert "Workflow MCP Server" in body
+    assert "TinyAssets MCP Server" in body
     assert "MCP" in body  # at least mentions MCP
 
 
@@ -41,7 +41,7 @@ def test_browser_get_mcp_directory_returns_discovery_html(client):
     response = client.get("/mcp-directory", headers={"Accept": "text/html"})
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "Workflow MCP Server" in response.text
+    assert "TinyAssets MCP Server" in response.text
 
 
 def test_default_get_mcp_returns_discovery_json(client):
@@ -85,13 +85,13 @@ def test_get_with_mcp_protocol_version_header_passes_through(client):
         },
     )
     # Whatever FastMCP returns; the key is it should NOT be the discovery HTML
-    assert "Workflow MCP Server" not in response.text
+    assert "TinyAssets MCP Server" not in response.text
 
 
 def test_get_with_sse_accept_passes_through(client):
     """Streamable HTTP SSE leg should not receive discovery output."""
     response = client.get("/mcp", headers={"Accept": "text/event-stream"})
-    assert "Workflow MCP Server" not in response.text
+    assert "TinyAssets MCP Server" not in response.text
     assert "mcp_server_endpoint" not in response.text
 
 
@@ -114,5 +114,5 @@ def test_post_mcp_passes_through(client):
         headers={"Accept": "text/html"},
         json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
     )
-    assert "Workflow MCP Server" not in response.text
+    assert "TinyAssets MCP Server" not in response.text
     assert "mcp_server_endpoint" not in response.text

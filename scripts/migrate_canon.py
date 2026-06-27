@@ -16,7 +16,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from workflow.ingestion.core import SourceManifest, ingest_file
+from tinyassets.ingestion.core import SourceManifest, ingest_file
 
 
 def _is_user_upload(canon_dir: Path, filename: str) -> bool:

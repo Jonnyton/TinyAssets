@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from workflow.constraints.asp_engine import ASPEngine, surface_to_asp_facts
-from workflow.constraints.constraint_surface import (
+from tinyassets.constraints.asp_engine import ASPEngine, surface_to_asp_facts
+from tinyassets.constraints.constraint_surface import (
     empty_constraint_surface,
     score_constraint_surface,
 )

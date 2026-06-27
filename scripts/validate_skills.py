@@ -149,7 +149,7 @@ def validate_all(root: Path) -> list[SkillIssue]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate Workflow project skills.")
+    parser = argparse.ArgumentParser(description="Validate TinyAssets project skills.")
     parser.add_argument("--root", type=Path, default=ROOT, help="repository root")
     args = parser.parse_args(argv)
 

@@ -17,12 +17,12 @@ Date: 2026-04-17. Owner: dev.
 
 | File | Occurrences | Role |
 |---|---|---|
-| `workflow/author_server.py` | 25 | Table `author_definitions.author_id` PK, FK on `branch_definitions`, `goals`; `_author_id_for()` generator; `get_author()` lookup; runtime capacity assignment. Pure agent-runtime. |
+| `tinyassets/author_server.py` | 25 | Table `author_definitions.author_id` PK, FK on `branch_definitions`, `goals`; `_author_id_for()` generator; `get_author()` lookup; runtime capacity assignment. Pure agent-runtime. |
 | `fantasy_author/api.py` | 7 | REST surface: `POST /authors/{author_id}/run`, `GET /v1/authors/{author_id}`, body param `author_id`, `parent_author_id`. Exposes agent-runtime identity to clients. |
 | `tests/test_author_server_api.py` | 4 | Exercises the same REST surface; `preferred_author_id`, `parent_author_id`. Agent-runtime. |
-| `workflow/context/guardrails.py` | 1 | Docstring only: scope metadata field name. Agent-runtime (scope describes running daemon). |
-| `workflow/context/compaction.py` | 1 | Docstring only: same. Agent-runtime. |
-| `workflow/memory/tools.py` | 1 | Historical comment about Stage 2b collapsing `author_id` into `user_id`. Agent-runtime. |
+| `tinyassets/context/guardrails.py` | 1 | Docstring only: scope metadata field name. Agent-runtime (scope describes running daemon). |
+| `tinyassets/context/compaction.py` | 1 | Docstring only: same. Agent-runtime. |
+| `tinyassets/memory/tools.py` | 1 | Historical comment about Stage 2b collapsing `author_id` into `user_id`. Agent-runtime. |
 
 ### Content-authorship (-> keep `author_id`, add `author_kind` in Phase 3)
 
@@ -40,7 +40,7 @@ Implication: the `author_kind` discriminator in Phase 3 (§1.5 schema shape) **h
 ### Excluded (by plan §2, not counted above)
 
 - `fantasy_author_original/` — legacy package tree, scheduled for outright deletion in Phase 1 per host §9-B.
-- `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/` — build-time mirror of `workflow/`, regenerated during packaging; renames land transitively once source is renamed.
+- `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/` — build-time mirror of `tinyassets/`, regenerated during packaging; renames land transitively once source is renamed.
 - `docs/` historical specs + design notes — exclusion list §2.
 - Git commit `author` field — exclusion list §2.
 
@@ -49,7 +49,7 @@ Implication: the `author_kind` discriminator in Phase 3 (§1.5 schema shape) **h
 ## 2. `fantasy_author_original/` live-import confirmation (plan §4 Phase 0)
 
 - `from fantasy_author_original` / `import fantasy_author_original` — **zero matches** in the live tree.
-- Only surviving reference is `scripts/resync_packages.py`, which uses the directory as a path literal (`ORIG = Path('.') / 'fantasy_author_original'`) to re-sync `workflow/` and `domains/fantasy_author/` with rewritten imports.
+- Only surviving reference is `scripts/resync_packages.py`, which uses the directory as a path literal (`ORIG = Path('.') / 'fantasy_author_original'`) to re-sync `tinyassets/` and `domains/fantasy_author/` with rewritten imports.
 
 **Action required at Phase 1:** delete `scripts/resync_packages.py` alongside `fantasy_author_original/`. Host has already confirmed delete-with-no-safety-net in §9-B.
 
@@ -73,7 +73,7 @@ Packaging surfaces checked:
 
 ## 4. Compat flag (plan §4 Phase 0)
 
-- Added `workflow/_rename_compat.py` with `rename_compat_enabled()` reading `WORKFLOW_AUTHOR_RENAME_COMPAT` (default on).
+- Added `tinyassets/_rename_compat.py` with `rename_compat_enabled()` reading `TINYASSETS_AUTHOR_RENAME_COMPAT` (default on).
 - Consumers wired in Phases 1-2 (shim `__init__.py` re-exports + module-level `Author = Daemon` aliases).
 - Flag flips off + file deleted in Phase 5.
 

@@ -3,10 +3,10 @@
 Spec: docs/vetted-specs.md §Loud sandbox-unavailable surface.
 
 Covers:
-  * workflow.providers.base.check_bwrap_failure — raises SandboxUnavailableError on match.
-  * workflow.providers.base.get_sandbox_status — probe result shape + caching.
-  * workflow.universe_server.get_status — sandbox_status field present in return.
-  * workflow.graph_compiler — SandboxUnavailableError propagates rather than being
+  * tinyassets.providers.base.check_bwrap_failure — raises SandboxUnavailableError on match.
+  * tinyassets.providers.base.get_sandbox_status — probe result shape + caching.
+  * tinyassets.universe_server.get_status — sandbox_status field present in return.
+  * tinyassets.graph_compiler — SandboxUnavailableError propagates rather than being
     swallowed into a generic CompilerError. (Requires graph_compiler fix to pass —
     marked xfail until that lands; the fix is to re-raise before the generic
     `except Exception` catch at lines 834/848.)
@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.providers.base import (
+from tinyassets.providers.base import (
     _BWRAP_FAILURE_PATTERNS,
     SandboxUnavailableError,
     check_bwrap_failure,
@@ -134,7 +134,7 @@ class TestProbeSandboxAvailable:
 
 class TestGetSandboxStatus:
     def test_returns_dict_with_bwrap_available(self):
-        import workflow.providers.base as base_mod
+        import tinyassets.providers.base as base_mod
         original = base_mod._sandbox_probe_cache
         try:
             base_mod._sandbox_probe_cache = None
@@ -148,7 +148,7 @@ class TestGetSandboxStatus:
         assert "bwrap_available" in result
 
     def test_caches_after_first_call(self):
-        import workflow.providers.base as base_mod
+        import tinyassets.providers.base as base_mod
         original = base_mod._sandbox_probe_cache
         try:
             base_mod._sandbox_probe_cache = None
@@ -173,12 +173,12 @@ class TestGetSandboxStatus:
 class TestGetStatusSandboxField:
     def _call_get_status(self, monkeypatch, tmp_path):
         """Call get_status with a minimal universe dir + mocked sandbox probe."""
-        import workflow.providers.base as base_mod
+        import tinyassets.providers.base as base_mod
         original = base_mod._sandbox_probe_cache
         base_mod._sandbox_probe_cache = {"bwrap_available": False, "reason": "test-host"}
         try:
-            from workflow.universe_server import get_status
-            monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+            from tinyassets.universe_server import get_status
+            monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
             result_str = get_status()
         finally:
             base_mod._sandbox_probe_cache = original
@@ -198,7 +198,7 @@ class TestGetStatusSandboxField:
 
     def test_sandbox_status_probe_error_handled_gracefully(self, monkeypatch, tmp_path):
         """If probe raises, get_status still returns sandbox_status with error reason."""
-        import workflow.providers.base as base_mod
+        import tinyassets.providers.base as base_mod
         original = base_mod._sandbox_probe_cache
         base_mod._sandbox_probe_cache = None
         try:
@@ -206,8 +206,8 @@ class TestGetStatusSandboxField:
                 base_mod, "probe_sandbox_available",
                 side_effect=RuntimeError("probe exploded"),
             ):
-                from workflow.universe_server import get_status
-                monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+                from tinyassets.universe_server import get_status
+                monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
                 result = json.loads(get_status())
         finally:
             base_mod._sandbox_probe_cache = original
@@ -220,7 +220,7 @@ class TestGetStatusSandboxField:
 
 class TestGraphCompilerSandboxPropagation:
     def _make_branch(self):
-        from workflow.branches import (
+        from tinyassets.branches import (
             BranchDefinition,
             EdgeDefinition,
             GraphNodeRef,
@@ -248,8 +248,8 @@ class TestGraphCompilerSandboxPropagation:
         import os
         import tempfile
 
-        from workflow.graph_compiler import compile_branch
-        from workflow.providers.base import SandboxUnavailableError
+        from tinyassets.graph_compiler import compile_branch
+        from tinyassets.providers.base import SandboxUnavailableError
 
         branch = self._make_branch()
 
@@ -277,8 +277,8 @@ class TestGraphCompilerSandboxPropagation:
         import os
         import tempfile
 
-        from workflow.graph_compiler import compile_branch
-        from workflow.providers.base import SandboxUnavailableError
+        from tinyassets.graph_compiler import compile_branch
+        from tinyassets.providers.base import SandboxUnavailableError
 
         monkeypatch.setattr("sys.platform", "linux")
         branch = self._make_branch()
@@ -304,7 +304,7 @@ class TestGraphCompilerSandboxPropagation:
         import os
         import tempfile
 
-        from workflow.graph_compiler import compile_branch
+        from tinyassets.graph_compiler import compile_branch
 
         branch = self._make_branch()
 

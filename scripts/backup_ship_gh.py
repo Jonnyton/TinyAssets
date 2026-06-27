@@ -1,7 +1,7 @@
-"""backup_ship_gh.py — upload a workflow-data tarball to GitHub release assets.
+"""backup_ship_gh.py — upload a tinyassets-data tarball to GitHub release assets.
 
 Offsite backup for task #59: after the local rclone upload succeeds, ship
-the same tarball to a private GitHub repo (Jonnyton/workflow-backups) as a
+the same tarball to a private GitHub repo (Jonnyton/tinyassets-backups) as a
 release asset.  No new secrets — uses GH_TOKEN (same credential already
 cached for GHA workflows).
 
@@ -15,14 +15,14 @@ Exit codes
 
 Usage
 -----
-    python3 scripts/backup_ship_gh.py /tmp/workflow-data-2026-04-20T02-00-00Z.tar.gz
+    python3 scripts/backup_ship_gh.py /tmp/tinyassets-data-2026-04-20T02-00-00Z.tar.gz
     GH_TOKEN=ghp_... python3 scripts/backup_ship_gh.py /path/to/backup.tar.gz
     DRY_RUN=1 python3 scripts/backup_ship_gh.py /path/to/backup.tar.gz
 
 Environment
 -----------
     GH_TOKEN              GitHub token with repo scope (required).
-    BACKUP_GH_REPO        target repo (default: Jonnyton/workflow-backups).
+    BACKUP_GH_REPO        target repo (default: Jonnyton/tinyassets-backups).
     BACKUP_GH_RETAIN      number of releases to keep (default: 30).
     DRY_RUN               set to "1" to skip mutations.
 
@@ -42,7 +42,7 @@ from typing import Any
 
 GH_API = "https://api.github.com"
 GH_UPLOAD_API = "https://uploads.github.com"
-DEFAULT_REPO = "Jonnyton/workflow-backups"
+DEFAULT_REPO = "Jonnyton/tinyassets-backups"
 DEFAULT_RETAIN = 30
 
 
@@ -59,7 +59,7 @@ def _headers(token: str, accept: str = "application/vnd.github+json") -> dict[st
         "Authorization": f"Bearer {token}",
         "Accept": accept,
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "workflow-backup-ship/1.0",
+        "User-Agent": "tinyassets-backup-ship/1.0",
     }
 
 
@@ -143,7 +143,7 @@ def ensure_repo(token: str, repo: str, *, post_fn: Any = None) -> None:
         "POST",
         create_url,
         {"name": name, "private": True, "auto_init": True,
-         "description": "Workflow daemon offsite backup archives"},
+         "description": "TinyAssets daemon offsite backup archives"},
         post_fn=post_fn,
     )
     print(f"created private repo {repo}")
@@ -164,7 +164,7 @@ def create_release(
         {
             "tag_name": tag,
             "name": f"backup {tag}",
-            "body": "Automated workflow-data backup archive.",
+            "body": "Automated tinyassets-data backup archive.",
             "draft": False,
             "prerelease": False,
         },
@@ -239,7 +239,7 @@ def ship(
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
             break
-    tag = stem  # e.g. "workflow-data-2026-04-20T02-00-00Z"
+    tag = stem  # e.g. "tinyassets-data-2026-04-20T02-00-00Z"
 
     print(f"[backup-ship] tarball: {tarball} ({size} bytes)")
     print(f"[backup-ship] target:  {repo} release {tag!r}")

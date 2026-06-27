@@ -60,8 +60,8 @@ The repo is not in “no source of truth” territory, but it is in
 The strongest surviving truths are:
 
 - the project is actively running live on April 8, 2026
-- the workflow/domain extraction exists on disk
-- the Workflow MCP server and multiplayer/MCP surfaces exist and are active
+- the tinyassets/domain extraction exists on disk
+- the TinyAssets MCP server and multiplayer/MCP surfaces exist and are active
 - the extracted engine is still partially bridged back through
   `fantasy_author.*`
 - the current verification story is stale
@@ -87,10 +87,10 @@ Observed directly during this audit:
 
 | Claim | Strongest evidence | Status | Confidence | Notes |
 |------|---------------------|--------|------------|-------|
-| Workflow extraction exists | `workflow/`, `domains/fantasy_author/`, `domains/research_probe/` present and compile | implemented | High | Structural extraction is real |
-| Workflow MCP server exists and is being used | `fantasy_author/universe_server.py`, `logs/mcp_server.log` | runtime-proven | High | This is not just planned; it is live |
+| Workflow extraction exists | `tinyassets/`, `domains/fantasy_author/`, `domains/research_probe/` present and compile | implemented | High | Structural extraction is real |
+| TinyAssets MCP server exists and is being used | `fantasy_author/universe_server.py`, `logs/mcp_server.log` | runtime-proven | High | This is not just planned; it is live |
 | Multiplayer HTTP/API wiring exists | `fantasy_author/api.py` routes into `author_server` | implemented | High | Current code exposes session/author/branch/runtime/ledger endpoints |
-| Engine/runtime extraction is complete and independent | `workflow/__main__.py`, `workflow/api/__init__.py` still delegate/re-export `fantasy_author.*` | contradicted | High | Engine split exists, but execution and API are still bridge-mode |
+| Engine/runtime extraction is complete and independent | `tinyassets/__main__.py`, `tinyassets/api/__init__.py` still delegate/re-export `fantasy_author.*` | contradicted | High | Engine split exists, but execution and API are still bridge-mode |
 | First live smoke test is still pending | active universe + fresh logs/db writes | contradicted | High | The system has already moved into live use |
 | Phase 0/5 verification still holds as currently true | current `pytest` and `ruff` results | contradicted | High | May have been true once in another environment, but not now |
 | `PLAN.md` can be treated as exact current truth | drift between plan/docs/runtime | contradicted | Medium | Still useful for direction, not safe as sole authority |
@@ -106,7 +106,7 @@ Evidence:
 
 - `PLAN.md` thesis emphasizes fantasy writing as the hard testbed, not the
   final abstraction
-- the extracted `workflow/` package and `domains/` split materially support
+- the extracted `tinyassets/` package and `domains/` split materially support
   that generalization
 - `domains/research_probe/` exists as a second-domain probe
 
@@ -119,7 +119,7 @@ Assessment:
 
 Evidence:
 
-- `workflow/` contains providers, memory, retrieval, evaluation,
+- `tinyassets/` contains providers, memory, retrieval, evaluation,
   checkpointing, context, desktop, testing, and API scaffolding
 - `domains/fantasy_author/graphs/` and `domains/research_probe/` own
   domain-specific topology
@@ -130,7 +130,7 @@ Assessment:
 - Status: `implemented`
 - Confidence: High
 
-### 3. The public interface is shifting from Custom GPT toward Workflow MCP
+### 3. The public interface is shifting from Custom GPT toward TinyAssets MCP
 
 Evidence:
 
@@ -148,9 +148,9 @@ Assessment:
 
 Evidence:
 
-- `workflow/__main__.py` only runs `fantasy_author` and delegates to
+- `tinyassets/__main__.py` only runs `fantasy_author` and delegates to
   `fantasy_author.__main__.DaemonController`
-- `workflow/api/__init__.py` returns/re-exports `fantasy_author.api`
+- `tinyassets/api/__init__.py` returns/re-exports `fantasy_author.api`
 
 Assessment:
 

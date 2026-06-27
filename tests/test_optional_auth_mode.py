@@ -13,13 +13,13 @@ from typing import Any
 
 import pytest
 
-from workflow.auth.middleware import (
+from tinyassets.auth.middleware import (
     auth_middleware,
     current_identity,
     require_auth,
     set_provider,
 )
-from workflow.auth.provider import (
+from tinyassets.auth.provider import (
     AuthProvider,
     DevAuthProvider,
     Identity,
@@ -86,7 +86,7 @@ def _reset_auth_context():
 
 @pytest.mark.parametrize("mode", ["optional", "resolve", "OPTIONAL", " optional "])
 def test_optional_mode_selects_non_gating_oauth_provider(monkeypatch, tmp_path, mode):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_AUTH", mode)
     provider = create_provider()
     assert isinstance(provider, OptionalOAuthProvider)
@@ -95,7 +95,7 @@ def test_optional_mode_selects_non_gating_oauth_provider(monkeypatch, tmp_path, 
 
 @pytest.mark.parametrize("mode", ["true", "1", "yes", "oauth"])
 def test_gated_modes_still_require_auth(monkeypatch, tmp_path, mode):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_AUTH", mode)
     provider = create_provider()
     # OAuthProvider, NOT the optional subclass.
@@ -105,7 +105,7 @@ def test_gated_modes_still_require_auth(monkeypatch, tmp_path, mode):
 
 @pytest.mark.parametrize("mode", ["false", "", "off", "nope"])
 def test_falsy_modes_stay_dev_anonymous(monkeypatch, tmp_path, mode):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_AUTH", mode)
     provider = create_provider()
     assert isinstance(provider, DevAuthProvider)

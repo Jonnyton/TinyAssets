@@ -1,11 +1,11 @@
-"""Tests for workflow.outcomes evaluators — protocol conformance, EvalResult shape."""
+"""Tests for tinyassets.outcomes evaluators — protocol conformance, EvalResult shape."""
 
 from __future__ import annotations
 
 import pytest
 
-from workflow.evaluation import EvalResult, Evaluator
-from workflow.outcomes import (
+from tinyassets.evaluation import EvalResult, Evaluator
+from tinyassets.outcomes import (
     ConferenceAcceptedEvaluator,
     DeployedAppEvaluator,
     HyperparameterImportanceEvaluator,
@@ -360,9 +360,9 @@ class TestMentionedInPublicationEvaluator:
         assert result.verdict == "fail"
 
     def test_optional_context_snippet_included_in_details(self):
-        state = {**self._VALID, "context_snippet": "...the Workflow platform..."}
+        state = {**self._VALID, "context_snippet": "...the TinyAssets platform..."}
         result = MentionedInPublicationEvaluator().evaluate(state)
-        assert result.details["context_snippet"] == "...the Workflow platform..."
+        assert result.details["context_snippet"] == "...the TinyAssets platform..."
 
     def test_empty_publication_returns_fail(self):
         state = {**self._VALID, "publication": ""}
@@ -447,7 +447,7 @@ class TestHyperparameterImportanceEvaluator:
         assert "param_d" in params_in_ranking  # ordinal-encoded categorical surfaces
 
     def test_skip_when_backends_missing(self, monkeypatch):
-        from workflow.outcomes import evaluators as ev_mod
+        from tinyassets.outcomes import evaluators as ev_mod
 
         err_msg = "scikit-learn / scipy not installed; pip install workflow[scientific]"
         monkeypatch.setattr(

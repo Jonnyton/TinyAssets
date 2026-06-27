@@ -3,7 +3,7 @@
 Closes the structural class surfaced in dev-2's REFLECTION (Task #18 audit
 follow-up): "feature added under time pressure, dispatch dict grows,
 human-readable contract doesn't." Each `@mcp.tool` handler in
-`workflow.universe_server` that uses an `action: str` dispatch table must
+`tinyassets.universe_server` that uses an `action: str` dispatch table must
 keep its docstring action list in sync with the actually-callable surface.
 The docstring is what FastMCP serializes into `tool.description` for every
 MCP client (Claude.ai, ChatGPT, Codex, etc.) — drift is a silent
@@ -39,13 +39,13 @@ import re
 
 import pytest
 
-from workflow import universe_server as us
-from workflow.api import branches as branches_mod
-from workflow.api import evaluation as evaluation_mod
-from workflow.api import market as market_mod
-from workflow.api import runs as runs_mod
-from workflow.api import runtime_ops as runtime_ops_mod
-from workflow.api import universe as universe_mod  # noqa: F401
+from tinyassets import universe_server as us
+from tinyassets.api import branches as branches_mod
+from tinyassets.api import evaluation as evaluation_mod
+from tinyassets.api import market as market_mod
+from tinyassets.api import runs as runs_mod
+from tinyassets.api import runtime_ops as runtime_ops_mod
+from tinyassets.api import universe as universe_mod  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # KNOWN_DEBT — pre-existing undocumented dispatch keys.

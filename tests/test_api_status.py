@@ -1,8 +1,8 @@
-"""Task #10 — direct tests for `workflow.api.status` after decomp Step 3.
+"""Task #10 — direct tests for `tinyassets.api.status` after decomp Step 3.
 
 The legacy test files (test_get_status_primitive.py, test_sandbox_*, etc.)
-still cover the chatbot-facing `workflow.universe_server` MCP wrapper. This
-file exercises `workflow.api.status` directly to lock in the canonical
+still cover the chatbot-facing `tinyassets.universe_server` MCP wrapper. This
+file exercises `tinyassets.api.status` directly to lock in the canonical
 implementation surface.
 """
 
@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from workflow.api import status as status_mod
-from workflow.api.status import _policy_hash, get_status
+from tinyassets.api import status as status_mod
+from tinyassets.api.status import _policy_hash, get_status
 
 # ── module surface ──────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ def test_policy_hash_handles_empty_dict():
 @pytest.fixture
 def status_env(tmp_path, monkeypatch):
     """Isolated data dir + universe so get_status touches no host files."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "test-host")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "test-user")
@@ -131,20 +131,20 @@ def test_get_status_release_state_reports_missing_receipt(status_env):
 def test_get_status_release_state_reads_deploy_receipt(status_env):
     receipt = {
         "git_sha": "868b8d04abcdef",
-        "image_tag": "ghcr.io/jonnyton/workflow-daemon:868b8d04abcd",
-        "image_digest": "ghcr.io/jonnyton/workflow-daemon@sha256:abc123",
+        "image_tag": "ghcr.io/jonnyton/tinyassets-daemon:868b8d04abcd",
+        "image_digest": "ghcr.io/jonnyton/tinyassets-daemon@sha256:abc123",
         "build_run_id": "111",
-        "build_run_url": "https://github.com/Jonnyton/Workflow/actions/runs/111",
+        "build_run_url": "https://github.com/Jonnyton/TinyAssets/actions/runs/111",
         "deploy_run_id": "222",
-        "deploy_run_url": "https://github.com/Jonnyton/Workflow/actions/runs/222",
+        "deploy_run_url": "https://github.com/Jonnyton/TinyAssets/actions/runs/222",
         "config_hash": "sha256:deadbeef",
-        "config_version": "workflow-env-v1",
+        "config_version": "tinyassets-env-v1",
         "schema_migration_rev": "not_applicable",
         "canary_bundle_status": "passed",
         "deployed_at": "2026-05-28T12:00:00Z",
-        "rollback_target": "ghcr.io/jonnyton/workflow-daemon:previous",
+        "rollback_target": "ghcr.io/jonnyton/tinyassets-daemon:previous",
         "actor": "codex-wiki-patch",
-        "repository": "Jonnyton/Workflow",
+        "repository": "Jonnyton/TinyAssets",
         "workflow_event": "workflow_run",
     }
     (status_env.parent / "release-state.json").write_text(
@@ -164,8 +164,8 @@ def test_get_status_release_state_reads_deploy_receipt(status_env):
 
 
 def test_get_status_includes_read_only_open_brain_surface(status_env, tmp_path):
-    from workflow.daemon_brain import capture_daemon_memory
-    from workflow.daemon_registry import create_daemon
+    from tinyassets.daemon_brain import capture_daemon_memory
+    from tinyassets.daemon_registry import create_daemon
 
     daemon = create_daemon(
         tmp_path,

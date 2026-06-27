@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.wiki.okf_export import export_universe_okf_bundle
+from tinyassets.wiki.okf_export import export_universe_okf_bundle
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -24,8 +24,8 @@ def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
 def fixture_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     data_root = tmp_path / "data"
     wiki_root = data_root / "alpha" / "wiki"
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(data_root))
-    monkeypatch.delenv("WORKFLOW_WIKI_PATH", raising=False)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    monkeypatch.delenv("TINYASSETS_WIKI_PATH", raising=False)
 
     (wiki_root / "pages" / "concepts").mkdir(parents=True)
     (wiki_root / "drafts" / "concepts").mkdir(parents=True)

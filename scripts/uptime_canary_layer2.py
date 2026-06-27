@@ -21,7 +21,7 @@ Exit-code table (§2.3 + §2.6 amendment 2026-04-20)
 
 Invocation
 ----------
-Windows Task Scheduler entry ``Workflow-Canary-L2`` invokes this hourly.
+Windows Task Scheduler entry ``TinyAssets-Canary-L2`` invokes this hourly.
 Exit code is 0 for GREEN and SOFT_YELLOW (soft signal, not a failure),
 nonzero for RED or unexpected errors.  Exit 14 (SKIP) is also 0 from the
 scheduler's perspective — a missed probe is not a failure.

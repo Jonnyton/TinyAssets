@@ -33,11 +33,11 @@ from domains.fantasy_daemon.phases.world_state_db import (
     store_fact,
     upsert_character,
 )
-from workflow.enrichment_signals import append_enrichment_signals
-from workflow.evaluation.editorial import EditorialNotes, read_editorial
-from workflow.evaluation.process import ProcessEvaluation, evaluate_scene_process
-from workflow.evaluation.structural import StructuralEvaluator, StructuralResult
-from workflow.ingestion.canon_io import iter_canon_files
+from tinyassets.enrichment_signals import append_enrichment_signals
+from tinyassets.evaluation.editorial import EditorialNotes, read_editorial
+from tinyassets.evaluation.process import ProcessEvaluation, evaluate_scene_process
+from tinyassets.evaluation.structural import StructuralEvaluator, StructuralResult
+from tinyassets.ingestion.canon_io import iter_canon_files
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +296,7 @@ def _build_editorial_context(state: dict[str, Any]) -> dict[str, str]:
     universe_path = state.get("_universe_path")
     if universe_path:
         try:
-            from workflow.notes import (
+            from tinyassets.notes import (
                 format_notes_for_context,
                 get_active_direction_notes,
             )
@@ -438,7 +438,7 @@ def _store_editorial_as_notes(
     try:
         import uuid as _uuid
 
-        from workflow.notes import Note, add_notes_bulk
+        from tinyassets.notes import Note, add_notes_bulk
 
         batch: list[Note] = []
         for item in editorial.protect:
@@ -479,7 +479,7 @@ def _store_consistency_audit_as_notes(
         return
 
     try:
-        from workflow.notes import add_notes_bulk
+        from tinyassets.notes import add_notes_bulk
 
         add_notes_bulk(universe_path, notes)
     except Exception as e:
@@ -494,7 +494,7 @@ def _build_consistency_audit_notes(
     """Build durable notes from structural and process audit failures."""
     import uuid as _uuid
 
-    from workflow.notes import Note
+    from tinyassets.notes import Note
 
     notes: list[Note] = []
 
@@ -823,7 +823,7 @@ def _upsert_characters_from_facts(
 
 def _assemble_memory(state: dict[str, Any], phase: str) -> dict:
     """Call MemoryManager.assemble_context if available."""
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     mgr = runtime.memory_manager
     if mgr is None:
@@ -837,7 +837,7 @@ def _assemble_memory(state: dict[str, Any], phase: str) -> dict:
 
 def _store_to_memory(state: dict[str, Any], extracted_facts: list) -> None:
     """Store scene results to MemoryManager if available."""
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     mgr = runtime.memory_manager
     if mgr is None:
@@ -857,7 +857,7 @@ def _save_to_version_store(
     quality_score: float,
 ) -> None:
     """Save draft to OutputVersionStore if available."""
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     store = runtime.version_store
     if store is None:
@@ -1074,7 +1074,7 @@ def _emit_scene_packet(
     scene in machine-readable form.  Persisted at the same path as the
     prose file but with a ``.packet.json`` extension.
     """
-    from workflow.packets import (
+    from tinyassets.packets import (
         EditorialVerdict,
         FactRef,
         PromiseRef,
@@ -1205,7 +1205,7 @@ def _index_prose_entities(
     registry) and the indexer module. Non-blocking -- failures are
     logged but don't affect the commit verdict.
     """
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     kg = runtime.knowledge_graph
     vs = runtime.vector_store
@@ -1219,8 +1219,8 @@ def _index_prose_entities(
         return
 
     try:
-        from workflow.ingestion.indexer import index_text
-        from workflow.memory.scoping import MemoryScope
+        from tinyassets.ingestion.indexer import index_text
+        from tinyassets.memory.scoping import MemoryScope
 
         # Memory-scope Stage 2b: tag writes with the caller's universe
         # tier. Sub-tiers (goal/branch/user) stay None on the commit

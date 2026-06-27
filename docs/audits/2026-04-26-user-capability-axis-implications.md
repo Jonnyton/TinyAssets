@@ -244,7 +244,7 @@ Recommended PLAN.md text (suggestion only):
 
 ### F20 — PLAN.md §"Module Layout" should call out tier-restricted modules
 
-**Current state:** PLAN.md likely doesn't enumerate which modules are local-app-only (e.g., `workflow/desktop/launcher.py`, `workflow/sandbox/`, `add_canon_from_path` in `workflow/api/extensions.py`). New contributors don't know which features are tier-restricted vs tier-portable.
+**Current state:** PLAN.md likely doesn't enumerate which modules are local-app-only (e.g., `tinyassets/desktop/launcher.py`, `tinyassets/sandbox/`, `add_canon_from_path` in `tinyassets/api/extensions.py`). New contributors don't know which features are tier-restricted vs tier-portable.
 
 **Recommended action:** Lead surfaces to host: add a "Tier dependency" annotation to module-layout entries that have one. Cross-references `project_user_capability_axis`.
 
@@ -258,7 +258,7 @@ Recommended PLAN.md text (suggestion only):
 
 **Location:** `.agents/skills/ui-test/SKILL.md` (and 2 mirrors).
 
-**Current state:** Skill description: "Simulate a Claude.ai phone user driving the Workflow daemon via the custom MCP connector." All examples reference Claude.ai phone. ChatGPT path mentioned briefly ("Codex / ChatGPT desktop route: when Codex has browser or computer control, use it only to drive the same live Claude.ai session...").
+**Current state:** Skill description: "Simulate a Claude.ai phone user driving the TinyAssets daemon via the custom MCP connector." All examples reference Claude.ai phone. ChatGPT path mentioned briefly ("Codex / ChatGPT desktop route: when Codex has browser or computer control, use it only to drive the same live Claude.ai session...").
 
 **What the principle changes:** Per provider parity, ui-test should support BOTH Claude.ai AND ChatGPT user-simulation as first-class. "Drive the same live Claude.ai session" via Codex defeats the purpose of testing the OpenAI side.
 
@@ -429,9 +429,9 @@ Host updated `project_user_capability_axis` mid-sweep to add the long-tail OSS-c
 **New anti-pattern added to memory:**
 > Hard-coding assumptions about which chat client renders responses (e.g., assuming Claude.ai's mermaid rendering is universal — Cline/Aider/OpenWebUI may render differently or not at all). Test on at least one OSS client periodically to keep the provider-portable assumption honest.
 
-### F27 — `workflow/api/prompts.py` `_CONTROL_STATION_PROMPT` is Claude.ai-named in 15 places
+### F27 — `tinyassets/api/prompts.py` `_CONTROL_STATION_PROMPT` is Claude.ai-named in 15 places
 
-**Location:** `workflow/api/prompts.py` (the canonical chatbot-facing system prompt loaded by every MCP session).
+**Location:** `tinyassets/api/prompts.py` (the canonical chatbot-facing system prompt loaded by every MCP session).
 
 **What the principle changes:** 15 references to `Claude.ai` / `ChatGPT` / `connector` in `_CONTROL_STATION_PROMPT` text. Examples:
 - L91 ("Shared-account / cross-session: ... One Claude.ai account may be used by multiple people")
@@ -473,9 +473,9 @@ This bundles cleanly into Task #22 (tool-description hardening) — same scope, 
 ### F30 — Mermaid rendering as a load-bearing chatbot-output convention
 
 **Location:**
-- `workflow/api/branches.py:742-770` — `_branch_mermaid()` renderer
-- `workflow/api/runs.py:84,89` — `get_run` emits ```mermaid``` block
-- `workflow/universe_server.py:541` — comment "`get_run` emits a ```mermaid``` diagram for Claude.ai auto-render"
+- `tinyassets/api/branches.py:742-770` — `_branch_mermaid()` renderer
+- `tinyassets/api/runs.py:84,89` — `get_run` emits ```mermaid``` block
+- `tinyassets/universe_server.py:541` — comment "`get_run` emits a ```mermaid``` diagram for Claude.ai auto-render"
 - `project_chatbot_visuals_first` memory — visuals-first rule
 
 **What the principle changes:** Mermaid renders in Claude.ai web + ChatGPT + Claude Code. **Probably DOES NOT render in:** OpenWebUI (renders only if mermaid plugin installed), Cline (terminal-based, no render), Aider (terminal-based, no render), LibreChat (varies by config). For these, mermaid blocks render as raw fenced text — readable but ugly + no graph layout.
@@ -493,7 +493,7 @@ The comment at `universe_server.py:541` ("for Claude.ai auto-render") even expli
 
 ### F31 — `chatbot_assumes_workflow` rule wording test against OpenWebUI
 
-**Location:** `workflow/api/prompts.py:_CONTROL_STATION_PROMPT` rules 1-12 + the user-vocabulary rule.
+**Location:** `tinyassets/api/prompts.py:_CONTROL_STATION_PROMPT` rules 1-12 + the user-vocabulary rule.
 
 **What the principle changes:** Per the new anti-pattern, "test on at least one OSS client periodically." The `chatbot_assumes_workflow` rule body should be re-read as if the reader is Cline / Aider / OpenWebUI. Specifically:
 - Rule 1 ("when user says 'workflow thing' or 'the connector'..."): "the connector" is Claude.ai-specific UI vocabulary. Cline says "MCP server"; OpenWebUI says "tool" or "function." A user on OpenWebUI typing "the workflow tool" might not match the rule's pattern.
@@ -512,9 +512,9 @@ Already covered in F21. ADDENDUM scope: the skill should grow a **third driver m
 
 **Urgency:** P2 (folds into F21).
 
-### F33 — Tool descriptions in `workflow/api/*` — verify NONE name a specific client
+### F33 — Tool descriptions in `tinyassets/api/*` — verify NONE name a specific client
 
-**Scan result:** Searched `workflow/api/` for tool description strings naming "Claude.ai" or "ChatGPT". **Zero canonical-tree matches.** Tool descriptions are already client-portable. Good.
+**Scan result:** Searched `tinyassets/api/` for tool description strings naming "Claude.ai" or "ChatGPT". **Zero canonical-tree matches.** Tool descriptions are already client-portable. Good.
 
 **Recommended action:** No action needed. Confirms one axis is already clean. Tests/test_vocabulary_hygiene.py regression contract works on this axis already.
 

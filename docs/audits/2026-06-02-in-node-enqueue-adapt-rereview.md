@@ -5,7 +5,7 @@
 
 This is the re-review gate after the **ADAPT** verdict in
 `2026-05-30-in-node-enqueue-codex-review.md` (recorded via PR #1217). The verb
-still ships **dark** behind `WORKFLOW_NODE_ENQUEUE_ENABLED` (default off). A
+still ships **dark** behind `TINYASSETS_NODE_ENQUEUE_ENABLED` (default off). A
 Codex **approve** here is the gate to flip that flag on in production — it does
 **not** gate the merge.
 
@@ -18,17 +18,17 @@ Codex **approve** here is the gate to flip that flag on in production — it doe
 
 ## Files / symbols
 
-- `workflow/graph_compiler.py`
+- `tinyassets/graph_compiler.py`
   - `NodeEnqueueContext` (new) — trusted, server-set `universe_id`, `actor`,
     `parent_branch_task_id`, `origin_branch_task_id`.
   - `_node_enqueue_branch_run` (rewritten) — Fixes 1+2+3.
   - `_node_enqueue_max_queue` / `_node_enqueue_max_lineage` (new env readers).
   - context threaded through `_build_node_mcp_invoker` → `_build_source_code_node`
     → `_build_node` → `compile_branch` (parallel to `invocation_depth`).
-- `workflow/branch_tasks.py` — `BranchTask.parent_branch_task_id` /
+- `tinyassets/branch_tasks.py` — `BranchTask.parent_branch_task_id` /
   `origin_branch_task_id` (new, migration-safe); `QueueCapExceeded` +
   `append_task_capped` (atomic count-then-append under one lock).
-- `workflow/runs.py` — `execute_branch` accepts `_enqueue_universe_id`
+- `tinyassets/runs.py` — `execute_branch` accepts `_enqueue_universe_id`
   `_parent_branch_task_id` `_origin_branch_task_id`, builds the context, threads
   it via `_invoke_graph` → `compile_branch`.
 - `fantasy_daemon/__main__.py` — dispatcher passes `claimed_task.universe_id` /
@@ -43,8 +43,8 @@ Codex **approve** here is the gate to flip that flag on in production — it doe
    (in-node enqueue is for dispatched runs; the async/MCP path passes no
    context and therefore cannot enqueue).
 2. **Queue growth (was Q1).** Global active cap
-   `WORKFLOW_NODE_ENQUEUE_MAX_QUEUE` (default 500) + per-origin lineage cap
-   `WORKFLOW_NODE_ENQUEUE_MAX_LINEAGE` (default 200), both enforced inside
+   `TINYASSETS_NODE_ENQUEUE_MAX_QUEUE` (default 500) + per-origin lineage cap
+   `TINYASSETS_NODE_ENQUEUE_MAX_LINEAGE` (default 200), both enforced inside
    `append_task_capped` under a single file lock (count + append atomic — no
    TOCTOU). Lineage = `origin_branch_task_id`, propagated server-side; a root
    run's first enqueue becomes its own origin.
@@ -99,7 +99,7 @@ the flag flip is unblocked. On **adapt**, list the concrete required changes.
 
 ## Verdict (codex round 2, 2026-06-03)
 
-**adapt** - do not flip `WORKFLOW_NODE_ENQUEUE_ENABLED` on in production yet.
+**adapt** - do not flip `TINYASSETS_NODE_ENQUEUE_ENABLED` on in production yet.
 
 The three original ADAPT items are substantially closed: enqueue now uses a
 trusted universe context, refuses foreign or absent universe context, validates
@@ -190,7 +190,7 @@ Verification (claude-code, 2026-06-03):
    scheduler/side-effect significance, or is `inputs` (opaque payload) +
    validated `branch_def_id` the complete remaining caller-controlled surface?
 3. With this closed, is the verdict **approve** to flip
-   `WORKFLOW_NODE_ENQUEUE_ENABLED` on?
+   `TINYASSETS_NODE_ENQUEUE_ENABLED` on?
 
 Append a `## Verdict (codex round 3, YYYY-MM-DD)` section: approve / adapt /
 reject.
@@ -198,7 +198,7 @@ reject.
 ## Verdict (codex round 3, 2026-06-03)
 
 **approve** - the round-2 blocker is closed, and flipping
-`WORKFLOW_NODE_ENQUEUE_ENABLED` on is unblocked from this review gate.
+`TINYASSETS_NODE_ENQUEUE_ENABLED` on is unblocked from this review gate.
 
 Round-3 answers:
 

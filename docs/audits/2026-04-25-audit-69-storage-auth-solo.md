@@ -45,7 +45,7 @@ This is the cleanest-to-clear design proposal in the substrate. **Phase A item 1
 
 **One subtle missing citation worth flagging:** #69 doesn't explicitly cite #59 (`resolve_canonical`). But: read operations don't need authority checks per #59 §5 ("Read-only. No authority required"). The composition is the absence of a check — implicit. **Recommendation:** §6 of #69 should add a one-liner: "Read-only operations (#59 resolve_canonical, etc.) do not need authority checks; symmetric privacy filtering is enforced at SQL-level via row-visibility, not at the operation layer." This makes the read/write asymmetry explicit. Small wording fix; not a design gap.
 
-**Cross-doc invariant worth tightening (NEW from this audit):** the `AuthorizationError` class should be importable from a stable surface that downstream callers (sub-branch invocation per #56, MCP perimeter handlers, future scheduler) can `except AuthorizationError:`. The current proposal puts it in `workflow/storage/authority.py`. **Recommendation:** ensure the import path is stable (e.g., re-export from `workflow.exceptions` if such a module exists, or document `workflow.storage.authority.AuthorizationError` as the canonical path). Implementation-time concern; small.
+**Cross-doc invariant worth tightening (NEW from this audit):** the `AuthorizationError` class should be importable from a stable surface that downstream callers (sub-branch invocation per #56, MCP perimeter handlers, future scheduler) can `except AuthorizationError:`. The current proposal puts it in `tinyassets/storage/authority.py`. **Recommendation:** ensure the import path is stable (e.g., re-export from `workflow.exceptions` if such a module exists, or document `workflow.storage.authority.AuthorizationError` as the canonical path). Implementation-time concern; small.
 
 ---
 
@@ -117,4 +117,4 @@ This is the cleanest-to-clear design proposal in the substrate. **Phase A item 1
   - `docs/design-notes/2026-04-25-resolve-canonical-action-proposal.md` (#59 §5 — read-only no auth).
 - Sibling pair-reads + audits: complete suite of seven (#59, #60, #62, #65, #66, #67, #68 in audit-numbering).
 - v2 vision: `docs/design-notes/2026-04-25-self-evolving-platform-vision-v2.md` §6 Phase A phasing.
-- Concrete gap reference: `workflow/daemon_server.py:2453-2475` (`set_canonical_branch` "Caller must validate authority").
+- Concrete gap reference: `tinyassets/daemon_server.py:2453-2475` (`set_canonical_branch` "Caller must validate authority").

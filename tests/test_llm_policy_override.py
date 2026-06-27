@@ -19,15 +19,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest  # noqa: F401 — used by pytest.raises
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
     _validate_llm_policy_shape,
 )
-from workflow.exceptions import AllProvidersExhaustedError
-from workflow.graph_compiler import compile_branch
+from tinyassets.exceptions import AllProvidersExhaustedError
+from tinyassets.graph_compiler import compile_branch
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -147,7 +147,7 @@ def test_pinned_preferred_used_when_available():
     )
 
     with patch(
-        "workflow.graph_compiler._get_shared_router", return_value=mock_router,
+        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
     ):
         def _provider(prompt, system, *, role="writer"):
             return "[plain-provider]"
@@ -191,7 +191,7 @@ def test_policy_router_empty_registry_falls_back_to_injected_provider_call():
         events.append(dict(kw))
 
     with patch(
-        "workflow.graph_compiler._get_shared_router", return_value=_EmptyRouter(),
+        "tinyassets.graph_compiler._get_shared_router", return_value=_EmptyRouter(),
     ):
         compiled = compile_branch(branch, provider_call=_provider, event_sink=_sink)
         app = compiled.graph.compile()
@@ -218,7 +218,7 @@ def test_branch_default_policy_applies_when_node_unset():
     )
 
     with patch(
-        "workflow.graph_compiler._get_shared_router", return_value=mock_router,
+        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
     ):
         def _provider(prompt, system, *, role="writer"):
             return "[plain]"
@@ -254,7 +254,7 @@ def test_node_policy_overrides_branch_default():
     mock_router.call_with_policy_sync.side_effect = _mock_policy_call
 
     with patch(
-        "workflow.graph_compiler._get_shared_router", return_value=mock_router,
+        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
     ):
         compiled = compile_branch(
             branch,
@@ -274,7 +274,7 @@ def test_node_policy_overrides_branch_default():
 def test_fallback_fires_when_preferred_exhausted():
     """When policy providers all fail, call_with_policy_sync falls through
     to the role chain (tested via router's own fallback, here mocked)."""
-    from workflow.exceptions import AllProvidersExhaustedError
+    from tinyassets.exceptions import AllProvidersExhaustedError
 
     policy = {
         "preferred": {"provider": "groq-free"},
@@ -290,7 +290,7 @@ def test_fallback_fires_when_preferred_exhausted():
     )
 
     with patch(
-        "workflow.graph_compiler._get_shared_router", return_value=mock_router,
+        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
     ):
         compiled = compile_branch(
             branch,
@@ -306,7 +306,7 @@ def test_fallback_fires_when_preferred_exhausted():
 
 def test_policy_dispatch_retries_transient_provider_exhaustion(monkeypatch):
     """Policy-aware run_branch dispatch should honor the router retry contract."""
-    import workflow.graph_compiler as graph_compiler
+    import tinyassets.graph_compiler as graph_compiler
 
     policy = {"preferred": {"provider": "groq-free"}}
     node = _make_node(llm_policy=policy)
@@ -324,7 +324,7 @@ def test_policy_dispatch_retries_transient_provider_exhaustion(monkeypatch):
         graph_compiler, "_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS", (0.0, 0.0),
     )
     with patch(
-        "workflow.graph_compiler._get_shared_router", return_value=mock_router,
+        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
     ):
         compiled = compile_branch(
             branch,
@@ -360,7 +360,7 @@ def test_difficulty_override_passed_through():
     mock_router.call_with_policy_sync.side_effect = _mock_call
 
     with patch(
-        "workflow.graph_compiler._get_shared_router", return_value=mock_router,
+        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
     ):
         compiled = compile_branch(
             branch,

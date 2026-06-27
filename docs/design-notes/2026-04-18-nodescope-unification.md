@@ -13,9 +13,9 @@ status: active
 
 ## 1. What each file does today
 
-**`workflow/memory/node_scope.py` (277 lines, Stage 2a).** Disk-side manifest loader. Parses `node_scope.yaml` sidecars into frozen tuple-based dataclasses. Types: `SliceSpec` (tuple-of-str), `ExternalSource` (plain `kind: str`), `NodeScopeEntry` (per-node config), `NodeScopeManifest` (branch-level collection with `default` + `nodes: dict[str, NodeScopeEntry]`). Ships the parser + validation errors; zero runtime integration.
+**`tinyassets/memory/node_scope.py` (277 lines, Stage 2a).** Disk-side manifest loader. Parses `node_scope.yaml` sidecars into frozen tuple-based dataclasses. Types: `SliceSpec` (tuple-of-str), `ExternalSource` (plain `kind: str`), `NodeScopeEntry` (per-node config), `NodeScopeManifest` (branch-level collection with `default` + `nodes: dict[str, NodeScopeEntry]`). Ships the parser + validation errors; zero runtime integration.
 
-**`workflow/memory/scoping.py` (356 lines, Stage 2b).** Runtime scope hierarchy. Types: `SliceSpec` (list-of-str, lowercase `None` default), `ExternalSource` (`Literal[...]` on `kind`), `NodeScope` (runtime dataclass — same conceptual fields as `NodeScopeEntry` minus the `for_node` dispatch), `MemoryScope` (5-tier: universe/goal/branch/user/node), `ScopedQuery`, `ScopeResolver`, `ScopedMemoryRouter`. Consumed by 14+ runtime sites — KG, retrieval router, vector store, agentic search, episodic memory, knowledge_graph, plus domain phases.
+**`tinyassets/memory/scoping.py` (356 lines, Stage 2b).** Runtime scope hierarchy. Types: `SliceSpec` (list-of-str, lowercase `None` default), `ExternalSource` (`Literal[...]` on `kind`), `NodeScope` (runtime dataclass — same conceptual fields as `NodeScopeEntry` minus the `for_node` dispatch), `MemoryScope` (5-tier: universe/goal/branch/user/node), `ScopedQuery`, `ScopeResolver`, `ScopedMemoryRouter`. Consumed by 14+ runtime sites — KG, retrieval router, vector store, agentic search, episodic memory, knowledge_graph, plus domain phases.
 
 ## 2. Where they overlap vs diverge
 
@@ -41,7 +41,7 @@ status: active
 **Re-home the loader.** `node_scope.py` becomes a thin parser that produces `scoping.NodeScope` instances directly — no parallel `NodeScopeEntry` type. Proposed module shape:
 
 ```python
-# workflow/memory/node_scope.py (post-unification)
+# tinyassets/memory/node_scope.py (post-unification)
 from workflow.memory.scoping import NodeScope, SliceSpec, ExternalSource
 
 MANIFEST_FILENAME = "node_scope.yaml"
@@ -86,8 +86,8 @@ def parse_manifest(text, *, where) -> NodeScopeManifest: ...
 
 ## 6. Sources
 
-- `workflow/memory/node_scope.py` (277 lines, Stage 2a loader).
-- `workflow/memory/scoping.py` (356 lines, Stage 2b runtime).
+- `tinyassets/memory/node_scope.py` (277 lines, Stage 2a loader).
+- `tinyassets/memory/scoping.py` (356 lines, Stage 2b runtime).
 - `tests/test_memory_scope_stage_2a.py` — sole 2a import site.
 - `docs/design-notes/2026-04-15-memory-scope-tiered.md` §4 (manifest design), §9.3 Q4-Q5 (SliceSpec + ExternalSource shape resolutions).
 - STATUS.md work row #19 (2c flag-flip monitoring, 2026-04-16 start).

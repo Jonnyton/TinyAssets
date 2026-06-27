@@ -1,10 +1,10 @@
-"""Tests for workflow.idempotency — @idempotent_by_step decorator and helpers."""
+"""Tests for tinyassets.idempotency — @idempotent_by_step decorator and helpers."""
 
 from __future__ import annotations
 
 import pytest
 
-from workflow.idempotency import (
+from tinyassets.idempotency import (
     _CHECKPOINT_MARKER_KEY,
     IdempotencyStore,
     checkpoint,
@@ -86,7 +86,7 @@ class TestIdempotentByStepDecorator:
 
     def test_first_call_executes_function(self, tmp_path, monkeypatch):
         store = self._make_store(tmp_path)
-        import workflow.idempotency as _mod
+        import tinyassets.idempotency as _mod
         monkeypatch.setattr(_mod, "_store", store)
 
         call_count = 0
@@ -103,7 +103,7 @@ class TestIdempotentByStepDecorator:
 
     def test_second_call_returns_cached(self, tmp_path, monkeypatch):
         store = self._make_store(tmp_path)
-        import workflow.idempotency as _mod
+        import tinyassets.idempotency as _mod
         monkeypatch.setattr(_mod, "_store", store)
 
         call_count = 0
@@ -121,7 +121,7 @@ class TestIdempotentByStepDecorator:
 
     def test_different_step_ids_execute_independently(self, tmp_path, monkeypatch):
         store = self._make_store(tmp_path)
-        import workflow.idempotency as _mod
+        import tinyassets.idempotency as _mod
         monkeypatch.setattr(_mod, "_store", store)
 
         call_count = 0
@@ -140,7 +140,7 @@ class TestIdempotentByStepDecorator:
 
     def test_different_run_ids_execute_independently(self, tmp_path, monkeypatch):
         store = self._make_store(tmp_path)
-        import workflow.idempotency as _mod
+        import tinyassets.idempotency as _mod
         monkeypatch.setattr(_mod, "_store", store)
 
         executed = []
@@ -174,7 +174,7 @@ class TestIdempotentByStepDecorator:
 
     def test_exception_in_function_does_not_cache(self, tmp_path, monkeypatch):
         store = self._make_store(tmp_path)
-        import workflow.idempotency as _mod
+        import tinyassets.idempotency as _mod
         monkeypatch.setattr(_mod, "_store", store)
 
         call_count = 0
@@ -197,7 +197,7 @@ class TestIdempotentByStepDecorator:
 
     def test_passes_extra_args_and_kwargs(self, tmp_path, monkeypatch):
         store = self._make_store(tmp_path)
-        import workflow.idempotency as _mod
+        import tinyassets.idempotency as _mod
         monkeypatch.setattr(_mod, "_store", store)
 
         received = {}
@@ -216,7 +216,7 @@ class TestIdempotentByStepDecorator:
         store = self._make_store(tmp_path)
         # Pre-seed store with a result
         store.set("run1", "step1", {"cached": True})
-        import workflow.idempotency as _mod
+        import tinyassets.idempotency as _mod
         monkeypatch.setattr(_mod, "_store", store)
 
         called = []

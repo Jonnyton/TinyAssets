@@ -14,9 +14,9 @@ import json
 
 import pytest
 
-from workflow.branches import NodeDefinition
-from workflow.providers.base import ModelConfig
-from workflow.providers.codex_provider import _reasoning_effort_args
+from tinyassets.branches import NodeDefinition
+from tinyassets.providers.base import ModelConfig
+from tinyassets.providers.codex_provider import _reasoning_effort_args
 
 
 def test_modelconfig_carries_reasoning_effort():
@@ -46,7 +46,7 @@ def test_node_definition_round_trips_effort():
 def test_compiled_node_threads_effort_into_provider_call():
     """The decisive test: a node's reasoning_effort reaches the provider call's
     ModelConfig (not a prompt suggestion)."""
-    from workflow.graph_compiler import _build_prompt_template_node
+    from tinyassets.graph_compiler import _build_prompt_template_node
 
     captured: dict = {}
 
@@ -78,7 +78,7 @@ def test_compiled_node_threads_effort_into_provider_call():
 def test_subsecond_node_timeout_floors_provider_timeout_to_one():
     """Codex review fix: a sub-second node timeout must not become provider
     timeout 0 (int(0.5)==0 → instant provider timeout)."""
-    from workflow.graph_compiler import _build_prompt_template_node
+    from tinyassets.graph_compiler import _build_prompt_template_node
 
     captured: dict = {}
 
@@ -99,13 +99,13 @@ def test_subsecond_node_timeout_floors_provider_timeout_to_one():
 def test_policy_path_skips_config_for_legacy_4arg_router():
     """Codex review fix: a router whose call_with_policy_sync takes only
     (role, prompt, system, policy) must NOT receive a 5th config arg."""
-    from workflow.graph_compiler import _call_policy_router_with_retry
+    from tinyassets.graph_compiler import _call_policy_router_with_retry
 
     class _LegacyRouter:
         def call_with_policy_sync(self, role, prompt, system, policy):
             return ("text", "legacy", {})
 
-    from workflow.providers.base import ModelConfig
+    from tinyassets.providers.base import ModelConfig
     # Should not raise TypeError despite a non-None config.
     out = _call_policy_router_with_retry(
         _LegacyRouter(), role="writer", prompt="p", system="",
@@ -116,9 +116,9 @@ def test_policy_path_skips_config_for_legacy_4arg_router():
 
 @pytest.fixture
 def server_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "founder")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us

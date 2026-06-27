@@ -24,9 +24,9 @@ def _seed_goal_and_claim(
     record when ``goal_owner`` is supplied so release-authority checks resolve
     the Goal owner.
     """
-    from workflow.daemon_server import initialize_author_server, save_goal
-    from workflow.gates.schema import migrate_gate_bonus_columns
-    from workflow.storage import _connect
+    from tinyassets.daemon_server import initialize_author_server, save_goal
+    from tinyassets.gates.schema import migrate_gate_bonus_columns
+    from tinyassets.storage import _connect
 
     initialize_author_server(base_path)
 
@@ -63,18 +63,18 @@ def _seed_goal_and_claim(
 
 def _gates(monkeypatch, tmp_path, *, user: str = "test_user", host_user: str | None = None,
            **kwargs):
-    """Call gates() with GATES_ENABLED + WORKFLOW_PAID_MARKET set.
+    """Call gates() with GATES_ENABLED + TINYASSETS_PAID_MARKET set.
 
     ``user`` sets the authenticated caller (UNIVERSE_SERVER_USER). ``host_user``
     optionally overrides the configured host identity used for release authority.
     """
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("GATES_ENABLED", "1")
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", user)
     if host_user is not None:
         monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", host_user)
-    from workflow.universe_server import gates
+    from tinyassets.universe_server import gates
     return json.loads(gates(**kwargs))
 
 
@@ -93,10 +93,10 @@ class TestStakeBonus:
         assert result["claim_id"] == claim_id
 
     def test_stake_bonus_requires_paid_market(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("GATES_ENABLED", "1")
-        monkeypatch.setenv("WORKFLOW_PAID_MARKET", "off")
-        from workflow.universe_server import gates
+        monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
+        from tinyassets.universe_server import gates
         result = json.loads(gates(action="stake_bonus", claim_id="x", bonus_stake=100))
         assert result["status"] == "not_available"
 
@@ -245,7 +245,7 @@ class TestUnstakeBonus:
                bonus_stake=500,
                node_id="n1")
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "other_user")
-        from workflow.universe_server import gates
+        from tinyassets.universe_server import gates
         result = json.loads(gates(action="unstake_bonus", claim_id=claim_id))
         assert result["status"] == "rejected"
         assert "not authorized" in result["error"].lower()
@@ -315,7 +315,7 @@ class TestReleaseBonus:
         """A gate re-claim rewrites claimed_by, but the legitimate owner/host
         release must still succeed and refund the IMMUTABLE original staker —
         a re-claimer can neither strand nor redirect the bonus (round-6)."""
-        from workflow.storage import _connect
+        from tinyassets.storage import _connect
         _, _, claim_id = _seed_goal_and_claim(
             tmp_path, claimed_by="alice", goal_owner="goal_owner"
         )
@@ -370,7 +370,7 @@ class TestReleaseBonus:
         Proves fail-without: the bonus stake stays on the claim, no settlement
         is recorded, and the treasury take is not credited.
         """
-        from workflow.storage import _connect
+        from tinyassets.storage import _connect
 
         _, _, claim_id = _seed_goal_and_claim(tmp_path, goal_owner="goal_owner")
         _gates(monkeypatch, tmp_path,
@@ -516,38 +516,38 @@ class TestReleaseBonus:
 # ── Pure business logic unit tests ────────────────────────────────────────────
 
 class TestGatesActionsUnit:
-    """Unit tests for workflow/gates/actions.py business logic (no MCP layer)."""
+    """Unit tests for tinyassets/gates/actions.py business logic (no MCP layer)."""
 
     def test_validate_stake_amount_valid(self):
-        from workflow.gates.actions import validate_stake_amount
+        from tinyassets.gates.actions import validate_stake_amount
         stake, err = validate_stake_amount(500)
         assert stake == 500
         assert err is None
 
     def test_validate_stake_amount_zero(self):
-        from workflow.gates.actions import validate_stake_amount
+        from tinyassets.gates.actions import validate_stake_amount
         stake, err = validate_stake_amount(0)
         assert stake == 0
         assert err is None
 
     def test_validate_stake_amount_negative_rejected(self):
-        from workflow.gates.actions import validate_stake_amount
+        from tinyassets.gates.actions import validate_stake_amount
         stake, err = validate_stake_amount(-1)
         assert err is not None
 
     def test_validate_stake_amount_non_numeric_rejected(self):
-        from workflow.gates.actions import validate_stake_amount
+        from tinyassets.gates.actions import validate_stake_amount
         _, err = validate_stake_amount("abc")
         assert err is not None
 
     def test_compute_bonus_payout_invariant(self):
-        from workflow.gates.actions import compute_bonus_payout
+        from tinyassets.gates.actions import compute_bonus_payout
         for stake in range(0, 10_001, 100):
             net, treasury = compute_bonus_payout(stake)
             assert net + treasury == stake, f"invariant broken at stake={stake}"
 
     def test_compute_bonus_payout_1pct_take(self):
-        from workflow.gates.actions import compute_bonus_payout
+        from tinyassets.gates.actions import compute_bonus_payout
         net, treasury = compute_bonus_payout(10_000)
         assert treasury == 100
         assert net == 9_900

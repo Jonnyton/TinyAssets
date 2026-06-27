@@ -1,7 +1,7 @@
 # ChatGPT Connector — Update Node Approval Bug Scoping
 
-**Date:** 2026-04-25  
-**Filed by:** dev (scoping pass per task #10)  
+**Date:** 2026-04-25
+**Filed by:** dev (scoping pass per task #10)
 **Symptom:** ChatGPT connector "Update Node approval ended in generic error"; retry saved node v2.
 
 ---
@@ -16,7 +16,7 @@
 
 ## Code Flow — `update_node`
 
-`_ext_branch_update_node` in `workflow/universe_server.py:5864`:
+`_ext_branch_update_node` in `tinyassets/universe_server.py:5864`:
 
 1. Reads current branch from DB → gets `version=N`.
 2. Applies field mutations in memory.
@@ -63,7 +63,7 @@ The `record_node_edit_audit` call is inside `try/except Exception` and logs but 
 To distinguish A vs B:
 
 1. **Daemon log around the error time** — was a POST to `/mcp` received? Did it return 200?
-2. **Branch version in DB** — is it v2 (Scenario A) or v3 (Scenario B)?  
+2. **Branch version in DB** — is it v2 (Scenario A) or v3 (Scenario B)?
    Check: `extensions(action="get_branch", branch_def_id=<id>)` → look at `version` field.
 3. **Node edit audit count** — `record_node_edit_audit` rows for that branch_def_id. One row = Scenario A. Two rows = Scenario B.
 
@@ -75,16 +75,16 @@ To distinguish A vs B:
 
 **Fix options:**
 
-**Option 1 — Idempotency key on `update_node`** (recommended, minimal)  
+**Option 1 — Idempotency key on `update_node`** (recommended, minimal)
 Add optional `idempotency_key: str` param to `extensions()` and `_ext_branch_update_node`. On first call, store `(idempotency_key, branch_def_id, result_json)` in a lightweight SQLite table. On retry with same key, return cached result without re-applying the edit.
 
-- Files: `workflow/universe_server.py` (param + dispatch + handler), `workflow/runs.py` (new table `update_idempotency`), `tests/test_update_node_idempotency.py`.
+- Files: `tinyassets/universe_server.py` (param + dispatch + handler), `tinyassets/runs.py` (new table `update_idempotency`), `tests/test_update_node_idempotency.py`.
 - Invariants: key expires after 24h; key scoped to `(actor, idempotency_key)` not global; only `update_node` uses it (other actions are naturally idempotent or have different semantics).
 
-**Option 2 — Expected version check**  
+**Option 2 — Expected version check**
 Add `expected_version: int` param. If branch version in DB != `expected_version`, reject with `{"status": "conflict", "current_version": N}`. Caller (ChatGPT) passes the version it read; retry with wrong version is safely rejected.
 
-- Files: `workflow/universe_server.py` only (small diff — `expected_version` param already exists on `extensions()` for `project_memory_set`).
+- Files: `tinyassets/universe_server.py` only (small diff — `expected_version` param already exists on `extensions()` for `project_memory_set`).
 - Invariants: `expected_version=0` or absent = "don't check" (backward-compat default).
 - ChatGPT side: the connector prompt must pass `expected_version` in the `update_node` call.
 
@@ -102,8 +102,8 @@ If root cause is Scenario A (client-side failure), no code fix needed. The ChatG
 
 1. Host checks daemon log + branch version + audit row count (see Evidence section above).
 2. If Scenario A: close as ChatGPT-side UX issue; document in connector prompt.
-3. If Scenario B: dispatch Option 2 (expected_version check) as a dev task.  
-   Files: `workflow/universe_server.py`, `tests/test_update_node_idempotency.py` (new).  
+3. If Scenario B: dispatch Option 2 (expected_version check) as a dev task.
+   Files: `tinyassets/universe_server.py`, `tests/test_update_node_idempotency.py` (new).
    Invariant: `expected_version` absent → no check (backward-compat).
 
 ---
@@ -112,7 +112,7 @@ If root cause is Scenario A (client-side failure), no code fix needed. The ChatG
 
 | File | Change |
 |------|--------|
-| `workflow/universe_server.py` | `_ext_branch_update_node`: check `kwargs.get("expected_version")` before save; return `{"status": "conflict", "current_version": N}` on mismatch. |
+| `tinyassets/universe_server.py` | `_ext_branch_update_node`: check `kwargs.get("expected_version")` before save; return `{"status": "conflict", "current_version": N}` on mismatch. |
 | `tests/test_update_node_expected_version.py` | New: match, mismatch, absent (backward-compat). |
 
 No schema changes. No new tables. ~30 lines of code + ~40 lines of tests.

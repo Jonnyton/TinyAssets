@@ -9,7 +9,7 @@ import { fmtStampStable } from "../../../lib/fmt";
 import { useMounted } from "../../../lib/useMounted";
 import styles from "../page.module.css";
 
-const GH_ACTIONS = "https://github.com/Jonnyton/Workflow/actions";
+const GH_ACTIONS = "https://github.com/Jonnyton/TinyAssets/actions";
 const MCP_BARE = "tinyassets.io/mcp";
 const bakedFetchedAt: string = baked.fetched_at ?? "";
 

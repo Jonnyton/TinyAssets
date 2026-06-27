@@ -106,7 +106,7 @@ def test_third_red_triggers_restart(state_path):
     watchdog_tick(state_file=state_path, probe_fn=_red_probe(), restart_fn=recorder)
     watchdog_tick(state_file=state_path, probe_fn=_red_probe(), restart_fn=recorder)
     state = watchdog_tick(state_file=state_path, probe_fn=_red_probe(), restart_fn=recorder)
-    assert recorder.calls == ["workflow-daemon.service"]
+    assert recorder.calls == ["tinyassets-daemon.service"]
     # After successful restart, streak optimistically resets.
     assert state["consecutive_reds"] == 0
     assert state["last_restart_ts"] is not None
@@ -127,7 +127,7 @@ def test_recovery_after_restart(state_path):
     # 3 reds → restart
     for _ in range(3):
         watchdog_tick(state_file=state_path, probe_fn=_red_probe(), restart_fn=recorder)
-    assert recorder.calls == ["workflow-daemon.service"]
+    assert recorder.calls == ["tinyassets-daemon.service"]
     # Next probe green → streak stays zero, no additional restart.
     state = watchdog_tick(state_file=state_path, probe_fn=_green_probe, restart_fn=recorder)
     assert state["consecutive_reds"] == 0
@@ -142,7 +142,7 @@ def test_rate_limit_blocks_rapid_restarts(state_path):
     recorder = _RestartRecorder()
     for _ in range(3):
         watchdog_tick(state_file=state_path, probe_fn=_red_probe(), restart_fn=recorder)
-    assert recorder.calls == ["workflow-daemon.service"]
+    assert recorder.calls == ["tinyassets-daemon.service"]
 
     # State file's last_restart_ts is now. Another round of 3 reds
     # should NOT trigger restart because min_restart_interval (default
@@ -154,7 +154,7 @@ def test_rate_limit_blocks_rapid_restarts(state_path):
             restart_fn=recorder,
             min_restart_interval=600.0,
         )
-    assert recorder.calls == ["workflow-daemon.service"], (
+    assert recorder.calls == ["tinyassets-daemon.service"], (
         "rate-limit should block a second restart within the interval"
     )
 
@@ -188,7 +188,7 @@ def test_restart_failure_keeps_streak(state_path):
             probe_fn=_red_probe(),
             restart_fn=recorder,
         )
-    assert recorder.calls == ["workflow-daemon.service"]
+    assert recorder.calls == ["tinyassets-daemon.service"]
     # Streak preserved so next tick tries again (don't "forget" the
     # outage just because we couldn't fix it).
     assert state["consecutive_reds"] >= 3
@@ -236,7 +236,7 @@ def test_threshold_1_single_red_restarts(state_path):
         restart_fn=recorder,
         threshold=1,
     )
-    assert recorder.calls == ["workflow-daemon.service"]
+    assert recorder.calls == ["tinyassets-daemon.service"]
 
 
 def test_threshold_5_needs_5_reds(state_path):
@@ -247,7 +247,7 @@ def test_threshold_5_needs_5_reds(state_path):
     assert recorder.calls == []
     watchdog_tick(state_file=state_path, probe_fn=_red_probe(),
                   restart_fn=recorder, threshold=5)
-    assert recorder.calls == ["workflow-daemon.service"]
+    assert recorder.calls == ["tinyassets-daemon.service"]
 
 
 # ---- GH issue emission -------------------------------------------------------
@@ -274,7 +274,7 @@ def test_gh_issue_fired_on_restart(state_path):
             restart_fn=recorder,
             gh_issue_fn=gh,
         )
-    assert recorder.calls == ["workflow-daemon.service"]
+    assert recorder.calls == ["tinyassets-daemon.service"]
     assert len(gh.calls) == 1
     title, body = gh.calls[0]
     assert "watchdog" in title.lower()
@@ -387,7 +387,7 @@ def test_gh_issue_skipped_on_restart_failure(state_path):
             restart_fn=recorder,
             gh_issue_fn=gh,
         )
-    assert recorder.calls == ["workflow-daemon.service"]
+    assert recorder.calls == ["tinyassets-daemon.service"]
     assert gh.calls == [], "GH issue should not fire when restart failed"
 
 

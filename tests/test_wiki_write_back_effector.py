@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from workflow.api.wiki import _ensure_wiki_scaffold
-from workflow.branches import NodeDefinition
-from workflow.effectors import (
+from tinyassets.api.wiki import _ensure_wiki_scaffold
+from tinyassets.branches import NodeDefinition
+from tinyassets.effectors import (
     EXTERNAL_WRITE_SINK_GITHUB_PR,
     EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
     read_repo_files,
@@ -15,8 +15,8 @@ from workflow.effectors import (
     run_wiki_write_back_effector,
     search_repo_files,
 )
-from workflow.storage.effector_consents import grant_consent
-from workflow.storage.external_write_receipts import (
+from tinyassets.storage.effector_consents import grant_consent
+from tinyassets.storage.external_write_receipts import (
     STATUS_SUCCEEDED,
     lookup_receipt,
 )

@@ -5,8 +5,8 @@ platform." Each user clones, runs locally, PRs to share. The question
 this audit answers: **which storage surfaces become git-tracked files,
 which stay local SQLite/disk?**
 
-Source of ground truth: live `workflow/author_server.py` (24 tables)
-and `workflow/runs.py` (6 tables) as of post-cluster #67.
+Source of ground truth: live `tinyassets/author_server.py` (24 tables)
+and `tinyassets/runs.py` (6 tables) as of post-cluster #67.
 
 ## Storage Surface Classification
 

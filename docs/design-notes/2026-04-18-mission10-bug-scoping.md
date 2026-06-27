@@ -9,22 +9,22 @@ status: research
 **Status:** Scoping pass. Read-only; no code touched. Avoids rename-in-flight zones.
 **Relates to:** tasks #15 (list_canon tier gap), #16 (accept_rate miscount), #17 (control_daemon observability).
 
-All three bugs live in `workflow/universe_server.py` (and its collaborators in `workflow/ingestion/core.py` + `workflow/desktop/dashboard.py`). None touch `domains/fantasy_author/`, `domains/fantasy_daemon/`, `workflow/author_server.py`, or `workflow/daemon_server.py` — safe during Phase 1 rename.
+All three bugs live in `tinyassets/universe_server.py` (and its collaborators in `tinyassets/ingestion/core.py` + `tinyassets/desktop/dashboard.py`). None touch `domains/fantasy_author/`, `domains/fantasy_daemon/`, `tinyassets/author_server.py`, or `tinyassets/daemon_server.py` — safe during Phase 1 rename.
 
 ---
 
 ## Bug 1 — `list_canon`/`read_canon` don't surface source-tier files (task #15)
 
 **Where it is:**
-- `workflow/universe_server.py:3221-3252` — `_action_list_canon`.
-- `workflow/universe_server.py:3255-3294` — `_action_read_canon`.
-- `workflow/universe_server.py:1166-1167` — action dispatch.
-- `workflow/universe_server.py:1075-1098` — tool signature (no `tier` param currently).
+- `tinyassets/universe_server.py:3221-3252` — `_action_list_canon`.
+- `tinyassets/universe_server.py:3255-3294` — `_action_read_canon`.
+- `tinyassets/universe_server.py:1166-1167` — action dispatch.
+- `tinyassets/universe_server.py:1075-1098` — tool signature (no `tier` param currently).
 
 **Where the write path goes:**
-- `workflow/ingestion/core.py:410-427` — `ingest_file` routes user uploads (`user_upload=True`) to `canon/sources/` unconditionally, sets `routed_to="sources"`.
-- `workflow/universe_server.py:3181-3187` (`_action_add_canon_from_path`) and `:3037-3043` (`_action_add_canon`) both call `ingest_file(user_upload=True)` → every MCP upload lands under `canon/sources/`, never at `canon/`.
-- `workflow/ingestion/core.py:441-453` — manifest at `canon/.manifest.json` records each ingest with `source_path="sources/<filename>"`.
+- `tinyassets/ingestion/core.py:410-427` — `ingest_file` routes user uploads (`user_upload=True`) to `canon/sources/` unconditionally, sets `routed_to="sources"`.
+- `tinyassets/universe_server.py:3181-3187` (`_action_add_canon_from_path`) and `:3037-3043` (`_action_add_canon`) both call `ingest_file(user_upload=True)` → every MCP upload lands under `canon/sources/`, never at `canon/`.
+- `tinyassets/ingestion/core.py:441-453` — manifest at `canon/.manifest.json` records each ingest with `source_path="sources/<filename>"`.
 
 **Concrete gap:**
 `_action_list_canon` walks `canon_dir.iterdir()` (single level, line 3234) and skips dotfiles (line 3235). `canon/sources/` is a directory, so `f.is_file()` at line 3235 is False → source-tier files silently invisible. The `.manifest.json` is skipped by the dotfile filter. There is no `tier` kwarg on the action signature or the tool decorator.
@@ -42,10 +42,10 @@ All three bugs live in `workflow/universe_server.py` (and its collaborators in `
 ## Bug 2 — `accept_rate` counts total scenes, not evaluated scenes (task #16)
 
 **Where it is:**
-- `workflow/desktop/dashboard.py:30-57` — `DashboardMetrics` dataclass, `record_accept`/`record_reject`, `_update_rate`.
-- `workflow/desktop/dashboard.py:64-97` — `seed_from_db`, the load-bearing bug.
+- `tinyassets/desktop/dashboard.py:30-57` — `DashboardMetrics` dataclass, `record_accept`/`record_reject`, `_update_rate`.
+- `tinyassets/desktop/dashboard.py:64-97` — `seed_from_db`, the load-bearing bug.
 
-**The read-path is correct.** `workflow/universe_server.py:1325-1372` (`_compute_accept_rate_from_db`) filters `verdict IS NOT NULL AND verdict != '' AND verdict != 'pending'` for the denominator and `verdict IN ('accept', 'second_draft')` for the numerator. When the MCP surface reads accept_rate, this function runs and is fine.
+**The read-path is correct.** `tinyassets/universe_server.py:1325-1372` (`_compute_accept_rate_from_db`) filters `verdict IS NOT NULL AND verdict != '' AND verdict != 'pending'` for the denominator and `verdict IN ('accept', 'second_draft')` for the numerator. When the MCP surface reads accept_rate, this function runs and is fine.
 
 **The write-path is wrong at seed time.** `seed_from_db` (line 76-92):
 - Line 78-80: `SELECT COUNT(*), SUM(word_count), COUNT(DISTINCT chapter_number) FROM scene_history`.
@@ -65,10 +65,10 @@ All three bugs live in `workflow/universe_server.py` (and its collaborators in `
 ## Bug 3 — `control_daemon status` observability gap (task #17)
 
 **Where it is:**
-- `workflow/universe_server.py:3297-3376` — `_action_control_daemon` (handles `pause`/`resume`/`status`).
-- `workflow/universe_server.py:3344-3371` — the `status` branch, the thin one.
-- `workflow/universe_server.py:1427-1469` — `_daemon_liveness`, the telemetry builder.
-- `workflow/universe_server.py:1238-1291` — `_last_activity_at` and `_staleness_bucket`.
+- `tinyassets/universe_server.py:3297-3376` — `_action_control_daemon` (handles `pause`/`resume`/`status`).
+- `tinyassets/universe_server.py:3344-3371` — the `status` branch, the thin one.
+- `tinyassets/universe_server.py:1427-1469` — `_daemon_liveness`, the telemetry builder.
+- `tinyassets/universe_server.py:1238-1291` — `_last_activity_at` and `_staleness_bucket`.
 
 **Status contradiction mechanism:** `phase` (line 1456) reads `current_phase` from `status.json` — written by the daemon when it enters a phase, never updated if the daemon crashes mid-phase. `staleness` (line 1441) derives from `activity.log` mtime, which only advances when the daemon is actually running. Result: `phase="running"` + `staleness="dormant"` after a silent crash. Both are technically "correct for their source" — but the caller has to reconcile two truths.
 
@@ -80,20 +80,20 @@ All three bugs live in `workflow/universe_server.py` (and its collaborators in `
 
 **Fix shape (no code):**
 1. Make `phase_human` the authoritative single-word state; demote `phase` to a sub-field. Extend `_phase_human` precedence to override raw phase when `staleness == "dormant"` — `"stalled-in-<raw_phase>"` beats `"running"` when activity.log has been silent for >24h. The decoupling between two sources is real; the fix is to expose ONE reconciled answer plus the raw inputs for debugging.
-2. Extend `_daemon_liveness` (workflow/universe_server.py:1427) to include:
+2. Extend `_daemon_liveness` (tinyassets/universe_server.py:1427) to include:
    - `pending_signals` dict — read `worldbuild_signals.json`, group by signal type, count unconsumed entries.
    - `time_in_phase_seconds` — compute from `status.json::last_updated` vs `datetime.now(timezone.utc)`.
    - `evaluator_streak` — read the last N rows of `scene_history` ordered by timestamp desc, count consecutive `verdict='revert'`.
 3. Thread these through the three sites that read liveness today (`_action_list_universes` line 1496, `_action_inspect_universe` line 1533, `_action_control_daemon` line 3368).
-4. Update `phase_human` (`workflow/universe_server.py:1294`) precedence so `staleness == "dormant"` takes priority over raw_phase. Likely shape: if `staleness == "dormant"` and `raw_phase` not in the terminal set, return `"stalled-in-<raw_phase>"` instead of bare `raw_phase`.
+4. Update `phase_human` (`tinyassets/universe_server.py:1294`) precedence so `staleness == "dormant"` takes priority over raw_phase. Likely shape: if `staleness == "dormant"` and `raw_phase` not in the terminal set, return `"stalled-in-<raw_phase>"` instead of bare `raw_phase`.
 
-**Non-code recommendation:** write the observability fields to a named shape (`DaemonLiveness` TypedDict) in `workflow/universe_server.py` near line 1427. Three call sites consuming the same dict justifies the type.
+**Non-code recommendation:** write the observability fields to a named shape (`DaemonLiveness` TypedDict) in `tinyassets/universe_server.py` near line 1427. Three call sites consuming the same dict justifies the type.
 
 ---
 
 ## Sequencing + collision notes
 
-- All three bugs touch `workflow/universe_server.py` and `workflow/desktop/dashboard.py`. **Zero overlap with `domains/*` or `workflow/author_server.py`.** Safe to dispatch while Phase 1 rename is in flight.
+- All three bugs touch `tinyassets/universe_server.py` and `tinyassets/desktop/dashboard.py`. **Zero overlap with `domains/*` or `tinyassets/author_server.py`.** Safe to dispatch while Phase 1 rename is in flight.
 - Bug 2 (dashboard) is lowest risk — one file, one line change + one test. Could be an early-landing confidence-builder.
 - Bug 1 requires a tool signature change (`tier` kwarg on `universe`). Heads-up for the MCP schema consumers (Claude Desktop re-registers on reconnect, no special migration). Action-level param addition is additive; no caller break.
 - Bug 3 is the most structural. Extending `_daemon_liveness` affects three read sites; `phase_human` precedence change is user-visible. Land last, with a brief changelog note.
@@ -103,6 +103,6 @@ All three bugs live in `workflow/universe_server.py` (and its collaborators in `
 ## Sources
 
 - Concern: `docs/concerns/2026-04-16-synthesis-skip-echoes.md` (RC-2 bite-loop hypothesis overlaps with Bug 3's observability gaps).
-- Ingestion: `workflow/ingestion/core.py:410-453` (ingest routing + manifest), `:1-30` (file header docs).
-- Tool surface: `workflow/universe_server.py:1075-1217` (universe tool), `:1427-1469` (_daemon_liveness).
-- Metrics: `workflow/desktop/dashboard.py:30-97` (DashboardMetrics + seed_from_db).
+- Ingestion: `tinyassets/ingestion/core.py:410-453` (ingest routing + manifest), `:1-30` (file header docs).
+- Tool surface: `tinyassets/universe_server.py:1075-1217` (universe tool), `:1427-1469` (_daemon_liveness).
+- Metrics: `tinyassets/desktop/dashboard.py:30-97` (DashboardMetrics + seed_from_db).

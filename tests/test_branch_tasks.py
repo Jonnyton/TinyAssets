@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.branch_tasks import (
+from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
     claim_task,
@@ -178,8 +178,8 @@ def test_lease_window_exceeds_worst_case_provider_node(tmp_path: Path) -> None:
     """Regression guard: the lease must outlast a long-but-healthy node so it
     is never reclaimed mid-flight (Codex review — lease==provider-timeout race).
     """
-    from workflow.branch_tasks import DEFAULT_LEASE_SECONDS
-    from workflow.providers.base import ModelConfig
+    from tinyassets.branch_tasks import DEFAULT_LEASE_SECONDS
+    from tinyassets.providers.base import ModelConfig
 
     # Worst case single node = full fallback chain (~3 providers) x per-call
     # timeout. The lease must clear that with margin.
@@ -333,7 +333,7 @@ def test_dispatcher_startup_reclaims_own_predecessor_orphan(
     even with a still-valid lease (redeploy-churn recovery)."""
     from fantasy_daemon.__main__ import _dispatcher_startup
 
-    monkeypatch.setenv("WORKFLOW_WORKER_ID", "claude-1")
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
     _claim_running(tmp_path, worker="claude-1")  # fresh ~30min lease
 
     _dispatcher_startup(tmp_path)
@@ -347,7 +347,7 @@ def test_dispatcher_startup_preserves_peer_under_other_worker_id(
     """Startup as claude-1 must NOT reclaim claude-2's live running task."""
     from fantasy_daemon.__main__ import _dispatcher_startup
 
-    monkeypatch.setenv("WORKFLOW_WORKER_ID", "claude-1")
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
     _claim_running(tmp_path, worker="claude-2")  # peer's fresh lease
 
     _dispatcher_startup(tmp_path)
@@ -358,11 +358,11 @@ def test_dispatcher_startup_preserves_peer_under_other_worker_id(
 def test_dispatcher_startup_no_predecessor_reclaim_without_worker_id(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    """With WORKFLOW_WORKER_ID unset, predecessor reclaim is skipped (a fresh
+    """With TINYASSETS_WORKER_ID unset, predecessor reclaim is skipped (a fresh
     lease survives — only TTL applies)."""
     from fantasy_daemon.__main__ import _dispatcher_startup
 
-    monkeypatch.delenv("WORKFLOW_WORKER_ID", raising=False)
+    monkeypatch.delenv("TINYASSETS_WORKER_ID", raising=False)
     task = _task()
     append_task(tmp_path, task)
     claim_task(tmp_path, task.branch_task_id, "daemon-a")  # fresh lease, blank executor
@@ -379,9 +379,9 @@ def test_dispatcher_startup_skips_shared_default_worker_id(
     several manually-started supervisors could share it, so reclaiming it would
     risk stealing a live twin's task (Codex review). Falls back to TTL."""
     from fantasy_daemon.__main__ import _dispatcher_startup
-    from workflow.cloud_worker import DEFAULT_HOST_USER
+    from tinyassets.cloud_worker import DEFAULT_HOST_USER
 
-    monkeypatch.setenv("WORKFLOW_WORKER_ID", DEFAULT_HOST_USER)
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", DEFAULT_HOST_USER)
     _claim_running(tmp_path, worker=DEFAULT_HOST_USER)  # fresh lease under default id
 
     _dispatcher_startup(tmp_path)

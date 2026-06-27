@@ -8,7 +8,7 @@ updated_on: 2026-05-01
 **Date:** 2026-04-27
 **Updated:** 2026-05-01
 **Author:** codex-gpt5-desktop
-**Purpose:** eliminate test-data design time once the `workflow/api/runs.py`
+**Purpose:** eliminate test-data design time once the `tinyassets/api/runs.py`
 lock clears for the accepted `extensions action=run_branch
 resume_from=<run_id>` implementation.
 

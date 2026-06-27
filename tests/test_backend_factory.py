@@ -2,7 +2,7 @@
 
 Covers:
 
-- ``workflow.catalog.get_backend`` env-var selection + auto-probe.
+- ``tinyassets.catalog.get_backend`` env-var selection + auto-probe.
 - Memoization + ``invalidate_backend_cache`` contract.
 - ``_format_dirty_file_conflict`` response shape.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.catalog import (
+from tinyassets.catalog import (
     DirtyFileError,
     SqliteCachedBackend,
     SqliteOnlyBackend,
@@ -29,7 +29,7 @@ from workflow.catalog import (
 def _reset_factory_state(monkeypatch: pytest.MonkeyPatch):
     """Every test starts with a clean cache + no backend env override."""
     invalidate_backend_cache()
-    monkeypatch.delenv("WORKFLOW_STORAGE_BACKEND", raising=False)
+    monkeypatch.delenv("TINYASSETS_STORAGE_BACKEND", raising=False)
     yield
     invalidate_backend_cache()
 
@@ -57,7 +57,7 @@ def test_env_var_forces_sqlite_only(tmp_path, monkeypatch):
     if shutil.which("git") is None:
         pytest.skip("git not available")
     _init_git_repo(tmp_path)
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite_only")
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_only")
 
     backend = get_backend(tmp_path / "output", repo_root=tmp_path)
     assert isinstance(backend, SqliteOnlyBackend)
@@ -65,7 +65,7 @@ def test_env_var_forces_sqlite_only(tmp_path, monkeypatch):
 
 def test_env_var_forces_sqlite_cached(tmp_path, monkeypatch):
     """Cached variant can be forced even with git disabled."""
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite_cached")
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_cached")
 
     backend = get_backend(tmp_path / "output", repo_root=tmp_path)
     assert isinstance(backend, SqliteCachedBackend)
@@ -75,7 +75,7 @@ def test_env_var_unknown_value_falls_through_to_autoprobe(
     tmp_path, monkeypatch,
 ):
     """A typo'd env var shouldn't silently pick the wrong backend."""
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "typo")
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "typo")
     # Not a git repo → should get SqliteOnly via auto-probe
     backend = get_backend(tmp_path / "output", repo_root=tmp_path)
     assert isinstance(backend, SqliteOnlyBackend)
@@ -111,7 +111,7 @@ def test_invalidate_backend_cache_reprobes(tmp_path, monkeypatch):
     b_first = get_backend(tmp_path / "output", repo_root=tmp_path)
     assert isinstance(b_first, SqliteOnlyBackend)
 
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite_cached")
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_cached")
     # Without invalidate, still cached as SqliteOnly
     assert get_backend(tmp_path / "output", repo_root=tmp_path) is b_first
 
@@ -142,7 +142,7 @@ def test_invalidate_also_clears_git_bridge_cache(tmp_path):
 def test_format_dirty_file_conflict_shape():
     # Reload universe_server to ensure the helper is imported fresh
     # (other tests in the suite reload this module; do it once here).
-    from workflow.api import engine_helpers as eh
+    from tinyassets.api import engine_helpers as eh
     importlib.reload(eh)
 
     paths = [Path("branches/foo.yaml"), Path("nodes/foo/n1.yaml")]
@@ -160,7 +160,7 @@ def test_format_dirty_file_conflict_shape():
 
 def test_format_dirty_file_conflict_handles_empty_paths():
     """DirtyFileError with no paths shouldn't crash the formatter."""
-    from workflow.api import engine_helpers as eh
+    from tinyassets.api import engine_helpers as eh
     exc = DirtyFileError([])
     payload = eh._format_dirty_file_conflict(exc)
     assert payload["status"] == "local_edit_conflict"

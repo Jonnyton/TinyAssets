@@ -1,2 +1,2 @@
-"""Shim: use workflow.evaluation.editorial instead."""
-from workflow.evaluation.editorial import *  # noqa: F401,F403
+"""Shim: use tinyassets.evaluation.editorial instead."""
+from tinyassets.evaluation.editorial import *  # noqa: F401,F403

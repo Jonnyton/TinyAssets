@@ -1,4 +1,4 @@
-# Workflow daemon deploy runbook (provider-neutral Debian 12 VM)
+# TinyAssets daemon deploy runbook (provider-neutral Debian 12 VM)
 
 Self-host migration Row D per
 `docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`.
@@ -20,7 +20,7 @@ this runbook gets you to the single-host green state.
 - DigitalOcean account (or Hetzner Cloud / Linode / Vultr) with billing.
 - SSH keypair registered in the provider's SSH-keys surface.
 - Domain `tinyassets.io` managed by Cloudflare (already true post-P0).
-- Cloudflare Zero Trust tunnel `workflow-daemon-prod` already created
+- Cloudflare Zero Trust tunnel `tinyassets-daemon-prod` already created
   (or a new tunnel you'll create at step 3). Token in hand.
 - Supabase project provisioned (for Track A schema + auth).
 - GitHub OAuth app registered with callback
@@ -39,12 +39,12 @@ Via DigitalOcean Control Panel (or `doctl` CLI):
    - Inbound: SSH (22) from your admin IP only, ICMP open.
    - **Do NOT** open 8001 — the daemon binds loopback-only.
    - Outbound: all.
-7. **Hostname:** `workflow-daemon-prod-01`.
+7. **Hostname:** `tinyassets-daemon-prod-01`.
 8. **Cloud-config** (advanced options, optional): none needed; bootstrap handles provisioning.
 
 Wait for status → green. Copy the public IPv4.
 
-**Hetzner equivalent** (if using fallback provider): Hetzner Cloud Console → Servers → Add Server → Location Falkenstein/Nuremberg → Image Debian 12 → Shared vCPU CX22 → same SSH key + firewall posture. Name `workflow-daemon-prod-01`.
+**Hetzner equivalent** (if using fallback provider): Hetzner Cloud Console → Servers → Add Server → Location Falkenstein/Nuremberg → Image Debian 12 → Shared vCPU CX22 → same SSH key + firewall posture. Name `tinyassets-daemon-prod-01`.
 
 ## Step 2 — Bootstrap the box (~3 min)
 
@@ -59,7 +59,7 @@ Run the bootstrap script. Two paths:
 **Path A (recommended — single command):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Jonnyton/Workflow/main/deploy/hetzner-bootstrap.sh \
+curl -fsSL https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/deploy/hetzner-bootstrap.sh \
     -o /tmp/bootstrap.sh
 sudo bash /tmp/bootstrap.sh
 ```
@@ -67,8 +67,8 @@ sudo bash /tmp/bootstrap.sh
 **Path B (local clone — if you want to review first):**
 
 ```bash
-git clone https://github.com/Jonnyton/Workflow.git /tmp/workflow-src
-sudo bash /tmp/workflow-src/deploy/hetzner-bootstrap.sh
+git clone https://github.com/Jonnyton/TinyAssets.git /tmp/tinyassets-src
+sudo bash /tmp/tinyassets-src/deploy/hetzner-bootstrap.sh
 ```
 
 The script is idempotent. Re-running is safe; it skips steps whose
@@ -78,19 +78,19 @@ end-state is already reached. Expected output ends with:
 [bootstrap] bootstrap complete.
 
 Next steps (host action required):
-  1. Fill in secrets: sudo nano /etc/workflow/env
+  1. Fill in secrets: sudo nano /etc/tinyassets/env
   ...
 ```
 
-## Step 3 — Fill `/etc/workflow/env` (~5 min)
+## Step 3 — Fill `/etc/tinyassets/env` (~5 min)
 
 Open in your editor of choice:
 
 ```bash
-sudo nano /etc/workflow/env
+sudo nano /etc/tinyassets/env
 ```
 
-Fill in these fields (template at `/opt/workflow/deploy/workflow-env.template`
+Fill in these fields (template at `/opt/tinyassets/deploy/tinyassets-env.template`
 documents each):
 
 | Variable | Source |
@@ -100,26 +100,26 @@ documents each):
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase dashboard → Project Settings → API → service_role key (keep secret; never ship to clients). |
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub → Settings → Developer settings → OAuth Apps → Workflow → Client ID. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | Same page → "Generate a new client secret" → copy once. |
-| `WORKFLOW_IMAGE` | Required immutable GHCR digest ref. `deploy-prod.yml` resolves the short-SHA tag from `.github/workflows/build-image.yml` to `ghcr.io/jonnyton/workflow-daemon@sha256:<digest>` before writing `/etc/workflow/env`. |
+| `TINYASSETS_IMAGE` | Required immutable GHCR digest ref. `deploy-prod.yml` resolves the short-SHA tag from `.github/workflows/build-image.yml` to `ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>` before writing `/etc/tinyassets/env`. |
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
 Permissions check:
 
 ```bash
-ls -la /etc/workflow/env
-# -rw-r----- 1 root workflow ... env
+ls -la /etc/tinyassets/env
+# -rw-r----- 1 root tinyassets ... env
 ```
 
 If ownership/mode differs, re-run the bootstrap — it resets to
-`root:workflow 640`.
+`root:tinyassets 640`.
 
 ## Step 3b — Codex auth persistent volume
 
 Codex CLI uses single-use OAuth refresh tokens that rotate in-place
 during normal operation. The compose stack persists Codex's auth state
 across container restarts at `CODEX_HOME=/data/.codex` on the shared
-`workflow-data` Docker volume (see `deploy/compose.yml`).
+`tinyassets-data` Docker volume (see `deploy/compose.yml`).
 Without this, every restart throws away rotated tokens and the next
 refresh attempt fails with `refresh_token_reused`. Design source:
 <https://developers.openai.com/codex/auth/ci-cd-auth>.
@@ -128,12 +128,12 @@ refresh attempt fails with `refresh_token_reused`. Design source:
 `.github/workflows/deploy-prod.yml` has a `Prepare codex auth
 persistent volume` step that runs on every deploy. It is idempotent:
 
-- Creates `workflow-data` when missing, resolves its local mountpoint,
+- Creates `tinyassets-data` when missing, resolves its local mountpoint,
   and creates `.codex` inside it; repairs ownership (`uid 1001:1001`)
   and mode (`700`) unconditionally every deploy so a failed earlier
   attempt gets healed back to a state uid 1001 can write.
 - On the very first deploy onto a pre-existing live droplet, copies
-  the rotated `auth.json` out of the running `workflow-worker`
+  the rotated `auth.json` out of the running `tinyassets-worker`
   container into `/data/.codex` so the post-restart container preserves
   the live refresh chain. It checks the new `/data/.codex/auth.json`
   path first and then the legacy `/app/.codex/auth.json` path for the
@@ -142,8 +142,8 @@ persistent volume` step that runs on every deploy. It is idempotent:
   section — the volume + `auth.json` are already in place and the
   entrypoint preserves the file on restart.
 
-The auth file is shared across the `workflow-daemon` and
-`workflow-worker` containers (both call `codex exec`: the daemon's
+The auth file is shared across the `tinyassets-daemon` and
+`tinyassets-worker` containers (both call `codex exec`: the daemon's
 in-process executor handles `run_branch` MCP calls; the worker's
 `fantasy_daemon` subprocess handles queued BranchTasks). Concurrent
 refresh attempts are serialized by `/usr/local/bin/codex` (which is
@@ -157,13 +157,13 @@ warns about for shared-auth scenarios (Codex Issue #10332).
 
 1. **Brand-new droplet, no live container to migrate from.** The
    workflow step creates the empty `/data/.codex`; the new container then
-   seeds `auth.json` from `WORKFLOW_CODEX_AUTH_JSON_B64` (GitHub
-   Actions secret or `/etc/workflow/env`) on first boot. Host action:
-   keep `WORKFLOW_CODEX_AUTH_JSON_B64` rotated so a fresh-droplet
+   seeds `auth.json` from `TINYASSETS_CODEX_AUTH_JSON_B64` (GitHub
+   Actions secret or `/etc/tinyassets/env`) on first boot. Host action:
+   keep `TINYASSETS_CODEX_AUTH_JSON_B64` rotated so a fresh-droplet
    bootstrap has a known-good seed available.
 2. **Persistent volume wiped (disaster recovery).** Same as case 1:
    the entrypoint reseeds from the env-var on the next boot. Host
-   action: same — keep the GitHub Actions secret or `/etc/workflow/env`
+   action: same — keep the GitHub Actions secret or `/etc/tinyassets/env`
    value fresh.
 
 In normal steady-state operation (volume intact, container restarts
@@ -172,20 +172,20 @@ with no host intervention.
 
 Claude Code subscription auth mirrors this persistence pattern directly.
 `deploy/compose.yml` sets `CLAUDE_CONFIG_DIR=/data/.claude`, and the
-entrypoint creates that directory on the shared `workflow-data` volume.
+entrypoint creates that directory on the shared `tinyassets-data` volume.
 The matching keepalive workflow runs a trivial `claude -p` call with the
 same `CLAUDE_CONFIG_DIR` so the subscription session is exercised after
 deploys and during idle weeks. Host login command for a fresh volume:
 
 ```bash
-sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude workflow-daemon claude auth login --claudeai
+sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude auth login --claudeai
 ```
 
 ## Step 4 — Start the daemon (~30 sec)
 
 ```bash
-sudo systemctl start workflow-daemon
-sudo systemctl status workflow-daemon
+sudo systemctl start tinyassets-daemon
+sudo systemctl status tinyassets-daemon
 ```
 
 Expect: **active (running)**. If the container image hasn't been pulled
@@ -195,11 +195,11 @@ subsequent restarts.
 Tail logs:
 
 ```bash
-sudo journalctl -u workflow-daemon -f
+sudo journalctl -u tinyassets-daemon -f
 ```
 
 Look for:
-- `daemon-1 | Starting Workflow Server on 0.0.0.0:8001 (transport=streamable-http)` — daemon bound.
+- `daemon-1 | Starting TinyAssets Server on 0.0.0.0:8001 (transport=streamable-http)` — daemon bound.
 - `cloudflared | Registered tunnel connection connIndex=0` — tunnel up.
 
 ## Step 5 — Verify canary green (~10 sec)
@@ -207,7 +207,7 @@ Look for:
 From the Hetzner box (container-internal):
 
 ```bash
-docker exec workflow-daemon \
+docker exec tinyassets-daemon \
     python scripts/mcp_public_canary.py \
         --url http://127.0.0.1:8001/mcp --verbose
 ```
@@ -248,11 +248,11 @@ Leave it off. The Hetzner tunnel is now the sole origin for
 If step 4 or 5 fails:
 
 ```bash
-sudo systemctl stop workflow-daemon
+sudo systemctl stop tinyassets-daemon
 # Investigate via journalctl; see Diagnosis section below.
 # To fully revert:
-sudo systemctl disable workflow-daemon
-sudo rm /etc/systemd/system/workflow-daemon.service
+sudo systemctl disable tinyassets-daemon
+sudo rm /etc/systemd/system/tinyassets-daemon.service
 sudo systemctl daemon-reload
 # Destroy the box:
 #   Hetzner console → Server → Delete.
@@ -278,10 +278,10 @@ cutover for the post-cutover playbook.
 
 ## Common failure modes
 
-- **`CLOUDFLARE_TUNNEL_TOKEN` not set or wrong.** `docker logs workflow-tunnel` shows `Unauthorized` or hangs at "Tried to connect to tunnel". Fix: re-copy the token from the Cloudflare dashboard; tokens don't expire but do get regenerated on tunnel rotation.
-- **Healthcheck never passes.** `docker inspect workflow-daemon | jq '.[].State.Health'` shows consecutive failures. The healthcheck runs `mcp_public_canary.py` against `http://127.0.0.1:8001/mcp`; if daemon didn't bind, check `docker logs workflow-daemon`.
-- **Short-SHA image pin not pullable.** Image tag doesn't exist in GHCR. Pick a known-good short-SHA tag from GHCR, resolve it to a digest ref, write `WORKFLOW_IMAGE=ghcr.io/jonnyton/workflow-daemon@sha256:<digest>` in `/etc/workflow/env`, then `systemctl restart workflow-daemon`.
-- **`/etc/workflow/env` permissions wrong.** Compose reads env file via docker; mode must allow the `workflow` user to read. `chown root:workflow /etc/workflow/env && chmod 640 /etc/workflow/env`.
+- **`CLOUDFLARE_TUNNEL_TOKEN` not set or wrong.** `docker logs tinyassets-tunnel` shows `Unauthorized` or hangs at "Tried to connect to tunnel". Fix: re-copy the token from the Cloudflare dashboard; tokens don't expire but do get regenerated on tunnel rotation.
+- **Healthcheck never passes.** `docker inspect tinyassets-daemon | jq '.[].State.Health'` shows consecutive failures. The healthcheck runs `mcp_public_canary.py` against `http://127.0.0.1:8001/mcp`; if daemon didn't bind, check `docker logs tinyassets-daemon`.
+- **Short-SHA image pin not pullable.** Image tag doesn't exist in GHCR. Pick a known-good short-SHA tag from GHCR, resolve it to a digest ref, write `TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>` in `/etc/tinyassets/env`, then `systemctl restart tinyassets-daemon`.
+- **`/etc/tinyassets/env` permissions wrong.** Compose reads env file via docker; mode must allow the `tinyassets` user to read. `chown root:tinyassets /etc/tinyassets/env && chmod 640 /etc/tinyassets/env`.
 - **Docker pull fails (GHCR auth).** If the image is private, the box needs a pull credential. This runbook assumes the GHCR image is public; if not, add `docker login ghcr.io` to the bootstrap + supply a PAT with `read:packages`.
 
 ---
@@ -295,33 +295,33 @@ Catches the failure systemd's `Restart=always` CAN'T see: daemon
 process alive, `/mcp` unresponsive (hung transaction, wedged thread,
 OOM-adjacent).
 
-- **Timer:** `workflow-watchdog.timer` fires every 2 min starting 60s after boot.
-- **Script:** `scripts/watchdog.py` probes `http://127.0.0.1:8001/mcp` via the canary. State persists at `/var/lib/workflow-watchdog/state.json` across ticks.
-- **Trigger:** 3 consecutive reds → `sudo systemctl restart workflow-daemon.service`.
+- **Timer:** `tinyassets-watchdog.timer` fires every 2 min starting 60s after boot.
+- **Script:** `scripts/watchdog.py` probes `http://127.0.0.1:8001/mcp` via the canary. State persists at `/var/lib/tinyassets-watchdog/state.json` across ticks.
+- **Trigger:** 3 consecutive reds → `sudo systemctl restart tinyassets-daemon.service`.
 - **Rate limit:** min 10 min between restarts — blocks hot-loop on persistent-failure states.
-- **Logs:** `sudo journalctl -u workflow-watchdog -f`.
-- **Sudoers:** scoped rule at `/etc/sudoers.d/workflow-watchdog` — `workflow` user has NOPASSWD ONLY for the one restart command; no other sudo access.
+- **Logs:** `sudo journalctl -u tinyassets-watchdog -f`.
+- **Sudoers:** scoped rule at `/etc/sudoers.d/tinyassets-watchdog` — `workflow` user has NOPASSWD ONLY for the one restart command; no other sudo access.
 
-Check next fire: `sudo systemctl list-timers workflow-watchdog.timer`.
+Check next fire: `sudo systemctl list-timers tinyassets-watchdog.timer`.
 
 ## Row J — State backup (installed by bootstrap)
 
-`hetzner-bootstrap.sh` installs a nightly backup of the `workflow-data`
+`hetzner-bootstrap.sh` installs a nightly backup of the `tinyassets-data`
 named Docker volume to Hetzner Storage Box. Bootstrap enables the
 timer unconditionally; if Storage Box creds are blank, `backup.sh`
 exits 1 with a clear message (so ops sees the wiring but can defer
 the Storage Box provisioning).
 
-- **Timer:** `workflow-backup.timer` fires nightly at 03:00 UTC.
-- **Script:** `deploy/backup.sh` tars the volume → `zstd` → `rclone` to `storagebox:workflow-backups/workflow-data-<ts>.tar.zst`.
+- **Timer:** `tinyassets-backup.timer` fires nightly at 03:00 UTC.
+- **Script:** `deploy/backup.sh` tars the volume → `zstd` → `rclone` to `storagebox:tinyassets-backups/tinyassets-data-<ts>.tar.zst`.
 - **Retention:** 7 daily + 4 weekly (override via `BACKUP_RETAIN_*` env vars).
-- **Host action needed:** provision a Hetzner Storage Box (BX11 recommended, ~€1/mo), create a dedicated subuser scoped to `/workflow-backups/`, fill `STORAGEBOX_HOST` / `STORAGEBOX_USER` / `STORAGEBOX_PASS` in `/etc/workflow/env`, `sudo systemctl restart workflow-backup.timer`.
+- **Host action needed:** provision a Hetzner Storage Box (BX11 recommended, ~€1/mo), create a dedicated subuser scoped to `/tinyassets-backups/`, fill `STORAGEBOX_HOST` / `STORAGEBOX_USER` / `STORAGEBOX_PASS` in `/etc/tinyassets/env`, `sudo systemctl restart tinyassets-backup.timer`.
 
 Storage Box provisioning (host does this when ready):
 1. Hetzner Cloud console → Storage Boxes → Add → BX11 (100 GB, ~€1/mo).
-2. Create subuser scoped to `/workflow-backups/`. Copy the SFTP host + subuser credentials.
-3. `sudo nano /etc/workflow/env` → fill in the 3 STORAGEBOX_* vars.
-4. Manually trigger first backup to verify: `sudo systemctl start workflow-backup.service && sudo journalctl -u workflow-backup -n 50`.
+2. Create subuser scoped to `/tinyassets-backups/`. Copy the SFTP host + subuser credentials.
+3. `sudo nano /etc/tinyassets/env` → fill in the 3 STORAGEBOX_* vars.
+4. Manually trigger first backup to verify: `sudo systemctl start tinyassets-backup.service && sudo journalctl -u tinyassets-backup -n 50`.
 5. On success, 03:00 UTC nightly cadence takes over.
 
 **Restore runbook:** `deploy/RESTORE.md` covers full-volume restore
@@ -336,25 +336,25 @@ for "no access".
 
 ### SSH access — the deploy key is non-default-named
 
-The operator deploy key is **`~/.ssh/workflow_deploy_ed25519`** (pubkey comment
-`workflow-deploy@…`). It is NOT one of ssh's default names (`id_rsa` /
+The operator deploy key is **`~/.ssh/tinyassets_deploy_ed25519`** (pubkey comment
+`tinyassets-deploy@…`). It is NOT one of ssh's default names (`id_rsa` /
 `id_ed25519`) and there is usually no `~/.ssh/config` entry, so a bare
 `ssh root@161.35.237.133` never offers it and fails with
 **`Permission denied (publickey)`**. That is NOT "no access" — ssh just didn't
 try the right key. Connect explicitly:
 
 ```bash
-chmod 600 ~/.ssh/workflow_deploy_ed25519   # ssh refuses a world-readable key
-ssh -i ~/.ssh/workflow_deploy_ed25519 -o IdentitiesOnly=yes root@161.35.237.133
+chmod 600 ~/.ssh/tinyassets_deploy_ed25519   # ssh refuses a world-readable key
+ssh -i ~/.ssh/tinyassets_deploy_ed25519 -o IdentitiesOnly=yes root@161.35.237.133
 ```
 
-Add a `~/.ssh/config` entry once so `ssh workflow-droplet` Just Works:
+Add a `~/.ssh/config` entry once so `ssh tinyassets-droplet` Just Works:
 
 ```
-Host workflow-droplet
+Host tinyassets-droplet
     HostName 161.35.237.133
     User root
-    IdentityFile ~/.ssh/workflow_deploy_ed25519
+    IdentityFile ~/.ssh/tinyassets_deploy_ed25519
     IdentitiesOnly yes
 ```
 
@@ -377,53 +377,53 @@ python scripts/droplet.py ssh -- <cmd>   # one-off remote command
 
 ### Compose layout (reconciled 2026-06-26 — the old drift trap is fixed)
 
-systemd runs `ExecStart=docker compose -f `**`/opt/workflow/compose.yml`**` up`.
+systemd runs `ExecStart=docker compose -f `**`/opt/tinyassets/compose.yml`**` up`.
 That path is now a **symlink → `deploy/compose.yml`** (the tracked file), so the
 old "root copy hand-maintained + drifts from `deploy/`" trap is gone — landing a
 `deploy/compose.yml` change on the droplet updates what systemd runs. The
-`/opt/workflow` checkout was reconciled to clean `origin/main` (was 1608 behind +
+`/opt/tinyassets` checkout was reconciled to clean `origin/main` (was 1608 behind +
 dirty; 2026-06-10 STATUS concern, **now resolved**). So:
 
-- A `git pull` in `/opt/workflow` is now **safe** — the checkout is clean, no
+- A `git pull` in `/opt/tinyassets` is now **safe** — the checkout is clean, no
   local edits to clobber. (The old "never git pull" warning is obsolete.)
 - A config commit still does **not** auto-deploy — only image builds trigger Row M.
   Landing a compose/env change is the manual step below.
 - Droplet-only values (image digest pin, secrets, tunnel token) live in
-  `/etc/workflow/env`, never in the repo. `environment:` in `deploy/compose.yml`
+  `/etc/tinyassets/env`, never in the repo. `environment:` in `deploy/compose.yml`
   overrides `env_file` for the same key.
 
 ### Applying a config/env change to the live daemon
 
 ```bash
-ssh workflow-droplet                       # or: python scripts/droplet.py ssh
+ssh tinyassets-droplet                       # or: python scripts/droplet.py ssh
 
 # A — a compose change already committed (e.g. a daemon env flag in
 #     deploy/compose.yml): pull it onto the now-clean checkout; the symlink means
-#     /opt/workflow/compose.yml reflects it immediately.
-cd /opt/workflow && git pull --ff-only origin main
+#     /opt/tinyassets/compose.yml reflects it immediately.
+cd /opt/tinyassets && git pull --ff-only origin main
 
 # B — a host-only env value (image pin, secret, quick flag): edit the env file.
-printf '\nWORKFLOW_SOME_FLAG=value\n' >> /etc/workflow/env
+printf '\nTINYASSETS_SOME_FLAG=value\n' >> /etc/tinyassets/env
 
 # Recreate ONLY the daemon so it re-reads config (brief MCP-surface blip):
-systemctl restart workflow-daemon
-docker exec workflow-daemon printenv | grep WORKFLOW_SOME_FLAG   # confirm it took
+systemctl restart tinyassets-daemon
+docker exec tinyassets-daemon printenv | grep TINYASSETS_SOME_FLAG   # confirm it took
 ```
 
 Then confirm the public surface is green (Hard Rule #11):
 `python scripts/droplet.py canary` (loopback) **and**
 `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp`.
-Rollback: revert the edit + `systemctl restart workflow-daemon`.
+Rollback: revert the edit + `systemctl restart tinyassets-daemon`.
 
 Worked example — the 2026-06-25 auto-ship enforce flip set
-`WORKFLOW_AUTO_SHIP_{RUBRIC,TRAJECTORY}_MODE=enforce` in `deploy/compose.yml`,
+`TINYASSETS_AUTO_SHIP_{RUBRIC,TRAJECTORY}_MODE=enforce` in `deploy/compose.yml`,
 now live + durable via the symlink (verified across a daemon restart).
 
 ## Row M — CI deploy pipeline (GitHub Actions)
 
 `.github/workflows/deploy-prod.yml` auto-deploys the freshly-published
 image on every successful `build-image.yml` run on `main`. SSH to the
-DigitalOcean Droplet, pin the new tag in `/etc/workflow/env`, `docker pull`,
+DigitalOcean Droplet, pin the new tag in `/etc/tinyassets/env`, `docker pull`,
 `systemctl restart`, run post-deploy canary, auto-rollback on red.
 
 **GitHub secrets required** (Settings → Secrets and variables → Actions):
@@ -436,9 +436,9 @@ DigitalOcean Droplet, pin the new tag in `/etc/workflow/env`, `docker pull`,
 
 Generate the key pair:
 ```bash
-ssh-keygen -t ed25519 -C "gh-actions-deploy" -f ~/.ssh/workflow_deploy -N ""
-cat ~/.ssh/workflow_deploy.pub  # add to /root/.ssh/authorized_keys on the Droplet
-cat ~/.ssh/workflow_deploy      # paste into DO_SSH_KEY secret
+ssh-keygen -t ed25519 -C "gh-actions-deploy" -f ~/.ssh/tinyassets_deploy -N ""
+cat ~/.ssh/tinyassets_deploy.pub  # add to /root/.ssh/authorized_keys on the Droplet
+cat ~/.ssh/tinyassets_deploy      # paste into DO_SSH_KEY secret
 ```
 
 Recommended: use a dedicated `deploy` user (not `root`) with limited
@@ -455,10 +455,10 @@ chmod 700 /home/deploy/.ssh
 
 # Scoped sudoers for deploy:
 cat > /etc/sudoers.d/deploy-pipeline <<EOF
-deploy ALL=(root) NOPASSWD:/usr/bin/sed -i * /etc/workflow/env
+deploy ALL=(root) NOPASSWD:/usr/bin/sed -i * /etc/tinyassets/env
 deploy ALL=(root) NOPASSWD:/usr/bin/docker pull *
-deploy ALL=(root) NOPASSWD:/usr/bin/systemctl restart workflow-daemon
-deploy ALL=(root) NOPASSWD:/usr/bin/grep * /etc/workflow/env
+deploy ALL=(root) NOPASSWD:/usr/bin/systemctl restart tinyassets-daemon
+deploy ALL=(root) NOPASSWD:/usr/bin/grep * /etc/tinyassets/env
 EOF
 chmod 0440 /etc/sudoers.d/deploy-pipeline
 visudo -c
@@ -471,7 +471,7 @@ Then `DO_SSH_USER=deploy` in the GH secret.
 - Deploy pins the new image tag + restarts the daemon.
 - Waits up to 90s for cold-start; polls canary every 5s.
 - On canary green, deploy succeeds.
-- On canary red, auto-rollback to the previous `WORKFLOW_IMAGE` value, re-verify canary, and open a `deploy-failed` GitHub issue with the run URL. Distinct from `p0-outage` (Row H) — deploy-failed = we caused it; p0-outage = daemon died spontaneously.
+- On canary red, auto-rollback to the previous `TINYASSETS_IMAGE` value, re-verify canary, and open a `deploy-failed` GitHub issue with the run URL. Distinct from `p0-outage` (Row H) — deploy-failed = we caused it; p0-outage = daemon died spontaneously.
 
 ## Row K — Log aggregation (sidecar in compose)
 
@@ -483,16 +483,16 @@ and forwards events. Two paths:
   `docker compose` + journald capture. Equivalent to not running the
   sidecar, but the wiring exists for one-env-flip enable.
 - **With Better Stack:** set `BETTERSTACK_SOURCE_TOKEN` in
-  `/etc/workflow/env`, `sudo systemctl restart workflow-daemon`.
+  `/etc/tinyassets/env`, `sudo systemctl restart tinyassets-daemon`.
   Vector starts shipping to `https://in.logs.betterstack.com` with
-  `workflow` service + `daemon`/`cloudflared` role metadata on each
+  `tinyassets` service + `daemon`/`cloudflared` role metadata on each
   event. Free tier = 3 GB/mo retention.
 
 **Host action (optional — enable Better Stack):**
 1. Sign up at betterstack.com (free tier). Create a "Logs" source.
 2. Copy the source token.
-3. `sudo nano /etc/workflow/env` → fill `BETTERSTACK_SOURCE_TOKEN=...`.
-4. `sudo systemctl restart workflow-daemon` (restarts the whole compose stack including the logs sidecar).
+3. `sudo nano /etc/tinyassets/env` → fill `BETTERSTACK_SOURCE_TOKEN=...`.
+4. `sudo systemctl restart tinyassets-daemon` (restarts the whole compose stack including the logs sidecar).
 5. Verify in Better Stack dashboard — events should appear within ~30s.
 
 If the box dies, Better Stack retains the most recent logs for
@@ -518,7 +518,7 @@ adds $1 when Row J lands).
 
 ## Support + escalation
 
-- **Log source of truth:** `journalctl -u workflow-daemon -f` on the Hetzner box.
+- **Log source of truth:** `journalctl -u tinyassets-daemon -f` on the Hetzner box.
 - **Canary alarm:** `.github/workflows/uptime-canary.yml` auto-opens a GitHub issue labeled `p0-outage` on 2 consecutive reds. Host gets GitHub email notification.
 - **Tunnel dashboard:** `https://dash.cloudflare.com/<acct>/one/networks/connectors` — shows tunnel + connector health.
 

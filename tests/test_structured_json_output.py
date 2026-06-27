@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.branches import NodeDefinition
-from workflow.graph_compiler import (
+from tinyassets.branches import NodeDefinition
+from tinyassets.graph_compiler import (
     CompilerError,
     _build_prompt_template_node,
     _coerce_value,

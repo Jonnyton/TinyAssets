@@ -18,7 +18,7 @@ block with that field — its surface is oriented toward privacy /
 routing evidence (``active_host``, ``tier_routing_policy``,
 ``evidence.activity_log_tail``, etc.). The ``universe action=inspect``
 tool IS the canonical surface for the ``daemon.last_activity_at``
-field (see ``workflow/universe_server.py:1690``). This canary reads
+field (see ``tinyassets/universe_server.py:1690``). This canary reads
 that one.
 
 Exit codes (task #15 spec)
@@ -52,7 +52,7 @@ Usage
 
 Env overrides
 -------------
-    WORKFLOW_LAST_ACTIVITY_THRESHOLD_MIN   default threshold (min)
+    TINYASSETS_LAST_ACTIVITY_THRESHOLD_MIN   default threshold (min)
 
 Stdlib only.
 """
@@ -310,11 +310,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
                     help=f"Per-request timeout seconds (default: {DEFAULT_TIMEOUT})")
     default_threshold = int(os.environ.get(
-        "WORKFLOW_LAST_ACTIVITY_THRESHOLD_MIN", DEFAULT_THRESHOLD_MIN,
+        "TINYASSETS_LAST_ACTIVITY_THRESHOLD_MIN", DEFAULT_THRESHOLD_MIN,
     ))
     ap.add_argument("--threshold-min", type=int, default=default_threshold,
                     help=f"Stale threshold in minutes (default: {default_threshold}; "
-                         f"env: WORKFLOW_LAST_ACTIVITY_THRESHOLD_MIN)")
+                         f"env: TINYASSETS_LAST_ACTIVITY_THRESHOLD_MIN)")
     ap.add_argument("--verbose", action="store_true",
                     help="Print one-line summary + diagnostic fields.")
     args = ap.parse_args(argv)
@@ -330,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         return exc.code
 
     # 0/2/3 outcomes all print the human message; exit code carries the
-    # RED/GREEN decision up to the workflow.
+    # RED/GREEN decision up to the tinyassets.
     if code == 0:
         print(f"[last-activity] {msg}")
     else:

@@ -19,8 +19,8 @@
   import Term from '$lib/components/Term.svelte';
   import baked from '$lib/content/mcp-snapshot.json';
 
-  const GH_REPO = 'https://github.com/Jonnyton/Workflow';
-  const GH_ACTIONS = 'https://github.com/Jonnyton/Workflow/actions';
+  const GH_REPO = 'https://github.com/Jonnyton/TinyAssets';
+  const GH_ACTIONS = 'https://github.com/Jonnyton/TinyAssets/actions';
   const MCP_BARE = 'tinyassets.io/mcp';
 
   // First-paint context from the freshly-baked snapshot, ONLY ever shown

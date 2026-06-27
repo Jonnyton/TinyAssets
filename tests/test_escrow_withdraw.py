@@ -15,19 +15,19 @@ ADDR = "0x" + "1" * 40
 
 
 def _init(base_path: Path) -> None:
-    from workflow.daemon_server import initialize_author_server
+    from tinyassets.daemon_server import initialize_author_server
     initialize_author_server(base_path)
 
 
 def _ext(monkeypatch, tmp_path, *, user="alice", paid_market=True, backend=None, **kwargs):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on" if paid_market else "off")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on" if paid_market else "off")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", user)
     if backend is not None:
-        monkeypatch.setenv("WORKFLOW_SETTLEMENT_BACKEND", backend)
+        monkeypatch.setenv("TINYASSETS_SETTLEMENT_BACKEND", backend)
     else:
-        monkeypatch.delenv("WORKFLOW_SETTLEMENT_BACKEND", raising=False)
-    from workflow.universe_server import extensions
+        monkeypatch.delenv("TINYASSETS_SETTLEMENT_BACKEND", raising=False)
+    from tinyassets.universe_server import extensions
     return json.loads(extensions(**kwargs))
 
 
@@ -102,7 +102,7 @@ class TestWithdrawIdempotency:
     def _count_batches(self, tmp_path, monkeypatch, batch_id):
         import sqlite3
 
-        from workflow.storage import db_path
+        from tinyassets.storage import db_path
         conn = sqlite3.connect(str(db_path(tmp_path)))
         try:
             return conn.execute(
@@ -193,11 +193,11 @@ class TestWithdrawBackendFailureContract:
     def _conn(self, tmp_path):
         import sqlite3
 
-        from workflow.daemon_server import initialize_author_server
-        from workflow.payments.escrow import migrate_escrow_schema
-        from workflow.payments.funding import credit_balance
-        from workflow.payments.wallets import set_payout_wallet
-        from workflow.storage import db_path
+        from tinyassets.daemon_server import initialize_author_server
+        from tinyassets.payments.escrow import migrate_escrow_schema
+        from tinyassets.payments.funding import credit_balance
+        from tinyassets.payments.wallets import set_payout_wallet
+        from tinyassets.storage import db_path
         initialize_author_server(tmp_path)
         conn = sqlite3.connect(str(db_path(tmp_path)), timeout=30.0)
         conn.row_factory = sqlite3.Row
@@ -215,8 +215,8 @@ class TestWithdrawBackendFailureContract:
         return conn
 
     def _inject_backend(self, monkeypatch, *, fail_mode):
-        from workflow.payments import actions as actions_mod
-        from workflow.payments.settlement_backend import (
+        from tinyassets.payments import actions as actions_mod
+        from tinyassets.payments.settlement_backend import (
             BaseSepoliaBackend,
             MockOnChainClient,
         )
@@ -226,12 +226,12 @@ class TestWithdrawBackendFailureContract:
         return client
 
     def _spendable(self, conn):
-        from workflow.payments.funding import get_balance
+        from tinyassets.payments.funding import get_balance
         bal = get_balance(conn, staker_id="alice", currency="MicroToken")
         return bal.spendable_amount if bal else 0
 
     def test_definitive_failure_refunds_and_is_retryable(self, tmp_path, monkeypatch):
-        from workflow.payments.actions import action_escrow_withdraw
+        from tinyassets.payments.actions import action_escrow_withdraw
         conn = self._conn(tmp_path)
         self._inject_backend(monkeypatch, fail_mode="not_submitted")
 
@@ -251,8 +251,8 @@ class TestWithdrawBackendFailureContract:
         ).fetchone()[0] == 0
 
         # Retry now succeeds (different backend that completes).
-        from workflow.payments import actions as actions_mod
-        from workflow.payments.settlement_backend import InternalBackend
+        from tinyassets.payments import actions as actions_mod
+        from tinyassets.payments.settlement_backend import InternalBackend
         monkeypatch.setattr(
             actions_mod, "get_settlement_backend", lambda: InternalBackend()
         )
@@ -263,7 +263,7 @@ class TestWithdrawBackendFailureContract:
         assert self._spendable(conn) == 600_000
 
     def test_unknown_failure_goes_in_doubt_not_refunded(self, tmp_path, monkeypatch):
-        from workflow.payments.actions import action_escrow_withdraw
+        from tinyassets.payments.actions import action_escrow_withdraw
         conn = self._conn(tmp_path)
         self._inject_backend(monkeypatch, fail_mode="unknown")
 
@@ -282,7 +282,7 @@ class TestWithdrawBackendFailureContract:
         assert row["status"] == "in_doubt"
 
     def test_unknown_failure_retry_does_not_double_pay(self, tmp_path, monkeypatch):
-        from workflow.payments.actions import action_escrow_withdraw
+        from tinyassets.payments.actions import action_escrow_withdraw
         conn = self._conn(tmp_path)
         client = self._inject_backend(monkeypatch, fail_mode="unknown")
 
@@ -295,8 +295,8 @@ class TestWithdrawBackendFailureContract:
 
         # A blind retry (even if the backend would now succeed) must NOT re-pay
         # or re-debit — it returns the in-doubt record unchanged.
-        from workflow.payments import actions as actions_mod
-        from workflow.payments.settlement_backend import (
+        from tinyassets.payments import actions as actions_mod
+        from tinyassets.payments.settlement_backend import (
             BaseSepoliaBackend,
             MockOnChainClient,
         )
@@ -324,9 +324,9 @@ class TestWithdrawBackendFailureContract:
         ).fetchone()[0] == 1
 
     def test_committed_success_replay_dedups(self, tmp_path, monkeypatch):
-        from workflow.payments import actions as actions_mod
-        from workflow.payments.actions import action_escrow_withdraw
-        from workflow.payments.settlement_backend import InternalBackend
+        from tinyassets.payments import actions as actions_mod
+        from tinyassets.payments.actions import action_escrow_withdraw
+        from tinyassets.payments.settlement_backend import InternalBackend
         conn = self._conn(tmp_path)
         monkeypatch.setattr(
             actions_mod, "get_settlement_backend", lambda: InternalBackend()

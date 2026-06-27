@@ -12,9 +12,9 @@ Codex checker key: PR #1144.
 
 from __future__ import annotations
 
-from workflow.effectors import github_pr
+from tinyassets.effectors import github_pr
 
-_DEST = "Jonnyton/Workflow"
+_DEST = "Jonnyton/TinyAssets"
 _HEAD = "autolab/probe-v3-k9x4m2"
 _BASE = "main"
 
@@ -140,29 +140,29 @@ def test_deletion_emits_null_sha_entry_without_blob(monkeypatch):
     ]
 
 
-_MIRROR = "packaging/claude-plugin/plugins/workflow-universe-server/runtime/"
+_MIRROR = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
 
 
 def test_mirror_path_for_mapping():
     assert (
-        github_pr._mirror_path_for("workflow/api/wiki.py")
-        == _MIRROR + "workflow/api/wiki.py"
+        github_pr._mirror_path_for("tinyassets/api/wiki.py")
+        == _MIRROR + "tinyassets/api/wiki.py"
     )
     assert github_pr._mirror_path_for("docs/x.md") is None
     assert github_pr._mirror_path_for("deploy/compose.yml") is None
-    assert github_pr._mirror_path_for("workflow/x.pyc") is None
-    assert github_pr._mirror_path_for("workflow/__pycache__/x.py") is None
+    assert github_pr._mirror_path_for("tinyassets/x.pyc") is None
+    assert github_pr._mirror_path_for("tinyassets/__pycache__/x.py") is None
 
 
 def test_workflow_path_is_mirrored_to_plugin_runtime(monkeypatch):
     fake = _scripted_api(_happy_responses())
     monkeypatch.setattr(github_pr, "_git_data_api", fake)
-    result = _materialize(changes={"workflow/api/wiki.py": "x = 1\n"})
+    result = _materialize(changes={"tinyassets/api/wiki.py": "x = 1\n"})
     assert result["materialized"] is True
     tree_call = next(b for m, p, b in fake.calls if p.endswith("/git/trees"))
     paths = {e["path"] for e in tree_call["tree"]}
-    assert "workflow/api/wiki.py" in paths
-    assert _MIRROR + "workflow/api/wiki.py" in paths
+    assert "tinyassets/api/wiki.py" in paths
+    assert _MIRROR + "tinyassets/api/wiki.py" in paths
     # Two blobs created (canonical + mirror), same content.
     assert sum(1 for _m, p, _b in fake.calls if p.endswith("/git/blobs")) == 2
 
@@ -170,11 +170,11 @@ def test_workflow_path_is_mirrored_to_plugin_runtime(monkeypatch):
 def test_workflow_delete_mirrors_as_delete(monkeypatch):
     fake = _scripted_api(_happy_responses())
     monkeypatch.setattr(github_pr, "_git_data_api", fake)
-    _materialize(changes={"workflow/old.py": None})
+    _materialize(changes={"tinyassets/old.py": None})
     tree_call = next(b for m, p, b in fake.calls if p.endswith("/git/trees"))
     entries = {e["path"]: e for e in tree_call["tree"]}
-    assert entries["workflow/old.py"]["sha"] is None
-    assert entries[_MIRROR + "workflow/old.py"]["sha"] is None
+    assert entries["tinyassets/old.py"]["sha"] is None
+    assert entries[_MIRROR + "tinyassets/old.py"]["sha"] is None
     assert not any(p.endswith("/git/blobs") for _m, p, _b in fake.calls)
 
 
@@ -190,8 +190,8 @@ def test_explicit_mirror_edit_not_overwritten(monkeypatch):
     fake = _scripted_api(_happy_responses())
     monkeypatch.setattr(github_pr, "_git_data_api", fake)
     _materialize(changes={
-        "workflow/a.py": "canonical\n",
-        _MIRROR + "workflow/a.py": "explicit-mirror\n",
+        "tinyassets/a.py": "canonical\n",
+        _MIRROR + "tinyassets/a.py": "explicit-mirror\n",
     })
     blob_bodies = [b["content"] for m, p, b in fake.calls if p.endswith("/git/blobs")]
     assert "canonical\n" in blob_bodies

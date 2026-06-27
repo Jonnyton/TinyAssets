@@ -24,7 +24,7 @@ Phase 1a is the **fastest shippable piece** of the persistent-uptime work: a rea
 - OAuth / identity / bearer tokens.
 - Bid inbox, request queue, daemon dispatch.
 - Write operations of any kind.
-- Any change to the on-host tray or `workflow/universe_server.py` runtime surface.
+- Any change to the on-host tray or `tinyassets/universe_server.py` runtime surface.
 
 **What Phase 1a wins us on the three host requirements:**
 - **(1) Always-on for node work** — *partial*. Users can browse goals/branches/nodes 24/7. Creation still requires a live host (Phase 1b).
@@ -63,9 +63,9 @@ This is a deliberately narrow win. It's worth shipping on its own because "users
   4. Deploy `site/` to the chosen target (see §3).
   5. On success, POST to Cloudflare Cache Purge API to invalidate `/catalog/*` and `/` (scoped API token in GitHub Actions secrets).
 
-**Why Python not Node:** the project is already Python; the generator imports `workflow/` schemas directly (or duplicates a minimal loader) rather than re-parsing YAML in a different language. Keeps one toolchain.
+**Why Python not Node:** the project is already Python; the generator imports `tinyassets/` schemas directly (or duplicates a minimal loader) rather than re-parsing YAML in a different language. Keeps one toolchain.
 
-**Existing code to reuse (read-only):** `workflow/catalog.py` if present (grep finds usage sites) to share model definitions; otherwise the generator's YAML loader is small and standalone. Dev decides the call on implementation — don't over-couple to runtime code.
+**Existing code to reuse (read-only):** `tinyassets/catalog.py` if present (grep finds usage sites) to share model definitions; otherwise the generator's YAML loader is small and standalone. Dev decides the call on implementation — don't over-couple to runtime code.
 
 ---
 

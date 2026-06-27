@@ -1,7 +1,7 @@
 # MCP Response Size Audit — build_branch / patch_branch
 
-**Date:** 2026-04-25  
-**Trigger:** ChatGPT "Something went wrong while generating the response" on multi-node branch builds (Mark's bug-to-patch workflow).  
+**Date:** 2026-04-25
+**Trigger:** ChatGPT "Something went wrong while generating the response" on multi-node branch builds (Mark's bug-to-patch workflow).
 **Scope:** `_ext_branch_build`, `_ext_branch_patch`, `_action_run_branch`.
 
 ---
@@ -21,7 +21,7 @@ All measurements use a representative node with a realistic prompt_template (~60
 | patch_branch | 8 | 11,654 | 495 | 96% |
 | patch_branch | 12 | 17,081 | 501 | 97% |
 
-**ChatGPT estimated stream budget:** ~32,000 bytes.  
+**ChatGPT estimated stream budget:** ~32,000 bytes.
 Even a 3-node branch with detailed prompt templates was pushing 5 KB, and real-world branches with longer prompts routinely exceed 30 KB on 8+ nodes.
 
 ---
@@ -54,15 +54,15 @@ Both `_ext_branch_build` and `_ext_branch_patch` now:
 `patch_branch` retains the `patched_fields` and `post_patch` identity block in both modes — the BUG-030 readback invariant is satisfied.
 
 **Files changed:**
-- `workflow/universe_server.py` — canonical
-- `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/universe_server.py`
-- `packaging/dist/workflow-universe-server-src/workflow/universe_server.py`
+- `tinyassets/universe_server.py` — canonical
+- `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py`
+- `packaging/dist/tinyassets-universe-server-src/tinyassets/universe_server.py`
 
 ---
 
 ## Contract Change Note
 
-Existing chatbots that parsed the `"branch"` field from the default response will no longer receive it. The field still exists under `verbose=true`. 
+Existing chatbots that parsed the `"branch"` field from the default response will no longer receive it. The field still exists under `verbose=true`.
 
 Known chatbot consumers of the `"branch"` field: none identified in prompts.py rules. The `post_patch` identity block (always present) covers the BUG-030 use case. Add `verbose=true` to any script/flow that needs the full post-state definition.
 

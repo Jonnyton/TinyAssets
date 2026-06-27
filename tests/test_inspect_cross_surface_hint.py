@@ -3,11 +3,11 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from workflow.api.prompts import _CONTROL_STATION_PROMPT
+from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
 
 def _call_inspect(universe_id="test-u"):
-    from workflow.api.universe import _action_inspect_universe
+    from tinyassets.api.universe import _action_inspect_universe
 
     fake_udir = Path("/fake") / universe_id
 
@@ -15,22 +15,22 @@ def _call_inspect(universe_id="test-u"):
         return True
 
     with (
-        # _action_inspect_universe lives in workflow.api.universe and
+        # _action_inspect_universe lives in tinyassets.api.universe and
         # imports these symbols directly (not via re-export). Patch at the
         # consumer site (api.universe) for it to take effect.
-        patch("workflow.api.universe._default_universe", return_value=universe_id),
-        patch("workflow.api.universe._universe_dir", return_value=fake_udir),
+        patch("tinyassets.api.universe._default_universe", return_value=universe_id),
+        patch("tinyassets.api.universe._universe_dir", return_value=fake_udir),
         patch.object(Path, "is_dir", return_value=True),
-        patch("workflow.api.universe._read_json", return_value=None),
-        patch("workflow.api.universe._read_text", return_value=""),
-        patch("workflow.api.universe._daemon_liveness", return_value={
+        patch("tinyassets.api.universe._read_json", return_value=None),
+        patch("tinyassets.api.universe._read_text", return_value=""),
+        patch("tinyassets.api.universe._daemon_liveness", return_value={
             "phase": "idle", "phase_human": "Idle", "is_paused": False,
             "has_premise": False, "has_work": False, "last_activity_at": "",
             "staleness": "fresh", "word_count": 0, "word_count_sample": "",
             "accept_rate": 0, "accept_rate_sample": "",
         }),
-        patch("workflow.api.universe._list_output_tree", return_value=[]),
-        patch("workflow.api.universe._base_path", return_value=Path("/fake")),
+        patch("tinyassets.api.universe._list_output_tree", return_value=[]),
+        patch("tinyassets.api.universe._base_path", return_value=Path("/fake")),
     ):
         return json.loads(_action_inspect_universe(universe_id=universe_id))
 

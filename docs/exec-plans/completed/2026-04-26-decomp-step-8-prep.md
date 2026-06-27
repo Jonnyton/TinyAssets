@@ -1,16 +1,16 @@
 ---
-title: Step 8 prep — workflow/api/branches.py extraction scope
+title: Step 8 prep — tinyassets/api/branches.py extraction scope
 date: 2026-04-26
 author: dev
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md §4.6 (`branches.py`), §8 step 8
-target_task: Decomp audit Step 8 — Extract workflow/api/branches.py (LAST step)
-gates_on: Steps 1-6 ✅ landed. Step 7 (market.py) MUST land before Step 8 — both edit `workflow/universe_server.py`. After Step 8 SHIP, residual universe_server.py is the projected ~4,400-LOC routing shim — close to (but not identical to) the audit's "~100-LOC routing shell" target (residual still owns `extensions()` body, `universe()` body, preamble engine helpers, and the 6 @mcp.tool wrappers preserved by Pattern A2).
+target_task: Decomp audit Step 8 — Extract tinyassets/api/branches.py (LAST step)
+gates_on: Steps 1-6 ✅ landed. Step 7 (market.py) MUST land before Step 8 — both edit `tinyassets/universe_server.py`. After Step 8 SHIP, residual universe_server.py is the projected ~4,400-LOC routing shim — close to (but not identical to) the audit's "~100-LOC routing shell" target (residual still owns `extensions()` body, `universe()` body, preamble engine helpers, and the 6 @mcp.tool wrappers preserved by Pattern A2).
 ---
 
 # Step 8 (`branches.py`) pre-flight scope
 
-Read-only scope for extracting the branch authoring + node CRUD subsystem from `workflow/universe_server.py` into a new `workflow/api/branches.py`. **Largest single extraction by LOC** (~2,675 in current code, audit said ~3,282) and the most cross-referenced. Same freshness-check protocol as Steps 1-7 prep.
+Read-only scope for extracting the branch authoring + node CRUD subsystem from `tinyassets/universe_server.py` into a new `tinyassets/api/branches.py`. **Largest single extraction by LOC** (~2,675 in current code, audit said ~3,282) and the most cross-referenced. Same freshness-check protocol as Steps 1-7 prep.
 
 ---
 
@@ -36,7 +36,7 @@ Read-only scope for extracting the branch authoring + node CRUD subsystem from `
 
 **Audit framing CONFIRMED:** All 23 handlers + helpers are branch-CRUD or node-manipulation concerns. The `@mcp.prompt` "Branch Design Guide" is a chatbot-facing prompt registration — moves with branches.py since it's branch-specific guidance.
 
-**`_BRANCH_VERSION_ACTIONS` already extracted in Step 5 (`evaluation.py`)** — audit's listing of it under branches.py was stale. Confirmed: `_BRANCH_VERSION_ACTIONS` lives in `workflow/api/evaluation.py` since commit 555712e.
+**`_BRANCH_VERSION_ACTIONS` already extracted in Step 5 (`evaluation.py`)** — audit's listing of it under branches.py was stale. Confirmed: `_BRANCH_VERSION_ACTIONS` lives in `tinyassets/api/evaluation.py` since commit 555712e.
 
 ---
 
@@ -125,7 +125,7 @@ Read-only scope for extracting the branch authoring + node CRUD subsystem from `
 ### 3.2 Do Steps 1-7 submodules depend on branches.py symbols?
 
 **Yes — `_resolve_branch_id` is referenced by Step 4 (runs.py) per #11's lazy-import block:**
-- `workflow/api/runs.py` `_action_run_branch` lazy-imports `from workflow.universe_server import _current_actor, _resolve_branch_id`.
+- `tinyassets/api/runs.py` `_action_run_branch` lazy-imports `from workflow.universe_server import _current_actor, _resolve_branch_id`.
 - After Step 8 lands, that import path needs to update to `from workflow.api.branches import _resolve_branch_id` (or stay via re-export shim if branches.py is re-exported from universe_server).
 
 **Strategy:** Keep `_resolve_branch_id` re-exported from `workflow.universe_server` via the back-compat shim block. **No edit needed** to runs.py — the existing `from workflow.universe_server import _current_actor, _resolve_branch_id` continues to work. Same pattern applies to any other Step 4-7 module that imports branches symbols.
@@ -162,7 +162,7 @@ Structurally identical to Step 4 (`_RUN_ACTIONS`) pattern. **Trivial; not a refa
 
 ### 3.5 `_BRANCH_VERSION_ACTIONS` — already extracted in Step 5
 
-The audit listed `_BRANCH_VERSION_ACTIONS` under branches.py scope, but **Step 5 (evaluation.py) extracted it** per the audit's own §4.4 listing. Current location: `workflow/api/evaluation.py`. **Do NOT re-extract.** Confirmed via grep: `_BRANCH_VERSION_ACTIONS` defined in evaluation.py only.
+The audit listed `_BRANCH_VERSION_ACTIONS` under branches.py scope, but **Step 5 (evaluation.py) extracted it** per the audit's own §4.4 listing. Current location: `tinyassets/api/evaluation.py`. **Do NOT re-extract.** Confirmed via grep: `_BRANCH_VERSION_ACTIONS` defined in evaluation.py only.
 
 ### 3.6 `@mcp.prompt` "Branch Design Guide" — Pattern A2 with prompt decoration
 
@@ -199,7 +199,7 @@ This is the **highest test-import surface of any extraction**. Counted at least 
 | `tests/test_canonical_branch_mcp.py:115,126` | `_BRANCH_ACTIONS` | 2 |
 | Plus untold others | `_ext_branch_*`, `_action_continue_branch`, `_action_fork_tree`, `_dispatch_branch_action`, `_BRANCH_ACTIONS`, `_BRANCH_WRITE_ACTIONS`, `_resolve_branch_id` | ~50+ |
 
-**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After Step 8 lands, `workflow/universe_server.py` adds re-export block for ~30 symbols (17 handlers in `_BRANCH_ACTIONS` + 2 dispatch dict + dispatcher + helpers + `_resolve_branch_id` + `_related_wiki_pages` + the prompt body).
+**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After Step 8 lands, `tinyassets/universe_server.py` adds re-export block for ~30 symbols (17 handlers in `_BRANCH_ACTIONS` + 2 dispatch dict + dispatcher + helpers + `_resolve_branch_id` + `_related_wiki_pages` + the prompt body).
 
 **Direct test-import surface estimated 75+ imports** across ~25 test files. **Largest re-export block of any extraction.** Re-export shim handles all without test edits — same pattern as Steps 4-7.
 
@@ -211,7 +211,7 @@ This is the **highest test-import surface of any extraction**. Counted at least 
 
 Searched for evidence that any branches-scope symbols already shipped to a submodule (e.g. `workflow.api.branches`). **None found in the API layer.**
 
-Note: there IS a `workflow/branches.py` (storage layer for `BranchDefinition` + `patch_branch_definition`, etc.) — that's the **persistence backend** that the API handlers wrap. Different namespace. Inside branches.py (API), imports stay as `from workflow.branches import BranchDefinition, NodeDefinition, ...` (storage). **Verify no name collision** at extraction time — the new file is `workflow/api/branches.py`, not `workflow/branches.py`.
+Note: there IS a `tinyassets/branches.py` (storage layer for `BranchDefinition` + `patch_branch_definition`, etc.) — that's the **persistence backend** that the API handlers wrap. Different namespace. Inside branches.py (API), imports stay as `from workflow.branches import BranchDefinition, NodeDefinition, ...` (storage). **Verify no name collision** at extraction time — the new file is `tinyassets/api/branches.py`, not `tinyassets/branches.py`.
 
 Adjacent partial moves:
 - 5 helpers in #8 — most branch handlers already use `_base_path` from helpers.py.
@@ -236,7 +236,7 @@ Adjacent partial moves:
 | Back-compat re-export block added to universe_server.py | ~50 |
 | `@mcp.prompt` decorator + signature wrapper preserved (Option A) | ~30 (decorator + signature + delegation; body is in branches.py) |
 | **Net reduction in universe_server.py** | **~2,593** |
-| New `workflow/api/branches.py` size | **~2,750** (with imports + module docstring) |
+| New `tinyassets/api/branches.py` size | **~2,750** (with imports + module docstring) |
 
 **Audit said ~3,282.** Reality ~2,673 — about 18% under. The wrapper preservation is much smaller than market.py (only 1 prompt vs 2 MCP tools).
 
@@ -285,11 +285,11 @@ Estimated wall time: **120-180 min** (largest extraction; most cross-references;
 1. **Confirm Steps 1-7 landed.** Step 7 must SHIP before Step 8 starts.
 2. **AST scan for external symbol set.** Identify exact set of universe_server-internal symbols that the moved code references. Lazy-import each in the consuming function. Expect 8-15 affected functions.
 3. **Verify `_apply_node_spec`, `_storage_backend`, `_gates_enabled` locations** — confirm whether they're inside L4435–L7110 (move with branches) or in preamble (stay).
-4. **Create `workflow/api/branches.py`:**
+4. **Create `tinyassets/api/branches.py`:**
    - Module docstring referencing audit + extraction date + the source range + cross-module dependencies (wiki re-imports + Pattern A2 explanation for `@mcp.prompt` Branch Design Guide).
    - Imports: `from workflow.api.helpers import _base_path, _default_universe, _universe_dir, _read_json, _read_text, _wiki_pages_dir, _find_all_pages` + `from workflow.api.wiki import _parse_frontmatter, _page_rel_path` + std-lib + typing + `logging.getLogger("universe_server.branches")`.
    - Move L4435–L7110 verbatim (preserving all section banners + helpers + handlers + `_BRANCH_ACTIONS` + `_BRANCH_WRITE_ACTIONS`). For Option A: extract `@mcp.prompt` body as a plain function `_branch_design_guide_prompt() -> str` exposing the markdown body; the decorator stays in universe_server.py.
-5. **Update `workflow/universe_server.py`:**
+5. **Update `tinyassets/universe_server.py`:**
    - Delete L4435–L7110 (single deletion, no reverse order needed since it's contiguous and there's no skip).
    - Add to back-compat shim block:
      ```python
@@ -330,16 +330,16 @@ Estimated wall time: **120-180 min** (largest extraction; most cross-references;
    - `pytest tests/test_branch_*.py tests/test_build_branch*.py tests/test_describe_branch*.py tests/test_patch_branch*.py tests/test_canonical_branch_mcp.py tests/test_run_branch_*.py -q` → green.
    - `pytest -k "branch or extensions" -q` → cross-cutting smoke.
    - `pytest -q` → full suite green (essential — branches.py touches 25+ test files).
-   - `ruff check workflow/api/branches.py workflow/universe_server.py` → clean.
-   - **Visual check:** `git diff workflow/universe_server.py | grep -c "^-def _"` should equal **23** (17 `_ext_branch_*` + `_action_continue_branch` + `_action_fork_tree` + `_dispatch_branch_action` + `_resolve_branch_id` + `_resolve_node_spec` + `_resolve_udir` + `_build_branch_text` + `_related_summary` + `_related_wiki_pages`). Note: actual count depends on whether `_apply_node_spec` is inside the range. Recompute after extraction.
+   - `ruff check tinyassets/api/branches.py tinyassets/universe_server.py` → clean.
+   - **Visual check:** `git diff tinyassets/universe_server.py | grep -c "^-def _"` should equal **23** (17 `_ext_branch_*` + `_action_continue_branch` + `_action_fork_tree` + `_dispatch_branch_action` + `_resolve_branch_id` + `_resolve_node_spec` + `_resolve_udir` + `_build_branch_text` + `_related_summary` + `_related_wiki_pages`). Note: actual count depends on whether `_apply_node_spec` is inside the range. Recompute after extraction.
 
 **Files in eventual Step 8 SHIP handoff:**
-- `workflow/api/branches.py` (NEW, ~2,750 LOC — largest single-file extraction)
-- `workflow/universe_server.py` (~2,593 LOC removed + ~50 re-export added + ~30 prompt-wrapper preservation = net ~−2,513)
+- `tinyassets/api/branches.py` (NEW, ~2,750 LOC — largest single-file extraction)
+- `tinyassets/universe_server.py` (~2,593 LOC removed + ~50 re-export added + ~30 prompt-wrapper preservation = net ~−2,513)
 - `tests/test_api_branches.py` (NEW, 70-100 tests recommended)
 - 3-6 existing test files with monkeypatch-target updates
-- `packaging/claude-plugin/.../workflow/api/branches.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
+- `packaging/claude-plugin/.../tinyassets/api/branches.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
 
 7-10 files, +2,800 / −2,510 LOC net.
 

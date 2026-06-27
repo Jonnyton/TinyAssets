@@ -7,8 +7,8 @@ type: design-note
 companion:
   - ideas/INBOX.md (2026-04-27 parity entry)
   - ideas/PIPELINE.md (cross-algorithm parity row)
-  - workflow/api/helpers.py
-  - workflow/api/market.py
+  - tinyassets/api/helpers.py
+  - tinyassets/api/market.py
 load-bearing-question: Does this make the user's chatbot better at serving the user's real goal?
 audience: lead, navigator, future dev/spec author
 ---

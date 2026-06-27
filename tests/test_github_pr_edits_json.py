@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import base64
 
-from workflow.effectors import github_pr
+from tinyassets.effectors import github_pr
 
-_DEST = "Jonnyton/Workflow"
+_DEST = "Jonnyton/TinyAssets"
 _HEAD = "patch-loop/edit-probe"
 _BASE = "main"
 

@@ -1,8 +1,8 @@
-# Workflow
+# TinyAssets
 
 **A global goals engine. Fully self-hostable, open-source (MIT platform / CC0 catalog), runs on your own infrastructure.** Humanity declares shared Goals — research breakthroughs, great novels, successful prosecutions, cures, open datasets, whatever people actually want done — and a legion of diverse AI-augmented workflows pursues each Goal in parallel. Branches evolve, cross-pollinate, and get ranked by how far their outputs advance up each Goal's real-world outcome-gate ladder. The system is built for whatever people collectively care about next.
 
-This repo contains substantial architecture and implementation work. The starter surfaces below help you navigate, extend, and connect — including via Obsidian if you use it.
+This repo contains substantial architecture and implementation work for TinyAssets. The starter surfaces below help you navigate, extend, and connect — including via Obsidian if you use it.
 
 **Built by Jonathan Farnsworth** (jonathan.m.farnsworth@gmail.com, GitHub [@Jonnyton](https://github.com/Jonnyton)) — sole human author; the only co-authors are the project's own AI agents.
 
@@ -21,16 +21,16 @@ Honest caveat (the site says this too): the *user-facing* outcome loop hasn't sh
 
 ## The flagship: the Loop
 
-A user's chatbot hits a capability gap, files it as a patch request, and the system routes the work through branch, evidence-gate, and deploy surfaces so the next summon starts smarter. The retired CI writer loop has been removed; the active direction is the general Loop substrate described in [`PLAN.md`](PLAN.md) and the branch/gate implementation under [`workflow/`](workflow).
+A user's chatbot hits a capability gap, files it as a patch request, and the system routes the work through branch, evidence-gate, and deploy surfaces so the next summon starts smarter. The retired CI writer loop has been removed; the active direction is the general Loop substrate described in [`PLAN.md`](PLAN.md) and the branch/gate implementation under [`tinyassets/`](tinyassets).
 
 ## See the code (one click from here)
 
 The entry path should reach functions, not just docs. Representative core:
 
-- **The MCP surface** every chatbot connects to — [`workflow/universe_server.py`](workflow/universe_server.py) (the `universe` / `extensions` / `goals` / `gates` / `wiki` / `get_status` tools).
-- **The daemon run loop** — [`fantasy_daemon/__main__.py`](fantasy_daemon/__main__.py), the current default runtime (LangGraph universe graph, SQLite checkpointer, pause/resume). The branch-execution *substrate* is goal-agnostic — branch specs compile to graphs via [`workflow/graph_compiler.py`](workflow/graph_compiler.py) — though this domain is still the hardcoded default; extracting the runtime into each universe's soul-declared loop is tracked in the [de-fantasy audit](docs/audits/2026-06-24-fantasy-architecture-residue-audit.md).
-- **Branch spec → executable graph** — [`workflow/graph_compiler.py`](workflow/graph_compiler.py) (compiles a declarative branch into a runnable `StateGraph`; approval-gated node execution).
-- **The evaluation/gate primitive** — [`workflow/node_eval.py`](workflow/node_eval.py).
+- **The MCP surface** every chatbot connects to — [`tinyassets/universe_server.py`](tinyassets/universe_server.py) (the `universe` / `extensions` / `goals` / `gates` / `wiki` / `get_status` tools).
+- **The daemon run loop** — [`fantasy_daemon/__main__.py`](fantasy_daemon/__main__.py), the current default runtime (LangGraph universe graph, SQLite checkpointer, pause/resume). The branch-execution *substrate* is goal-agnostic — branch specs compile to graphs via [`tinyassets/graph_compiler.py`](tinyassets/graph_compiler.py) — though this domain is still the hardcoded default; extracting the runtime into each universe's soul-declared loop is tracked in the [de-fantasy audit](docs/audits/2026-06-24-fantasy-architecture-residue-audit.md).
+- **Branch spec → executable graph** — [`tinyassets/graph_compiler.py`](tinyassets/graph_compiler.py) (compiles a declarative branch into a runnable `StateGraph`; approval-gated node execution).
+- **The evaluation/gate primitive** — [`tinyassets/node_eval.py`](tinyassets/node_eval.py).
 
 ## What's strongest here
 
@@ -41,8 +41,8 @@ A coherent, dependency-verified stack (LangGraph / FastMCP / LanceDB / igraph / 
 Clone-to-green-tests in ~5 minutes on a clean machine:
 
 ```bash
-git clone https://github.com/Jonnyton/Workflow.git
-cd Workflow
+git clone https://github.com/Jonnyton/TinyAssets.git
+cd TinyAssets
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .[dev]
 pytest -q                 # full suite — no API keys needed (tests mock providers)
@@ -54,14 +54,14 @@ All tests run offline with `_FORCE_MOCK=True` set in `tests/conftest.py`. No `AN
 Cross-platform notes:
 - Tested on Windows, macOS, Linux. Paths use `pathlib.Path` — backslashes don't leak into tests.
 - Python 3.11+ required (see `pyproject.toml`).
-- The tray (`workflow/workflow_tray.py`) is Windows-first; macOS/Linux support is work-in-progress. Platform code is cross-platform.
+- The tray (`tinyassets_tray.py`) is Windows-first; macOS/Linux support is work-in-progress. Platform code is cross-platform.
 
 ## Start Here
 
 1. Read [STATUS.md](STATUS.md) for live state.
 2. Read [PLAN.md](PLAN.md) for architecture and design intent.
 3. Read [AGENTS.md](AGENTS.md) for process rules.
-4. Read [docs/project-lineage.md](docs/project-lineage.md) for how Workflow grew out of the earlier Hex, Echoes, Fantasy Writer, and Fantasy Author work.
+4. Read [docs/project-lineage.md](docs/project-lineage.md) for how TinyAssets grew out of the earlier Hex, Echoes, Fantasy Writer, and Fantasy Author work.
 5. Use `python scripts/docview.py` for large Markdown, text, and JSON files
    before any raw whole-file read.
 6. Capture loose user ideas in [ideas/INBOX.md](ideas/INBOX.md) or with

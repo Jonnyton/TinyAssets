@@ -1,11 +1,11 @@
 """Discovery sources for the domain registry (Task #22).
 
-Post-§3.2 `workflow.discovery.discover_domains()` unions two sources:
+Post-§3.2 `tinyassets.discovery.discover_domains()` unions two sources:
 
-1. `importlib.metadata.entry_points(group="workflow.domains")` — for
+1. `importlib.metadata.entry_points(group="tinyassets.domains")` — for
    pip-installed domains (the canonical third-party install path).
 2. Filesystem scan of ``domains/<name>/skill.py`` next to the
-   ``workflow/`` package — editable-dev-install fallback.
+   ``tinyassets/`` package — editable-dev-install fallback.
 
 This module covers the new behaviors. Pre-existing integration tests
 in ``test_workflow_runtime.py`` continue to assert the filesystem-only
@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import workflow.discovery as discovery_mod
+import tinyassets.discovery as discovery_mod
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -240,5 +240,5 @@ def test_entry_point_group_constant_exposed():
     """``ENTRY_POINT_GROUP`` is part of the public API so third-party
     domain packages know which group string to declare.
     """
-    assert discovery_mod.ENTRY_POINT_GROUP == "workflow.domains"
+    assert discovery_mod.ENTRY_POINT_GROUP == "tinyassets.domains"
     assert "ENTRY_POINT_GROUP" in discovery_mod.__all__

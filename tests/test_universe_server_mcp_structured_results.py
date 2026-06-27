@@ -8,7 +8,7 @@ import json
 
 def test_direct_wrappers_keep_json_string_contract() -> None:
     """Local callers still import wrappers directly and json.loads the result."""
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     status_raw = us.get_status()
     wiki_raw = us.wiki(action="list")
@@ -27,7 +27,7 @@ def test_mcp_tool_result_has_structured_content_and_text_content() -> None:
     data with a pointer to structuredContent. Either way the payload's data is
     present in text, never replaced by a placeholder stub.
     """
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     async def _call_status():
         return await us.mcp.call_tool("get_status", {"universe_id": ""})
@@ -62,7 +62,7 @@ def test_mcp_tool_large_result_keeps_full_structured_content_with_bounded_text(
     bounded to the text budget with an explicit pointer to ``structuredContent``
     for the elided remainder.
     """
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     claims = [
         {

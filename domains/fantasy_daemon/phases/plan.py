@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from workflow.utils.json_parsing import parse_llm_json
+from tinyassets.utils.json_parsing import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def plan(state: dict[str, Any]) -> dict[str, Any]:
     from domains.fantasy_daemon.phases._activity import activity_log, update_phase
     from domains.fantasy_daemon.phases._provider_stub import call_for_plan
     from domains.fantasy_daemon.phases.writer_tools import select_and_run_writer_tools
-    from workflow.retrieval.agentic_search import assemble_phase_search_context
+    from tinyassets.retrieval.agentic_search import assemble_phase_search_context
 
     orient_result = state.get("orient_result", {})
     scene_id = orient_result.get("scene_id", "unknown")
@@ -168,7 +168,7 @@ def plan(state: dict[str, Any]) -> dict[str, Any]:
 
 def _assemble_memory(state: dict[str, Any], phase: str) -> dict:
     """Compatibility wrapper around the shared search policy."""
-    from workflow.retrieval.agentic_search import assemble_memory_context
+    from tinyassets.retrieval.agentic_search import assemble_memory_context
 
     return assemble_memory_context(state, phase)
 
@@ -419,8 +419,8 @@ def _get_structural_guidance(
     tuple of (htn_outline, dome_detail, structural_beats)
         structural_beats is a list of beat dicts for the current scene.
     """
-    from workflow.planning.dome_expansion import DOMEExpander
-    from workflow.planning.htn_planner import HTNPlanner
+    from tinyassets.planning.dome_expansion import DOMEExpander
+    from tinyassets.planning.htn_planner import HTNPlanner
 
     planner = HTNPlanner()
     world_state = state.get("orient_result", {}).get("world_state")
@@ -499,7 +499,7 @@ def _validate_plan_constraints(
     not possible (e.g., clingo not installed).
     """
     try:
-        from workflow.constraints.asp_engine import ASPEngine
+        from tinyassets.constraints.asp_engine import ASPEngine
 
         engine = ASPEngine()
 
@@ -551,7 +551,7 @@ def _try_constraint_synthesis(state: dict[str, Any]) -> Any | None:
     """
     from pathlib import Path
 
-    from workflow.ingestion.canon_io import iter_canon_files
+    from tinyassets.ingestion.canon_io import iter_canon_files
 
     premise = state.get("workflow_instructions", {}).get("premise", "")
     if not premise:
@@ -576,7 +576,7 @@ def _try_constraint_synthesis(state: dict[str, Any]) -> Any | None:
                 pass
 
     try:
-        from workflow.constraints.constraint_synthesis import ConstraintSynthesis
+        from tinyassets.constraints.constraint_synthesis import ConstraintSynthesis
 
         synth = ConstraintSynthesis()
         surface = synth.process(premise, source_docs or None)

@@ -15,26 +15,26 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.contribution_events import (
+from tinyassets.contribution_events import (
     _connect as ce_connect,
 )
-from workflow.contribution_events import (
+from tinyassets.contribution_events import (
     initialize_contribution_events_db,
 )
-from workflow.daemon_server import (
+from tinyassets.daemon_server import (
     initialize_author_server,
     save_branch_definition,
 )
-from workflow.runs import (
+from tinyassets.runs import (
     _connect as runs_connect,
 )
-from workflow.runs import (
+from tinyassets.runs import (
     execute_branch,
     initialize_runs_db,
 )

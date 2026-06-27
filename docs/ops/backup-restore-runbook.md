@@ -4,7 +4,7 @@ date: 2026-04-21
 row: J — self-host migration
 ---
 
-# Workflow daemon — backup and restore runbook
+# TinyAssets daemon — backup and restore runbook
 
 State backup for the DO Droplet's `/data` volume. Row J per
 `docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`.
@@ -16,7 +16,7 @@ State backup for the DO Droplet's `/data` volume. Row J per
 - **Script:** `deploy/backup.sh` — two archives per run (see "Two-tier design"), uploaded to any
   rclone-compatible remote.
 - **Restore:** `deploy/backup-restore.sh` — pulls a snapshot and restores it in-place.
-- **Schedule:** `deploy/workflow-backup.timer` (systemd) — fires nightly at **03:00 UTC**.
+- **Schedule:** `deploy/tinyassets-backup.timer` (systemd) — fires nightly at **03:00 UTC**.
 - **Offsite options:** DO Spaces (`s3://`), Hetzner Storage Box (`sftp://`), AWS S3, etc. — any
   rclone remote works. `BACKUP_DEST` is the single config variable.
 
@@ -31,7 +31,7 @@ pre-2026-06-10 script treated that as fatal — every nightly run from
 | Tier | Archive | Contents | Consistency | Failure policy |
 |------|---------|----------|-------------|----------------|
 | **Brain** | `workflow-brain-<ts>.tar.gz` (MBs) | `wiki/`, `daemon_wikis/`, top-level `*.json` ledgers, top-level `*.db` | Strict — staged to a temp dir; SQLite copied via python3 `sqlite3.backup()` API | Any failure is fatal (exit 2/3) |
-| **Full** | `workflow-data-<ts>.tar.gz` (GBs) | whole volume incl. rebuildable per-universe `lancedb/` indexes + universe canon/output | Best-effort — tarred live; tar rc=1 tolerated, rc≥2 fatal | Upload failure fatal (exit 3) |
+| **Full** | `tinyassets-data-<ts>.tar.gz` (GBs) | whole volume incl. rebuildable per-universe `lancedb/` indexes + universe canon/output | Best-effort — tarred live; tar rc=1 tolerated, rc≥2 fatal | Upload failure fatal (exit 3) |
 
 The brain tier is the irreplaceable knowledge state and must always land.
 The full tier may contain torn copies of files that were mid-write; LanceDB
@@ -46,12 +46,12 @@ local directory on the same disk as the data — and GitHub releases were the
 only true offsite copy. **Fixed 2026-06-10:** DO Spaces provisioned from the
 droplet's own `DO_API_TOKEN` (no human in the loop):
 
-- `BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/workflow-backups`
-- Spaces key `workflow-backup-shipper-v3` (account-wide `fullaccess` grant —
+- `BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups`
+- Spaces key `tinyassets-backup-shipper-v3` (account-wide `fullaccess` grant —
   keys created with `grants: []` or per-nonexistent-bucket grants get 403;
   use `[{"permission": "fullaccess"}]` with no bucket field).
 - rclone config at `/app/.config/rclone/rclone.conf` (the systemd unit runs
-  with `HOME=/app` from `/etc/workflow/env`).
+  with `HOME=/app` from `/etc/tinyassets/env`).
 - Verified end-to-end: `Result=success`, both tiers listed in the bucket.
 
 Offsite is now: **DO Spaces (primary) + GitHub releases (secondary)**.
@@ -102,14 +102,14 @@ rclone config create storagebox sftp \
   pass "$(rclone obscure "$STORAGEBOX_PASS")"
 ```
 
-### 2. Set `BACKUP_DEST` in `/etc/workflow/env`
+### 2. Set `BACKUP_DEST` in `/etc/tinyassets/env`
 
 ```bash
 # DO Spaces:
-echo 'BACKUP_DEST=spaces:my-bucket-name/workflow-backups' >> /etc/workflow/env
+echo 'BACKUP_DEST=spaces:my-bucket-name/tinyassets-backups' >> /etc/tinyassets/env
 
 # Hetzner Storage Box:
-echo 'BACKUP_DEST=storagebox:workflow-backups' >> /etc/workflow/env
+echo 'BACKUP_DEST=storagebox:tinyassets-backups' >> /etc/tinyassets/env
 ```
 
 Any rclone remote URL is accepted: `s3://bucket/path`, `sftp://host/path`,
@@ -118,8 +118,8 @@ Any rclone remote URL is accepted: `s3://bucket/path`, `sftp://host/path`,
 ### 3. Install and enable the systemd units
 
 ```bash
-cp /opt/workflow/deploy/backup.service /etc/systemd/system/
-cp /opt/workflow/deploy/backup.timer   /etc/systemd/system/
+cp /opt/tinyassets/deploy/backup.service /etc/systemd/system/
+cp /opt/tinyassets/deploy/backup.timer   /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now backup.timer
 systemctl status backup.timer
@@ -140,14 +140,14 @@ systemctl list-timers backup.timer
 sudo systemctl start backup.service
 
 # Watch progress:
-journalctl -f -u workflow-backup
+journalctl -f -u tinyassets-backup
 
 # Or run the script directly (useful for testing with DRY_RUN):
-source /etc/workflow/env
-sudo -E bash /opt/workflow/deploy/backup.sh
+source /etc/tinyassets/env
+sudo -E bash /opt/tinyassets/deploy/backup.sh
 
 # Dry-run (no mutations):
-DRY_RUN=1 bash /opt/workflow/deploy/backup.sh
+DRY_RUN=1 bash /opt/tinyassets/deploy/backup.sh
 ```
 
 ---
@@ -155,17 +155,17 @@ DRY_RUN=1 bash /opt/workflow/deploy/backup.sh
 ## List available snapshots
 
 ```bash
-source /etc/workflow/env
-bash /opt/workflow/deploy/backup-restore.sh --list
+source /etc/tinyassets/env
+bash /opt/tinyassets/deploy/backup-restore.sh --list
 ```
 
 Example output:
 
 ```
-[restore 2026-04-21T10:00:00Z] available archives at s3://my-bucket/workflow-backups:
-  workflow-data-2026-04-21T02-00-00Z.tar.gz
-  workflow-data-2026-04-20T02-00-00Z.tar.gz
-  workflow-data-2026-04-19T02-00-00Z.tar.gz
+[restore 2026-04-21T10:00:00Z] available archives at s3://my-bucket/tinyassets-backups:
+  tinyassets-data-2026-04-21T02-00-00Z.tar.gz
+  tinyassets-data-2026-04-20T02-00-00Z.tar.gz
+  tinyassets-data-2026-04-19T02-00-00Z.tar.gz
 ```
 
 ---
@@ -177,9 +177,9 @@ The brain archive's contents are relative to the volume root (`./wiki`,
 state over an existing volume:
 
 ```bash
-systemctl stop workflow-daemon   # or: docker compose -f /opt/workflow/deploy/compose.yml stop daemon
-tar -xzf /tmp/workflow-brain-<ts>.tar.gz -C /var/lib/docker/volumes/workflow-data/_data
-systemctl start workflow-daemon
+systemctl stop tinyassets-daemon   # or: docker compose -f /opt/tinyassets/deploy/compose.yml stop daemon
+tar -xzf /tmp/workflow-brain-<ts>.tar.gz -C /var/lib/docker/volumes/tinyassets-data/_data
+systemctl start tinyassets-daemon
 ```
 
 ---
@@ -188,16 +188,16 @@ systemctl start workflow-daemon
 
 ```bash
 # Dry-run first — shows which archive would be restored:
-DRY_RUN=1 sudo -E bash /opt/workflow/deploy/backup-restore.sh
+DRY_RUN=1 sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
 
 # Restore latest:
-sudo -E bash /opt/workflow/deploy/backup-restore.sh
+sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
 
 # Restore a specific snapshot:
-sudo -E bash /opt/workflow/deploy/backup-restore.sh --timestamp=2026-04-20T02-00-00Z
+sudo -E bash /opt/tinyassets/deploy/backup-restore.sh --timestamp=2026-04-20T02-00-00Z
 ```
 
-The script stops `workflow-daemon`, extracts the archive into the Docker volume, then restarts the
+The script stops `tinyassets-daemon`, extracts the archive into the Docker volume, then restarts the
 daemon. Downtime is ~30–90 seconds for a typical volume.
 
 ---
@@ -210,19 +210,19 @@ Use this when the original Droplet is gone or unrecoverable.
    Bootstrap automatically configures:
    - Docker log-rotation (`/etc/docker/daemon.json` — 10 MB max, 3 files)
    - 2 GB swap file (`/swapfile`) + `/etc/fstab` persistence + `vm.swappiness=10`
-2. Copy `/etc/workflow/env` from the vault (or re-populate from the succession runbook).
+2. Copy `/etc/tinyassets/env` from the vault (or re-populate from the succession runbook).
 3. Pull the daemon image:
    ```bash
-   docker pull ghcr.io/jonnyton/workflow-daemon:latest
+   docker pull ghcr.io/jonnyton/tinyassets-daemon:latest
    ```
 4. Run the restore:
    ```bash
-   source /etc/workflow/env
-   sudo -E bash /opt/workflow/deploy/backup-restore.sh
+   source /etc/tinyassets/env
+   sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
    ```
 5. Bring up the full stack:
    ```bash
-   docker compose -f /opt/workflow/deploy/compose.yml up -d
+   docker compose -f /opt/tinyassets/deploy/compose.yml up -d
    ```
 6. Verify:
    ```bash
@@ -236,13 +236,13 @@ Use this when the original Droplet is gone or unrecoverable.
 Check the last backup result:
 
 ```bash
-journalctl -u workflow-backup --since "24 hours ago" | grep -E "backup complete|ERROR"
+journalctl -u tinyassets-backup --since "24 hours ago" | grep -E "backup complete|ERROR"
 ```
 
 Or tail the log file directly:
 
 ```bash
-tail -20 /var/log/workflow-backup.log
+tail -20 /var/log/tinyassets-backup.log
 ```
 
 Expected healthy output ends with `backup complete.`
@@ -253,18 +253,18 @@ Expected healthy output ends with `backup complete.`
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| `BACKUP_DEST is not set` | Env file missing the variable | Add `BACKUP_DEST=...` to `/etc/workflow/env` |
-| `volume workflow-data not found` | Docker volume not yet created | Run `docker compose up -d` first |
+| `BACKUP_DEST is not set` | Env file missing the variable | Add `BACKUP_DEST=...` to `/etc/tinyassets/env` |
+| `volume tinyassets-data not found` | Docker volume not yet created | Run `docker compose up -d` first |
 | `rclone upload failed` | Network/auth error | Check rclone config: `rclone lsd $BACKUP_DEST` |
-| `tar failed` | Volume data corrupted | Check `docker logs workflow-daemon`; may need full restore |
+| `tar failed` | Volume data corrupted | Check `docker logs tinyassets-daemon`; may need full restore |
 | Timer never fires | Unit not enabled | `systemctl enable --now backup.timer` |
 
 ---
 
 ## Offsite backup — GitHub release assets
 
-When `GH_TOKEN` is set in `/etc/workflow/env`, `backup.sh` also ships the
-tarball to a private GitHub repo (`Jonnyton/workflow-backups`) as a release
+When `GH_TOKEN` is set in `/etc/tinyassets/env`, `backup.sh` also ships the
+tarball to a private GitHub repo (`Jonnyton/tinyassets-backups`) as a release
 asset via `scripts/backup_ship_gh.py`.  This is a second copy independent of
 the rclone primary destination.
 
@@ -272,20 +272,20 @@ the rclone primary destination.
 
 ```bash
 # List available releases (requires GH_TOKEN or gh CLI auth).
-gh release list --repo Jonnyton/workflow-backups
+gh release list --repo Jonnyton/tinyassets-backups
 
 # Download a specific release asset.
-gh release download <tag> --repo Jonnyton/workflow-backups --dir /tmp
+gh release download <tag> --repo Jonnyton/tinyassets-backups --dir /tmp
 
 # Restore (same as rclone path — feed the tarball to backup-restore.sh).
-BACKUP_FILE=/tmp/workflow-data-<tag>.tar.gz sudo -E bash /opt/workflow/deploy/backup-restore.sh
+BACKUP_FILE=/tmp/tinyassets-data-<tag>.tar.gz sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
 ```
 
 Or via raw API (no gh CLI):
 
 ```bash
 curl -sL -H "Authorization: Bearer $GH_TOKEN" \
-  "https://api.github.com/repos/Jonnyton/workflow-backups/releases/latest" \
+  "https://api.github.com/repos/Jonnyton/tinyassets-backups/releases/latest" \
   | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['assets'][0]['browser_download_url'])"
 # Then curl -L <url> > /tmp/backup.tar.gz
 ```
@@ -293,7 +293,7 @@ curl -sL -H "Authorization: Bearer $GH_TOKEN" \
 **Retention:** 30 releases kept by default (`BACKUP_GH_RETAIN`). Oldest pruned
 on each successful upload.
 
-**Setup:** create `Jonnyton/workflow-backups` as a private repo once (or let
+**Setup:** create `Jonnyton/tinyassets-backups` as a private repo once (or let
 `backup_ship_gh.py` create it automatically on first run).  Add `GH_TOKEN` to
-`/etc/workflow/env` with `repo` scope.
+`/etc/tinyassets/env` with `repo` scope.
 

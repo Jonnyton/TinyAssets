@@ -1,4 +1,4 @@
-"""Tests for workflow/bug_investigation.py — Task #33 Phase 1 + Phase 2 helpers."""
+"""Tests for tinyassets/bug_investigation.py — Task #33 Phase 1 + Phase 2 helpers."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ def _reload_module(goal_id: str):
     """Reload bug_investigation with a patched env var so the module-level
     constant re-evaluates.
     """
-    with patch.dict("os.environ", {"WORKFLOW_BUG_INVESTIGATION_GOAL_ID": goal_id}):
-        if "workflow.bug_investigation" in sys.modules:
-            del sys.modules["workflow.bug_investigation"]
-        mod = importlib.import_module("workflow.bug_investigation")
+    with patch.dict("os.environ", {"TINYASSETS_BUG_INVESTIGATION_GOAL_ID": goal_id}):
+        if "tinyassets.bug_investigation" in sys.modules:
+            del sys.modules["tinyassets.bug_investigation"]
+        mod = importlib.import_module("tinyassets.bug_investigation")
     return mod
 
 
@@ -23,7 +23,7 @@ class TestIsAutoTriggerEnabled:
     def test_disabled_when_env_unset(self):
         with patch.dict("os.environ", {}, clear=False):
             import os
-            os.environ.pop("WORKFLOW_BUG_INVESTIGATION_GOAL_ID", None)
+            os.environ.pop("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", None)
             # Reimport to pick up missing env
             mod = _reload_module("")
             assert mod.is_auto_trigger_enabled() is False
@@ -100,7 +100,7 @@ class TestBuildRunPayload:
 
 class TestFormatInvestigationComment:
     def _call(self, run_id: str, **kwargs) -> str:
-        from workflow.bug_investigation import format_investigation_comment
+        from tinyassets.bug_investigation import format_investigation_comment
         return format_investigation_comment(run_id, **kwargs)
 
     def test_contains_run_id(self):
@@ -126,7 +126,7 @@ class TestFormatInvestigationComment:
 
 class TestFormatPatchPacketComment:
     def _call(self, patch_packet: dict) -> str:
-        from workflow.bug_investigation import format_patch_packet_comment
+        from tinyassets.bug_investigation import format_patch_packet_comment
         return format_patch_packet_comment(patch_packet)
 
     def test_empty_dict_returns_empty_string(self):
@@ -212,8 +212,8 @@ def _write_bug_page(bugs_dir: Path, filename: str, content: str = _SAMPLE_PAGE) 
 
 class TestAttachPatchPacketComment:
     def _call(self, bug_id: str, patch_packet: dict, wiki_root: Path) -> dict:
-        from workflow.bug_investigation import attach_patch_packet_comment
-        with patch("workflow.storage.wiki_path", return_value=wiki_root):
+        from tinyassets.bug_investigation import attach_patch_packet_comment
+        with patch("tinyassets.storage.wiki_path", return_value=wiki_root):
             return attach_patch_packet_comment(bug_id, patch_packet)
 
     def test_successful_attach(self, tmp_path):

@@ -24,7 +24,7 @@ Pattern lights up cleanly: implementation-side pair-reads can verify design fide
 
 ### Cross-check 1: Schema fidelity (#71 vs #48 §1)
 
-**CONVERGES verbatim.** I read `workflow/contribution_events.py:34-62` (the actual DDL constant) against #48 §1.1 design DDL.
+**CONVERGES verbatim.** I read `tinyassets/contribution_events.py:34-62` (the actual DDL constant) against #48 §1.1 design DDL.
 
 | Element | Design (#48 §1) | Implementation (#71) | Match |
 |---|---|---|---|
@@ -50,13 +50,13 @@ No structural drift. Schema is **a literal lift of #48 §1.1**. Sharper than typ
 
 **`execute_step` emit-site (Task #72):**
 
-Design (#48 §3 row 1): "Daemon-host step | `update_run_status()` step-finalize path | `workflow/runs.py:331-377`."
+Design (#48 §3 row 1): "Daemon-host step | `update_run_status()` step-finalize path | `tinyassets/runs.py:331-377`."
 
 Implementation: `runs.py:400-449` — emit lives inside `update_run_status` after the UPDATE, gated on `status in _TERMINAL_STATUSES`. **CONVERGES with one sharpening:** design said "step finalize"; implementation correctly narrowed to TERMINAL-status transitions only (per design intent — non-terminal transitions like `running` shouldn't emit). The fetch-then-emit pattern reads back the run row to populate `actor_id`, `branch_def_id`, `branch_version_id` — clean.
 
 **`design_used` emit-site (Task #75):**
 
-Design (#48 §3 row 2): "Designer | Same step-finalize as #1 + `record_event()` | `workflow/runs.py:434-450`."
+Design (#48 §3 row 2): "Designer | Same step-finalize as #1 + `record_event()` | `tinyassets/runs.py:434-450`."
 
 Implementation: `runs.py:1241-1282` — emit lives inside `_on_node` closure, fires at `NODE_STATUS_RAN` phase. **DRIFT with rationale: emit-site is `_on_node` closure, not `update_run_status` finalize-path.** Why: design said "co-emit with execute_step at step boundary." Implementation emits per-node-execution rather than per-run-finalize. **This is a sharpening, not a divergence:**
 
@@ -204,10 +204,10 @@ This is the first impl-side pair-read; pattern observations:
   - `a608a03` Task #72 execute_step emit-site wiring.
   - `fea677d` Task #75 design_used emit-site wiring.
 - Cross-check sources:
-  - `workflow/contribution_events.py:34-62` (DDL).
-  - `workflow/contribution_events.py:90-142` (record_contribution_event helper).
-  - `workflow/runs.py:400-449` (execute_step emit-site).
-  - `workflow/runs.py:1241-1282` (design_used emit-site).
+  - `tinyassets/contribution_events.py:34-62` (DDL).
+  - `tinyassets/contribution_events.py:90-142` (record_contribution_event helper).
+  - `tinyassets/runs.py:400-449` (execute_step emit-site).
+  - `tinyassets/runs.py:1241-1282` (design_used emit-site).
 - Substrate cross-references:
   - `docs/design-notes/2026-04-25-attribution-layer-specs.md` §1.1 + §3 + §5 + §6.3.
   - `docs/design-notes/2026-04-25-runner-version-id-bridge.md` (#54 — branch_version_id column).

@@ -52,7 +52,7 @@ because those never drive the graph.
 `tests/test_conditional_edges_compile_invoke.py::TestContractInversionRegressionGuard`
 keeps a hand-built pre-fix router (returns a target, not a label) and
 asserts `graph.invoke` raises `KeyError`. If someone reverts the fix in
-`workflow/graph_compiler.py:_build_conditional_router`, that test goes
+`tinyassets/graph_compiler.py:_build_conditional_router`, that test goes
 red immediately.
 
 ## Scripted provider helper

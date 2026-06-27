@@ -143,7 +143,7 @@ A live run produces:
 
 ## Source
 
-Captured from dev-partner chat (ChatGPT gpt-5) with the Workflow MCP connector
+Captured from dev-partner chat (ChatGPT gpt-5) with the TinyAssets MCP connector
 installed, on 2026-05-02. Conversation: https://chatgpt.com/c/69f64b8d-fa04-83e8-b4d3-bb6e95b16475
 
 The chatbot independently verified the same finding via universe.inspect,

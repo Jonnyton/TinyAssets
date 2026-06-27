@@ -24,9 +24,9 @@ Three host-decision queues now sit in front of dispatch:
 ### Q4 — PLAN.md.draft: approve, iterate, or reject?
 
 **Framing.** `PLAN.md.draft` proposes three architectural commitments that haven't been canonical before:
-1. A **Module Layout** section codifying 5 canonical subpackages (`workflow/api/`, `workflow/storage/`, `workflow/runtime/`, `workflow/bid/`, `workflow/servers/`) with a migration policy ("flat module > 500 LOC OR overlapping sibling responsibility → gets a subpackage").
+1. A **Module Layout** section codifying 5 canonical subpackages (`tinyassets/api/`, `tinyassets/storage/`, `tinyassets/runtime/`, `tinyassets/bid/`, `tinyassets/servers/`) with a migration policy ("flat module > 500 LOC OR overlapping sibling responsibility → gets a subpackage").
 2. The **self-auditing-tools** principle as a Cross-Cutting Principle — trust-critical tools include their own caveats (structured evidence + structured caveats + chatbot composes narrative).
-3. The **engine/domain seam is named** — every action lives in exactly one of `workflow/api/` or `domains/<name>/api/`. No third location.
+3. The **engine/domain seam is named** — every action lives in exactly one of `tinyassets/api/` or `domains/<name>/api/`. No third location.
 
 These are load-bearing for refactor dispatch (hotspots #1-#3 in `docs/audits/2026-04-19-project-folder-spaghetti.md`) AND for the §11 Track Q decision in Q5 below AND for engine/domain separation (#11 design note).
 
@@ -37,7 +37,7 @@ These are load-bearing for refactor dispatch (hotspots #1-#3 in `docs/audits/202
 
 **Recommendation: (a).** The Module Layout absorbs the spaghetti audit's 5 target subpackages without overcommitting — every choice in the draft is reversible, and the migration policy is gradient (flat-modules-staying-flat is fine if they don't grow). The principle additions (self-auditing tools + named engine/domain seam) are documentation of patterns the codebase is already moving toward; deferring approval just delays the canonicalization.
 
-**If (b), most likely iteration vectors:** subpackage names (e.g., `workflow/market/` instead of `workflow/bid/`), or the ~500 LOC migration threshold (could be tighter or looser), or whether `workflow/servers/` should be `workflow/entrypoints/` to match the integration-shell language.
+**If (b), most likely iteration vectors:** subpackage names (e.g., `tinyassets/market/` instead of `tinyassets/bid/`), or the ~500 LOC migration threshold (could be tighter or looser), or whether `tinyassets/servers/` should be `tinyassets/entrypoints/` to match the integration-shell language.
 
 ---
 
@@ -104,7 +104,7 @@ From `docs/design-notes/2026-04-19-self-auditing-tools.md` §5. Each Q gates imp
 
 **Choices:**
 - **(a) Hand-written per surface.** Highest quality; highest authoring cost; drift risk.
-- **(b) Derived from typed schema** in `workflow/protocols.py`. Lower drift; more rigid.
+- **(b) Derived from typed schema** in `tinyassets/protocols.py`. Lower drift; more rigid.
 - **(c) Hybrid.** Derived as baseline; hand-written overrides where surface-specific nuance matters.
 
 **Recommendation: (c).** Get structural property from (b); preserve narrative quality where it matters via (a).
@@ -134,7 +134,7 @@ From `docs/design-notes/2026-04-19-universe-to-workflow-server-rename.md` §5. A
 
 ### Q10 — Module rename target name?
 
-**Choices:** `(a) workflow/workflow_server.py` — brand match. `(b) workflow/server.py` — collides with bootstrap stub. `(c) workflow/mcp_server.py` — name may be taken.
+**Choices:** `(a) tinyassets/workflow_server.py` — brand match. `(b) tinyassets/server.py` — collides with bootstrap stub. `(c) tinyassets/mcp_server.py` — name may be taken.
 
 **Recommendation: (a).**
 

@@ -8,7 +8,7 @@ status: active — single ordered playbook
 # Post-Redeploy Wiki Migration Playbook
 
 When the cloud daemon redeploy lands the BUG-028 alias-resolution fix
-(`workflow/universe_server.py:12644-12658`), every wiki write that has been
+(`tinyassets/universe_server.py:12644-12658`), every wiki write that has been
 deferred against a canonical `BUG-NNN-...` uppercase-slug path becomes safe.
 
 Pre-redeploy, those writes hit `_sanitize_slug` lowercasing and either

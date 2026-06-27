@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from workflow.api.universe import (
+from tinyassets.api.universe import (
     WRITE_ACTIONS,
     _action_daemon_overview,
     _action_set_tier_config,
@@ -34,7 +34,7 @@ from workflow.api.universe import (
 
 @pytest.fixture
 def universe_harness(tmp_path, monkeypatch):
-    """WORKFLOW_DATA_DIR + WORKFLOW_REPO_ROOT pinned."""
+    """TINYASSETS_DATA_DIR + TINYASSETS_REPO_ROOT pinned."""
     base = tmp_path / "output"
     base.mkdir()
     uid = "test-uni"
@@ -42,11 +42,11 @@ def universe_harness(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "bids").mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
-    monkeypatch.setenv("WORKFLOW_REPO_ROOT", str(repo))
+    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(repo))
     # Clear the cache between tests to avoid cross-contamination.
-    from workflow.api.universe import _OVERVIEW_CACHE
+    from tinyassets.api.universe import _OVERVIEW_CACHE
     _OVERVIEW_CACHE.clear()
     return {"base": base, "uid": uid, "repo": repo}
 
@@ -73,7 +73,7 @@ def test_daemon_overview_response_shape(universe_harness):
 
 def test_daemon_overview_top_n_limit_honored(universe_harness, monkeypatch):
     """Seed queue with 50 tasks; default limit returns top 20."""
-    from workflow.branch_tasks import BranchTask, append_task, new_task_id
+    from tinyassets.branch_tasks import BranchTask, append_task, new_task_id
     udir = universe_harness["base"] / universe_harness["uid"]
     for i in range(50):
         t = BranchTask(
@@ -118,7 +118,7 @@ def test_daemon_overview_cache_invalidated_on_set_tier_config(universe_harness):
 
 def test_daemon_overview_large_queue_bounded(universe_harness):
     """With 500 tasks, response still bounded by top-N."""
-    from workflow.branch_tasks import BranchTask, append_task, new_task_id
+    from tinyassets.branch_tasks import BranchTask, append_task, new_task_id
     udir = universe_harness["base"] / universe_harness["uid"]
     for _ in range(500):
         append_task(udir, BranchTask(
@@ -147,13 +147,13 @@ def test_daemon_overview_flag_off_shows_paid_bid_not_live(
     "stubbed"). Either is acceptable; test pins "not live" so the
     real invariant — flag-off must not misadvertise a live market —
     is enforced regardless of the naming choice."""
-    monkeypatch.setenv("WORKFLOW_PAID_MARKET", "off")
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
     # Clear any pre-existing config from other tests in the class
     udir = universe_harness["base"] / universe_harness["uid"]
     cfg_path = udir / "dispatcher_config.yaml"
     if cfg_path.exists():
         cfg_path.unlink()
-    from workflow.api.universe import _OVERVIEW_CACHE
+    from tinyassets.api.universe import _OVERVIEW_CACHE
     _OVERVIEW_CACHE.clear()
     resp = json.loads(_action_daemon_overview(
         universe_id=universe_harness["uid"],
@@ -173,7 +173,7 @@ def test_daemon_overview_drift_surfaces(universe_harness, monkeypatch):
         json.dumps({"goals": [], "updated_at": ""}), encoding="utf-8",
     )
 
-    from workflow.api.universe import _OVERVIEW_CACHE
+    from tinyassets.api.universe import _OVERVIEW_CACHE
     _OVERVIEW_CACHE.clear()
     resp = json.loads(_action_daemon_overview(
         universe_id=universe_harness["uid"],
@@ -183,9 +183,9 @@ def test_daemon_overview_drift_surfaces(universe_harness, monkeypatch):
 
 def test_daemon_overview_settlements_count_accurate(universe_harness):
     """Settlements counted from repo_root/settlements/ dir."""
-    from workflow.bid.node_bid import NodeBid
-    from workflow.bid.settlements import record_settlement_event
-    from workflow.executors.node_bid import NodeBidResult
+    from tinyassets.bid.node_bid import NodeBid
+    from tinyassets.bid.settlements import record_settlement_event
+    from tinyassets.executors.node_bid import NodeBidResult
 
     repo_root = universe_harness["repo"]
     bid = NodeBid(node_bid_id="nb_o1", node_def_id="n/x", bid=1.0)
@@ -195,7 +195,7 @@ def test_daemon_overview_settlements_count_accurate(universe_harness):
     )
     record_settlement_event(repo_root, bid, result, "daemon-a")
 
-    from workflow.api.universe import _OVERVIEW_CACHE
+    from tinyassets.api.universe import _OVERVIEW_CACHE
     _OVERVIEW_CACHE.clear()
     resp = json.loads(_action_daemon_overview(
         universe_id=universe_harness["uid"],
@@ -238,7 +238,7 @@ def test_set_tier_config_invalid_tier_rejects(universe_harness):
 
 def test_set_tier_config_persists_across_load(universe_harness):
     """Invariant 4: toggle → load_dispatcher_config sees it."""
-    from workflow.dispatcher import load_dispatcher_config
+    from tinyassets.dispatcher import load_dispatcher_config
     _action_set_tier_config(
         universe_id=universe_harness["uid"],
         tier="paid_bids", enabled=True,
@@ -288,14 +288,14 @@ def test_set_tier_config_is_write_action(universe_harness):
 def test_node_lookup_none_default_is_no_op():
     """NodeBidProducer with node_lookup_fn=None defaults to letting
     all bids through (executor-side catches adversarials)."""
-    from workflow.producers.node_bid import _producer_sandbox_reject
+    from tinyassets.producers.node_bid import _producer_sandbox_reject
     # None lookup → empty reject reason → bid passes producer layer.
     assert _producer_sandbox_reject("any-node", None) == ""
 
 
 def test_node_lookup_unknown_node_rejected():
     """Wired lookup returning None → producer rejects pre-pick."""
-    from workflow.producers.node_bid import _producer_sandbox_reject
+    from tinyassets.producers.node_bid import _producer_sandbox_reject
     reason = _producer_sandbox_reject(
         "missing-node", lambda _slug: None,
     )
@@ -303,7 +303,7 @@ def test_node_lookup_unknown_node_rejected():
 
 
 def test_node_lookup_unapproved_node_rejected():
-    from workflow.producers.node_bid import _producer_sandbox_reject
+    from tinyassets.producers.node_bid import _producer_sandbox_reject
 
     class _Node:
         approved = False
@@ -329,7 +329,7 @@ def test_node_lookup_raise_fails_closed():
     Tight assertion on the exact reason so a future regression that
     flips back to fail-OPEN ("" reason) surfaces immediately.
     """
-    from workflow.producers.node_bid import _producer_sandbox_reject
+    from tinyassets.producers.node_bid import _producer_sandbox_reject
 
     def _raises(_slug):
         raise RuntimeError("boom")
@@ -347,8 +347,8 @@ def test_dashboard_actions_do_not_add_new_mcp_tools():
     """Dashboard actions live on the existing `universe` tool, NOT new
     top-level tools. Enforced by the tool-registry introspection.
     """
-    from workflow.api import universe as uni
-    # Dashboard action handlers live in workflow.api.universe after
+    from tinyassets.api import universe as uni
+    # Dashboard action handlers live in tinyassets.api.universe after
     # decomp Step 9. Assert they exist there as a regression guard
     # against accidental removal.
     assert hasattr(uni, "_action_daemon_overview")
@@ -358,7 +358,7 @@ def test_dashboard_actions_do_not_add_new_mcp_tools():
 def test_dashboard_adds_exactly_two_actions_to_universe():
     """Introspective: daemon_overview + set_tier_config are the only
     two new `universe` tool actions."""
-    from workflow.api import universe as uni
+    from tinyassets.api import universe as uni
     dashboard_actions = {"daemon_overview", "set_tier_config"}
     for action in dashboard_actions:
         if action == "set_tier_config":
@@ -393,7 +393,7 @@ def test_daemon_overview_response_shape_doc_exists():
 
 
 def test_bid_execution_log_import_works():
-    from workflow.bid.execution_log import (  # noqa: F401
+    from tinyassets.bid.execution_log import (  # noqa: F401
         append_execution_log_entry,
         read_execution_log,
     )
@@ -401,7 +401,7 @@ def test_bid_execution_log_import_works():
 
 def test_bid_ledger_shim_still_works():
     """Deprecated alias continues to re-export during transition."""
-    from workflow.bid.execution_log import (  # noqa: F401
+    from tinyassets.bid.execution_log import (  # noqa: F401
         append_ledger_entry,
         read_ledger,
     )
@@ -409,7 +409,7 @@ def test_bid_ledger_shim_still_works():
 
 def test_bid_execution_log_reads_legacy_filename(tmp_path):
     """Transition: if only bid_ledger.json exists, read from it."""
-    from workflow.bid.execution_log import read_execution_log
+    from tinyassets.bid.execution_log import read_execution_log
     (tmp_path / "bid_ledger.json").write_text(
         json.dumps([{"k": "v"}]), encoding="utf-8",
     )
@@ -425,7 +425,7 @@ def test_bid_execution_log_reads_legacy_filename(tmp_path):
 def test_trim_overview_under_cap_passes_through():
     """Response under the byte cap is returned unchanged, no
     `truncated` marker."""
-    from workflow.api.universe import _trim_overview_for_bytes
+    from tinyassets.api.universe import _trim_overview_for_bytes
 
     response = {"ok": True, "queue": {"top": [1, 2, 3]}}
     out = _trim_overview_for_bytes(response, cap=10_000)
@@ -438,7 +438,7 @@ def test_trim_overview_activity_tail_first():
     gates + dispatcher + subscriptions fields are NEVER trimmed —
     load-bearing per reviewer polish #5.
     """
-    from workflow.api.universe import (
+    from tinyassets.api.universe import (
         DAEMON_OVERVIEW_MAX_BYTES,
         _trim_overview_for_bytes,
     )
@@ -476,7 +476,7 @@ def test_trim_overview_activity_keeps_tail_not_head():
     the latest entries must survive so operators still see recent
     events in the trimmed response.
     """
-    from workflow.api.universe import _trim_overview_for_bytes
+    from tinyassets.api.universe import _trim_overview_for_bytes
 
     lines = [f"event-{i:04d}" + ("x" * 200) for i in range(500)]
     response = {"activity_tail": list(lines)}
@@ -491,7 +491,7 @@ def test_trim_overview_preserves_count_fields():
     """After a trim, `*_count` fields remain authoritative. Consumers
     learn the ACTUAL totals via counts, even when lists are halved.
     """
-    from workflow.api.universe import _trim_overview_for_bytes
+    from tinyassets.api.universe import _trim_overview_for_bytes
 
     response = {
         "queue": {

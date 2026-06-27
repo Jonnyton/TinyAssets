@@ -191,7 +191,7 @@ Kept intentionally small: 11 params, tight dispatch.
 ## Integration with existing systems
 
 ### `goals` tool
-`goals leaderboard metric=outcome` currently returns a stub in `_action_goal_leaderboard` at `workflow/universe_server.py:6229-6264`. The stub emits:
+`goals leaderboard metric=outcome` currently returns a stub in `_action_goal_leaderboard` at `tinyassets/universe_server.py:6229-6264`. The stub emits:
 
 ```json
 {
@@ -272,9 +272,9 @@ Read-only actions do NOT produce commits — per Phase 7 invariant, only public 
 
 ### `force` + `local_edit_conflict` pattern (copy from Phase 7.3)
 
-All three mutation actions (`claim`, `retract`, `define_ladder`) MUST accept `force: bool = False` and surface `local_edit_conflict` when the target YAML has uncommitted local edits. Dev should copy the pattern verbatim from `_dispatch_goal_action` (`workflow/universe_server.py:6445`) and `_dispatch_branch_action` (`workflow/universe_server.py:2637`).
+All three mutation actions (`claim`, `retract`, `define_ladder`) MUST accept `force: bool = False` and surface `local_edit_conflict` when the target YAML has uncommitted local edits. Dev should copy the pattern verbatim from `_dispatch_goal_action` (`tinyassets/universe_server.py:6445`) and `_dispatch_branch_action` (`tinyassets/universe_server.py:2637`).
 
-Response shape on conflict — built by `_format_dirty_file_conflict` at `workflow/universe_server.py:345-363`. Do NOT hand-author this payload; call the formatter with the `DirtyFileError`:
+Response shape on conflict — built by `_format_dirty_file_conflict` at `tinyassets/universe_server.py:345-363`. Do NOT hand-author this payload; call the formatter with the `DirtyFileError`:
 
 ```json
 {
@@ -304,7 +304,7 @@ Dirty-check target for each action:
 2. **Ship `gates` tool** — define_ladder + get_ladder + claim + retract + list_claims + leaderboard.
 3. **Rewire `goals leaderboard metric=outcome`** from stub to real aggregation.
 4. **Extend `goals get`** with `gate_summary`.
-5. **YAML emitters** — `goals` YAML gains `gate_ladder`; new `gates/` directory under repo root with claim YAMLs. **No backend protocol change for ladder** — `save_goal_and_commit` at `workflow/storage/backend.py:95-103` already takes `goal: dict`, so `gate_ladder` rides through as a dict key. Dev should NOT touch the three backend implementations (SqliteOnly, SqliteCached, FilesystemOnly) for ladder support — the serializer picks up the new key automatically once the YAML schema lists it. Only new code required is `save_gate_claim_and_commit`, a fresh composite for the `gate_claims` table (new surface, no precedent to extend).
+5. **YAML emitters** — `goals` YAML gains `gate_ladder`; new `gates/` directory under repo root with claim YAMLs. **No backend protocol change for ladder** — `save_goal_and_commit` at `tinyassets/storage/backend.py:95-103` already takes `goal: dict`, so `gate_ladder` rides through as a dict key. Dev should NOT touch the three backend implementations (SqliteOnly, SqliteCached, FilesystemOnly) for ladder support — the serializer picks up the new key automatically once the YAML schema lists it. Only new code required is `save_gate_claim_and_commit`, a fresh composite for the `gate_claims` table (new surface, no precedent to extend).
 6. **Tests** — table-driven: propose Goal → define_ladder → bind Branch → claim rung → retract → re-claim → leaderboard. Plus YAML round-trip property tests (SQLite → YAML → SQLite identity) matching Phase 7 precedent.
 
 Each migration step is an independent PR. Ladder column + claim table is safe to ship before the tool handler exists — column stays empty.
@@ -348,7 +348,7 @@ Phase 6.2 adds three read/write-less actions to the existing `gates` tool and re
 
 #### Scope (one-paragraph)
 
-Three handlers (`_action_gates_retract`, `_action_gates_list_claims`, `_action_gates_leaderboard`) registered in `_GATES_ACTIONS` at `workflow/universe_server.py`. One helper in `workflow/author_server.py` per new action (`retract_gate_claim`, `list_gate_claims`, `gate_leaderboard`). `_action_goal_leaderboard` at ~line 6245 becomes a thin forwarder to `_action_gates_leaderboard` for `metric=outcome`. Two 6.1 debts fixed inline. Flag remains `GATES_ENABLED=0` default through 6.2 per existing rollout.
+Three handlers (`_action_gates_retract`, `_action_gates_list_claims`, `_action_gates_leaderboard`) registered in `_GATES_ACTIONS` at `tinyassets/universe_server.py`. One helper in `tinyassets/author_server.py` per new action (`retract_gate_claim`, `list_gate_claims`, `gate_leaderboard`). `_action_goal_leaderboard` at ~line 6245 becomes a thin forwarder to `_action_gates_leaderboard` for `metric=outcome`. Two 6.1 debts fixed inline. Flag remains `GATES_ENABLED=0` default through 6.2 per existing rollout.
 
 #### Action signatures
 
@@ -381,9 +381,9 @@ Pattern matches `goals update` at line 5936-5967 for the host fallback. Use `_cu
 
 #### 6.1 debts folded in
 
-**Debt 1: host-override missing on `define_ladder`.** Current code at `workflow/universe_server.py:6694-6702` only checks `goal["author"] != actor` and rejects. Fix: mirror `goals update` at 5958-5959 — allow if `actor == "host"`. One-line change, no new tests needed beyond a host-actor case added to the 6.2 `retract` auth tests (same pattern).
+**Debt 1: host-override missing on `define_ladder`.** Current code at `tinyassets/universe_server.py:6694-6702` only checks `goal["author"] != actor` and rejects. Fix: mirror `goals update` at 5958-5959 — allow if `actor == "host"`. One-line change, no new tests needed beyond a host-actor case added to the 6.2 `retract` auth tests (same pattern).
 
-**Debt 2: rebind-between-claims edge.** `claim_gate` at `workflow/author_server.py:2685-2697` UPDATE overwrites the denormalized `goal_id` with whatever the Branch is currently bound to. If a Branch rebinds from Goal A to Goal B between two claims on the same rung_key, the first claim is silently relocated to Goal B when the second `claim` call fires. Leaderboard math for Goal A quietly changes.
+**Debt 2: rebind-between-claims edge.** `claim_gate` at `tinyassets/author_server.py:2685-2697` UPDATE overwrites the denormalized `goal_id` with whatever the Branch is currently bound to. If a Branch rebinds from Goal A to Goal B between two claims on the same rung_key, the first claim is silently relocated to Goal B when the second `claim` call fires. Leaderboard math for Goal A quietly changes.
 
 Fix options, rank-ordered:
 1. **Preferred: reject re-claim if existing claim's `goal_id` != current branch `goal_id`.** Add a guard in `claim_gate` (or earlier in `_action_gates_claim`) that detects the mismatch and returns `{"status": "rejected", "error": "branch_rebound", "original_goal_id": "...", "current_goal_id": "...", "hint": "Retract the existing claim first, then re-claim under the new Goal."}`. Makes the rebind visible to the user and preserves Goal A's leaderboard integrity.
@@ -394,7 +394,7 @@ Option 1 is the smallest, clearest fix and composes with 6.3 (rebind shows up as
 
 #### Integration with existing systems
 
-- **`_action_goal_leaderboard`** at `workflow/universe_server.py:6245` currently stubs `metric=outcome`. Replace the stub branch (lines 6267-6280) with: call `_action_gates_leaderboard` with `goal_id` + `limit` from kwargs, then massage the response shape back into the `goals leaderboard` envelope (it uses `lines` + `text` formatting; entries still land in `entries`). Keep `_V1_LEADERBOARD_METRICS` and move `"outcome"` out of `_STUB_LEADERBOARD_METRICS` into `_V1_LEADERBOARD_METRICS`. `_ALL_LEADERBOARD_METRICS` stays the union.
+- **`_action_goal_leaderboard`** at `tinyassets/universe_server.py:6245` currently stubs `metric=outcome`. Replace the stub branch (lines 6267-6280) with: call `_action_gates_leaderboard` with `goal_id` + `limit` from kwargs, then massage the response shape back into the `goals leaderboard` envelope (it uses `lines` + `text` formatting; entries still land in `entries`). Keep `_V1_LEADERBOARD_METRICS` and move `"outcome"` out of `_STUB_LEADERBOARD_METRICS` into `_V1_LEADERBOARD_METRICS`. `_ALL_LEADERBOARD_METRICS` stays the union.
 - **Branch visibility.** `list_claims` and `leaderboard` must filter entries whose Branch has `visibility="private"` unless the caller is the Branch owner or host. Equivalent logic already exists for `branch list`; reuse or parallel-implement minimally.
 - **`GATES_ENABLED` gating stays in place.** Same flag guard as 6.1. Rewired `goals leaderboard metric=outcome` must *also* respect the flag — if the flag is off, fall back to the existing "not_available" stub response but with message "outcome metric is gated by GATES_ENABLED (Phase 6.2)." This is important: we don't want the outcome-metric rewire to make `goals leaderboard` fail when gates are disabled.
 
@@ -412,8 +412,8 @@ Every test uses the existing 6.1 fixtures (base_path tmp, `initialize_author_ser
 
 #### Deliverables & file list
 
-- `workflow/universe_server.py` — three handlers + registration + leaderboard rewire + `define_ladder` auth fix.
-- `workflow/author_server.py` — `retract_gate_claim`, `list_gate_claims`, `gate_leaderboard`; optional helper `_get_current_goal_id_for_branch` if the rebind guard lives at that layer.
+- `tinyassets/universe_server.py` — three handlers + registration + leaderboard rewire + `define_ladder` auth fix.
+- `tinyassets/author_server.py` — `retract_gate_claim`, `list_gate_claims`, `gate_leaderboard`; optional helper `_get_current_goal_id_for_branch` if the rebind guard lives at that layer.
 - `tests/test_universe_server_gates.py` (or nearest) — ~20 new tests.
 - `docs/specs/outcome_gates_phase6.md` — mark 6.2 done in §Rollout when landed.
 
@@ -421,7 +421,7 @@ No PLAN.md changes. No STATUS.md changes beyond the row-delete on land.
 
 #### Explicit non-goals in 6.2
 
-- Git commit path. That's 6.3. Don't touch `workflow/storage/backend.py`.
+- Git commit path. That's 6.3. Don't touch `tinyassets/storage/backend.py`.
 - YAML emitters. 6.3.
 - `goals get` gate_summary field. 6.4.
 - `branch` tool gate_claims field. 6.4.

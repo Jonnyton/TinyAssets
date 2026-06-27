@@ -1,4 +1,4 @@
-# Install Workflow's repo-level git hooks into Git's hooks directory.
+# Install TinyAssets repo-level git hooks into Git's hooks directory.
 #
 # Hooks live canonically at scripts/git-hooks/ and are copied into
 # the path reported by `git rev-parse --git-path hooks`. Re-run this

@@ -1,4 +1,4 @@
-"""Tests for ``workflow.git_bridge`` (Phase 7.2 G1).
+"""Tests for ``tinyassets.git_bridge`` (Phase 7.2 G1).
 
 Exercises the primitives end-to-end against real ``git init`` repositories
 in ``tmp_path``. Skips cleanly when git isn't installed so CI environments
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow import git_bridge
+from tinyassets import git_bridge
 
 # Skip the whole module if git isn't installed — local-only branch of the
 # spec where git features simply no-op.

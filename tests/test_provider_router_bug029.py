@@ -10,10 +10,10 @@ import asyncio
 
 import pytest
 
-from workflow.exceptions import AllProvidersExhaustedError
-from workflow.providers.base import BaseProvider, ModelConfig, ProviderResponse
-from workflow.providers.quota import QuotaTracker
-from workflow.providers.router import FALLBACK_CHAINS, ProviderRouter
+from tinyassets.exceptions import AllProvidersExhaustedError
+from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.providers.quota import QuotaTracker
+from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
 
 # ---------------------------------------------------------------------------
 # Helpers

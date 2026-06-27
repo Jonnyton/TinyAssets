@@ -15,8 +15,8 @@ Phase F is where the daemon first leaves the universe boundary. Phases C-E prove
 - `docs/exec-plans/daemon_task_economy_rollout.md` §Phase F (lines 154-180).
 - `docs/planning/daemon_task_economy.md` §4.1 cascade item 5 (pool tier), §4.6 data-model asks, §3.2 BranchTask shape.
 - `docs/specs/phase_e_preflight.md` §4.1 #4 flag matrix + §R9 producer double-execution guard + §4.3 invariant 9 priority_weight cap.
-- Live Phase E code: `workflow/dispatcher.py` (scoring + selection), `workflow/branch_tasks.py` (queue primitives + file lock), `workflow/producers/__init__.py` (TaskProducer protocol).
-- Live submission precedent: `workflow/universe_server.py:_action_submit_request` at ~1303 + `append_task` call at ~1419.
+- Live Phase E code: `tinyassets/dispatcher.py` (scoring + selection), `tinyassets/branch_tasks.py` (queue primitives + file lock), `tinyassets/producers/__init__.py` (TaskProducer protocol).
+- Live submission precedent: `tinyassets/universe_server.py:_action_submit_request` at ~1303 + `append_task` call at ~1419.
 - STATUS.md 2026-04-14 Phase E follow-up #3 — "dispatcher still runs observational-only (not feeding `_run_graph`'s `initial_state`). Wire-up lands when user-sim Mission 8 gates the Phase D default flip, or as Phase F scope." This preflight's answer: Phase F scope. Load-bearing resolution.
 - PLAN.md cross-cutting principle: "Universe = single consistent reality. Data isolation between universes is the only hard boundary." (§Design Decisions.)
 - PLAN.md: "GitHub as canonical shared state. Public catalog of Goals, Branches, Nodes lives in the repo. Users clone, run locally, contribute via PR. No multi-tenant hosted runtime."
@@ -26,11 +26,11 @@ Phase F is where the daemon first leaves the universe boundary. Phases C-E prove
 Before pinning the new surface, enumerate what's already live so Phase F composes existing pieces rather than rebuilding.
 
 **Already live (after Phase E):**
-- Six tier names are defined and the dispatcher's `DispatcherConfig` has `accept_goal_pool: bool = False` plus a `tier_weights["goal_pool"] = 40.0` default (`workflow/dispatcher.py:38-92`). Phase E reserved the tier; Phase F activates it.
-- BranchTask dataclass has reserved fields `goal_id: str = ""` and `bid: float = 0.0` and `required_llm_type: str = ""` (`workflow/branch_tasks.py:68-90`). Phase F is the first consumer of `goal_id`; `bid` and `required_llm_type` stay empty until Phase G.
-- `TaskProducer` protocol at `workflow/producers/__init__.py:21-65` with registry-based discovery. Three fantasy producers already register. Protocol docstring already mentions "Phase F may introduce an async variant" — that flag is called in now.
+- Six tier names are defined and the dispatcher's `DispatcherConfig` has `accept_goal_pool: bool = False` plus a `tier_weights["goal_pool"] = 40.0` default (`tinyassets/dispatcher.py:38-92`). Phase E reserved the tier; Phase F activates it.
+- BranchTask dataclass has reserved fields `goal_id: str = ""` and `bid: float = 0.0` and `required_llm_type: str = ""` (`tinyassets/branch_tasks.py:68-90`). Phase F is the first consumer of `goal_id`; `bid` and `required_llm_type` stay empty until Phase G.
+- `TaskProducer` protocol at `tinyassets/producers/__init__.py:21-65` with registry-based discovery. Three fantasy producers already register. Protocol docstring already mentions "Phase F may introduce an async variant" — that flag is called in now.
 - `append_task` + `read_queue` + file-lock primitive ready for any submission path to write into `branch_tasks.json`. Phase F's pool-post action writes via this same API.
-- Dispatcher's `tier_enabled` check routes `goal_pool` via `accept_goal_pool` flag (`workflow/dispatcher.py:67-68`). Phase F just needs a valid source of `goal_pool`-origin tasks for the dispatcher to pick up.
+- Dispatcher's `tier_enabled` check routes `goal_pool` via `accept_goal_pool` flag (`tinyassets/dispatcher.py:67-68`). Phase F just needs a valid source of `goal_pool`-origin tasks for the dispatcher to pick up.
 - Phase E dispatcher is observational-only — it logs picks but doesn't drive `_run_graph`'s `initial_state`. See §3 R1 for resolution.
 
 **Phase F adds:**
@@ -39,7 +39,7 @@ Before pinning the new surface, enumerate what's already live so Phase F compose
 - `GoalPoolProducer` — new TaskProducer variant that reads the repo-root pool, filters to subscribed Goals, and emits BranchTasks into the per-universe `branch_tasks.json` queue (not WorkTargets — see R2).
 - MCP actions: `subscribe_goal`, `unsubscribe_goal`, `list_subscriptions`, `post_to_goal_pool`.
 - A curated "maintenance pool" (default subscription on fresh install) so idle daemons do useful cross-universe housekeeping out of the box.
-- Feature flag `WORKFLOW_GOAL_POOL=off` (default). Flips on when the host opts their daemon into external work.
+- Feature flag `TINYASSETS_GOAL_POOL=off` (default). Flips on when the host opts their daemon into external work.
 - **Dispatcher-to-invocation wire-up** (STATUS.md Phase E follow-up #3) — Phase F resolves the deferred plumbing so picked `goal_pool` tasks actually run.
 
 **Explicitly NOT in Phase F:**
@@ -71,7 +71,7 @@ Before pinning the new surface, enumerate what's already live so Phase F compose
 
 ### Reversibility summary
 
-Everything is reversible by `WORKFLOW_GOAL_POOL=off`. Phase F's flag is default off. With the flag off, the GoalPoolProducer is not registered, `post_to_goal_pool` / `subscribe_goal` actions return `{"status": "not_available", "hint": "WORKFLOW_GOAL_POOL=on required"}`, and existing universe behavior is unchanged. Phase E's dispatcher-to-invocation wire-up (§R1) lands under this flag too — if it destabilizes the direct path, flag off reverts both Phase F AND the wire-up simultaneously. A merged-but-flag-off Phase F is inert.
+Everything is reversible by `TINYASSETS_GOAL_POOL=off`. Phase F's flag is default off. With the flag off, the GoalPoolProducer is not registered, `post_to_goal_pool` / `subscribe_goal` actions return `{"status": "not_available", "hint": "TINYASSETS_GOAL_POOL=on required"}`, and existing universe behavior is unchanged. Phase E's dispatcher-to-invocation wire-up (§R1) lands under this flag too — if it destabilizes the direct path, flag off reverts both Phase F AND the wire-up simultaneously. A merged-but-flag-off Phase F is inert.
 
 Secondary safety: the repo-root `goal_pool/` directory is public-by-construction (it's in the repo) but disposable. A host who gets a bad post in the pool can `git reset` the file locally; they don't need to do anything if they don't subscribe to that Goal.
 
@@ -85,17 +85,17 @@ Scope boundaries, signatures, invariants, and non-goals. Dev fills in HOW.
    - At cycle boundary, call `select_next_task(universe_path, config=cfg)`. If the result is non-None, extract `(branch_def_id, inputs)` from the `BranchTask`.
    - If `branch_def_id == "fantasy_author/universe-cycle"` (the default Branch): use the existing wrapper invocation path but set the wrapper's boundary-state seed from `inputs` where `inputs` provides fields (e.g. a goal-pool task with `inputs.target_series = "foo"` overrides the wrapper's default).
    - If `branch_def_id != "fantasy_author/universe-cycle"`: load the named Branch (defensively — not all subscriber daemons serve all Branches), compile via `compile_branch`, invoke via the same wrapper pattern.
-   - Mark the picked task `status=running` via `mark_status` before invocation. On completion, `status=succeeded` or `status=failed` with error text. Use the existing file-locked `mark_status` from `workflow/branch_tasks.py`.
+   - Mark the picked task `status=running` via `mark_status` before invocation. On completion, `status=succeeded` or `status=failed` with error text. Use the existing file-locked `mark_status` from `tinyassets/branch_tasks.py`.
    - The wire-up is strictly additive — if dispatcher returns None or if Phase F flag is off, `_run_graph` follows the existing D-on path unchanged.
    - If dispatcher returns a task whose `branch_def_id` doesn't resolve, mark it `failed` with `error="branch_not_available"` and continue with the default path for THIS cycle — don't loop on failure.
 
-2. **`workflow/producers/branch_task.py` — new `BranchTaskProducer` protocol.** Distinct from the in-universe `TaskProducer`:
+2. **`tinyassets/producers/branch_task.py` — new `BranchTaskProducer` protocol.** Distinct from the in-universe `TaskProducer`:
    - `BranchTaskProducer(Protocol)` — fields `name: str`, `origin: str` (matches `BranchTask.trigger_source`). Method `produce(universe_path: Path, *, subscribed_goals: list[str], config: dict | None = None) -> list[BranchTask]`. Returns the BranchTasks this producer wants to add to the queue; the dispatcher appends them (idempotent on `branch_task_id`) via existing `append_task`.
-   - Module-level registry + `register_branch_task_producer(p) -> None` + `registered_branch_task_producers() -> tuple` + `run_branch_task_producers(universe_path, subscribed_goals) -> list[BranchTask]`. Mirrors the existing `workflow/producers/__init__.py` shape.
+   - Module-level registry + `register_branch_task_producer(p) -> None` + `registered_branch_task_producers() -> tuple` + `run_branch_task_producers(universe_path, subscribed_goals) -> list[BranchTask]`. Mirrors the existing `tinyassets/producers/__init__.py` shape.
    - Called from the dispatcher's `select_next_task` orchestration at cycle boundaries (see R7 — this is WHERE the BranchTaskProducer lives, distinct from in-universe WorkTarget producers).
    - Synchronous protocol for v1. Memo §3.2 suggested async for "I/O-heavy cross-universe producers"; the pool producer's I/O is local file reads + optional `git fetch` — milliseconds. Keep sync; revisit if a producer ever does HTTP.
 
-3. **`workflow/producers/goal_pool.py` — `GoalPoolProducer`.** Concrete implementation of `BranchTaskProducer`. Reads `<repo_root>/goal_pool/<goal_slug>/*.yaml` for each goal in `subscribed_goals`. Each YAML file parses into a BranchTask via `BranchTask.from_dict` with validation:
+3. **`tinyassets/producers/goal_pool.py` — `GoalPoolProducer`.** Concrete implementation of `BranchTaskProducer`. Reads `<repo_root>/goal_pool/<goal_slug>/*.yaml` for each goal in `subscribed_goals`. Each YAML file parses into a BranchTask via `BranchTask.from_dict` with validation:
    - Required fields: `branch_task_id` (must match filename stem), `branch_def_id` (slug form), `goal_id` (must match containing directory slug), `inputs` (dict).
    - Rejected fields in `inputs` (R4): `_universe_path`, `_db_path`, `_kg_path`, `work_target_ref`, any key starting with `_`.
    - Stamp `trigger_source="goal_pool"`, `queued_at=<file mtime>`, `claimed_by=""`, `status="pending"`, `priority_weight=0.0`. (Pool tasks have no user_boost signal in v1.)
@@ -110,7 +110,7 @@ Scope boundaries, signatures, invariants, and non-goals. Dev fills in HOW.
    - `post_to_goal_pool(goal_id: str, branch_def_id: str, inputs_json: str, priority_weight: float = 0.0)` — write a YAML to `<repo_root>/goal_pool/<goal_id>/<new_task_id>.yaml`. Response includes the file path AND a hint string: `"To make this post visible to cross-host subscribers, run: git add goal_pool/<goal>/<id>.yaml && git commit && git push"`.
    - Authorization: any authenticated actor can post; host identity signal from `UNIVERSE_SERVER_USER` is recorded in the YAML's `posted_by` field for attribution. Non-host posters have `priority_weight` clamped to 0 (inherits Phase E §4.3 invariant 9 across the new submission path).
 
-5. **Subscription durability.** `<universe>/subscriptions.json`. Shape: `{"goals": ["research-paper", "fantasy-novel", "maintenance"], "updated_at": "<iso>"}`. File-locked via the same `_file_lock` helper imported from `workflow/branch_tasks.py`, but using a **separate sidecar lock file** at `<universe>/subscriptions.json.lock` — NOT the same lock as `<universe>/branch_tasks.json.lock`. Subscription mutations and queue mutations share zero contention surface; a long-held subscription read does not block dispatcher-cycle queue writes, and vice versa. Missing file treated as empty list with automatic default-maintenance-subscription added on first read (the "fresh install subscribes to maintenance" default — see invariant 10 + §4.12 Q2).
+5. **Subscription durability.** `<universe>/subscriptions.json`. Shape: `{"goals": ["research-paper", "fantasy-novel", "maintenance"], "updated_at": "<iso>"}`. File-locked via the same `_file_lock` helper imported from `tinyassets/branch_tasks.py`, but using a **separate sidecar lock file** at `<universe>/subscriptions.json.lock` — NOT the same lock as `<universe>/branch_tasks.json.lock`. Subscription mutations and queue mutations share zero contention surface; a long-held subscription read does not block dispatcher-cycle queue writes, and vice versa. Missing file treated as empty list with automatic default-maintenance-subscription added on first read (the "fresh install subscribes to maintenance" default — see invariant 10 + §4.12 Q2).
 
 6. **Universe config additions.** `<universe>/dispatcher_config.yaml` gains a `goal_pool` section with:
    - `accept_goal_pool: true` (flips the existing DispatcherConfig field from default false to true when host opts in).
@@ -118,9 +118,9 @@ Scope boundaries, signatures, invariants, and non-goals. Dev fills in HOW.
    - `goal_affinity_coefficient: 1.0` — bumps goal_pool-tier scoring per §4.3 priority math. Non-zero in Phase F for the first time (was 0 in Phase E reservation).
 
 7. **Repo-root discovery (contract).** `workflow.goal_pool.repo_root_path() -> Path` resolves the shared pool location in this order:
-   1. `WORKFLOW_REPO_ROOT` env var — explicit host control. Matches the `UNIVERSE_SERVER_USER` / `UNIVERSE_SERVER_HOST_USER` pattern. Takes precedence over everything.
+   1. `TINYASSETS_REPO_ROOT` env var — explicit host control. Matches the `UNIVERSE_SERVER_USER` / `UNIVERSE_SERVER_HOST_USER` pattern. Takes precedence over everything.
    2. Git-detect upward from `<universe_path>` — walk parents looking for `.git/`. Matches the "clone the repo, run locally" PLAN.md mental model.
-   3. `RuntimeError` if neither resolves. Pool producer treats this as "pool not available, empty result, INFO log"; MCP post action returns `{"status": "rejected", "error": "repo_root_not_resolvable", "hint": "Set WORKFLOW_REPO_ROOT or run the daemon from inside a git checkout"}`.
+   3. `RuntimeError` if neither resolves. Pool producer treats this as "pool not available, empty result, INFO log"; MCP post action returns `{"status": "rejected", "error": "repo_root_not_resolvable", "hint": "Set TINYASSETS_REPO_ROOT or run the daemon from inside a git checkout"}`.
 
    Fallback order deliberately NOT "always parent of universe" — some installs keep universes under `~/universes/<name>/` with no git at the parent level. Fallback order deliberately NOT "git-detect only" — pytest tmpdir tests need a fixed env-var pin to work without a fake .git scaffold. This resolves §4.9 Q3 as a contract, not an open question.
 
@@ -132,11 +132,11 @@ Scope boundaries, signatures, invariants, and non-goals. Dev fills in HOW.
 
 Three flags active in Phase F:
 
-- `WORKFLOW_UNIFIED_EXECUTION` (Phase D) — required ON for pool tasks to actually execute (via the wrapped BranchDefinition path). If OFF, pool producer still emits into queue but dispatcher-observational-only (inherits Phase E matrix).
-- `WORKFLOW_DISPATCHER_ENABLED` (Phase E) — required ON. If OFF, dispatcher short-circuits; pool tasks sit in queue unseen.
-- `WORKFLOW_GOAL_POOL` (Phase F, new) — default OFF. When ON: GoalPoolProducer registers; MCP pool actions functional. When OFF: GoalPoolProducer not registered; MCP pool actions return `{"status": "not_available", "hint": "..."}`.
+- `TINYASSETS_UNIFIED_EXECUTION` (Phase D) — required ON for pool tasks to actually execute (via the wrapped BranchDefinition path). If OFF, pool producer still emits into queue but dispatcher-observational-only (inherits Phase E matrix).
+- `TINYASSETS_DISPATCHER_ENABLED` (Phase E) — required ON. If OFF, dispatcher short-circuits; pool tasks sit in queue unseen.
+- `TINYASSETS_GOAL_POOL` (Phase F, new) — default OFF. When ON: GoalPoolProducer registers; MCP pool actions functional. When OFF: GoalPoolProducer not registered; MCP pool actions return `{"status": "not_available", "hint": "..."}`.
 
-**Three-flag matrix** — table summarizes behavior. Dev should pin this in comments somewhere (probably `workflow/producers/goal_pool.py` docstring):
+**Three-flag matrix** — table summarizes behavior. Dev should pin this in comments somewhere (probably `tinyassets/producers/goal_pool.py` docstring):
 
 | D | E | F | Behavior |
 |---|---|---|----------|
@@ -163,7 +163,7 @@ Three flags active in Phase F:
 
 8. **Dispatcher wire-up hard-fail + cancel-during-claim race (R1 + Phase D §R11).** Two sub-cases, both tested:
    - **Compile failure.** Picked task whose Branch fails to compile under the wrapper is marked `failed` with clear error; daemon does NOT silently fall back to default path without logging. Test (new): seed queue with a task referencing a registered-but-invalid Branch; assert `_run_graph` marks it failed; assert one ERROR log line identifying the branch_def_id; assert daemon continues with default path next cycle.
-   - **Cancel-during-claim race.** If a user cancels a task (transitions `pending → cancelled` via `queue_cancel`) between the dispatcher's `select_next_task` pick and the wire-up's claim attempt, the claim must fail cleanly — NOT raise `ValueError` from `_VALID_TRANSITIONS` at `workflow/branch_tasks.py:59-65` (which rejects `cancelled → running`). Use `claim_task(universe_path, task_id, claimer)` which returns `None` on not-pending rather than `mark_status(..., status="running")` which would raise. Pseudocode in §4.10 reflects this. Test (new): seed queue with pending task; patch `select_next_task` to return it; race: cancel the task before invocation; assert daemon logs an INFO line `claim_lost_to_cancel` and falls through to default path without raising.
+   - **Cancel-during-claim race.** If a user cancels a task (transitions `pending → cancelled` via `queue_cancel`) between the dispatcher's `select_next_task` pick and the wire-up's claim attempt, the claim must fail cleanly — NOT raise `ValueError` from `_VALID_TRANSITIONS` at `tinyassets/branch_tasks.py:59-65` (which rejects `cancelled → running`). Use `claim_task(universe_path, task_id, claimer)` which returns `None` on not-pending rather than `mark_status(..., status="running")` which would raise. Pseudocode in §4.10 reflects this. Test (new): seed queue with pending task; patch `select_next_task` to return it; race: cancel the task before invocation; assert daemon logs an INFO line `claim_lost_to_cancel` and falls through to default path without raising.
 
 9. **Pool-task execution writes to subscriber universe only.** After pool-task completion, subscriber universe's state (canon, notes, work_targets) may show writes; poster universe's state is byte-identical to pre-execution. Test (new, end-to-end extension of invariant 5): post a task that writes to canon; subscriber executes; assert subscriber's canon has the write; assert poster's canon has no change.
 
@@ -189,17 +189,17 @@ New file `tests/test_phase_f_goal_pool.py`. Structure:
 - **Invariants (6 tests):** 1 (universe isolation); 2 (registry separation); 3 (producer-call boundary, id-counted); 5 (subscribe→post→pick round-trip — end-to-end); 9 (write-scoping); 10 (fresh-install default).
 - **R13 race test (1 test):** two daemons simultaneously see the same pool YAML; assert both enqueue locally; assert completion of one doesn't prevent completion of the other. Verifies the accepted double-execution risk is visible, not hidden.
 
-Aim: ~41 tests. Many share fixtures — a `_two_universe_fixture` helper providing two tmpdir universes sharing a repo_root is worth writing once and reusing across invariants 1, 2, 5, 9. The `WORKFLOW_REPO_ROOT` env var (§4.1 #7) is the fixture's pinning mechanism — no git scaffolding required.
+Aim: ~41 tests. Many share fixtures — a `_two_universe_fixture` helper providing two tmpdir universes sharing a repo_root is worth writing once and reusing across invariants 1, 2, 5, 9. The `TINYASSETS_REPO_ROOT` env var (§4.1 #7) is the fixture's pinning mechanism — no git scaffolding required.
 
 ### 4.5 Rollback plan
 
-**Landing state:** `WORKFLOW_GOAL_POOL=off` by default. Merging safe; existing universes unaffected. The dispatcher-to-invocation wire-up (§4.1 #1) is gated under D-on+E-on — with Phase D default still off, it's still inert at merge time.
+**Landing state:** `TINYASSETS_GOAL_POOL=off` by default. Merging safe; existing universes unaffected. The dispatcher-to-invocation wire-up (§4.1 #1) is gated under D-on+E-on — with Phase D default still off, it's still inert at merge time.
 
 **Flag-on rollout gate:** user-sim Mission 9 (after Mission 8 flips Phase D default on) runs an end-to-end pool post-and-pick between two pytest temp universes. When that passes, flag can default to on.
 
 **If Phase F breaks in live after flag on:**
-1. **Immediate:** `WORKFLOW_GOAL_POOL=0` + Workflow daemon restart. Pool producer unregisters; subscriber queues stop receiving new pool tasks; existing queued pool tasks get cancelled OR execute normally (dev picks: recommend "remain queued, marked cancelled on next cycle under flag-off"). No data loss.
-2. **Short-term:** if flag-off doesn't stabilize, set `WORKFLOW_DISPATCHER_ENABLED=0`. Now all tier-aware selection is off; daemon falls back to pre-Phase-E default fantasy selection. Pool tasks stay in files but nothing reads them.
+1. **Immediate:** `TINYASSETS_GOAL_POOL=0` + TinyAssets daemon restart. Pool producer unregisters; subscriber queues stop receiving new pool tasks; existing queued pool tasks get cancelled OR execute normally (dev picks: recommend "remain queued, marked cancelled on next cycle under flag-off"). No data loss.
+2. **Short-term:** if flag-off doesn't stabilize, set `TINYASSETS_DISPATCHER_ENABLED=0`. Now all tier-aware selection is off; daemon falls back to pre-Phase-E default fantasy selection. Pool tasks stay in files but nothing reads them.
 3. **Full rollback:** revert the Phase F commit. Files in `goal_pool/` remain harmlessly in repo. Subscription files in `<universe>/subscriptions.json` remain. Nothing reads them.
 
 **Data considerations:**
@@ -231,12 +231,12 @@ Aim: ~41 tests. Many share fixtures — a `_two_universe_fixture` helper providi
 
 | File | Change | Size estimate |
 |------|--------|---------------|
-| `workflow/producers/branch_task.py` | NEW — `BranchTaskProducer` protocol + registry + helpers | ~90 lines |
-| `workflow/producers/goal_pool.py` | NEW — `GoalPoolProducer` + YAML reader + input validator | ~150 lines |
-| `workflow/universe_server.py` | EDIT — add `subscribe_goal` / `unsubscribe_goal` / `list_subscriptions` / `post_to_goal_pool` actions to `universe` tool dispatcher | ~200 lines added |
-| `workflow/subscriptions.py` | NEW — per-universe subscriptions file I/O + default-maintenance logic + file lock | ~80 lines |
+| `tinyassets/producers/branch_task.py` | NEW — `BranchTaskProducer` protocol + registry + helpers | ~90 lines |
+| `tinyassets/producers/goal_pool.py` | NEW — `GoalPoolProducer` + YAML reader + input validator | ~150 lines |
+| `tinyassets/universe_server.py` | EDIT — add `subscribe_goal` / `unsubscribe_goal` / `list_subscriptions` / `post_to_goal_pool` actions to `universe` tool dispatcher | ~200 lines added |
+| `tinyassets/subscriptions.py` | NEW — per-universe subscriptions file I/O + default-maintenance logic + file lock | ~80 lines |
 | `fantasy_author/__main__.py` | EDIT `_run_graph` — dispatcher-to-invocation wire-up (§4.1 #1). Strictly additive; existing path preserved | ~80 lines changed |
-| `workflow/dispatcher.py` | EDIT — add BranchTaskProducer run-step at cycle boundary (writes queue before selecting). No change to scoring | ~30 lines added |
+| `tinyassets/dispatcher.py` | EDIT — add BranchTaskProducer run-step at cycle boundary (writes queue before selecting). No change to scoring | ~30 lines added |
 | `goal_pool/maintenance/README.md` | NEW — explains maintenance pool, post conventions, example YAML | ~40 lines |
 | `docs/planning/goal_pool_conventions.md` | NEW — public-facing pool directory layout + YAML shape + git push workflow | ~80 lines |
 | `tests/test_phase_f_goal_pool.py` | NEW — ~41 tests | ~950 lines |
@@ -264,7 +264,7 @@ No schema changes to any existing dataclass. No new MCP tools (4 actions land on
 A. Per-universe opt-in list of Goal IDs. `<universe>/subscriptions.json`. Rationale: matches memo §4.6 data-model ask; matches current 1:1 universe:daemon reality; forward-compatible with multi-universe-daemon future (daemon unions lists). Per-daemon tier policy (memo Q3 territory) is orthogonal — a daemon's tier switches are already in `dispatcher_config.yaml`; subscription is who-you-care-about, tier policy is what-you-pay-attention-to. Keep them separate surfaces.
 
 **Q2. Pool producer protocol — extend `TaskProducer` or new protocol?**
-A. New protocol — `BranchTaskProducer`. Lives at `workflow/producers/branch_task.py`. Produces `list[BranchTask]`, not `list[WorkTarget]`. Rationale: R2 + Phase E's keystone distinction. In-universe producers emit content (WorkTargets) inside review gates; cross-universe producers emit execution intents (BranchTasks) at dispatcher boundaries. Two distinct registries, two distinct surfaces. Synchronous protocol for v1; memo §3.2's "async variant" deferred until a real async producer appears (HTTP-based cross-project signals, maybe Phase I).
+A. New protocol — `BranchTaskProducer`. Lives at `tinyassets/producers/branch_task.py`. Produces `list[BranchTask]`, not `list[WorkTarget]`. Rationale: R2 + Phase E's keystone distinction. In-universe producers emit content (WorkTargets) inside review gates; cross-universe producers emit execution intents (BranchTasks) at dispatcher boundaries. Two distinct registries, two distinct surfaces. Synchronous protocol for v1; memo §3.2's "async variant" deferred until a real async producer appears (HTTP-based cross-project signals, maybe Phase I).
 
 **Q3. Fetching model — poll vs push; file-backed vs server-mediated?**
 A. Pull from git-backed repo-root directory. `goal_pool/<goal_slug>/*.yaml`. Rationale: PLAN.md "local-first, git-native" + "GitHub as canonical shared state" settle this. Users clone the repo, their daemons see the pool. Posts are `git push` actions (the MCP action writes local; the user or Phase H dashboard pushes). No web service. No push notifications. Single-host / local-only installs work entirely locally — the pool dir is real; push is a no-op because no remote cares.

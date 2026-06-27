@@ -138,7 +138,7 @@ Shipped only if #69 handoffs lands at MVP (per navigator's minimum-viable-launch
 
 ### 3.3 Tier-2 (post-MVP, plugin-able day one)
 
-- `slack` — `post_message`, `upload_file` (OAuth2, requires Slack app registration per-workspace or global Workflow app).
+- `slack` — `post_message`, `upload_file` (OAuth2, requires Slack app registration per-workspace or global TinyAssets app).
 - `discord` — `post_message` (bot token or OAuth2).
 - `sendgrid` / `mailgun` — transactional email alternative to Gmail's per-user OAuth (platform-managed key, useful for automated pipelines).
 

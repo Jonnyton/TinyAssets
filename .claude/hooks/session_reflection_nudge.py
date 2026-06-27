@@ -23,7 +23,7 @@ from pathlib import Path
 DURABLE_HINTS = (
     "AGENTS.md", "PLAN.md", "STATUS.md", "CLAUDE.md",
     ".claude/skills/", ".claude/agents/", ".claude/hooks/", ".agents/skills/",
-    "scripts/", "workflow/", "docs/", "tests/",
+    "scripts/", "tinyassets/", "docs/", "tests/",
 )
 
 

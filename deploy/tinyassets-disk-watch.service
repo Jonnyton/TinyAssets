@@ -1,0 +1,50 @@
+# TinyAssets disk pressure watchdog — hourly disk check + auto-prune.
+#
+# Runs three steps per tick (BUG-023 Phases 2+3+4):
+#   1. disk_watch.py   — open GH issue if /var/lib/docker is past DISK_WARN_PCT.
+#   2. rotate_run_transcripts — gzip + archive old run artifacts.
+#   3. disk_autoprune.py — docker image prune -af if root ≥ DISK_AUTOPRUNE_PCT.
+#
+# Each step is oneshot + independent — step N failing does not block N+1.
+# The rotation + autoprune steps tolerate missing binaries / paths, so
+# the service never fails loudly on a host without docker installed.
+#
+# Environment variables sourced from /etc/tinyassets/env:
+#   GITHUB_TOKEN       — fine-grained PAT with issues:write
+#   GITHUB_REPOSITORY  — owner/repo  (default: Jonnyton/TinyAssets)
+#   DISK_WARN_PCT      — disk_watch GH-alert threshold (default 80)
+#   DISK_AUTOPRUNE_PCT — prune trigger threshold (default 85)
+#   DISK_WATCH_PATH    — path to check, default /var/lib/docker for
+#                        disk_watch, / for disk_autoprune
+#   TINYASSETS_RUN_TRANSCRIPT_RETENTION_DAYS — rotation retention (default 30)
+#
+# Install:
+#   sudo cp deploy/tinyassets-disk-watch.service /etc/systemd/system/
+#   sudo cp deploy/tinyassets-disk-watch.timer    /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tinyassets-disk-watch.timer
+
+[Unit]
+Description=TinyAssets disk watchdog + rotation + auto-prune (hourly)
+Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/docs/ops/log-aggregation-runbook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/tinyassets/env
+# Step 1 — legacy disk_watch GH-issue alarm. Runs first so its exit
+# status doesn't mask subsequent steps.
+ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/disk_watch.py
+# Step 2 — rotate run transcripts older than retention into archived/.
+ExecStart=/usr/bin/python3 -m scripts.rotate_run_transcripts
+# Step 3 matches p0-outage disk_full cleanup: Docker system/builder
+# prune plus journal vacuum, without Docker volumes.
+# Step 3 — auto-prune docker images if root volume is pressured.
+ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/disk_autoprune.py
+# Each ExecStart runs sequentially; Type=oneshot treats all three as
+# a single unit of work for the timer's OnUnitActiveSec window.
+TimeoutStartSec=180s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tinyassets-disk-watch

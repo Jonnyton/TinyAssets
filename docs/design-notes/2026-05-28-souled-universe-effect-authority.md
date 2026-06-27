@@ -12,7 +12,7 @@ A universe's **soul** is a continuity-of-intent engine: it preserves, grows, and
 its founder's will, even when the founder is not actively present. A universe acts on the world
 through **branches with real-world gates** (its hands). For the platform's own universe ("Tiny",
 whose product happens to be Workflow itself), one of those hands is the patch-request loop, and
-its real-world gate is *opening PRs against the Workflow repo*.
+its real-world gate is *opening PRs against the TinyAssets repo*.
 
 Today that hand's **authority** comes from a global daemon env map, decoupled from the soul. This
 note proposes the one structural change that makes "permission controlled by this specific
@@ -42,27 +42,27 @@ platform has no patch loop at all but still has a soul and other hands (social, 
 
 ## What is already wired on `origin/main` (do not rebuild)
 
-- **`workflow/universe_soul.py`** — `soul.md` carries founder-will as typed fields: `purpose`,
+- **`tinyassets/universe_soul.py`** — `soul.md` carries founder-will as typed fields: `purpose`,
   `why`, `hard_lines`, `soft_preferences`, `open_to_contributors`, plus **`edit_authority`**
   (default `"soul.edit"`) and **`loop_branch_def_id`**. Every write snapshots to
   `soul_versions/NNNN.md`, so soul edits are already versioned. `PinnedUniverseSoul.context()`
   carries an explicit identity boundary ("guides context only; does not change actor identity").
-- **The loop-generalization is built.** `workflow/api/universe.py::_universe_loop_dispatch()`
+- **The loop-generalization is built.** `tinyassets/api/universe.py::_universe_loop_dispatch()`
   reads `soul.loop_branch_def_id` and dispatches *that* branch. The universe already runs the
   loop its soul names — generic loop, universe supplies which one.
-- **Soul-as-lens (read direction) is wired.** `workflow/retrieval/agentic_search.py::assemble_soul_lens_context()`
+- **Soul-as-lens (read direction) is wired.** `tinyassets/retrieval/agentic_search.py::assemble_soul_lens_context()`
   pulls the pinned soul into context assembly. The soul already *shapes* what every branch sees.
-- **The hands + receipts exist.** `workflow/effectors/{github_pr,windows_desktop}.py` translate an
-  `external_write_packet` into real side effects; `workflow/storage/external_write_receipts.py`
+- **The hands + receipts exist.** `tinyassets/effectors/{github_pr,windows_desktop}.py` translate an
+  `external_write_packet` into real side effects; `tinyassets/storage/external_write_receipts.py`
   records them. Per-destination **consent is already per-universe** via the `effector_consents`
   table (`github_pr.py::_check_consent(universe_dir, destination)`).
-- **`workflow/resolution/`** is a *claim-conflict* resolver (which surface wins when evidence
+- **`tinyassets/resolution/`** is a *claim-conflict* resolver (which surface wins when evidence
   disagrees) — **not** the effect-permission gate. Do not conflate the two.
 
 ## The gap (this slice)
 
-In `workflow/effectors/github_pr.py`, the **write capability** — the authority to effect a given
-destination — is read from a **global daemon env map** `WORKFLOW_GITHUB_PR_CAPABILITIES`
+In `tinyassets/effectors/github_pr.py`, the **write capability** — the authority to effect a given
+destination — is read from a **global daemon env map** `TINYASSETS_GITHUB_PR_CAPABILITIES`
 (`_CAPABILITIES_ENV`, `_read_capability(destination)`), keyed by `owner/repo`. The per-universe
 `effector_consents` row gates *consent*, but the *capability/authority itself* is global and has
 no relationship to the running universe's soul.
@@ -80,7 +80,7 @@ boundary:
 1. **Soul declares its authorized hands.** Add an effect-authority scope to the soul (extend
    `edit_authority` semantics, or a sibling `effect_authority` list) naming the sinks/destinations
    this universe is permitted to effect — e.g. Tiny's soul declares
-   `github_pr:Jonnyton/Workflow`. This is the universe's own typed declaration of its hands, in
+   `github_pr:Jonnyton/TinyAssets`. This is the universe's own typed declaration of its hands, in
    `soul.md`, versioned like everything else.
 2. **The effector resolves authority from the soul of the running universe**, not from a global
    env map. `_read_capability(destination)` becomes "is this destination within the running
@@ -89,10 +89,10 @@ boundary:
    soul; the token is just how the authorized action is executed.
 3. **Consent stays as the second factor** (`effector_consents`) — soul authorizes the *class* of
    hand; consent is the per-destination active grant. Both must hold. Kill-switch
-   (`WORKFLOW_EXTERNAL_WRITE_ENABLED`) and dry-run defaults are unchanged.
+   (`TINYASSETS_EXTERNAL_WRITE_ENABLED`) and dry-run defaults are unchanged.
 
 Result: Tiny is the sole PR-effector for Workflow **because its soul is the only soul that
-declares `github_pr:Jonnyton/Workflow` as an authorized hand** — architecture, not env config.
+declares `github_pr:Jonnyton/TinyAssets` as an authorized hand** — architecture, not env config.
 A game universe declares its own destinations. The mechanism is identical for all.
 
 ### Scope discipline (irreducibility / no over-build)
@@ -126,10 +126,10 @@ A game universe declares its own destinations. The mechanism is identical for al
 
 ## References
 
-- Code: `workflow/universe_soul.py`, `workflow/api/universe.py` (`_universe_loop_dispatch`),
-  `workflow/retrieval/agentic_search.py` (`assemble_soul_lens_context`),
-  `workflow/effectors/github_pr.py`, `workflow/storage/{external_write_receipts,effector_consents}.py`,
-  `workflow/resolution/`.
+- Code: `tinyassets/universe_soul.py`, `tinyassets/api/universe.py` (`_universe_loop_dispatch`),
+  `tinyassets/retrieval/agentic_search.py` (`assemble_soul_lens_context`),
+  `tinyassets/effectors/github_pr.py`, `tinyassets/storage/{external_write_receipts,effector_consents}.py`,
+  `tinyassets/resolution/`.
 - Design lineage: PR-139 (wiki), `docs/design-notes/2026-05-19-external-write-authority-and-rewards.md`.
 - Memory: `project_tiny_souled_platform_person`, `project_platform_is_just_a_goal_consumer`,
   `project_role_shift_to_community_participant`, `feedback_irreducibility_test_before_spec`.

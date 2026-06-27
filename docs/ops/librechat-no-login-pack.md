@@ -36,7 +36,7 @@ mcpSettings:
 mcpServers:
   workflow:
     title: "Workflow"
-    description: "Directory-safe Workflow MCP endpoint"
+    description: "Directory-safe TinyAssets MCP endpoint"
     type: "streamable-http"
     url: "https://tinyassets.io/mcp-directory"
     timeout: 30000
@@ -88,8 +88,8 @@ Record all values before claiming support:
 
 Acceptance criteria:
 
-- LibreChat starts with the Workflow MCP server configured.
-- LibreChat reports the Workflow MCP server as connected and not requiring
+- LibreChat starts with the TinyAssets MCP server configured.
+- LibreChat reports the TinyAssets MCP server as connected and not requiring
   OAuth.
 - LibreChat exposes all 11 directory-safe Workflow tools.
 - A chat/agent run invokes at least one read-only Workflow tool.

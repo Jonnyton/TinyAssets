@@ -19,7 +19,7 @@ import os
 import time
 from pathlib import Path
 
-from workflow.storage.rotation import (
+from tinyassets.storage.rotation import (
     prune_universe_outputs,
     rotate_activity_log,
     startup_storage_probe,
@@ -59,14 +59,14 @@ class TestRotateActivityLog:
         assert log.exists()
 
     def test_disabled_when_env_unset(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_CAP_ACTIVITY_LOG_BYTES", raising=False)
+        monkeypatch.delenv("TINYASSETS_CAP_ACTIVITY_LOG_BYTES", raising=False)
         log = tmp_path / "activity.log"
         log.write_bytes(b"x" * 99999)
         rotated = rotate_activity_log(log)
         assert rotated is False
 
     def test_env_var_override_respected(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_CAP_ACTIVITY_LOG_BYTES", "500")
+        monkeypatch.setenv("TINYASSETS_CAP_ACTIVITY_LOG_BYTES", "500")
         log = tmp_path / "activity.log"
         log.write_bytes(b"x" * 600)
         rotated = rotate_activity_log(log)
@@ -155,7 +155,7 @@ class TestPruneUniverseOutputs:
         assert len(list(d.iterdir())) == 3
 
     def test_disabled_when_env_unset(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_CAP_UNIVERSE_OUTPUTS_BYTES", raising=False)
+        monkeypatch.delenv("TINYASSETS_CAP_UNIVERSE_OUTPUTS_BYTES", raising=False)
         d = tmp_path / "output"
         d.mkdir()
         self._make_files(d, [999_999])
@@ -163,7 +163,7 @@ class TestPruneUniverseOutputs:
         assert deleted == []
 
     def test_env_var_override_respected(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_CAP_UNIVERSE_OUTPUTS_BYTES", "400")
+        monkeypatch.setenv("TINYASSETS_CAP_UNIVERSE_OUTPUTS_BYTES", "400")
         d = tmp_path / "output"
         d.mkdir()
         self._make_files(d, [100, 200, 300])
@@ -198,7 +198,7 @@ class TestStartupStorageProbe:
         assert isinstance(result["universe_outputs_pruned"], list)
 
     def test_triggers_rotation_when_over_cap(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_CAP_ACTIVITY_LOG_BYTES", "100")
+        monkeypatch.setenv("TINYASSETS_CAP_ACTIVITY_LOG_BYTES", "100")
         log = tmp_path / "activity.log"
         log.write_bytes(b"x" * 200)
         out = tmp_path / "output"
@@ -208,7 +208,7 @@ class TestStartupStorageProbe:
         assert not log.exists()
 
     def test_triggers_pruning_when_over_cap(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_CAP_UNIVERSE_OUTPUTS_BYTES", "300")
+        monkeypatch.setenv("TINYASSETS_CAP_UNIVERSE_OUTPUTS_BYTES", "300")
         log = tmp_path / "activity.log"
         log.write_bytes(b"hello")
         out = tmp_path / "output"
@@ -223,8 +223,8 @@ class TestStartupStorageProbe:
         assert len(result["universe_outputs_pruned"]) > 0
 
     def test_no_action_when_caps_not_set(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_CAP_ACTIVITY_LOG_BYTES", raising=False)
-        monkeypatch.delenv("WORKFLOW_CAP_UNIVERSE_OUTPUTS_BYTES", raising=False)
+        monkeypatch.delenv("TINYASSETS_CAP_ACTIVITY_LOG_BYTES", raising=False)
+        monkeypatch.delenv("TINYASSETS_CAP_UNIVERSE_OUTPUTS_BYTES", raising=False)
         log = tmp_path / "activity.log"
         log.write_bytes(b"x" * 999_999)
         out = tmp_path / "output"

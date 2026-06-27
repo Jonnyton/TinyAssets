@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.knowledge.knowledge_graph import KnowledgeGraph
+from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def temp_kg(tmp_path):
 @pytest.fixture
 def _set_runtime_kg(temp_kg):
     """Set runtime.knowledge_graph to a real KG for the duration of the test."""
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     runtime.knowledge_graph = temp_kg
     yield
@@ -224,7 +224,7 @@ class TestCommitKGIntegration:
     def test_kg_none_skips_extraction(self, tmp_story_db):
         """When runtime.knowledge_graph is None, entity indexing is skipped."""
         from domains.fantasy_daemon.phases.commit import commit
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         assert runtime.knowledge_graph is None
 

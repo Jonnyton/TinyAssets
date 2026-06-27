@@ -62,7 +62,7 @@ When importing Reddit ideas into Workflow, preserve attribution where possible:
 ## Near-Term Workflow
 
 1. A user or chatbot fetches the subreddit, RSS, or JSON listing.
-2. The fetched snapshot is submitted to Workflow MCP as imported source material.
+2. The fetched snapshot is submitted to TinyAssets MCP as imported source material.
 3. The `Echoes Reddit source intake` branch builds a source manifest and contribution packet.
 4. A canon gate marks each packet as `needs-review`, `draft-canon`, `accepted-canon`, `rejected`, or `archived`.
 5. Accepted material is promoted into canon or a GitHub PR only after review.

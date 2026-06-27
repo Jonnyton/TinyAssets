@@ -9,7 +9,7 @@
 # file is loaded — no betterstack sink, no 401 error noise.
 #
 # To enable Better Stack: set BETTERSTACK_SOURCE_TOKEN in
-# /etc/workflow/env and restart compose. No config change needed.
+# /etc/tinyassets/env and restart compose. No config change needed.
 
 # ---------------------------------------------------------------------
 # Sources: Docker container logs
@@ -21,8 +21,8 @@ sources:
     # Scope to only our containers — don't spam Better Stack with
     # every Docker container on the box (if any).
     include_containers:
-      - workflow-daemon
-      - workflow-tunnel
+      - tinyassets-daemon
+      - tinyassets-tunnel
 
 # ---------------------------------------------------------------------
 # Transforms: add metadata
@@ -33,11 +33,11 @@ transforms:
     type: remap
     inputs: [docker_logs]
     source: |
-      .service = "workflow"
+      .service = "tinyassets"
       # Derive role from container name so Better Stack can filter.
-      if .container_name == "workflow-daemon" {
+      if .container_name == "tinyassets-daemon" {
         .role = "daemon"
-      } else if .container_name == "workflow-tunnel" {
+      } else if .container_name == "tinyassets-tunnel" {
         .role = "cloudflared"
       } else {
         .role = "other"

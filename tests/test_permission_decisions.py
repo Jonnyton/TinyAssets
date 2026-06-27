@@ -6,14 +6,14 @@ import json
 import sqlite3
 from pathlib import Path
 
-from workflow.auth.provider import (
+from tinyassets.auth.provider import (
     Identity,
     PermissionContext,
     PermissionScope,
 )
-from workflow.daemon_server import initialize_author_server
-from workflow.resolution import FIXTURE_LOCATION, validate_decision_payload
-from workflow.storage import (
+from tinyassets.daemon_server import initialize_author_server
+from tinyassets.resolution import FIXTURE_LOCATION, validate_decision_payload
+from tinyassets.storage import (
     ALL_CAPABILITIES,
     CAP_SUBMIT_REQUEST,
     DEFAULT_USER_CAPABILITIES,
@@ -21,7 +21,7 @@ from workflow.storage import (
     db_path,
     ensure_host_account,
 )
-from workflow.universe_soul import ensure_universe_soul, has_soul
+from tinyassets.universe_soul import ensure_universe_soul, has_soul
 
 
 def _fixture_decision(case_id: str):

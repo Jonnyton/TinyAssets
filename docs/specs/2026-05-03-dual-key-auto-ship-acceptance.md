@@ -194,7 +194,7 @@ Add read-only summaries after PR-open and mirror-key recording exist:
       {
         "ship_attempt_id": "ship_20260503_abcd1234",
         "request_id": "BUG-055",
-        "pr_url": "https://github.com/Jonnyton/Workflow/pull/243",
+        "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/243",
         "ship_class": "docs_canary",
         "required_keys": ["codex", "cowork"],
         "key_state": {
@@ -226,7 +226,7 @@ audit mirror. `get_status` should expose a compact summary only.
 
 1. Spec agreement: Cowork/Codex agree on this contract and open questions.
 2. PR creation: loop opens its own PR from an auto-change branch behind
-   `WORKFLOW_AUTO_SHIP_PR_CREATE_ENABLED=false` by default.
+   `TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED=false` by default.
 3. Required-key config: add per-ship-class required reviewer policy, all manual
    by default.
 4. Approval poller/merge action: re-check envelope, CI, and PR review state,

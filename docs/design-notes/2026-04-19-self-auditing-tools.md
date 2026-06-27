@@ -138,7 +138,7 @@ Devin Session 2 closed the trust gap on confidential-tier routing via `get_statu
    - **(a) Hand-written per surface.** Highest quality; highest authoring cost; drift risk over time.
    - **(b) Derived from a typed schema.** Each evidence field has a `caveat: str` annotation; the tool surface emits them. Lower drift; more rigid.
    - **(c) Hybrid.** Derived as a baseline; hand-written overrides for surface-specific nuance.
-   - **Recommendation: (c).** Get the structural property from (b); preserve narrative quality where it matters via (a). Draft the schema in `workflow/protocols.py` if greenlit.
+   - **Recommendation: (c).** Get the structural property from (b); preserve narrative quality where it matters via (a). Draft the schema in `tinyassets/protocols.py` if greenlit.
 
 4. **Dry-inspect pairing — separate task or bundled?** §6 below scopes `dry_inspect_node`. Should it ship under the same Track Q, or as a follow-on?
    - **(a) Bundled into Track Q.** Self-auditing covers current state + prospective behavior in one pattern delivery. Cleaner story for users.
@@ -203,7 +203,7 @@ These come back after host §5 answers.
 | Item | Effort |
 |---|---|
 | `get_status` (already shipped via `15c897a`, task #88) | Done. |
-| Pattern schema in `workflow/protocols.py` (if Q3 picks (b) or (c)) | ~0.5 dev-day |
+| Pattern schema in `tinyassets/protocols.py` (if Q3 picks (b) or (c)) | ~0.5 dev-day |
 | `get_memory_scope_status` MVP | ~1 dev-day |
 | `get_routing_evidence` MVP | ~1 dev-day |
 | `get_privacy_decisions` MVP | ~1 dev-day |
@@ -224,7 +224,7 @@ Roughly comparable to Track P (evaluation-layers unification, ~7-8 dev-days). Bo
 
 ### 10.1 Why this is a self-auditing-tools instantiation
 
-The implementation at `workflow/universe_server.py:3453-3500+` follows the §3 pattern precisely:
+The implementation at `tinyassets/universe_server.py:3453-3500+` follows the §3 pattern precisely:
 
 ```
 {
@@ -288,7 +288,7 @@ Every Track Q sub-task that adds a new surface should reference this canonical s
 |---|---|---|
 | `get_status` (15c897a, task #88) | Done | SHIPPED 2026-04-19 |
 | **`get_recent_events` (acfeeeb, task #50 / #B5)** | **Done** | **SHIPPED 2026-04-19** |
-| Pattern schema in `workflow/protocols.py` | ~0.5 dev-day | Pending Q3 |
+| Pattern schema in `tinyassets/protocols.py` | ~0.5 dev-day | Pending Q3 |
 | `get_memory_scope_status` MVP | ~1 dev-day | Pending Q5 |
 | `get_routing_evidence` MVP | ~1 dev-day | Pending Q5 |
 | `get_privacy_decisions` MVP | ~1 dev-day | Pending Q5 |
@@ -303,10 +303,10 @@ Track Q remaining work ~6 dev-days — slightly less than originally scoped beca
 
 When dev picks up the next Track Q surface (per Q6 impl-ease recommendation, that's `get_memory_scope_status`), the implementation pattern is:
 
-1. Read `_action_get_recent_events` at `workflow/universe_server.py:3453` for the canonical shape.
+1. Read `_action_get_recent_events` at `tinyassets/universe_server.py:3453` for the canonical shape.
 2. Define the per-surface evidence dict matching §4's field map for the chosen surface.
 3. Author surface-specific caveats (per §5 Q3 hybrid recommendation: derive a baseline from a typed schema + hand-write surface-specific overrides).
-4. Add the action to the dispatcher routing in `workflow/universe_server.py` action table.
+4. Add the action to the dispatcher routing in `tinyassets/universe_server.py` action table.
 5. Add tests modeled on whatever covers `_action_get_recent_events`.
 
 No architectural questions to re-answer per surface — pattern is now stable.
@@ -325,7 +325,7 @@ Specifically foundation:
 - The `{evidence: {...}, caveats: [...], actionable_next_steps: [...]}` payload shape (§3 pattern anatomy).
 - The separation-of-concerns invariant: tools expose observable state, chatbot composes narrative, evidence + caveats are separate keys (never interleaved).
 - The two SHIPPED implementations (`get_status` at `15c897a` + `get_recent_events` at `acfeeeb`) — these are the canonical reference shapes future surfaces lift from.
-- The optional pattern schema in `workflow/protocols.py` (per §5 Q3 hybrid recommendation) — once established, every surface inherits from it.
+- The optional pattern schema in `tinyassets/protocols.py` (per §5 Q3 hybrid recommendation) — once established, every surface inherits from it.
 
 **Why foundation:** every future Track Q surface depends on this shape being stable. Two shipped instances (`get_status` + `get_recent_events`) prove the shape works; further iteration would be debt-creating, not signal-driven.
 

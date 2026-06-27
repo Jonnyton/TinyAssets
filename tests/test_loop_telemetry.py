@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.branch_tasks import (
+from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
     claim_task,
@@ -25,14 +25,14 @@ from workflow.branch_tasks import (
     read_queue,
     reclaim_expired_leases,
 )
-from workflow.cloud_worker import (
+from tinyassets.cloud_worker import (
     SUPERVISOR_HEARTBEAT_FILENAME,
     SupervisorState,
     run_supervisor,
     supervisor_heartbeat_filename,
     write_supervisor_heartbeat,
 )
-from workflow.cloud_worker_healthcheck import check as healthcheck_check
+from tinyassets.cloud_worker_healthcheck import check as healthcheck_check
 
 
 def _utc(offset_s: float = 0.0) -> datetime:
@@ -91,7 +91,7 @@ def test_reclaim_skips_leaseless_running_rows(tmp_path):
     task = _make_task(tmp_path)
     claimed = claim_task(tmp_path, task.branch_task_id, "daemon::test::1")
     assert claimed is not None
-    from workflow.branch_tasks import _read_raw, _write_raw, queue_path
+    from tinyassets.branch_tasks import _read_raw, _write_raw, queue_path
 
     qp = queue_path(tmp_path)
     raw = _read_raw(qp)
@@ -133,7 +133,7 @@ def test_write_supervisor_heartbeat_atomic_shape(tmp_path):
 def test_write_supervisor_heartbeat_writes_worker_specific_file(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("WORKFLOW_WORKER_ID", "codex-1")
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "codex-1")
     state = SupervisorState()
     write_supervisor_heartbeat(tmp_path, state, iteration=1, phase="spawned")
 
@@ -204,7 +204,7 @@ def test_healthcheck_fails_without_beat(tmp_path):
 
 def test_healthcheck_passes_on_fresh_beat(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "workflow.cloud_worker._has_pickable_branch_task", lambda u: False,
+        "tinyassets.cloud_worker._has_pickable_branch_task", lambda u: False,
     )
     _write_beat(tmp_path, age_s=10)
     healthy, reason = healthcheck_check(tmp_path)
@@ -213,7 +213,7 @@ def test_healthcheck_passes_on_fresh_beat(tmp_path, monkeypatch):
 
 def test_healthcheck_reads_worker_specific_beat(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "workflow.cloud_worker._has_pickable_branch_task", lambda u: False,
+        "tinyassets.cloud_worker._has_pickable_branch_task", lambda u: False,
     )
     beat = {
         "ts": _iso(_utc(-10)),
@@ -237,7 +237,7 @@ def test_healthcheck_fails_on_stale_beat(tmp_path):
 
 def test_healthcheck_honors_planned_backoff_sleep(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "workflow.cloud_worker._has_pickable_branch_task", lambda u: False,
+        "tinyassets.cloud_worker._has_pickable_branch_task", lambda u: False,
     )
     _write_beat(tmp_path, age_s=600, phase="backoff", planned_sleep_s=900)
     healthy, reason = healthcheck_check(tmp_path)
@@ -251,7 +251,7 @@ def test_healthcheck_fails_when_pickable_waits_through_backoff(
     # beat is within its planned-sleep allowance but pickable work is
     # waiting — unhealthy, restart picks it up.
     monkeypatch.setattr(
-        "workflow.cloud_worker._has_pickable_branch_task", lambda u: True,
+        "tinyassets.cloud_worker._has_pickable_branch_task", lambda u: True,
     )
     _write_beat(tmp_path, age_s=600, phase="backoff", planned_sleep_s=900)
     healthy, reason = healthcheck_check(tmp_path)
@@ -265,13 +265,13 @@ def test_healthcheck_fails_when_pickable_waits_through_backoff(
 
 
 def test_worker_liveness_absent(tmp_path):
-    from workflow.api.universe import _worker_liveness
+    from tinyassets.api.universe import _worker_liveness
 
     assert _worker_liveness(tmp_path) == {"present": False}
 
 
 def test_worker_liveness_alive_and_dead(tmp_path):
-    from workflow.api.universe import _worker_liveness
+    from tinyassets.api.universe import _worker_liveness
 
     _write_beat(tmp_path, age_s=10)
     live = _worker_liveness(tmp_path)
@@ -284,7 +284,7 @@ def test_worker_liveness_alive_and_dead(tmp_path):
 
 
 def test_worker_liveness_enumerates_worker_specific_beats(tmp_path):
-    from workflow.api.universe import _worker_liveness
+    from tinyassets.api.universe import _worker_liveness
 
     for worker_id, runtime_id in (
         ("codex-1", "runtime-codex"),
@@ -392,8 +392,8 @@ def test_canary_falls_through_when_alive_with_work():
 
 
 def test_call_meta_shape():
-    from workflow.providers.base import ProviderResponse
-    from workflow.providers.router import ProviderRouter
+    from tinyassets.providers.base import ProviderResponse
+    from tinyassets.providers.router import ProviderRouter
 
     resp = ProviderResponse(
         text="hi", provider="codex", model="gpt-5.1-codex",
@@ -411,8 +411,8 @@ def test_call_meta_shape():
 
 @pytest.mark.asyncio
 async def test_call_with_policy_returns_meta_triple():
-    from workflow.providers.base import ProviderResponse
-    from workflow.providers.router import ProviderRouter
+    from tinyassets.providers.base import ProviderResponse
+    from tinyassets.providers.router import ProviderRouter
 
     class _Prov:
         name = "fake"

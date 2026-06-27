@@ -28,8 +28,8 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
-from workflow.graph_compiler import (
+from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+from tinyassets.graph_compiler import (
     CompilerError,
     _build_prompt_template_node,
     _state_schema_defaults,
@@ -389,7 +389,7 @@ def test_apply_state_field_spec_canonical_default_value_preserved():
     """A build_branch spec entry using the canonical ``default_value``
     key must round-trip through ``_apply_state_field_spec`` into storage
     in a shape that ``_state_schema_defaults`` can read."""
-    from workflow.api.branches import _apply_state_field_spec
+    from tinyassets.api.branches import _apply_state_field_spec
 
     class _StubBranch:
         def __init__(self) -> None:
@@ -413,7 +413,7 @@ def test_apply_state_field_spec_legacy_default_spec_still_works():
     """The legacy ``default`` spec shape continues to work — older
     callers (and earlier tests) that pass ``default`` should still
     produce a runtime-seedable schema entry."""
-    from workflow.api.branches import _apply_state_field_spec
+    from tinyassets.api.branches import _apply_state_field_spec
 
     class _StubBranch:
         def __init__(self) -> None:
@@ -432,7 +432,7 @@ def test_apply_state_field_spec_legacy_default_spec_still_works():
 def test_apply_state_field_spec_field_default_legacy_spec_still_works():
     """The other legacy spec shape ``field_default`` (used by
     fine-grained ``add_state_field``) also keeps working."""
-    from workflow.api.branches import _apply_state_field_spec
+    from tinyassets.api.branches import _apply_state_field_spec
 
     class _StubBranch:
         def __init__(self) -> None:
@@ -461,9 +461,9 @@ def test_build_branch_default_value_preserved_through_get_branch(
 
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     try:
@@ -521,9 +521,9 @@ def test_build_branch_state_schema_default_seeded_to_strict_prompt(
 
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     try:
@@ -560,8 +560,8 @@ def test_build_branch_state_schema_default_seeded_to_strict_prompt(
 
         from langgraph.checkpoint.memory import InMemorySaver
 
-        from workflow.branches import BranchDefinition
-        from workflow.graph_compiler import (
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.graph_compiler import (
             compile_branch,
             seed_initial_state,
         )

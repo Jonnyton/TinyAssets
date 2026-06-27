@@ -13,7 +13,7 @@ This folder connects Workflow to Jonathan Farnsworth's broader public project gr
 
 ## Public Repos
 
-- Workflow: https://github.com/Jonnyton/Workflow
+- Workflow: https://github.com/Jonnyton/TinyAssets
 - Portfolio index: https://github.com/Jonnyton/portfolio-index
 - Echoes of the Cosmos: https://github.com/Jonnyton/echoes-of-the-cosmos
 - Fantasy Agent Workflow Lab: https://github.com/Jonnyton/fantasy-agent-workflow-lab

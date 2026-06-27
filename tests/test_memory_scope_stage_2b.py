@@ -27,8 +27,8 @@ import sqlite3
 
 import pytest
 
-from workflow.knowledge.knowledge_graph import KnowledgeGraph
-from workflow.knowledge.models import (
+from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+from tinyassets.knowledge.models import (
     FactWithContext,
     GraphEdge,
     GraphEntity,
@@ -36,13 +36,13 @@ from workflow.knowledge.models import (
     NarrativeFunction,
     SourceType,
 )
-from workflow.memory.episodic import (
+from tinyassets.memory.episodic import (
     EpisodicMemory,
     check_episodic_no_bleed,
     migrate_episodic_schema_to_domain_neutral,
     rollback_episodic_schema_migration,
 )
-from workflow.memory.scoping import MemoryScope
+from tinyassets.memory.scoping import MemoryScope
 
 # ─── KG write-site threading ────────────────────────────────────────────
 
@@ -185,7 +185,7 @@ def test_kg_add_entity_upsert_refreshes_scope(kg):
 def _legacy_episodic_schema() -> str:
     """The pre-Stage-2b episodic schema (no goal_id / branch_id / user_id).
 
-    Mirrors ``workflow/memory/episodic.py``'s schema before this
+    Mirrors ``tinyassets/memory/episodic.py``'s schema before this
     landing, so we can simulate a universe with real legacy rows.
     """
     return """
@@ -415,7 +415,7 @@ def test_episodic_neutral_migration_requires_operator_flag(tmp_path):
 def test_episodic_neutral_migration_backup_and_rollback(tmp_path, monkeypatch):
     db = tmp_path / "episodic.db"
     _seed_legacy_episodic_db(db)
-    monkeypatch.setenv("WORKFLOW_EPISODIC_SCHEMA_MIGRATION", "1")
+    monkeypatch.setenv("TINYASSETS_EPISODIC_SCHEMA_MIGRATION", "1")
 
     report = migrate_episodic_schema_to_domain_neutral(
         db,

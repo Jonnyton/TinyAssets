@@ -2,7 +2,7 @@
   "name": "tinyassets-site-react",
   "version": "0.1.0",
   "private": true,
-  "description": "tinyassets.io — Workflow/Tiny site, React/Next migration of WebSite/site (Svelte). Consumes @tiny/design-system.",
+  "description": "tinyassets.io — TinyAssets/Tiny site, React/Next migration of WebSite/site (Svelte). Consumes @tiny/design-system.",
   "type": "module",
   "scripts": {
     "dev": "next dev",

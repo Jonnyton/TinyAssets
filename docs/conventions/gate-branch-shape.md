@@ -144,7 +144,7 @@ same rung and evidence vocabulary so gate review and bounty settlement do not
 diverge.
 
 The MCP `gates claim` path should validate this metadata once the current
-`workflow/api/market.py` sweep clears; until then, request labels and PR policy
+`tinyassets/api/market.py` sweep clears; until then, request labels and PR policy
 checks enforce the cloud-visible subset.
 
 Post-2026-06-15 Codex-written patch-loop PRs may use the weaker GPT-5.5-only
@@ -285,9 +285,9 @@ That test is generic; it does not need per-gate authoring. It catches the class 
 
 - `project_evaluation_layers_unifying_frame` — unified Evaluator type direction (memory).
 - `project_chatbot_visuals_first` — chatbot reads verdict_evidence + reproduces visually (memory).
-- `workflow/gates/actions.py:223` — engine-level `eval_verdict` enum (`pass`/`fail`/`skip`); convention's `pass` matches.
-- `workflow/branches.py` (conditional_edges spec, ~L100-150 of dataclass) — the consumer contract this convention serves.
-- `workflow/graph_compiler.py:2026-2033` — LangGraph `add_conditional_edges` integration.
+- `tinyassets/gates/actions.py:223` — engine-level `eval_verdict` enum (`pass`/`fail`/`skip`); convention's `pass` matches.
+- `tinyassets/branches.py` (conditional_edges spec, ~L100-150 of dataclass) — the consumer contract this convention serves.
+- `tinyassets/graph_compiler.py:2026-2033` — LangGraph `add_conditional_edges` integration.
 - `domains/fantasy_daemon/phases/commit.py:1148` — `EditorialVerdict` packet (existing domain shape; pre-convention).
 - `docs/design-notes/2026-04-26-mark-change-loop-status-mapping.md` — Task #15 mapping; this convention is R2 of that doc.
 - `docs/design-notes/2026-04-25-surgical-rollback-proposal.md` (Task #57) — design that adds `rollback` verdict's downstream meaning.

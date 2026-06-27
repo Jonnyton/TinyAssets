@@ -18,7 +18,7 @@ prompt_template: |
 
   Gate decision: {promotion_decision}
 
-  Write concrete next actions for a chatbot using Workflow MCP. Include when to use universe add_canon, wiki write or ingest, universe give_direction, submit_request, and a GitHub PR. Be explicit that the branch reviews imported snapshots; it does not fetch the web by itself and does not auto-promote canon without a review gate.
+  Write concrete next actions for a chatbot using TinyAssets MCP. Include when to use universe add_canon, wiki write or ingest, universe give_direction, submit_request, and a GitHub PR. Be explicit that the branch reviews imported snapshots; it does not fetch the web by itself and does not auto-promote canon without a review gate.
 timeout_seconds: 300.0
 approved: false
 enabled: true

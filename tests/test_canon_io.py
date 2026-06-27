@@ -1,4 +1,4 @@
-"""Tests for the guarded canon-I/O chokepoint (``workflow.ingestion.canon_io``).
+"""Tests for the guarded canon-I/O chokepoint (``tinyassets.ingestion.canon_io``).
 
 Every canon read, write, or enumeration routes through ``canon_io`` so that
 path-traversal and symlink-escape are rejected before any I/O. These tests
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.ingestion.canon_io import (
+from tinyassets.ingestion.canon_io import (
     iter_canon_files,
     read_canon_text,
     safe_canon_path,

@@ -1,9 +1,9 @@
-"""Stage and pack the Workflow Server MCPB bundle.
+"""Stage and pack the TinyAssets Server MCPB bundle.
 
 Per `docs/design-notes/2026-04-14-packaging-mirror-decision.md` Option 1:
-the bundle stages the live `workflow/` package directly. The legacy
+the bundle stages the live `tinyassets/` package directly. The legacy
 `fantasy_author/universe_server.py` shim path is gone — `server.py`
-inside the bundle imports `workflow.universe_server` like a normal
+inside the bundle imports `tinyassets.universe_server` like a normal
 Python package consumer.
 
 A subprocess import probe runs against the staged bundle before pack
@@ -22,12 +22,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_ROOT = REPO_ROOT / "packaging" / "mcpb"
 DIST_ROOT = REPO_ROOT / "packaging" / "dist"
-STAGE_ROOT = DIST_ROOT / "workflow-universe-server-src"
-BUNDLE_PATH = DIST_ROOT / "workflow-universe-server.mcpb"
+STAGE_ROOT = DIST_ROOT / "tinyassets-universe-server-src"
+BUNDLE_PATH = DIST_ROOT / "tinyassets-universe-server.mcpb"
 
-WORKFLOW_SRC = REPO_ROOT / "workflow"
+TINYASSETS_SRC = REPO_ROOT / "tinyassets"
 
-# Patterns excluded when copying the workflow/ tree into the stage.
+# Patterns excluded when copying the tinyassets/ tree into the stage.
 # Glob shapes match Path.match semantics.
 _TREE_EXCLUDES: tuple[str, ...] = (
     "__pycache__",
@@ -96,11 +96,11 @@ def _stage_bundle() -> Path:
         STAGE_ROOT / "assets" / "icon.png",
     )
 
-    # Stage the live `workflow/` package — single source of truth per
+    # Stage the live `tinyassets/` package — single source of truth per
     # design-note Option 1. Excludes runtime artifacts (.db, __pycache__,
     # logs) that would bloat the bundle without adding value.
-    file_count = _copy_tree(WORKFLOW_SRC, STAGE_ROOT / "workflow")
-    print(f"Staged workflow/ package: {file_count} files")
+    file_count = _copy_tree(TINYASSETS_SRC, STAGE_ROOT / "tinyassets")
+    print(f"Staged tinyassets/ package: {file_count} files")
 
     return STAGE_ROOT
 
@@ -110,14 +110,14 @@ def _probe_import(stage: Path) -> None:
 
     Runs in a subprocess so the probe's import side-effects don't leak
     into the build process. Sets ``sys.path`` to the stage root so the
-    bundled ``workflow/`` package resolves before any installed copy.
+    bundled ``tinyassets/`` package resolves before any installed copy.
     ``PYTHONDONTWRITEBYTECODE=1`` keeps the probe from littering the
     fresh stage with ``__pycache__`` files that would then be packed.
     """
     probe_script = (
         f"import sys; sys.path.insert(0, {str(stage)!r}); "
-        "import workflow.universe_server as us; "
-        "assert hasattr(us, 'main'), 'workflow.universe_server.main missing'; "
+        "import tinyassets.universe_server as us; "
+        "assert hasattr(us, 'main'), 'tinyassets.universe_server.main missing'; "
         "print('probe-ok')"
     )
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
@@ -145,7 +145,7 @@ def _run(command: list[str], *, cwd: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage and optionally validate/pack the Workflow MCPB bundle. "
+            "Stage and optionally validate/pack the TinyAssets MCPB bundle. "
             "The staging step always runs; --validate adds the @anthropic-ai/mcpb "
             "manifest validator; --pack produces the .mcpb artifact."
         ),
@@ -158,7 +158,7 @@ def main() -> None:
     parser.add_argument(
         "--pack",
         action="store_true",
-        help="Pack the staged bundle into packaging/dist/workflow-universe-server.mcpb.",
+        help="Pack the staged bundle into packaging/dist/tinyassets-universe-server.mcpb.",
     )
     parser.add_argument(
         "--skip-probe",

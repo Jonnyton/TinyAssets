@@ -5,7 +5,7 @@ name: Docker build smoke
 #
 # Fires on any change that could plausibly break the Dockerfile build:
 # the Dockerfile itself, .dockerignore, pyproject.toml (dep changes),
-# workflow/** (source the builder stage installs), deploy/** (future
+# tinyassets/** (source the builder stage installs), deploy/** (future
 # Row C + D wiring). Manual dispatch for host-triggered re-verification.
 #
 # Intentionally NOT folded into tier3-oss-clone-nightly — that one runs
@@ -18,7 +18,7 @@ on:
       - 'Dockerfile'
       - '.dockerignore'
       - 'pyproject.toml'
-      - 'workflow/**'
+      - 'tinyassets/**'
       - 'domains/**'
       - 'deploy/**'
       - '.github/workflows/docker-build.yml'
@@ -27,7 +27,7 @@ on:
       - 'Dockerfile'
       - '.dockerignore'
       - 'pyproject.toml'
-      - 'workflow/**'
+      - 'tinyassets/**'
       - 'domains/**'
       - 'deploy/**'
       - '.github/workflows/docker-build.yml'
@@ -55,12 +55,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Workflow daemon image
+      - name: Build TinyAssets daemon image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          tags: workflow-daemon:ci
+          tags: tinyassets-daemon:ci
           load: true                  # keep the image local for the run step
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -68,10 +68,10 @@ jobs:
       - name: Start container
         run: |
           docker run -d --rm \
-              --name workflow-daemon-ci \
+              --name tinyassets-daemon-ci \
               -p 8001:8001 \
-              -e WORKFLOW_IMAGE=workflow-daemon:ci \
-              workflow-daemon:ci
+              -e TINYASSETS_IMAGE=tinyassets-daemon:ci \
+              tinyassets-daemon:ci
 
           # Give uvicorn + FastMCP a moment to bind. Poll rather than
           # sleep-blindly so slow cold-starts don't false-fail.
@@ -88,7 +88,7 @@ jobs:
             sleep 1
           done
           echo "::error::Daemon never became reachable on port 8001"
-          docker logs workflow-daemon-ci || true
+          docker logs tinyassets-daemon-ci || true
           exit 1
 
       - name: MCP initialize smoke
@@ -103,15 +103,15 @@ jobs:
 
       - name: Container logs on success
         if: success()
-        run: docker logs workflow-daemon-ci | tail -50 || true
+        run: docker logs tinyassets-daemon-ci | tail -50 || true
 
       - name: Container logs on failure
         if: failure()
         run: |
           echo "::error::Docker build or smoke failed"
-          docker logs workflow-daemon-ci 2>&1 || true
+          docker logs tinyassets-daemon-ci 2>&1 || true
           docker ps -a || true
 
       - name: Stop container
         if: always()
-        run: docker stop workflow-daemon-ci || true
+        run: docker stop tinyassets-daemon-ci || true

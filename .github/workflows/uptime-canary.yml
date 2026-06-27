@@ -120,7 +120,7 @@ jobs:
       # Layer-1c: last_activity canary (Task #15). Proves node
       # execution is 24/7, not just MCP surface. Reads daemon.
       # last_activity_at from `universe action=inspect` and pages
-      # if it's older than WORKFLOW_LAST_ACTIVITY_THRESHOLD_MIN
+      # if it's older than TINYASSETS_LAST_ACTIVITY_THRESHOLD_MIN
       # (default 30min). Closes the "MCP is green but node execution
       # is stalled" gap — exactly the state seen live 2026-04-22
       # before Task #14 landed the cloud-side worker.

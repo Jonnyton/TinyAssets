@@ -90,7 +90,7 @@ Four hypotheses, each with a distinct evidence signature. Listed in order of est
 - Score variance is small but criterion-set varies.
 - No structural change in drafts would resolve all criteria simultaneously.
 
-**Fix shape if confirmed:** **Pin criteria for in-flight scenes.** Once an evaluator first evaluates a scene, the criterion set used should remain stable across all subsequent revise cycles for that scene — otherwise the daemon is chasing a moving target. Audit `workflow/evaluation/` for criteria selection logic; add a per-scene criterion-pin cache.
+**Fix shape if confirmed:** **Pin criteria for in-flight scenes.** Once an evaluator first evaluates a scene, the criterion set used should remain stable across all subsequent revise cycles for that scene — otherwise the daemon is chasing a moving target. Audit `tinyassets/evaluation/` for criteria selection logic; add a per-scene criterion-pin cache.
 
 **Dev-day estimate:** ~1 day. Criterion-pin cache + per-scene reset-on-accept logic.
 

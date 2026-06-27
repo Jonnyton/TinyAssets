@@ -57,16 +57,16 @@ def _mock_selector_passthrough(monkeypatch):
             ],
         }
     monkeypatch.setattr(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         _passthrough,
     )
 
 
 @pytest.fixture
 def us_env(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, tmp_path
     importlib.reload(us)
@@ -77,8 +77,8 @@ def _call(us, action: str, **kwargs) -> dict:
 
 
 def _seed_goal_and_branches(base_path: Path):
-    from workflow.daemon_server import save_branch_definition, save_goal
-    from workflow.runs import (
+    from tinyassets.daemon_server import save_branch_definition, save_goal
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         add_judgment,
         create_run,
@@ -167,7 +167,7 @@ def test_quality_leaderboard_returns_ranked_entries(us_env):
 
 def test_quality_leaderboard_empty_goal_renders_friendly_text(us_env):
     us, base = us_env
-    from workflow.daemon_server import save_goal
+    from tinyassets.daemon_server import save_goal
     save_goal(
         base,
         goal=dict(
@@ -230,7 +230,7 @@ def test_recommended_parent_returns_top_entry(us_env):
 
 def test_recommended_parent_empty_goal_text_carries_rationale(us_env):
     us, base = us_env
-    from workflow.daemon_server import save_goal
+    from tinyassets.daemon_server import save_goal
     save_goal(
         base,
         goal=dict(

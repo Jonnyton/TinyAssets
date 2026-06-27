@@ -55,10 +55,10 @@ market, daemon, and work-target concepts rather than a new top-level tool.
 
 Expected implementation homes:
 
-- `workflow/api/market.py` for incentive/claim/bid semantics.
-- `workflow/work_targets.py` for queue ordering and request assignment.
-- `workflow/daemon_registry.py` for requester-directed daemon targeting.
-- `workflow/api/runs.py` / `workflow/universe_server.py` only where run/attach
+- `tinyassets/api/market.py` for incentive/claim/bid semantics.
+- `tinyassets/work_targets.py` for queue ordering and request assignment.
+- `tinyassets/daemon_registry.py` for requester-directed daemon targeting.
+- `tinyassets/api/runs.py` / `tinyassets/universe_server.py` only where run/attach
   evidence is needed after BUG-045/P1a.
 
 ## V0 Implementation Notes

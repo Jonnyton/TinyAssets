@@ -14,22 +14,22 @@ import json
 
 import pytest
 
-from workflow.api.universe import _action_list_universes
-from workflow.universe_server import get_status
+from tinyassets.api.universe import _action_list_universes
+from tinyassets.universe_server import get_status
 
 
 @pytest.fixture
 def empty_base(tmp_path, monkeypatch):
-    """Point WORKFLOW_DATA_DIR at an empty existing directory."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    """Point TINYASSETS_DATA_DIR at an empty existing directory."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     return tmp_path
 
 
 @pytest.fixture
 def missing_base(tmp_path, monkeypatch):
-    """Point WORKFLOW_DATA_DIR at a path that does not exist."""
+    """Point TINYASSETS_DATA_DIR at a path that does not exist."""
     missing = tmp_path / "does-not-exist"
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(missing))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(missing))
     return missing
 
 
@@ -39,7 +39,7 @@ def hidden_only_base(tmp_path, monkeypatch):
     `name.startswith('.')` guard."""
     (tmp_path / ".hidden1").mkdir()
     (tmp_path / ".hidden2").mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     return tmp_path
 
 
@@ -48,7 +48,7 @@ def populated_base(tmp_path, monkeypatch):
     """Base dir contains one legitimate universe."""
     udir = tmp_path / "alpha"
     udir.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     return tmp_path
 
 
@@ -58,7 +58,7 @@ def operational_dirs_base(tmp_path, monkeypatch):
     (tmp_path / "alpha").mkdir()
     for name in ("wiki", "runs", "lance", "output"):
         (tmp_path / name).mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     return tmp_path
 
 

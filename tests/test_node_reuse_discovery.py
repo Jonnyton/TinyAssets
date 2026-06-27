@@ -28,9 +28,9 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -239,7 +239,7 @@ class TestReusePromptNudges:
         assert "node_ref" in text
 
     def test_branch_design_guide_points_at_search_first(self, ext_env):
-        from workflow.api.branches import _BRANCH_DESIGN_GUIDE
+        from tinyassets.api.branches import _BRANCH_DESIGN_GUIDE
         text = _BRANCH_DESIGN_GUIDE.lower()
         assert "search_nodes" in text
         assert "node_ref" in text
@@ -251,7 +251,7 @@ class TestReusePromptNudges:
         )
 
     def test_branch_design_guide_names_chat_native_authoring(self, ext_env):
-        from workflow.api.branches import _BRANCH_DESIGN_GUIDE
+        from tinyassets.api.branches import _BRANCH_DESIGN_GUIDE
         text = _BRANCH_DESIGN_GUIDE
         assert "chat-native" in text
         assert "GitHub Actions YAML" in text

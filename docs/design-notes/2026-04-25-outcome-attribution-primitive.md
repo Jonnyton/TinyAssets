@@ -161,7 +161,7 @@ extensions action=report_outcome
 
 ### 5.1 Authority — write-side, requires storage-auth
 
-Per #69 storage-auth pattern, this is a WRITE action (persists row to contribution_events). Gates on new `check_outcome_report_authority(actor_id, target_artifact_id)` in `workflow/storage/authority.py`:
+Per #69 storage-auth pattern, this is a WRITE action (persists row to contribution_events). Gates on new `check_outcome_report_authority(actor_id, target_artifact_id)` in `tinyassets/storage/authority.py`:
 
 ```python
 def check_outcome_report_authority(
@@ -171,7 +171,7 @@ def check_outcome_report_authority(
     target_artifact_id: str,
 ) -> None:
     """Raise AuthorizationError if actor cannot report outcome for this artifact.
-    
+
     Authority rules:
     - Artifact author may report (read goal.author or branch_def.author).
     - Host may always report.
@@ -228,7 +228,7 @@ Reputation aggregation in attribution-layer-specs §7 reads `(actor_id, weight, 
 
 ## 7. Open questions
 
-1. **Recursive CTE depth bound.** Recommended: `:max_lineage_depth = 5`, configurable via `WORKFLOW_LINEAGE_MAX_DEPTH` env var (introduce if not yet defined; reuse if it is). Closed.
+1. **Recursive CTE depth bound.** Recommended: `:max_lineage_depth = 5`, configurable via `TINYASSETS_LINEAGE_MAX_DEPTH` env var (introduce if not yet defined; reuse if it is). Closed.
 
 2. **Multiple outcomes per artifact?** Recommended: YES. A branch_version can have `outcome_stable` then later `outcome_superseded` (replaced by newer version). Outcomes are append-only events; latest weighted-aggregate wins for reputation. UI can render history. Closed.
 
@@ -264,7 +264,7 @@ Reputation aggregation in attribution-layer-specs §7 reads `(actor_id, weight, 
 - Convention adherence: `docs/design-notes/2026-04-25-design-proposal-pattern-convention.md` — 5-move pattern.
 - Existing schema reuse:
   - `branch_versions.watch_window_seconds` (added per #57 §3) — NOT introducing a new field.
-  - `branch_definitions.fork_from` (`workflow/daemon_server.py` — fork_from migration block; line numbers drift as new migrations land, grep `fork_from` for current location) — lineage walk source.
+  - `branch_definitions.fork_from` (`tinyassets/daemon_server.py` — fork_from migration block; line numbers drift as new migrations land, grep `fork_from` for current location) — lineage walk source.
   - `contribution_events` (per #48 §1) + 4 existing indexes.
 - Existing dispatch + MCP patterns:
   - `_action_extensions_*` registry for `report_outcome` registration alongside `build_branch`/`patch_branch`/`author_patch_notes`.

@@ -4,7 +4,7 @@ import { Moved } from "../_components/Moved";
 export const metadata: Metadata = {
   title: "Build — Tiny",
   description:
-    "The contributor path is now Build — clone the engine, run it locally, and the real ways to contribute to Workflow.",
+    "The contributor path is now Build — clone the engine, run it locally, and the real ways to contribute to TinyAssets.",
   alternates: { canonical: "https://tinyassets.io/build" },
 };
 
@@ -16,7 +16,7 @@ export default function ContributePage() {
       line={
         <>
           Contributing is now <em>Build</em> — clone the open engine, run it
-          locally, and every real way to help shape Workflow.
+          locally, and every real way to help shape TinyAssets.
         </>
       }
       cta="Go to Build →"

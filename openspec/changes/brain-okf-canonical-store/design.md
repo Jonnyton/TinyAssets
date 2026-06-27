@@ -18,7 +18,7 @@ Current live state: the brain write path is **unbuilt** and gated behind the Cod
 **Non-Goals:**
 - Unblocking or performing the brain build (still gated; this is a design amendment).
 - Migrating the 1,183-page wiki (slice-1 reads it through a compatibility shim, no content migration).
-- Building the `workflow/brain/` package, the commit protocol, the conformance shim, or the steward in this change.
+- Building the `tinyassets/brain/` package, the commit protocol, the conformance shim, or the steward in this change.
 - Inventing an OKF "profile" mechanism (OKF has none; use its native extensibility).
 
 ## Decisions

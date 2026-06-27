@@ -1,6 +1,6 @@
 """Workflow domain registration.
 
-Implements the workflow.protocols.Domain protocol, connecting
+Implements the tinyassets.protocols.Domain protocol, connecting
 Workflow's graph topology and phase implementations to
 the shared workflow engine infrastructure.
 """
@@ -13,11 +13,11 @@ from domains.fantasy_daemon.eval import get_fantasy_eval_criteria
 from domains.fantasy_daemon.graphs import build_universe_graph
 from domains.fantasy_daemon.memory import get_fantasy_memory_schemas
 from domains.fantasy_daemon.tools import get_fantasy_tools
-from workflow.protocols import DomainConfig, DomainTool, EvalCriteria, MemorySchema
+from tinyassets.protocols import DomainConfig, DomainTool, EvalCriteria, MemorySchema
 
 
 class FantasyAuthorDomain:
-    """Workflow domain — implements workflow.protocols.Domain."""
+    """Workflow domain — implements tinyassets.protocols.Domain."""
 
     @property
     def config(self) -> DomainConfig:

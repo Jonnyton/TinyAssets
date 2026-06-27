@@ -1,4 +1,4 @@
-"""Unified runner for Workflow invariants.
+"""Unified runner for TinyAssets invariants.
 
 Loads every invariant registered in `scripts/invariants/` and drives
 them through three operating modes:
@@ -188,7 +188,7 @@ def cmd_continuous() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run Workflow invariants.",
+        description="Run TinyAssets invariants.",
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--list", action="store_true", help="List registered invariants.")

@@ -1,9 +1,9 @@
-<!-- TopNav — paper chrome. Brand is Tiny (the being); the engine name lives in
-     the footer's naming sentence. Active route gets an ink underline.
+<!-- TopNav — paper chrome. Brand is TinyAssets; Tiny is the speaking persona.
+     Active route gets an ink underline.
      Mobile hamburger drawer at <=1000px; items array drives both. -->
 <script lang="ts">
   import { page } from '$app/state';
-  import WorkflowMark from './WorkflowMark.svelte';
+  import TinyAssetsMark from './TinyAssetsMark.svelte';
 
   const items = [
     { href: '/start', label: 'start' },
@@ -27,10 +27,10 @@
 
 <header class="top">
   <div class="container top__row">
-    <a class="brand" href="/" aria-label="Tiny — home" onclick={close}>
-      <WorkflowMark size={26} />
-      <span class="brand__name">Tiny</span>
-      <span class="brand__sub ev">tinyassets.io</span>
+    <a class="brand" href="/" aria-label="TinyAssets home" onclick={close}>
+      <TinyAssetsMark size={26} />
+      <span class="brand__name">TinyAssets</span>
+      <span class="brand__sub ev">meet Tiny</span>
     </a>
     <nav class="nav" aria-label="Primary">
       {#each items as it (it.href)}
@@ -78,7 +78,7 @@
   }
   .top__row { display: flex; align-items: center; justify-content: space-between; padding-block: 11px; gap: 16px; }
   .brand { display: flex; align-items: baseline; gap: 10px; text-decoration: none; }
-  .brand :global(.workflow-mark) { align-self: center; }
+  .brand :global(.tinyassets-mark) { align-self: center; }
   .brand__name {
     font-family: var(--font-display);
     font-style: italic;

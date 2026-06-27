@@ -60,8 +60,8 @@ auto-fix-bug.yml no-PR terminal labeling before this patch:
 - does not add auto-fix-reviewed for a raw writer step failure
 
 gh secret list before the push-token fix:
-- WORKFLOW_CODEX_AUTH_JSON_B64 existed
-- WORKFLOW_PUSH_TOKEN was absent
+- TINYASSETS_CODEX_AUTH_JSON_B64 existed
+- TINYASSETS_PUSH_TOKEN was absent
 
 gh auth status:
 - local GitHub token scopes included repo and workflow
@@ -97,11 +97,11 @@ Patch:
   no-PR outcome by adding `auto-fix-reviewed` and `auto-fix-writer-failed`.
 - Keep the issue open with `needs-human`, but make it ineligible for automatic
   scheduled rediscovery until a human or manual dispatch explicitly retries it.
-- Add optional `WORKFLOW_PUSH_TOKEN` support for Codex writer branch pushes.
+- Add optional `TINYASSETS_PUSH_TOKEN` support for Codex writer branch pushes.
   When present, the workflow sets the git remote to use that token before
   pushing, which covers workflow-file edits that GitHub's default Actions token
   rejects.
-- Installed the `WORKFLOW_PUSH_TOKEN` repo secret at 2026-05-05T18:32Z from
+- Installed the `TINYASSETS_PUSH_TOKEN` repo secret at 2026-05-05T18:32Z from
   the existing local `gh` auth token, whose visible scopes include `workflow`.
 - Quoted the `loop-uptime-maintenance` skill frontmatter description. The #344
   writer run logged that Codex could not parse the skill YAML because the
@@ -109,7 +109,7 @@ Patch:
 - Pass the Codex PR title through a `PR_TITLE` environment variable and commit
   with `git commit -m "$PR_TITLE"` so quotes, parentheses, and other
   user-authored title characters cannot break the shell.
-- When `WORKFLOW_PUSH_TOKEN` is visible, let discovery retry
+- When `TINYASSETS_PUSH_TOKEN` is visible, let discovery retry
   `auto-fix-branch-push-blocked` issues and clear their stale
   `auto-fix-reviewed` / `auto-fix-branch-push-blocked` labels as they enter the
   fix job. Without this, #311-class issues would stay terminal even after the
@@ -151,8 +151,8 @@ needed so the same class terminalizes automatically next time.
 Push-token setup evidence:
 
 ```text
-gh secret list --repo Jonnyton/Workflow:
-- WORKFLOW_PUSH_TOKEN 2026-05-05T18:32:42Z
+gh secret list --repo Jonnyton/TinyAssets:
+- TINYASSETS_PUSH_TOKEN 2026-05-05T18:32:42Z
 
 Run 25395083723 at 2026-05-05T18:39Z selected #345 and produced a real patch,
 then failed before commit/push:
@@ -204,7 +204,7 @@ For user-derived PR titles, the loop should never splice the title directly
 into shell code; pass it through environment or a file and let the shell read it
 as data.
 For old branch-push failures that predate the new credential, discovery must
-explicitly requeue them when `WORKFLOW_PUSH_TOKEN` becomes visible; otherwise
+explicitly requeue them when `TINYASSETS_PUSH_TOKEN` becomes visible; otherwise
 fixing the capability does not drain the already-terminal backlog.
 
 ## Question 4 - How can the loop avoid this break in the first place next time?

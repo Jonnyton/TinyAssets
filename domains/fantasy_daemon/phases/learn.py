@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from workflow.learning.craft_cards import generate_craft_cards
-from workflow.learning.criteria_discovery import discover_criteria
-from workflow.learning.style_rules import LearningSystem, Observation
+from tinyassets.learning.craft_cards import generate_craft_cards
+from tinyassets.learning.criteria_discovery import discover_criteria
+from tinyassets.learning.style_rules import LearningSystem, Observation
 
 logger = logging.getLogger(__name__)
 

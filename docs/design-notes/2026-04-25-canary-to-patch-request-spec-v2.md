@@ -11,7 +11,7 @@ status: active
 **v2 changes:**
 1. **§3 Layer 3 NEW: composition rule with surgical rollback** — when #57 emits successful `caused_regression`, canary skip-or-tag to prevent double-counting (per #65 §2 cross-doc seam).
 2. **§5 NEW: closure status taxonomy refinement** — adds `closed_watching` status distinct from `fixed` (closes v1 §7 Q4 collision).
-3. **§3 Layer 1 sharpening: durable throttle-state location** (closes v1 §7 Q1 — `.workflow/canary_state/` instead of `.agents/canary_state/`).
+3. **§3 Layer 1 sharpening: durable throttle-state location** (closes v1 §7 Q1 — `.tinyassets/canary_state/` instead of `.agents/canary_state/`).
 4. **§4 minor: severity escalation memory** — canary re-reads open bug's current severity before file-or-cosign decision (closes v1 §7 Q2).
 5. **§9 NEW: composition with #55 external-PR bridge** — `code_committed` from PR vs. canary `caused_regression` are orthogonal but share the surgical-rollback signal source.
 6. **§3 Layer 4 NEW: tag namespace formalization** — `source:`, `canary:`, `failure_class:` namespaces ratified (closes v1 §7 Q3).
@@ -39,9 +39,9 @@ Four layers now (was two in v1 — v2 adds Layer 3 and Layer 4).
 
 ### Layer 1 — canary-side throttle file (UPDATED location)
 
-Each canary maintains a small JSON state file. **v2 location:** `.workflow/canary_state/<canary_name>.json` (was `.agents/canary_state/...` in v1).
+Each canary maintains a small JSON state file. **v2 location:** `.tinyassets/canary_state/<canary_name>.json` (was `.agents/canary_state/...` in v1).
 
-**Why the move:** `.agents/` is for cross-session activity logs and team coordination; `.workflow/` is the persistent state root (alongside `.workflow/wiki`, `.workflow/runs.db`). Throttle state belongs in persistent-state, not session-coordination. Survives daemon restart cleanly; no daemon-restart-recovery complexity.
+**Why the move:** `.agents/` is for cross-session activity logs and team coordination; `.tinyassets/` is the persistent state root (alongside `.tinyassets/wiki`, `.tinyassets/runs.db`). Throttle state belongs in persistent-state, not session-coordination. Survives daemon restart cleanly; no daemon-restart-recovery complexity.
 
 **Throttle rule** (UNCHANGED from v1): one new patch_request per `(canary_name, failure_class)` pair per 6 hours unless severity escalates from P1/P2 → P0. Within window, repeated failures invoke `cosign_bug` against existing `bug_id`.
 
@@ -167,7 +167,7 @@ Per-canary thin-module wiring. `scripts/canary_patch_request.py` shared helper. 
 
 | v1 Q | Status |
 |---|---|
-| Q1 throttle-state-file persistence under restart | **CLOSED** — moved to `.workflow/canary_state/` (persistent state root). |
+| Q1 throttle-state-file persistence under restart | **CLOSED** — moved to `.tinyassets/canary_state/` (persistent state root). |
 | Q2 severity escalation memory | **CLOSED** — §4 v2 NEW behavior matrix. |
 | Q3 tag namespace formalization | **CLOSED** — §3 Layer 4 ratification. |
 | Q4 auto-close vs watch-window collision | **CLOSED** — §5 `closed_watching` distinct from `closed_resolved`. |

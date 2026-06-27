@@ -87,7 +87,7 @@ def test_deploy_resolves_image_to_digest_and_never_latest():
 
 def test_deploy_resolves_previous_image_to_digest_for_rollback():
     text = _text()
-    assert "previous WORKFLOW_IMAGE to immutable rollback ref" in text
+    assert "previous TINYASSETS_IMAGE to immutable rollback ref" in text
     assert "prev_digest=" in text
     assert "prev_image=\"${prev%%:*}\"" in text
 
@@ -130,7 +130,7 @@ def test_do_ssh_key_secret_referenced():
 
 
 def test_codex_subscription_bundle_secret_referenced():
-    assert "WORKFLOW_CODEX_AUTH_JSON_B64" in _text()
+    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in _text()
 
 
 def test_no_legacy_hetzner_secrets():
@@ -254,9 +254,9 @@ def test_deploy_syncs_codex_subscription_bundle_with_helper():
     )
     assert deploy_step is not None, "deploy job must have a deploy step"
     run_script = deploy_step.get("run", "") or ""
-    assert "WORKFLOW_CODEX_AUTH_JSON_B64" in run_script
-    assert "install-workflow-env.sh set WORKFLOW_CODEX_AUTH_JSON_B64" in run_script
-    assert "install-workflow-env.sh set WORKFLOW_ALLOW_API_KEY_PROVIDERS" in run_script
+    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in run_script
+    assert "install-tinyassets-env.sh set TINYASSETS_CODEX_AUTH_JSON_B64" in run_script
+    assert "install-tinyassets-env.sh set TINYASSETS_ALLOW_API_KEY_PROVIDERS" in run_script
     assert "OPENAI_API_KEY" not in run_script, (
         "deploy must not recover the public daemon by syncing API-key writer auth"
     )
@@ -271,10 +271,10 @@ def test_deploy_syncs_runtime_compose_and_systemd_files():
     assert sync_step is not None, "deploy must sync runtime compose files"
     run_script = sync_step.get("run", "") or ""
     assert "deploy/compose.yml" in run_script
-    assert "/opt/workflow/compose.yml" in run_script
-    assert "/opt/workflow/deploy/compose.yml" in run_script
-    assert "deploy/workflow-daemon.service" in run_script
-    assert "/etc/systemd/system/workflow-daemon.service" in run_script
+    assert "/opt/tinyassets/compose.yml" in run_script
+    assert "/opt/tinyassets/deploy/compose.yml" in run_script
+    assert "deploy/tinyassets-daemon.service" in run_script
+    assert "/etc/systemd/system/tinyassets-daemon.service" in run_script
     assert "systemctl daemon-reload" in run_script
     assert "vector-entrypoint.sh" in run_script
 
@@ -298,7 +298,7 @@ def test_disk_preflight_runs_before_deploy_image_pull():
     )
 
     assert preflight_idx < deploy_idx, (
-        "disk preflight must happen before WORKFLOW_IMAGE is changed, "
+        "disk preflight must happen before TINYASSETS_IMAGE is changed, "
         "docker pull runs, or systemd restart can take the live daemon down"
     )
 
@@ -327,7 +327,7 @@ def test_deploy_scrubs_stdio_only_workflow_universe_from_cloud_env():
     )
     assert scrub_step is not None
     run_script = scrub_step.get("run", "") or ""
-    assert "delete WORKFLOW_WIKI_PATH WORKFLOW_UNIVERSE" in run_script
+    assert "delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE" in run_script
 
 
 def test_deploy_verifies_cloud_worker_running():
@@ -339,10 +339,10 @@ def test_deploy_verifies_cloud_worker_running():
     assert worker_step is not None, "deploy must verify cloud workers are running"
     run_script = worker_step.get("run", "") or ""
     for name in (
-        "workflow-worker",
-        "workflow-worker-codex-2",
-        "workflow-worker-claude-1",
-        "workflow-worker-claude-2",
+        "tinyassets-worker",
+        "tinyassets-worker-codex-2",
+        "tinyassets-worker-claude-1",
+        "tinyassets-worker-claude-2",
     ):
         assert name in run_script
     assert "docker inspect" in run_script
@@ -360,7 +360,7 @@ def test_deploy_rejects_cloud_worker_workflow_universe_override():
     )
     assert worker_step is not None
     run_script = worker_step.get("run", "") or ""
-    assert "grep -q '^WORKFLOW_UNIVERSE='" in run_script
+    assert "grep -q '^TINYASSETS_UNIVERSE='" in run_script
     assert "stdio-only override" in run_script
     assert "_resolve_universe_path" in run_script
 
@@ -395,7 +395,7 @@ def test_deploy_requires_llm_binding_even_without_visible_deploy_secret():
     assert "--require-sandbox" in run_script
     assert "--retries 12" in run_script
     assert "--retry-delay 10" in run_script
-    assert "::warning::No deploy-visible WORKFLOW_CODEX_AUTH_JSON_B64" not in run_script
+    assert "::warning::No deploy-visible TINYASSETS_CODEX_AUTH_JSON_B64" not in run_script
 
 
 def test_deploy_publishes_release_state_after_canaries_and_access_gate():
@@ -438,14 +438,14 @@ def test_deploy_publishes_release_state_after_canaries_and_access_gate():
     assert "SOURCE_SHA" in step_env
     assert "TARGET_IMAGE" in step_env
     assert "PREV_IMAGE" in step_env
-    assert "WORKFLOW_EVENT" in step_env
+    assert "TINYASSETS_EVENT" in step_env
     assert "docker image inspect" in run_script
-    assert "sha256sum /etc/workflow/env" in run_script
-    assert "docker volume inspect workflow-data" in run_script
+    assert "sha256sum /etc/tinyassets/env" in run_script
+    assert "docker volume inspect tinyassets-data" in run_script
     assert "release_state_host_dir" in run_script
     assert "/data/release-state.json" in run_script
     assert "${release_state_host_dir}/release-state.json" in run_script
-    assert "/tmp/workflow-release-state.json /data/release-state.json" not in run_script
+    assert "/tmp/tinyassets-release-state.json /data/release-state.json" not in run_script
     assert "canary_bundle_status\": \"passed\"" in run_script
 
 
@@ -464,7 +464,7 @@ def _codex_volume_step(wf: dict) -> dict:
     )
     assert step is not None, (
         "deploy must include a 'Prepare codex auth persistent volume' "
-        "step that provisions workflow-data/.codex on every deploy "
+        "step that provisions tinyassets-data/.codex on every deploy "
         "(Forever Rule — no host-action required)"
     )
     return step
@@ -517,7 +517,7 @@ def test_codex_volume_step_chown_is_unconditional():
 
     chown_line_idx = next(
         (i for i, line in enumerate(body)
-         if line.strip().startswith('chown "$WORKFLOW_UID:$WORKFLOW_GID" "$CODEX_DIR"')),
+         if line.strip().startswith('chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"')),
         None,
     )
     chmod_line_idx = next(
@@ -557,7 +557,7 @@ def test_codex_volume_step_creates_dir_idempotently():
     step = _codex_volume_step(wf)
     run_script = step.get("run", "") or ""
     assert 'docker volume create "$VOLUME_NAME"' in run_script, (
-        "workflow-data named volume must be created idempotently before "
+        "tinyassets-data named volume must be created idempotently before "
         "resolving its mountpoint"
     )
     assert 'docker volume inspect "$VOLUME_NAME"' in run_script, (
@@ -576,7 +576,7 @@ def test_codex_volume_step_creates_dir_idempotently():
 
 def test_codex_volume_step_migrates_from_running_container_once():
     """First deploy after CODEX_HOME migration onto a live droplet must copy the
-    rotated auth.json out of the running workflow-worker into the
+    rotated auth.json out of the running tinyassets-worker into the
     persistent volume. Subsequent deploys skip (auth.json already
     present). No-op when no live source container exists.
     """
@@ -586,18 +586,18 @@ def test_codex_volume_step_migrates_from_running_container_once():
     assert 'if [ ! -f "$CODEX_DIR/auth.json" ]' in run_script, (
         "migration branch must be guarded so it fires exactly once"
     )
-    assert "docker inspect workflow-worker" in run_script, (
-        "migration must check workflow-worker presence before docker cp"
+    assert "docker inspect tinyassets-worker" in run_script, (
+        "migration must check tinyassets-worker presence before docker cp"
     )
-    assert 'docker exec workflow-worker test -f /data/.codex/auth.json' in run_script, (
+    assert 'docker exec tinyassets-worker test -f /data/.codex/auth.json' in run_script, (
         "migration must check the new CODEX_HOME path before copying"
     )
-    assert 'docker exec workflow-worker test -f /app/.codex/auth.json' in run_script, (
+    assert 'docker exec tinyassets-worker test -f /app/.codex/auth.json' in run_script, (
         "migration must also support one-time legacy /app/.codex pickup"
     )
-    assert "docker cp workflow-worker:/data/.codex/auth.json" in run_script
-    assert "docker cp workflow-worker:/app/.codex/auth.json" in run_script
-    assert 'chown "$WORKFLOW_UID:$WORKFLOW_GID" "$CODEX_DIR/auth.json"' in run_script
+    assert "docker cp tinyassets-worker:/data/.codex/auth.json" in run_script
+    assert "docker cp tinyassets-worker:/app/.codex/auth.json" in run_script
+    assert 'chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR/auth.json"' in run_script
     assert 'chmod 600 "$CODEX_DIR/auth.json"' in run_script
 
 
@@ -607,16 +607,16 @@ def test_subscription_volume_step_prepares_claude_config_dir():
     run_script = step.get("run", "") or ""
     assert 'CLAUDE_DIR="$VOLUME_DIR/.claude"' in run_script
     assert 'mkdir -p "$CLAUDE_DIR"' in run_script
-    assert 'chown -R "$WORKFLOW_UID:$WORKFLOW_GID" "$CLAUDE_DIR"' in run_script
+    assert 'chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"' in run_script
     assert 'chmod 700 "$CLAUDE_DIR"' in run_script
-    assert 'docker exec workflow-worker test -d /data/.claude' in run_script
-    assert 'docker exec workflow-worker test -d /app/.claude' in run_script
-    assert "docker cp workflow-worker:/data/.claude/." in run_script
-    assert "docker cp workflow-worker:/app/.claude/." in run_script
+    assert 'docker exec tinyassets-worker test -d /data/.claude' in run_script
+    assert 'docker exec tinyassets-worker test -d /app/.claude' in run_script
+    assert "docker cp tinyassets-worker:/data/.claude/." in run_script
+    assert "docker cp tinyassets-worker:/app/.claude/." in run_script
 
 
 # ---------------------------------------------------------------------------
-# PR-128 — Phase 2 capability map sync into /etc/workflow/env
+# PR-128 — Phase 2 capability map sync into /etc/tinyassets/env
 # ---------------------------------------------------------------------------
 
 
@@ -631,9 +631,9 @@ def test_deploy_job_env_has_github_pr_capability_flag():
         "Deploy step and summary can branch on capability visibility"
     )
     raw_value = str(job_env["HAS_GITHUB_PR_CAPABILITY"])
-    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value, (
+    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" in raw_value, (
         "HAS_GITHUB_PR_CAPABILITY must be derived from the "
-        "WORKFLOW_GITHUB_PR_CAPABILITIES secret presence check"
+        "TINYASSETS_GITHUB_PR_CAPABILITIES secret presence check"
     )
     assert "!= ''" in raw_value, (
         "HAS_GITHUB_PR_CAPABILITY must use a non-empty-string check, "
@@ -651,18 +651,18 @@ def test_deploy_step_env_imports_github_pr_capabilities_secret():
     )
     assert deploy_step is not None, "deploy job must have a deploy step"
     step_env = deploy_step.get("env") or {}
-    assert "WORKFLOW_GITHUB_PR_CAPABILITIES" in step_env, (
-        "Deploy step env must import WORKFLOW_GITHUB_PR_CAPABILITIES "
+    assert "TINYASSETS_GITHUB_PR_CAPABILITIES" in step_env, (
+        "Deploy step env must import TINYASSETS_GITHUB_PR_CAPABILITIES "
         "from secrets so the inline ssh sync can pipe the value"
     )
-    raw_value = str(step_env["WORKFLOW_GITHUB_PR_CAPABILITIES"])
-    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value
+    raw_value = str(step_env["TINYASSETS_GITHUB_PR_CAPABILITIES"])
+    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" in raw_value
 
 
 def test_deploy_step_syncs_github_pr_capabilities_when_set():
     """When ``HAS_GITHUB_PR_CAPABILITY=true``, the Deploy step must
-    pipe the secret into install-workflow-env.sh via the same atomic
-    helper used for WORKFLOW_CODEX_AUTH_JSON_B64."""
+    pipe the secret into install-tinyassets-env.sh via the same atomic
+    helper used for TINYASSETS_CODEX_AUTH_JSON_B64."""
     wf = _load()
     deploy_step = next(
         (s for s in _steps(wf) if s.get("id") == "deploy"),
@@ -674,12 +674,12 @@ def test_deploy_step_syncs_github_pr_capabilities_when_set():
     # Required-shape assertions: the conditional, the pipe, the helper
     # invocation, and the warning surface for the missing-secret case.
     assert 'if [ "${HAS_GITHUB_PR_CAPABILITY}" = "true" ]' in run_script, (
-        "deploy must gate the WORKFLOW_GITHUB_PR_CAPABILITIES sync on "
+        "deploy must gate the TINYASSETS_GITHUB_PR_CAPABILITIES sync on "
         "HAS_GITHUB_PR_CAPABILITY=true so absence is a warning, not "
         "an unbound-variable failure"
     )
     assert (
-        'printf \'%s\' "${WORKFLOW_GITHUB_PR_CAPABILITIES}"'
+        'printf \'%s\' "${TINYASSETS_GITHUB_PR_CAPABILITIES}"'
         in run_script
     ), (
         "deploy must pipe the secret via printf '%s' so the value is "
@@ -687,15 +687,15 @@ def test_deploy_step_syncs_github_pr_capabilities_when_set():
         "pattern)"
     )
     assert (
-        "install-workflow-env.sh set WORKFLOW_GITHUB_PR_CAPABILITIES"
+        "install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES"
         in run_script
     ), (
-        "deploy must call the atomic install-workflow-env.sh helper "
-        "(the same path that enforces root:workflow 640 + post-write "
+        "deploy must call the atomic install-tinyassets-env.sh helper "
+        "(the same path that enforces root:tinyassets 640 + post-write "
         "readability) to write the capability map"
     )
     assert (
-        "WORKFLOW_GITHUB_PR_CAPABILITIES is not visible to deploy"
+        "TINYASSETS_GITHUB_PR_CAPABILITIES is not visible to deploy"
         in run_script
     ), (
         "deploy must emit a structured ::warning:: when the secret is "
@@ -715,7 +715,7 @@ def test_deploy_step_summary_reports_github_pr_capability_visibility():
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
     assert (
-        "WORKFLOW_GITHUB_PR_CAPABILITIES visible to deploy"
+        "TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy"
         in run_script
     ), (
         "deploy step summary must report the capability-map visibility "
@@ -736,8 +736,8 @@ def test_github_pr_capability_sync_runs_after_codex_auth_sync():
     )
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
-    codex_marker = "set WORKFLOW_CODEX_AUTH_JSON_B64"
-    cap_marker = "set WORKFLOW_GITHUB_PR_CAPABILITIES"
+    codex_marker = "set TINYASSETS_CODEX_AUTH_JSON_B64"
+    cap_marker = "set TINYASSETS_GITHUB_PR_CAPABILITIES"
     codex_idx = run_script.find(codex_marker)
     cap_idx = run_script.find(cap_marker)
     assert codex_idx != -1, "codex-auth sync block must be present"
@@ -756,14 +756,14 @@ def test_github_pr_capability_sync_runs_after_codex_auth_sync():
 
 def test_deploy_step_deletes_github_pr_capability_when_secret_absent():
     """Round-2 regression guard. Round-1 logged a warning when
-    ``WORKFLOW_GITHUB_PR_CAPABILITIES`` was absent but did NOT remove
-    the existing key from ``/etc/workflow/env``, so deleting the GH
+    ``TINYASSETS_GITHUB_PR_CAPABILITIES`` was absent but did NOT remove
+    the existing key from ``/etc/tinyassets/env``, so deleting the GH
     Actions secret to revoke had no effect — the next deploy
     restarted the daemon with the OLD capability still active.
 
     The fix: when ``HAS_GITHUB_PR_CAPABILITY=false`` (or unset), the
     Deploy step must issue an explicit
-    ``install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES``
+    ``install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES``
     call so the effector observes ``missing_capability`` on its next
     read. The documented contract ("absence -> dry-run") was being
     silently violated; this test gates the fix.
@@ -776,11 +776,11 @@ def test_deploy_step_deletes_github_pr_capability_when_secret_absent():
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
     assert (
-        "install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES"
+        "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
         in run_script
     ), (
-        "Deploy step must issue an explicit `install-workflow-env.sh "
-        "delete WORKFLOW_GITHUB_PR_CAPABILITIES` call when the secret "
+        "Deploy step must issue an explicit `install-tinyassets-env.sh "
+        "delete TINYASSETS_GITHUB_PR_CAPABILITIES` call when the secret "
         "is absent so revoking the GH Actions secret actually "
         "revokes capability on the droplet (round-2 fix for PR #980 "
         "Codex finding)."
@@ -803,9 +803,9 @@ def test_capability_delete_is_gated_on_else_branch():
 
     # Anchor the conditional. The set call must come before the
     # else+delete tail.
-    set_marker = "install-workflow-env.sh set WORKFLOW_GITHUB_PR_CAPABILITIES"
+    set_marker = "install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES"
     delete_marker = (
-        "install-workflow-env.sh delete WORKFLOW_GITHUB_PR_CAPABILITIES"
+        "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
     )
     set_idx = run_script.find(set_marker)
     delete_idx = run_script.find(delete_marker)
@@ -849,9 +849,9 @@ def test_capability_delete_warning_explains_revocation():
     assert (
         "removing any prior" in run_script
         or "remove any prior" in run_script
-        or "delete WORKFLOW_GITHUB_PR_CAPABILITIES" in run_script
+        or "delete TINYASSETS_GITHUB_PR_CAPABILITIES" in run_script
     ), (
         "the absence warning must describe the revocation action so "
         "operators can confirm capability was actually cleared from "
-        "/etc/workflow/env, not just absent from GH Actions"
+        "/etc/tinyassets/env, not just absent from GH Actions"
     )

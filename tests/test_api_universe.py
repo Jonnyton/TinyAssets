@@ -1,8 +1,8 @@
-"""Direct tests for `workflow.api.universe` after decomp Step 9.
+"""Direct tests for `tinyassets.api.universe` after decomp Step 9.
 
 Legacy test files for the `universe()` MCP tool import via
-`workflow.universe_server` and continue to pass through the back-compat
-re-export shim. This file exercises `workflow.api.universe` directly to
+`tinyassets.universe_server` and continue to pass through the back-compat
+re-export shim. This file exercises `tinyassets.api.universe` directly to
 lock in the new public surface.
 
 Pattern mirrors `test_api_market.py` / `test_api_runs.py` /
@@ -14,8 +14,8 @@ Surface guarded:
   ledger trio — universe-tool internal pipeline
 - `_action_*` handler set — present, callable, owned by this module
 - Daemon-liveness telemetry helpers — present, owned by this module
-- Pattern A2 wrapper: `workflow.universe_server.universe` delegates to
-  `workflow.api.universe._universe_impl` (verified via simple round-trip)
+- Pattern A2 wrapper: `tinyassets.universe_server.universe` delegates to
+  `tinyassets.api.universe._universe_impl` (verified via simple round-trip)
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import json
 
 import pytest
 
-from workflow.api import universe as univ_mod
+from tinyassets.api import universe as univ_mod
 
 # ── module surface ──────────────────────────────────────────────────────────
 
@@ -85,7 +85,7 @@ def test_module_exposes_expected_public_names() -> None:
     actual = set(dir(univ_mod))
     missing = expected - actual
     assert not missing, (
-        f"workflow.api.universe missing expected public names: {sorted(missing)}"
+        f"tinyassets.api.universe missing expected public names: {sorted(missing)}"
     )
 
 
@@ -114,15 +114,15 @@ def test_write_actions_entries_are_extractor_gate_tuples() -> None:
 
 
 def test_pattern_a2_wrapper_delegates_to_api_universe() -> None:
-    """`workflow.universe_server.universe` MUST be a thin wrapper that
-    delegates to `workflow.api.universe._universe_impl`.
+    """`tinyassets.universe_server.universe` MUST be a thin wrapper that
+    delegates to `tinyassets.api.universe._universe_impl`.
 
     Validates the Step 9 Pattern A2 contract: the FastMCP @mcp.tool
     registration lives in universe_server.py, the body lives in
-    workflow.api.universe._universe_impl. Catches any silent regression
+    tinyassets.api.universe._universe_impl. Catches any silent regression
     where the wrapper grows independent logic.
     """
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     assert callable(us.universe)
     # Read-only action — no side effects.
@@ -133,7 +133,7 @@ def test_pattern_a2_wrapper_delegates_to_api_universe() -> None:
 
 def test_community_change_context_tool_delegates_to_api_universe(monkeypatch) -> None:
     """Top-level review-context alias stays a thin Pattern A2 wrapper."""
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     seen = {}
 
@@ -328,7 +328,7 @@ def test_community_change_context_pr_detail(monkeypatch) -> None:
             }, None)
         if path == "/repos/owner/repo/pulls/57/files":
             return ([{
-                "filename": "workflow/startup.py",
+                "filename": "tinyassets/startup.py",
                 "status": "modified",
                 "additions": 4,
                 "deletions": 1,
@@ -359,7 +359,7 @@ def test_community_change_context_pr_detail(monkeypatch) -> None:
 
     assert data["target"] == "pr:57"
     assert data["pr"]["head"] == "auto-change/issue-57-codex"
-    assert data["files"][0]["filename"] == "workflow/startup.py"
+    assert data["files"][0]["filename"] == "tinyassets/startup.py"
     assert data["files"][0]["patch_excerpt"].startswith("@@")
     assert data["comments"][0]["author"] == "reviewer"
     assert data["reviews"][0]["state"] == "COMMENTED"

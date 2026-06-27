@@ -5,7 +5,7 @@
 in-node primitive, so per AGENTS.md it gets opposite-provider review before
 live rollout).
 **Gate:** review must return **approve** or **adapt** before
-`WORKFLOW_NODE_ENQUEUE_ENABLED` is flipped on in production. The code is merged
+`TINYASSETS_NODE_ENQUEUE_ENABLED` is flipped on in production. The code is merged
 **dark** (flag default off), so the *merge* already happened; this gate blocks
 *enabling the capability live*, not the merge.
 
@@ -22,14 +22,14 @@ Built across two merged PRs (+ a proof PR):
 | #1215 | `a148b9f1` | §14 concurrency proof + this gate row. |
 
 ### Files / symbols to read
-- `workflow/graph_compiler.py`:
+- `tinyassets/graph_compiler.py`:
   - `_NODE_MCP_ACTION_ALIASES` (the `dispatch`/`wiki` entries),
   - `_node_enqueue_enabled` / `_node_enqueue_max_depth` / `_node_enqueue_budget`,
   - `_node_enqueue_branch_run(...)` — the verb body (guards + append),
   - `_invoke_mcp_action` dispatch branch `elif tool_name == "dispatch"`,
   - the `invocation_depth` threading: `_build_node_mcp_invoker` →
     `_build_source_code_node` → `_build_node` call site.
-- `workflow/branch_tasks.py`: the new `BranchTask.depth` field (+ `append_task`
+- `tinyassets/branch_tasks.py`: the new `BranchTask.depth` field (+ `append_task`
   file lock, `from_dict` migration filter).
 - `fantasy_daemon/__main__.py`: the dispatcher passes
   `_invocation_depth=getattr(claimed_task, "depth", 0)` into `execute_branch`.
@@ -51,15 +51,15 @@ Composability is already demonstrated: the driver branch `cca3c93b632e`
 
 ## Three bounds (fail-closed) — verify each holds
 
-1. **Capability flag** `WORKFLOW_NODE_ENQUEUE_ENABLED` (default **off**) — the
+1. **Capability flag** `TINYASSETS_NODE_ENQUEUE_ENABLED` (default **off**) — the
    verb refuses unless explicitly enabled. Ships dark.
-2. **Spawn-depth cap** `WORKFLOW_NODE_ENQUEUE_MAX_DEPTH` (default **2**) —
+2. **Spawn-depth cap** `TINYASSETS_NODE_ENQUEUE_MAX_DEPTH` (default **2**) —
    bounds chain *length*. Depth rides on `BranchTask.depth`, threaded across the
    queue boundary (dispatcher → `execute_branch(_invocation_depth=)` →
    `compile_branch` → node invoker). A node enqueues at `parent_depth + 1`;
    refuse beyond cap. Mirrors the existing `_runtime_max_invocation_depth`
    invoke-branch guard.
-3. **Per-run budget** `WORKFLOW_NODE_ENQUEUE_MAX_PER_RUN` (default **50**) —
+3. **Per-run budget** `TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN` (default **50**) —
    bounds branching *factor*; one run may enqueue at most this many.
 
 Also: `trigger_source` is forced to `owner_queued` (no arbitrary tier); the verb
@@ -111,7 +111,7 @@ record.
 
 ## Verdict (codex, 2026-05-30)
 
-**Verdict: adapt before enabling `WORKFLOW_NODE_ENQUEUE_ENABLED` in
+**Verdict: adapt before enabling `TINYASSETS_NODE_ENQUEUE_ENABLED` in
 production.** The dark merge is acceptable: the verb is default-off, the local
 depth/budget guards are real, `BranchTask.depth` is threaded across the
 dispatcher boundary, and the focused tests pass. It is not ready for live
@@ -132,7 +132,7 @@ target branch authority.
    on `BranchTask`. Do not rely on `inputs` for lineage because branch code
    controls it.
 2. **Cross-process lock safety: acceptable for the current single-host
-   filesystem model.** `workflow/branch_tasks.py` locks a sidecar
+   filesystem model.** `tinyassets/branch_tasks.py` locks a sidecar
    `branch_tasks.json.lock` with `msvcrt.locking` on Windows and `fcntl.flock`
    on POSIX, and `read_queue`, `append_task`, and claim/update paths all operate
    under that lock before atomically replacing the JSON file. The checked-in

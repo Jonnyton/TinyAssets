@@ -1,4 +1,4 @@
-"""Unit tests for the general LLM-call bridge (workflow/providers/call.py).
+"""Unit tests for the general LLM-call bridge (tinyassets/providers/call.py).
 
 This is the Tier-A extraction of the engine's domain-agnostic LLM-call
 primitive out of domains/fantasy_daemon/phases/_provider_stub.py. The two
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.providers import call as provider_call
+from tinyassets.providers import call as provider_call
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +71,7 @@ def test_get_last_provider_reflects_latest_call_not_snapshot() -> None:
 
 
 def test_no_router_no_fallback_raises() -> None:
-    from workflow.exceptions import AllProvidersExhaustedError
+    from tinyassets.exceptions import AllProvidersExhaustedError
 
     provider_call.set_force_mock(False)
     provider_call.set_provider_router(None)

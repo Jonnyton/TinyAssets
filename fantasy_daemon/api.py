@@ -27,11 +27,11 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from workflow.enrichment_signals import (
+from tinyassets.enrichment_signals import (
     load_enrichment_signals,
     write_enrichment_signals,
 )
-from workflow.universe_soul import (
+from tinyassets.universe_soul import (
     ensure_universe_soul,
     has_soul,
     legacy_premise_path,
@@ -99,7 +99,7 @@ def configure(
     _daemon_thread = daemon_thread
 
     if base_path:
-        from workflow import daemon_server as author_server
+        from tinyassets import daemon_server as author_server
 
         author_server.sync_universes_from_filesystem(base_path)
 
@@ -197,7 +197,7 @@ def _require_bearer_token(request: Request) -> dict[str, Any]:
 
     Returns the actor dict with user/host info and capabilities.
     """
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     auth = request.headers.get("Authorization", "").strip()
     if not auth.startswith("Bearer "):
@@ -2172,7 +2172,7 @@ def create_session(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """Create a user session. Returns a Bearer token for subsequent requests."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2208,7 +2208,7 @@ def list_authors(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """List all registered authors."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2227,7 +2227,7 @@ def get_author(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """Get a specific author by ID."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2248,7 +2248,7 @@ def propose_author_fork(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """Propose a fork of an existing author."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2279,7 +2279,7 @@ def cast_vote(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """Cast a vote in a vote window."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2300,7 +2300,7 @@ def resolve_vote(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """Resolve a vote window (host-only)."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     if not author_server.actor_has_capability(actor, author_server.CAP_RESOLVE_VOTE):
         raise HTTPException(
@@ -2327,7 +2327,7 @@ def create_branch(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """Create a new branch in a universe."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2363,7 +2363,7 @@ def list_branches(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """List all branches in a universe."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2382,7 +2382,7 @@ def create_request(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """Submit a user request (e.g., author preference, notes)."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2421,7 +2421,7 @@ def list_requests(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """List all requests in a universe."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2438,7 +2438,7 @@ def spawn_runtime(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """Spawn a runtime instance for an author in a universe."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     if not author_server.actor_has_capability(
         actor,
@@ -2487,7 +2487,7 @@ def list_runtimes(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """List runtime instances in a universe."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()
@@ -2503,7 +2503,7 @@ def list_actions(
     actor: dict[str, Any] = Depends(_require_bearer_token),
 ) -> dict[str, Any]:
     """List action records (ledger) for a universe."""
-    from workflow import daemon_server as author_server
+    from tinyassets import daemon_server as author_server
 
     try:
         base = _base()

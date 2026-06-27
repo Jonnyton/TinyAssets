@@ -5,9 +5,9 @@ list in ``scripts/secrets_keys.txt``, and writes each KEY=VALUE pair into
 the chosen vault under the convention documented in
 ``docs/design-notes/2026-04-22-secrets-vault-integration.md``:
 
-  1Password:  item name = KEY; vault = $WORKFLOW_SECRETS_VAULT (default "workflow");
+  1Password:  item name = KEY; vault = $TINYASSETS_SECRETS_VAULT (default "tinyassets");
               field "password" holds the value.
-  Bitwarden:  item name = KEY; organization/folder = "workflow"; login.password = value.
+  Bitwarden:  item name = KEY; organization/folder = "tinyassets"; login.password = value.
 
 Idempotent: if an item already exists, issues an ``op item edit`` /
 ``bw edit item`` instead of creating a duplicate.
@@ -49,7 +49,7 @@ _KEYS_FILE = _REPO_ROOT / "scripts" / "secrets_keys.txt"
 
 
 def _default_plaintext_path() -> Path:
-    override = os.environ.get("WORKFLOW_SECRETS_PLAINTEXT_PATH")
+    override = os.environ.get("TINYASSETS_SECRETS_PLAINTEXT_PATH")
     if override:
         return Path(override)
     return Path(os.path.expanduser("~")) / "workflow-secrets.env"
@@ -282,10 +282,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--plaintext", type=Path, default=None,
                     help="Path to plaintext env file (default: "
-                         "$WORKFLOW_SECRETS_PLAINTEXT_PATH or $HOME/workflow-secrets.env).")
+                         "$TINYASSETS_SECRETS_PLAINTEXT_PATH or $HOME/workflow-secrets.env).")
     ap.add_argument("--vendor", required=True, choices=["1password", "bitwarden"],
                     help="Which vault backend to write to.")
-    ap.add_argument("--vault", default=os.environ.get("WORKFLOW_SECRETS_VAULT", "workflow"),
+    ap.add_argument("--vault", default=os.environ.get("TINYASSETS_SECRETS_VAULT", "tinyassets"),
                     help="Vault name (1Password only; default 'workflow').")
     ap.add_argument("--keys-file", type=Path, default=_KEYS_FILE,
                     help=f"Canonical keys list (default: {_KEYS_FILE}).")

@@ -18,8 +18,8 @@ for ~7 days before TEMP cleanup reclaims them.
 Reference: `docs/audits/2026-04-25-despawn-chain-protocol.md` §6 CHANGE-1.
 
 Env vars:
-- `WORKFLOW_DISABLE_TEAM_PRUNE` truthy → skip prune entirely.
-- `WORKFLOW_TEAM_PRUNE_DRY_RUN` truthy → list what would be pruned without
+- `TINYASSETS_DISABLE_TEAM_PRUNE` truthy → skip prune entirely.
+- `TINYASSETS_TEAM_PRUNE_DRY_RUN` truthy → list what would be pruned without
   moving anything.
 
 Errors are caught and written to stderr; the hook always exits 0 so
@@ -90,10 +90,10 @@ def _move_dir(src: Path, dst: Path, dry_run: bool) -> bool:
 
 
 def main() -> int:
-    if _is_truthy("WORKFLOW_DISABLE_TEAM_PRUNE"):
+    if _is_truthy("TINYASSETS_DISABLE_TEAM_PRUNE"):
         return 0
 
-    dry_run = _is_truthy("WORKFLOW_TEAM_PRUNE_DRY_RUN")
+    dry_run = _is_truthy("TINYASSETS_TEAM_PRUNE_DRY_RUN")
     teams_root = _teams_root()
     if not teams_root.is_dir():
         return 0

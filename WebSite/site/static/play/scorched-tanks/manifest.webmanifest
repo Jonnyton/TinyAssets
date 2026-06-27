@@ -1,7 +1,7 @@
 {
   "name": "Scorched Tanks Original Amiga",
   "short_name": "Scorched Tanks",
-  "description": "Original Scorched Tanks Amiga disk autostarted in a browser runtime by a Workflow branch.",
+  "description": "Original Scorched Tanks Amiga disk autostarted in a browser runtime by a TinyAssets branch.",
   "start_url": "/play/scorched-tanks/",
   "scope": "/play/scorched-tanks/",
   "display": "standalone",

@@ -96,7 +96,7 @@ def test_plan_constraint_synthesis_skips_symlink(tmp_path, monkeypatch):
             return _FakeSurface()
 
     monkeypatch.setattr(
-        "workflow.constraints.constraint_synthesis.ConstraintSynthesis",
+        "tinyassets.constraints.constraint_synthesis.ConstraintSynthesis",
         _FakeSynth,
     )
     state = {
@@ -201,7 +201,7 @@ def test_worldbuild_scan_existing_skips_symlink(tmp_path):
 
 
 def test_raptor_read_canon_paragraphs_skips_symlink(tmp_path):
-    from workflow.knowledge.raptor import _read_canon_paragraphs
+    from tinyassets.knowledge.raptor import _read_canon_paragraphs
 
     canon, _ = _canon_with_escape(tmp_path)
     paragraphs = _read_canon_paragraphs(str(canon))
@@ -216,7 +216,7 @@ def test_raptor_read_canon_paragraphs_skips_symlink(tmp_path):
 
 
 def test_memory_ingestion_find_files_skips_symlinked_subdir(tmp_path):
-    from workflow.memory.ingestion import ProgressiveIngestor
+    from tinyassets.memory.ingestion import ProgressiveIngestor
 
     canon = tmp_path / "canon"
     canon.mkdir()
@@ -245,7 +245,7 @@ def test_memory_ingestion_find_files_skips_symlinked_subdir(tmp_path):
 
 def _setup_universe(tmp_path, monkeypatch):
     """Point the universe API base path at tmp_path and return a universe id."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     uid = "test_universe"
     udir = tmp_path / uid
     (udir / "canon").mkdir(parents=True)
@@ -253,7 +253,7 @@ def _setup_universe(tmp_path, monkeypatch):
 
 
 def test_universe_read_canon_rejects_symlink(tmp_path, monkeypatch):
-    from workflow.api import universe as uni
+    from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
     monkeypatch.setattr(uni, "_default_universe", lambda: uid)
@@ -278,7 +278,7 @@ def test_universe_read_canon_rejects_symlink(tmp_path, monkeypatch):
 
 
 def test_universe_list_canon_skips_symlink(tmp_path, monkeypatch):
-    from workflow.api import universe as uni
+    from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
     monkeypatch.setattr(uni, "_default_universe", lambda: uid)
@@ -301,7 +301,7 @@ def test_universe_list_canon_skips_symlink(tmp_path, monkeypatch):
 
 def test_universe_read_source_rejects_traversal(tmp_path, monkeypatch):
     """Traversal filename to read_source is rejected (runs live, no symlink)."""
-    from workflow.api import universe as uni
+    from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
     monkeypatch.setattr(uni, "_default_universe", lambda: uid)
@@ -317,7 +317,7 @@ def test_universe_read_source_rejects_traversal(tmp_path, monkeypatch):
 def test_universe_read_source_legit_file_still_works(tmp_path, monkeypatch):
     """A real ``canon/sources/<name>`` file must still be readable after the
     containment-root fix (no regression of the happy path)."""
-    from workflow.api import universe as uni
+    from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
     monkeypatch.setattr(uni, "_default_universe", lambda: uid)
@@ -338,7 +338,7 @@ def test_universe_read_source_rejects_symlinked_sources_dir(tmp_path, monkeypatc
     symlink target outside canon, containment is measured against the canon
     ROOT, so the read is rejected and no external content leaks.
     """
-    from workflow.api import universe as uni
+    from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
     monkeypatch.setattr(uni, "_default_universe", lambda: uid)
@@ -360,7 +360,7 @@ def test_universe_read_source_rejects_symlinked_sources_dir(tmp_path, monkeypatc
 
 def test_universe_list_sources_skips_symlinked_sources_dir(tmp_path, monkeypatch):
     """A symlinked ``canon/sources`` dir must surface no source files."""
-    from workflow.api import universe as uni
+    from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
     monkeypatch.setattr(uni, "_default_universe", lambda: uid)
@@ -382,7 +382,7 @@ def test_universe_list_sources_skips_symlinked_sources_dir(tmp_path, monkeypatch
 
 def test_universe_list_sources_legit_files_still_listed(tmp_path, monkeypatch):
     """Real ``canon/sources/*`` files must still be enumerated (no regression)."""
-    from workflow.api import universe as uni
+    from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
     monkeypatch.setattr(uni, "_default_universe", lambda: uid)
@@ -406,7 +406,7 @@ def test_universe_list_sources_legit_files_still_listed(tmp_path, monkeypatch):
 def test_work_targets_manifest_read_rejects_symlink(tmp_path):
     """A symlinked ``canon/.manifest.json`` pointing outside canon must not be
     read by the synthesis-signal rehydration path."""
-    from workflow import work_targets
+    from tinyassets import work_targets
 
     universe_dir = tmp_path / "u1"
     canon = universe_dir / "canon"
@@ -428,7 +428,7 @@ def test_work_targets_manifest_read_rejects_symlink(tmp_path):
 
 def test_work_targets_manifest_read_legit_still_works(tmp_path):
     """A real ``canon/.manifest.json`` still rehydrates a synthesis signal."""
-    from workflow import work_targets
+    from tinyassets import work_targets
 
     universe_dir = tmp_path / "u1"
     sources = universe_dir / "canon" / "sources"
@@ -455,7 +455,7 @@ def test_work_targets_manifest_read_legit_still_works(tmp_path):
 def test_work_targets_needs_synthesis_rejects_traversal_source_path(tmp_path):
     """A manifest ``source_path`` with a traversal must not probe outside canon
     (runs live on Windows -- no symlink needed)."""
-    from workflow import work_targets
+    from tinyassets import work_targets
 
     universe_dir = tmp_path / "u1"
     (universe_dir / "canon").mkdir(parents=True)
@@ -472,7 +472,7 @@ def test_work_targets_needs_synthesis_rejects_traversal_source_path(tmp_path):
 
 def test_work_targets_needs_synthesis_legit_source_path(tmp_path):
     """A real ``sources/<file>`` source_path is detected as present."""
-    from workflow import work_targets
+    from tinyassets import work_targets
 
     universe_dir = tmp_path / "u1"
     sources = universe_dir / "canon" / "sources"

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.api.wiki import (
+from tinyassets.api.wiki import (
     _WIKI_CATEGORIES,
     _ensure_wiki_scaffold,
 )

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# backup.sh — nightly snapshot of the workflow-data named volume.
+# backup.sh — nightly snapshot of the tinyassets-data named volume.
 #
 # Self-host migration Row J per
 # docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
@@ -21,27 +21,27 @@
 # Retention: 7 daily + 4 weekly + 6 monthly per tier, pruned at the end
 # of each run (scripts/backup_prune.py).
 #
-# Triggered by workflow-backup.service (systemd oneshot) from
-# workflow-backup.timer (nightly 03:00 UTC).
+# Triggered by tinyassets-backup.service (systemd oneshot) from
+# tinyassets-backup.timer (nightly 03:00 UTC).
 #
-# Required env (from /etc/workflow/env, sourced by the systemd unit):
+# Required env (from /etc/tinyassets/env, sourced by the systemd unit):
 #   BACKUP_DEST   rclone destination URL, e.g.:
-#                   s3://my-do-spaces-bucket/workflow-backups
-#                   sftp://u123456.your-storagebox.de/workflow-backups
+#                   s3://my-do-spaces-bucket/tinyassets-backups
+#                   sftp://u123456.your-storagebox.de/tinyassets-backups
 #                 Any rclone remote URL works; rclone must already be
 #                 configured for the scheme (see docs/ops/backup-restore-runbook.md).
 #
 # Optional env:
-#   BACKUP_VOLUME          Docker volume name (default: workflow-data)
+#   BACKUP_VOLUME          Docker volume name (default: tinyassets-data)
 #   BACKUP_RETAIN_DAILY    keep last N daily archives (default: 7)
 #   BACKUP_RETAIN_WEEKLY   keep first archive per week, last N weeks (default: 4)
 #   BACKUP_RETAIN_MONTHLY  keep first archive per month, last N months (default: 6)
 #   DRY_RUN                set to "1" — print plan, no tar/upload/prune
-#   BACKUP_LOG             append log to this file (default: /var/log/workflow-backup.log)
+#   BACKUP_LOG             append log to this file (default: /var/log/tinyassets-backup.log)
 #   GH_TOKEN               GitHub token for offsite upload to BACKUP_GH_REPO.
 #                          When set, both tarballs are also shipped as GH
 #                          release assets.
-#   BACKUP_GH_REPO         GitHub repo for offsite releases (default: Jonnyton/workflow-backups).
+#   BACKUP_GH_REPO         GitHub repo for offsite releases (default: Jonnyton/tinyassets-backups).
 #   BACKUP_GH_RETAIN       GH releases to keep (default: 30).
 #
 # Exit codes:
@@ -54,12 +54,12 @@
 
 set -euo pipefail
 
-BACKUP_VOLUME="${BACKUP_VOLUME:-workflow-data}"
+BACKUP_VOLUME="${BACKUP_VOLUME:-tinyassets-data}"
 BACKUP_RETAIN_DAILY="${BACKUP_RETAIN_DAILY:-7}"
 BACKUP_RETAIN_WEEKLY="${BACKUP_RETAIN_WEEKLY:-4}"
 BACKUP_RETAIN_MONTHLY="${BACKUP_RETAIN_MONTHLY:-6}"
 DRY_RUN="${DRY_RUN:-0}"
-BACKUP_LOG="${BACKUP_LOG:-/var/log/workflow-backup.log}"
+BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
 
 # Docker-internal volume mountpoint. Fall back to `docker volume inspect`
 # when Docker uses a non-default storage root.
@@ -76,7 +76,7 @@ log() {
 if [[ "${DRY_RUN}" != "1" ]]; then
     if [[ -z "${BACKUP_DEST:-}" ]]; then
         log "ERROR: BACKUP_DEST is not set"
-        log "Set it in /etc/workflow/env, e.g.: BACKUP_DEST=s3://my-bucket/workflow-backups"
+        log "Set it in /etc/tinyassets/env, e.g.: BACKUP_DEST=s3://my-bucket/tinyassets-backups"
         exit 1
     fi
 fi
@@ -106,9 +106,9 @@ TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
 # ----- 3. brain tier — consistent archive of the irreplaceable subset ---
 
-BRAIN_NAME="workflow-brain-${TS}.tar.gz"
+BRAIN_NAME="tinyassets-brain-${TS}.tar.gz"
 BRAIN_PATH="/tmp/${BRAIN_NAME}"
-BRAIN_STAGE="$(mktemp -d /tmp/workflow-brain-stage.XXXXXX)"
+BRAIN_STAGE="$(mktemp -d /tmp/tinyassets-brain-stage.XXXXXX)"
 trap 'rm -rf "${BRAIN_STAGE}"' EXIT
 
 log "staging brain tier (wiki, daemon_wikis, ledgers, SQLite DBs)..."
@@ -160,7 +160,7 @@ log "  brain upload OK"
 
 # ----- 4. full tier — whole volume, live (tar exit 1 tolerated) ---------
 
-TAR_NAME="workflow-data-${TS}.tar.gz"
+TAR_NAME="tinyassets-data-${TS}.tar.gz"
 TAR_PATH="/tmp/${TAR_NAME}"
 
 log "creating archive ${TAR_PATH}..."
@@ -195,7 +195,7 @@ log "  upload OK"
 SHIP_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_ship_gh.py"
 if [[ -n "${GH_TOKEN:-}" ]]; then
     for ship_path in "${TAR_PATH}" "${BRAIN_PATH}"; do
-        log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/workflow-backups})..."
+        log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/tinyassets-backups})..."
         set +e
         python3 "${SHIP_SCRIPT}" "${ship_path}" 2>&1 | while IFS= read -r line; do
             log "  gh-ship: ${line}"
@@ -214,7 +214,7 @@ rm -f "${TAR_PATH}" "${BRAIN_PATH}"
 
 # ----- 6. retention prune ----------------------------------------------
 
-# Keep, per tier prefix (workflow-data-, workflow-brain-):
+# Keep, per tier prefix (tinyassets-data-, tinyassets-brain-):
 #   - last BACKUP_RETAIN_DAILY daily archives (most recent N)
 #   - first archive of each week for last BACKUP_RETAIN_WEEKLY weeks
 #   - first archive of each month for last BACKUP_RETAIN_MONTHLY months

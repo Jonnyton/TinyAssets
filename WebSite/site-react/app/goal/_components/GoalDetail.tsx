@@ -173,8 +173,8 @@ export default function GoalDetail({ id }: { id: string }) {
   const bridgePrompt = useMemo(
     () =>
       goal?.name
-        ? `Show me the goal "${goal.name}" (${id}) on my Workflow connector and list its branches.`
-        : `Show me the goal ${id} on my Workflow connector and list its branches.`,
+        ? `Show me the goal "${goal.name}" (${id}) on my TinyAssets connector and list its branches.`
+        : `Show me the goal ${id} on my TinyAssets connector and list its branches.`,
     [goal?.name, id]
   );
   const [copied, setCopied] = useState(false);
@@ -314,7 +314,7 @@ export default function GoalDetail({ id }: { id: string }) {
               <p className="eyebrow">take it to your chatbot</p>
               <h2 id="bridge-title" className="detail__h2">Open this goal on your connector.</h2>
               <p className="bridge__lede">
-                With the <Term def="A connector is the one URL you paste into Claude, ChatGPT, or any MCP-capable assistant to give it the Workflow tools — no account, no install.">connector</Term>{" "}
+                With the <Term def="A connector is the one URL you paste into Claude, ChatGPT, or any MCP-capable assistant to give it the TinyAssets tools — no account, no install.">connector</Term>{" "}
                 enabled, paste this into your own chatbot to inspect this goal and the
                 branches competing to reach it:
               </p>

@@ -22,16 +22,16 @@ from pathlib import Path
 
 import pytest
 
-from workflow import storage
-from workflow.storage import inspect_storage_utilization
+from tinyassets import storage
+from tinyassets.storage import inspect_storage_utilization
 
 _FakeUsage = namedtuple("_FakeUsage", ["total", "used", "free"])
 
 
 @pytest.fixture
 def isolated_data_dir(tmp_path: Path, monkeypatch) -> Path:
-    """Point WORKFLOW_DATA_DIR at a tmp directory for deterministic walks."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    """Point TINYASSETS_DATA_DIR at a tmp directory for deterministic walks."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     return tmp_path
 
 
@@ -217,7 +217,7 @@ class TestGetStatusIntegration:
         # Create the default universe so get_status has a real target.
         (isolated_data_dir / "default-universe").mkdir()
 
-        from workflow.universe_server import get_status
+        from tinyassets.universe_server import get_status
         raw = get_status("default-universe")
         payload = json.loads(raw)
 
@@ -251,7 +251,7 @@ class TestGetStatusIntegration:
         expected_log_bytes = activity_log.stat().st_size
         expected_output_bytes = (out_dir / "chapter1.txt").stat().st_size
 
-        from workflow.universe_server import get_status
+        from tinyassets.universe_server import get_status
         raw = get_status("default-universe")
         payload = json.loads(raw)
 

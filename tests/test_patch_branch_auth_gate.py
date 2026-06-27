@@ -25,9 +25,9 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base, monkeypatch
@@ -87,8 +87,8 @@ class TestPatchBranchAuthGate:
 
         # Switch to bob and try to mutate alice's branch.
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
-        importlib.reload(__import__("workflow.universe_server", fromlist=["x"]))
-        from workflow import universe_server as us_bob
+        importlib.reload(__import__("tinyassets.universe_server", fromlist=["x"]))
+        from tinyassets import universe_server as us_bob
 
         res = _patch_tags(us_bob, bid)
         assert res["status"] == "rejected", res
@@ -102,8 +102,8 @@ class TestPatchBranchAuthGate:
         bid = _build_as_alice(us)  # author = alice
 
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
-        importlib.reload(__import__("workflow.universe_server", fromlist=["x"]))
-        from workflow import universe_server as us_bob
+        importlib.reload(__import__("tinyassets.universe_server", fromlist=["x"]))
+        from tinyassets import universe_server as us_bob
 
         res = _patch_tags(us_bob, bid, force=True)
         assert res["status"] == "patched", res
@@ -121,14 +121,14 @@ class TestPatchBranchAuthGate:
 
         # Build the branch as anonymous.
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "anonymous")
-        importlib.reload(__import__("workflow.universe_server", fromlist=["x"]))
-        from workflow import universe_server as us_anon
+        importlib.reload(__import__("tinyassets.universe_server", fromlist=["x"]))
+        from tinyassets import universe_server as us_anon
         bid = _build_as_alice(us_anon)  # author = anonymous
 
         # alice tries to mutate the anonymous-authored branch.
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-        importlib.reload(__import__("workflow.universe_server", fromlist=["x"]))
-        from workflow import universe_server as us_alice
+        importlib.reload(__import__("tinyassets.universe_server", fromlist=["x"]))
+        from tinyassets import universe_server as us_alice
 
         res = _patch_tags(us_alice, bid)
         assert res["status"] == "rejected", res
@@ -144,8 +144,8 @@ class TestPatchBranchAuthGate:
         bid = _build_as_alice(us)  # author = alice
 
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "anonymous")
-        importlib.reload(__import__("workflow.universe_server", fromlist=["x"]))
-        from workflow import universe_server as us_anon
+        importlib.reload(__import__("tinyassets.universe_server", fromlist=["x"]))
+        from tinyassets import universe_server as us_anon
 
         res = _patch_tags(us_anon, bid)
         assert res["status"] == "rejected", res

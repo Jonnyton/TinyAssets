@@ -62,7 +62,7 @@ Prior art for git-over-MCP wrappers is thin: Anthropic's `mcp-server-git` refere
 
 ## 5. Sync cadence and conflicts
 
-- **Default:** `git pull` on Workflow MCP server start; manual `pull_latest` MCP action thereafter. Daemon does NOT auto-pull mid-run (avoids surprise mutations during agent execution).
+- **Default:** `git pull` on TinyAssets MCP server start; manual `pull_latest` MCP action thereafter. Daemon does NOT auto-pull mid-run (avoids surprise mutations during agent execution).
 - **Drift detection:** before `share_branch` opens a PR, auto-fetch and warn if upstream advanced.
 - **Conflicts:** drafts live in untracked `drafts/`, so user drafts cannot collide with upstream. Published artifacts live under per-author paths or use slug-collision detection at PR time. Real merge conflicts are rare in this layout (one file per artifact, one author per file).
 
@@ -74,7 +74,7 @@ Light fork (recommended): an MCP `fork_branch` action that copies the source fil
 
 ## 7. Always-on demo
 
-`tinyassets.io/mcp` stays as a single shared demo Workflow MCP server — read-only-ish (allows building drafts, blocks `share_branch`/`open_pr`). Cloudflare Tunnel + the host's machine; if the host is offline, demo is offline (acceptable since the real product is "clone and run"). Landing page (static, served via GitHub Pages from the catalog repo) explains "try the demo OR clone in 3 commands."
+`tinyassets.io/mcp` stays as a single shared demo TinyAssets MCP server — read-only-ish (allows building drafts, blocks `share_branch`/`open_pr`). Cloudflare Tunnel + the host's machine; if the host is offline, demo is offline (acceptable since the real product is "clone and run"). Landing page (static, served via GitHub Pages from the catalog repo) explains "try the demo OR clone in 3 commands."
 
 ## 8. Open questions for planner
 
@@ -84,4 +84,4 @@ Light fork (recommended): an MCP `fork_branch` action that copies the source fil
 4. CI gate strictness on PR — full graph compilation + schema validation + lint, or schema only? Stricter CI = higher contributor friction.
 5. License — MIT for the engine is settled; what license for community-contributed Branches? CC-BY-SA, MIT, public domain, or per-Branch in frontmatter?
 6. Snapshot-index cadence (`index/*.json` for fast lookup) — GitHub Action on every merge to main, or daily? Trade-off: freshness vs PR noise.
-7. How does the local Workflow MCP server know which catalog repo to pull from? Hardcoded `Workflow/catalog`, or configurable via `WORKFLOW_CATALOG_REPO` env? (Configurable enables alternative catalogs / private forks.)
+7. How does the local TinyAssets MCP server know which catalog repo to pull from? Hardcoded `Workflow/catalog`, or configurable via `TINYASSETS_CATALOG_REPO` env? (Configurable enables alternative catalogs / private forks.)

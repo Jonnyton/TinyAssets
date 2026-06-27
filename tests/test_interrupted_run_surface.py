@@ -26,10 +26,10 @@ import pytest
 
 @pytest.fixture
 def run_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
 
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, Path(tmp_path)
@@ -46,7 +46,7 @@ def _create_running_run(tmp_path: Path, us, branch_def_id: str = "b1") -> str:
     # real table (it handles missing-row KeyError but OperationalError
     # for a missing table would bubble).
     _call(us, "create_branch", name="throwaway")
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_RUNNING,
         create_run,
         initialize_runs_db,
@@ -67,7 +67,7 @@ def test_interrupted_run_get_run_surfaces_resumable_false(run_env):
     rid = _create_running_run(base, us)
 
     # Simulate daemon restart recovery.
-    from workflow.runs import recover_in_flight_runs
+    from tinyassets.runs import recover_in_flight_runs
     assert recover_in_flight_runs(base) == 1
 
     got = _call(us, "get_run", run_id=rid)
@@ -80,7 +80,7 @@ def test_interrupted_run_get_run_surfaces_resumable_false(run_env):
 def test_non_interrupted_run_does_not_carry_resumable_field(run_env):
     us, base = run_env
     _call(us, "create_branch", name="throwaway")
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         create_run,
         initialize_runs_db,
@@ -105,7 +105,7 @@ def test_interrupted_surface_across_multiple_runs(run_env):
     us, base = run_env
     rids = [_create_running_run(base, us, f"b{i}") for i in range(3)]
 
-    from workflow.runs import recover_in_flight_runs
+    from tinyassets.runs import recover_in_flight_runs
     assert recover_in_flight_runs(base) == 3
 
     for rid in rids:

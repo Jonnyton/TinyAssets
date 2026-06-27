@@ -5,11 +5,11 @@ type: patch_request
 kind: patch_request
 created: 2026-05-17
 updated: 2026-05-22
-component: workflow/wiki - filing-time effort prediction / triage classifier
+component: tinyassets/wiki - filing-time effort prediction / triage classifier
 severity: minor
 status: open
 reported_by: chatbot
-tags: [patch_request, workflow/wiki - filing-time effort prediction / triage classifier, circuit-breaker, filing-time-classification, effort-prediction, two-regime, ghost-risk, msr-2026, frontier-import, pr-116-companion, pr-123-companion, six-plus-five-aligned]
+tags: [patch_request, tinyassets/wiki - filing-time effort prediction / triage classifier, circuit-breaker, filing-time-classification, effort-prediction, two-regime, ghost-risk, msr-2026, frontier-import, pr-116-companion, pr-123-companion, six-plus-five-aligned]
 ---
 
 # PR-124: Filing-time effort-class prediction - Circuit-Breaker classifier flags ghost-risk and merge-instant filings at file_bug time so carrier attention can land before stall (MSR '26 prior art with AUC 0.96 on 33K agent PRs)

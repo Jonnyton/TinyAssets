@@ -8,18 +8,18 @@ from pathlib import Path
 from typing import Any
 
 from domains.fantasy_daemon.phases.world_state_db import connect, get_all_facts, init_db
-from workflow.enrichment_signals import (
+from tinyassets.enrichment_signals import (
     ENRICHMENT_STATE_KEY,
     load_enrichment_signals,
     state_enrichment_signals,
     write_enrichment_signals,
 )
-from workflow.ingestion.canon_io import iter_canon_files
-from workflow.ingestion.canon_names import (
+from tinyassets.ingestion.canon_io import iter_canon_files
+from tinyassets.ingestion.canon_names import (
     resolve_within_canon as _resolve_within_canon,
 )
-from workflow.ingestion.canon_names import safe_canon_filename, safe_canon_slug
-from workflow.universe_soul import (
+from tinyassets.ingestion.canon_names import safe_canon_filename, safe_canon_slug
+from tinyassets.universe_soul import (
     premise_from_soul,
     read_legacy_premise,
     write_universe_soul,
@@ -124,7 +124,7 @@ def worldbuild(state: dict[str, Any]) -> dict[str, Any]:
         universe_path = state.get("_universe_path")
         if universe_path:
             try:
-                from workflow.memory.ingestion import ProgressiveIngestor
+                from tinyassets.memory.ingestion import ProgressiveIngestor
                 canon_dir = Path(universe_path) / "canon"
                 universe_id = Path(universe_path).stem
                 ingestor = ProgressiveIngestor(canon_dir, universe_id)
@@ -132,7 +132,7 @@ def worldbuild(state: dict[str, Any]) -> dict[str, Any]:
                 new = ingestor.check_for_new_files()
                 if new:
                     ingestor.triage()
-                    from workflow.memory.ingestion import IngestionPriority
+                    from tinyassets.memory.ingestion import IngestionPriority
                     for section in ingestor.get_next_batch(IngestionPriority.IMMEDIATE):
                         ingestor.mark_ingested(section)
                     logger.info("Ingested %d new canon files into memory", len(new))
@@ -140,7 +140,7 @@ def worldbuild(state: dict[str, Any]) -> dict[str, Any]:
                 logger.warning("Canon re-ingestion failed: %s", e)
 
     # --- 5. Run promotion gates via MemoryManager ---
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     mgr = runtime.memory_manager
     if mgr is not None:
@@ -478,7 +478,7 @@ def _handle_new_element(
     state: dict[str, Any],
 ) -> None:
     """Create a focused canon document for a newly discovered element."""
-    from workflow.providers.call import call_provider, get_last_provider
+    from tinyassets.providers.call import call_provider, get_last_provider
 
     topic_slug = safe_canon_slug(topic)
     topic_label = topic.replace("_", " ").title()
@@ -528,7 +528,7 @@ def _handle_contradiction(
     Asks the LLM which version makes for a better, more coherent universe
     given the full premise and context. Does NOT default to either side.
     """
-    from workflow.providers.call import call_provider, get_last_provider
+    from tinyassets.providers.call import call_provider, get_last_provider
 
     topic_slug = safe_canon_slug(topic)
 
@@ -597,7 +597,7 @@ def _handle_expansion(
     state: dict[str, Any],
 ) -> None:
     """Expand an existing thin canon document with new details from prose."""
-    from workflow.providers.call import call_provider, get_last_provider
+    from tinyassets.providers.call import call_provider, get_last_provider
 
     topic_slug = safe_canon_slug(topic)
 
@@ -688,7 +688,7 @@ def _handle_synthesize_source(
         logger.warning("Failed to read source file %s: %s", source_file, e)
         return False
 
-    from workflow.ingestion.extractors import (
+    from tinyassets.ingestion.extractors import (
         extract_text,
         get_last_bite_outcomes,
         synthesize_source,
@@ -709,7 +709,7 @@ def _handle_synthesize_source(
 
     # Update manifest with synthesized doc mappings
     if generated:
-        from workflow.ingestion.core import SourceManifest
+        from tinyassets.ingestion.core import SourceManifest
 
         manifest = SourceManifest.load(canon_dir)
         entry = manifest.get(source_file)
@@ -754,7 +754,7 @@ def _handle_synthesize_source(
     # Synthesis produced nothing — still record the bite outcomes so
     # the manifest state explains why (e.g. "5 bites, all parse_failed").
     if bite_outcomes:
-        from workflow.ingestion.core import SourceManifest
+        from tinyassets.ingestion.core import SourceManifest
 
         manifest = SourceManifest.load(canon_dir)
         entry = manifest.get(source_file)
@@ -898,7 +898,7 @@ def _generate_canon_documents(state: dict[str, Any]) -> list[str]:
                 topic, premise, direction_notes, existing_topics
             )
             if content:
-                from workflow.providers.call import get_last_provider
+                from tinyassets.providers.call import get_last_provider
                 filename = safe_canon_filename(topic)
                 _write_canon_file(canon_dir, filename, content, model=get_last_provider())
                 # Verify the file actually exists on disk. ``filename`` already
@@ -949,7 +949,7 @@ def _read_premise(universe_dir: Path, state: dict[str, Any]) -> str:
 def _read_direction_notes(universe_dir: Path) -> str:
     """Read user direction notes for worldbuild context."""
     try:
-        from workflow.notes import (
+        from tinyassets.notes import (
             format_notes_for_context,
             get_active_direction_notes,
         )
@@ -1107,7 +1107,7 @@ def _trigger_kg_reindex(state: dict[str, Any]) -> None:
     which extracts entities/relationships/facts and indexes text chunks.
     Uses runtime singletons for the retrieval backends.
     """
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     kg = runtime.knowledge_graph
     vs = runtime.vector_store
@@ -1125,8 +1125,8 @@ def _trigger_kg_reindex(state: dict[str, Any]) -> None:
         return
 
     from domains.fantasy_daemon.phases._provider_stub import call_provider
-    from workflow.ingestion.indexer import index_text
-    from workflow.memory.scoping import MemoryScope
+    from tinyassets.ingestion.indexer import index_text
+    from tinyassets.memory.scoping import MemoryScope
 
     # Memory-scope Stage 2b: derive the universe tier from the
     # universe directory name (same convention Stage 2a migration used
@@ -1180,14 +1180,14 @@ def _run_leiden_clustering(state: dict[str, Any]) -> None:
     stores them in the KG's community table. Non-blocking -- failures
     are logged but don't affect the worldbuild cycle.
     """
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     kg = runtime.knowledge_graph
     if kg is None:
         return
 
     try:
-        from workflow.knowledge.leiden import detect_communities_from_kg
+        from tinyassets.knowledge.leiden import detect_communities_from_kg
 
         communities = detect_communities_from_kg(kg)
         if communities:
@@ -1217,14 +1217,14 @@ def _rebuild_raptor(state: dict[str, Any]) -> None:
     router gets fresh multi-level summaries.  Uses the shared helper
     in ``knowledge.raptor`` which is also called at daemon startup.
     """
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     universe_path = state.get("_universe_path")
     if not universe_path:
         return
 
     try:
-        from workflow.knowledge.raptor import rebuild_raptor_from_canon
+        from tinyassets.knowledge.raptor import rebuild_raptor_from_canon
 
         canon_dir = str(Path(universe_path) / "canon")
         universe_id = Path(universe_path).stem or "default"

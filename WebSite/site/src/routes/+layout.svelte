@@ -13,25 +13,25 @@
       {
         '@type': 'Organization',
         '@id': 'https://tinyassets.io/#org',
-        name: 'Workflow',
+        name: 'TinyAssets',
         alternateName: 'Tiny',
         url: 'https://tinyassets.io/',
         logo: 'https://tinyassets.io/logo-mark.png',
-        sameAs: ['https://github.com/Jonnyton/Workflow']
+        sameAs: ['https://github.com/Jonnyton/TinyAssets']
       },
       {
         '@type': 'WebSite',
         '@id': 'https://tinyassets.io/#site',
         url: 'https://tinyassets.io/',
-        name: 'Tiny',
-        alternateName: 'Workflow',
+        name: 'TinyAssets',
+        alternateName: 'Tiny',
         description:
-          'Tiny is the public face of Workflow — an open-source engine you connect to your chatbot over MCP. Name a goal and it runs real multi-step work, with evidence-gated outcomes and a loop that patches the engine itself.',
+          'TinyAssets is the open-source platform you connect to your chatbot over MCP. Tiny is the personified intelligence inside it: name a goal and he runs real multi-step work, with evidence-gated outcomes and a loop that patches the engine itself.',
         publisher: { '@id': 'https://tinyassets.io/#org' }
       },
       {
         '@type': 'SoftwareApplication',
-        name: 'Workflow',
+        name: 'TinyAssets',
         alternateName: 'Tiny',
         applicationCategory: 'DeveloperApplication',
         operatingSystem: 'Web, Windows, macOS, Linux',
@@ -45,14 +45,14 @@
 </script>
 
 <svelte:head>
-  <meta property="og:site_name" content="Tiny" />
+  <meta property="og:site_name" content="TinyAssets" />
   <meta property="og:type" content="website" />
-  <meta property="og:title" content="Tiny — a small living engine that turns chat into finished work" />
+  <meta property="og:title" content="TinyAssets — meet Tiny, the engine that turns chat into finished work" />
   <meta property="og:description" content="Connect your chatbot to one URL. Name a goal. Tiny runs the real, multi-step work — and shows you live, verifiable evidence instead of marketing claims." />
   <meta property="og:image" content="https://tinyassets.io/og-image.png" />
   <meta property="og:url" content="https://tinyassets.io/" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Tiny — the engine that shows its work" />
+  <meta name="twitter:title" content="TinyAssets — the engine that shows its work" />
   <meta name="twitter:description" content="Live, verifiable state on every page: the same MCP endpoint you paste into your chatbot renders this site's numbers." />
   <meta name="twitter:image" content="https://tinyassets.io/og-image.png" />
   {@html `<script type="application/ld+json">${JSON.stringify(jsonLd)}<\/script>`}

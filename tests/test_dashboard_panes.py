@@ -12,13 +12,13 @@ Tray: update_tier_states, _handle_tier_toggle, _handle_pause_all_tiers,
 
 from __future__ import annotations
 
-from workflow.desktop.dashboard import (
+from tinyassets.desktop.dashboard import (
     DashboardHandler,
     DispatcherPane,
     EarningsPane,
     QueuePane,
 )
-from workflow.desktop.tray import TrayApp
+from tinyassets.desktop.tray import TrayApp
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -163,7 +163,7 @@ class TestQueuePane:
 
 class TestEarningsPane:
     def test_disabled_when_paid_market_off(self, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_PAID_MARKET", raising=False)
+        monkeypatch.delenv("TINYASSETS_PAID_MARKET", raising=False)
         pane = EarningsPane()
         assert pane.enabled is False
         pane.refresh(_VALID_OVERVIEW)
@@ -171,7 +171,7 @@ class TestEarningsPane:
         assert s == {"enabled": False}
 
     def test_enabled_when_paid_market_on(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on")
+        monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
         pane = EarningsPane()
         assert pane.enabled is True
         pane.refresh(_VALID_OVERVIEW)
@@ -184,13 +184,13 @@ class TestEarningsPane:
 
     def test_refresh_malformed_payload_isolated(self, monkeypatch):
         """R3 invariant 2: bad payload in enabled pane captured, not raised."""
-        monkeypatch.setenv("WORKFLOW_PAID_MARKET", "on")
+        monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
         pane = EarningsPane()
         pane.refresh({"settlements": "NOT_A_DICT", "bids": {}})
         assert pane.last_error is not None
 
     def test_refresh_no_op_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_PAID_MARKET", "off")
+        monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
         pane = EarningsPane()
         pane.refresh({"settlements": {"count_total": 99}})
         # Enabled=False → values stay at defaults, no error.

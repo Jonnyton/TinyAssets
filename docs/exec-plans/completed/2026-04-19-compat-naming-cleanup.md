@@ -3,16 +3,16 @@
 **Date:** 2026-04-19
 **Author:** navigator
 **Status:** Pre-staged dev-executable plan. Sequenced as **R3** in `docs/exec-plans/active/2026-04-19-refactor-dispatch-sequence.md`. Smaller than expected — the audit's "naming collision risk" framing turned out to be even simpler at code-level.
-**Scope:** Resolve the `workflow/compat.py` vs `workflow/_rename_compat.py` naming ambiguity. Surprise finding: `compat.py` is documentation-only with zero imports.
+**Scope:** Resolve the `tinyassets/compat.py` vs `tinyassets/_rename_compat.py` naming ambiguity. Surprise finding: `compat.py` is documentation-only with zero imports.
 **Effort:** ~5-15 minutes. Single trivial commit.
 
 ---
 
 ## 1. Surprise finding from the audit
 
-The spaghetti audit (hotspot #5) flagged `workflow/compat.py` (90 LOC) and `workflow/_rename_compat.py` (188 LOC) as a naming-collision risk worth a ~0.5 dev-day investigation + rename. Reading the actual file:
+The spaghetti audit (hotspot #5) flagged `tinyassets/compat.py` (90 LOC) and `tinyassets/_rename_compat.py` (188 LOC) as a naming-collision risk worth a ~0.5 dev-day investigation + rename. Reading the actual file:
 
-**`workflow/compat.py` is a 90-line module-docstring-only file.** Lines 1-89 are a multi-line docstring documenting the obsolete Phase 2 fantasy_author → workflow + domains/ extraction transition. Line 90 is `"""` closing the docstring. **There are zero defs, zero classes, zero `__all__`, zero imports.** It is a documentation file with a `.py` extension.
+**`tinyassets/compat.py` is a 90-line module-docstring-only file.** Lines 1-89 are a multi-line docstring documenting the obsolete Phase 2 fantasy_author → workflow + domains/ extraction transition. Line 90 is `"""` closing the docstring. **There are zero defs, zero classes, zero `__all__`, zero imports.** It is a documentation file with a `.py` extension.
 
 Verified by grep: **zero call sites** anywhere in the canonical tree, mirror tree, or test suite import from `workflow.compat`. The file is dead documentation that survived the rename Phase 1 landings unnoticed.
 
@@ -22,7 +22,7 @@ Verified by grep: **zero call sites** anywhere in the canonical tree, mirror tre
 
 ## 2. What `compat.py` actually documents
 
-Module docstring describes the in-flight Phase 2 extraction (Phase 2a / Phase 2b / Phase 3) — when `fantasy_author/` was being split into `workflow/` (engine) + `domains/fantasy_author/` (domain). That extraction completed in `b395d19` (Phase 1 Part 1) + `72e696e` (Phase 1 Part 2) + `7dde417` (Phase 1 Part 2.5). The Phase 2 the docstring describes never matched the eventual phase numbering in the parent rename plan (`docs/exec-plans/active/2026-04-15-author-to-daemon-rename.md`), and the architectural facts it asserts about `fantasy_author/` "remaining fully functional with original imports unchanged" no longer hold — `fantasy_author/` is now a back-compat shim package (per Phase 1 Part 2.5's `install_module_alias` flow).
+Module docstring describes the in-flight Phase 2 extraction (Phase 2a / Phase 2b / Phase 3) — when `fantasy_author/` was being split into `tinyassets/` (engine) + `domains/fantasy_author/` (domain). That extraction completed in `b395d19` (Phase 1 Part 1) + `72e696e` (Phase 1 Part 2) + `7dde417` (Phase 1 Part 2.5). The Phase 2 the docstring describes never matched the eventual phase numbering in the parent rename plan (`docs/exec-plans/active/2026-04-15-author-to-daemon-rename.md`), and the architectural facts it asserts about `fantasy_author/` "remaining fully functional with original imports unchanged" no longer hold — `fantasy_author/` is now a back-compat shim package (per Phase 1 Part 2.5's `install_module_alias` flow).
 
 In short: the docstring is **historically inaccurate as of today** and serves no live reader. Any reader hitting it would be misled, not informed. Deletion is correct, not just convenient.
 
@@ -32,26 +32,26 @@ In short: the docstring is **historically inaccurate as of today** and serves no
 
 | Path | Action | Notes |
 |---|---|---|
-| `workflow/compat.py` | **DELETE** | Zero imports; documentation-only; historically inaccurate; obsolete. |
-| `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/compat.py` | **DELETE (mirror)** | Byte-equal to canonical per mirror discipline. |
+| `tinyassets/compat.py` | **DELETE** | Zero imports; documentation-only; historically inaccurate; obsolete. |
+| `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/compat.py` | **DELETE (mirror)** | Byte-equal to canonical per mirror discipline. |
 
 **Files NOT touched:**
-- `workflow/_rename_compat.py` — keeps its name. The `_` prefix correctly signals "internal," and the `_rename_compat` qualifier is unambiguous about scope (Author→Daemon rename window). Rename to `_alias_loader.py` was on the table per the spaghetti audit, but with `compat.py` removed there's no naming collision to resolve. **No-op.**
+- `tinyassets/_rename_compat.py` — keeps its name. The `_` prefix correctly signals "internal," and the `_rename_compat` qualifier is unambiguous about scope (Author→Daemon rename window). Rename to `_alias_loader.py` was on the table per the spaghetti audit, but with `compat.py` removed there's no naming collision to resolve. **No-op.**
 - Any other compat-related file. There are no others.
 
 ---
 
 ## 4. Single atomic commit
 
-### Commit — delete `workflow/compat.py` (obsolete Phase 2 documentation)
+### Commit — delete `tinyassets/compat.py` (obsolete Phase 2 documentation)
 
 **Files:**
-- `git rm workflow/compat.py`
-- `git rm packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/compat.py`
+- `git rm tinyassets/compat.py`
+- `git rm packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/compat.py`
 
 **Suggested commit message:**
 ```
-refactor: delete workflow/compat.py (obsolete Phase 2 documentation)
+refactor: delete tinyassets/compat.py (obsolete Phase 2 documentation)
 
 The file was a 90-line docstring-only module documenting the in-flight
 fantasy_author → workflow + domains/ extraction (Phase 2). That extraction
@@ -66,7 +66,7 @@ Resolves R3 of docs/exec-plans/active/2026-04-19-refactor-dispatch-sequence.md
 (reduced from ~0.5 dev-day naming-clarity refactor to ~5-min deletion after
 audit revealed compat.py is dead documentation, not a code module).
 
-workflow/_rename_compat.py keeps its name (no naming collision once
+tinyassets/_rename_compat.py keeps its name (no naming collision once
 compat.py is gone; "_rename_compat" already unambiguous about scope).
 ```
 

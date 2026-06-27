@@ -5,17 +5,17 @@ assumes "one host machine, one logged-in user." Phase 7's executable
 spec needs to know what already neighbors a multi-tenant boundary,
 what's flat single-tenant, and what shape each migration would take.
 
-Source of ground truth: live state in `workflow/*.py` as of the
+Source of ground truth: live state in `tinyassets/*.py` as of the
 post-cluster-#58→#67 commit. Per-area breakdown follows.
 
 ## 1. Identity & actor attribution
 
-- **Single source today**: `workflow/universe_server.py:163`
+- **Single source today**: `tinyassets/universe_server.py:163`
   `_current_actor()` reads `UNIVERSE_SERVER_USER` env var, defaults
   `"anonymous"`. Used everywhere user attribution lands (ledger,
   branch/goal/run author, judgment author).
 - **Auth surface present but unused at the dispatcher boundary**:
-  `workflow/auth/provider.py` already implements an `OAuthProvider`
+  `tinyassets/auth/provider.py` already implements an `OAuthProvider`
   protocol with PKCE + Dynamic Client Registration shape, and a
   `DevModeAuthProvider` that returns anonymous for any token. Live
   MCP tool dispatchers do NOT consult it — actor comes from env.
@@ -44,10 +44,10 @@ Five distinct SQLite databases per universe:
 
 | File | Owner | Purpose |
 |------|-------|---------|
-| `.author_server.db` | `workflow/author_server.py:_connect` | branches, nodes, goals, lineage, judgments, ledger |
-| `.runs.db` | `workflow/runs.py:_connect` | run rows, run_events, node_edit_audits |
-| `.langgraph_runs.db` | `workflow/runs.py:1059` (SqliteSaver) | LangGraph checkpointer |
-| `knowledge.db` | `workflow/knowledge/knowledge_graph.py` | KG entities/edges/facts |
+| `.author_server.db` | `tinyassets/author_server.py:_connect` | branches, nodes, goals, lineage, judgments, ledger |
+| `.runs.db` | `tinyassets/runs.py:_connect` | run rows, run_events, node_edit_audits |
+| `.langgraph_runs.db` | `tinyassets/runs.py:1059` (SqliteSaver) | LangGraph checkpointer |
+| `knowledge.db` | `tinyassets/knowledge/knowledge_graph.py` | KG entities/edges/facts |
 | `world_state.db` (per-domain) | domain code | world-state queries |
 
 - **Concurrency**: `sqlite3.connect(..., timeout=30.0)` + `PRAGMA
@@ -62,7 +62,7 @@ Five distinct SQLite databases per universe:
 
 ## 4. LanceDB singleton
 
-- **Singleton enforced**: `workflow/retrieval/vector_store.py:27`
+- **Singleton enforced**: `tinyassets/retrieval/vector_store.py:27`
   `get_db(path)` lazily creates one `lancedb.DBConnection` per
   process, refuses CWD-relative defaults (post-#48/#51 hardening).
 - **Cross-universe risk**: explicit path required, so the singleton
@@ -73,8 +73,8 @@ Five distinct SQLite databases per universe:
 
 ## 5. Run executor (background work)
 
-- **Process-local**: `workflow/runs.py:1230` shared
-  `ThreadPoolExecutor(max_workers=WORKFLOW_RUN_MAX_CONCURRENT or 4)`
+- **Process-local**: `tinyassets/runs.py:1230` shared
+  `ThreadPoolExecutor(max_workers=TINYASSETS_RUN_MAX_CONCURRENT or 4)`
   thread-prefix `workflow-run`. Future map keyed by `run_id`.
 - **Implication**: runs are tied to the process that submitted them.
   No cross-host scheduling, no resume across host restart (recovery
@@ -87,7 +87,7 @@ Five distinct SQLite databases per universe:
 
 ## 6. Provider credentials
 
-- **Process-env today**: each provider in `workflow/providers/*.py`
+- **Process-env today**: each provider in `tinyassets/providers/*.py`
   reads its API key from a `*_API_KEY` env var at construction time
   (`GROQ_API_KEY`, `GEMINI_API_KEY`, `GROK_API_KEY`, etc).
 - **Implication**: host-machine-wide credentials, not per-tenant.
@@ -98,7 +98,7 @@ Five distinct SQLite databases per universe:
 
 ## 7. Desktop / tray / tunnel (host-side only)
 
-- **Host-only by design**: `workflow/desktop/host_tray.py`,
+- **Host-only by design**: `tinyassets/desktop/host_tray.py`,
   `tray.py`, `launcher.py`, `dashboard.py` — local UI for the host
   operator. Not part of the multi-tenant runtime.
 - **Tunnel**: `universe_tray.py` runs `cloudflared` with a hardcoded

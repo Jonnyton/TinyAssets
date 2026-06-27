@@ -14,14 +14,14 @@ status: active
 
 ## 1. Recommendation
 
-A frozen dataclass `PatchNotes` with content-hashed `patch_notes_id`, structured `evidence_refs`, in-payload `route_history`. Replaces the `dict[str, Any]` placeholder in `EvalResult.patch_notes` (Task #53). Lives in `workflow/evaluation/patch_notes.py` (new file); JSON-serialized into `run_events.detail_json` and `contribution_events.metadata_json` columns.
+A frozen dataclass `PatchNotes` with content-hashed `patch_notes_id`, structured `evidence_refs`, in-payload `route_history`. Replaces the `dict[str, Any]` placeholder in `EvalResult.patch_notes` (Task #53). Lives in `tinyassets/evaluation/patch_notes.py` (new file); JSON-serialized into `run_events.detail_json` and `contribution_events.metadata_json` columns.
 
 ---
 
 ## 2. Dataclass shape
 
 ```python
-# workflow/evaluation/patch_notes.py
+# tinyassets/evaluation/patch_notes.py
 
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -171,7 +171,7 @@ new_notes = dataclasses.replace(
 )  # __post_init__ recomputes patch_notes_id
 ```
 
-Max-depth check + visited-set check + `WORKFLOW_ROUTE_BACK_MAX_DEPTH` env var from #53 §3 stay identical. No semantic change; cleaner type discipline.
+Max-depth check + visited-set check + `TINYASSETS_ROUTE_BACK_MAX_DEPTH` env var from #53 §3 stay identical. No semantic change; cleaner type discipline.
 
 ---
 
@@ -199,7 +199,7 @@ The `feedback_provided` event then records `notes.patch_notes_id` in metadata. T
 
 ### Step 0 — define dataclass + helpers + tests
 
-Add `workflow/evaluation/patch_notes.py` with `PatchNotes` + `EvidenceRef` classes. Helpers: `to_dict`, `from_dict`, `_compute_id`. Tests per §8.
+Add `tinyassets/evaluation/patch_notes.py` with `PatchNotes` + `EvidenceRef` classes. Helpers: `to_dict`, `from_dict`, `_compute_id`. Tests per §8.
 
 ### Step 1 — `extensions action=author_patch_notes` MCP wrapper (out of this proposal's scope)
 
@@ -243,7 +243,7 @@ Two-week sunset window. During sunset, `EvalResult.__post_init__` accepts both `
 
 5. **Forward-compat for new fields — extra dict + INFO-level warning.** Closed per lead pre-draft note. Old code reading new payloads continues to work; new code reading old payloads fills defaults. INFO not WARNING because version skew is expected, not anomalous; promote to WARNING only at high frequency.
 
-6. **(Truly open) Maximum `evidence_refs` length.** A gate evaluator could pad refs to game `feedback_provided` weight. Recommend cap at 16 refs per PatchNotes; above raise ValueError. Tuneable via `WORKFLOW_PATCH_NOTES_MAX_EVIDENCE_REFS` env var, default 16.
+6. **(Truly open) Maximum `evidence_refs` length.** A gate evaluator could pad refs to game `feedback_provided` weight. Recommend cap at 16 refs per PatchNotes; above raise ValueError. Tuneable via `TINYASSETS_PATCH_NOTES_MAX_EVIDENCE_REFS` env var, default 16.
 
 7. **(Truly open) `tests_added` validation.** Should the dataclass verify those test paths exist? Recommend NO at construction time — tests may be authored later in the chain. The list is metadata, not a runtime contract. Future enhancement: a separate verifier action validates "tests exist + pass" post-merge.
 
@@ -264,6 +264,6 @@ Two-week sunset window. During sunset, `EvalResult.__post_init__` accepts both `
 - Replaces placeholder in: `docs/design-notes/2026-04-25-gate-route-back-verb-proposal.md` (Task #53) — `EvalResult.patch_notes: dict[str, Any]` placeholder becomes `PatchNotes` typed.
 - Citation-chain consumer: attribution-layer-specs §1.4 (`feedback_provided` event) — uses `patch_notes_id` to trace cites.
 - Contribution ledger: `docs/design-notes/2026-04-25-contribution-ledger-proposal.md` (Task #48) — `feedback_provided` event surface 5 references this dataclass.
-- Sibling dataclasses (project-consistency reference): `workflow/branches.py` (NodeDefinition, BranchDefinition, EdgeDefinition); `workflow/evaluation/__init__.py:37` (EvalResult).
-- Existing serialization pattern (`to_dict` / `from_dict`): `workflow/branches.py:680-741` (BranchDefinition).
-- Cycle-detection that this dataclass formalizes: Task #53 §3 (max-depth + visited-set) and §6 Q3 (`WORKFLOW_ROUTE_BACK_MAX_DEPTH` env).
+- Sibling dataclasses (project-consistency reference): `tinyassets/branches.py` (NodeDefinition, BranchDefinition, EdgeDefinition); `tinyassets/evaluation/__init__.py:37` (EvalResult).
+- Existing serialization pattern (`to_dict` / `from_dict`): `tinyassets/branches.py:680-741` (BranchDefinition).
+- Cycle-detection that this dataclass formalizes: Task #53 §3 (max-depth + visited-set) and §6 Q3 (`TINYASSETS_ROUTE_BACK_MAX_DEPTH` env).

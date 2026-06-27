@@ -14,7 +14,7 @@ status: active
 
 ## 1. Recommendation — small webhook receiver, reuse existing primitives
 
-Pick a small webhook receiver at `workflow/integrations/github_webhook.py` that maps GitHub PR events to existing `_wiki_file_bug(kind="patch_request")` calls. **No new MCP action; no new schema.** The PR bridge is structurally identical to navigator's canary→patch_request seam — external trigger source → server-side `_wiki_file_bug` invocation → standard wiki page lifecycle.
+Pick a small webhook receiver at `tinyassets/integrations/github_webhook.py` that maps GitHub PR events to existing `_wiki_file_bug(kind="patch_request")` calls. **No new MCP action; no new schema.** The PR bridge is structurally identical to navigator's canary→patch_request seam — external trigger source → server-side `_wiki_file_bug` invocation → standard wiki page lifecycle.
 
 The deciding insight: any external system that produces patch-request-shaped artifacts (canary failures, GitHub PRs, third-party bots) should converge on the same primitive. `_wiki_file_bug` at `universe_server.py:13102` already accepts a `kind` parameter and validates it against `_VALID_BUG_KINDS`. Adding `"patch_request"` to that enum (lands with dev's Task #52) gives the bridge a stable target to call.
 
@@ -36,7 +36,7 @@ This proposal anticipates that routing pattern; the bridge invokes `_wiki_file_b
 |---|---|
 | **Event type** | `pull_request` (covers `opened`, `closed`, `synchronize`, `labeled`, `reopened` actions). Subset of actions handled per §3. |
 | **Auth** | Webhook secret signed via HMAC-SHA256 (`X-Hub-Signature-256` header). Standard GitHub pattern. Receiver verifies signature before any payload processing — reject unsigned / bad-sig deliveries with 401. |
-| **Secret storage** | `$HOME/workflow-secrets.env` per existing project convention. Env var name: `WORKFLOW_GITHUB_WEBHOOK_SECRET`. |
+| **Secret storage** | `$HOME/workflow-secrets.env` per existing project convention. Env var name: `TINYASSETS_GITHUB_WEBHOOK_SECRET`. |
 | **Endpoint path** | `POST /webhooks/github` mounted on the existing universe_server HTTP surface. |
 | **Anti-replay** | `X-GitHub-Delivery` GUID per delivery; receiver tracks last **N=1000** GUIDs in a bounded FIFO dedup table. Replays return 200 + `{"status": "duplicate_delivery", "guid": ...}` (idempotent). Bounded eviction prevents unbounded growth. |
 | **Failure mode** | If receiver is down for an outage, GitHub retries failed deliveries (its own backoff). Idempotent processing means safe replay on recovery. |
@@ -98,7 +98,7 @@ _wiki_file_bug(
 
 ### Opt-in label (config-driven)
 
-Bridge fires only for PRs carrying the configured label. **Label name is config-driven via `WORKFLOW_GITHUB_PR_LABEL`** (env var; default `patch-request`). Maintainers can rename without code changes; if the env var is unset, the default applies.
+Bridge fires only for PRs carrying the configured label. **Label name is config-driven via `TINYASSETS_GITHUB_PR_LABEL`** (env var; default `patch-request`). Maintainers can rename without code changes; if the env var is unset, the default applies.
 
 If the label is missing at PR open, no patch_request is created. Adding the label later (`labeled` action) fires the bridge retroactively.
 
@@ -108,7 +108,7 @@ Skip the patch_request creation when ANY of these match:
 
 - **PR labels contain** `docs-only`, `format-only`, or `hotfix`. These don't need design vetting — they're mechanical.
 - **PR head branch matches** `dependabot/*`, `renovate/*`, `pre-commit-ci/*` patterns. Mechanical updates from automation; no human design intent.
-- **PR author is in trusted-automation allowlist** (config: `WORKFLOW_GITHUB_AUTOMATION_ALLOWLIST`, comma-separated). Default includes `github-actions[bot]`, `dependabot[bot]`, `renovate[bot]`.
+- **PR author is in trusted-automation allowlist** (config: `TINYASSETS_GITHUB_AUTOMATION_ALLOWLIST`, comma-separated). Default includes `github-actions[bot]`, `dependabot[bot]`, `renovate[bot]`.
 
 Carve-out matches return 200 OK with `{"status": "skipped_carve_out", "reason": "..."}` for observability — silent skip would be confusing for maintainers debugging label-not-firing.
 
@@ -158,7 +158,7 @@ The `pr_merged_commit_sha` field links the patch_request page to the actual land
 
 1. **Identity binding mechanism — explicit opt-in via `link_github_handle`.** RECOMMENDED. Closed per lead's pre-draft note + matches `project_user_builds_we_enable`. Implementation of the verb itself is a downstream dispatch.
 
-2. **Label rename safety — config-driven label name.** `WORKFLOW_GITHUB_PR_LABEL` env var, default `patch-request`. RECOMMENDED. Closed.
+2. **Label rename safety — config-driven label name.** `TINYASSETS_GITHUB_PR_LABEL` env var, default `patch-request`. RECOMMENDED. Closed.
 
 3. **Multi-repo namespace.** Today's recommendation: single wiki namespace, repo recorded in tags only. RECOMMENDED for now. Phase D federation work may revisit — federated wikis would mean federated namespaces, with cross-instance reference syntax. Note for future revisit.
 
@@ -190,7 +190,7 @@ The `pr_merged_commit_sha` field links the patch_request page to the actual land
 - Navigator's canary→patch_request seam (structural twin): `docs/design-notes/2026-04-25-canary-to-patch-request-spec.md`.
 - Contribution ledger surface 3 (`code_committed` events): `docs/design-notes/2026-04-25-contribution-ledger-proposal.md` §3.
 - Sibling design pattern: my Task #47 / #48 / #53 / #54 proposals.
-- Existing `_wiki_file_bug` primitive: `workflow/universe_server.py:13102-13186` (kind validation at line 13141; dedup at 13157-13186).
+- Existing `_wiki_file_bug` primitive: `tinyassets/universe_server.py:13102-13186` (kind validation at line 13141; dedup at 13157-13186).
 - Existing dedup test coverage (proves `_wiki_file_bug` is the right reuse target): `tests/test_wiki_file_bug_dedup.py` + my `tests/test_wiki_cosign_flow.py`.
 - Project memory: `project_user_builds_we_enable.md` (explicit opt-in for identity binding).
 - CONTRIBUTORS.md (committed `87e96bb`) — reference shape for Co-Authored-By trailers.

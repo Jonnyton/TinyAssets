@@ -43,9 +43,9 @@ The dev queue and host-decision queue are now structured around four active work
 ### Q4 — PLAN.md.draft: approve, iterate, or reject?
 
 **Framing.** `PLAN.md.draft` proposes three architectural commitments that haven't been canonical before:
-1. A **Module Layout** section codifying 5 canonical subpackages (`workflow/api/`, `workflow/storage/`, `workflow/runtime/`, `workflow/bid/`, `workflow/servers/`) with a migration policy ("flat module > 500 LOC OR overlapping sibling responsibility → gets a subpackage").
+1. A **Module Layout** section codifying 5 canonical subpackages (`tinyassets/api/`, `tinyassets/storage/`, `tinyassets/runtime/`, `tinyassets/bid/`, `tinyassets/servers/`) with a migration policy ("flat module > 500 LOC OR overlapping sibling responsibility → gets a subpackage").
 2. The **self-auditing-tools** principle as a Cross-Cutting Principle — trust-critical tools include their own caveats (structured evidence + structured caveats + chatbot composes narrative).
-3. The **engine/domain seam is named** — every action lives in exactly one of `workflow/api/` or `domains/<name>/api/`. No third location.
+3. The **engine/domain seam is named** — every action lives in exactly one of `tinyassets/api/` or `domains/<name>/api/`. No third location.
 
 **These are load-bearing for refactor dispatch** (hotspots #1-#3 in `docs/audits/2026-04-19-project-folder-spaghetti.md`) AND for the §11 Track Q decision in Q5 below AND for engine/domain separation (#11 design note).
 
@@ -56,7 +56,7 @@ The dev queue and host-decision queue are now structured around four active work
 
 **Recommendation: (a).** The Module Layout absorbs the spaghetti audit's 5 target subpackages without overcommitting — every choice in the draft is reversible, and the migration policy is gradient (flat-modules-staying-flat is fine if they don't grow). The principle additions (self-auditing tools + named engine/domain seam) are documentation of patterns the codebase is already moving toward; deferring approval just delays the canonicalization.
 
-**If (b), most likely iteration vectors:** subpackage names (e.g., `workflow/market/` instead of `workflow/bid/`), or the ~500 LOC migration threshold (could be tighter or looser), or whether `workflow/servers/` should be `workflow/entrypoints/` to match the integration-shell language.
+**If (b), most likely iteration vectors:** subpackage names (e.g., `tinyassets/market/` instead of `tinyassets/bid/`), or the ~500 LOC migration threshold (could be tighter or looser), or whether `tinyassets/servers/` should be `tinyassets/entrypoints/` to match the integration-shell language.
 
 ---
 
@@ -103,7 +103,7 @@ These remain queued. Carry-overs:
 
 ### Q10 — Module rename target: which name?
 
-**Recommendation: (a) `workflow/workflow_server.py`** — brand match.
+**Recommendation: (a) `tinyassets/workflow_server.py`** — brand match.
 
 ### Q11 — Compat-flag scheme: shared or independent flip clocks?
 
@@ -197,7 +197,7 @@ Per host-issued directive ("you reason through ambiguities to a recommendation; 
 
 | Q | Pre-answer | Confidence | Rationale + host-signal cross-check |
 |---|---|---|---|
-| **Q4 PLAN.md.draft** | **(a) approve as-is** | HIGH | Module Layout derived from spaghetti audit (which integrated codex's modularity audit). Naming (`workflow/bid/`, `workflow/servers/`) matches existing module names + the rebrand to "Workflow Server" per `project_daemon_product_voice.md`. Self-auditing-tools principle is documentation of patterns already shipped (`get_status` task #88). Engine/domain seam aligns with #11 design note already in host-review. Zero contradictions; reversible commitment; deferral cost > approval cost. |
+| **Q4 PLAN.md.draft** | **(a) approve as-is** | HIGH | Module Layout derived from spaghetti audit (which integrated codex's modularity audit). Naming (`tinyassets/bid/`, `tinyassets/servers/`) matches existing module names + the rebrand to "TinyAssets Server" per `project_daemon_product_voice.md`. Self-auditing-tools principle is documentation of patterns already shipped (`get_status` task #88). Engine/domain seam aligns with #11 design note already in host-review. Zero contradictions; reversible commitment; deferral cost > approval cost. |
 | **Q1 Postgres-canonical** | **(a) Postgres canonical, GitHub mirror** | HIGH | Host memory `project_full_platform_target.md` requires "thousands concurrent, full node collaboration with zero daemons hosted." GitHub-canonical cannot satisfy this without a custom realtime layer (effectively rebuilding Supabase Realtime). Postgres-canonical is the only shape that meets the explicit requirement. *Note: this is a one-way door, but it's a one-way door already-implied by host's explicit scale requirement.* Not a 50/50 taste call. |
 | **Q2 Pre-launch load-test** | **(a) ship pre-launch (~1.5 dev-days)** | HIGH | Host memory `feedback_always_install_ready.md` ("Main is downloadable release at all times; broken install is production bug") + `project_distribution_horizon.md` (viral spread possible any day) both make launch-day failure unrecoverable. 1.5 dev-days against unrecoverable risk is asymmetric in favor of ship. |
 | **Q3 Fly.io** | **(a) defer Fly entirely** | HIGH | Q1's Supabase pick supersedes Fly. Host memory `project_godaddy_hosting.md` ("prefer existing infra over new vendors") consistent with not adding a new vendor when an existing one (Supabase) covers the surface. No host signal favoring Fly. |
@@ -207,7 +207,7 @@ Per host-issued directive ("you reason through ambiguities to a recommendation; 
 | **Q8 Bundle dry-inspect** | **(a) bundled into Track Q** | HIGH | Same trust funnel; shipping one without the other leaves a gap exactly where Devin Session 2 succeeded. Per Devin Session 2 §3+§4 — the load-bearing claim is that current-state evidence + prospective-behavior evidence together form the trust loop. Splitting them defeats the loop. |
 | **Q9 Audit-log retention** | **(b) 7-day TTL** | MEDIUM | Recommendation balances trust property against privacy footprint. Host has not signaled on retention specifically; could plausibly argue for (a) cheap-in-memory or (c) indefinite-with-opt-out. (b) is the safe-middle pick; **lead can ratify and dev defaults to it**. If a tier-2 host complaints later, revisit. |
 | **Q-sat-6 `get_dispatch_evidence`** | **(a) 6th surface in Track Q** | HIGH | Closes Mission 26 #B5 + concern 1 chatbot-verification gap. Same chain-break shape as `get_status` closing LIVE-F8. Per the self-auditing-tools §4 surface list, this is the 6th canonical surface; adding it preserves pattern consistency. (b) folding into `get_status` obscures the pattern. (c) defer leaves known-unverifiable concern in place. |
-| **Q10 Module rename name** | **(a) `workflow/workflow_server.py`** | HIGH | Brand match to "Workflow Server" rebrand. (b) collides with existing `packaging/.../runtime/server.py`. (c) needs verification we shouldn't bother with. Pure naming-mechanics call; no taste component beyond brand-match (which is host-directed). |
+| **Q10 Module rename name** | **(a) `tinyassets/workflow_server.py`** | HIGH | Brand match to "TinyAssets Server" rebrand. (b) collides with existing `packaging/.../runtime/server.py`. (c) needs verification we shouldn't bother with. Pure naming-mechanics call; no taste component beyond brand-match (which is host-directed). |
 | **Q11 Compat flag scheme** | **(a) two independent flags** | HIGH | Author→Daemon rename is at Phase 1.5 with long bake horizon ahead; universe→workflow rename just starting. Tying their flip cadences forces one to delay or rush. Pure engineering call. |
 | **Q12 Plugin-dir migration** | **(a) hard cutover + migration script + v0.2.0 release notes** | HIGH | Per `project_distribution_horizon.md` (small early install base), one-time reinstall friction with migration script is cheaper than parallel-name bridge that risks duplicate-plugin UI bug. If install base grows past ~10 hosts before this lands, revisit (b) — but that's a future trigger, not a current call. |
 | **Q-priv-1 Threat model** | **(a) honest operator + breach risk** | HIGH (nav-defaulted, host signal-derived 2026-04-19) | **Updated:** Host did not directly answer this Q but surfaced general posture (per lead 2026-04-19): "disposable prototypes, iterate on understanding, don't over-engineer for hypotheticals." Navigator defaults to (a) per that posture. Privacy track CAN still ship local-LLM support for users who want adversary-posture defense — it becomes an **opt-in primitive** (per Q-priv-3 always-pause + tier-2 confidential routing) rather than the default architectural stance. (a) covers the platform-default; opt-in (b) covers the strict-privacy case. No further host check needed unless a tier-2 host explicitly demands strict-adversary architecture. |

@@ -12,9 +12,9 @@ from __future__ import annotations
 import base64
 import json
 
-from workflow.effectors import github_read as gr
+from tinyassets.effectors import github_read as gr
 
-_DEST = "Jonnyton/Workflow"
+_DEST = "Jonnyton/TinyAssets"
 
 
 def _b64(text: str) -> str:
@@ -146,7 +146,7 @@ def test_read_request_quotes_path_component(monkeypatch):
     assert err is None
     assert parsed["type"] == "file"
     assert urls == [
-        "https://api.github.com/repos/Jonnyton/Workflow/contents/"
+        "https://api.github.com/repos/Jonnyton/TinyAssets/contents/"
         "dir/a%20b%23c%3Fref%3Dother.py"
     ]
 
@@ -168,7 +168,7 @@ def test_too_large_by_size_returns_null(monkeypatch):
         {"read_destination": _DEST, "target_paths": "big.py"},
         monkeypatch,
         reader,
-        env={"WORKFLOW_GITHUB_READ_MAX_BYTES_PER_FILE": "100"},
+        env={"TINYASSETS_GITHUB_READ_MAX_BYTES_PER_FILE": "100"},
     )
     assert contents == {"big.py": None}
     assert status["big.py"] == "too_large"
@@ -183,7 +183,7 @@ def test_file_count_cap_truncates_extras(monkeypatch):
         {"read_destination": _DEST, "target_paths": "a.py, b.py"},
         monkeypatch,
         reader,
-        env={"WORKFLOW_GITHUB_READ_MAX_FILES": "1"},
+        env={"TINYASSETS_GITHUB_READ_MAX_FILES": "1"},
     )
     assert "a.py" in contents and contents["a.py"] == "a"
     assert status["b.py"] == "truncated"
@@ -199,7 +199,7 @@ def test_total_byte_cap_truncates(monkeypatch):
         {"read_destination": _DEST, "target_paths": "a.py, b.py"},
         monkeypatch,
         reader,
-        env={"WORKFLOW_GITHUB_READ_MAX_TOTAL_BYTES": "6"},
+        env={"TINYASSETS_GITHUB_READ_MAX_TOTAL_BYTES": "6"},
     )
     assert contents["a.py"] == "aaaaa"
     assert status["b.py"] == "truncated"
@@ -231,8 +231,8 @@ def test_json_array_paths_parsed(monkeypatch):
 def test_read_token_uses_separate_map_not_write_map(monkeypatch):
     # Write map present, read map absent -> reads stay unauthenticated (empty
     # token), proving we do NOT reuse the write credential.
-    monkeypatch.setenv("WORKFLOW_GITHUB_PR_CAPABILITIES", json.dumps({_DEST: "WRITETOKEN"}))
-    monkeypatch.delenv("WORKFLOW_GITHUB_READ_CAPABILITIES", raising=False)
+    monkeypatch.setenv("TINYASSETS_GITHUB_PR_CAPABILITIES", json.dumps({_DEST: "WRITETOKEN"}))
+    monkeypatch.delenv("TINYASSETS_GITHUB_READ_CAPABILITIES", raising=False)
     reader = _scripted_reader({"a.py": _file_resp("a")})
     _run({"read_destination": _DEST, "target_paths": "a.py"}, monkeypatch, reader)
     assert reader.calls[0][2] == ""  # token empty -> unauthenticated
@@ -240,7 +240,7 @@ def test_read_token_uses_separate_map_not_write_map(monkeypatch):
 
 def test_read_token_resolved_from_read_map(monkeypatch):
     monkeypatch.setenv(
-        "WORKFLOW_GITHUB_READ_CAPABILITIES", json.dumps({_DEST: "READTOKEN"})
+        "TINYASSETS_GITHUB_READ_CAPABILITIES", json.dumps({_DEST: "READTOKEN"})
     )
     reader = _scripted_reader({"a.py": _file_resp("a")})
     _run({"read_destination": _DEST, "target_paths": "a.py"}, monkeypatch, reader)
@@ -248,7 +248,7 @@ def test_read_token_resolved_from_read_map(monkeypatch):
 
 
 def test_registration_resolves_in_domain_registry():
-    from workflow.domain_registry import resolve_domain_callable
+    from tinyassets.domain_registry import resolve_domain_callable
 
     gr.register_read_repo_files()
     assert resolve_domain_callable("workflow", "read_repo_files") is gr.read_repo_files

@@ -5,7 +5,7 @@ status: active
 # Node Software Capabilities — First-Class Plug-and-Play
 
 **Status:** Promotion-ready. Explorer scout #36 + host §10 answers (Q1/Q2/Q3) + new Shape IV software-donation feature folded 2026-04-15. One remaining item pending host: explicit PLAN.md principle approval (§9).
-**Related:** Planner memory `project_node_software_capabilities.md`. Memory-scope Stage 2 (`2026-04-15-memory-scope-tiered.md`) for `branch_node_scope.yaml` colocation. Phase G `workflow/node_sandbox.py` as the existing subprocess-isolation precedent.
+**Related:** Planner memory `project_node_software_capabilities.md`. Memory-scope Stage 2 (`2026-04-15-memory-scope-tiered.md`) for `branch_node_scope.yaml` colocation. Phase G `tinyassets/node_sandbox.py` as the existing subprocess-isolation precedent.
 **Target:** MVP that lets a user-sim mission run an Unreal-Engine-backed video-game-creation workflow on the host's existing Unreal install, on-approval.
 
 ## 0. Framing
@@ -16,7 +16,7 @@ Simultaneously: **plug-and-play is the viral hook for the product's breadth.** "
 
 ### 0.1 Explorer's key finding: the pattern already exists
 
-Explorer scout (#36, 2026-04-15) surfaced that the **`required_llm_type` / `served_llm_type` pair is the capability-filter template**. A node declares what it needs (`required_llm_type: "claude-opus"`); a daemon declares what it serves (`served_llm_type: "claude-opus"`); the dispatcher at `workflow/dispatcher.py:230-238` filters bids on match. This design generalizes that pair from string-scalar to list-of-capabilities (`required_capabilities: list[str]` / `served_capabilities: list[str]`) and extends the filter to set-inclusion. **The engineering surface is smaller than the product ambition suggests.**
+Explorer scout (#36, 2026-04-15) surfaced that the **`required_llm_type` / `served_llm_type` pair is the capability-filter template**. A node declares what it needs (`required_llm_type: "claude-opus"`); a daemon declares what it serves (`served_llm_type: "claude-opus"`); the dispatcher at `tinyassets/dispatcher.py:230-238` filters bids on match. This design generalizes that pair from string-scalar to list-of-capabilities (`required_capabilities: list[str]` / `served_capabilities: list[str]`) and extends the filter to set-inclusion. **The engineering surface is smaller than the product ambition suggests.**
 
 ### 0.3 Host's 2026-04-15 decisions (§10 answers)
 
@@ -44,7 +44,7 @@ The three existing node-execution paths all specifically prevent launching exter
 
 ### Where
 
-**Two locations, one source of truth.** Per explorer's scout, `NodeDefinition` at `workflow/branches.py:101-150` is the existing authoritative schema for what a node IS (including `required_llm_type`, `dependencies`, `tools_allowed`). That's where `required_capabilities: list[str]` lives — as a sibling of `dependencies`. This is the canonical declaration.
+**Two locations, one source of truth.** Per explorer's scout, `NodeDefinition` at `tinyassets/branches.py:101-150` is the existing authoritative schema for what a node IS (including `required_llm_type`, `dependencies`, `tools_allowed`). That's where `required_capabilities: list[str]` lives — as a sibling of `dependencies`. This is the canonical declaration.
 
 **`<branch>/node_scope.yaml` carries the same field as a view-friendly override**, so the memory-scope manifest stays the single "what this node reaches out to" reviewer surface (per memory-scope Stage 2 §4). At branch-registration time, if `node_scope.yaml` declares `requires:` for a node, it must match or be a subset of the `NodeDefinition.required_capabilities`; mismatch fails registration with a loud error.
 
@@ -206,7 +206,7 @@ class CapabilityHandler(Protocol):
         """Sanity-check an install (file exists, version check passes)."""
 ```
 
-Handlers live in `workflow/capabilities/handlers/` (one file per capability). Bundled handlers for the MVP: `unreal_engine.py`, `ollama.py`. Others ship over time. Third-party handlers: out of scope for MVP; flag §7.
+Handlers live in `tinyassets/capabilities/handlers/` (one file per capability). Bundled handlers for the MVP: `unreal_engine.py`, `ollama.py`. Others ship over time. Third-party handlers: out of scope for MVP; flag §7.
 
 ### Detection
 
@@ -230,10 +230,10 @@ Missing handler for a declared capability = node preflight fails loudly with `Un
 
 ### Dispatcher filter (MVP one-line extension)
 
-Explorer confirmed `workflow/dispatcher.py:230-238` already filters bids by `required_llm_type` matching host's `served_llm_type`. MVP extends this to check `required_capabilities` ⊆ `served_capabilities` set:
+Explorer confirmed `tinyassets/dispatcher.py:230-238` already filters bids by `required_llm_type` matching host's `served_llm_type`. MVP extends this to check `required_capabilities` ⊆ `served_capabilities` set:
 
 ```python
-# workflow/dispatcher.py (pseudocode of the extension)
+# tinyassets/dispatcher.py (pseudocode of the extension)
 if bid.required_llm_type and bid.required_llm_type != host.served_llm_type:
     continue  # existing filter
 if bid.required_capabilities:
@@ -304,7 +304,7 @@ All required capabilities resolved?
 **Default: `always`.** Auto-install and auto-update without per-install prompts. The approval gate is software-level (you approved Unreal Engine → all installs and updates of Unreal Engine proceed without further prompts). Revocation is the control surface: remove approval → future installs refuse; existing install stays until explicitly uninstalled.
 
 ```yaml
-# ~/.workflow/config.yaml or host settings
+# ~/.tinyassets/config.yaml or host settings
 capability_policy:
   install_mode: always            # always | ask | never. Host default: always.
   update_mode: always             # always | ask | never. Host default: always.
@@ -361,13 +361,13 @@ Explorer scout surfaced that all three current execution paths (prompt-template,
 - Declares `required_capabilities` as its defining field.
 - Bypasses Phase G's Python exec-pattern-scan (it's not Python exec'ing; it's subprocess-of-declared-binary).
 - Inherits Phase G's **approval gate** — `approved=True` is mandatory. Host reviews the manifest (which binaries, which capabilities, which universe) as code-review before first run.
-- Runs inside `workflow/node_sandbox.py`'s subprocess wrapper — the sandbox is the execution container for the node's orchestration code; capability invocations are child subprocesses inheriting the sandbox constraints.
+- Runs inside `tinyassets/node_sandbox.py`'s subprocess wrapper — the sandbox is the execution container for the node's orchestration code; capability invocations are child subprocesses inheriting the sandbox constraints.
 - Cannot coexist with prompt-template or source-code execution in the same node. A node is exactly one of these four types.
 
 ### Authoring surface
 
 ```python
-# NodeDefinition (conceptual; actual shape from workflow/branches.py:101-150)
+# NodeDefinition (conceptual; actual shape from tinyassets/branches.py:101-150)
 class NodeDefinition(TypedDict):
     node_def_id: str
     kind: Literal["prompt_template", "source_code", "external_tool", "node_bid"]
@@ -405,7 +405,7 @@ For software the daemon needs to *interactively drive* (playing a game, clicking
 
 ### Invocation → node_sandbox relationship
 
-The node itself runs inside `workflow/node_sandbox.py`'s subprocess. Capability invocations are subprocesses *from* that sandbox. Resource inheritance: the sandbox's `cwd`/`env`/`limits` cascade to child invocations. The capability handler's `invoke()` is called with these as positional args.
+The node itself runs inside `tinyassets/node_sandbox.py`'s subprocess. Capability invocations are subprocesses *from* that sandbox. Resource inheritance: the sandbox's `cwd`/`env`/`limits` cascade to child invocations. The capability handler's `invoke()` is called with these as positional args.
 
 **Default isolation posture:** subprocess-of-subprocess. Fast enough, matches Phase G. Container/VM posture is future.
 
@@ -523,9 +523,9 @@ If a node requires `[unreal_engine, specialized_mocap_software]` and no peer don
 
 ### Critical-path scope (MVP) — revised 2026-04-15 post host §10 answers
 
-1. **NodeDefinition schema: add `required_capabilities: list[str]` + `capability_pattern: str`** as siblings of `dependencies` at `workflow/branches.py:101-150`.
+1. **NodeDefinition schema: add `required_capabilities: list[str]` + `capability_pattern: str`** as siblings of `dependencies` at `tinyassets/branches.py:101-150`.
 2. **DispatcherConfig schema: add `served_capabilities: list[str]`** at the config site (explorer to name the exact line post-claim).
-3. **Dispatcher filter extension** at `workflow/dispatcher.py:230-238` — one-line set-inclusion check per §3 above.
+3. **Dispatcher filter extension** at `tinyassets/dispatcher.py:230-238` — one-line set-inclusion check per §3 above.
 4. **Host-capability YAML** at `hosts/<host_id>.yaml` — hand-maintained. Extended with `donations_offered:` (Shape IV).
 5. **New node type `external_tool_node`** — §5.5. Bypasses Python sandbox; inherits approval gate; invokes declared binaries via CapabilityHandler.
 6. **`CapabilityHandler` protocol + TWO invocation patterns + two handlers:**
@@ -572,7 +572,7 @@ Two sections:
 
 **§Engine And Domains (L210):** this IS a domain-extension mechanism. The engine provides the capability-resolution framework; domains declare their required capabilities; new domains (fantasy-videogame, scientific-computing, corporate-Excel) consume the framework without the engine needing per-domain code. Directly matches "engine stays lean; domains carry their own weight."
 
-**§Distribution And Discoverability (L186):** capability handlers are a distribution concern — bundled handlers ship with the daemon, new handlers are a future distribution channel. Tie-in: the packaging auto-build from `workflow/` (per `2026-04-14-packaging-mirror-decision.md`) will include `workflow/capabilities/handlers/` in the bundle. Five-dep surface unchanged; handlers are pure Python that subprocess out.
+**§Distribution And Discoverability (L186):** capability handlers are a distribution concern — bundled handlers ship with the daemon, new handlers are a future distribution channel. Tie-in: the packaging auto-build from `tinyassets/` (per `2026-04-14-packaging-mirror-decision.md`) will include `tinyassets/capabilities/handlers/` in the bundle. Five-dep surface unchanged; handlers are pure Python that subprocess out.
 
 **§Multiplayer Daemon Platform (L102):** "public attributable actions." Software invocation is exactly the kind of action that should be attributable — who ran Unreal on whose universe. The `capability_install_log` contributes this.
 
@@ -590,9 +590,9 @@ Two sections:
 
 ### 10.2 Still open (non-blocking)
 
-4. **Capability handler location.** Recommend `workflow/capabilities/handlers/` per §3. Alternative: a plugin dir for third-party handlers. Defer third-party.
+4. **Capability handler location.** Recommend `tinyassets/capabilities/handlers/` per §3. Alternative: a plugin dir for third-party handlers. Defer third-party.
 5. **Version spec syntax.** Recommend PEP 440 (pip's syntax). PEP 440 is weirder for software that uses semver (Unreal is semver-ish); let handlers normalize internally.
-6. **Host YAML location.** Recommend `hosts/<host_id>.yaml` (at repo root, version-controlled per Phase 7 direction). Alternative: per-user `~/.workflow/hosts/`. Phase 7 direction suggests repo-root.
+6. **Host YAML location.** Recommend `hosts/<host_id>.yaml` (at repo root, version-controlled per Phase 7 direction). Alternative: per-user `~/.tinyassets/hosts/`. Phase 7 direction suggests repo-root.
 7. **Tray UI integration.** Phase H tray shows daemon status. Recommend adding a "Capabilities" panel listing served capabilities, pending approvals, donation offers/requests. Defer if Phase H merge still volatile.
 8. **PLAN.md principle approval.** §9 proposes a new PLAN.md principle ("The daemon's software surface is declarative, host-registered, and multi-layer-authorized"). **Not yet explicitly approved by host** — PLAN.md changes require explicit sign-off per AGENTS.md. Flagging for host confirmation before dev-promotion.
 9. **Pattern C fallback criteria.** If UI-automation on Unreal Editor proves too flaky during Day 5-6 implementation (§8), what's the fallback — defer Pattern C support for Unreal specifically, or defer all of Pattern C from MVP? Recommend: keep Pattern C in the handler protocol + ship one Pattern C reference integration (maybe a simpler software target) + document Unreal Pattern C as "best-effort" if it's fragile. Day-5 checkpoint with host to decide.
@@ -600,12 +600,12 @@ Two sections:
 
 ### Explorer-confirmed 2026-04-15 (scout #36)
 
-- **Existing pattern IS the template:** `required_llm_type` / `served_llm_type` + dispatcher filter at `workflow/dispatcher.py:230-238`. Generalize to list. Confirmed.
-- **NodeDefinition has no binary-requirements field today** (`workflow/branches.py:101-150`). `tools_allowed` exists but is stub — declared + unenforced. Clean add site for `required_capabilities`.
+- **Existing pattern IS the template:** `required_llm_type` / `served_llm_type` + dispatcher filter at `tinyassets/dispatcher.py:230-238`. Generalize to list. Confirmed.
+- **NodeDefinition has no binary-requirements field today** (`tinyassets/branches.py:101-150`). `tools_allowed` exists but is stub — declared + unenforced. Clean add site for `required_capabilities`.
 - **All three execution paths prevent external binaries** (prompt-template, source-code-sandboxed, NodeBid exec). Escape seam = new `external_tool_node` type (explorer preferred; planner agreed — §5.5).
 - **Phase G approval gate is the security precedent** (`bids/README.md:52-128`). Host approval = code review. Generalizes cleanly to capability-manifest approval.
 - **Multi-host capability routing exists at market level** via shared git `bids/`, but **cross-host per-node splitting is unresolved**. I-strict MVP posture documented.
-- **`_producer_sandbox_reject`** at `workflow/producers/node_bid.py:44-81` is the "declare-then-resolve" code pattern to mirror.
+- **`_producer_sandbox_reject`** at `tinyassets/producers/node_bid.py:44-81` is the "declare-then-resolve" code pattern to mirror.
 
 ### Remaining explorer scout items (non-blocking)
 

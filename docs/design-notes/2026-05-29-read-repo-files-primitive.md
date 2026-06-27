@@ -80,7 +80,7 @@ correctly with no user-pasted contents.
 
 1. **Read scope is separate from write scope.** Reading public repo files needs
    only `Contents: read`; writing needs `Contents: write`. Do **not** reuse
-   `WORKFLOW_GITHUB_PR_CAPABILITIES` as the read credential by default. Add a
+   `TINYASSETS_GITHUB_PR_CAPABILITIES` as the read credential by default. Add a
    separate read-capability resolver/map so a universe can be granted read-only
    without write.
 2. **Path source + server-enforced limits.** `target_paths` carries the requested

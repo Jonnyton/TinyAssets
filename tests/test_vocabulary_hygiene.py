@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import asyncio
 
-from workflow.api.prompts import _CONTROL_STATION_PROMPT
-from workflow.universe_server import (
+from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
+from tinyassets.universe_server import (
     _EXTENSION_GUIDE_PROMPT,
     mcp,
 )

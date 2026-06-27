@@ -4,7 +4,7 @@ title: Q6.3 — Third-party providers in fallback chain — privacy primitive sc
 date: 2026-04-27
 author: dev-2
 type: design-note
-load-bearing-question: When a Workflow daemon's fallback chain reaches Gemini/Groq/Grok/etc, what data crosses the network, and what minimal platform primitive lets a chatbot/community privacy posture actually enforce a no-third-party policy?
+load-bearing-question: When a TinyAssets daemon's fallback chain reaches Gemini/Groq/Grok/etc, what data crosses the network, and what minimal platform primitive lets a chatbot/community privacy posture actually enforce a no-third-party policy?
 relates-to:
   - docs/design-notes/2026-04-18-privacy-modes-for-sensitive-workflows.md (parent privacy-modes note; §3 already named this gap)
   - docs/audits/2026-04-28-rows-6-7-8-community-build-obviation-addendum.md (commons-first audit; obviated Q6.1 + Q6.2; Q6.3 still-platform)
@@ -25,7 +25,7 @@ Q6.3 is the one privacy question that survives the commons-first reframe of the 
 
 Each provider sends prompt + system + config raw over the network. No scrubbing today.
 
-### 1.1 Router (`workflow/providers/router.py`)
+### 1.1 Router (`tinyassets/providers/router.py`)
 
 - **Hard-coded chains (L51-56):**
   - `writer`: `claude-code → codex → gemini-free → groq-free → grok-free → ollama-local`
@@ -34,7 +34,7 @@ Each provider sends prompt + system + config raw over the network. No scrubbing 
   - `embed`: `ollama-local` (already local-only)
 - **Judge ensemble (L61-63):** `_JUDGE_PROVIDERS = ["codex", "gemini-free", "groq-free", "grok-free", "ollama-local"]` — fans out to ALL available in parallel.
 - **Per-universe steering today:** `ucfg.preferred_writer` / `preferred_judge` (L152-155) — only **REORDERS** the chain. Does NOT remove third-party links. A pinned-local universe with `preferred_writer="ollama-local"` still has `claude-code, codex, gemini-free, groq-free, grok-free` in the chain after it. If `ollama-local` raises `ProviderError`, fallback continues into the third-party providers.
-- **`WORKFLOW_PIN_WRITER` env (L143-146):** narrows writer chain to the single pinned provider with no fallback. **This is the only existing hard-pin in the system.** Process-wide, not per-universe; kills fallback safety. Not an answer for Q6.3 because it's process-wide and writer-only.
+- **`TINYASSETS_PIN_WRITER` env (L143-146):** narrows writer chain to the single pinned provider with no fallback. **This is the only existing hard-pin in the system.** Process-wide, not per-universe; kills fallback safety. Not an answer for Q6.3 because it's process-wide and writer-only.
 
 ### 1.2 Per-provider payload (verbatim wire content)
 
@@ -59,7 +59,7 @@ Five options ordered increasing-cost / increasing-coverage:
 
 ### Option A — Allowlist enforcement at router (THIS NOTE'S RECOMMENDATION)
 
-**Shape:** add `allowed_providers: list[str] | None` field to `UniverseConfig` (`workflow/config.py`). Router consults at call time:
+**Shape:** add `allowed_providers: list[str] | None` field to `UniverseConfig` (`tinyassets/config.py`). Router consults at call time:
 
 - Before `for provider_name in chain:` loop, filter chain to `[p for p in chain if p in allowed_providers]` when set.
 - If filtered chain is empty → raise `AllProvidersExhaustedError` immediately (fail loudly, no implicit local fallback — caller gets explicit signal that policy blocked the call).
@@ -120,7 +120,7 @@ Per `project_privacy_via_community_composition`: "Platform owns enforcement prim
 1. **`allowed_providers` default.** When unset, current behavior (full chain including third-party) preserved? Recommend yes — backwards-compatible; opt-in for privacy. Pre-existing universes don't change behavior on upgrade.
 2. **Audit-log when a request hits an allowlist-empty failure.** Log to `logger.warning` only, or surface to `get_status` / `get_progress`? Recommend `logger.warning` at router + structured exception that callers can render. No new persistent surface; the hard-fail is already loud.
 3. **Allowlist scope — universe-only, or also per-branch / per-node?** Per-universe is sufficient for the parent privacy note's Allied-AP use case. Per-branch/per-node adds combinatorial config without obvious extra leverage. Recommend per-universe only for v1; if a real use case for finer scope emerges, add later.
-4. **Process-wide `WORKFLOW_PIN_WRITER` interaction.** When both pin and allowlist are set, pin wins (existing behavior — narrows chain to single provider, then allowlist filter applies; if pin not in allowlist, hard-fail). Recommend keep current pin semantics, document the interaction.
+4. **Process-wide `TINYASSETS_PIN_WRITER` interaction.** When both pin and allowlist are set, pin wins (existing behavior — narrows chain to single provider, then allowlist filter applies; if pin not in allowlist, hard-fail). Recommend keep current pin semantics, document the interaction.
 5. **Judge ensemble (`call_judge_ensemble`) under allowlist.** Filter `_JUDGE_PROVIDERS` by allowlist — yes; if filtered to empty, return `[]` (caller already handles empty list per L484-486). Already the existing pattern.
 
 ## 5. Effort + dispatch shape
@@ -140,9 +140,9 @@ Per `project_privacy_via_community_composition`: "Platform owns enforcement prim
 
 - `docs/design-notes/2026-04-18-privacy-modes-for-sensitive-workflows.md` §3 — "router does not consult a per-universe allowlist today" gap statement (this note converts that gap into a primitive proposal).
 - `docs/audits/2026-04-28-rows-6-7-8-community-build-obviation-addendum.md` — commons-first audit; classified Q6.3 as still-platform.
-- `workflow/providers/router.py` — implementation target.
-- `workflow/config.py:29,33` — `preferred_writer/preferred_judge` (existing per-universe steering surface to extend).
-- `workflow/preferences.py:33` — `LOCAL_PROVIDERS = ["ollama-local"]` (already the canonical "local-only" pin source).
+- `tinyassets/providers/router.py` — implementation target.
+- `tinyassets/config.py:29,33` — `preferred_writer/preferred_judge` (existing per-universe steering surface to extend).
+- `tinyassets/preferences.py:33` — `LOCAL_PROVIDERS = ["ollama-local"]` (already the canonical "local-only" pin source).
 - `project_privacy_via_community_composition` (memory) — "Platform owns enforcement primitives only" rule.
 - `project_minimal_primitives_principle` (memory) — "fewest primitives" frame; allowlist-as-list is one field, not a taxonomy.
 

@@ -1,0 +1,27 @@
+# TinyAssets docker image prune — weekly cleanup of dangling images.
+#
+# Prevents disk fill from accumulated tinyassets-daemon image tags.
+# Each deploy pulls a new tag (~1.78 GB); without pruning, 20 deploys
+# fills a 25 GB Droplet.
+#
+# Prune strategy:
+#   docker image prune -af --filter until=168h  — remove images >7d old
+#   docker builder prune -af                    — remove buildkit cache
+#
+# Runs as root (requires docker socket). Triggered weekly by
+# tinyassets-prune.timer. PrivateTmp=yes for defense-in-depth.
+
+[Unit]
+Description=TinyAssets docker image prune (weekly cleanup)
+Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/deploy/hetzner-bootstrap.sh
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'docker image prune -af --filter until=168h && docker builder prune -af'
+TimeoutStartSec=10min
+PrivateTmp=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tinyassets-prune

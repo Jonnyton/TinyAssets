@@ -59,25 +59,25 @@ def _restore_code() -> str:
 
 
 def test_restore_does_not_call_docker_start():
-    """`docker start workflow-daemon` in the active code path was the
+    """`docker start tinyassets-daemon` in the active code path was the
     2026-04-22 drill blocker. Must stay out."""
     code = _restore_code()
-    assert "docker start workflow-daemon" not in code, (
-        "backup-restore.sh must not `docker start workflow-daemon` — "
+    assert "docker start tinyassets-daemon" not in code, (
+        "backup-restore.sh must not `docker start tinyassets-daemon` — "
         "the drill's own Start step owns that with retry + probe logic"
     )
 
 
 def test_restore_does_not_call_systemctl_start():
-    """`systemctl start workflow-daemon` / `restart` from restore would
+    """`systemctl start tinyassets-daemon` / `restart` from restore would
     trip the ExecStartPre ENV-UNREADABLE guard on a fresh drill droplet
     (Task #3). Keep it out of the restore path."""
     code = _restore_code()
     # Tolerant regex — catches `systemctl start`, `systemctl restart`,
     # and any `systemctl reload-or-restart` variants.
-    assert not re.search(r"systemctl\s+(start|restart|reload-or-restart)\s+workflow-daemon",
+    assert not re.search(r"systemctl\s+(start|restart|reload-or-restart)\s+tinyassets-daemon",
                          code), (
-        "backup-restore.sh must not systemctl-(re)start workflow-daemon"
+        "backup-restore.sh must not systemctl-(re)start tinyassets-daemon"
     )
 
 
@@ -86,8 +86,8 @@ def test_restore_still_stops_daemon_before_extract():
     the volume while the daemon has files open would corrupt the restored
     state. Only the post-extract start is removed."""
     code = _restore_code()
-    assert "docker stop workflow-daemon" in code, (
-        "pre-extract `docker stop workflow-daemon` is required for safe "
+    assert "docker stop tinyassets-daemon" in code, (
+        "pre-extract `docker stop tinyassets-daemon` is required for safe "
         "volume overwrite; do not remove alongside the start-coupling fix"
     )
 
@@ -154,7 +154,7 @@ def test_drill_start_compose_scopes_to_daemon_service():
     secrets, causing the step to abort before the probe ever runs.
     """
     run = _start_compose_step()["run"]
-    assert "compose -f /opt/workflow/deploy/compose.yml up -d daemon" in run, (
+    assert "compose -f /opt/tinyassets/deploy/compose.yml up -d daemon" in run, (
         "drill's compose-up must scope to `daemon` service only; a bare "
         "`up -d` would also try to start cloudflared + vector and fail"
     )

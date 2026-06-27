@@ -7,14 +7,14 @@ import json
 
 import pytest
 
-from workflow.api.wiki import (
+from tinyassets.api.wiki import (
     _WIKI_READ_DEFAULT_MAX_CHARS,
     _extract_keywords,
     _parse_frontmatter,
     _sanitize_slug,
     _wiki_similarity_score,
 )
-from workflow.universe_server import (
+from tinyassets.universe_server import (
     mcp,
     wiki,
 )
@@ -144,7 +144,7 @@ def wiki_dir(tmp_path, monkeypatch):
         page_content, encoding="utf-8"
     )
 
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
     return wiki_root
 
 
@@ -329,7 +329,7 @@ class TestWikiWrite:
     def test_wiki_categories_enum_matches_expanded_taxonomy(self):
         """Lock-in: the module constant carries all ten categories in
         the canonical order."""
-        from workflow.api.wiki import _WIKI_CATEGORIES
+        from tinyassets.api.wiki import _WIKI_CATEGORIES
 
         assert _WIKI_CATEGORIES == (
             "projects", "concepts", "people", "research",
@@ -433,7 +433,7 @@ class TestWikiPromote:
 
     def test_promote_first_page_can_link_to_seed_index(self, tmp_path, monkeypatch):
         wiki_root = tmp_path / "FreshWiki"
-        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
         content = (
             "---\ntitle: First Concept\ntype: concept\n"
             "created: 2026-05-05\nupdated: 2026-05-05\n"
@@ -515,7 +515,7 @@ class TestWikiConsolidate:
         content_a = (
             "---\ntitle: Same Topic\ntype: concept\n---\n\n"
             "Long content about multi-agent patterns and coordination for "
-            "[[workflow-engine]] with detailed discussion of the workflow.\n"
+            "[[workflow-engine]] with detailed discussion of the tinyassets.\n"
         )
         content_b = (
             "---\ntitle: Same Topic Extra\ntype: concept\n---\n\n"
@@ -610,7 +610,7 @@ class TestWikiLint:
 
     def test_lint_accepts_seed_index_as_wikilink_target(self, tmp_path, monkeypatch):
         wiki_root = tmp_path / "FreshWiki"
-        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
         content = (
             "---\ntitle: First Concept\ntype: concept\n"
             "confidence: medium\nsources: [first-note]\n---\n\n"
@@ -721,7 +721,7 @@ class TestWikiDispatch:
         """
         root = tmp_path / "nonexistent"
         assert not root.exists()
-        monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(root))
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(root))
         result = json.loads(wiki("list"))
         assert "error" not in result, (
             f"wiki list errored instead of auto-scaffolding: {result!r}"
@@ -889,7 +889,7 @@ class TestWikiFileBugDispatch:
                 raise FileExistsError(path)
             return real_open(path, mode, *args, **kwargs)
 
-        with patch("workflow.api.wiki.open", side_effect=fake_open, create=True):
+        with patch("tinyassets.api.wiki.open", side_effect=fake_open, create=True):
             out = json.loads(
                 wiki(
                     "file_bug",

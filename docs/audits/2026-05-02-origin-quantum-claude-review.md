@@ -29,7 +29,7 @@ Primary sources verified:
 
 The design's internal logic is sound: quantum results map to existing `EvalResult` (avoiding a new evaluator primitive), `QuantumTask` is artifact-only inside OptimizationRun (avoiding premature table promotion), `workflow[quantum]` extras pattern matches existing optional-dep convention.
 
-But the design depends on two unbuilt primitives (Capacity Grant + OptimizationRun), names one specific vendor (Origin Quantum + pyqpanda3) in its `workflow/quantum/providers/originq.py` tree, and has no current user pull. These are the three concerns the navigator flagged. I concur with each.
+But the design depends on two unbuilt primitives (Capacity Grant + OptimizationRun), names one specific vendor (Origin Quantum + pyqpanda3) in its `tinyassets/quantum/providers/originq.py` tree, and has no current user pull. These are the three concerns the navigator flagged. I concur with each.
 
 ## Cross-check against just-merged PLAN.md (PR #915)
 
@@ -48,7 +48,7 @@ Applying all five rules + the 2026-05-19 design-questions-scoping-rules feedback
 
 | Rule | Verdict | Notes |
 |---|---|---|
-| **1 — Minimal primitives** | CONDITIONAL PASS | The design correctly refuses a new EvaluatorKind. But it introduces `QuantumTask` artifact schema (10 fields) + `quantum/` capability pack + `workflow[quantum]` extras + `workflow/quantum/providers/originq.py` tree. The "promote-only-if-needed" guardrail is there; the conditional pass survives only if that guardrail holds. The deeper issue: per the just-landed Distribution Module, the canonical mechanism is `required_capabilities` + `external_tool_node`, not a `quantum/` capability pack. **The design ships a parallel surface, violating the Module Layout commitment.** |
+| **1 — Minimal primitives** | CONDITIONAL PASS | The design correctly refuses a new EvaluatorKind. But it introduces `QuantumTask` artifact schema (10 fields) + `quantum/` capability pack + `workflow[quantum]` extras + `tinyassets/quantum/providers/originq.py` tree. The "promote-only-if-needed" guardrail is there; the conditional pass survives only if that guardrail holds. The deeper issue: per the just-landed Distribution Module, the canonical mechanism is `required_capabilities` + `external_tool_node`, not a `quantum/` capability pack. **The design ships a parallel surface, violating the Module Layout commitment.** |
 | **2 — Community-build over platform-build** | PASS in principle, FAIL on the vendor choice | Optional-dep pattern is correctly community-build-friendly. But the `providers/originq.py` shape pre-picks Origin Quantum as THE first vendor, foreclosing community-composed multi-vendor evaluator chains. The community-build answer is: ship one quantum-execution `external_tool_node` template (composed from existing primitives), let community evolve provider-specific evaluators (Origin, IBM Qiskit, Rigetti, AWS Braket, Azure Quantum, Google Cirq, future zk-proof backends). The design picks a winner instead of shipping a substrate. |
 | **3 — Privacy + threat-model via community** | FAIL | The design enumerates "circuit public only if inputs public; raw provider payload private-by-default" — this is a frozen privacy taxonomy that Scoping Rule 3 explicitly prohibits. The community should compose this per Goal (e.g., a research-paper Goal might require all circuits public for reproducibility; a corporate Goal might require all circuits private). |
 | **4 — Commons-first** | CONDITIONAL FAIL on cloud path | Simulator path (local pyqpanda3) is host-side — commons-first compatible. Cloud QPU path sends data to Origin's servers (China-based per design note §Risks #10) — data leaves the host into a non-commons jurisdiction. The "data residency" risk is real and the design doesn't address it with explicit Capacity Grant policy gates. Cloud path violates Rule 4 until Capacity Grant exists with geopolitical-aware policy. |
@@ -72,7 +72,7 @@ Navigator memory also flagged a meta-issue: Codex wrote into navigator-scope age
 
 If quantum compute moves from "post-uptime, optional capability pack" to actively-in-flight, the design needs to address:
 
-1. **Multi-vendor abstraction first.** Cataloging IBM Qiskit / Rigetti / AWS Braket / Azure Quantum / Google Cirq with their tradeoffs, before any vendor-specific code lands. The design should be `external_tool_node`-compatible quantum execution, not a `workflow/quantum/` surface.
+1. **Multi-vendor abstraction first.** Cataloging IBM Qiskit / Rigetti / AWS Braket / Azure Quantum / Google Cirq with their tradeoffs, before any vendor-specific code lands. The design should be `external_tool_node`-compatible quantum execution, not a `tinyassets/quantum/` surface.
 
 2. **Capacity Grant + Credential Broker as a prerequisite.** Per the MCP host customer matrix model, the cloud-QPU path needs explicit credential-broker policy. The design references `capacity_grant_ref` and `executor_backend=origin_quantum_cloud` but those concepts don't exist yet. Build the substrate first.
 

@@ -53,13 +53,13 @@ def _make_branch_dict(node_defs=None, branch_def_id="b1", name="TestBranch"):
 
 
 def _call_validate_real(branch_dict):
-    from workflow.api.branches import _ext_branch_validate
+    from tinyassets.api.branches import _ext_branch_validate
 
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("workflow.api.helpers._base_path", return_value="/fake"),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
         patch(
-            "workflow.providers.base.get_sandbox_status",
+            "tinyassets.providers.base.get_sandbox_status",
             return_value={"bwrap_available": True},
         ),
     ):
@@ -68,57 +68,57 @@ def _call_validate_real(branch_dict):
 
 
 def _call_describe(branch_dict, validate_errors=None):
-    from workflow.api.branches import _ext_branch_describe
+    from tinyassets.api.branches import _ext_branch_describe
 
     if validate_errors is None:
         validate_errors = []
 
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("workflow.api.helpers._base_path", return_value="/fake"),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
         patch(
-            "workflow.api.branches._related_wiki_pages",
+            "tinyassets.api.branches._related_wiki_pages",
             return_value={"items": [], "truncated_count": 0},
         ),
-        patch("workflow.branch_versions.list_branch_versions", return_value=[]),
-        patch("workflow.daemon_server.list_branch_definitions", return_value=[]),
-        patch("workflow.branches.BranchDefinition.validate", return_value=validate_errors),
+        patch("tinyassets.branch_versions.list_branch_versions", return_value=[]),
+        patch("tinyassets.daemon_server.list_branch_definitions", return_value=[]),
+        patch("tinyassets.branches.BranchDefinition.validate", return_value=validate_errors),
     ):
         result = _ext_branch_describe({"branch_def_id": branch_dict["branch_def_id"]})
     return json.loads(result)
 
 
 def _call_get(branch_dict):
-    from workflow.api.branches import _ext_branch_get
+    from tinyassets.api.branches import _ext_branch_get
 
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("workflow.api.helpers._base_path", return_value="/fake"),
-        patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-        patch("workflow.api.engine_helpers._current_actor", return_value="tester"),
-        patch("workflow.api.market._gates_enabled", return_value=False),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+        patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+        patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
+        patch("tinyassets.api.market._gates_enabled", return_value=False),
         patch(
-            "workflow.api.branches._related_wiki_pages",
+            "tinyassets.api.branches._related_wiki_pages",
             return_value={"items": [], "truncated_count": 0},
         ),
-        patch("workflow.daemon_server.list_gate_claims", return_value=[]),
+        patch("tinyassets.daemon_server.list_gate_claims", return_value=[]),
     ):
         result = _ext_branch_get({"branch_def_id": branch_dict["branch_def_id"]})
     return json.loads(result)
 
 
 def _call_validate(branch_dict, validate_errors=None):
-    from workflow.api.branches import _ext_branch_validate
+    from tinyassets.api.branches import _ext_branch_validate
 
     if validate_errors is None:
         validate_errors = []
 
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("workflow.api.helpers._base_path", return_value="/fake"),
-        patch("workflow.branches.BranchDefinition.validate", return_value=validate_errors),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+        patch("tinyassets.branches.BranchDefinition.validate", return_value=validate_errors),
         patch(
-            "workflow.providers.base.get_sandbox_status",
+            "tinyassets.providers.base.get_sandbox_status",
             return_value={"bwrap_available": True},
         ),
     ):

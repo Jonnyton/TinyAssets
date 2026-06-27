@@ -17,20 +17,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from workflow.exceptions import (
+from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderError,
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from workflow.providers.base import (
+from tinyassets.providers.base import (
     DEGRADED_JUDGE_RESPONSE,
     BaseProvider,
     ModelConfig,
     ProviderResponse,
 )
-from workflow.providers.quota import QuotaTracker
-from workflow.providers.router import FALLBACK_CHAINS, ProviderRouter
+from tinyassets.providers.quota import QuotaTracker
+from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
 
 # =====================================================================
 # Helpers -- fake providers for testing
@@ -325,8 +325,8 @@ class TestPreferredProvider:
 
     @pytest.mark.asyncio
     async def test_api_key_preferred_writer_ignored_without_opt_in(self, monkeypatch):
-        from workflow import runtime_singletons as runtime
-        from workflow.config import UniverseConfig
+        from tinyassets import runtime_singletons as runtime
+        from tinyassets.config import UniverseConfig
 
         monkeypatch.setattr(
             runtime, "universe_config",
@@ -341,10 +341,10 @@ class TestPreferredProvider:
 
     @pytest.mark.asyncio
     async def test_preferred_writer_tried_first_with_api_key_opt_in(self, monkeypatch):
-        from workflow import runtime_singletons as runtime
-        from workflow.config import UniverseConfig
+        from tinyassets import runtime_singletons as runtime
+        from tinyassets.config import UniverseConfig
 
-        monkeypatch.setenv("WORKFLOW_ALLOW_API_KEY_PROVIDERS", "1")
+        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
         monkeypatch.setattr(
             runtime, "universe_config",
             UniverseConfig(preferred_writer="gemini-free"),
@@ -357,8 +357,8 @@ class TestPreferredProvider:
 
     @pytest.mark.asyncio
     async def test_api_key_preferred_judge_ignored_without_opt_in(self, monkeypatch):
-        from workflow import runtime_singletons as runtime
-        from workflow.config import UniverseConfig
+        from tinyassets import runtime_singletons as runtime
+        from tinyassets.config import UniverseConfig
 
         monkeypatch.setattr(
             runtime, "universe_config",
@@ -373,10 +373,10 @@ class TestPreferredProvider:
 
     @pytest.mark.asyncio
     async def test_preferred_judge_tried_first_with_api_key_opt_in(self, monkeypatch):
-        from workflow import runtime_singletons as runtime
-        from workflow.config import UniverseConfig
+        from tinyassets import runtime_singletons as runtime
+        from tinyassets.config import UniverseConfig
 
-        monkeypatch.setenv("WORKFLOW_ALLOW_API_KEY_PROVIDERS", "1")
+        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
         monkeypatch.setattr(
             runtime, "universe_config",
             UniverseConfig(preferred_judge="groq-free"),
@@ -389,8 +389,8 @@ class TestPreferredProvider:
 
     @pytest.mark.asyncio
     async def test_preferred_writer_falls_back_on_failure(self, monkeypatch):
-        from workflow import runtime_singletons as runtime
-        from workflow.config import UniverseConfig
+        from tinyassets import runtime_singletons as runtime
+        from tinyassets.config import UniverseConfig
 
         monkeypatch.setattr(
             runtime, "universe_config",
@@ -428,7 +428,7 @@ class TestJudgeEnsemble:
 
     @pytest.mark.asyncio
     async def test_fans_out_to_all_available_with_api_key_opt_in(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_ALLOW_API_KEY_PROVIDERS", "1")
+        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
         providers = _make_providers()
         router = ProviderRouter(providers=providers)
 
@@ -453,7 +453,7 @@ class TestJudgeEnsemble:
 
     @pytest.mark.asyncio
     async def test_ensemble_with_failures(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_ALLOW_API_KEY_PROVIDERS", "1")
+        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
         providers = {
             "codex": FakeProvider("codex", "openai", fail_with=ProviderError("x")),
             "gemini-free": FakeProvider("gemini-free", "google", "gemini-resp"),
@@ -502,7 +502,7 @@ class TestProviderRegistration:
 
     def test_claude_provider_not_registered_when_binary_absent(self):
         """claude-code must not appear in available_providers when 'claude' binary is missing."""
-        from workflow.providers.claude_provider import ClaudeProvider
+        from tinyassets.providers.claude_provider import ClaudeProvider
 
         with patch("shutil.which", return_value=None):
             assert not ClaudeProvider.is_available()
@@ -513,7 +513,7 @@ class TestProviderRegistration:
 
     def test_codex_provider_not_registered_when_binary_absent(self):
         """codex must not appear in available_providers when 'codex' binary is missing."""
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         with patch("shutil.which", return_value=None):
             assert not CodexProvider.is_available()
@@ -524,14 +524,14 @@ class TestProviderRegistration:
 
     def test_claude_provider_registered_when_binary_present(self):
         """claude-code is registered when 'claude' binary is found."""
-        from workflow.providers.claude_provider import ClaudeProvider
+        from tinyassets.providers.claude_provider import ClaudeProvider
 
         with patch("shutil.which", return_value="/usr/local/bin/claude"):
             assert ClaudeProvider.is_available()
 
     def test_codex_provider_registered_when_binary_present(self):
         """codex is registered when 'codex' binary is found."""
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         with patch("shutil.which", return_value="/usr/local/bin/codex"):
             assert CodexProvider.is_available()
@@ -565,7 +565,7 @@ class TestProviderRegistration:
 class TestClaudeProvider:
     @pytest.mark.asyncio
     async def test_success(self):
-        from workflow.providers.claude_provider import ClaudeProvider
+        from tinyassets.providers.claude_provider import ClaudeProvider
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"Hello world", b""))
@@ -574,7 +574,7 @@ class TestClaudeProvider:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("workflow.providers.claude_provider._resolve_claude_cmd",
+            patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
@@ -587,7 +587,7 @@ class TestClaudeProvider:
 
     @pytest.mark.asyncio
     async def test_exit_code_1_quick_triggers_unavailable(self):
-        from workflow.providers.claude_provider import ClaudeProvider
+        from tinyassets.providers.claude_provider import ClaudeProvider
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"", b"unavailable"))
@@ -596,7 +596,7 @@ class TestClaudeProvider:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("workflow.providers.claude_provider._resolve_claude_cmd",
+            patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
@@ -606,7 +606,7 @@ class TestClaudeProvider:
 
     @pytest.mark.asyncio
     async def test_timeout_kills_process(self):
-        from workflow.providers.claude_provider import ClaudeProvider
+        from tinyassets.providers.claude_provider import ClaudeProvider
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
@@ -614,7 +614,7 @@ class TestClaudeProvider:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("workflow.providers.claude_provider._resolve_claude_cmd",
+            patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()),
@@ -632,7 +632,7 @@ class TestClaudeProvider:
 class TestCodexProvider:
     @pytest.mark.asyncio
     async def test_success(self):
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"codex output", b""))
@@ -641,7 +641,7 @@ class TestCodexProvider:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
@@ -654,7 +654,7 @@ class TestCodexProvider:
 
     @pytest.mark.asyncio
     async def test_error_raises_provider_error(self):
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"", b"bad"))
@@ -663,7 +663,7 @@ class TestCodexProvider:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
@@ -674,7 +674,7 @@ class TestCodexProvider:
     @pytest.mark.asyncio
     async def test_empty_stdout_raises_provider_error(self):
         """Empty stdout with exit 0 must raise ProviderError, not return ''."""
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
@@ -683,7 +683,7 @@ class TestCodexProvider:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
@@ -694,7 +694,7 @@ class TestCodexProvider:
     @pytest.mark.asyncio
     async def test_auth_failure_exit_0_raises_provider_error(self):
         """codex v0.122 exits 0 on 401 but emits Unauthorized in stderr."""
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(
@@ -706,7 +706,7 @@ class TestCodexProvider:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
@@ -717,7 +717,7 @@ class TestCodexProvider:
     @pytest.mark.asyncio
     async def test_skip_git_repo_check_in_command_without_bwrap(self):
         """codex exec must bypass sandbox only when bwrap is unavailable."""
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         captured_cmd = []
         mock_proc = AsyncMock()
@@ -731,9 +731,9 @@ class TestCodexProvider:
             return mock_proc
 
         with (
-            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("workflow.providers.codex_provider.get_sandbox_status",
+            patch("tinyassets.providers.codex_provider.get_sandbox_status",
                   return_value={"bwrap_available": False, "reason": "test"}),
             patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         ):
@@ -753,8 +753,8 @@ class TestCodexProvider:
     @pytest.mark.asyncio
     async def test_runs_from_repo_root_so_coding_tasks_can_read_source(self):
         """BUG-060: loop investigations need repo source/tests, not an empty tempdir."""
-        import workflow.providers.codex_provider as codex_provider
-        from workflow.providers.codex_provider import CodexProvider
+        import tinyassets.providers.codex_provider as codex_provider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         captured_cmd = []
         mock_proc = AsyncMock()
@@ -768,9 +768,9 @@ class TestCodexProvider:
             return mock_proc
 
         with (
-            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("workflow.providers.codex_provider.get_sandbox_status",
+            patch("tinyassets.providers.codex_provider.get_sandbox_status",
                   return_value={"bwrap_available": False, "reason": "test"}),
             patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         ):
@@ -784,7 +784,7 @@ class TestCodexProvider:
     @pytest.mark.asyncio
     async def test_model_can_be_overridden_by_env(self, monkeypatch):
         """Operators can move the provider forward after the deployed CLI supports it."""
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         captured_cmd = []
         mock_proc = AsyncMock()
@@ -797,11 +797,11 @@ class TestCodexProvider:
             captured_cmd.extend(args)
             return mock_proc
 
-        monkeypatch.setenv("WORKFLOW_CODEX_MODEL", "gpt-5.5")
+        monkeypatch.setenv("TINYASSETS_CODEX_MODEL", "gpt-5.5")
         with (
-            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("workflow.providers.codex_provider.get_sandbox_status",
+            patch("tinyassets.providers.codex_provider.get_sandbox_status",
                   return_value={"bwrap_available": True, "reason": None}),
             patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         ):
@@ -813,7 +813,7 @@ class TestCodexProvider:
     @pytest.mark.asyncio
     async def test_uses_full_auto_when_bwrap_available(self):
         """Healthy bwrap hosts should keep Codex's sandboxed auto mode."""
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.codex_provider import CodexProvider
 
         captured_cmd = []
         mock_proc = AsyncMock()
@@ -827,9 +827,9 @@ class TestCodexProvider:
             return mock_proc
 
         with (
-            patch("workflow.providers.codex_provider._resolve_codex_cmd",
+            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("workflow.providers.codex_provider.get_sandbox_status",
+            patch("tinyassets.providers.codex_provider.get_sandbox_status",
                   return_value={"bwrap_available": True, "reason": None}),
             patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         ):
@@ -852,7 +852,7 @@ class TestOllamaProvider:
     async def test_success(self):
         import json
 
-        from workflow.providers.ollama_provider import OllamaProvider
+        from tinyassets.providers.ollama_provider import OllamaProvider
 
         response_body = json.dumps({"response": "ollama output"}).encode()
         mock_response = MagicMock()
@@ -872,7 +872,7 @@ class TestOllamaProvider:
     async def test_connection_refused(self):
         import urllib.error
 
-        from workflow.providers.ollama_provider import OllamaProvider
+        from tinyassets.providers.ollama_provider import OllamaProvider
 
         with patch(
             "urllib.request.urlopen",
@@ -918,7 +918,7 @@ class TestGeminiProvider:
                 "os.environ",
                 {
                     "GEMINI_API_KEY": "test-key",
-                    "WORKFLOW_ALLOW_API_KEY_PROVIDERS": "1",
+                    "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1",
                 },
             ),
             patch.dict(
@@ -930,7 +930,7 @@ class TestGeminiProvider:
                 },
             ),
         ):
-            from workflow.providers.gemini_provider import GeminiProvider
+            from tinyassets.providers.gemini_provider import GeminiProvider
 
             provider = GeminiProvider()
             task = asyncio.create_task(
@@ -954,7 +954,7 @@ class TestGeminiProvider:
 class TestGrokProvider:
     def test_requires_api_key_provider_opt_in(self):
         with patch.dict("os.environ", {"XAI_API_KEY": "test-key"}, clear=True):
-            from workflow.providers.grok_provider import GrokProvider
+            from tinyassets.providers.grok_provider import GrokProvider
 
             with pytest.raises(ProviderUnavailableError, match="disabled by default"):
                 GrokProvider()
@@ -975,11 +975,11 @@ class TestGrokProvider:
         with (
             patch.dict(
                 "os.environ",
-                {"XAI_API_KEY": "test-key", "WORKFLOW_ALLOW_API_KEY_PROVIDERS": "1"},
+                {"XAI_API_KEY": "test-key", "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
             ),
             patch.dict(sys.modules, {"openai": fake_openai}),
         ):
-            from workflow.providers.grok_provider import GrokProvider
+            from tinyassets.providers.grok_provider import GrokProvider
 
             provider = GrokProvider()
             resp = await provider.complete("prompt", "system", ModelConfig())
@@ -1002,11 +1002,11 @@ class TestGrokProvider:
         with (
             patch.dict(
                 "os.environ",
-                {"XAI_API_KEY": "test-key", "WORKFLOW_ALLOW_API_KEY_PROVIDERS": "1"},
+                {"XAI_API_KEY": "test-key", "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
             ),
             patch.dict(sys.modules, {"openai": fake_openai}),
         ):
-            from workflow.providers.grok_provider import GrokProvider
+            from tinyassets.providers.grok_provider import GrokProvider
 
             provider = GrokProvider()
             with pytest.raises(ProviderUnavailableError):
@@ -1025,11 +1025,11 @@ class TestGrokProvider:
         with (
             patch.dict(
                 "os.environ",
-                {"XAI_API_KEY": "test-key", "WORKFLOW_ALLOW_API_KEY_PROVIDERS": "1"},
+                {"XAI_API_KEY": "test-key", "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
             ),
             patch.dict(sys.modules, {"openai": fake_openai}),
         ):
-            from workflow.providers.grok_provider import GrokProvider
+            from tinyassets.providers.grok_provider import GrokProvider
 
             provider = GrokProvider()
             with pytest.raises(ProviderError):
@@ -1039,12 +1039,12 @@ class TestGrokProvider:
         with (
             patch.dict(
                 "os.environ",
-                {"WORKFLOW_ALLOW_API_KEY_PROVIDERS": "1"},
+                {"TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
                 clear=True,
             ),
             patch.dict(sys.modules, {"openai": MagicMock()}),
         ):
-            from workflow.providers.grok_provider import GrokProvider
+            from tinyassets.providers.grok_provider import GrokProvider
 
             with pytest.raises(ProviderUnavailableError, match="XAI_API_KEY"):
                 GrokProvider()

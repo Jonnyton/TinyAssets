@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.credential_vault import (
+from tinyassets.credential_vault import (
     VAULT_FILENAME,
     apply_provider_auth_env,
     claude_subscription_auth_available,
@@ -29,7 +29,7 @@ def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
             {
                 "credential_type": "vcs",
                 "service": "github",
-                "destination": "Jonnyton/Workflow",
+                "destination": "Jonnyton/TinyAssets",
                 "purpose": "write",
                 "token": "ghs_secret",
             },
@@ -70,14 +70,14 @@ def test_resolve_github_token_uses_exact_destination_and_purpose(tmp_path):
             {
                 "credential_type": "vcs",
                 "service": "github",
-                "destination": "Jonnyton/Workflow",
+                "destination": "Jonnyton/TinyAssets",
                 "purpose": "read",
                 "token": "read-token",
             },
             {
                 "credential_type": "vcs",
                 "service": "github",
-                "destination": "Jonnyton/Workflow",
+                "destination": "Jonnyton/TinyAssets",
                 "purpose": "write",
                 "token": "write-token",
             },
@@ -85,10 +85,10 @@ def test_resolve_github_token_uses_exact_destination_and_purpose(tmp_path):
     )
 
     assert resolve_github_token(
-        tmp_path, "Jonnyton/Workflow", purpose="write"
+        tmp_path, "Jonnyton/TinyAssets", purpose="write"
     ) == "write-token"
     assert resolve_github_token(
-        tmp_path, "Jonnyton/Workflow", purpose="read"
+        tmp_path, "Jonnyton/TinyAssets", purpose="read"
     ) == "read-token"
     assert resolve_github_token(tmp_path, "jonnyton/workflow", purpose="write") == ""
 
@@ -165,7 +165,7 @@ def test_apply_provider_auth_env_uses_workflow_universe(tmp_path):
             }
         ],
     )
-    env = {"WORKFLOW_UNIVERSE": str(tmp_path)}
+    env = {"TINYASSETS_UNIVERSE": str(tmp_path)}
 
     apply_provider_auth_env(env, "claude-code")
 

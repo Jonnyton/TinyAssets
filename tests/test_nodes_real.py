@@ -459,9 +459,9 @@ class TestCommitNode:
     def test_commit_persists_consistency_audit_notes(self, tmp_story_db, tmp_path):
         from unittest.mock import patch
 
-        from workflow.evaluation.process import ProcessCheck, ProcessEvaluation
-        from workflow.evaluation.structural import CheckResult, StructuralResult
-        from workflow.notes import list_notes
+        from tinyassets.evaluation.process import ProcessCheck, ProcessEvaluation
+        from tinyassets.evaluation.structural import CheckResult, StructuralResult
+        from tinyassets.notes import list_notes
 
         state = _base_state(tmp_story_db, _universe_path=str(tmp_path))
         state.update(orient(state))

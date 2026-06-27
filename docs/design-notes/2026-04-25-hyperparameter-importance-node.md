@@ -166,7 +166,7 @@ The structural win: Priya's ecology reviewers never create a W&B account. The CS
 
 ## 7. Fit Within Project Primitives
 
-This node satisfies the `Evaluator` protocol (`workflow.evaluation.EvalResult`) via structural subtyping — the same pattern as `PublishedPaperEvaluator`, `MergedPREvaluator`, and `DeployedAppEvaluator` in `workflow/outcomes/evaluators.py`. No inheritance required; no engine changes.
+This node satisfies the `Evaluator` protocol (`workflow.evaluation.EvalResult`) via structural subtyping — the same pattern as `PublishedPaperEvaluator`, `MergedPREvaluator`, and `DeployedAppEvaluator` in `tinyassets/outcomes/evaluators.py`. No inheritance required; no engine changes.
 
 It also aligns with the `Evaluation layers — unifying frame` design principle: "whole platform IS evaluation-driven." A sweep-result evaluator is a first-class platform primitive, not a one-off script.
 
@@ -192,6 +192,6 @@ It also aligns with the `Evaluation layers — unifying frame` design principle:
 
 2. **Minimum runs threshold:** Below how many runs is importance analysis meaningless? Suggest `min_runs=10` with a `"skip"` verdict below that — mirrors the `EvalResult(verdict="skip")` pattern in existing evaluators.
 
-3. **Module placement:** Should this live under `workflow/outcomes/` (alongside the existing evaluators) or in a future `workflow/domains/scientific/` module? The existing evaluators are general-purpose; this is domain-specific. Recommend `workflow/domains/scientific/` when that module is created.
+3. **Module placement:** Should this live under `tinyassets/outcomes/` (alongside the existing evaluators) or in a future `tinyassets/domains/scientific/` module? The existing evaluators are general-purpose; this is domain-specific. Recommend `tinyassets/domains/scientific/` when that module is created.
 
-4. **Node registration:** Does the node auto-register in the catalog on daemon start, or is it opt-in via the `WORKFLOW_SCIENTIFIC_DOMAIN=1` feature flag? Consistent with the flag-at-import-time pattern (see agent memory `feedback_flag_at_import_time.md`): registration-gate flags read at import.
+4. **Node registration:** Does the node auto-register in the catalog on daemon start, or is it opt-in via the `TINYASSETS_SCIENTIFIC_DOMAIN=1` feature flag? Consistent with the flag-at-import-time pattern (see agent memory `feedback_flag_at_import_time.md`): registration-gate flags read at import.

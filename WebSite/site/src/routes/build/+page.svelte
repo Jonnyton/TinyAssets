@@ -15,7 +15,7 @@
   import Term from '$lib/components/Term.svelte';
   import Tick from '$lib/components/Tick.svelte';
 
-  const REPO_URL = 'https://github.com/Jonnyton/Workflow';
+  const REPO_URL = 'https://github.com/Jonnyton/TinyAssets';
 
   // Live repo pulse — fetched, never baked. Until the read lands the strip
   // says it's reading; afterwards every value carries its read-stamp.
@@ -54,10 +54,10 @@
   // Door-two repo steps. Each links to a real file/page on GitHub.
   const REPO_STEPS = [
     {
-      cmd: 'git clone https://github.com/Jonnyton/Workflow',
-      note: 'Clone the engine.',
+      cmd: 'git clone https://github.com/Jonnyton/TinyAssets',
+      note: 'Clone the platform repo from the canonical TinyAssets GitHub path.',
       href: REPO_URL,
-      label: 'Workflow on GitHub'
+      label: 'TinyAssets on GitHub'
     },
     {
       cmd: 'pip install -e .[dev]',
@@ -84,7 +84,7 @@
   <title>Build me — two doors into contributing to Tiny</title>
   <meta
     name="description"
-    content="Two doors into building Tiny: improve the engine through your chatbot without ever cloning code, or clone the Workflow repository and work on it directly. Both end in the same loop — evidence gates, cross-family review, a human merge key."
+    content="Two doors into building TinyAssets: improve Tiny through your chatbot without ever cloning code, or clone the TinyAssets GitHub repository and work on it directly. Both end in the same loop — evidence gates, cross-family review, a human merge key."
   />
 </svelte:head>
 
@@ -104,7 +104,7 @@
       and a <em>human key</em> that has to turn before anything merges.
     </p>
     <p class="cover__naming">
-      The being is <strong>Tiny</strong>; the engine is <strong>Workflow</strong>.
+      The platform is <strong>TinyAssets</strong>; the being is <strong>Tiny</strong>.
       Contributing to either is contributing to both.
     </p>
   </div>
@@ -189,7 +189,7 @@
       for the architecture and
       <a href={`${REPO_URL}/blob/main/CONTRIBUTING.md`} target="_blank" rel="noreferrer">CONTRIBUTING.md</a>
       for how work lands. When you're ready, open a pull request against
-      <a href={REPO_URL} target="_blank" rel="noreferrer">Workflow on GitHub ↗</a>.
+      <a href={REPO_URL} target="_blank" rel="noreferrer">TinyAssets on GitHub ↗</a>.
     </p>
   </div>
 </section>

@@ -10,7 +10,7 @@ live testing even though the user only said "workflow" and "knowledge".
 
 from __future__ import annotations
 
-from workflow.api.prompts import _CONTROL_STATION_PROMPT
+from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
 
 class TestVocabularyDisciplineSection:

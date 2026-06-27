@@ -10,7 +10,7 @@ This queue starts after the implementation slice shipped. The live state is:
 - Directory/review endpoint: `https://tinyassets.io/mcp-directory`
 - Public canary: green for both endpoints on 2026-05-01
 - Directory tool-list: 11 narrow tools from `/mcp-directory`
-- MCP Registry listing: live as `io.github.Jonnyton/workflow-universe-server`
+- MCP Registry listing: live as `io.github.Jonnyton/tinyassets-universe-server`
 
 The rollout is not complete until Workflow is accepted into host-native
 directories or registries, normal eligible users can find/add it without
@@ -44,10 +44,10 @@ Completed steps:
 1. Installed and SHA-verified `mcp-publisher` v1.7.6.
 2. Authenticated from the local `gh` session without logging the token.
 3. Fixed the registry namespace to the case-sensitive owner namespace
-   `io.github.Jonnyton/workflow-universe-server`.
+   `io.github.Jonnyton/tinyassets-universe-server`.
 4. Ran `mcp-publisher publish packaging/registry/server.json`.
 5. Verified the public registry API returns one active latest listing:
-   `https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Jonnyton/workflow-universe-server`.
+   `https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Jonnyton/tinyassets-universe-server`.
 
 Follow-up: add registry-aware client proof when a host consumes the listing.
 
@@ -65,7 +65,7 @@ Submit:
 
 Acceptance proof:
 
-- Workflow appears in the Claude Connectors Directory.
+- TinyAssets appears in the Claude Connectors Directory.
 - A normal logged-in Claude user adds Workflow without pasting a custom URL.
 - Claude invokes `get_workflow_status` or `list_workflow_goals`.
 - Trace goes to `output/claude_chat_trace.md` and summary to
@@ -100,7 +100,7 @@ Known blockers:
 
 Acceptance proof:
 
-- Workflow appears in the ChatGPT App Directory for eligible logged-in users.
+- TinyAssets appears in the ChatGPT App Directory for eligible logged-in users.
 - A normal eligible user invokes Workflow without Developer Mode.
 - At least one read-only tool call succeeds and is logged in the proof registry.
 
@@ -177,7 +177,7 @@ Progress:
 
 Create a compact package for host/platform maintainers:
 
-- One-paragraph category: "live collaborative workflow/node daemon for AI agents"
+- One-paragraph category: "live collaborative tinyassets/node daemon for AI agents"
 - Endpoint and transport matrix
 - Tool surface summary
 - Privacy/safety/support links

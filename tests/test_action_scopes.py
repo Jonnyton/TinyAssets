@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from workflow.auth.middleware import auth_middleware, require_action_scope, set_provider
-from workflow.auth.provider import (
+from tinyassets.auth.middleware import auth_middleware, require_action_scope, set_provider
+from tinyassets.auth.provider import (
     AuthProvider,
     DevAuthProvider,
     Identity,
@@ -63,18 +63,18 @@ def _reset_auth_provider() -> None:
 def test_action_scope_registry_is_derived_from_internal_dispatch_tables() -> None:
     registry = build_action_scope_registry()
 
-    assert registry["universe.inspect"].oauth_scope == "workflow.universe.read"
+    assert registry["universe.inspect"].oauth_scope == "tinyassets.universe.read"
     assert registry["universe.inspect"].effect == "read"
     assert "UNIVERSE_ACTIONS" in registry["universe.inspect"].source
 
-    assert registry["universe.daemon_banish"].oauth_scope == "workflow.universe.admin"
+    assert registry["universe.daemon_banish"].oauth_scope == "tinyassets.universe.admin"
     assert registry["universe.daemon_banish"].effect == "admin"
 
-    assert registry["wiki.read"].oauth_scope == "workflow.wiki.read"
-    assert registry["wiki.write"].oauth_scope == "workflow.wiki.write"
+    assert registry["wiki.read"].oauth_scope == "tinyassets.wiki.read"
+    assert registry["wiki.write"].oauth_scope == "tinyassets.wiki.write"
 
-    assert registry["extensions.run_branch"].oauth_scope == "workflow.extensions.costly"
-    assert registry["gates.list"].oauth_scope == "workflow.gates.read"
+    assert registry["extensions.run_branch"].oauth_scope == "tinyassets.extensions.costly"
+    assert registry["gates.list"].oauth_scope == "tinyassets.gates.read"
 
     assert all("schema" not in row.source.lower() for row in registry.values())
 
@@ -99,21 +99,21 @@ def test_money_escrow_writes_require_write_scope_not_read() -> None:
             f"must require write authorization"
         )
         assert row.effect in ("write", "costly", "admin"), row.effect
-        assert row.oauth_scope != "workflow.extensions.read", action
+        assert row.oauth_scope != "tinyassets.extensions.read", action
 
 
 def test_action_scope_status_self_audit_reports_table_and_caveats() -> None:
-    from workflow.api.extensions import _extensions_impl
+    from tinyassets.api.extensions import _extensions_impl
 
     payload = json.loads(_extensions_impl(action="get_action_scope_status"))
 
     assert payload["source"] == "internal_dispatch_action_registries"
     assert "not raw MCP tool schemas" in payload["scope_derivation"]
-    assert "workflow.universe.admin" in payload["oauth_scopes"]
+    assert "tinyassets.universe.admin" in payload["oauth_scopes"]
     assert payload["counts"]["actions"] >= 80
     assert any(
         row["action_name"] == "universe.daemon_banish"
-        and row["oauth_scope"] == "workflow.universe.admin"
+        and row["oauth_scope"] == "tinyassets.universe.admin"
         for row in payload["actions"]
     )
     assert payload["caveats"]
@@ -123,17 +123,17 @@ def test_permission_action_requires_named_scope_when_present() -> None:
     identity = Identity(
         user_id="user::operator",
         username="operator",
-        capabilities=["workflow.universe.write"],
+        capabilities=["tinyassets.universe.write"],
     )
 
     verdict = identity.can(
         PermissionAction(
             name="universe.submit_request",
-            required_scope="workflow.universe.write",
+            required_scope="tinyassets.universe.write",
         )
     )
     assert verdict.allowed is True
-    assert verdict.required_scope == "workflow.universe.write"
+    assert verdict.required_scope == "tinyassets.universe.write"
 
     legacy_only = Identity(
         user_id="user::legacy",
@@ -143,7 +143,7 @@ def test_permission_action_requires_named_scope_when_present() -> None:
     assert legacy_only.can(
         PermissionAction(
             name="universe.submit_request",
-            required_scope="workflow.universe.write",
+            required_scope="tinyassets.universe.write",
         )
     ).allowed is False
 
@@ -152,7 +152,7 @@ def test_action_scope_checkpoint_enforces_only_when_auth_is_enabled() -> None:
     set_provider(StaticAuthProvider(Identity(
         user_id="user::operator",
         username="operator",
-        capabilities=["workflow.universe.admin"],
+        capabilities=["tinyassets.universe.admin"],
     )))
     auth_middleware("ok")
     require_action_scope("universe", "daemon_banish")
@@ -160,10 +160,10 @@ def test_action_scope_checkpoint_enforces_only_when_auth_is_enabled() -> None:
     set_provider(StaticAuthProvider(Identity(
         user_id="user::reader",
         username="reader",
-        capabilities=["workflow.universe.read"],
+        capabilities=["tinyassets.universe.read"],
     )))
     auth_middleware("ok")
-    with pytest.raises(PermissionError, match="workflow.universe.admin"):
+    with pytest.raises(PermissionError, match="tinyassets.universe.admin"):
         require_action_scope("universe", "daemon_banish")
 
     set_provider(DevAuthProvider())

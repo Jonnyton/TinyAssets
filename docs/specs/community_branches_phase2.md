@@ -82,7 +82,7 @@ Rationale: conditional edges are dead weight without a runner to execute them. R
 
 ## Acceptance criteria
 
-1. All 10 ship-list actions registered in `workflow/universe_server.py` under `extensions`.
+1. All 10 ship-list actions registered in `tinyassets/universe_server.py` under `extensions`.
 2. Each action writes through the public action ledger (or #11 lands first).
 3. A `branch_design_guide` MCP prompt walks users through the recipe-tracker vignette.
 4. End-to-end test: build the recipe-tracker BranchDefinition via MCP calls only, `validate_branch` returns no errors, `describe_branch` produces a coherent paragraph.

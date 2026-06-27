@@ -1,6 +1,6 @@
-# tinyassets.io — Workflow site (Track B Phase 1)
+# tinyassets.io — TinyAssets site (Track B Phase 1)
 
-Landing-first SvelteKit static site for the Workflow product, deploying to GitHub Pages with `tinyassets.io` as a custom domain. Replaces the legacy crypto-investor homepage with the Workflow positioning per spec `docs/specs/2026-04-18-web-app-landing-and-catalog.md`.
+Landing-first SvelteKit static site for the TinyAssets platform, deploying to GitHub Pages with `tinyassets.io` as a custom domain. Replaces the legacy crypto-investor homepage with the TinyAssets positioning per spec `docs/specs/2026-04-18-web-app-landing-and-catalog.md`.
 
 **Phase 1 polished:** `/`, `/connect`, `/legal`.
 **Phase 1 stubbed:** `/catalog`, `/host`, `/contribute`, `/status`, `/account`, `/economy`.
@@ -18,7 +18,7 @@ Landing-first SvelteKit static site for the Workflow product, deploying to GitHu
 Requires Node.js 20+. Install + run:
 
 ```powershell
-cd C:\Users\Jonathan\Projects\Workflow\WebSite\site
+cd C:\Users\Jonathan\Projects\TinyAssets\WebSite\site
 npm install
 npm run dev          # http://localhost:5173
 ```
@@ -51,12 +51,12 @@ npm run build
 
 ```
 src/
-├── app.html                       HTML shell (Workflow mark favicon, theme color)
+├── app.html                       HTML shell (TinyAssets mark favicon, theme color)
 ├── app.css                        Imports tokens; tiny app-only utilities
 ├── app.d.ts                       TypeScript ambient types
 ├── routes/
 │   ├── +layout.svelte             TopNav + Footer chrome
-│   ├── +page.svelte               / landing — Hero + ThreeLayer + WhyWorkflow + TokenStrip
+│   ├── +page.svelte               / landing — Hero + ThreeLayer + WhyTinyAssets + TokenStrip
 │   ├── connect/+page.svelte       /connect — MCP URL paste + 2-step
 │   ├── legal/+page.svelte         /legal — license + privacy stubs
 │   ├── catalog/+page.svelte       /catalog — Phase 1.5 stub
@@ -71,13 +71,12 @@ src/
 │   │   │   ├── Button.svelte           primary/secondary/ghost/link
 │   │   │   ├── RitualLabel.svelte      small-caps mono kicker
 │   │   │   └── StatusPill.svelte       live/idle/paid/self/error pill
-│   │   ├── WorkflowMark.svelte          live loop + project graph brand mark
+│   │   ├── TinyAssetsMark.svelte        TinyAssets brand mark
 │   │   ├── TopNav.svelte                sticky-translucent nav
 │   │   ├── Footer.svelte                footer chrome + contact
 │   │   ├── ChatDemo.svelte              faux Claude.ai transcript (hero showcase)
 │   │   ├── Hero.svelte                  landing hero (copy + ChatDemo)
 │   │   ├── ThreeLayer.svelte            Goal · Branch · Daemon trinity
-│   │   ├── WhyWorkflow.svelte           four why-points
 │   │   └── TokenStrip.svelte            tinyassets economy + 3-chain addresses
 │   ├── content/
 │   │   └── token-info.json              single source of truth for ta token (BASE/PulseChain/BSC)
@@ -86,8 +85,9 @@ src/
 │   └── styles/
 │       └── tokens.css                   canonical design tokens (Ink/Violet/Ember/Bone palette)
 └── static/
-    ├── workflow-mark.svg                favicon / static brand mark
-    ├── workflow-mark.png                raster fallback for the static brand mark
+    ├── logo-mark.png                    TinyAssets raster brand mark
+    ├── tinyassets-mark.svg              favicon / static brand mark
+    ├── tinyassets-mark.png              raster fallback for the static brand mark
     ├── CNAME                            tinyassets.io custom domain
     └── .nojekyll                        disable GitHub Jekyll processing
 ```

@@ -207,7 +207,7 @@ If Step 0 surfaces a regression, drop the action handler. PatchNotes dataclass (
 - Migration sequencing: this action is Step 1 of #66 §6 4-step migration.
 - Orthogonal (no auth check): `docs/design-notes/2026-04-25-storage-auth-refactor-proposal.md` (Task #69) — read-only actions don't gate on storage-auth.
 - Orthogonal (no ledger event): `docs/design-notes/2026-04-25-contribution-ledger-proposal.md` (Task #48) — read-only construction doesn't emit events.
-- Existing dispatch pattern reference: `workflow/universe_server.py:6804` (`extensions` action dispatch dict). New action registers alongside `build_branch`, `patch_branch`, etc.
+- Existing dispatch pattern reference: `tinyassets/universe_server.py:6804` (`extensions` action dispatch dict). New action registers alongside `build_branch`, `patch_branch`, etc.
 - Existing JSON-arg pattern reference: `_action_extensions_patch_branch` (`changes_json` decode), `_action_extensions_build_branch` (`spec_json` decode).
 - Authentication source pattern: `goals action=propose` reads `_current_actor()` for `goal.author`; this action does the same for `author_actor_id`.
 - Convention adherence: `docs/design-notes/2026-04-25-design-proposal-pattern-convention.md` — this proposal follows the 5-move recipe (investigate → tradeoff → recommend → opens → SHIP).

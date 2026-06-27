@@ -266,11 +266,11 @@ Two impl-side pair-reads complete (#78, this). Patterns observed:
   - `80a1e14` Task #65a — schema + `_execute_branch_core` extraction.
   - `ee254b0` Task #65b — `execute_branch_version_async` + `_action_run_branch_version` + `SnapshotSchemaDrift`.
 - Cross-check sources:
-  - `workflow/runs.py:238-248` (schema migration).
-  - `workflow/runs.py:1680-1786` (`_execute_branch_core` + `execute_branch_async` wrapper).
-  - `workflow/runs.py:1789-1802` (`SnapshotSchemaDrift` class).
-  - `workflow/runs.py:1805-1870` (`execute_branch_version_async` helper).
-  - `workflow/universe_server.py:8423-8539` (`_action_run_branch_version` + registry).
+  - `tinyassets/runs.py:238-248` (schema migration).
+  - `tinyassets/runs.py:1680-1786` (`_execute_branch_core` + `execute_branch_async` wrapper).
+  - `tinyassets/runs.py:1789-1802` (`SnapshotSchemaDrift` class).
+  - `tinyassets/runs.py:1805-1870` (`execute_branch_version_async` helper).
+  - `tinyassets/universe_server.py:8423-8539` (`_action_run_branch_version` + registry).
 - Pair-read #59 (design-vs-design): `docs/audits/2026-04-25-pair-54-vs-56-convergence.md` — origin of refactor-as-separate-dispatch + schema-drift recommendations both honored here.
 - Sibling impl-pair-read: `docs/audits/2026-04-25-impl-71-72-75-vs-48-convergence.md` (#78, navigator) — cross-check 6 composition verified at #48 emit-site.
 - Composition with #56 sub-branch (impl in flight): `docs/design-notes/2026-04-25-sub-branch-invocation-proposal.md` (#56 §3 calls `execute_branch_version_async` directly — helper is ready).

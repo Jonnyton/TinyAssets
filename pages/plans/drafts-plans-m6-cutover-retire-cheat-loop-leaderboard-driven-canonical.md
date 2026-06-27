@@ -10,7 +10,7 @@ wiki_source_updated: 2026-05-21T00:00:00Z
 
 # M6 Cutover Plan
 
-**Goal:** Retire the cheat patch loop (env-var-wired `WORKFLOW_BUG_INVESTIGATION_GOAL_ID` auto-trigger + hardcoded Loop 1 handler) and route ALL patch-request flow through Goal `4ff5862cc26d` with a **leaderboard-selected canonical handler that re-iterates automatically** as community designers publish better branches.
+**Goal:** Retire the cheat patch loop (env-var-wired `TINYASSETS_BUG_INVESTIGATION_GOAL_ID` auto-trigger + hardcoded Loop 1 handler) and route ALL patch-request flow through Goal `4ff5862cc26d` with a **leaderboard-selected canonical handler that re-iterates automatically** as community designers publish better branches.
 
 **Core design principle (host directive 2026-05-21):** The canonical Loop 2 handler MUST be picked by the substrate (PR-123 `recommended_parent_for_fork`), not by host gut-feel. This makes the loop self-iterating -- every time a new winner emerges on the leaderboard, the canonical handler rolls forward without manual intervention. The cutover ships the tooling AND the auto-iteration mechanism.
 
@@ -27,8 +27,8 @@ This is the architecture host has been pushing toward across this session: **com
 ## Prerequisites (must be true before cutover)
 
 1. **PR #969 (Phase 2 Slice 1) merged** -- real-PR emission authority + idempotency + consent gates land. Without this, the user-buildable loop can only emit packet-only output. Cheat loop still has real-PR capability the new loop lacks.
-2. **`WORKFLOW_GITHUB_PR_CAPABILITIES` JSON map set** in production env with at least one repo destination (likely `Jonnyton/Workflow` for the dogfooding cycle).
-3. **`effector_consents` row** granted via `extensions action=grant_effector_consent sink=github_pull_request destination=Jonnyton/Workflow granted_by=host` for the dogfooding destination.
+2. **`TINYASSETS_GITHUB_PR_CAPABILITIES` JSON map set** in production env with at least one repo destination (likely `Jonnyton/TinyAssets` for the dogfooding cycle).
+3. **`effector_consents` row** granted via `extensions action=grant_effector_consent sink=github_pull_request destination=Jonnyton/TinyAssets granted_by=host` for the dogfooding destination.
 4. **Dispatcher verified live.** Prior session evidence shows queued `bug_investigation` requests (`b72b6cfc-...`, `513ae266-...`, `ae896680-...`) were never claimed. Before cutover, file a fresh test bug + verify the dispatcher actually picks it up + completes a run. If broken, cheat retirement triggers an outage. Cutover blocks on this check.
 5. **PR-126 gate-claim flow verified live** -- Eli's three `learned_failure` claims on 2026-05-21 prove `gates action=claim_from_branch_run` works user-side. [verified in source filing]
 6. **PR-123 leaderboard live** -- `recommended_parent_for_fork goal_id=4ff5862cc26d` returns ranked entries. Just merged 2026-05-21T02:05Z. [verify deploy lands]
@@ -65,7 +65,7 @@ This is the substrate-side switch. After this, any call to `goals action=run_can
 
 ### Step 4 -- Swap file_bug's auto-trigger from cheat to canonical
 
-In `workflow/bug_investigation.py`, change `_maybe_enqueue_investigation()` so that instead of looking up `WORKFLOW_BUG_INVESTIGATION_GOAL_ID` (the cheat env var) and dispatching a hardcoded Loop 1 run, it does:
+In `tinyassets/bug_investigation.py`, change `_maybe_enqueue_investigation()` so that instead of looking up `TINYASSETS_BUG_INVESTIGATION_GOAL_ID` (the cheat env var) and dispatching a hardcoded Loop 1 run, it does:
 
 ```text
 goals action=run_canonical goal_id=4ff5862cc26d inputs_json={
@@ -76,9 +76,9 @@ goals action=run_canonical goal_id=4ff5862cc26d inputs_json={
 
 This makes `file_bug` queue investigations on the leaderboard-selected user-buildable branch, automatically.
 
-### Step 5 -- Remove `WORKFLOW_BUG_INVESTIGATION_GOAL_ID` from production env
+### Step 5 -- Remove `TINYASSETS_BUG_INVESTIGATION_GOAL_ID` from production env
 
-After Step 4 lands + deploys + a live test bug is processed successfully by the new path, the env var is no longer read. Remove it from `/etc/workflow/env` on the droplet via the existing deploy workflow.
+After Step 4 lands + deploys + a live test bug is processed successfully by the new path, the env var is no longer read. Remove it from `/etc/tinyassets/env` on the droplet via the existing deploy workflow.
 
 ### Step 6 -- Delete `_maybe_enqueue_investigation` cheat code path
 
@@ -100,7 +100,7 @@ The simpler design is preferred: makes the iteration entirely substrate-resident
 2. Observe the auto-trigger: bug_investigation request should queue with leaderboard's pick as the handler branch.
 3. Wait for the run to complete (~minutes).
 4. Verify the canonical branch's output produces a patch_packet attached to the bug page.
-5. If Phase 2 + consent + capability are set up: verify a REAL draft PR appears on `Jonnyton/Workflow` (not just a dry-run packet).
+5. If Phase 2 + consent + capability are set up: verify a REAL draft PR appears on `Jonnyton/TinyAssets` (not just a dry-run packet).
 6. Verify the branch's `recommended_rung_claim` matches a real Goal ladder rung.
 7. Call `gates action=claim_from_branch_run run_id=<id>` and confirm the rung gets recorded.
 8. Read the bug page to confirm the patch packet + claim are visible there.

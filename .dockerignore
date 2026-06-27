@@ -2,7 +2,7 @@
 # Per docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md Row A
 # + `docs/ops/docker-notes.md` build discipline.
 #
-# What goes IN the image: workflow/ + domains/ + pyproject.toml.
+# What goes IN the image: tinyassets/ + domains/ + pyproject.toml.
 # Everything else is build context pollution — slower builds, larger
 # context upload, and in some cases a security footprint risk (secrets,
 # host identity, credentials).
@@ -21,7 +21,7 @@ venv/
 dist/
 build/
 
-# On-disk state + outputs (belongs in WORKFLOW_DATA_DIR bind-mount, not image)
+# On-disk state + outputs (belongs in TINYASSETS_DATA_DIR bind-mount, not image)
 output/
 *.db
 *.db-wal

@@ -14,7 +14,7 @@ row.
 
 ## Currently host-independent (good ✓)
 
-- **MCP daemon** — runs on DO Droplet `workflow-daemon-1`
+- **MCP daemon** — runs on DO Droplet `tinyassets-daemon-1`
   (`161.35.237.133`), container auto-restarts, watchdog + compose both
   set to `restart: unless-stopped`. Fully independent.
 - **Cloudflare Worker + tunnel + DNS** — all at Cloudflare.
@@ -49,7 +49,7 @@ row.
   python scripts/bootstrap_add_second_ssh_key.py \
       --host 161.35.237.133 \
       --primary-key ~/.ssh/workflow_deploy_ed25519 \
-      --repo Jonnyton/Workflow
+      --repo Jonnyton/TinyAssets
   ```
   Script is idempotent: skips if `DO_SSH_KEY_BACKUP` already seeded.
 - **Recovery if primary key lost:** use `DO_SSH_KEY_BACKUP` secret;
@@ -79,10 +79,10 @@ row.
 
 - **Historical resolution:** codex CLI shipped in the daemon image
   (Dockerfile Node 20 + `@openai/codex`) with `OPENAI_API_KEY` seeded to
-  `/etc/workflow/env` + GH Actions secret.
+  `/etc/tinyassets/env` + GH Actions secret.
 - **Superseded 2026-04-30:** default daemon LLM execution is subscription-only.
   `OPENAI_API_KEY` is stripped when
-  `WORKFLOW_ALLOW_API_KEY_PROVIDERS` is not truthy; use subscription-backed
+  `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is not truthy; use subscription-backed
   Claude/Codex auth instead.
 - **Why codex (not Anthropic):** codex CLI is subprocess-based (hard
   rule 3) and already wrapped by `workflow.providers.codex_provider`.

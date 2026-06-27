@@ -5,8 +5,8 @@ The compiler reads three NodeDefinition fields:
 - ``invoke_branch_version_spec`` — same shape against a pinned branch_version.
 - ``await_run_spec`` — block on a sibling run_id from state.
 
-`workflow/branches.py` declares them; `workflow/graph_compiler.py` consumes
-them. But two distinct authoring write paths in `workflow/api/branches.py`
+`tinyassets/branches.py` declares them; `tinyassets/graph_compiler.py` consumes
+them. But two distinct authoring write paths in `tinyassets/api/branches.py`
 silently dropped the keys — callers got nodes that validated and even compiled
 but ran as no-op stubs:
 
@@ -43,9 +43,9 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -58,7 +58,7 @@ def _call(us, tool: str, action: str, **kwargs):
 
 
 def _load(us, base: Path, bid: str) -> dict:
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition
 
     return get_branch_definition(base, branch_def_id=bid)
 
@@ -223,8 +223,8 @@ def test_update_node_threads_await_run_spec(ext_env):
 
 
 def test_signature_regression_node_definition_and_authoring_paths():
-    from workflow.api.branches import _apply_node_spec, _ext_branch_update_node
-    from workflow.branches import NodeDefinition
+    from tinyassets.api.branches import _apply_node_spec, _ext_branch_update_node
+    from tinyassets.branches import NodeDefinition
 
     # NodeDefinition declares all three fields.
     nd_fields = {f.name for f in NodeDefinition.__dataclass_fields__.values()}

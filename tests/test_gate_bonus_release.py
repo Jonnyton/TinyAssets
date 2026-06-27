@@ -1,6 +1,6 @@
 import sqlite3
 
-from workflow.gates.actions import compute_bonus_payout, release_bonus, unstake_bonus
+from tinyassets.gates.actions import compute_bonus_payout, release_bonus, unstake_bonus
 
 
 def _make_conn() -> sqlite3.Connection:
@@ -226,7 +226,7 @@ def test_release_bonus_refuses_double_settle_on_concurrent_release(monkeypatch):
     """Compare-and-swap: if a concurrent release zeroes the stake between this
     call's read and its conditional UPDATE, this call must bail BEFORE recording
     any settlement — no double-settle (slice1a review CRITICAL — round 4)."""
-    import workflow.gates.actions as ga
+    import tinyassets.gates.actions as ga
 
     conn = _make_conn()
     _insert_claim(

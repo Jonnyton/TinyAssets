@@ -17,7 +17,7 @@ Setup (run ONCE by the human host, not by user-sim):
       'https://chatgpt.com/'"
 
 Then log into chatgpt.com in that window, ensure Developer Mode is enabled,
-ensure the Workflow connector is available in the composer, and keep the
+ensure the TinyAssets connector is available in the composer, and keep the
 window visible. The driver navigates the existing chatgpt tab; it does not
 open new ones.
 
@@ -76,13 +76,13 @@ NOTEPAD = ROOT / "output" / "user_sim_session.md"
 
 CHROME_BIN = Path(
     os.environ.get(
-        "WORKFLOW_CHROME_BIN",
+        "TINYASSETS_CHROME_BIN",
         r"C:\Users\Jonathan\AppData\Local\ms-playwright\chromium-1208\chrome-win64\chrome.exe",
     )
 )
 CHROME_PROFILE = Path(
     os.environ.get(
-        "WORKFLOW_CHROME_PROFILE",
+        "TINYASSETS_CHROME_PROFILE",
         str(Path.home() / ".claude-ai-profile"),
     )
 )
@@ -122,7 +122,7 @@ def _launch_chrome() -> None:
     if not CHROME_BIN.exists():
         raise RuntimeError(
             f"Chrome binary not found at {CHROME_BIN}. "
-            f"Set WORKFLOW_CHROME_BIN env var to override."
+            f"Set TINYASSETS_CHROME_BIN env var to override."
         )
     CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
     args = [

@@ -1,2 +1,2 @@
-"""Shim: use workflow.ingestion.core instead."""
-from workflow.ingestion.core import *  # noqa: F401,F403
+"""Shim: use tinyassets.ingestion.core instead."""
+from tinyassets.ingestion.core import *  # noqa: F401,F403

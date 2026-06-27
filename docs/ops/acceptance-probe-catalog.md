@@ -22,7 +22,7 @@ checks, and new-connector verification.
 **Connector URL under test:** `https://tinyassets.io/mcp`
 **Apex URL under test:** `https://tinyassets.io/` (Layer-1 wrapper requires HTTP 200)
 **Rendered chatbot client:** Claude.ai, ChatGPT Developer Mode, or another
-browser chatbot with the Workflow connector visibly installed. Record which
+browser chatbot with the TinyAssets connector visibly installed. Record which
 client produced the evidence.
 
 ### Prompt (paste verbatim)
@@ -45,7 +45,7 @@ paper on deep space population — can you walk me through it?
 
 ### Green criteria
 
-- Chatbot invokes at least one Workflow MCP tool (visible in thinking-block or response).
+- Chatbot invokes at least one TinyAssets MCP tool (visible in thinking-block or response).
 - Response references real daemon state (e.g., empty workspace, named primitives from actual tool output).
 - Layer-1 wrapper confirms `https://tinyassets.io/` returns HTTP 200 while `/mcp` is green.
 - No fabricated workflow JSON, no fabricated prior-session history.
@@ -243,7 +243,7 @@ python scripts/last_activity_canary.py --url http://127.0.0.1:8001/mcp
 python scripts/last_activity_canary.py --threshold-min 60 --verbose
 ```
 
-Env override: `WORKFLOW_LAST_ACTIVITY_THRESHOLD_MIN` sets the default threshold (minutes).
+Env override: `TINYASSETS_LAST_ACTIVITY_THRESHOLD_MIN` sets the default threshold (minutes).
 
 ### What it exercises
 
@@ -293,10 +293,10 @@ python scripts/revert_loop_canary.py --verbose
 ```
 
 Env overrides:
-- `WORKFLOW_REVERT_CANARY_N` — WARN threshold (default 3)
-- `WORKFLOW_REVERT_CANARY_T_MIN` — WARN window minutes (default 10)
-- `WORKFLOW_REVERT_CANARY_N_CRITICAL` — CRITICAL threshold (default 5)
-- `WORKFLOW_REVERT_CANARY_T_CRITICAL` — CRITICAL window minutes (default 20)
+- `TINYASSETS_REVERT_CANARY_N` — WARN threshold (default 3)
+- `TINYASSETS_REVERT_CANARY_T_MIN` — WARN window minutes (default 10)
+- `TINYASSETS_REVERT_CANARY_N_CRITICAL` — CRITICAL threshold (default 5)
+- `TINYASSETS_REVERT_CANARY_T_CRITICAL` — CRITICAL window minutes (default 20)
 
 ### What it exercises
 
@@ -465,7 +465,7 @@ These canary-adjacent scripts exist in the repo but do NOT earn standalone catal
 | Script | Why no slot |
 |---|---|
 | `scripts/uptime_canary.py` | Thin wrapper around `mcp_public_canary.probe_result` that adds local-log persistence and production apex `/` HTTP-200 coverage. Same surface as PROBE-001 — duplicating it as a slot would double-count. The wrapper is the Task-Scheduler-invoked form; PROBE-001 is the user-invocable form. |
-| `scripts/uptime_alarm.py` | Escalation **action**, not a probe. Tails `.agents/uptime.log` and emits alarm lines. Note: per task #20, prod alarm log moved to `/var/log/workflow/uptime_alarms.log` (env-overridable). |
+| `scripts/uptime_alarm.py` | Escalation **action**, not a probe. Tails `.agents/uptime.log` and emits alarm lines. Note: per task #20, prod alarm log moved to `/var/log/tinyassets/uptime_alarms.log` (env-overridable). |
 | `scripts/selfhost_smoke.py` | Time-bounded Row-F acceptance script (48h offline trial — hour 1, 24, 47). Default mode targets the canonical endpoint and confirms the public direct tunnel origin is Access-gated (401/403). `--internal-parity` preserves the old parity comparison only for internal/service-token tunnel paths. Not a steady-state public probe; once Row F closes, this script is archived. |
 | `.github/workflows/p0-outage-triage.yml` | Escalation **action**, not a probe. Auto-fired by `uptime-canary.yml` on CRITICAL alarm; runs forensics + opens triage issue. Same shape as `uptime_alarm.py` (action, not green/red signal). |
 | `.github/workflows/dr-drill.yml` | Quarterly disaster-recovery rehearsal triggered by `workflow_dispatch` only. Acceptance-test-as-CI rather than steady-state probe; same family as `selfhost_smoke.py`. STATUS Work table tracks drill cadence. |

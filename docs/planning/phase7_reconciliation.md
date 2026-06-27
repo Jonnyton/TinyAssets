@@ -32,7 +32,7 @@ research docs, one executable spec, one new module tree.
 
 **Scope of change:**
 
-- **New module `workflow/storage/`** (688 lines): Phase 7.1 storage surface
+- **New module `tinyassets/storage/`** (688 lines): Phase 7.1 storage surface
   per spec. Three files:
   - `layout.py` — pure-path `YamlRepoLayout` + `slugify`. Resolves
     `branches/<slug>.yaml`, `goals/<slug>.yaml`,
@@ -74,7 +74,7 @@ research docs, one executable spec, one new module tree.
   strategic pivot), `scripts/claude_chat.py` (+189), and the four runtime
   files that host the pre-existing in-flight cluster.
 
-**What it does NOT yet do:** no git bridge (`workflow/git_bridge.py`) yet,
+**What it does NOT yet do:** no git bridge (`tinyassets/git_bridge.py`) yet,
 no MCP action cutover (build_branch/patch_branch still only write SQLite),
 no export script, no GitHub Actions. That's Phases 7.2–7.5. The landed
 code is strictly Phase 7.1 "storage layout + serializer, no git yet" per
@@ -90,16 +90,16 @@ tighten staleness rules".
 **What the single commit actually does** (the title massively undersells
 it — 466 files, +38K/-65K):
 
-- **Reverts c85efa1 in its entirety.** Deletes `workflow/universe_server.py`
-  (-6,692 lines), `workflow/runs.py` (-1,333), `workflow/graph_compiler.py`
-  (-481), plus `workflow/node_eval.py`, `workflow/node_sandbox.py`,
-  `workflow/packets.py`, `workflow/preferences.py`, `workflow/utils/json_parsing.py`.
-  `workflow/branches.py` also not present.
+- **Reverts c85efa1 in its entirety.** Deletes `tinyassets/universe_server.py`
+  (-6,692 lines), `tinyassets/runs.py` (-1,333), `tinyassets/graph_compiler.py`
+  (-481), plus `tinyassets/node_eval.py`, `tinyassets/node_sandbox.py`,
+  `tinyassets/packets.py`, `tinyassets/preferences.py`, `tinyassets/utils/json_parsing.py`.
+  `tinyassets/branches.py` also not present.
 - **Reintroduces the Custom GPT path.** Adds `custom_gpt/` with
   `actions_schema.yaml` (926 lines), `instructions.md`, `README.md`.
   PLAN.md on the worktree says "Custom GPT / MCP-compatible chatbots",
   contradicting main's PLAN.md "MCP is primary; Custom GPT is legacy."
-- **Adds `workflow/testing/gpt_builder.py` (+508) and `gpt_harness.py`
+- **Adds `tinyassets/testing/gpt_builder.py` (+508) and `gpt_harness.py`
   (+471).** New test surface for Custom-GPT-driven builds.
 - **Adds `.claude/skills/gpt-test/` and `gpt-update/` skills** (+299 each
   mirrored into `.agents/skills/`). Deletes `ui-test/` skill.
@@ -206,20 +206,20 @@ headers) is a real improvement. Worth lifting.
 4. **Capture `gpt_builder.py` / `gpt_harness.py` as an ideas/INBOX.md
    entry** before retiring the branch — if the Custom-GPT driver
    testing approach ever earns a second look, the code exists in git
-   history at b5e75a9:workflow/testing/gpt_builder.py.
+   history at b5e75a9:tinyassets/testing/gpt_builder.py.
 
 ### Phase 7 roadmap after this reconciliation
 
 Phase 7.1 is the uncommitted landing (storage module + tests + spec +
 research). Next concrete steps per the spec are:
 
-- **7.2** Implement `workflow/git_bridge.py` (thin `subprocess.run(["git",
+- **7.2** Implement `tinyassets/git_bridge.py` (thin `subprocess.run(["git",
   ...])` wrapper: `stage`, `commit`, `pull`, `open_pr`). Replace
   `SqliteCachedBackend._stage_hook` noop with `git_bridge.stage`.
 - **7.3** Wire ~12 MCP write handlers through `StorageBackend`. Start
   with the three highest-traffic writes: `build_branch`, `patch_branch`,
   `update_node`. Add `sync_latest` and `publish_to_remote` actions.
-- **7.4** Identity wiring: `WORKFLOW_GITHUB_USERNAME` env; `_current_actor`
+- **7.4** Identity wiring: `TINYASSETS_GITHUB_USERNAME` env; `_current_actor`
   threads through FastMCP request context; existing `OAuthProvider`
   lights up for self-hosted installs.
 - **7.5** GitHub Actions: BranchDefinition validation on PR + mermaid
@@ -275,7 +275,7 @@ These are all sequential — no parallelism opportunity between 7.2 and
 1. Once #4 and #5 clear, commit the uncommitted delta as a single
    commit: "Phase 7.1: storage layout + serializer + spec + adjacent
    cluster". Include the 8 modified + 10 new test + 7 research doc +
-   1 spec + 1 new `workflow/storage/` module.
+   1 spec + 1 new `tinyassets/storage/` module.
 2. Cherry-pick STATUS.md *discipline wording only* from b5e75a9 (the
    "Session discipline — read this every session" block + the section
    header schema). Do not pull any of its actual Concerns or Work
@@ -283,11 +283,11 @@ These are all sequential — no parallelism opportunity between 7.2 and
 3. `git worktree remove .claude/worktrees/inspiring-newton`. Branch
    stays in refs.
 4. Open a follow-up task for **Phase 7.2 git bridge**
-   (`workflow/git_bridge.py`). Spec §7.2 has the executable surface.
+   (`tinyassets/git_bridge.py`). Spec §7.2 has the executable surface.
 
 **Parallel-safe next (different dev):**
 
-- Capture `workflow/testing/gpt_builder.py` / `gpt_harness.py` from
+- Capture `tinyassets/testing/gpt_builder.py` / `gpt_harness.py` from
   b5e75a9 as an ideas/INBOX.md pointer entry in case Custom-GPT
   driver testing is ever revived.
 

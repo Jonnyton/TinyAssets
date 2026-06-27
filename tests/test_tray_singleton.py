@@ -1,12 +1,12 @@
-"""Tests for workflow.singleton_lock — host-wide one-instance lock."""
+"""Tests for tinyassets.singleton_lock — host-wide one-instance lock."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from workflow import singleton_lock
-from workflow.singleton_lock import (
+from tinyassets import singleton_lock
+from tinyassets.singleton_lock import (
     acquire_singleton_lock,
     release_singleton_lock,
 )
@@ -78,7 +78,7 @@ def test_release_on_unacquired_is_safe() -> None:
     """release_singleton_lock must be a no-op on a failed acquisition —
     the tray's finally-block calls it unconditionally.
     """
-    from workflow.singleton_lock import LockAcquisition
+    from tinyassets.singleton_lock import LockAcquisition
 
     release_singleton_lock(
         LockAcquisition(

@@ -37,14 +37,14 @@ def run_backfill(base_path: str, *, dry_run: bool = False) -> dict:
     Returns ``{"published_default_bvid": "...",
     "updated_goal_ids": [...], "skipped_goal_count": <int>}``.
     """
-    from workflow.api.selector_dispatch import (
+    from tinyassets.api.selector_dispatch import (
         ensure_default_selector_published,
     )
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         initialize_author_server,
         update_goal,
     )
-    from workflow.storage import _connect
+    from tinyassets.storage import _connect
 
     initialize_author_server(base_path)
     default_bvid = ensure_default_selector_published(base_path)
@@ -100,9 +100,9 @@ def run_backfill(base_path: str, *, dry_run: bool = False) -> dict:
 
 
 def _resolve_base_path() -> str:
-    base = os.environ.get("WORKFLOW_DATA_DIR", "")
+    base = os.environ.get("TINYASSETS_DATA_DIR", "")
     if not base:
-        from workflow.storage import data_dir
+        from tinyassets.storage import data_dir
         return str(data_dir())
     return base
 
@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--base-path", default=None,
-        help="data dir (defaults to $WORKFLOW_DATA_DIR or platform default)",
+        help="data dir (defaults to $TINYASSETS_DATA_DIR or platform default)",
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)

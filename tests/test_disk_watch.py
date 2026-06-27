@@ -9,10 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from disk_watch import check  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SHIP_LOGS_SERVICE = REPO_ROOT / "deploy" / "workflow-ship-logs.service"
-SHIP_LOGS_TIMER = REPO_ROOT / "deploy" / "workflow-ship-logs.timer"
-DISK_WATCH_SERVICE = REPO_ROOT / "deploy" / "workflow-disk-watch.service"
-DISK_WATCH_TIMER = REPO_ROOT / "deploy" / "workflow-disk-watch.timer"
+SHIP_LOGS_SERVICE = REPO_ROOT / "deploy" / "tinyassets-ship-logs.service"
+SHIP_LOGS_TIMER = REPO_ROOT / "deploy" / "tinyassets-ship-logs.timer"
+DISK_WATCH_SERVICE = REPO_ROOT / "deploy" / "tinyassets-disk-watch.service"
+DISK_WATCH_TIMER = REPO_ROOT / "deploy" / "tinyassets-disk-watch.timer"
 
 
 # ---------------------------------------------------------------------------
@@ -116,12 +116,12 @@ def test_issue_fn_called_with_correct_args():
 
 
 # ---------------------------------------------------------------------------
-# Sentinel: workflow-ship-logs.service
+# Sentinel: tinyassets-ship-logs.service
 # ---------------------------------------------------------------------------
 
 
 def test_ship_logs_service_exists():
-    assert SHIP_LOGS_SERVICE.exists(), "workflow-ship-logs.service must exist in deploy/"
+    assert SHIP_LOGS_SERVICE.exists(), "tinyassets-ship-logs.service must exist in deploy/"
 
 
 def test_ship_logs_service_is_oneshot():
@@ -136,16 +136,16 @@ def test_ship_logs_service_invokes_ship_logs_sh():
 
 def test_ship_logs_service_sources_env_file():
     text = SHIP_LOGS_SERVICE.read_text(encoding="utf-8")
-    assert "EnvironmentFile=/etc/workflow/env" in text
+    assert "EnvironmentFile=/etc/tinyassets/env" in text
 
 
 # ---------------------------------------------------------------------------
-# Sentinel: workflow-ship-logs.timer
+# Sentinel: tinyassets-ship-logs.timer
 # ---------------------------------------------------------------------------
 
 
 def test_ship_logs_timer_exists():
-    assert SHIP_LOGS_TIMER.exists(), "workflow-ship-logs.timer must exist in deploy/"
+    assert SHIP_LOGS_TIMER.exists(), "tinyassets-ship-logs.timer must exist in deploy/"
 
 
 def test_ship_logs_timer_is_hourly():
@@ -167,12 +167,12 @@ def test_ship_logs_timer_persistent():
 
 
 # ---------------------------------------------------------------------------
-# Sentinel: workflow-disk-watch.service
+# Sentinel: tinyassets-disk-watch.service
 # ---------------------------------------------------------------------------
 
 
 def test_disk_watch_service_exists():
-    assert DISK_WATCH_SERVICE.exists(), "workflow-disk-watch.service must exist in deploy/"
+    assert DISK_WATCH_SERVICE.exists(), "tinyassets-disk-watch.service must exist in deploy/"
 
 
 def test_disk_watch_service_is_oneshot():
@@ -187,16 +187,16 @@ def test_disk_watch_service_invokes_disk_watch_py():
 
 def test_disk_watch_service_sources_env_file():
     text = DISK_WATCH_SERVICE.read_text(encoding="utf-8")
-    assert "EnvironmentFile=/etc/workflow/env" in text
+    assert "EnvironmentFile=/etc/tinyassets/env" in text
 
 
 # ---------------------------------------------------------------------------
-# Sentinel: workflow-disk-watch.timer
+# Sentinel: tinyassets-disk-watch.timer
 # ---------------------------------------------------------------------------
 
 
 def test_disk_watch_timer_exists():
-    assert DISK_WATCH_TIMER.exists(), "workflow-disk-watch.timer must exist in deploy/"
+    assert DISK_WATCH_TIMER.exists(), "tinyassets-disk-watch.timer must exist in deploy/"
 
 
 def test_disk_watch_timer_is_daily():

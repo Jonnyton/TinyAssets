@@ -211,7 +211,7 @@ def _fake_rclone_bin(tmp_path: Path) -> Path:
     fake_rclone.write_text(
         "#!/usr/bin/env bash\n"
         'if [[ "$1" == "lsf" ]]; then\n'
-        "    echo '2026-04-20T02-00-00Z;workflow-data-2026-04-20T02-00-00Z.tar.gz'\n"
+        "    echo '2026-04-20T02-00-00Z;tinyassets-data-2026-04-20T02-00-00Z.tar.gz'\n"
         "    exit 0\n"
         "fi\n"
         'if [[ "$1" == "ls" ]]; then exit 0; fi\n'
@@ -230,7 +230,7 @@ def _fake_rclone_bash_env(tmp_path: Path) -> Path:
     fake_env.write_text(
         "rclone() {\n"
         '    if [[ "$1" == "lsf" ]]; then\n'
-        "        echo '2026-04-20T02-00-00Z;workflow-data-2026-04-20T02-00-00Z.tar.gz'\n"
+        "        echo '2026-04-20T02-00-00Z;tinyassets-data-2026-04-20T02-00-00Z.tar.gz'\n"
         "        return 0\n"
         "    fi\n"
         '    if [[ "$1" == "ls" ]]; then return 0; fi\n'
@@ -249,7 +249,7 @@ def test_restore_dry_run_exits_0(tmp_path):
     fake_env = _fake_rclone_bash_env(tmp_path)
     env = {
         "DRY_RUN": "1",
-        "BACKUP_DEST": "s3://test-bucket/workflow-backups",
+        "BACKUP_DEST": "s3://test-bucket/tinyassets-backups",
         "BACKUP_LOG": _bash_path(tmp_path / "backup.log"),
         "BASH_ENV": _bash_path(fake_env),
         "PATH": _bash_path_env(fake_bin),
@@ -264,7 +264,7 @@ def test_restore_dry_run_prints_dry_run_indicator(tmp_path):
     fake_env = _fake_rclone_bash_env(tmp_path)
     env = {
         "DRY_RUN": "1",
-        "BACKUP_DEST": "s3://test-bucket/workflow-backups",
+        "BACKUP_DEST": "s3://test-bucket/tinyassets-backups",
         "BACKUP_LOG": _bash_path(tmp_path / "backup.log"),
         "BASH_ENV": _bash_path(fake_env),
         "PATH": _bash_path_env(fake_bin),
@@ -293,7 +293,7 @@ def test_restore_exits_1_when_backup_dest_missing():
 
 
 def _make_archives(dates: list[str]) -> list[str]:
-    return [f"workflow-data-{d}T02-00-00Z.tar.gz" for d in dates]
+    return [f"tinyassets-data-{d}T02-00-00Z.tar.gz" for d in dates]
 
 
 def _retention_set(names: list[str], **kwargs: int) -> set[str]:
@@ -318,7 +318,7 @@ def test_retention_keeps_weekly_anchors():
     names = _make_archives(dates)
     to_delete = _retention_set(names, keep_daily=7, keep_weekly=2, keep_monthly=6)
     # Apr 8 is first of week 2 (days 8-14)
-    week2_anchor = "workflow-data-2026-04-08T02-00-00Z.tar.gz"
+    week2_anchor = "tinyassets-data-2026-04-08T02-00-00Z.tar.gz"
     assert week2_anchor not in to_delete, f"Week anchor should be kept: {week2_anchor}"
 
 
@@ -351,7 +351,7 @@ def test_retention_never_deletes_unrecognized_names():
     """Foreign files at the destination must never be emitted for deletion.
 
     Regression: before 2026-06-10 the delete set was computed as
-    all-names-minus-kept, so any file not matching the workflow-data
+    all-names-minus-kept, so any file not matching the tinyassets-data
     pattern was deleted on every successful prune.
     """
     foreign = ["README.txt", "manual-snapshot.tar.gz", "somebody-elses-file.bin"]
@@ -367,22 +367,22 @@ def test_retention_per_tier_independent():
     """Brain and data archives get independent retention windows."""
     dates = [f"2026-04-{d:02d}" for d in range(1, 11)]
     data_names = _make_archives(dates)
-    brain_names = [f"workflow-brain-{d}T03-00-00Z.tar.gz" for d in dates]
+    brain_names = [f"tinyassets-brain-{d}T03-00-00Z.tar.gz" for d in dates]
     to_delete = _retention_set(
         data_names + brain_names, keep_daily=7, keep_weekly=4, keep_monthly=6
     )
     # Same policy as test_prune_script_subprocess_emits_deletions, applied
     # per tier: only the Apr 01 archive of EACH tier is pruned.
     assert to_delete == {
-        "workflow-data-2026-04-01T02-00-00Z.tar.gz",
-        "workflow-brain-2026-04-01T03-00-00Z.tar.gz",
+        "tinyassets-data-2026-04-01T02-00-00Z.tar.gz",
+        "tinyassets-brain-2026-04-01T03-00-00Z.tar.gz",
     }, f"Expected per-tier Apr 01 pruning; got: {to_delete}"
 
 
 def test_backup_sh_has_brain_tier_and_tolerates_live_tar():
     """Structural anchors for the 2026-06-10 two-tier redesign."""
     text = BACKUP_SH.read_text(encoding="utf-8")
-    assert "workflow-brain-" in text, "brain-tier archive missing from backup.sh"
+    assert "tinyassets-brain-" in text, "brain-tier archive missing from backup.sh"
     assert "--warning=no-file-changed" in text, "live-tar warning suppression missing"
     assert 'tar_rc' in text and '-ge 2' in text, (
         "full-tier tar must tolerate rc=1 and fail only on rc>=2"
@@ -408,6 +408,6 @@ def test_prune_script_subprocess_emits_deletions():
     )
     assert proc.returncode == 0, f"backup_prune.py failed:\n{proc.stderr}"
     deleted = [line for line in proc.stdout.strip().splitlines() if line]
-    assert deleted == ["workflow-data-2026-04-01T02-00-00Z.tar.gz"], (
+    assert deleted == ["tinyassets-data-2026-04-01T02-00-00Z.tar.gz"], (
         f"Expected only Apr 01 pruned; got: {deleted}"
     )

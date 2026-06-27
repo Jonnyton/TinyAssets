@@ -36,7 +36,7 @@ def draft(state: dict[str, Any]) -> dict[str, Any]:
     from domains.fantasy_daemon.phases._activity import activity_log, update_phase
     from domains.fantasy_daemon.phases._provider_stub import call_for_draft
     from domains.fantasy_daemon.phases.writer_tools import select_and_run_writer_tools
-    from workflow.retrieval.agentic_search import assemble_phase_search_context
+    from tinyassets.retrieval.agentic_search import assemble_phase_search_context
 
     plan_output = state.get("plan_output") or {}
     orient_result = state.get("orient_result") or {}
@@ -152,7 +152,7 @@ def draft(state: dict[str, Any]) -> dict[str, Any]:
 
 def _assemble_memory(state: dict[str, Any], phase: str) -> dict:
     """Compatibility wrapper around the shared search policy."""
-    from workflow.retrieval.agentic_search import assemble_memory_context
+    from tinyassets.retrieval.agentic_search import assemble_memory_context
 
     return assemble_memory_context(state, phase)
 

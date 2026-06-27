@@ -69,7 +69,7 @@ The aggregate is most of what `SessionTrace`'s 13 fields would store. Adding a p
 
 **RAW REJECT: A `TracePrivacyReview` typed lifecycle.**
 
-Per Scoping Rule 3 explicit prohibition. Community composes per-piece privacy with chatbot judgment; the platform owns enforcement primitives (`WORKFLOW_UPLOAD_WHITELIST`, file-path enforcement, MCP approval surface), not a privacy lifecycle taxonomy.
+Per Scoping Rule 3 explicit prohibition. Community composes per-piece privacy with chatbot judgment; the platform owns enforcement primitives (`TINYASSETS_UPLOAD_WHITELIST`, file-path enforcement, MCP approval surface), not a privacy lifecycle taxonomy.
 
 **RAW REJECT: A `TraceAttribution` typed surface separate from the existing attribution graph.**
 

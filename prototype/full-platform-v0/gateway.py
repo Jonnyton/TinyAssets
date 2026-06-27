@@ -22,7 +22,7 @@ from fastmcp import FastMCP
 from pgvector.psycopg import register_vector
 
 DSN = os.environ.get(
-    "WORKFLOW_V0_DSN",
+    "TINYASSETS_V0_DSN",
     "postgresql://workflow:workflow_v0_dev@localhost:5433/workflow_v0",
 )
 

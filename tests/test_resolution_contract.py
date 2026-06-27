@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from workflow.resolution import (
+from tinyassets.resolution import (
     FIXTURE_LOCATION,
     RESOLVER_DECISION_SCHEMA_VERSION,
     VALID_DECISION_STATUSES,

@@ -21,7 +21,7 @@ Key brand/vocab: users **summon** daemons (not "start"), **bind** them to a univ
 
 ## Sources consumed while building this system
 
-All source material came from the user-attached Workflow codebase (`local_ls`/`local_read` against the `Workflow/` mount) and the GitHub repo **`Jonnyton/Workflow`**.
+All source material came from the user-attached Workflow codebase (`local_ls`/`local_read` against the `Workflow/` mount) and the GitHub repo **`Jonnyton/TinyAssets`**.
 
 - `Workflow/README.md` — top-level pitch, "summoning" voice, product positioning.
 - `Workflow/PLAN.md` — full platform plan (daemon-driven thesis, universes/canon/soul files).

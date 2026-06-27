@@ -1,6 +1,6 @@
 # Claude.ai native rendering behaviors — MCP tool-return reference
 
-Dated 2026-04-12. Scope: what structural shapes of tool output Claude.ai chat will auto-render richly, and what the Workflow MCP server should therefore return.
+Dated 2026-04-12. Scope: what structural shapes of tool output Claude.ai chat will auto-render richly, and what the TinyAssets MCP server should therefore return.
 
 Evidence tiers: **[spec]** MCP spec, **[anthropic]** Anthropic docs, **[observed]** our live testing, **[unconfirmed]** plausible but unsourced. Unconfirmed items are live-test candidates, not design commitments.
 
@@ -16,7 +16,7 @@ Evidence tiers: **[spec]** MCP spec, **[anthropic]** Anthropic docs, **[observed
 | Mermaid code fences in assistant prose render inline in Claude.ai chat | Triple-backtick `mermaid` block; used in Anthropic's own MCP docs (e.g. sequenceDiagram blocks render when the page is viewed in Claude.ai) | [observed] task #32 landed; [anthropic] MCP spec pages ship mermaid blocks natively |
 | Claude.ai creates Artifacts for sufficiently long / self-contained deliverables (HTML, React, SVG, long Markdown, long code) | Anthropic Help Center — "What are Artifacts and how do I use them" | [anthropic] support.anthropic.com article 9945119 (HTML; access requires browser, not direct markdown fetch) |
 
-## Tool-result implications for the Workflow MCP server
+## Tool-result implications for the TinyAssets MCP server
 
 1. **Text is the reliable channel.** Every MCP client renders `text` content items. Fancier rendering (mermaid, tables, code) depends on whether the client treats the assistant-message body as Markdown. Claude.ai does; other MCP clients may not. Ship mermaid/markdown inside `text`, never inside a nonstandard field.
 2. **Use `structuredContent` in parallel.** For workflow graphs, node lists, etc., return both a human-readable text block (mermaid + markdown summary) and canonical `structuredContent` JSON. Text drives the UI; JSON preserves fidelity for scripted clients. Matches spec back-compat guidance.

@@ -76,7 +76,7 @@ search in sub-100ms. Outperforms MemGPT on Deep Memory Retrieval benchmark
 
 - GitHub: github.com/getzep/graphiti
 - Paper: arxiv.org/abs/2501.13956
-- Relevance: Your temporal truth tracking (workflow/memory/temporal.py) is
+- Relevance: Your temporal truth tracking (tinyassets/memory/temporal.py) is
   on the right path. Graphiti is the cleanest open-source reference for how
   validity windows and supersession should work at the graph level.
 
@@ -263,7 +263,7 @@ the broader shift toward intent-driven retrieval all support "memory queries
 should feel like faceted search, not storage-tier addressing."
 
 **Temporal truth tracking (Phase 3 work):** Now standard infrastructure.
-workflow/memory/temporal.py is architecturally correct. Graphiti is the best
+tinyassets/memory/temporal.py is architecturally correct. Graphiti is the best
 open-source reference for validation and potential integration.
 
 **Memory scoping (Phase 3 work):** Universe/branch/author/user/session
@@ -295,7 +295,7 @@ improves relevance. The Hindsight paper's four-strategy + cross-encoder
 pattern is the current best practice.
 
 **3. Memory consolidation as a scheduled operation.** The consolidation
-module exists (workflow/memory/consolidation.py) but should run on a
+module exists (tinyassets/memory/consolidation.py) but should run on a
 schedule — not just on demand. Mem0's production deployments show that
 unbounded memory growth degrades retrieval quality within weeks.
 

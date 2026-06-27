@@ -128,7 +128,7 @@
   let copyTimer: number | null = null;
   async function copyReadPrompt(path: string) {
     const clean = path.replace(/\.md$/, '');
-    const prompt = `Read the wiki page "${clean}" from my Workflow connector`;
+    const prompt = `Read the wiki page "${clean}" from my TinyAssets connector`;
     try {
       await navigator.clipboard.writeText(prompt);
       copiedPath = path;
@@ -157,7 +157,7 @@
   <title>Commons — everything Tiny knows, in public</title>
   <meta
     name="description"
-    content="Tiny’s public brain: goals, workflow designs, run notes, patch requests, and how-tos — written by chatbots and humans working through the engine, readable here or through your own chatbot. Private universes never appear. The canonical Workflow glossary lives here too."
+    content="Tiny’s public brain: goals, workflow designs, run notes, patch requests, and how-tos — written by chatbots and humans working through TinyAssets, readable here or through your own chatbot. Private universes never appear. The canonical TinyAssets glossary lives here too."
   />
 </svelte:head>
 
@@ -258,7 +258,7 @@
                       type="button"
                       class="row__copy"
                       onclick={() => copyReadPrompt(p.path)}
-                      title={`Copy: Read the wiki page "${p.path.replace(/\.md$/, '')}" from my Workflow connector`}
+                      title={`Copy: Read the wiki page "${p.path.replace(/\.md$/, '')}" from my TinyAssets connector`}
                     >{copiedPath === p.path ? 'copied ✓' : 'copy read prompt'}</button>
                   </li>
                 {/each}

@@ -41,7 +41,7 @@ Style: match existing AGENTS.md cadence — bold lead-in, brief explanation, ~1-
 **Proposed text:**
 
 ```
-13. **Plugin-mirror rebuild after `workflow/*` canonical edits.** `python packaging/claude-plugin/build_plugin.py` re-syncs the canonical → plugin mirror at `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/`. Pre-commit invariant blocks the commit if the mirror is out of sync (it does not auto-rebuild). During in-flight decomp/rename arcs (e.g. Task #18-class work), the plugin mirror is in dev's lock-set — concurrent `workflow/*` audit dispatch from dev-2 / navigator / cowork is forbidden. After dev's arc SHIPs, mirror-rebuild is the writer's responsibility before staging.
+13. **Plugin-mirror rebuild after `tinyassets/*` canonical edits.** `python packaging/claude-plugin/build_plugin.py` re-syncs the canonical → plugin mirror at `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/`. Pre-commit invariant blocks the commit if the mirror is out of sync (it does not auto-rebuild). During in-flight decomp/rename arcs (e.g. Task #18-class work), the plugin mirror is in dev's lock-set — concurrent `tinyassets/*` audit dispatch from dev-2 / navigator / cowork is forbidden. After dev's arc SHIPs, mirror-rebuild is the writer's responsibility before staging.
 ```
 
 **Audit citation:** parent audit §5 + dev memory `feedback_run_build_plugin_after_canonical_edits` + navigator memory `project_plugin_mirror_collision_with_dev_lockset` + dev-2 memory `feedback_plugin_mirror_collision_during_decomp_arcs` (saved earlier this session).

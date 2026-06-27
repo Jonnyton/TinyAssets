@@ -19,7 +19,7 @@ Do not swap to the full custom connector endpoint `https://tinyassets.io/mcp`
 without regenerating `chatgpt-app-submission.json` and re-running the tool
 audit, because `/mcp` exposes the broader legacy surface.
 
-2026-05-02T15:37-07:00: ChatGPT Settings -> Apps -> `Workflow DEV` still
+2026-05-02T15:37-07:00: ChatGPT Settings -> Apps -> `TinyAssets DEV` still
 points to `https://tinyassets.io/mcp`. That enabled developer app is stale for
 submission testing and returned raw legacy diagnostics in a fresh ChatGPT web
 prompt. Re-register or create the ChatGPT Developer Mode test app against
@@ -72,7 +72,7 @@ Description:
 
 Release notes:
 
-`Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe Workflow MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
+`Initial public alpha of Workflow. This app connects ChatGPT to the directory-safe TinyAssets MCP surface for daemon status, shared goals, project wiki lookup, run browsing, and bounded request submission.`
 
 ## Submission Packet
 

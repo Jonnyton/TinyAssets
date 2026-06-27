@@ -4,8 +4,8 @@ Covers docs/specs/phase_h_preflight.md §4.1 #7 (R6, invariant 7).
 
 Automates the unified-execution follow-up: verifies that the same daemon events
 produce equivalent activity.log output under both
-``WORKFLOW_UNIFIED_EXECUTION=off`` (flag-off) and
-``WORKFLOW_UNIFIED_EXECUTION=on`` (flag-on).
+``TINYASSETS_UNIFIED_EXECUTION=off`` (flag-off) and
+``TINYASSETS_UNIFIED_EXECUTION=on`` (flag-on).
 
 Structure
 ---------
@@ -75,7 +75,7 @@ def _normalize_log(text: str) -> list[str]:
 # Acceptable diff surface documentation
 # ---------------------------------------------------------------------------
 
-# Lines that appear ONLY under flag-on (WORKFLOW_UNIFIED_EXECUTION=on).
+# Lines that appear ONLY under flag-on (TINYASSETS_UNIFIED_EXECUTION=on).
 _FLAG_ON_ONLY_PREFIXES: tuple[str, ...] = (
     "dispatcher_observational:",
 )
@@ -174,7 +174,7 @@ class TestNormalizeLog:
 @pytest.mark.slow
 def test_activity_log_parity_flag_off_vs_on(monkeypatch, tmp_path):
     """R6 / invariant 7: identical daemon events produce equivalent
-    activity.log under WORKFLOW_UNIFIED_EXECUTION=off and =on.
+    activity.log under TINYASSETS_UNIFIED_EXECUTION=off and =on.
 
     Strategy
     --------
@@ -219,7 +219,7 @@ def test_activity_log_parity_flag_off_vs_on(monkeypatch, tmp_path):
 
     def _run_daemon_log_events(flag_value: str) -> str:
         """Set up a DaemonController, emit events, return activity.log text."""
-        monkeypatch.setenv("WORKFLOW_UNIFIED_EXECUTION", flag_value)
+        monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", flag_value)
         universe = tmp_path / f"uni_{flag_value}"
         universe.mkdir()
         db = tmp_path / f"ckpt_{flag_value}.db"
@@ -280,7 +280,7 @@ def test_activity_log_parity_acceptable_diff_surface_documented(monkeypatch, tmp
     from fantasy_daemon.__main__ import DaemonController
 
     def _collect_lines(flag_value: str) -> set[str]:
-        monkeypatch.setenv("WORKFLOW_UNIFIED_EXECUTION", flag_value)
+        monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", flag_value)
         universe = tmp_path / f"uni_doc_{flag_value}"
         universe.mkdir()
         db = tmp_path / f"ckpt_doc_{flag_value}.db"

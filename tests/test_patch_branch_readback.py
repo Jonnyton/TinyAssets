@@ -33,7 +33,7 @@ def _make_branch_dict(branch_def_id="b1", name="Old Name", entry_point="n1",
 
 
 def _call_patch(branch_before, branch_after, changes_json):
-    from workflow.api.branches import _ext_branch_patch
+    from tinyassets.api.branches import _ext_branch_patch
 
     save_mock = MagicMock(return_value=branch_after)
 
@@ -45,12 +45,12 @@ def _call_patch(branch_before, branch_after, changes_json):
     # not contaminated by the auth check. Tests covering the auth
     # behavior itself live in test_patch_branch_auth_gate.py.
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_before),
-        patch("workflow.daemon_server.save_branch_definition", save_mock),
-        patch("workflow.api.helpers._base_path", return_value="/fake"),
-        patch("workflow.branches.BranchDefinition.validate", return_value=[]),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_before),
+        patch("tinyassets.daemon_server.save_branch_definition", save_mock),
+        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+        patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
         patch(
-            "workflow.api.engine_helpers._current_actor",
+            "tinyassets.api.engine_helpers._current_actor",
             return_value=branch_before.get("author", "tester"),
         ),
     ):

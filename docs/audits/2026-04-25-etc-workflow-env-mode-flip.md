@@ -1,31 +1,31 @@
-# Audit: /etc/workflow/env mode-flip root cause
+# Audit: /etc/tinyassets/env mode-flip root cause
 
-**Date:** 2026-04-25  
-**Auditor:** dev (automated audit)  
-**Scope:** Every path that creates, writes, chmods, or reads `/etc/workflow/env` across `deploy/`, `.github/workflows/`, and systemd units.
+**Date:** 2026-04-25
+**Auditor:** dev (automated audit)
+**Scope:** Every path that creates, writes, chmods, or reads `/etc/tinyassets/env` across `deploy/`, `.github/workflows/`, and systemd units.
 
 ---
 
 ## Background
 
-STATUS Concern [2026-04-22]: `/etc/workflow/env` mode flipped to unreadable. The 2026-04-21 P0 outage was already traced to `sed -i` dropping group ownership; mitigations were added. This audit checks whether all write paths are covered and whether a new class of mode-flip is possible.
+STATUS Concern [2026-04-22]: `/etc/tinyassets/env` mode flipped to unreadable. The 2026-04-21 P0 outage was already traced to `sed -i` dropping group ownership; mitigations were added. This audit checks whether all write paths are covered and whether a new class of mode-flip is possible.
 
 ---
 
-## Every path that touches /etc/workflow/env
+## Every path that touches /etc/tinyassets/env
 
 ### A. bootstrap — `deploy/hetzner-bootstrap.sh` lines 191–203
 
 **Creates the file if absent:**
 
 ```bash
-mkdir -p "${ENV_DIR}"                          # /etc/workflow
-chown "root:${WORKFLOW_USER}" "${ENV_DIR}"     # dir: root:workflow
+mkdir -p "${ENV_DIR}"                          # /etc/tinyassets
+chown "root:${TINYASSETS_USER}" "${ENV_DIR}"     # dir: root:workflow
 chmod 750 "${ENV_DIR}"                         # dir: rwxr-x---
 
 if [[ ! -f "${ENV_DIR}/env" ]]; then
-    cp "${WORKFLOW_HOME}/deploy/workflow-env.template" "${ENV_DIR}/env"
-    chown "root:${WORKFLOW_USER}" "${ENV_DIR}/env"
+    cp "${TINYASSETS_HOME}/deploy/workflow-env.template" "${ENV_DIR}/env"
+    chown "root:${TINYASSETS_USER}" "${ENV_DIR}/env"
     chmod 640 "${ENV_DIR}/env"                 # file: rw-r-----
 fi
 ```
@@ -40,9 +40,9 @@ Three `sudo sed -i` invocations, each followed by explicit `chown + chmod`:
 
 | Step | sed -i target | Restore sequence |
 |------|--------------|-----------------|
-| Scrub legacy WIKI_PATH (line 134) | `/etc/workflow/env` | `chown root:workflow` + `chmod 640` + readability assert |
-| Pin new image tag (lines 145–148) | `/etc/workflow/env` | `chown root:workflow` + `chmod 640` + readability assert |
-| Rollback: restore previous tag (lines 230–233) | `/etc/workflow/env` | `chown root:workflow` + `chmod 640` + readability assert |
+| Scrub legacy WIKI_PATH (line 134) | `/etc/tinyassets/env` | `chown root:workflow` + `chmod 640` + readability assert |
+| Pin new image tag (lines 145–148) | `/etc/tinyassets/env` | `chown root:workflow` + `chmod 640` + readability assert |
+| Rollback: restore previous tag (lines 230–233) | `/etc/tinyassets/env` | `chown root:workflow` + `chmod 640` + readability assert |
 
 **`sed -i` behavior (root cause of the 2026-04-21 P0):** `sed -i` writes to a temp file then `rename(2)`s it over the target. The rename preserves the directory slot but creates a new inode with default ownership (root:root) and umask-derived mode (typically 0600). Any error between `sed -i` and the subsequent `chown`/`chmod` leaves the file in the broken 0600 state.
 
@@ -56,44 +56,44 @@ Two repair paths, both run `chown + chmod + readability assert` without `sed -i`
 
 ```bash
 # repair (line 155):
-sudo chown root:workflow /etc/workflow/env
-sudo chmod 640 /etc/workflow/env
-sudo -u workflow test -r /etc/workflow/env
-sudo ls -l /etc/workflow/env
+sudo chown root:workflow /etc/tinyassets/env
+sudo chmod 640 /etc/tinyassets/env
+sudo -u workflow test -r /etc/tinyassets/env
+sudo ls -l /etc/tinyassets/env
 
 # image fallback (line 204):
-sudo sed -i 's|^WORKFLOW_IMAGE=.*|WORKFLOW_IMAGE=ghcr.io/.../latest|' /etc/workflow/env
-sudo chown root:workflow /etc/workflow/env
-sudo chmod 640 /etc/workflow/env
-sudo -u workflow test -r /etc/workflow/env
+sudo sed -i 's|^TINYASSETS_IMAGE=.*|TINYASSETS_IMAGE=ghcr.io/.../latest|' /etc/tinyassets/env
+sudo chown root:workflow /etc/tinyassets/env
+sudo chmod 640 /etc/tinyassets/env
+sudo -u workflow test -r /etc/tinyassets/env
 ```
 
 **Assessment:** Same `sed -i` risk as B. The repair path (lines 155–159) is safe since it's a pure `chown + chmod` with no write. The image-fallback path has the same transient-abort risk.
 
 ---
 
-### D. systemd unit — `deploy/workflow-daemon.service`
+### D. systemd unit — `deploy/tinyassets-daemon.service`
 
 ```ini
 User=workflow
-EnvironmentFile=/etc/workflow/env
-ExecStartPre=/bin/sh -c 'test -r /etc/workflow/env || { echo "ENV-UNREADABLE..." >&2; exit 1; }'
-ReadWritePaths=/var/lib/docker /run/docker.sock /etc/workflow
+EnvironmentFile=/etc/tinyassets/env
+ExecStartPre=/bin/sh -c 'test -r /etc/tinyassets/env || { echo "ENV-UNREADABLE..." >&2; exit 1; }'
+ReadWritePaths=/var/lib/docker /run/docker.sock /etc/tinyassets
 ```
 
-**Assessment:** The `ExecStartPre` readability check is correct and surfaces the problem via journald. `ReadWritePaths=/etc/workflow` allows the workflow user to write to the *directory*, but the individual `env` file is `root:workflow 640` so workflow can read but not write. The systemd unit itself never modifies the file's mode.
+**Assessment:** The `ExecStartPre` readability check is correct and surfaces the problem via journald. `ReadWritePaths=/etc/tinyassets` allows the workflow user to write to the *directory*, but the individual `env` file is `root:workflow 640` so workflow can read but not write. The systemd unit itself never modifies the file's mode.
 
 ---
 
 ### E. docker-entrypoint.sh
 
-Reads sentinel env vars but never writes or chmods `/etc/workflow/env`. No risk.
+Reads sentinel env vars but never writes or chmods `/etc/tinyassets/env`. No risk.
 
 ---
 
 ### F. compose.yml
 
-References `/etc/workflow/env` via `env_file:` — read-only from compose's perspective. Docker reads it as the unprivileged container runtime user (root inside the container), which succeeds regardless of the file's mode on the host because compose reads it before exec. However, if compose is run as the `workflow` user (via the systemd unit) and the file is `0600 root:root`, compose itself will fail to open the file, silently passing an empty env to the container.
+References `/etc/tinyassets/env` via `env_file:` — read-only from compose's perspective. Docker reads it as the unprivileged container runtime user (root inside the container), which succeeds regardless of the file's mode on the host because compose reads it before exec. However, if compose is run as the `workflow` user (via the systemd unit) and the file is `0600 root:root`, compose itself will fail to open the file, silently passing an empty env to the container.
 
 ---
 
@@ -101,14 +101,14 @@ References `/etc/workflow/env` via `env_file:` — read-only from compose's pers
 
 ### RC-1 (confirmed): `sed -i` clobbers group ownership + perms — 2026-04-21 P0
 
-`sed -i` does a `rename(2)` of a temp file written as root. The new inode inherits `root:root` and umask (typically `0600`). Any path using `sed -i /etc/workflow/env` that aborts before `chown + chmod` leaves the file unreadable by `workflow`.
+`sed -i` does a `rename(2)` of a temp file written as root. The new inode inherits `root:root` and umask (typically `0600`). Any path using `sed -i /etc/tinyassets/env` that aborts before `chown + chmod` leaves the file unreadable by `workflow`.
 
 **Triggered when:**
 - A `sudo sed -i` completes but the next command (`chown`) is interrupted by: SSH timeout, network drop, `set -e` triggered by a preceding command exit-code, or the `sed` process itself failing.
 
 ### RC-2 (hypothetical): Out-of-band `sudo sed -i` from SSH session
 
-A host manually running `sudo sed -i ... /etc/workflow/env` via SSH (e.g., to update a secret) and forgetting to restore `chown + chmod`. There is no guard against this.
+A host manually running `sudo sed -i ... /etc/tinyassets/env` via SSH (e.g., to update a secret) and forgetting to restore `chown + chmod`. There is no guard against this.
 
 ### RC-3 (hypothetical): compose run with wrong user context
 
@@ -116,7 +116,7 @@ If `docker compose` is run as `root` (e.g., during manual debugging via `sudo do
 
 ### RC-4 (hypothetical): Future `sed -i` added without chown/chmod restore
 
-Any future script, runbook step, or GitHub Actions step that does `sudo sed -i /etc/workflow/env` without the restore trio is a latent RC-1. No structural prevention exists today.
+Any future script, runbook step, or GitHub Actions step that does `sudo sed -i /etc/tinyassets/env` without the restore trio is a latent RC-1. No structural prevention exists today.
 
 ---
 
@@ -127,9 +127,9 @@ Any future script, runbook step, or GitHub Actions step that does `sudo sed -i /
 Instead of `sed -i + chown + chmod` (three steps, abort-prone), use a single atomic operation:
 
 ```bash
-# Replace WORKFLOW_IMAGE in /etc/workflow/env atomically.
-new_content=$(sudo sed "s|^WORKFLOW_IMAGE=.*|WORKFLOW_IMAGE=${NEW_IMAGE}|" /etc/workflow/env)
-printf '%s\n' "${new_content}" | sudo install -m 640 -o root -g workflow /dev/stdin /etc/workflow/env
+# Replace TINYASSETS_IMAGE in /etc/tinyassets/env atomically.
+new_content=$(sudo sed "s|^TINYASSETS_IMAGE=.*|TINYASSETS_IMAGE=${NEW_IMAGE}|" /etc/tinyassets/env)
+printf '%s\n' "${new_content}" | sudo install -m 640 -o root -g workflow /dev/stdin /etc/tinyassets/env
 ```
 
 `install` writes a new file at the target path with the specified owner/perms atomically. No intermediate state with wrong perms. Applies to all three `sed -i` sites in `deploy-prod.yml` and the one in `p0-outage-triage.yml`.
@@ -139,20 +139,20 @@ printf '%s\n' "${new_content}" | sudo install -m 640 -o root -g workflow /dev/st
 Add a dedicated CI step that runs BEFORE any `sed -i` that asserts and restores the file's mode:
 
 ```yaml
-- name: Assert + restore /etc/workflow/env mode
+- name: Assert + restore /etc/tinyassets/env mode
   run: |
-    ssh ... "sudo chown root:workflow /etc/workflow/env && sudo chmod 640 /etc/workflow/env"
+    ssh ... "sudo chown root:workflow /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env"
 ```
 
 Running this first means even if a subsequent `sed -i` aborts mid-sequence, a re-run of the workflow starts with a known-good state.
 
 ### Fix C (runbook): Document the restore trio for manual SSH sessions
 
-Add to `deploy/HETZNER-DEPLOY.md` (or a new `deploy/OPS-RUNBOOK.md`): "Any manual edit to `/etc/workflow/env` must be followed by `sudo chown root:workflow /etc/workflow/env && sudo chmod 640 /etc/workflow/env`." This addresses RC-2.
+Add to `deploy/HETZNER-DEPLOY.md` (or a new `deploy/OPS-RUNBOOK.md`): "Any manual edit to `/etc/tinyassets/env` must be followed by `sudo chown root:workflow /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env`." This addresses RC-2.
 
 ### Fix D (optional, structural): Replace direct file with a wrapper script
 
-Replace `EnvironmentFile=/etc/workflow/env` in the systemd unit with an `ExecStartPre` that reads secrets from the vault and writes to a tmpfs path owned by `workflow`. This removes the persistent on-disk file entirely and eliminates the mode-flip class. Higher lift — appropriate only if the vault integration lands.
+Replace `EnvironmentFile=/etc/tinyassets/env` in the systemd unit with an `ExecStartPre` that reads secrets from the vault and writes to a tmpfs path owned by `workflow`. This removes the persistent on-disk file entirely and eliminates the mode-flip class. Higher lift — appropriate only if the vault integration lands.
 
 ---
 
@@ -171,9 +171,9 @@ Replace `EnvironmentFile=/etc/workflow/env` in the systemd unit with an `ExecSta
 | File | Verdict |
 |------|---------|
 | `deploy/hetzner-bootstrap.sh` | Safe — `cp` + explicit `chown + chmod`, only runs once |
-| `deploy/workflow-daemon.service` | Safe — `ExecStartPre` readability check; unit never writes the file |
+| `deploy/tinyassets-daemon.service` | Safe — `ExecStartPre` readability check; unit never writes the file |
 | `deploy/compose.yml` | Read-only reference; no write risk |
 | `deploy/docker-entrypoint.sh` | Read-only; no write risk |
-| `deploy/workflow-env.template` | Template only; never touches `/etc/workflow/env` directly |
+| `deploy/workflow-env.template` | Template only; never touches `/etc/tinyassets/env` directly |
 | `.github/workflows/deploy-prod.yml` | **RC-1 present** at 3 `sed -i` sites; mitigated but not eliminated |
 | `.github/workflows/p0-outage-triage.yml` | **RC-1 present** at 1 `sed -i` site; mitigated but not eliminated |

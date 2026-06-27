@@ -8,27 +8,27 @@ import igraph as ig
 import numpy as np
 import pytest
 
-from workflow.knowledge.entity_extraction import (
+from tinyassets.knowledge.entity_extraction import (
     AliasRegistry,
     extract_from_prose,
 )
-from workflow.knowledge.hipporag import (
+from tinyassets.knowledge.hipporag import (
     HippoRAG,
     personalized_pagerank_query,
 )
-from workflow.knowledge.knowledge_graph import KnowledgeGraph
-from workflow.knowledge.leiden import (
+from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+from tinyassets.knowledge.leiden import (
     detect_communities,
     detect_communities_from_kg,
 )
-from workflow.knowledge.models import (
+from tinyassets.knowledge.models import (
     FactWithContext,
     GraphEdge,
     GraphEntity,
     LanguageType,
     SourceType,
 )
-from workflow.knowledge.raptor import (
+from tinyassets.knowledge.raptor import (
     RaptorTree,
     build_raptor_tree,
     query_raptor_tree,
@@ -337,7 +337,7 @@ class TestKnowledgeGraph:
         assert results == []
 
     def test_get_open_promises_with_foreshadowing(self, populated_kg):
-        from workflow.knowledge.models import NarrativeFunction
+        from tinyassets.knowledge.models import NarrativeFunction
         # Add a foreshadowing fact with no truth_value_final
         populated_kg.add_facts([
             FactWithContext(
@@ -354,7 +354,7 @@ class TestKnowledgeGraph:
         assert results[0]["fact_id"] == "promise1"
 
     def test_get_open_promises_resolved_excluded(self, populated_kg):
-        from workflow.knowledge.models import NarrativeFunction
+        from tinyassets.knowledge.models import NarrativeFunction
         # Add a resolved foreshadowing fact
         populated_kg.add_facts([
             FactWithContext(
@@ -371,7 +371,7 @@ class TestKnowledgeGraph:
         assert all(r["fact_id"] != "resolved_promise" for r in results)
 
     def test_get_open_promises_overdue(self, populated_kg):
-        from workflow.knowledge.models import NarrativeFunction
+        from tinyassets.knowledge.models import NarrativeFunction
         # Add an old promise (chapter 1) and a recent one (chapter 50)
         populated_kg.add_facts([
             FactWithContext(
@@ -634,7 +634,7 @@ class TestEntityExtraction:
 
     def test_prompt_includes_access_tier_instructions(self):
         """FICTION_EXTRACTION_PROMPT should describe access_tier classification."""
-        from workflow.knowledge.entity_extraction import FICTION_EXTRACTION_PROMPT
+        from tinyassets.knowledge.entity_extraction import FICTION_EXTRACTION_PROMPT
         assert "access_tier" in FICTION_EXTRACTION_PROMPT
         assert "common knowledge" in FICTION_EXTRACTION_PROMPT
         assert "cosmic" in FICTION_EXTRACTION_PROMPT
@@ -669,7 +669,7 @@ class TestRAPTOR:
         for i in range(3):
             tree.add_node(
                 __import__(
-                    "workflow.knowledge.raptor", fromlist=["RaptorNode"]
+                    "tinyassets.knowledge.raptor", fromlist=["RaptorNode"]
                 ).RaptorNode(
                     node_id=f"n{i}",
                     text=f"Summary {i}",
@@ -688,7 +688,7 @@ class TestRAPTOR:
 
     def test_read_canon_paragraphs(self, tmp_path):
         """_read_canon_paragraphs splits canon/*.md into >50 char paragraphs."""
-        from workflow.knowledge.raptor import _read_canon_paragraphs
+        from tinyassets.knowledge.raptor import _read_canon_paragraphs
 
         canon_dir = tmp_path / "canon"
         canon_dir.mkdir()
@@ -704,7 +704,7 @@ class TestRAPTOR:
 
     def test_read_canon_paragraphs_no_dir(self, tmp_path):
         """_read_canon_paragraphs returns empty list when dir doesn't exist."""
-        from workflow.knowledge.raptor import _read_canon_paragraphs
+        from tinyassets.knowledge.raptor import _read_canon_paragraphs
 
         paras = _read_canon_paragraphs(str(tmp_path / "nonexistent"))
         assert paras == []
@@ -713,8 +713,8 @@ class TestRAPTOR:
         """rebuild_raptor_from_canon builds tree from canon/*.md paragraphs."""
         from unittest.mock import patch
 
-        import workflow.runtime_singletons as rt
-        from workflow.knowledge.raptor import rebuild_raptor_from_canon
+        import tinyassets.runtime_singletons as rt
+        from tinyassets.knowledge.raptor import rebuild_raptor_from_canon
 
         # Create canon files with >50 char paragraphs
         canon_dir = tmp_path / "canon"
@@ -739,7 +739,7 @@ class TestRAPTOR:
 
         try:
             with patch(
-                "workflow.providers.call.call_provider",
+                "tinyassets.providers.call.call_provider",
                 return_value="Summary of the cluster.",
             ):
                 tree = rebuild_raptor_from_canon(
@@ -759,8 +759,8 @@ class TestRAPTOR:
         """DaemonController._build_raptor_tree reads canon files."""
         from unittest.mock import patch
 
-        import workflow.runtime_singletons as rt
-        from workflow.__main__ import DaemonController
+        import tinyassets.runtime_singletons as rt
+        from tinyassets.__main__ import DaemonController
 
         canon_dir = tmp_path / "canon"
         canon_dir.mkdir()
@@ -788,7 +788,7 @@ class TestRAPTOR:
                 no_tray=True,
             )
             with patch(
-                "workflow.providers.call.call_provider",
+                "tinyassets.providers.call.call_provider",
                 return_value="Summary of cluster.",
             ):
                 controller._build_raptor_tree()
@@ -802,8 +802,8 @@ class TestRAPTOR:
 
     def test_daemon_build_raptor_skips_without_embed_fn(self, tmp_path):
         """_build_raptor_tree skips when no embed_fn is available."""
-        import workflow.runtime_singletons as rt
-        from workflow.__main__ import DaemonController
+        import tinyassets.runtime_singletons as rt
+        from tinyassets.__main__ import DaemonController
 
         canon_dir = tmp_path / "canon"
         canon_dir.mkdir()
@@ -831,8 +831,8 @@ class TestRAPTOR:
 
     def test_daemon_build_raptor_skips_empty_canon(self, tmp_path):
         """_build_raptor_tree skips when canon dir has no content."""
-        import workflow.runtime_singletons as rt
-        from workflow.__main__ import DaemonController
+        import tinyassets.runtime_singletons as rt
+        from tinyassets.__main__ import DaemonController
 
         old_rt = rt.raptor_tree
         rt.raptor_tree = None

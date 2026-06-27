@@ -162,7 +162,7 @@ slow. Callers pick the metric; no aggregate score in v1.
 
 ## Integration seams (Phase 2-4 surfaces I built)
 
-### BranchDefinition (`workflow/branches.py`)
+### BranchDefinition (`tinyassets/branches.py`)
 - Add `goal_id: str = ""` field.
 - `to_dict()` / `from_dict()` pick it up automatically via existing
   dataclass plumbing.
@@ -314,10 +314,10 @@ the prompt routing table gains:
 
 Roughly the scale of Phase 2 (build_branch surfaces):
 
-- Storage + CRUD helpers: 1 PR (~300 lines in `workflow/author_server.py`
-  or a new `workflow/goals.py`). Includes the ADD COLUMN migration.
+- Storage + CRUD helpers: 1 PR (~300 lines in `tinyassets/author_server.py`
+  or a new `tinyassets/goals.py`). Includes the ADD COLUMN migration.
 - `goals` MCP tool + 8 action handlers: 1 PR (~500 lines in
-  `workflow/universe_server.py`, following the `_BRANCH_ACTIONS`
+  `tinyassets/universe_server.py`, following the `_BRANCH_ACTIONS`
   dispatch pattern).
 - `list_branches goal_id` filter: small (~30 lines, same PR as above).
 - Prompts (`goal_discovery_guide`, `control_station` routing): 1 PR

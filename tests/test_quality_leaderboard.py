@@ -6,7 +6,7 @@ patching entrenches the wrong architecture. DESIGN-008 replaces the
 formula with a per-Goal selector-branch dispatch. These tests now
 exercise the dispatch contract, not formula arithmetic.
 
-Strategy: monkeypatch ``workflow.api.selector_dispatch.dispatch_selector``
+Strategy: monkeypatch ``tinyassets.api.selector_dispatch.dispatch_selector``
 so tests don't depend on a live LLM provider. The mock takes the
 ``candidate_branches`` input and returns deterministic
 ``ranked_entries`` based on a per-test choice of dominant signal
@@ -37,16 +37,16 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.api.quality_leaderboard import (
+from tinyassets.api.quality_leaderboard import (
     build_quality_leaderboard,
     recommend_parent_for_fork,
 )
-from workflow.daemon_server import (
+from tinyassets.daemon_server import (
     initialize_author_server,
     save_branch_definition,
     save_goal,
 )
-from workflow.runs import (
+from tinyassets.runs import (
     RUN_STATUS_COMPLETED,
     add_judgment,
     create_run,
@@ -62,7 +62,7 @@ from workflow.runs import (
 @pytest.fixture
 def base_path(tmp_path: Path, monkeypatch) -> Path:
     """Per-test data root with both schema layers initialized."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     initialize_author_server(tmp_path)
     initialize_runs_db(tmp_path)
     return tmp_path
@@ -169,8 +169,8 @@ def _mock_dispatch_selector(
       named signal field descending and emit them as ``ranked_entries``.
     * ``fail_with`` — return ``{"ok": False, "error_kind": ..., "error": ...}``.
 
-    The returned function is patched into ``workflow.api.quality_leaderboard``
-    via ``patch("workflow.api.quality_leaderboard.dispatch_selector",
+    The returned function is patched into ``tinyassets.api.quality_leaderboard``
+    via ``patch("tinyassets.api.quality_leaderboard.dispatch_selector",
     side_effect=mock)``.
     """
     def _mock(
@@ -259,7 +259,7 @@ def test_empty_goal_returns_empty_entries(base_path):
     and the leaderboard returns ok=True with entries=[]."""
     _make_goal(base_path, "g-empty")
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(),
     ) as mock_dispatch:
         board = build_quality_leaderboard(
@@ -277,7 +277,7 @@ def test_empty_goal_returns_empty_entries(base_path):
 def test_recommend_parent_when_no_entries(base_path):
     _make_goal(base_path, "g-empty")
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(),
     ):
         rec = recommend_parent_for_fork(
@@ -298,7 +298,7 @@ def test_single_branch_ranks_first(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b1", goal_id="g1")
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(by_signal="completed_run_count"),
     ):
         board = build_quality_leaderboard(
@@ -323,7 +323,7 @@ def test_completed_run_with_iso_finished_at_does_not_crash(base_path):
 
     now = datetime(2026, 5, 23, tzinfo=timezone.utc).timestamp()
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(by_signal="last_successful_run_at"),
     ):
         board = build_quality_leaderboard(
@@ -357,7 +357,7 @@ def test_mixed_finished_at_storage_uses_latest_normalized_timestamp(base_path):
 
     now = datetime(2026, 5, 24, tzinfo=timezone.utc).timestamp()
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(by_signal="last_successful_run_at"),
     ):
         board = build_quality_leaderboard(
@@ -390,7 +390,7 @@ def test_mock_selector_ranking_by_judgment_avg(base_path):
     _record_judgment(base_path, run_id=r_low, tags=["quality:3.0"])
     _record_judgment(base_path, run_id=r_high, tags=["quality:9.0"])
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(by_signal="judgment_score_avg"),
     ):
         board = build_quality_leaderboard(
@@ -440,7 +440,7 @@ def test_substrate_passes_signal_bundle_to_selector(base_path):
         }
 
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_capturing,
     ):
         build_quality_leaderboard(base_path, goal_id="g1", viewer="")
@@ -494,7 +494,7 @@ def test_other_numeric_tags_bucketed_separately(base_path):
         }
 
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_capturing,
     ):
         build_quality_leaderboard(base_path, goal_id="g1", viewer="")
@@ -533,7 +533,7 @@ def test_non_numeric_tags_ignored(base_path):
         }
 
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_capturing,
     ):
         build_quality_leaderboard(base_path, goal_id="g1", viewer="")
@@ -580,7 +580,7 @@ def test_fork_count_signal_present(base_path):
         }
 
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_capturing,
     ):
         build_quality_leaderboard(base_path, goal_id="g1", viewer="")
@@ -618,7 +618,7 @@ def test_safe_to_publish_signal_from_branch_stats(base_path):
         }
 
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_capturing,
     ):
         build_quality_leaderboard(base_path, goal_id="g1", viewer="")
@@ -632,7 +632,7 @@ def test_gate_rung_signal_populates_when_claim_present(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b-rung", goal_id="g1")
     _make_branch(base_path, branch_def_id="b-no-rung", goal_id="g1")
-    from workflow.storage import _connect
+    from tinyassets.storage import _connect
     with _connect(base_path) as conn:
         conn.execute(
             """
@@ -666,7 +666,7 @@ def test_gate_rung_signal_populates_when_claim_present(base_path):
         }
 
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_capturing,
     ):
         build_quality_leaderboard(base_path, goal_id="g1", viewer="")
@@ -693,7 +693,7 @@ def test_selector_invalid_output_surfaces_structured_error(base_path):
         "run_id": "run-bad",
     }
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(fail_with=fail_response),
     ):
         board = build_quality_leaderboard(
@@ -716,7 +716,7 @@ def test_selector_timeout_surfaces_structured_error(base_path):
         "run_id": "run-stuck",
     }
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(fail_with=fail_response),
     ):
         rec = recommend_parent_for_fork(
@@ -738,7 +738,7 @@ def test_selector_run_failed_surfaces_structured_error(base_path):
         "run_id": "run-crashed",
     }
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(fail_with=fail_response),
     ):
         board = build_quality_leaderboard(
@@ -764,7 +764,7 @@ def test_substrate_filters_duplicate_entries_from_selector_output(base_path):
         {"branch_def_id": "b1", "score": 8.0, "rationale": "dupe"},
     ]
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(ranked_entries=duplicates),
     ):
         board = build_quality_leaderboard(
@@ -798,7 +798,7 @@ def test_substrate_drops_phantom_branch_def_ids_from_selector(base_path):
         {"branch_def_id": "b1", "score": 5.0, "rationale": "real one"},
     ]
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(ranked_entries=poisoned),
     ):
         board = build_quality_leaderboard(
@@ -829,7 +829,7 @@ def test_substrate_phantom_filter_does_not_leave_rank_gaps(base_path):
         {"branch_def_id": "b2", "score": 5.0},
     ]
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(ranked_entries=interleaved),
     ):
         board = build_quality_leaderboard(
@@ -853,9 +853,9 @@ def test_substrate_logs_phantom_attempts(base_path, caplog):
          "rationale": "private leak attempt"},
         {"branch_def_id": "b1", "score": 5.0},
     ]
-    with caplog.at_level(logging.WARNING, logger="workflow.api.quality_leaderboard"):
+    with caplog.at_level(logging.WARNING, logger="tinyassets.api.quality_leaderboard"):
         with patch(
-            "workflow.api.quality_leaderboard.dispatch_selector",
+            "tinyassets.api.quality_leaderboard.dispatch_selector",
             side_effect=_mock_dispatch_selector(ranked_entries=poisoned),
         ):
             build_quality_leaderboard(
@@ -899,7 +899,7 @@ def test_substrate_ignores_selector_emitted_branch_version_id(base_path):
         },
     ]
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(ranked_entries=spoofed),
     ):
         board = build_quality_leaderboard(
@@ -934,10 +934,10 @@ def test_substrate_logs_selector_bvid_spoof_attempt(base_path, caplog):
         },
     ]
     with caplog.at_level(
-        logging.WARNING, logger="workflow.api.quality_leaderboard",
+        logging.WARNING, logger="tinyassets.api.quality_leaderboard",
     ):
         with patch(
-            "workflow.api.quality_leaderboard.dispatch_selector",
+            "tinyassets.api.quality_leaderboard.dispatch_selector",
             side_effect=_mock_dispatch_selector(ranked_entries=spoofed),
         ):
             build_quality_leaderboard(
@@ -960,8 +960,8 @@ def test_substrate_accepts_selector_matching_authoritative_bvid(base_path):
     is still used either way — this test just locks the no-spoof
     path so the spoof-list doesn't generate false positives when a
     well-behaved selector echoes the input bvid back.)"""
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import get_branch_definition
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b1", goal_id="g1")
     branch_dict = get_branch_definition(base_path, branch_def_id="b1")
@@ -986,7 +986,7 @@ def test_substrate_accepts_selector_matching_authoritative_bvid(base_path):
         },
     ]
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(ranked_entries=echoed),
     ):
         board = build_quality_leaderboard(
@@ -1015,7 +1015,7 @@ def test_substrate_assigns_rank_1_to_first_entry(base_path):
         {"branch_def_id": "b1", "score": 3.0},
     ]
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(ranked_entries=fixed_order),
     ):
         board = build_quality_leaderboard(
@@ -1044,7 +1044,7 @@ def test_recommend_parent_returns_top_with_selector_rationale(base_path):
         {"branch_def_id": "b-mid", "score": 6.0, "rationale": "mid"},
     ]
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_mock_dispatch_selector(ranked_entries=ranked),
     ):
         rec = recommend_parent_for_fork(
@@ -1087,7 +1087,7 @@ def test_realistic_goal_with_eighteen_entries_under_mock_selector(base_path):
             ],
         }
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_ranker,
     ):
         board = build_quality_leaderboard(
@@ -1113,7 +1113,7 @@ def test_goal_binding_takes_precedence_over_default(base_path):
     _make_goal(base_path, "g1")
     _make_branch(base_path, branch_def_id="b1", goal_id="g1")
     # Bind a non-platform-default selector at the storage layer.
-    from workflow.daemon_server import update_goal
+    from tinyassets.daemon_server import update_goal
     update_goal(
         base_path,
         goal_id="g1",
@@ -1137,7 +1137,7 @@ def test_goal_binding_takes_precedence_over_default(base_path):
         }
 
     with patch(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         side_effect=_capturing,
     ):
         board = build_quality_leaderboard(

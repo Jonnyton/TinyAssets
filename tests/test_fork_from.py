@@ -9,8 +9,8 @@ import json
 
 import pytest
 
-from workflow.branch_versions import publish_branch_version
-from workflow.daemon_server import (
+from tinyassets.branch_versions import publish_branch_version
+from tinyassets.daemon_server import (
     initialize_author_server,
     save_branch_definition,
     update_branch_definition,
@@ -18,7 +18,7 @@ from workflow.daemon_server import (
 
 
 def _seed_branch(base_path, branch_id: str = "b1", name: str = "Branch") -> dict:
-    from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+    from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
 
     initialize_author_server(base_path)
     nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")
@@ -35,7 +35,7 @@ def _seed_branch(base_path, branch_id: str = "b1", name: str = "Branch") -> dict
 
 
 def _publish(base_path, branch_id: str) -> str:
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition
 
     bd = get_branch_definition(base_path, branch_def_id=branch_id)
     v = publish_branch_version(base_path, bd, publisher="alice")
@@ -45,7 +45,7 @@ def _publish(base_path, branch_id: str) -> str:
 class TestForkFromField:
     def test_branch_has_no_fork_from_by_default(self, tmp_path):
         _seed_branch(tmp_path)
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
 
         bd = get_branch_definition(tmp_path, branch_def_id="b1")
         assert bd["fork_from"] is None
@@ -56,7 +56,7 @@ class TestForkFromField:
         _seed_branch(tmp_path, "b2", "Branch 2")
 
         update_branch_definition(tmp_path, branch_def_id="b2", updates={"fork_from": bvid})
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
 
         bd = get_branch_definition(tmp_path, branch_def_id="b2")
         assert bd["fork_from"] == bvid
@@ -74,9 +74,9 @@ class TestForkFromField:
             update_branch_definition(tmp_path, branch_def_id="b3", updates={"fork_from": bvid2})
 
     def test_build_branch_with_fork_from_roundtrips(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _ext_branch_build
+        from tinyassets.api.branches import _ext_branch_build
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path, "b1")
         bvid = _publish(tmp_path, "b1")
 
@@ -92,9 +92,9 @@ class TestForkFromField:
         assert result["branch"]["fork_from"] == bvid
 
     def test_build_branch_invalid_fork_from_rejected(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _ext_branch_build
+        from tinyassets.api.branches import _ext_branch_build
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         initialize_author_server(tmp_path)
 
         spec = json.dumps({
@@ -111,9 +111,9 @@ class TestForkFromField:
 
 class TestSetForkFromPatchOp:
     def test_set_fork_from_op_sets_lineage(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _ext_branch_patch
+        from tinyassets.api.branches import _ext_branch_patch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path, "b1")
         bvid = _publish(tmp_path, "b1")
         _seed_branch(tmp_path, "b2", "Branch 2")
@@ -129,9 +129,9 @@ class TestSetForkFromPatchOp:
         assert result["branch"]["fork_from"] == bvid
 
     def test_set_fork_from_invalid_version_rejected(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _ext_branch_patch
+        from tinyassets.api.branches import _ext_branch_patch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path, "b1")
 
         result = json.loads(_ext_branch_patch({
@@ -144,9 +144,9 @@ class TestSetForkFromPatchOp:
         assert result.get("errors") or result.get("error")
 
     def test_set_fork_from_immutable_after_set(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _ext_branch_patch
+        from tinyassets.api.branches import _ext_branch_patch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path, "b1")
         bvid1 = _publish(tmp_path, "b1")
         _seed_branch(tmp_path, "b2")
@@ -166,9 +166,9 @@ class TestSetForkFromPatchOp:
 
 class TestForkTree:
     def test_fork_tree_no_lineage(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _action_fork_tree
+        from tinyassets.api.branches import _action_fork_tree
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path)
         result = json.loads(_action_fork_tree({"branch_def_id": "b1"}))
         assert result["branch_def_id"] == "b1"
@@ -176,9 +176,9 @@ class TestForkTree:
         assert result["descendant_count"] == 0
 
     def test_fork_tree_shows_descendant(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _action_fork_tree
+        from tinyassets.api.branches import _action_fork_tree
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path, "b1", "Root")
         bvid = _publish(tmp_path, "b1")
         _seed_branch(tmp_path, "b2", "Fork")
@@ -189,9 +189,9 @@ class TestForkTree:
         assert result["descendants"][0]["branch_def_id"] == "b2"
 
     def test_fork_tree_shows_ancestor(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _action_fork_tree
+        from tinyassets.api.branches import _action_fork_tree
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path, "b1", "Root")
         bvid = _publish(tmp_path, "b1")
         _seed_branch(tmp_path, "b2", "Fork")
@@ -202,17 +202,17 @@ class TestForkTree:
         assert result["ancestors"][0]["branch_def_id"] == "b1"
 
     def test_fork_tree_missing_branch_error(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _action_fork_tree
+        from tinyassets.api.branches import _action_fork_tree
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         initialize_author_server(tmp_path)
         result = json.loads(_action_fork_tree({"branch_def_id": "nonexistent"}))
         assert "error" in result
 
     def test_fork_tree_missing_branch_def_id_error(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _action_fork_tree
+        from tinyassets.api.branches import _action_fork_tree
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         initialize_author_server(tmp_path)
         result = json.loads(_action_fork_tree({}))
         assert "error" in result
@@ -220,9 +220,9 @@ class TestForkTree:
 
 class TestDescribeBranchLineageEnrichment:
     def test_describe_branch_includes_fork_from(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _ext_branch_describe
+        from tinyassets.api.branches import _ext_branch_describe
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path, "b1")
         bvid = _publish(tmp_path, "b1")
         _seed_branch(tmp_path, "b2", "Fork")
@@ -232,18 +232,18 @@ class TestDescribeBranchLineageEnrichment:
         assert result["fork_from"] == bvid
 
     def test_describe_branch_no_fork_from_is_none(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _ext_branch_describe
+        from tinyassets.api.branches import _ext_branch_describe
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path)
 
         result = json.loads(_ext_branch_describe({"branch_def_id": "b1"}))
         assert result["fork_from"] is None
 
     def test_describe_branch_includes_fork_descendants(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _ext_branch_describe
+        from tinyassets.api.branches import _ext_branch_describe
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path, "b1", "Root")
         bvid = _publish(tmp_path, "b1")
         _seed_branch(tmp_path, "b2", "Fork")
@@ -257,9 +257,9 @@ class TestDescribeBranchLineageEnrichment:
         assert "published_versions_count" in desc
 
     def test_describe_branch_no_descendants_returns_empty_list(self, tmp_path, monkeypatch):
-        from workflow.api.branches import _ext_branch_describe
+        from tinyassets.api.branches import _ext_branch_describe
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _seed_branch(tmp_path)
 
         result = json.loads(_ext_branch_describe({"branch_def_id": "b1"}))

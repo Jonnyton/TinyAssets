@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from workflow.directory_server import (
+from tinyassets.directory_server import (
     _redact_directory_status,
     directory_mcp,
     read_graph,
@@ -197,10 +197,10 @@ def test_directory_status_redacts_operator_diagnostics() -> None:
 
 def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> None:
     """Guard the reviewed directory goal path beyond tool-schema listing."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "directory-test")
 
-    from workflow.catalog import invalidate_backend_cache
+    from tinyassets.catalog import invalidate_backend_cache
 
     invalidate_backend_cache()
     try:
@@ -226,10 +226,10 @@ def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> No
 
 def test_directory_submit_request_queues_temp_universe_request(monkeypatch, tmp_path) -> None:
     """Guard the reviewed directory request write path without touching prod."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "directory-test")
 
-    from workflow.catalog import invalidate_backend_cache
+    from tinyassets.catalog import invalidate_backend_cache
 
     invalidate_backend_cache()
     universe_dir = tmp_path / "directory-universe"
@@ -263,7 +263,7 @@ def test_directory_submit_request_queues_temp_universe_request(monkeypatch, tmp_
 def test_directory_write_page_drafts_temp_wiki_page(monkeypatch, tmp_path) -> None:
     """Guard the five-handle page write adapter against parameter drift."""
     wiki_root = tmp_path / "wiki"
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
 
     drafted = json.loads(
         write_page(
@@ -284,8 +284,8 @@ def test_directory_write_page_drafts_temp_wiki_page(monkeypatch, tmp_path) -> No
 def test_directory_write_page_honors_target_universe(monkeypatch, tmp_path) -> None:
     """A writer scoped to a universe writes to that universe's page substrate."""
     shared_wiki = tmp_path / "shared-wiki"
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(shared_wiki))
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(shared_wiki))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     drafted = json.loads(
         write_page(
@@ -315,7 +315,7 @@ def test_directory_write_page_honors_target_universe(monkeypatch, tmp_path) -> N
 
 
 def test_directory_write_page_rejects_dot_universe(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     result = json.loads(
         write_page(
@@ -335,9 +335,9 @@ def test_directory_read_page_changed_since_routes_to_since_feed(
 ) -> None:
     """Empty read_page + changed_since is the directory-safe since action."""
     wiki_root = tmp_path / "wiki"
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
 
-    from workflow.api.wiki import _ensure_wiki_scaffold
+    from tinyassets.api.wiki import _ensure_wiki_scaffold
 
     _ensure_wiki_scaffold(wiki_root)
     fresh = wiki_root / "pages" / "notes" / "fresh-directory-feed.md"

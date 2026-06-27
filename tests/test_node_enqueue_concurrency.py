@@ -9,7 +9,7 @@ prove the safety rails hold under load:
   3. every enqueued task is well-formed at the correct spawn depth, with a
      unique task id (no id collision across concurrent appends).
 
-This is the gate the enqueue capability flag (WORKFLOW_NODE_ENQUEUE_ENABLED)
+This is the gate the enqueue capability flag (TINYASSETS_NODE_ENQUEUE_ENABLED)
 waits on before going live.
 """
 
@@ -20,16 +20,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 from langgraph.checkpoint.memory import InMemorySaver
 
-import workflow.api.helpers as helpers
-import workflow.daemon_server as ds
-from workflow.branch_tasks import read_queue
-from workflow.branches import (
+import tinyassets.api.helpers as helpers
+import tinyassets.daemon_server as ds
+from tinyassets.branch_tasks import read_queue
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import NodeEnqueueContext, compile_branch
+from tinyassets.graph_compiler import NodeEnqueueContext, compile_branch
 
 _BUDGET = 5
 _RUNS = 8  # concurrent branch runs
@@ -92,8 +92,8 @@ def _one_run(run_id: int) -> str:
 
 
 def test_concurrent_enqueue_bounded_and_lock_safe(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_MAX_PER_RUN", str(_BUDGET))
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", str(_BUDGET))
     uni = tmp_path / "uni"
     uni.mkdir()
     monkeypatch.setattr(helpers, "_universe_dir", lambda uid: uni)

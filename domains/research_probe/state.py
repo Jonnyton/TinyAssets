@@ -1,8 +1,8 @@
 """Research Probe domain state definition.
 
-Extends the base workflow state with research-specific fields.
+Extends the base TinyAssets state with research-specific fields.
 This domain demonstrates a flat workflow topology with revision loops,
-contrasting with Workflow's 4-level hierarchy.
+contrasting with the fantasy domain's 4-level hierarchy.
 """
 
 from __future__ import annotations
@@ -12,13 +12,13 @@ from typing import Any
 
 from typing_extensions import Annotated
 
-from workflow.protocols import WorkflowState
+from tinyassets.protocols import TinyAssetsState
 
 
-class ResearchState(WorkflowState):
+class ResearchState(TinyAssetsState):
     """Complete state for research probe domain.
 
-    Extends WorkflowState with research-specific fields for gathering
+    Extends TinyAssetsState with research-specific fields for gathering
     sources, extracting facts, synthesizing summaries, and iterative review.
     """
 

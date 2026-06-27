@@ -25,7 +25,7 @@ FastMCP's `ToolAnnotations` wraps only the five shipped fields. Setting `destruc
 
 ## 3. The load-bearing architectural fact
 
-`add_canon_from_path` is **not a tool**. It is an `action` parameter value on the coarse-grained `universe` tool in `workflow/universe_server.py:1075` (`_action_add_canon_from_path` at line 3071, dispatched at line 1165). MCP clients approve *tools*, not *actions*. Claude Desktop's "always allow" toggle binds to the tool's name — once `universe` is allowed, *every* action on it is allowed, including `add_canon_from_path`.
+`add_canon_from_path` is **not a tool**. It is an `action` parameter value on the coarse-grained `universe` tool in `tinyassets/universe_server.py:1075` (`_action_add_canon_from_path` at line 3071, dispatched at line 1165). MCP clients approve *tools*, not *actions*. Claude Desktop's "always allow" toggle binds to the tool's name — once `universe` is allowed, *every* action on it is allowed, including `add_canon_from_path`.
 
 Per Anthropic [issue #24433](https://github.com/anthropics/claude-code/issues/24433), approval granularity is tool-level and arguments are not inspected. There is no protocol- or client-level mechanism to carve out a single action from a tool's always-allow scope.
 
@@ -34,7 +34,7 @@ Per Anthropic [issue #24433](https://github.com/anthropics/claude-code/issues/24
 - **(a) Server-side annotation only.** Add `destructiveHint=True` to the `universe` tool (or a future `sensitiveHint`). Cost: ~0. Effect: zero today — Claude Desktop doesn't honor it for approval. Forward-compatible if a `neverAutoApprove` annotation lands.
 - **(b) Extract `add_canon_from_path` to its own tool.** Split off `canon_upload` (or similar) as a dedicated `@mcp.tool` with its own annotations. This is the *only* way to make always-allow carve-out work with existing clients. Cost: ~0.5 dev-day + one extra "allow" click in the UX. Plays well with the #11 MCP-split direction: this tool would live in the mounted `fantasy` server, giving domain-owned sensitive ops their own approval scope.
 - **(c) Purely client-side config.** Document a `claude_desktop_config.json` pattern with an `alwaysAllow: ["universe:*"]` exclusion, once clients support it. Today no such field exists — this is a request for a future client feature, not a design we can ship.
-- **(d) Keep current defense (whitelist).** `WORKFLOW_UPLOAD_WHITELIST` (workflow/universe_server.py:141) already rejects out-of-whitelist paths server-side, independent of MCP approval. This is the real guard and remains load-bearing.
+- **(d) Keep current defense (whitelist).** `TINYASSETS_UPLOAD_WHITELIST` (tinyassets/universe_server.py:141) already rejects out-of-whitelist paths server-side, independent of MCP approval. This is the real guard and remains load-bearing.
 
 ## 5. Recommendation
 
@@ -50,7 +50,7 @@ Per Anthropic [issue #24433](https://github.com/anthropics/claude-code/issues/24
 - [MCP blog — tool annotations as risk vocabulary](https://blog.modelcontextprotocol.io/posts/2026-03-16-tool-annotations/)
 - [anthropics/claude-code #24433 — "Always allow" does not persist](https://github.com/anthropics/claude-code/issues/24433)
 - [modelcontextprotocol/modelcontextprotocol #711 — Annotations for security/privacy](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/711)
-- Codebase: `workflow/universe_server.py:1075` (universe tool), `:3071` (`_action_add_canon_from_path`), `:141` (`_upload_whitelist_prefixes`).
+- Codebase: `tinyassets/universe_server.py:1075` (universe tool), `:3071` (`_action_add_canon_from_path`), `:141` (`_upload_whitelist_prefixes`).
 
 ---
 
@@ -71,11 +71,11 @@ Per Anthropic [issue #24433](https://github.com/anthropics/claude-code/issues/24
 **Yes.** Extraction can ship as a self-contained change independent of the engine/domain MCP split.
 
 **What standalone extraction looks like:**
-- Register `add_canon_from_path` (or rename to `canon_upload_local` for clarity) as its own `@mcp.tool` in `workflow/universe_server.py` alongside the existing `universe` tool. ~0.5 dev-day, same effort estimate as the original note.
-- Remove `add_canon_from_path` from the `universe` tool's action dispatch (`workflow/universe_server.py:1166`).
+- Register `add_canon_from_path` (or rename to `canon_upload_local` for clarity) as its own `@mcp.tool` in `tinyassets/universe_server.py` alongside the existing `universe` tool. ~0.5 dev-day, same effort estimate as the original note.
+- Remove `add_canon_from_path` from the `universe` tool's action dispatch (`tinyassets/universe_server.py:1166`).
 - Keep the server-side path whitelist (`_upload_whitelist_prefixes`, line 142) as the actual security boundary — unchanged and still load-bearing.
 - Set `destructiveHint=True` and `openWorldHint=True` on the new tool for forward-compat if a `sensitiveHint` lands later.
-- Clients see two tools on the Workflow Server surface: `universe` (coarse actions) + `canon_upload_local` (separate approval scope).
+- Clients see two tools on the TinyAssets Server surface: `universe` (coarse actions) + `canon_upload_local` (separate approval scope).
 
 **What #11 M1 would add on top:** when the mount-split lands, the extracted tool moves into the mounted `fantasy` server. The carve-out value is unchanged — it only changes which namespace owns the tool. Until M1, the tool simply lives on the root server alongside `universe`.
 
@@ -85,7 +85,7 @@ Arguments for **ship now**:
 - Decoupled work item. 0.5 dev-day. No blocker.
 - Security benefit is real and immediate — every user running the current `universe`-with-always-allow is one toggle away from granting arbitrary-path reads. Extracting the tool forces a distinct approval click.
 - Forward-compatible with M1. When M1 lands, the tool relocates into `fantasy` with a trivial move — no user-facing breakage beyond the approval re-prompt that naturally follows any tool-namespace change.
-- Pre-#3 (Author→Daemon rename) is fine. This touches `workflow/universe_server.py`, not files under the rename scope.
+- Pre-#3 (Author→Daemon rename) is fine. This touches `tinyassets/universe_server.py`, not files under the rename scope.
 
 Arguments for **wait for M1**:
 - Tool-namespace churn. Shipping extraction now + M1 later creates two approval re-prompts for users over the course of weeks. One is annoying; two is worse.

@@ -321,7 +321,7 @@ def control_station() -> str:
     return CONTROL_STATION_PROMPT
 
 CONTROL_STATION_PROMPT = """\
-You are operating as a Workflow Server control station — a workflow
+You are operating as a TinyAssets Server control station — a workflow
 builder and long-horizon AI platform. Users design custom multi-step
 AI workflows ("branches") with typed state, registered nodes,
 evaluation hooks, and iteration loops. Fantasy authoring is one
@@ -375,7 +375,7 @@ what should stay private. When in doubt, keep it private and ask.
 - Keeps every load-bearing semantic: tool-use contract, no-simulation contract, explicit-ask-for-writes contract, universe isolation, privacy model.
 - ≤50 lines; within the ~3-5-line-per-"piece" target from the directive-relocation plan.
 
-Task #15 execution on `workflow/universe_server.py` uses this as the canonical text when it unblocks. Gateway ships with it from day one.
+Task #15 execution on `tinyassets/universe_server.py` uses this as the canonical text when it unblocks. Gateway ships with it from day one.
 
 ---
 

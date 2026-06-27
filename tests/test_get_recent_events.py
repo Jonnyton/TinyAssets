@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.api.universe import (
+from tinyassets.api.universe import (
     _action_get_recent_events,
     _parse_activity_line,
 )
@@ -71,8 +71,8 @@ def universe_with_log(tmp_path, monkeypatch):
     Patches `_universe_dir` so the action finds our synthetic universe
     rather than the host's real output directory.
     """
-    from workflow import universe_server as us
-    from workflow.api import universe as uni
+    from tinyassets import universe_server as us
+    from tinyassets.api import universe as uni
 
     udir = tmp_path / "test-universe"
     udir.mkdir()
@@ -141,8 +141,8 @@ def test_tag_filter_no_match_returns_caveat(universe_with_log):
 
 def test_dispatch_guard_empty_match_adds_absence_caveat(tmp_path, monkeypatch):
     """tag='dispatch_guard' with zero matches must warn empty != no-overshoots."""
-    from workflow import universe_server as us
-    from workflow.api import universe as uni
+    from tinyassets import universe_server as us
+    from tinyassets.api import universe as uni
 
     udir = tmp_path / "no-dispatch-universe"
     udir.mkdir()
@@ -168,8 +168,8 @@ def test_dispatch_guard_empty_match_adds_absence_caveat(tmp_path, monkeypatch):
 
 def test_dispatch_guard_missing_log_adds_absence_caveat(tmp_path, monkeypatch):
     """tag='dispatch_guard' on a universe with no activity.log still warns."""
-    from workflow import universe_server as us
-    from workflow.api import universe as uni
+    from tinyassets import universe_server as us
+    from tinyassets.api import universe as uni
 
     udir = tmp_path / "fresh-dispatch-universe"
     udir.mkdir()
@@ -222,8 +222,8 @@ def test_untagged_caveat_when_no_filter(universe_with_log):
 
 
 def test_missing_log_returns_empty_with_caveat(tmp_path, monkeypatch):
-    from workflow import universe_server as us
-    from workflow.api import universe as uni
+    from tinyassets import universe_server as us
+    from tinyassets.api import universe as uni
 
     udir = tmp_path / "fresh-universe"
     udir.mkdir()  # no activity.log inside
@@ -277,7 +277,7 @@ def test_total_lines_reflects_log_not_matched(universe_with_log):
 def test_get_recent_events_is_registered_in_dispatch_table():
     """Regression guard: get_recent_events must be a registered action
     in the universe() dispatch table."""
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     # Invoke the action via the public dispatcher and confirm it does
     # NOT return the "Unknown action" error.

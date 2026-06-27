@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { WorkflowMark } from "./WorkflowMark";
+import { TinyAssetsMark } from "./TinyAssetsMark";
 import styles from "./TopNav.module.css";
 
 const items = [
@@ -31,7 +31,7 @@ export function TopNav() {
       <header className={styles.top}>
         <div className={`container ${styles.row}`}>
           <Link className={styles.brand} href="/" aria-label="Tiny — home" onClick={close}>
-            <WorkflowMark size={26} />
+            <TinyAssetsMark size={26} />
             <span className={styles.brandName}>Tiny</span>
             <span className={`${styles.brandSub} ev`}>tinyassets.io</span>
           </Link>

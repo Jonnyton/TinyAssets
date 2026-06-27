@@ -34,13 +34,13 @@ audience: lead, host
 |---|---|---|---|
 | 1 | `visibility: 'public'\|'private'` on Branch + Goal IS soft-private anti-pattern; retire | Multi-arc data + code retirement: catalog records become public-only, private-tagged data emigrates to host. | **P0** — direct principle conflict |
 | 2 | T1 browser-only users without a host can't have private content under strict commons-first | Design + ship community-hosted-on-your-behalf path (paid + free-friend variants). Browser-only users' privacy = a willing T2 hosts their universe. | **P0** — covers ~95% of users |
-| 3 | Today's `output/<universe>/` per-universe data directory model is the right shape — it's already host-resident; just need to clarify which fields are public-vs-private | Per-universe DB stays as host-resident store; per-universe metadata WHICH IS PUBLISHED gets pushed to a separate "commons" layer (git catalog already exists for this — `workflow/catalog/`) | **P1** |
+| 3 | Today's `output/<universe>/` per-universe data directory model is the right shape — it's already host-resident; just need to clarify which fields are public-vs-private | Per-universe DB stays as host-resident store; per-universe metadata WHICH IS PUBLISHED gets pushed to a separate "commons" layer (git catalog already exists for this — `tinyassets/catalog/`) | **P1** |
 | 4 | Discover/similarity/remix substrate IS the load-bearing infrastructure — currently weak | New 6th MCP primitive `discover` (see sibling design note). Today: weak text search via `goals.search`, no similarity, no remix-with-credit chain. | **P1** |
 | 5 | Privacy-modes design note (parked, 3 host Qs) becomes RETIRE-CANDIDATE — answer is "data is host-resident, no platform privacy policy needed" | Mark design-note as superseded; retire the 3 host Qs. | **P2** — already parked; just need closure |
 
 **Findings that shifted the in-flight queue: 8.** Concrete reframes for Phase 6, A.1 unpack, paid-market design, privacy-modes note, primitive-set proposal, and PLAN.md.
 
-**Findings that ratified existing direction: 7.** Wiki is already commons-shaped; git catalog (`workflow/catalog/`) already supports public commons; attribution model already designed (`project_designer_royalties_and_bounties`); A.1 unpack ratified; minimal-primitives ratified; convergent-commons memory ratified.
+**Findings that ratified existing direction: 7.** Wiki is already commons-shaped; git catalog (`tinyassets/catalog/`) already supports public commons; attribution model already designed (`project_designer_royalties_and_bounties`); A.1 unpack ratified; minimal-primitives ratified; convergent-commons memory ratified.
 
 **Findings flagged for backlog: 6.** Federated-discovery research, multi-host availability UX, content moderation reframe, license-policy hardening.
 
@@ -51,10 +51,10 @@ audience: lead, host
 ### F1 — `BranchDefinition.visibility = "public" | "private"` field IS the soft-private anti-pattern
 
 **Location:**
-- `workflow/branches.py:729-734` — `visibility: str = "public"` on `BranchDefinition`
-- `workflow/api/branches.py` — viewer-side filtering: `if visibility == "private" and branch.get("author", "") != _current_actor()` skip in listings, leaderboards, gate claims
-- `workflow/catalog/serializer.py:125,291,312` — visibility persists into YAML catalog
-- `workflow/api/engine_helpers.py` — `_filter_claims_by_branch_visibility()` and parallel `_filter_leaderboard_by_branch_visibility()` (Phase 6.2.2)
+- `tinyassets/branches.py:729-734` — `visibility: str = "public"` on `BranchDefinition`
+- `tinyassets/api/branches.py` — viewer-side filtering: `if visibility == "private" and branch.get("author", "") != _current_actor()` skip in listings, leaderboards, gate claims
+- `tinyassets/catalog/serializer.py:125,291,312` — visibility persists into YAML catalog
+- `tinyassets/api/engine_helpers.py` — `_filter_claims_by_branch_visibility()` and parallel `_filter_leaderboard_by_branch_visibility()` (Phase 6.2.2)
 - `workflow.author_server.save_branch_definition` (now `daemon_server`) — normalizes to 'public'/'private' at SQLite layer
 
 **What the principle says:** Per `project_commons_first_architecture` §"Anti-patterns":
@@ -73,23 +73,23 @@ Today's code is exactly this anti-pattern. Private branches sit in the same cata
 
 ### F2 — Universe metadata storage assumes platform-stored content
 
-**Location:** `workflow/storage/__init__.py` data directory resolver. Per `output/<universe>/` per-universe layout, data CURRENTLY lives in `<WORKFLOW_DATA_DIR>/<universe>/.author_server.db` + `notes.json` + per-universe knowledge graph + LanceDB indexes.
+**Location:** `tinyassets/storage/__init__.py` data directory resolver. Per `output/<universe>/` per-universe layout, data CURRENTLY lives in `<TINYASSETS_DATA_DIR>/<universe>/.author_server.db` + `notes.json` + per-universe knowledge graph + LanceDB indexes.
 
-**What the principle says:** This is actually FINE — `<WORKFLOW_DATA_DIR>` is the host's local data root, not platform-stored. The model is host-resident, just needs clearer naming.
+**What the principle says:** This is actually FINE — `<TINYASSETS_DATA_DIR>` is the host's local data root, not platform-stored. The model is host-resident, just needs clearer naming.
 
 **Recommended action — naming + framing:**
 - Rename "platform DB" mental model to "host-resident workflow DB." Update Phase 6 design note framing accordingly.
 - The cloud daemon (DO Droplet) IS itself a host. Whatever it stores IS host-resident from the platform's perspective. Just need to name what's commons-published.
 - The PLATFORM (the abstract shared service) doesn't have a DB. It has:
-  - The git-backed commons catalog (already exists at `workflow/catalog/`)
+  - The git-backed commons catalog (already exists at `tinyassets/catalog/`)
   - The wiki (host-published commons content)
   - The MCP-tool surface (stateless dispatch to whichever host has the data)
 
 **Urgency: P1 — framing/docs work, not data movement.**
 
-### F3 — `workflow/catalog/` (git-native YAML catalog) IS the public commons substrate — RATIFIED
+### F3 — `tinyassets/catalog/` (git-native YAML catalog) IS the public commons substrate — RATIFIED
 
-**Location:** `workflow/catalog/{__init__.py, backend.py, layout.py, serializer.py}` — Phase 7 design.
+**Location:** `tinyassets/catalog/{__init__.py, backend.py, layout.py, serializer.py}` — Phase 7 design.
 
 **What the principle says:** Git-backed YAML catalog of branch defs, goal defs, node registrations, bid posts is EXACTLY the public commons. Public-by-construction (committed to git, fork-friendly, attribution-friendly). Already designed.
 
@@ -97,9 +97,9 @@ Today's code is exactly this anti-pattern. Private branches sit in the same cata
 
 **Urgency: P1 — gates on R7 close.**
 
-### F4 — Wiki at `workflow/api/wiki.py` IS the public commons knowledge layer — RATIFIED
+### F4 — Wiki at `tinyassets/api/wiki.py` IS the public commons knowledge layer — RATIFIED
 
-**Location:** `workflow/api/wiki.py`, `pages/`, `drafts/` directory model, `wiki action=*` MCP verbs.
+**Location:** `tinyassets/api/wiki.py`, `pages/`, `drafts/` directory model, `wiki action=*` MCP verbs.
 
 **What the principle says:** Per `project_wiki_is_uptime_surface` + `project_convergent_design_commons` + this principle: wiki is user-writable, public, collaborative. Already commons-shaped.
 
@@ -109,7 +109,7 @@ Today's code is exactly this anti-pattern. Private branches sit in the same cata
 
 ### F5 — Goal `visibility` field same anti-pattern as F1
 
-**Location:** `workflow/catalog/serializer.py:291,312` — Goal also has `visibility` field.
+**Location:** `tinyassets/catalog/serializer.py:291,312` — Goal also has `visibility` field.
 
 **Recommended action:** Same arc as F1. Goals are commons or host-resident; same migration path.
 
@@ -117,7 +117,7 @@ Today's code is exactly this anti-pattern. Private branches sit in the same cata
 
 ### F6 — Attribution graph data — public commons by construction
 
-**Location:** `workflow/contribution_events.py`, `workflow/attribution/`, `CONTRIBUTORS.md`.
+**Location:** `tinyassets/contribution_events.py`, `tinyassets/attribution/`, `CONTRIBUTORS.md`.
 
 **What the principle says:** Per `project_designer_royalties_and_bounties` + commons-first: attribution data is INHERENTLY public (it's the commons-credit chain). Already public-by-design.
 
@@ -125,9 +125,9 @@ Today's code is exactly this anti-pattern. Private branches sit in the same cata
 
 **Urgency:** N/A — ratification.
 
-### F7 — Dispatcher queue (`workflow/dispatcher.py`) — request routing assumes data location is platform-trackable
+### F7 — Dispatcher queue (`tinyassets/dispatcher.py`) — request routing assumes data location is platform-trackable
 
-**Location:** `workflow/dispatcher.py`, `workflow/scheduler.py`, `workflow/branch_tasks.py`, `workflow/bid/*`.
+**Location:** `tinyassets/dispatcher.py`, `tinyassets/scheduler.py`, `tinyassets/branch_tasks.py`, `tinyassets/bid/*`.
 
 **What the principle says:** When a paid/free request needs to run against a PRIVATE branch, the dispatcher must route to a host that HAS THE BRANCH DATA, not just any willing claimer. New constraint: data-locality-aware routing.
 
@@ -181,13 +181,13 @@ Already in the queue. Commons-first doesn't change the answer; flagging consiste
 
 | Component | Why aligned | Status |
 |---|---|---|
-| `workflow/catalog/` (git-native YAML) | Public commons by construction | F3 |
-| `workflow/api/wiki.py` + `pages/` | Already commons-shaped | F4 |
-| `workflow/attribution/` + `CONTRIBUTORS.md` | Attribution chain is public | F6 |
-| `workflow/api/extensions.py` (`extensions list`, `describe_branch`) | Public-discovery surface | RATIFIED |
+| `tinyassets/catalog/` (git-native YAML) | Public commons by construction | F3 |
+| `tinyassets/api/wiki.py` + `pages/` | Already commons-shaped | F4 |
+| `tinyassets/attribution/` + `CONTRIBUTORS.md` | Attribution chain is public | F6 |
+| `tinyassets/api/extensions.py` (`extensions list`, `describe_branch`) | Public-discovery surface | RATIFIED |
 | MCP `goals search` | Discovery primitive seed | RATIFIED but weak (F12 below) |
-| `workflow/registry.py` (node registry) | Public node catalog | RATIFIED |
-| `workflow/payments/` (escrow, settlements) | Ledger is commons | RATIFIED |
+| `tinyassets/registry.py` (node registry) | Public node catalog | RATIFIED |
+| `tinyassets/payments/` (escrow, settlements) | Ledger is commons | RATIFIED |
 | Per-universe directory model (`output/<universe>/`) | Already host-resident | RATIFIED with naming clarification (F2) |
 
 ---
@@ -215,7 +215,7 @@ Already in the queue. Commons-first doesn't change the answer; flagging consiste
 
 ### F13 — Multi-generation attribution chain — partially designed
 
-**Location:** `project_designer_royalties_and_bounties` memory, `workflow/contribution_events.py`.
+**Location:** `project_designer_royalties_and_bounties` memory, `tinyassets/contribution_events.py`.
 
 **What the principle says:** When User C remixes User B's design who remixed User A's design, attribution flows back through generations. Already memory-designed; needs implementation arc.
 
@@ -270,7 +270,7 @@ Likely needs revision once `discover` primitive design lands (sibling note).
 
 **Location:** `docs/design-notes/2026-04-26-fantasy-daemon-unpack-arc.md`.
 
-**What the principle says:** A.1's split (engine to `workflow/`, domain to `domains/fantasy_daemon/`) maps EXACTLY to commons-first's split (engine substrate is commons-shared; domain skill definitions are commons; per-domain runtime state is host-resident). The unpack arc closes the rename arc; commons-first closes the data-locality arc. Same direction.
+**What the principle says:** A.1's split (engine to `tinyassets/`, domain to `domains/fantasy_daemon/`) maps EXACTLY to commons-first's split (engine substrate is commons-shared; domain skill definitions are commons; per-domain runtime state is host-resident). The unpack arc closes the rename arc; commons-first closes the data-locality arc. Same direction.
 
 **Recommended action:** No A.1 scope change. Add a §"Commons-first ratification" note to the A.1 design note in §6 (sequencing dependencies) once host approves both.
 
@@ -282,7 +282,7 @@ Likely needs revision once `discover` primitive design lands (sibling note).
 
 **What the principle says:** The DB renamed in Phase 6 IS the host-resident private store. Phase 6's mechanics are correct; the FRAMING ("data DB rename") slightly misleads. Should read "host-resident workflow DB rename — closes the rename arc at the data layer for host-resident state."
 
-**Recommended action:** When host approves Phase 6, add a 1-line framing clarification at top of the design note: "This DB lives on hosts (per commons-first architecture). Public commons data is in `workflow/catalog/` git-backed catalog, NOT this DB."
+**Recommended action:** When host approves Phase 6, add a 1-line framing clarification at top of the design note: "This DB lives on hosts (per commons-first architecture). Public commons data is in `tinyassets/catalog/` git-backed catalog, NOT this DB."
 
 **Urgency: P2** — small framing edit.
 

@@ -8,13 +8,13 @@ Validates:
 
 from __future__ import annotations
 
-from workflow.constraints.constraint_surface import (
+from tinyassets.constraints.constraint_surface import (
     empty_constraint_surface,
     score_constraint_surface,
 )
-from workflow.constraints.constraint_synthesis import ConstraintSynthesis
-from workflow.planning.dome_expansion import DOMEExpander
-from workflow.planning.htn_planner import HTNPlanner
+from tinyassets.constraints.constraint_synthesis import ConstraintSynthesis
+from tinyassets.planning.dome_expansion import DOMEExpander
+from tinyassets.planning.htn_planner import HTNPlanner
 
 # ------------------------------------------------------------------
 # HTN Planner
@@ -193,7 +193,7 @@ def test_constraint_synthesis_classify_short_docs():
 def test_constraint_synthesis_generate():
     """GENERATE mode produces a valid ConstraintSurface."""
     # Use base_rules_path="" to skip loading world_rules.lp
-    from workflow.constraints.asp_engine import ASPEngine
+    from tinyassets.constraints.asp_engine import ASPEngine
 
     engine = ASPEngine(base_rules_path="")
     synth = ConstraintSynthesis(asp_engine=engine)
@@ -208,7 +208,7 @@ def test_constraint_synthesis_generate():
 
 def test_constraint_synthesis_extract():
     """EXTRACT mode processes rich source into a ConstraintSurface."""
-    from workflow.constraints.asp_engine import ASPEngine
+    from tinyassets.constraints.asp_engine import ASPEngine
 
     engine = ASPEngine(base_rules_path="")
     synth = ConstraintSynthesis(asp_engine=engine)
@@ -256,7 +256,7 @@ def test_constraint_surface_scoring_incremental():
 
 def test_constraint_synthesis_never_blocks():
     """Synthesis always returns (never-block rule), even with max iterations."""
-    from workflow.constraints.asp_engine import ASPEngine
+    from tinyassets.constraints.asp_engine import ASPEngine
 
     engine = ASPEngine(base_rules_path="")
     synth = ConstraintSynthesis(asp_engine=engine)

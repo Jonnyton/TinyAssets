@@ -7,7 +7,7 @@ status: active
 
 # Cloud daemon restart runbook
 
-Consolidated recovery reference for the DO Droplet running the Workflow daemon.
+Consolidated recovery reference for the DO Droplet running the TinyAssets daemon.
 Use this as your first stop when `https://tinyassets.io/mcp` goes red or the
 daemon stops responding.
 
@@ -39,7 +39,7 @@ python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --verbose
 
 ```bash
 ssh root@<droplet-ip>
-# IP is in /etc/workflow/env as DO_DROPLET_HOST, or check DigitalOcean console.
+# IP is in /etc/tinyassets/env as DO_DROPLET_HOST, or check DigitalOcean console.
 ```
 
 ---
@@ -49,19 +49,19 @@ ssh root@<droplet-ip>
 ### 1. Check status
 
 ```bash
-sudo systemctl status workflow-daemon
-sudo journalctl -u workflow-daemon -n 50 --no-pager
+sudo systemctl status tinyassets-daemon
+sudo journalctl -u tinyassets-daemon -n 50 --no-pager
 ```
 
 Look for:
-- `daemon-1 | Starting Workflow Server on 0.0.0.0:8001` — daemon bound
+- `daemon-1 | Starting TinyAssets Server on 0.0.0.0:8001` — daemon bound
 - `cloudflared | Registered tunnel connection connIndex=0` — tunnel up
 
 ### 2. Simple restart (try this first)
 
 ```bash
-sudo systemctl restart workflow-daemon
-sudo systemctl status workflow-daemon
+sudo systemctl restart tinyassets-daemon
+sudo systemctl status tinyassets-daemon
 ```
 
 Wait 30–60 seconds for the container image to fully start, then re-run the canary.
@@ -70,7 +70,7 @@ Wait 30–60 seconds for the container image to fully start, then re-run the can
 
 ```bash
 docker ps -a
-docker logs workflow-daemon --tail 50
+docker logs tinyassets-daemon --tail 50
 docker logs workflow-tunnel --tail 50
 ```
 
@@ -78,7 +78,7 @@ Common patterns:
 
 **Daemon not binding (port conflict or crash loop):**
 ```bash
-docker logs workflow-daemon --tail 100 | grep -E "Error|Exception|Starting"
+docker logs tinyassets-daemon --tail 100 | grep -E "Error|Exception|Starting"
 ```
 
 **Tunnel not connecting:**
@@ -87,12 +87,12 @@ docker logs workflow-tunnel --tail 50
 # "Unauthorized" → token wrong or regenerated; see env fix below
 ```
 
-### 4. Fix `/etc/workflow/env` and restart
+### 4. Fix `/etc/tinyassets/env` and restart
 
 ```bash
-sudo nano /etc/workflow/env
+sudo nano /etc/tinyassets/env
 # Fix the relevant variable (see table below)
-sudo systemctl restart workflow-daemon
+sudo systemctl restart tinyassets-daemon
 ```
 
 Key variables to check:
@@ -100,14 +100,14 @@ Key variables to check:
 | Variable | Source |
 |---|---|
 | `CLOUDFLARE_TUNNEL_TOKEN` | Cloudflare dashboard → Zero Trust → Networks → Tunnels → (tunnel) → Connectors |
-| `WORKFLOW_IMAGE` | GHCR image tag; fall back to `ghcr.io/jonnyton/workflow-daemon:latest` if pinned tag missing |
+| `TINYASSETS_IMAGE` | GHCR image tag; fall back to `ghcr.io/jonnyton/tinyassets-daemon:latest` if pinned tag missing |
 
 After editing, check permissions:
 ```bash
-ls -la /etc/workflow/env
+ls -la /etc/tinyassets/env
 # Must be: -rw-r----- 1 root workflow ... env
 # Fix if wrong:
-sudo chown root:workflow /etc/workflow/env && sudo chmod 640 /etc/workflow/env
+sudo chown root:workflow /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env
 ```
 
 ---
@@ -133,7 +133,7 @@ empty-prose → REVERT loop → log/checkpoint accumulation fills disk.
 ### Step 1 — Reclaim Docker layer cache (safe)
 
 This reclaims Docker's build cache and unused images. It does NOT touch the
-`workflow-data` named volume where live state lives.
+`tinyassets-data` named volume where live state lives.
 
 ```bash
 docker system prune -af
@@ -144,7 +144,7 @@ df -h /
 ### Step 2 — Verify volume integrity
 
 ```bash
-VOLUME_DIR="$(sudo docker volume inspect --format '{{ .Mountpoint }}' workflow-data)"
+VOLUME_DIR="$(sudo docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data)"
 sudo ls -lh "${VOLUME_DIR}"
 # Should show: .auth.db, .node_eval.db, .author_server.db, per-universe subdirs
 ```
@@ -152,8 +152,8 @@ sudo ls -lh "${VOLUME_DIR}"
 ### Step 3 — Restart the daemon
 
 ```bash
-sudo systemctl restart workflow-daemon
-sudo journalctl -u workflow-daemon -f
+sudo systemctl restart tinyassets-daemon
+sudo journalctl -u tinyassets-daemon -f
 ```
 
 ### Step 4 — Confirm canary green
@@ -184,7 +184,7 @@ The daemon can be soft-paused without stopping the container:
 
 ```bash
 # Pause:
-VOLUME_DIR="$(sudo docker volume inspect --format '{{ .Mountpoint }}' workflow-data)"
+VOLUME_DIR="$(sudo docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data)"
 sudo touch "${VOLUME_DIR}/.pause"
 
 # Resume:
@@ -199,23 +199,23 @@ and you need to preserve uptime while diagnosing.
 
 ## Watchdog behavior
 
-The bootstrap installs `workflow-watchdog.timer` which fires every 2 minutes:
-- 3 consecutive canary reds → auto-restarts `workflow-daemon.service`
+The bootstrap installs `tinyassets-watchdog.timer` which fires every 2 minutes:
+- 3 consecutive canary reds → auto-restarts `tinyassets-daemon.service`
 - Rate-limited to one restart per 10 minutes (prevents hot-loop on persistent failure)
 
 Check watchdog logs:
 ```bash
-sudo journalctl -u workflow-watchdog -f
-sudo systemctl list-timers workflow-watchdog.timer
+sudo journalctl -u tinyassets-watchdog -f
+sudo systemctl list-timers tinyassets-watchdog.timer
 ```
 
 If the watchdog is restarting the daemon repeatedly without recovery, the root
 cause is deeper than a simple hang. Disable the watchdog temporarily while you
 diagnose:
 ```bash
-sudo systemctl stop workflow-watchdog.timer
+sudo systemctl stop tinyassets-watchdog.timer
 # ... investigate ...
-sudo systemctl start workflow-watchdog.timer
+sudo systemctl start tinyassets-watchdog.timer
 ```
 
 ---
@@ -226,11 +226,11 @@ Use `deploy/RESTORE.md` or `docs/ops/backup-restore-runbook.md`.
 
 Quick path (restore latest backup on existing Droplet):
 ```bash
-sudo systemctl stop workflow-daemon
-source /etc/workflow/env
-sudo -E bash /opt/workflow/deploy/backup-restore.sh
-sudo systemctl start workflow-daemon
-python3 /opt/workflow/scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --verbose
+sudo systemctl stop tinyassets-daemon
+source /etc/tinyassets/env
+sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
+sudo systemctl start tinyassets-daemon
+python3 /opt/tinyassets/scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --verbose
 ```
 
 ---

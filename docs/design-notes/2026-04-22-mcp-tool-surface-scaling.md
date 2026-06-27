@@ -38,8 +38,8 @@ lean ones.
 
 ## §2 — Our 6-tool baseline
 
-Current surface (registered via `@mcp.tool` in `workflow/mcp_server.py`
-+ `workflow/universe_server.py`):
+Current surface (registered via `@mcp.tool` in `tinyassets/mcp_server.py`
++ `tinyassets/universe_server.py`):
 
 | Tool | Signature shape | Scaling shape |
 |---|---|---|

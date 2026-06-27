@@ -185,7 +185,7 @@
 
 ### `docs/audits/2026-04-18-universe-server-directive-relocation-plan.md` (no OPEN section, but note)
 
-This plan's dev-time-execution surface became obsolete per my #27 §8 pre-execution of the canonical `control_station` prompt in the new MCP gateway skeleton. **Flag as RESOLVED-via-supersession**: the directive relocation ships in the new gateway on track C, not via edits to `workflow/universe_server.py`. Task #15 can be formally retired.
+This plan's dev-time-execution surface became obsolete per my #27 §8 pre-execution of the canonical `control_station` prompt in the new MCP gateway skeleton. **Flag as RESOLVED-via-supersession**: the directive relocation ships in the new gateway on track C, not via edits to `tinyassets/universe_server.py`. Task #15 can be formally retired.
 
 ### `docs/specs/2026-04-19-plan-b-selfhost-migration-playbook.md` §8 (6 flags, post-audit)
 

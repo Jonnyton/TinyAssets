@@ -1,4 +1,4 @@
-"""Tests for workflow.payments schema layer — settlement tables + identifiers.
+"""Tests for tinyassets.payments schema layer — settlement tables + identifiers.
 
 Spec: project_monetization_crypto_1pct (1% treasury fee, batch sub-$1 settlements)
       project_node_escrow_and_abandonment (escrow stays on node, not daemon)
@@ -19,7 +19,7 @@ import sqlite3
 
 import pytest
 
-from workflow.payments import (
+from tinyassets.payments import (
     ActorId,
     BatchedTransaction,
     EscrowEntry,
@@ -593,7 +593,7 @@ class TestRebuildAtomicity:
         }
 
     def test_pending_rebuild_failure_leaves_no_scratch_table(self):
-        from workflow.payments import schema as schema_mod
+        from tinyassets.payments import schema as schema_mod
 
         conn = self._legacy_conn()
         # Inject a failure AFTER the scratch table is created + populated but
@@ -621,7 +621,7 @@ class TestRebuildAtomicity:
         assert row["net_amount"] == 990
 
     def test_failed_rebuild_is_retryable_and_then_succeeds(self):
-        from workflow.payments import schema as schema_mod
+        from tinyassets.payments import schema as schema_mod
 
         conn = self._legacy_conn()
         proxy = _FailingConn(conn, fail_on="INSERT INTO pending_settlement_new")

@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from workflow.api.market import classify_filing_effort, filing_effort_dispatch_route
-from workflow.branch_tasks import BranchTask, read_queue
-from workflow.dispatcher import DispatcherConfig, score_task
-from workflow.work_targets import (
+from tinyassets.api.market import classify_filing_effort, filing_effort_dispatch_route
+from tinyassets.branch_tasks import BranchTask, read_queue
+from tinyassets.dispatcher import DispatcherConfig, score_task
+from tinyassets.work_targets import (
     choose_authorial_targets,
     load_work_targets,
     materialize_pending_requests,
@@ -24,14 +24,14 @@ def server_base(tmp_path: Path, monkeypatch):
     base.mkdir()
     uid = "test-uni"
     (base / uid).mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     return base, uid
 
 
 def _submit(**kwargs):
-    from workflow.api.universe import _action_submit_request
+    from tinyassets.api.universe import _action_submit_request
 
     return json.loads(_action_submit_request(**kwargs))
 
@@ -347,7 +347,7 @@ def test_requester_directed_daemon_requires_ownership(
     monkeypatch,
 ):
     base, uid = server_base
-    from workflow import daemon_registry
+    from tinyassets import daemon_registry
 
     daemon = daemon_registry.create_daemon(
         base,

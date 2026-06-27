@@ -27,9 +27,9 @@ from pathlib import Path
 
 import pytest
 
-from workflow import git_bridge
-from workflow.branches import BranchDefinition, NodeDefinition
-from workflow.catalog import (
+from tinyassets import git_bridge
+from tinyassets.branches import BranchDefinition, NodeDefinition
+from tinyassets.catalog import (
     CommitFailedError,
     SqliteCachedBackend,
     YamlRepoLayout,
@@ -70,11 +70,11 @@ def _reset_git_bridge_cache():
 def base_path(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow.daemon_server import initialize_author_server
+    from tinyassets.daemon_server import initialize_author_server
     initialize_author_server(base)
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield base
 
@@ -176,7 +176,7 @@ def test_save_branch_commit_failure_rolls_back_yaml(
     )
 
     # SQLite row retained — explorer's Path A decision.
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition
     row = get_branch_definition(
         base_path, branch_def_id=exc_info.value.row_ref,
     )
@@ -272,7 +272,7 @@ def test_save_goal_commit_failure_rolls_back_yaml(
 def test_save_gate_claim_commit_failure_rolls_back(
     base_path, tmp_path, monkeypatch,
 ):
-    from workflow.daemon_server import save_branch_definition, save_goal
+    from tinyassets.daemon_server import save_branch_definition, save_goal
 
     # Seed a branch and goal so claim_gate has real rows to reference.
     branch = _make_branch("Gate-fail branch")
@@ -320,7 +320,7 @@ def test_save_gate_claim_commit_failure_rolls_back(
     assert pending[0]["helper_name"] == "save_gate_claim_and_commit"
 
     # SQLite claim row retained.
-    from workflow.daemon_server import list_gate_claims
+    from tinyassets.daemon_server import list_gate_claims
     rows = list_gate_claims(
         base_path, branch_def_id=branch_saved["branch_def_id"],
     )
@@ -333,7 +333,7 @@ def test_save_gate_claim_commit_failure_rolls_back(
 def test_retract_gate_claim_commit_failure_rolls_back(
     base_path, tmp_path, monkeypatch,
 ):
-    from workflow.daemon_server import save_branch_definition, save_goal
+    from tinyassets.daemon_server import save_branch_definition, save_goal
 
     branch = _make_branch("Retract-fail branch")
     branch_saved = save_branch_definition(

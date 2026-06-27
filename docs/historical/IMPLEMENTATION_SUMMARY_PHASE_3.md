@@ -12,7 +12,7 @@ Successfully implemented Phase 3.1 (Compaction Services and Durable Handoff Arti
 
 ## Files Created
 
-### 1. `workflow/context/compaction.py` (597 lines)
+### 1. `tinyassets/context/compaction.py` (597 lines)
 
 Complete implementation of durable handoff artifacts and compaction services.
 
@@ -52,7 +52,7 @@ Complete implementation of durable handoff artifacts and compaction services.
 - SQLite for durable persistence with scope-aware queries
 - Token counting via simple 4-chars-per-token approximation
 
-### 2. `workflow/context/guardrails.py` (460 lines)
+### 2. `tinyassets/context/guardrails.py` (460 lines)
 
 Complete implementation of tool result filtering, pagination, and summarization guardrails.
 
@@ -106,7 +106,7 @@ Complete implementation of tool result filtering, pagination, and summarization 
 - Graceful degradation: missing scope/timestamp info doesn't break results
 - Token budgets via 4-chars-per-token approximation (matches compaction)
 
-### 3. `workflow/context/__init__.py` (41 lines)
+### 3. `tinyassets/context/__init__.py` (41 lines)
 
 Public interface exports for the context module.
 
@@ -229,7 +229,7 @@ Both modules tested manually with integration scenarios:
 ## File Locations
 
 ```
-workflow/
+tinyassets/
 ├── context/
 │   ├── __init__.py              (Public interface)
 │   ├── compaction.py            (HandoffArtifact, CompactionService, HandoffStore)

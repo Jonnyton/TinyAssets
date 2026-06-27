@@ -8,14 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from workflow.ingestion.canon_io import iter_canon_files
-from workflow.notes import (
+from tinyassets.ingestion.canon_io import iter_canon_files
+from tinyassets.notes import (
     format_notes_for_context,
     get_unread_notes_for_orient,
     mark_notes_read,
 )
-from workflow.retrieval.agentic_search import assemble_phase_search_context
-from workflow.utils.json_parsing import parse_llm_json
+from tinyassets.retrieval.agentic_search import assemble_phase_search_context
+from tinyassets.utils.json_parsing import parse_llm_json
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,43 @@
+{
+  "name": "tinyassets-universe-server",
+  "version": "0.2.0",
+  "description": "Bundled TinyAssets Server runtime and explicit slash-style skills for inspecting and steering local universes.",
+  "author": {
+    "name": "Jonathan Farnsworth"
+  },
+  "homepage": "https://github.com/Jonnyton/TinyAssets",
+  "repository": "https://github.com/Jonnyton/TinyAssets",
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "mcp",
+    "daemon",
+    "fiction",
+    "langgraph"
+  ],
+  "userConfig": {
+    "universe_base": {
+      "type": "directory",
+      "title": "TinyAssets Data Directory",
+      "description": "Directory containing your TinyAssets data root, including universe folders."
+    },
+    "default_universe": {
+      "type": "string",
+      "title": "Default Universe",
+      "description": "Optional default universe ID when a command does not specify one.",
+      "sensitive": false
+    }
+  },
+  "mcpServers": {
+    "tinyassets-universe-server": {
+      "command": "python",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/runtime/bootstrap.py"
+      ],
+      "env": {
+        "TINYASSETS_DATA_DIR": "${user_config.universe_base}",
+        "UNIVERSE_SERVER_DEFAULT_UNIVERSE": "${user_config.default_universe}"
+      }
+    }
+  }
+}

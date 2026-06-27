@@ -1,4 +1,4 @@
-# Workflow
+# TinyAssets
 
 A goal-agnostic daemon engine. Bind it to a domain and let it run. The platform supports any multi-step AI workflow — research
 papers, screenplays, recipe trackers, standup trackers, novels, news
@@ -12,7 +12,7 @@ One unified priority, not a ranked list. Every surface of the system
 works 24/7 with zero hosts online:
 
 - Tier-1 chatbot users create / browse / collaborate on nodes via a
-  real chatbot UI with the Workflow connector installed (Claude.ai,
+  real chatbot UI with the TinyAssets connector installed (Claude.ai,
   ChatGPT Developer Mode, or a future equivalent surface).
 - Tier-3 OSS contributors `git clone` and run cleanly.
 - Tier-2 daemon hosts one-click install the tray (<5min friction).
@@ -167,8 +167,8 @@ scoped reader at `python scripts/docview.py`.
 - Claude Code reads from `.claude/skills/`.
 - When the right workflow skill is not obvious, start with `using-agent-skills` and then read the matching skill.
 - After editing shared skills, run `powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1` to refresh the Claude Code mirror.
-- When the user points at an outside project, repo, paper, benchmark, article, or codebase and asks what Workflow should learn or integrate, use `external-research-implications`. That process must canonicalize the source, research current context, compare module-by-module against Workflow, write durable implications, and self-update the skill when the process itself improves.
-- Research-derived concepts need opposite-provider review before implementation. If Codex makes the initial finding, Claude researches/reviews it; if Claude makes the initial finding, Codex researches/reviews it. If another provider makes the initial finding, name a different reviewer provider explicitly in `STATUS.md`, preferring the Codex/Claude pair when available. The review must re-check sources and Workflow context, leave a durable artifact, and gate any build, git push, live rollout, or acceptance test based on the finding.
+- When the user points at an outside project, repo, paper, benchmark, article, or codebase and asks what TinyAssets should learn or integrate, use `external-research-implications`. That process must canonicalize the source, research current context, compare module-by-module against TinyAssets, write durable implications, and self-update the skill when the process itself improves.
+- Research-derived concepts need opposite-provider review before implementation. If Codex makes the initial finding, Claude researches/reviews it; if Claude makes the initial finding, Codex researches/reviews it. If another provider makes the initial finding, name a different reviewer provider explicitly in `STATUS.md`, preferring the Codex/Claude pair when available. The review must re-check sources and TinyAssets context, leave a durable artifact, and gate any build, git push, live rollout, or acceptance test based on the finding.
 
 ### Skill methodology [all providers]
 
@@ -213,7 +213,7 @@ into `.claude/skills/` and `.codex/skills/`.
 
 ### Site preview / ship loop
 
-The Workflow site lives in `WebSite/site/`. Keep website-specific rules in
+The TinyAssets site lives in `WebSite/site/`. Keep website-specific rules in
 `.agents/skills/website-editing/SKILL.md`, not expanded here. For any
 non-trivial website edit, read that skill first; it owns the preview loop,
 UX affordance conventions, transparent-capture rules, build/ship pipeline,
@@ -238,7 +238,7 @@ Three patterns keep agent output trustworthy:
 
 **Verification is structural.** Every substantive change needs test/check evidence and an independent review path before it is treated as landed. Claude Code's `TaskCompleted` -> verifier loop is the preferred team implementation. Codex/Cowork satisfy the same invariant with focused tests plus independent diff/subagent review where available. Self-review alone is not enough for public-surface, storage, auth, migration, concurrency, or data-loss-risk changes.
 
-**Final chatbot-surface verification is a rendered chatbot conversation through the live connector.** For changes affecting public MCP behavior, chatbot UX, connector tool descriptions, user-visible node/workflow state, or `tinyassets.io`, final acceptance must use a real browser-rendered chatbot conversation with the installed Workflow MCP connector at `https://tinyassets.io/mcp`, following `ui-test`. Claude.ai and ChatGPT Developer Mode both satisfy this when the Workflow connector is visible/installed and the tester types user-like prompts in the browser. The proof requirement is not host-login Claude.ai access; it is a real user path through the live MCP service. Direct MCP calls, local scripts, tests, DOM-only checks, and canaries are supporting evidence, not final user-surface proof. Log the rendered prompt/result in `output/user_sim_session.md` and include a trace or screenshot path when available.
+**Final chatbot-surface verification is a rendered chatbot conversation through the live connector.** For changes affecting public MCP behavior, chatbot UX, connector tool descriptions, user-visible node/workflow state, or `tinyassets.io`, final acceptance must use a real browser-rendered chatbot conversation with the installed TinyAssets MCP connector at `https://tinyassets.io/mcp`, following `ui-test`. Claude.ai and ChatGPT Developer Mode both satisfy this when the TinyAssets connector is visible/installed and the tester types user-like prompts in the browser. The proof requirement is not host-login Claude.ai access; it is a real user path through the live MCP service. Direct MCP calls, local scripts, tests, DOM-only checks, and canaries are supporting evidence, not final user-surface proof. Log the rendered prompt/result in `output/user_sim_session.md` and include a trace or screenshot path when available.
 
 **Post-fix clean-use evidence.** After the fix and `ui-test`, final verification must also look for evidence that actual users have used the affected feature cleanly since the fix landed. Use available production traces, connector/server logs, support reports, user-visible history, or other real-user evidence. Freshness-stamp the evidence. If no post-fix real-user use is visible yet, say that explicitly and, for public-surface or high-risk changes, leave a short watch item in `STATUS.md` instead of claiming proven clean use.
 
@@ -358,7 +358,7 @@ auditing whether a category is absent.
 Every row must have:
 
 - **Files** — specific files or directories this task will write.
-  This is the collision boundary. Be concrete: `workflow/api/wiki.py, workflow/storage/__init__.py`
+  This is the collision boundary. Be concrete: `tinyassets/api/wiki.py, tinyassets/storage/__init__.py`
   not `backend`. Read-only dependencies go in Depends, not Files. Use
   comma or semicolon between atoms.
 - **Depends** — which tasks must merge first. Include both task
@@ -472,7 +472,7 @@ keeps the next provider's `claim_check.py` accurate.
 
 - `pytest` for the full suite. `ruff check` before committing.
 - Every module must have tests. Nodes must never crash.
-- After canonical `workflow/*` edits that affect the Claude plugin runtime, rebuild/check the mirror with `python packaging/claude-plugin/build_plugin.py`; pre-commit mirror parity is the guardrail. See `packaging/INDEX.md`.
+- After canonical `tinyassets/*` edits that affect the Claude plugin runtime, rebuild/check the mirror with `python packaging/claude-plugin/build_plugin.py`; pre-commit mirror parity is the guardrail. See `packaging/INDEX.md`.
 - `actionlint` for GH Actions workflow edits. Install: `choco install actionlint -y` (Windows) / `brew install actionlint` (macOS) / `go install github.com/rhysd/actionlint/cmd/actionlint@latest` (Go). Pre-commit invariant #7 runs it on staged `.github/workflows/*.yml`; CI (`.github/workflows/actionlint.yml`) is the authoritative gate.
 - **Sandbox test-temp hygiene [all providers].** Some agent sandboxes (notably Codex; also some Cursor/Cowork runs) redirect pytest's `--basetemp`/`TMPDIR` *into* the checkout (`.pytest-tmp/`, `.codex-test-tmp/`, `.workflow-test-data/`) and create those dirs under a restricted sandbox token. On Windows the resulting dirs carry ACLs the normal interactive user can't read or delete, so they survive `git worktree remove` / `wt.py done` and need an elevated `takeown` + `icacls` + `rmdir` to clear (a reboot does **not** help — it's an ACL, not a held handle). Prevention: point your sandbox's `--basetemp`/`TMPDIR` *outside* the repo (system temp). These patterns are gitignored so they don't pollute `git status` or block worktree teardown. Diagnosed 2026-06-25 during de-fantasy worktree cleanup (no process held the dirs — every candidate's CWD was the main checkout; the block was an unreadable ACL on the sandbox-created temp subdir).
 
@@ -491,16 +491,16 @@ Load-bearing invariants stay inline (don't make a reader open the catalog to
 honor these):
 
 - **Canonical, CWD-independent resolvers.** Path/data defaults must be
-  CWD-independent and go through the resolver APIs — `workflow.storage.data_dir()`
-  for `WORKFLOW_DATA_DIR`, `wiki_path()` for the wiki root — never `Path.cwd()`
+  CWD-independent and go through the resolver APIs — `tinyassets.storage.data_dir()`
+  for `TINYASSETS_DATA_DIR`, `wiki_path()` for the wiki root — never `Path.cwd()`
   logic or a re-implemented precedence.
-- **Container deploys.** Set `WORKFLOW_DATA_DIR=/data` + bind-mount the host path
+- **Container deploys.** Set `TINYASSETS_DATA_DIR=/data` + bind-mount the host path
   to `/data` (`deploy/README.md`).
 - **Subscription-only by default.** API-key provider env vars (`OPENAI_API_KEY`,
   `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, …) are ignored unless
-  `WORKFLOW_ALLOW_API_KEY_PROVIDERS` is truthy.
+  `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is truthy.
 - **Local secrets are vault-first.** Load via
-  `set -a; source scripts/load_secrets.sh; set +a` (`WORKFLOW_SECRETS_VENDOR` =
+  `set -a; source scripts/load_secrets.sh; set +a` (`TINYASSETS_SECRETS_VENDOR` =
   `1password` default / `bitwarden` / `plaintext`), never a committed plaintext
   file. Canonical keys: `scripts/secrets_keys.txt`.
 

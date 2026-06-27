@@ -1,4 +1,4 @@
-"""Tests for workflow/cloud_worker.py — supervisor loop + helpers.
+"""Tests for tinyassets/cloud_worker.py — supervisor loop + helpers.
 
 The supervisor is subprocess-based; tests avoid real spawns via the
 ``spawn_fn`` + ``sleep_fn`` injection seams on ``run_supervisor``. A
@@ -18,7 +18,7 @@ _WORKFLOW = Path(__file__).resolve().parent.parent / "workflow"
 if str(_WORKFLOW.parent) not in sys.path:
     sys.path.insert(0, str(_WORKFLOW.parent))
 
-import workflow.cloud_worker as cw  # noqa: E402
+import tinyassets.cloud_worker as cw  # noqa: E402
 
 # ---- FakeProc: scripted subprocess stand-in ------------------------------
 
@@ -333,24 +333,24 @@ def test_subprocess_env_honors_explicit_host_user_override(monkeypatch):
 
 
 def test_subprocess_env_forces_unified_execution(monkeypatch):
-    """Dispatcher pick is gated on WORKFLOW_UNIFIED_EXECUTION — cloud
+    """Dispatcher pick is gated on TINYASSETS_UNIFIED_EXECUTION — cloud
     worker must ensure it's on so the subprocess actually claims tasks."""
-    monkeypatch.delenv("WORKFLOW_UNIFIED_EXECUTION", raising=False)
+    monkeypatch.delenv("TINYASSETS_UNIFIED_EXECUTION", raising=False)
     env = cw._build_subprocess_env()
-    assert env["WORKFLOW_UNIFIED_EXECUTION"] == "1"
+    assert env["TINYASSETS_UNIFIED_EXECUTION"] == "1"
 
 
 def test_subprocess_env_preserves_operator_unified_execution_setting(monkeypatch):
-    """If operator explicitly sets WORKFLOW_UNIFIED_EXECUTION=0 (to
+    """If operator explicitly sets TINYASSETS_UNIFIED_EXECUTION=0 (to
     bisect a bug), cloud worker shouldn't override it."""
-    monkeypatch.setenv("WORKFLOW_UNIFIED_EXECUTION", "0")
+    monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", "0")
     env = cw._build_subprocess_env()
-    assert env["WORKFLOW_UNIFIED_EXECUTION"] == "0"
+    assert env["TINYASSETS_UNIFIED_EXECUTION"] == "0"
 
 
 def test_subprocess_env_sets_workflow_universe(tmp_path):
     env = cw._build_subprocess_env(tmp_path)
-    assert env["WORKFLOW_UNIVERSE"] == str(tmp_path)
+    assert env["TINYASSETS_UNIVERSE"] == str(tmp_path)
 
 
 def test_subprocess_env_strips_openai_api_key_by_default(monkeypatch):
@@ -361,7 +361,7 @@ def test_subprocess_env_strips_openai_api_key_by_default(monkeypatch):
 
 
 def test_subprocess_env_preserves_openai_api_key_when_opted_in(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_ALLOW_API_KEY_PROVIDERS", "1")
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake-test-key-xyz")
     env = cw._build_subprocess_env()
     assert env["OPENAI_API_KEY"] == "sk-fake-test-key-xyz"
@@ -371,7 +371,7 @@ def test_subprocess_env_preserves_openai_api_key_when_opted_in(monkeypatch):
 
 
 def test_has_pickable_branch_task_detects_pending_dispatcher_row(tmp_path):
-    from workflow.branch_tasks import BranchTask, append_task
+    from tinyassets.branch_tasks import BranchTask, append_task
 
     append_task(
         tmp_path,
@@ -389,7 +389,7 @@ def test_has_pickable_branch_task_detects_pending_dispatcher_row(tmp_path):
 def test_has_pickable_branch_task_respects_unified_execution_opt_out(
     tmp_path, monkeypatch,
 ):
-    from workflow.branch_tasks import BranchTask, append_task
+    from tinyassets.branch_tasks import BranchTask, append_task
 
     append_task(
         tmp_path,
@@ -400,7 +400,7 @@ def test_has_pickable_branch_task_respects_unified_execution_opt_out(
             trigger_source="owner_queued",
         ),
     )
-    monkeypatch.setenv("WORKFLOW_UNIFIED_EXECUTION", "0")
+    monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", "0")
 
     assert cw._has_pickable_branch_task(tmp_path) is False
 
@@ -409,7 +409,7 @@ def test_supervisor_does_not_restart_pending_task_before_claim_grace(
     tmp_path,
     monkeypatch,
 ):
-    from workflow.branch_tasks import BranchTask, append_task
+    from tinyassets.branch_tasks import BranchTask, append_task
 
     append_task(
         tmp_path,
@@ -446,7 +446,7 @@ def test_supervisor_restarts_idle_subprocess_for_still_pending_task_after_grace(
     tmp_path,
     monkeypatch,
 ):
-    from workflow.branch_tasks import BranchTask, append_task
+    from tinyassets.branch_tasks import BranchTask, append_task
 
     append_task(
         tmp_path,
@@ -487,7 +487,7 @@ def test_supervisor_restarts_idle_subprocess_for_still_pending_task_after_grace(
 
 
 def test_supervisor_does_not_restart_when_task_is_already_running(tmp_path):
-    from workflow.branch_tasks import BranchTask, append_task
+    from tinyassets.branch_tasks import BranchTask, append_task
 
     append_task(
         tmp_path,
@@ -543,16 +543,16 @@ def test_cloud_host_user_override_honored(monkeypatch):
 def test_resolve_universe_explicit_override(tmp_path, monkeypatch):
     explicit = tmp_path / "my-universe"
     explicit.mkdir()
-    monkeypatch.setenv("WORKFLOW_UNIVERSE", str(explicit))
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(explicit))
     resolved = cw._resolve_universe_path()
     assert resolved == explicit
 
 
 def test_resolve_universe_default_subdir(tmp_path, monkeypatch):
     (tmp_path / "my-default").mkdir()
-    monkeypatch.delenv("WORKFLOW_UNIVERSE", raising=False)
+    monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
-    with patch("workflow.storage.data_dir", return_value=tmp_path):
+    with patch("tinyassets.storage.data_dir", return_value=tmp_path):
         resolved = cw._resolve_universe_path()
     assert resolved == tmp_path / "my-default"
 
@@ -561,9 +561,9 @@ def test_resolve_universe_active_marker_overrides_default(tmp_path, monkeypatch)
     (tmp_path / "my-default").mkdir()
     (tmp_path / "active-now").mkdir()
     (tmp_path / ".active_universe").write_text("active-now", encoding="utf-8")
-    monkeypatch.delenv("WORKFLOW_UNIVERSE", raising=False)
+    monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
-    with patch("workflow.storage.data_dir", return_value=tmp_path):
+    with patch("tinyassets.storage.data_dir", return_value=tmp_path):
         resolved = cw._resolve_universe_path()
     assert resolved == tmp_path / "active-now"
 
@@ -573,9 +573,9 @@ def test_resolve_universe_explicit_override_beats_active_marker(tmp_path, monkey
     explicit.mkdir()
     (tmp_path / "active-now").mkdir()
     (tmp_path / ".active_universe").write_text("active-now", encoding="utf-8")
-    monkeypatch.setenv("WORKFLOW_UNIVERSE", str(explicit))
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(explicit))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "active-now")
-    with patch("workflow.storage.data_dir", return_value=tmp_path):
+    with patch("tinyassets.storage.data_dir", return_value=tmp_path):
         resolved = cw._resolve_universe_path()
     assert resolved == explicit
 
@@ -589,9 +589,9 @@ def test_resolve_universe_auto_picks_first_with_program_md(tmp_path, monkeypatch
     with_premise.mkdir()
     (with_premise / "PROGRAM.md").write_text("premise text", encoding="utf-8")
 
-    monkeypatch.delenv("WORKFLOW_UNIVERSE", raising=False)
+    monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
     monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
-    with patch("workflow.storage.data_dir", return_value=tmp_path):
+    with patch("tinyassets.storage.data_dir", return_value=tmp_path):
         resolved = cw._resolve_universe_path()
     # Sorted order → `empty-candidate` comes first alphabetically,
     # but it doesn't have PROGRAM.md so should be skipped.
@@ -605,9 +605,9 @@ def test_resolve_universe_auto_picks_first_with_soul_md(tmp_path, monkeypatch):
     with_soul.mkdir()
     (with_soul / "soul.md").write_text("# Universe Soul\n", encoding="utf-8")
 
-    monkeypatch.delenv("WORKFLOW_UNIVERSE", raising=False)
+    monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
     monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
-    with patch("workflow.storage.data_dir", return_value=tmp_path):
+    with patch("tinyassets.storage.data_dir", return_value=tmp_path):
         resolved = cw._resolve_universe_path()
     assert resolved == with_soul
 
@@ -615,9 +615,9 @@ def test_resolve_universe_auto_picks_first_with_soul_md(tmp_path, monkeypatch):
 def test_resolve_universe_falls_back_to_default_universe_name(tmp_path, monkeypatch):
     """Empty data dir with nothing — falls back to 'default-universe'
     under data_dir so fantasy_daemon creates it on first run."""
-    monkeypatch.delenv("WORKFLOW_UNIVERSE", raising=False)
+    monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
     monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
-    with patch("workflow.storage.data_dir", return_value=tmp_path):
+    with patch("tinyassets.storage.data_dir", return_value=tmp_path):
         resolved = cw._resolve_universe_path()
     assert resolved == tmp_path / "default-universe"
 
@@ -642,7 +642,7 @@ def test_spawn_argv_includes_no_tray_and_universe(tmp_path, monkeypatch):
     assert "--universe" in captured["args"]
     idx = captured["args"].index("--universe")
     assert captured["args"][idx + 1] == str(tmp_path / "my-uni")
-    assert captured["env"]["WORKFLOW_UNIVERSE"] == str(tmp_path / "my-uni")
+    assert captured["env"]["TINYASSETS_UNIVERSE"] == str(tmp_path / "my-uni")
 
 
 def test_spawn_argv_uses_fantasy_daemon_module(tmp_path, monkeypatch):
@@ -724,7 +724,7 @@ def test_main_exits_zero_after_max_iterations(tmp_path, monkeypatch):
 
 def _running_task(tmp_path, *, worker: str) -> None:
     """Append + claim a 'running' task (fresh lease) under *worker*."""
-    from workflow.branch_tasks import BranchTask, append_task, claim_task
+    from tinyassets.branch_tasks import BranchTask, append_task, claim_task
 
     append_task(tmp_path, BranchTask(
         branch_task_id=f"bt-{worker}", branch_def_id="b", universe_id="u",
@@ -734,9 +734,9 @@ def _running_task(tmp_path, *, worker: str) -> None:
 
 def test_release_own_orphaned_leases_releases_own(tmp_path, monkeypatch):
     """A still-valid lease under our own worker_id is released on shutdown."""
-    from workflow.branch_tasks import read_queue
+    from tinyassets.branch_tasks import read_queue
 
-    monkeypatch.setenv("WORKFLOW_WORKER_ID", "claude-1")
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
     _running_task(tmp_path, worker="claude-1")
 
     assert cw._release_own_orphaned_leases(tmp_path) == 1
@@ -745,9 +745,9 @@ def test_release_own_orphaned_leases_releases_own(tmp_path, monkeypatch):
 
 def test_release_own_orphaned_leases_preserves_peer(tmp_path, monkeypatch):
     """A live peer's running task (different worker_id) is never released."""
-    from workflow.branch_tasks import read_queue
+    from tinyassets.branch_tasks import read_queue
 
-    monkeypatch.setenv("WORKFLOW_WORKER_ID", "claude-1")
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
     _running_task(tmp_path, worker="claude-2")
 
     assert cw._release_own_orphaned_leases(tmp_path) == 0
@@ -756,9 +756,9 @@ def test_release_own_orphaned_leases_preserves_peer(tmp_path, monkeypatch):
 
 def test_release_own_orphaned_leases_skips_default_id(tmp_path, monkeypatch):
     """The shared cloud-droplet fallback id is not released (could be shared)."""
-    from workflow.branch_tasks import read_queue
+    from tinyassets.branch_tasks import read_queue
 
-    monkeypatch.delenv("WORKFLOW_WORKER_ID", raising=False)
+    monkeypatch.delenv("TINYASSETS_WORKER_ID", raising=False)
     monkeypatch.delenv("UNIVERSE_SERVER_HOST_USER", raising=False)
     assert cw._worker_id() == cw.DEFAULT_HOST_USER  # precondition
     _running_task(tmp_path, worker=cw.DEFAULT_HOST_USER)

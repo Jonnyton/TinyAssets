@@ -1,6 +1,6 @@
 <!--
   TokenDisclaimer - reusable safe-harbor block for currency-related surfaces.
-  Keeps live Destiny (tiny) references separate from Workflow's test tiny rail.
+  Keeps live Destiny (tiny) references separate from TinyAssets' test tiny rail.
 -->
 <script lang="ts">
   import RitualLabel from './Primitives/RitualLabel.svelte';
@@ -12,18 +12,18 @@
 {#if compact}
   <p class="compact">
     <strong>Not an investment.</strong>
-    Workflow currently uses <code>{legal.token.workflow_test_currency}</code> only. Real <code>{legal.token.display_name}</code> integration is a later roadmap phase; it does not represent equity, profit-sharing, or yield. <a href="/legal#token-disclosures">Full disclosures</a>
+    TinyAssets currently uses <code>{legal.token.workflow_test_currency}</code> only. Real <code>{legal.token.display_name}</code> integration is a later roadmap phase; it does not represent equity, profit-sharing, or yield. <a href="/legal#token-disclosures">Full disclosures</a>
   </p>
 {:else}
   <aside class="block">
     <RitualLabel color="var(--signal-idle)">Important - token disclosures</RitualLabel>
-    <h3>What <code>{legal.token.display_name}</code> is, and what Workflow touches now.</h3>
+    <h3>What <code>{legal.token.display_name}</code> is, and what TinyAssets touches now.</h3>
     <ul>
       <li>
-        <strong>Current Workflow rail:</strong> {legal.token.current_workflow_status}
+        <strong>Current TinyAssets rail:</strong> {legal.token.current_workflow_status}
       </li>
       <li>
-        <strong>Real currency reference:</strong> {legal.token.display_name} is the live-token naming convention. Workflow keeps that name so testnet messaging matches the eventual real integration.
+        <strong>Real currency reference:</strong> {legal.token.display_name} is the live-token naming convention. TinyAssets keeps that name so testnet messaging matches the eventual real integration.
       </li>
       <li>
         <strong>Rewards model:</strong> {legal.token.rewards_model}

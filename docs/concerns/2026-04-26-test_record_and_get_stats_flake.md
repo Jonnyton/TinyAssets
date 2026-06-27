@@ -23,7 +23,7 @@ Even when the flake doesn't surface in reproduction, the test code has 3 concret
 
 ### 1. WAL + multi-connection on Windows (most likely structural cause)
 
-`NodeEvaluator._connect()` (`workflow/node_eval.py:168`) opens a fresh SQLite connection per call:
+`NodeEvaluator._connect()` (`tinyassets/node_eval.py:168`) opens a fresh SQLite connection per call:
 
 ```python
 def _connect(self) -> sqlite3.Connection:
@@ -41,7 +41,7 @@ This matches the observed symptom shape: passes alone (no contention), passes in
 
 ### 2. `time.time()` field on `ExecutionRecord` is wall-clock, not monotonic
 
-`ExecutionRecord.timestamp = field(default_factory=time.time)` (`workflow/node_eval.py:73`). The test inserts 3 rows in <1ms; if Windows clock-resolution rounds two of them to the same float (uncommon but possible when wall-clock has 15.6ms granularity), the `last_exec` field returns one timestamp but the `total_executions` count is unchanged. Doesn't directly explain the flake, but compounds non-determinism of write-then-read patterns.
+`ExecutionRecord.timestamp = field(default_factory=time.time)` (`tinyassets/node_eval.py:73`). The test inserts 3 rows in <1ms; if Windows clock-resolution rounds two of them to the same float (uncommon but possible when wall-clock has 15.6ms granularity), the `last_exec` field returns one timestamp but the `total_executions` count is unchanged. Doesn't directly explain the flake, but compounds non-determinism of write-then-read patterns.
 
 ### 3. Fixture teardown does NOT delete the DB file
 
@@ -76,9 +76,9 @@ If the flake re-surfaces, the fastest path to a confirmed RCA is:
 
 Change `_connect()` from "open new connection each call" to "reuse a single instance-scoped connection." Eliminates the WAL-handoff race entirely because all writes/reads go through the same connection (which sees its own writes immediately even in WAL mode).
 
-**Risk:** changes thread-safety semantics. SQLite connections are single-thread by default; if anything currently calls `record()` from a background thread (e.g. async run dispatcher), this would break. Search before changing: `grep -rn "NodeEvaluator\|node_eval" workflow/ domains/`. If single-threaded today, this fix is the right one. If multi-threaded, use a per-thread connection pool (`threading.local`).
+**Risk:** changes thread-safety semantics. SQLite connections are single-thread by default; if anything currently calls `record()` from a background thread (e.g. async run dispatcher), this would break. Search before changing: `grep -rn "NodeEvaluator\|node_eval" tinyassets/ domains/`. If single-threaded today, this fix is the right one. If multi-threaded, use a per-thread connection pool (`threading.local`).
 
-**Estimate:** 30-45 min. Touches `workflow/node_eval.py` only. Test stays unchanged (the fix lives entirely under the existing API).
+**Estimate:** 30-45 min. Touches `tinyassets/node_eval.py` only. Test stays unchanged (the fix lives entirely under the existing API).
 
 ### Fix B — wal_checkpoint after every write inside `record()` (defensive; cheaper)
 
@@ -108,8 +108,8 @@ Per `feedback_status_md_host_managed.md`, the STATUS Concern entry stays. **Read
 
 - `tests/test_node_eval.py:79` (`test_record_and_get_stats_roundtrip`)
 - `tests/test_node_eval.py:32-41` (`evaluator` fixture with checkpoint-on-teardown)
-- `workflow/node_eval.py:150-236` (`NodeEvaluator` class — `_connect`, `_initialize_db`, `record`)
-- `workflow/node_eval.py:240-308` (`get_stats`)
+- `tinyassets/node_eval.py:150-236` (`NodeEvaluator` class — `_connect`, `_initialize_db`, `record`)
+- `tinyassets/node_eval.py:240-308` (`get_stats`)
 - `tests/conftest.py:36-57` (`_isolate_storage_backend` autouse — irrelevant to node_eval, but confirmed not the cause)
 - `tests/test_data_dir_call_sites.py:47-80` (`test_node_evaluator_*` — confirmed not the polluter)
 - `%APPDATA%/Workflow/.node_eval.db` (28KB, empty `node_executions` table — confirmed not a state-leak source)

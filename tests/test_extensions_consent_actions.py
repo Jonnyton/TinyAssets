@@ -22,9 +22,9 @@ import pytest
 def us_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
     importlib.reload(us)
@@ -45,12 +45,12 @@ def test_grant_then_list_roundtrip(us_env):
         us,
         "grant_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/Workflow",
+        project_id="Jonnyton/TinyAssets",
         author="host",
     )
     assert granted["status"] == "granted"
     assert granted["consent"]["sink"] == "github_pull_request"
-    assert granted["consent"]["destination"] == "Jonnyton/Workflow"
+    assert granted["consent"]["destination"] == "Jonnyton/TinyAssets"
     assert granted["consent"]["granted_by"] == "host"
     assert granted["consent"]["revoked_at"] is None
 
@@ -62,7 +62,7 @@ def test_grant_then_list_roundtrip(us_env):
     assert listed["sink_filter"] == "github_pull_request"
     assert listed["active_only"] is True
     destinations = {row["destination"] for row in listed["consents"]}
-    assert destinations == {"Jonnyton/Workflow"}
+    assert destinations == {"Jonnyton/TinyAssets"}
 
 
 def test_grant_defaults_granted_by_to_current_actor(us_env):
@@ -71,7 +71,7 @@ def test_grant_defaults_granted_by_to_current_actor(us_env):
         us,
         "grant_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/Workflow",
+        project_id="Jonnyton/TinyAssets",
         # author omitted -> defaults to UNIVERSE_SERVER_USER == "tester"
     )
     assert granted["status"] == "granted"
@@ -84,7 +84,7 @@ def test_grant_requires_sink(us_env):
         us,
         "grant_effector_consent",
         intent="",  # missing sink
-        project_id="Jonnyton/Workflow",
+        project_id="Jonnyton/TinyAssets",
         author="host",
     )
     assert "error" in result
@@ -115,18 +115,18 @@ def test_revoke_after_grant(us_env):
         us,
         "grant_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/Workflow",
+        project_id="Jonnyton/TinyAssets",
         author="host",
     )
     revoked = _call(
         us,
         "revoke_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/Workflow",
+        project_id="Jonnyton/TinyAssets",
     )
     assert revoked["status"] == "revoked"
     assert revoked["sink"] == "github_pull_request"
-    assert revoked["destination"] == "Jonnyton/Workflow"
+    assert revoked["destination"] == "Jonnyton/TinyAssets"
     # list with active_only=True (default) -> empty.
     active = _call(
         us, "list_effector_consents", intent="github_pull_request",
@@ -152,7 +152,7 @@ def test_revoke_requires_sink_and_destination(us_env):
         us,
         "revoke_effector_consent",
         intent="",
-        project_id="Jonnyton/Workflow",
+        project_id="Jonnyton/TinyAssets",
     )
     assert no_sink["failure_class"] == "missing_sink"
     no_dest = _call(
@@ -213,8 +213,8 @@ def test_grant_and_revoke_visible_to_effector(us_env, monkeypatch):
     """A grant recorded via the MCP action must immediately gate the
     effector's consent check, and a subsequent revoke must close it."""
     us, base = us_env
-    from workflow.effectors import EXTERNAL_WRITE_SINK_GITHUB_PR
-    from workflow.effectors.github_pr import (
+    from tinyassets.effectors import EXTERNAL_WRITE_SINK_GITHUB_PR
+    from tinyassets.effectors.github_pr import (
         _CAPABILITIES_ENV,
         run_github_pr_effector,
     )
@@ -224,12 +224,12 @@ def test_grant_and_revoke_visible_to_effector(us_env, monkeypatch):
     # resolves to ``tok``.
     monkeypatch.setenv(
         _CAPABILITIES_ENV,
-        json.dumps({"Jonnyton/Workflow": "tok"}),
+        json.dumps({"Jonnyton/TinyAssets": "tok"}),
     )
     universe_dir = base
     packet = {
         "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,
-        "destination": "Jonnyton/Workflow",
+        "destination": "Jonnyton/TinyAssets",
         "payload": {
             "title": "x",
             "body": "x",
@@ -263,7 +263,7 @@ def test_grant_and_revoke_visible_to_effector(us_env, monkeypatch):
         us,
         "grant_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/Workflow",
+        project_id="Jonnyton/TinyAssets",
         author="host",
     )
 
@@ -273,14 +273,14 @@ def test_grant_and_revoke_visible_to_effector(us_env, monkeypatch):
     from unittest.mock import patch
     fake = SimpleNamespace(
         returncode=0,
-        stdout="https://github.com/Jonnyton/Workflow/pull/55\n",
+        stdout="https://github.com/Jonnyton/TinyAssets/pull/55\n",
         stderr="",
     )
     with patch(
-        "workflow.effectors.github_pr._materialize_branch",
+        "tinyassets.effectors.github_pr._materialize_branch",
         return_value={"materialized": True, "head_branch": "auto/x"},
     ), patch(
-        "workflow.effectors.github_pr.subprocess.run",
+        "tinyassets.effectors.github_pr.subprocess.run",
         return_value=fake,
     ):
         after = run_github_pr_effector(
@@ -297,7 +297,7 @@ def test_grant_and_revoke_visible_to_effector(us_env, monkeypatch):
         us,
         "revoke_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/Workflow",
+        project_id="Jonnyton/TinyAssets",
     )
 
     # After revoke (with a NEW hint to bypass the idempotency dedup

@@ -1,6 +1,6 @@
 ---
 name: website-editing
-description: "Conventions for editing the Workflow site (WebSite/site/, deploys to tinyassets.io). Use when you make any change to the site: copy, components, routes, content, styling, captures of real chatbot conversations, deploy. Covers the preview loop, transparent-capture conventions, build/ship pipeline, FUSE quirks for Cowork, and auto-iteration on recurring failures."
+description: "Conventions for editing the TinyAssets site (WebSite/site/, deploys to tinyassets.io). Use when you make any change to the site: copy, components, routes, content, styling, captures of real chatbot conversations, deploy. Covers the preview loop, transparent-capture conventions, build/ship pipeline, FUSE quirks for Cowork, and auto-iteration on recurring failures."
 ---
 
 # Website editing
@@ -36,7 +36,7 @@ If F5 is ever needed, that's a signal HMR misfired — **investigate**, don't no
 
 ## Transparent capture — when the website shows a real chatbot conversation
 
-The site's home (ChatDemo) and `/loop` show real conversations Jonathan had with the Workflow MCP connector via claude.ai. The principle: **when claiming transparency, the captured material has to BE the captured material — not a summary, not a paraphrase, not curated highlights.**
+The site's home (ChatDemo) and `/loop` show real conversations Jonathan had with the TinyAssets MCP connector via claude.ai. The principle: **when claiming transparency, the captured material has to BE the captured material — not a summary, not a paraphrase, not curated highlights.**
 
 Required when capturing a real conversation for the site:
 
@@ -45,7 +45,7 @@ Required when capturing a real conversation for the site:
 3. **Click every disclosure before claiming you have the full text.** Each chip has its own Show more. Re-extract via `get_page_text` after every expansion to make sure you've got it all.
 4. **Render the full diagram(s).** Real diagrams have specific node counts, edge labels, color groups. Hand-rolled SVGs are fine (mermaid.js npm install can be slow on Cowork) — but the SVG must be faithful to the source: same node count, same labels, same back-edges, same color groups (blue branch, warm gate, green live/done, dashed planned/terminal).
 5. **Anchor section verbatim.** When the chatbot lists "Anchors used: Goal X — …", reproduce the prose as a single block, not a bullet summary. The "honest caveat" line gets its own visually distinct callout.
-6. **Footer line names the source.** *"Captured 2026-MM-DD from claude.ai with the Workflow MCP connector attached. Every word above appears verbatim in the original chat."*
+6. **Footer line names the source.** *"Captured 2026-MM-DD from claude.ai with the TinyAssets MCP connector attached. Every word above appears verbatim in the original chat."*
 
 **Anti-pattern:** writing "Loading tools — Goals — Wiki Knowledge Base × 3" and calling it a thought trace. That's a summary of tool calls, not the actual text. The actual text has Claude's reasoning between each tool call. Capture all of it.
 

@@ -1,4 +1,4 @@
-"""Tests for ``workflow.auto_ship.validate_ship_request`` (PR #198 Phase 1).
+"""Tests for ``tinyassets.auto_ship.validate_ship_request`` (PR #198 Phase 1).
 
 Covers the auto-ship safety envelope from
 ``docs/milestones/auto-ship-canary-v0.md`` §6:
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.auto_ship import (
+from tinyassets.auto_ship import (
     ALLOWED_SHIP_CLASSES,
     DIFF_SIZE_BYTES_MAX,
     FORBIDDEN_PATH_PREFIXES,
@@ -53,7 +53,7 @@ class TestRubricMode:
     lacks the rubric fields, so it is the natural warn/enforce probe."""
 
     def test_warn_is_default_and_never_blocks(self, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", raising=False)
+        monkeypatch.delenv("TINYASSETS_AUTO_SHIP_RUBRIC_MODE", raising=False)
         d = validate_ship_request(_valid_packet())
         assert d["validation_result"] == "passed"
         assert d["would_open_pr"] is True
@@ -63,13 +63,13 @@ class TestRubricMode:
         assert "release_evidence_bundle_incomplete" in ids
 
     def test_off_mode_skips_rubric(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "off")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_RUBRIC_MODE", "off")
         d = validate_ship_request(_valid_packet())
         assert d["validation_result"] == "passed"
         assert d["rubric_warnings"] == []
 
     def test_enforce_blocks_packet_missing_rubric_fields(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "enforce")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_RUBRIC_MODE", "enforce")
         d = validate_ship_request(_valid_packet())
         assert d["validation_result"] == "blocked"
         assert d["would_open_pr"] is False
@@ -77,7 +77,7 @@ class TestRubricMode:
         assert "release_evidence_bundle_incomplete" in ids
 
     def test_enforce_passes_fully_populated_packet(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "enforce")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_RUBRIC_MODE", "enforce")
         d = validate_ship_request(_valid_packet(
             child_candidate_patch_packet={"diff": "+ x"},
             release_evidence_bundle_complete=True,
@@ -88,7 +88,7 @@ class TestRubricMode:
         assert d["rubric_warnings"] == []
 
     def test_invalid_mode_falls_back_to_warn(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "bogus")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_RUBRIC_MODE", "bogus")
         d = validate_ship_request(_valid_packet())
         assert d["validation_result"] == "passed"
 
@@ -110,7 +110,7 @@ class TestTrajectoryMode:
         return _valid_packet(parent_loop_status="receipt_waiting")
 
     def test_warn_is_default_and_never_blocks(self, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", raising=False)
+        monkeypatch.delenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", raising=False)
         d = validate_ship_request(self._fail_traj_packet())
         # decision unchanged — envelope still passes
         assert d["validation_result"] == "passed"
@@ -123,22 +123,22 @@ class TestTrajectoryMode:
         assert all(w["event"] == "trajectory_warning" for w in d["trajectory_warnings"])
 
     def test_off_mode_skips_trajectory(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "off")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", "off")
         d = validate_ship_request(self._fail_traj_packet())
         assert d["validation_result"] == "passed"
         assert d["trajectory_warnings"] == []
 
     def test_clean_packet_has_no_trajectory_warnings(self, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", raising=False)
+        monkeypatch.delenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", raising=False)
         d = validate_ship_request(_valid_packet())
         assert d["trajectory_warnings"] == []
 
     def test_warn_never_changes_decision(self, monkeypatch):
         # The decision must be byte-identical with trajectory off vs warn.
         packet = self._fail_traj_packet()
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "off")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", "off")
         off = validate_ship_request(packet)
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "warn")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", "warn")
         warn = validate_ship_request(packet)
         assert off["validation_result"] == warn["validation_result"]
         assert off["would_open_pr"] == warn["would_open_pr"]
@@ -146,7 +146,7 @@ class TestTrajectoryMode:
 
     def test_enforce_blocks_conclusive_fail(self, monkeypatch):
         # enforce promotes a conclusive path-quality FAIL to a block.
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
         d = validate_ship_request(self._fail_traj_packet())
         assert d["validation_result"] == "blocked"
         assert d["would_open_pr"] is False
@@ -161,7 +161,7 @@ class TestTrajectoryMode:
 
     def test_enforce_does_not_block_clean_packet(self, monkeypatch):
         # A sound-path packet passes even under enforce.
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
         d = validate_ship_request(_valid_packet())
         assert d["validation_result"] == "passed"
         assert d["would_open_pr"] is True
@@ -170,15 +170,15 @@ class TestTrajectoryMode:
     def test_enforce_block_is_distinct_axis_from_rubric(self, monkeypatch):
         # The trajectory block lives on its own channel — never tagged as or
         # double-reported through a rubric rule (separate-axis discipline).
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
-        monkeypatch.delenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", raising=False)  # rubric stays warn
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
+        monkeypatch.delenv("TINYASSETS_AUTO_SHIP_RUBRIC_MODE", raising=False)  # rubric stays warn
         d = validate_ship_request(self._fail_traj_packet())
         traj = [v for v in d["violations"] if v.get("rule_id") == "trajectory_path_unsound"]
         assert len(traj) == 1
         assert "trajectory_path_unsound" not in str(d.get("rubric_warnings", []))
 
     def test_invalid_trajectory_mode_falls_back_to_warn(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "bogus")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", "bogus")
         d = validate_ship_request(self._fail_traj_packet())
         assert d["validation_result"] == "passed"
         assert d["trajectory_warnings"], "invalid mode behaves as warn"
@@ -190,8 +190,8 @@ class TestTrajectoryMode:
         # intentional two-lens report (distinct evaluators/axes), NOT the S2
         # same-rule double-report (Codex review 2026-06-25). Both default warn,
         # so this only applies if a host flips BOTH.
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_RUBRIC_MODE", "enforce")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", "enforce")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_RUBRIC_MODE", "enforce")
         d = validate_ship_request(self._fail_traj_packet())
         assert d["validation_result"] == "blocked"
         traj = [v for v in d["violations"] if v.get("rule_id") == "trajectory_path_unsound"]
@@ -201,13 +201,13 @@ class TestTrajectoryMode:
 
     def test_fail_open_on_eval_error(self, monkeypatch):
         # A bug in the trajectory eval must never break the live gate.
-        import workflow.evaluation.coding_process as cp
+        import tinyassets.evaluation.coding_process as cp
 
         def _boom(*_a, **_k):
             raise RuntimeError("simulated eval bug")
 
         monkeypatch.setattr(cp, "evaluate_coding_trajectory", _boom)
-        monkeypatch.setenv("WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE", "warn")
+        monkeypatch.setenv("TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE", "warn")
         d = validate_ship_request(self._fail_traj_packet())
         assert d["validation_result"] == "passed"
         assert d["trajectory_warnings"] == []
@@ -411,7 +411,7 @@ class TestShipClass:
         # Need to also adjust changed_paths to match the class
         path_map = {
             "docs_canary": "docs/autoship-canaries/x.md",
-            "metadata_canary": "workflow/autoship_canaries/x.json",
+            "metadata_canary": "tinyassets/autoship_canaries/x.json",
             "test_fixture_canary": "tests/fixtures/autoship_canaries/x.json",
         }
         d = validate_ship_request(_valid_packet(
@@ -476,9 +476,9 @@ class TestPaths:
         assert d["validation_result"] == "blocked"
 
     def test_path_normalization_does_not_let_forbidden_in(self):
-        # ``./workflow/api/x`` normalizes to ``workflow/api/x`` and must be blocked
+        # ``./tinyassets/api/x`` normalizes to ``tinyassets/api/x`` and must be blocked
         d = validate_ship_request(_valid_packet(
-            changed_paths=["./workflow/api/something.py"]
+            changed_paths=["./tinyassets/api/something.py"]
         ))
         assert d["validation_result"] == "blocked"
         assert any(
@@ -577,7 +577,7 @@ class TestAggregateReporting:
             "stable_evidence_handle": "h",
             "automation_claim_status": "no_execution_claim",
             "rollback_plan": "rb",
-            "changed_paths": ["workflow/api/foo.py"],  # forbidden prefix
+            "changed_paths": ["tinyassets/api/foo.py"],  # forbidden prefix
             "diff": "x",
         }
         d = validate_ship_request(bad)

@@ -1,8 +1,8 @@
 # Fantasy Shim Import Audit — Phase 0
 
-**Date:** 2026-04-25  
-**Scope:** All Python files outside `fantasy_author/`, `fantasy_daemon/`, `fantasy_author_original/`, `domains/` that import `fantasy_author.*`, `fantasy_daemon.*`, or `fantasy_author_original.*`.  
-**Method:** `git grep -n "from fantasy_author|import fantasy_author|from fantasy_daemon|import fantasy_daemon"` filtered to non-shim paths.  
+**Date:** 2026-04-25
+**Scope:** All Python files outside `fantasy_author/`, `fantasy_daemon/`, `fantasy_author_original/`, `domains/` that import `fantasy_author.*`, `fantasy_daemon.*`, or `fantasy_author_original.*`.
+**Method:** `git grep -n "from fantasy_author|import fantasy_author|from fantasy_daemon|import fantasy_daemon"` filtered to non-shim paths.
 **Total live importers:** 73 references across 25 files.
 
 ---
@@ -20,7 +20,7 @@ Phase 1 target: rewrite all production imports. Tests are lower risk (shim is tr
 
 ## Production Files (Phase 1 — Immediate)
 
-### `workflow/__main__.py`
+### `tinyassets/__main__.py`
 
 | Line | Current import | Target |
 |---|---|---|
@@ -30,7 +30,7 @@ Phase 1 target: rewrite all production imports. Tests are lower risk (shim is tr
 
 Comment at lines 31–33 explains the alias was intentional back-compat during migration; the comment and the re-export block should be removed together.
 
-### `workflow_tray.py`
+### `tinyassets_tray.py`
 
 | Line | Current import | Target |
 |---|---|---|
@@ -38,9 +38,9 @@ Comment at lines 31–33 explains the alias was intentional back-compat during m
 
 This is a runtime `exec()` string, not a static import. Must be updated as a string literal.
 
-### `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/__main__.py`
+### `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/__main__.py`
 
-Mirror of `workflow/__main__.py` inside the packaging bundle. Same lines 31, 33, 38, 39, 173.
+Mirror of `tinyassets/__main__.py` inside the packaging bundle. Same lines 31, 33, 38, 39, 173.
 
 | Line | Current import | Target |
 |---|---|---|
@@ -80,7 +80,7 @@ Lower risk: shim transparently resolves to `workflow.*` / `fantasy_daemon.*`. Mi
 
 ## Excluded / Keep-as-is
 
-- `workflow/api/__init__.py` line 8: comment in docstring, not an import
+- `tinyassets/api/__init__.py` line 8: comment in docstring, not an import
 - `scripts/build_shims.py`: shim-builder script — must reference shim names
 - `scripts/migrate_imports.py`: migration tool — must reference old names by design
 - `tests/test_import_compatibility.py`: tests backward-compat of the shim itself; retire after shim deleted
@@ -93,8 +93,8 @@ Lower risk: shim transparently resolves to `workflow.*` / `fantasy_daemon.*`. Mi
 | Phase | Scope | Gate |
 |---|---|---|
 | **Phase 0** (this doc) | Audit — enumerate all live importers | Done |
-| **Phase 1** | Rewrite 3 production files (`workflow/__main__.py`, `workflow_tray.py`, packaging mirror) | Full suite green + ruff clean |
+| **Phase 1** | Rewrite 3 production files (`tinyassets/__main__.py`, `tinyassets_tray.py`, packaging mirror) | Full suite green + ruff clean |
 | **Phase 2** | Rewrite 22 test files | Full suite green + ruff clean |
 | **Phase 3** | Delete `fantasy_author/`, `fantasy_author_original/` shim trees | Confirm zero remaining importers |
 
-Phase 1 is mechanical: every `fantasy_author.__main__` → `workflow.__main__`, every `fantasy_daemon.api` → `workflow.api`. The `workflow_tray.py` string-exec case needs special handling (string literal replacement, not AST rewrite).
+Phase 1 is mechanical: every `fantasy_author.__main__` → `workflow.__main__`, every `fantasy_daemon.api` → `workflow.api`. The `tinyassets_tray.py` string-exec case needs special handling (string literal replacement, not AST rewrite).

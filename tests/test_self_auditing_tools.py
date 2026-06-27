@@ -2,8 +2,8 @@
 
 Guards:
 - Returns schema_version=1.
-- Returns tiered_scope_enabled=False + flag_state="off" when WORKFLOW_TIERED_SCOPE unset.
-- Returns tiered_scope_enabled=True + flag_state="on" when WORKFLOW_TIERED_SCOPE=on.
+- Returns tiered_scope_enabled=False + flag_state="off" when TINYASSETS_TIERED_SCOPE unset.
+- Returns tiered_scope_enabled=True + flag_state="on" when TINYASSETS_TIERED_SCOPE=on.
 - active_enforcement_tiers is ["universe_id"] when flag is off.
 - active_enforcement_tiers is all 4 tiers when flag is on.
 - all_scope_tiers always has exactly 4 entries.
@@ -26,10 +26,10 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    monkeypatch.delenv("WORKFLOW_TIERED_SCOPE", raising=False)
-    from workflow import universe_server as us
+    monkeypatch.delenv("TINYASSETS_TIERED_SCOPE", raising=False)
+    from tinyassets import universe_server as us
     yield us, base
 
 
@@ -104,10 +104,10 @@ class TestMemoryScopeStatusFlagOn:
     def env_on(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         base = tmp_path / "output"
         base.mkdir()
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-        monkeypatch.setenv("WORKFLOW_TIERED_SCOPE", "on")
-        from workflow import universe_server as us
+        monkeypatch.setenv("TINYASSETS_TIERED_SCOPE", "on")
+        from tinyassets import universe_server as us
         yield us, base
 
     def test_flag_state_on_when_set(self, env_on) -> None:
@@ -149,13 +149,13 @@ class TestMemoryScopeStatusMismatchWarnings:
     ) -> None:
         base = tmp_path / "output"
         base.mkdir()
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-        monkeypatch.delenv("WORKFLOW_TIERED_SCOPE", raising=False)
+        monkeypatch.delenv("TINYASSETS_TIERED_SCOPE", raising=False)
 
         # Write a fake activity.log with a mismatch line into the default universe dir.
-        from workflow import universe_server as us
-        from workflow.api.helpers import _default_universe
+        from tinyassets import universe_server as us
+        from tinyassets.api.helpers import _default_universe
         uid = _default_universe()
         udir = base / uid
         udir.mkdir(parents=True, exist_ok=True)

@@ -2,7 +2,7 @@
 
 asp_engine.py resolves `_DEFAULT_RULES_PATH` as `parents[2]/data/world_rules.lp`
 relative to the module file. In the Docker image the module lives at
-`/app/workflow/constraints/asp_engine.py`, so parents[2] = `/app` and the
+`/app/tinyassets/constraints/asp_engine.py`, so parents[2] = `/app` and the
 expected path is `/app/data/world_rules.lp`. The Dockerfile was missing a
 COPY for this file, causing ASP validation to silently fail in cloud deploys.
 
@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from workflow.constraints.asp_engine import _DEFAULT_RULES_PATH
+from tinyassets.constraints.asp_engine import _DEFAULT_RULES_PATH
 
 
 class TestDefaultRulesPath:
@@ -47,7 +47,7 @@ class TestDefaultRulesPath:
         """parents[2] of asp_engine.py must be the repo/package root where
         data/ lives, not some arbitrary ancestor.
         """
-        from workflow.constraints import asp_engine as _mod
+        from tinyassets.constraints import asp_engine as _mod
         mod_path = Path(_mod.__file__).resolve()
         expected_root = mod_path.parents[2]
         assert (_DEFAULT_RULES_PATH.parent.parent == expected_root), (
@@ -60,7 +60,7 @@ class TestASPEngineAbsentFile:
     def test_engine_init_with_missing_rules_does_not_crash(self, tmp_path):
         """ASPEngine should not crash at __init__ time when the rules file
         is absent — it only loads at validate() time."""
-        from workflow.constraints.asp_engine import ASPEngine
+        from tinyassets.constraints.asp_engine import ASPEngine
 
         absent = tmp_path / "nonexistent.lp"
         engine = ASPEngine(base_rules_path=absent)
@@ -69,10 +69,10 @@ class TestASPEngineAbsentFile:
     def test_engine_logs_warning_when_rules_file_missing(self, tmp_path, caplog):
         """When the rules file is missing, ASPEngine logs a warning at init
         time rather than crashing. The _base_rules string is empty."""
-        from workflow.constraints.asp_engine import ASPEngine
+        from tinyassets.constraints.asp_engine import ASPEngine
 
         absent = tmp_path / "nonexistent.lp"
-        with caplog.at_level(logging.WARNING, logger="workflow.constraints.asp_engine"):
+        with caplog.at_level(logging.WARNING, logger="tinyassets.constraints.asp_engine"):
             engine = ASPEngine(base_rules_path=absent)
         assert engine._base_rules == ""
         assert any("not found" in m.lower() for m in caplog.messages)

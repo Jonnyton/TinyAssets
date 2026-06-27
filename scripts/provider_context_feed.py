@@ -298,11 +298,11 @@ def _drop_dead_lane_purposes(
 
     Worktrees whose branch is fully an ancestor of origin/main represent landed work and
     should not surface as actionable lanes for the lead. Set
-    `WORKFLOW_FEED_INCLUDE_DEAD_LANES=1` to bypass this filter (useful for archaeology).
+    `TINYASSETS_FEED_INCLUDE_DEAD_LANES=1` to bypass this filter (useful for archaeology).
     """
     import os as _os
 
-    if _os.environ.get("WORKFLOW_FEED_INCLUDE_DEAD_LANES", "").strip().lower() in {
+    if _os.environ.get("TINYASSETS_FEED_INCLUDE_DEAD_LANES", "").strip().lower() in {
         "1",
         "true",
         "yes",

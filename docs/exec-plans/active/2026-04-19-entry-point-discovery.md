@@ -10,10 +10,10 @@
 
 ## 1. Why this is needed
 
-`workflow/discovery.py` currently scans the source tree at runtime: walks `domains/*/skill.py`, builds import paths from directory names, and rebinds rename-compat aliases inline. Three concrete problems flow from this shape:
+`tinyassets/discovery.py` currently scans the source tree at runtime: walks `domains/*/skill.py`, builds import paths from directory names, and rebinds rename-compat aliases inline. Three concrete problems flow from this shape:
 
 1. **Couples discovery to checked-out repo layout.** Installed extensions outside the source tree are second-class — there is no path for `pip install workflow-research-domain` to register itself with the engine without dropping files into the source `domains/` directory.
-2. **Leaks rename-compat policy into plugin discovery.** Lines 65-66 inject `fantasy_author` into discovery results when `WORKFLOW_AUTHOR_RENAME_COMPAT` is on. This entangles two unrelated concerns: import-path back-compat and domain-registry contract.
+2. **Leaks rename-compat policy into plugin discovery.** Lines 65-66 inject `fantasy_author` into discovery results when `TINYASSETS_AUTHOR_RENAME_COMPAT` is on. This entangles two unrelated concerns: import-path back-compat and domain-registry contract.
 3. **Encodes a heuristic class-name lookup.** `auto_register()` at `discovery.py:99-130` tries `FantasyAuthorDomain`, `ResearchProbeDomain`, then iterates `dir(module)` looking for a class ending in `"Domain"`. This works today (2 domains, hand-coded names) but doesn't scale to third-party domains that pick their own class names.
 
 Per PyPA's entry-points specification ([packaging.python.org](https://packaging.python.org/en/latest/specifications/entry-points/)) and Python's standard library [`importlib.metadata.entry_points()`](https://docs.python.org/3/library/importlib.metadata.html), the canonical mechanism for installed distributions to advertise components is an entry-point group. Each domain declares itself in its own `pyproject.toml`; the engine reads the group at startup. No filesystem scan, no class-name heuristic, no compat injection.
@@ -58,13 +58,13 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DOMAINS_GROUP = "workflow.domains"
-_DEV_FALLBACK_FLAG = "WORKFLOW_DISCOVERY_DEV_FALLBACK"
+_DEV_FALLBACK_FLAG = "TINYASSETS_DISCOVERY_DEV_FALLBACK"
 
 
 def discover_domains() -> list[str]:
     """Discover installed domain slugs via entry-point group ``workflow.domains``.
 
-    Falls back to a filesystem scan only when WORKFLOW_DISCOVERY_DEV_FALLBACK
+    Falls back to a filesystem scan only when TINYASSETS_DISCOVERY_DEV_FALLBACK
     is set (default off in production; on in editable-install dev workflows
     where pyproject re-discovery is cumbersome).
     """
@@ -117,7 +117,7 @@ __all__ = ["discover_domains", "auto_register"]
 - Entry-point group is the canonical source.
 - Filesystem scan is a fallback gated by an explicit env var (off by default).
 - No class-name heuristic — the entry-point value is a fully-qualified `module:Class` path.
-- No rename-compat alias injection — rename-compat lives in import shims (`workflow/_rename_compat.py`), not in discovery contract.
+- No rename-compat alias injection — rename-compat lives in import shims (`tinyassets/_rename_compat.py`), not in discovery contract.
 
 ### 2.3 Migration of in-tree domains
 
@@ -151,9 +151,9 @@ No behavior change — discovery.py still uses filesystem scan today.
 
 ### Commit 2 — Switch `discovery.py` to entry-point reads + add dev-fallback gate
 
-**Files:** `workflow/discovery.py`, `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/discovery.py` (mirror).
+**Files:** `tinyassets/discovery.py`, `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/discovery.py` (mirror).
 
-**Change:** Replace `discover_domains()` body with the §2.2 shape. `auto_register()` switches to `ep.load()`. `_filesystem_scan_fallback()` keeps the prior filesystem-scan behavior, gated on `WORKFLOW_DISCOVERY_DEV_FALLBACK`.
+**Change:** Replace `discover_domains()` body with the §2.2 shape. `auto_register()` switches to `ep.load()`. `_filesystem_scan_fallback()` keeps the prior filesystem-scan behavior, gated on `TINYASSETS_DISCOVERY_DEV_FALLBACK`.
 
 **Behavior change:** Production discovery now reads entry points first; falls back to filesystem only when explicitly opted in. **The `fantasy_author` rename-compat alias injection is removed.** The alias still works for *imports* (via `_rename_compat.py`'s deep-submodule meta-path finder), but no longer appears in `discover_domains()` results. Tests that assert `"fantasy_author" in discover_domains()` need update.
 
@@ -164,9 +164,9 @@ No behavior change — discovery.py still uses filesystem scan today.
 discovery: switch to importlib.metadata entry-point group "workflow.domains"
 
 Production reads entry points first; filesystem scan kept as opt-in dev
-fallback (WORKFLOW_DISCOVERY_DEV_FALLBACK env). Removes rename-compat alias
+fallback (TINYASSETS_DISCOVERY_DEV_FALLBACK env). Removes rename-compat alias
 injection from discover_domains() — alias remains active at the import-shim
-layer (workflow/_rename_compat.py), not the discovery contract.
+layer (tinyassets/_rename_compat.py), not the discovery contract.
 
 R10 of docs/exec-plans/completed/2026-04-19-refactor-dispatch-sequence.md.
 Closes docs/design-notes/2026-04-19-modularity-audit.md §4 ask #2.
@@ -204,11 +204,11 @@ discovery: test suite + docs reflect entry-point-based discovery
 
 **Before:** Drop a new `domains/<name>/skill.py` and discovery picks it up immediately.
 
-**After:** Drop the file *and* set `WORKFLOW_DISCOVERY_DEV_FALLBACK=1` to use filesystem scan, OR add the entry point to `pyproject.toml` and re-run `pip install -e .`.
+**After:** Drop the file *and* set `TINYASSETS_DISCOVERY_DEV_FALLBACK=1` to use filesystem scan, OR add the entry point to `pyproject.toml` and re-run `pip install -e .`.
 
 **Consequence:** Dev-mode friction increases by one step for new-domain creation. The fallback flag mitigates this for in-progress experimentation; the proper path (entry-point declaration) is required before the domain ships.
 
-**Mitigation:** Document the `WORKFLOW_DISCOVERY_DEV_FALLBACK` flag in CONTRIBUTING.md / domain-author docs. One-line addition.
+**Mitigation:** Document the `TINYASSETS_DISCOVERY_DEV_FALLBACK` flag in CONTRIBUTING.md / domain-author docs. One-line addition.
 
 ### 4.3 No production behavior change for first-class domains
 
@@ -235,7 +235,7 @@ discovery: test suite + docs reflect entry-point-based discovery
 
 ## 7. Open follow-ups (not in scope here)
 
-- **`packaging/dist/workflow-universe-server-src/workflow/discovery.py`** is stale dist-staging output; will regenerate on next packaging build. No action needed.
+- **`packaging/dist/tinyassets-universe-server-src/tinyassets/discovery.py`** is stale dist-staging output; will regenerate on next packaging build. No action needed.
 - **Domain-author docs** for the entry-point pattern. Recommend a short `docs/domains/authoring.md` page after R10 lands; ~30 min to draft. Not in this exec-plan; flag for follow-up.
 - **Test-domain entry point** for in-test fixture domains (the test suite spins up ad-hoc domains for plugin contract tests). Currently uses programmatic `registry.register()` calls; would benefit from a `workflow.domains.test` group convention. Defer.
 

@@ -22,11 +22,11 @@ submitted_at: "2026-04-14T12:00:00+00:00"
 ## Lifecycle
 
 1. A user posts via MCP: `universe action=submit_node_bid node_def_id=... inputs_json=... bid=...`
-   (requires `WORKFLOW_PAID_MARKET=on` on the posting host). A YAML
+   (requires `TINYASSETS_PAID_MARKET=on` on the posting host). A YAML
    lands in `bids/<node_bid_id>.yaml`.
 2. Commit + push so cross-host daemons can see it:
    `git add bids/<id>.yaml && git commit && git push`.
-3. Any daemon with `WORKFLOW_PAID_MARKET=on` whose NodeBidProducer
+3. Any daemon with `TINYASSETS_PAID_MARKET=on` whose NodeBidProducer
    runs during its dispatcher cycle will emit a BranchTask for the
    bid. The dispatcher picks it alongside Branch-based work per the
    scoring function.
@@ -49,13 +49,13 @@ matching tasks are eligible. Empty on either side = no filter.
 
 ## Security posture
 
-**Read this before enabling `WORKFLOW_PAID_MARKET=on`.**
+**Read this before enabling `TINYASSETS_PAID_MARKET=on`.**
 
 ### What runs
 
 The NodeBid executor calls Python `exec()` on the `source_code` of
 an approved node. The call site is
-`workflow/executors/node_bid.py:149`:
+`tinyassets/executors/node_bid.py:149`:
 
 ```python
 exec(source, {"__builtins__": __builtins__}, local_scope)
@@ -83,8 +83,8 @@ ship new code. Only nodes the host has already accepted can run.
 ### Three-layer defense
 
 Enforced at both producer side (pre-queue rejection, see
-`workflow/producers/node_bid.py:_producer_sandbox_reject`) and
-executor side (defense-in-depth, see `workflow/executors/node_bid.py:execute_node_bid`).
+`tinyassets/producers/node_bid.py:_producer_sandbox_reject`) and
+executor side (defense-in-depth, see `tinyassets/executors/node_bid.py:execute_node_bid`).
 Preflight §4.3 invariant 1 requires BOTH boundaries:
 
 1. **Registration + approval.** `node_def_id` must resolve in the
@@ -92,7 +92,7 @@ Preflight §4.3 invariant 1 requires BOTH boundaries:
    `node_not_found`. Unapproved → `unapproved_node`.
 2. **Source-pattern rejection.** The approved node's `source_code`
    is scanned against `_BID_DANGEROUS_PATTERNS` in
-   `workflow/graph_compiler.py:122` — a **strict superset** of the
+   `tinyassets/graph_compiler.py:122` — a **strict superset** of the
    wrapper-node list: `os.system`, `subprocess`, `eval(`, `exec(`,
    `__import__`, `compile(`, `open(`, `importlib`, `pickle`,
    `marshal`. Match → `dangerous_pattern:<pattern>`. Network
@@ -128,7 +128,7 @@ Preflight §4.3 invariant 1 requires BOTH boundaries:
 - **Pick-waste on unapproved bids.** When the producer-side lookup
   is unavailable (e.g. `repo_root_path` fails at daemon start),
   unapproved bids can reach the dispatcher and be picked. The
-  executor-side approval gate (`workflow/executors/node_bid.py:108`)
+  executor-side approval gate (`tinyassets/executors/node_bid.py:108`)
   fails them, but the daemon's per-cycle pick contract
   (`fantasy_author/__main__.py:1000`) finalizes and exits rather
   than re-picking. Result: one dispatcher cycle is consumed per
@@ -154,11 +154,11 @@ Preflight §4.3 invariant 1 requires BOTH boundaries:
 
 - `docs/planning/node_bid_conventions.md` — full Phase G contract
   (commit `20c3dd9`).
-- `workflow/graph_compiler.py:_BID_DANGEROUS_PATTERNS` — single
+- `tinyassets/graph_compiler.py:_BID_DANGEROUS_PATTERNS` — single
   source of truth for the pattern list.
-- `workflow/producers/node_bid.py:_producer_sandbox_reject` —
+- `tinyassets/producers/node_bid.py:_producer_sandbox_reject` —
   producer-side layers 1+2.
-- `workflow/executors/node_bid.py:execute_node_bid` — executor-side
+- `tinyassets/executors/node_bid.py:execute_node_bid` — executor-side
   layers 1+2+3.
 
 ## Race note
@@ -172,11 +172,11 @@ race.
 
 ### Revert-on-push-fail is destructive
 
-**Read this before enabling `WORKFLOW_PAID_MARKET=on` as default.**
+**Read this before enabling `TINYASSETS_PAID_MARKET=on` as default.**
 
 When a claim push fails (remote race lost, auth failure, network
 hiccup), the claim is rolled back by `_revert_claim` in
-`workflow/node_bid.py:225`. The revert runs:
+`tinyassets/node_bid.py:225`. The revert runs:
 
 ```
 git reset --hard origin/<branch>

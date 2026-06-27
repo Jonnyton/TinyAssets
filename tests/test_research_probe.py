@@ -15,8 +15,8 @@ from langgraph.graph import StateGraph
 from domains.research_probe import ResearchProbeDomain
 from domains.research_probe.state import ResearchState
 from domains.research_probe.tools import research_search
-from workflow.protocols import Domain
-from workflow.registry import DomainRegistry, default_registry
+from tinyassets.protocols import Domain
+from tinyassets.registry import DomainRegistry, default_registry
 
 
 class TestResearchProbeDomainProtocol:
@@ -189,12 +189,12 @@ class TestNoFantasyAuthorImports:
         assert "fantasy_author" not in analyze_source
 
     def test_workflow_imports_only(self) -> None:
-        """Domain should only import from workflow.*, not fantasy_author.*."""
+        """Domain should only import from tinyassets.*, not fantasy_author.*."""
         import domains.research_probe.skill as research_skill_module
 
         source = open(research_skill_module.__file__).read()
         # Should have workflow imports
-        assert "workflow.protocols" in source
+        assert "tinyassets.protocols" in source
         # Should not have fantasy_author imports
         assert "domains.fantasy_daemon" not in source
 
@@ -264,7 +264,7 @@ class TestResearchStateContract:
         assert hasattr(ResearchState, "__annotations__")
 
     def test_research_state_has_engine_fields(self) -> None:
-        """ResearchState should include base WorkflowState fields."""
+        """ResearchState should include base TinyAssetsState fields."""
         annotations = ResearchState.__annotations__
         assert "workflow_id" in annotations
         assert "domain_name" in annotations

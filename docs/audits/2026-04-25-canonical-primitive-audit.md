@@ -3,7 +3,7 @@
 **Date:** 2026-04-25
 **Author:** dev-2
 **Scope:** read-only audit. Answers questions A-F about the canonical-branch primitive's data model, authz, action surface, lookup, variant support, and Mark gate-series user-story gap. NO redesign. Lead routes redesign as a follow-up.
-**Surfaces read:** `workflow/daemon_server.py` (lines 285-424 schema; 2240-2429 canonical helpers; 2525-2553 `branches_for_goal`); `workflow/universe_server.py` (lines 9996-10702 `_action_goal_*` handlers + `_GOAL_ACTIONS` registry); `tests/test_canonical_branch.py`, `tests/test_canonical_branch_mcp.py`, `tests/test_goals_*.py`.
+**Surfaces read:** `tinyassets/daemon_server.py` (lines 285-424 schema; 2240-2429 canonical helpers; 2525-2553 `branches_for_goal`); `tinyassets/universe_server.py` (lines 9996-10702 `_action_goal_*` handlers + `_GOAL_ACTIONS` registry); `tests/test_canonical_branch.py`, `tests/test_canonical_branch_mcp.py`, `tests/test_goals_*.py`.
 
 ---
 
@@ -21,7 +21,7 @@ For Mark's gate-series user-story ("for MY goal G, MY canonical is branch B"), t
 
 ## A. Data model
 
-### Storage table: `goals` (`workflow/daemon_server.py:301-310`)
+### Storage table: `goals` (`tinyassets/daemon_server.py:301-310`)
 
 ```sql
 CREATE TABLE goals (
@@ -53,7 +53,7 @@ CREATE TABLE goals (
 
 ## B. Authorization on `set_canonical`
 
-### Server-side authority (`workflow/universe_server.py:10648-10658`)
+### Server-side authority (`tinyassets/universe_server.py:10648-10658`)
 
 ```python
 actor = _current_actor()
@@ -77,7 +77,7 @@ The storage layer is permissive — `set_canonical_branch()` does not re-check a
 
 ## C. Action surface inventory
 
-### `_GOAL_ACTIONS` registry (`workflow/universe_server.py:10688-10698`)
+### `_GOAL_ACTIONS` registry (`tinyassets/universe_server.py:10688-10698`)
 
 | Action | Handler | Args | Returns | Write? |
 |---|---|---|---|---|
@@ -212,10 +212,10 @@ The minimal viable path is **gaps #1, #3, #4** — the three "Blocking" rows. Wi
 
 ## References
 
-- Schema: `workflow/daemon_server.py` lines 301-310 (goals table) + 413-423 (canonical migration).
-- Storage helpers: `workflow/daemon_server.py` lines 2240-2429.
-- MCP handler: `workflow/universe_server.py` lines 10634-10685 (`_action_goal_set_canonical`).
-- MCP registry: `workflow/universe_server.py` lines 10688-10702 (`_GOAL_ACTIONS`, `_GOAL_WRITE_ACTIONS`).
+- Schema: `tinyassets/daemon_server.py` lines 301-310 (goals table) + 413-423 (canonical migration).
+- Storage helpers: `tinyassets/daemon_server.py` lines 2240-2429.
+- MCP handler: `tinyassets/universe_server.py` lines 10634-10685 (`_action_goal_set_canonical`).
+- MCP registry: `tinyassets/universe_server.py` lines 10688-10702 (`_GOAL_ACTIONS`, `_GOAL_WRITE_ACTIONS`).
 - Tests: `tests/test_canonical_branch.py`, `tests/test_canonical_branch_mcp.py`.
 - Storage-split scoping: `docs/design-notes/2026-04-25-arch-audit-5-r7-split-scoping.md` line 81 (acknowledges current goal-CRUD scope).
 - Mark persona: `.claude/agent-memory/user/personas/mark/` (no canonical-variants grievance on file as of 2026-04-25).

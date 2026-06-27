@@ -169,8 +169,8 @@
   // The neutral prompt a visitor pastes into their own chatbot.
   const bridgePrompt = $derived(
     goal?.name
-      ? `Show me the goal "${goal.name}" (${id}) on my Workflow connector and list its branches.`
-      : `Show me the goal ${id} on my Workflow connector and list its branches.`
+      ? `Show me the goal "${goal.name}" (${id}) on my TinyAssets connector and list its branches.`
+      : `Show me the goal ${id} on my TinyAssets connector and list its branches.`
   );
   let copied = $state(false);
   let copyTimer: number | null = null;
@@ -310,7 +310,7 @@
         <p class="eyebrow">take it to your chatbot</p>
         <h2 id="bridge-title" class="detail__h2">Open this goal on your connector.</h2>
         <p class="bridge__lede">
-          With the <Term def="A connector is the one URL you paste into Claude, ChatGPT, or any MCP-capable assistant to give it the Workflow tools — no account, no install.">connector</Term>
+          With the <Term def="A connector is the one URL you paste into Claude, ChatGPT, or any MCP-capable assistant to give it the TinyAssets tools — no account, no install.">connector</Term>
           enabled, paste this into your own chatbot to inspect this goal and the
           branches competing to reach it:
         </p>

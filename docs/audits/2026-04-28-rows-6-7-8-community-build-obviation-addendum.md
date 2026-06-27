@@ -46,7 +46,7 @@ Atomized the host-Q lists in all 3 design notes (per `feedback_obviated_item_che
 |---|---|---|---|
 | Q6.1 | Threat model scope: defending against (a) Anthropic-as-honest-operator, (b) Anthropic-as-adversary, or (c) arbitrary observers? | **OBVIATED** | `project_privacy_via_community_composition` (2026-04-26): "chatbot reads the user's stated threat model from chat context and applies appropriate composition." Threat model is per-conversation, not platform-fixed. The Q presupposed a platform-wide answer; principle says no platform-wide answer is needed. |
 | Q6.2 | Metadata acceptable? Is "host runs an Allied AP workflow" itself sensitive? | **OBVIATED** | Same principle: chatbot decides per-piece per `project_privacy_per_piece_chatbot_judged`. Metadata sensitivity is community-build composition, not platform-tier flag. The §7.5 universe-aliasing primitive becomes a community-composition recipe, not a mandatory platform feature. |
-| Q6.3 | Third-party providers in daemon fallback chain — ever? | **STILL-PLATFORM** | Provider router config (`workflow/providers/router.py`) is platform code; community can't compose around it via existing primitives. The Q remains a real platform decision: should the fallback chain accept third-party providers when local is unavailable, or pause-and-wait? Per principle, this is platform-policy because it's structurally not chatbot-composable. |
+| Q6.3 | Third-party providers in daemon fallback chain — ever? | **STILL-PLATFORM** | Provider router config (`tinyassets/providers/router.py`) is platform code; community can't compose around it via existing primitives. The Q remains a real platform decision: should the fallback chain accept third-party providers when local is unavailable, or pause-and-wait? Per principle, this is platform-policy because it's structurally not chatbot-composable. |
 
 ### Reframe recommendation
 
@@ -79,7 +79,7 @@ Same pattern as the methods-prose evaluator REFRAME (Concern row 5, audit-applie
 
 ### Plus: principle-level reframe
 
-Per `project_privacy_via_community_composition`: SENSITIVITY classification is community-build (chatbot decides per-piece what's sensitive). Platform owns ENFORCEMENT primitives only — `WORKFLOW_UPLOAD_WHITELIST` (live), F3 self-auditing structured caveats (proposed). The note's §1 question framing ("can the server mark `add_canon_from_path` as never-auto-approve?") is the wrong question under the new principle; the right question is "does the chatbot have the structured evidence to compose its own per-piece approval narrative?" — which F3 answers.
+Per `project_privacy_via_community_composition`: SENSITIVITY classification is community-build (chatbot decides per-piece what's sensitive). Platform owns ENFORCEMENT primitives only — `TINYASSETS_UPLOAD_WHITELIST` (live), F3 self-auditing structured caveats (proposed). The note's §1 question framing ("can the server mark `add_canon_from_path` as never-auto-approve?") is the wrong question under the new principle; the right question is "does the chatbot have the structured evidence to compose its own per-piece approval narrative?" — which F3 answers.
 
 ### Reframe recommendation
 
@@ -105,7 +105,7 @@ Same one-line reframe pattern as row 6. Frontmatter `status: superseded-by-F3` +
 
 The note's content:
 - §1-4: trace + root-cause hypothesis (analysis)
-- §5: mitigations on the Workflow Server side — text edits to tool `description` fields, prompt-text moves
+- §5: mitigations on the TinyAssets Server side — text edits to tool `description` fields, prompt-text moves
 - §5.5: 2026-04-19 Maya-evidence additions (control_station prompt directives)
 - §6: out-of-scope items
 - §7: recommendation for STATUS.md
@@ -128,7 +128,7 @@ Row 8 currently:
 > [2026-04-18] Claude.ai injection mitigation blocked on host-Q batch: `docs/design-notes/2026-04-18-claude-ai-injection-hallucination.md`.
 
 Reframe to (and move out of Concerns into Work table):
-> Work table: `Claude.ai injection mitigation — §5 + §5.5 dev-actionable text edits (move directives out of tool descriptions, de-dup phrases, add Maya control_station directives). Sequenced after #18 per plugin-mirror-collision rule. | workflow/universe_server.py + prompt files | #18 | dev-ready |`
+> Work table: `Claude.ai injection mitigation — §5 + §5.5 dev-actionable text edits (move directives out of tool descriptions, de-dup phrases, add Maya control_station directives). Sequenced after #18 per plugin-mirror-collision rule. | tinyassets/universe_server.py + prompt files | #18 | dev-ready |`
 
 Also retire the Concern row entirely once the Work row lands — the row was a mis-classification.
 

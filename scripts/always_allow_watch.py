@@ -8,7 +8,7 @@ scopes to dialog containers, so it can't see this and returns 0.
 
 This helper is scoped: it looks for a <button> whose visible text equals
 "Always allow" and whose ancestor contains the phrase "wants to use" or
-"Workflow Server" (the permission-card text shell — matches the connector's
+"TinyAssets Server" (the permission-card text shell — matches the connector's
 shipped display_name from packaging/conway/panel-metadata.json). It clicks
 that button and only that button.
 
@@ -55,8 +55,8 @@ def _click_inline_always_allow(page) -> dict:
           if (!/Claude wants to use/i.test(allText)) {
             return {found: false, reason: 'no permission card text on page'};
           }
-          if (!/Workflow(?: Server)?/i.test(allText)) {
-            return {found: false, reason: 'permission card not Workflow Server'};
+          if (!/TinyAssets(?: Server)?/i.test(allText)) {
+            return {found: false, reason: 'permission card not TinyAssets Server'};
           }
           const buttons = Array.from(document.querySelectorAll('button'));
           const btn = buttons.find(b => {

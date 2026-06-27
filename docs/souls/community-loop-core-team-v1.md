@@ -133,7 +133,7 @@ identity: a future flagship upgrade must update the active soul/version and
 registry record before use, while running a lower-tier or unapproved model in a
 role requires an external claimant outside the core path, a borrowed-role
 context where allowed, or a renamed/forked daemon. This matches the dev's
-current loop, which is issue/label/workflow/PR driven rather than a private
+current loop, which is issue/label/tinyassets/PR driven rather than a private
 multi-agent chat.
 
 ## Non-Goals

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import inspect
 
-from workflow import runs
+from tinyassets import runs
 
 
 class TestDefaultBumped:
@@ -170,9 +170,9 @@ class TestMcpRecursionLimitOverride:
     """_action_run_branch MCP handler validates recursion_limit_override."""
 
     def test_unset_uses_default(self, tmp_path, monkeypatch):
-        from workflow.api.runs import _action_run_branch
+        from tinyassets.api.runs import _action_run_branch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         # No branch → quick error return before recursion_limit check
         import json
         result = json.loads(_action_run_branch({
@@ -183,13 +183,13 @@ class TestMcpRecursionLimitOverride:
     def test_valid_override_50_accepted(self, tmp_path, monkeypatch):
         import json
 
-        from workflow.api.runs import _action_run_branch
-        from workflow.runs import RUN_STATUS_QUEUED, RunOutcome
+        from tinyassets.api.runs import _action_run_branch
+        from tinyassets.runs import RUN_STATUS_QUEUED, RunOutcome
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._stub_valid_branch(monkeypatch)
         monkeypatch.setattr(
-            "workflow.api.branches._resolve_branch_id",
+            "tinyassets.api.branches._resolve_branch_id",
             lambda branch_def_id, _base_path: branch_def_id,
         )
         captured: dict[str, object] = {}
@@ -199,7 +199,7 @@ class TestMcpRecursionLimitOverride:
             return RunOutcome(run_id="run-1", status=RUN_STATUS_QUEUED, output={})
 
         monkeypatch.setattr(
-            "workflow.runs.execute_branch_async",
+            "tinyassets.runs.execute_branch_async",
             _fake_execute_branch_async,
         )
 
@@ -218,11 +218,11 @@ class TestMcpRecursionLimitOverride:
         stub_branch = MagicMock()
         stub_branch.validate.return_value = []  # no errors
         monkeypatch.setattr(
-            "workflow.daemon_server.get_branch_definition",
+            "tinyassets.daemon_server.get_branch_definition",
             lambda *a, **k: dummy_src,
         )
         monkeypatch.setattr(
-            "workflow.branches.BranchDefinition.from_dict",
+            "tinyassets.branches.BranchDefinition.from_dict",
             staticmethod(lambda _: stub_branch),
         )
         return stub_branch
@@ -230,9 +230,9 @@ class TestMcpRecursionLimitOverride:
     def test_override_below_min_rejected(self, tmp_path, monkeypatch):
         import json
 
-        from workflow.api.runs import _action_run_branch
+        from tinyassets.api.runs import _action_run_branch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._stub_valid_branch(monkeypatch)
         result = json.loads(_action_run_branch({
             "branch_def_id": "b1",
@@ -244,9 +244,9 @@ class TestMcpRecursionLimitOverride:
     def test_override_above_max_rejected(self, tmp_path, monkeypatch):
         import json
 
-        from workflow.api.runs import _action_run_branch
+        from tinyassets.api.runs import _action_run_branch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._stub_valid_branch(monkeypatch)
         result = json.loads(_action_run_branch({
             "branch_def_id": "b1",
@@ -258,9 +258,9 @@ class TestMcpRecursionLimitOverride:
     def test_override_not_integer_rejected(self, tmp_path, monkeypatch):
         import json
 
-        from workflow.api.runs import _action_run_branch
+        from tinyassets.api.runs import _action_run_branch
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._stub_valid_branch(monkeypatch)
         result = json.loads(_action_run_branch({
             "branch_def_id": "b1",
@@ -273,7 +273,7 @@ class TestGetRunRecursionLimit:
     """get_run snapshot includes recursion_limit from events."""
 
     def test_recursion_limit_in_snapshot_when_event_present(self):
-        from workflow.api.runs import _compose_run_snapshot
+        from tinyassets.api.runs import _compose_run_snapshot
 
         dummy_record = {
             "run_id": "r1",
@@ -297,12 +297,12 @@ class TestGetRunRecursionLimit:
             }
         ]
         from unittest.mock import patch
-        with patch("workflow.daemon_server.get_branch_definition", side_effect=KeyError("b1")):
+        with patch("tinyassets.daemon_server.get_branch_definition", side_effect=KeyError("b1")):
             snapshot = _compose_run_snapshot(dummy_record, events)
         assert snapshot["recursion_limit"] == 75
 
     def test_recursion_limit_none_when_no_system_event(self):
-        from workflow.api.runs import _compose_run_snapshot
+        from tinyassets.api.runs import _compose_run_snapshot
 
         dummy_record = {
             "run_id": "r1",
@@ -315,6 +315,6 @@ class TestGetRunRecursionLimit:
             "error": "",
         }
         from unittest.mock import patch
-        with patch("workflow.daemon_server.get_branch_definition", side_effect=KeyError("b1")):
+        with patch("tinyassets.daemon_server.get_branch_definition", side_effect=KeyError("b1")):
             snapshot = _compose_run_snapshot(dummy_record, [])
         assert snapshot["recursion_limit"] is None

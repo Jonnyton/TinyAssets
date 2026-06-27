@@ -101,7 +101,7 @@ Record all values before claiming support:
 
 Acceptance criteria:
 
-- Open WebUI adds the Workflow MCP server without crashing or infinite loading.
+- Open WebUI adds the TinyAssets MCP server without crashing or infinite loading.
 - A chat can invoke at least one read-only Workflow tool.
 - The visible response matches the tool result enough for a user to trust it.
 - Any console/server error is recorded.

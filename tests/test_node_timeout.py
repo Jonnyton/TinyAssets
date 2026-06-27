@@ -20,13 +20,13 @@ import time
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import (
+from tinyassets.graph_compiler import (
     NodeTimeoutError,
     _run_with_timeout,
     compile_branch,
@@ -66,7 +66,7 @@ def test_node_timeout_error_default_node_id_is_empty():
 def test_runs_attribute_beats_regex_for_timeout_attribution():
     """Even if the message format drifts (no `Node 'X'` substring), the
     runner still gets the right node_id because it reads the attribute."""
-    from workflow.runs import _node_id_from_timeout_exc
+    from tinyassets.runs import _node_id_from_timeout_exc
 
     exc = NodeTimeoutError("drifted message without the quoted node", node_id="n1")
     assert _node_id_from_timeout_exc(exc) == "n1"
@@ -155,14 +155,14 @@ def test_runner_emits_node_timeout_event_and_marks_run_failed(
     whose detail marks reason='timeout'."""
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
 
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         initialize_author_server,
         save_branch_definition,
     )
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_FAILED,
         execute_branch_async,
         get_run,
@@ -215,14 +215,14 @@ def test_runner_emits_node_empty_response_event_and_marks_run_failed(
     run status to 'failed' — not silently mark the node 'ran' with output=''."""
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
 
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         initialize_author_server,
         save_branch_definition,
     )
-    from workflow.runs import (
+    from tinyassets.runs import (
         NODE_STATUS_FAILED,
         RUN_STATUS_FAILED,
         execute_branch_async,
@@ -272,14 +272,14 @@ def test_fast_provider_does_not_hit_timeout(tmp_path, monkeypatch):
     timeout does not trip the guard."""
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
 
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         initialize_author_server,
         save_branch_definition,
     )
-    from workflow.runs import (
+    from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         execute_branch_async,
         get_run,

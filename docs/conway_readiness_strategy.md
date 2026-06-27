@@ -1,6 +1,6 @@
 # Conway Readiness Strategy
 
-Deep research findings and day-1 discoverability plan for the Workflow MCP server.
+Deep research findings and day-1 discoverability plan for the TinyAssets MCP server.
 
 **Date:** 2026-04-08
 **Goal:** When Conway launches, our project is already listed, packaged, and discoverable — zero manual intervention required.
@@ -72,7 +72,7 @@ Conway won't exist in a vacuum. Anthropic already has three overlapping extensio
 ### Layer 1: MCP Servers (Standard Protocol)
 
 - Open standard (Model Context Protocol)
-- Your Workflow MCP server already implements this via FastMCP
+- Your TinyAssets MCP server already implements this via FastMCP
 - Any MCP-compatible client can connect
 - **This is your universal foundation — keep it.**
 
@@ -118,7 +118,7 @@ We don't wait to find out which surface Conway inherits from. We ship on all thr
 
 ### Track A: MCP Server (Universal Foundation) ✅ ALREADY DONE
 
-Your Workflow MCP server (`universe_server.py`) is already a compliant MCP server via FastMCP with Streamable HTTP transport. It exposes:
+Your TinyAssets MCP server (`universe_server.py`) is already a compliant MCP server via FastMCP with Streamable HTTP transport. It exposes:
 - `universe()` tool — comprehensive universe operations (read/write/control)
 - `extensions()` tool — custom node registration system
 - MCP prompts (`control_station`, `extension_guide`)
@@ -130,15 +130,15 @@ Your Workflow MCP server (`universe_server.py`) is already a compliant MCP serve
 
 ### Track B: MCPB Desktop Extension (.mcpb package)
 
-Package the Workflow MCP server as a one-click installable desktop extension.
+Package the TinyAssets MCP server as a one-click installable desktop extension.
 
 **What to build:**
 1. **`manifest.json`** following MCPB v0.3+ spec:
    ```json
    {
-     "name": "workflow-universe-server",
+     "name": "tinyassets-universe-server",
      "version": "0.1.0",
-     "display_name": "Workflow Server",
+     "display_name": "TinyAssets Server",
      "description": "Goal-agnostic daemon engine. Summon the daemon, bind it to a domain, and let it drive. Connect to living universes, submit direction, register custom workflow nodes, and steer autonomous output — all through natural conversation.",
      "icon": "icon.png",
      "tools": [...all tool definitions with annotations...],
@@ -194,7 +194,7 @@ Package as a plugin for the Claude Code / Cowork marketplace.
 
 Even without a confirmed `.cnw.zip` spec, we can prepare:
 
-1. **Webhook endpoint** — Your Workflow MCP server already has an API. Add a lightweight webhook receiver that Conway can call to wake/trigger the daemon:
+1. **Webhook endpoint** — Your TinyAssets MCP server already has an API. Add a lightweight webhook receiver that Conway can call to wake/trigger the daemon:
    ```python
    @app.post("/webhook/conway")
    async def conway_trigger(request: Request):
@@ -240,7 +240,7 @@ Register on `registry.modelcontextprotocol.io` — the official MCP registry.
 | 2 | Submit to Claude Code/Cowork plugin marketplace | Medium | Immediate visibility to 100K+ users |
 | 3 | Package as MCPB desktop extension + submit | Medium | Claude Desktop directory listing |
 | 4 | Register on MCP registry | Low | Universal discoverability |
-| 5 | Add webhook endpoint to Workflow MCP server | Low | Conway-ready trigger surface |
+| 5 | Add webhook endpoint to TinyAssets MCP server | Low | Conway-ready trigger surface |
 | 6 | Prepare UI panel metadata | Low | Ready to package as `.cnw.zip` the moment the spec drops |
 | 7 | Monitor Anthropic developer channels daily | Ongoing | First-mover on `.cnw.zip` spec |
 
@@ -267,7 +267,7 @@ The video warns about "Google Play Services lock-in." Here's the nuanced take:
 
 **Yes, optimize for Conway.** It's Anthropic's platform and they'll favor native extensions. But your architecture already avoids lock-in because:
 
-- The Workflow MCP server speaks standard MCP — works with any MCP client
+- The TinyAssets MCP server speaks standard MCP — works with any MCP client
 - The FastAPI layer works with any HTTP client
 - The daemon is provider-agnostic (Claude, Codex, Ollama, Gemini, etc.)
 

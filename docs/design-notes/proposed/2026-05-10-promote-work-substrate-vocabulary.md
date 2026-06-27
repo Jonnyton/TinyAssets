@@ -61,7 +61,7 @@ Out of scope:
 - Runtime MCP tool renames or new actions.
 - Permission implementation changes.
 - Rewriting community-authored branches or PR #662 content.
-- Changing `workflow/*` runtime code or plugin mirrors.
+- Changing `tinyassets/*` runtime code or plugin mirrors.
 
 ## Compatibility
 

@@ -1,4 +1,4 @@
-# SUCCESSION.md — Keeping Workflow Alive Without Us
+# SUCCESSION.md — Keeping TinyAssets Alive Without Us
 
 **Status:** First-pass runbook (v0.1). Treat every line as load-bearing for the "system is always up without us" forever rule (see `project_host_independent_succession.md` in session memory). Amendments go via PR; 2 admin-pool members must approve changes.
 
@@ -29,12 +29,12 @@ Every row is a thing that breaks if only one person can do it. Target: **every r
 | Supabase project + billing | Host | 1 | **P0 pre-launch** |
 | Cloudflare account | Host | 1 | **P0 pre-launch** |
 | Fly.io account + billing | Host | 1 | **P0 pre-launch** |
-| GitHub org owner (`Workflow/` + `Workflow-catalog/`) | Host | 1 | **P0 pre-launch** |
-| `workflow-catalog-bot[bot]` GitHub App owner | Host | 1 | **P0 pre-launch** |
+| GitHub org owner (`TinyAssets/` + `TinyAssets-catalog/`) | Host | 1 | **P0 pre-launch** |
+| `tinyassets-catalog-bot[bot]` GitHub App owner | Host | 1 | **P0 pre-launch** |
 | Windows EV code-signing cert | Host (not yet procured) | 0 (N/A) | P1 (procurement is itself the gate) |
 | macOS Apple Developer ID | Host (not yet procured) | 0 (N/A) | P1 |
 | Treasury wallet private key (Base testnet for now) | Host | 1 | **P0** — migrate to 2-of-3 multisig before any mainnet value |
-| Workflow token contract (ERC-20) admin role | Host | 1 | **P0 pre-mainnet** |
+| TinyAssets token contract (ERC-20) admin role | Host | 1 | **P0 pre-mainnet** |
 | Moderation `host_admin` mod_role rows in Postgres | Host only until recruitment | 1 | **P0 pre-launch** (recruit ≥1 co-admin) |
 | DNS registrar override (if GoDaddy itself breaks) | — | 0 | P2 — document fallback registrar |
 | This SUCCESSION.md document | Anyone with repo write | ≥2 already | — |
@@ -54,7 +54,7 @@ Every row is a thing that breaks if only one person can do it. Target: **every r
 | _TBD pre-launch or post-launch_ | tertiary maintainer, optional treasury signer #3 | | |
 
 **Recruitment criteria** for co-maintainers (first co-admin must be seated pre-launch per `project_host_independent_succession.md` §38):
-- Merged ≥3 non-trivial PRs into `Workflow/` OR ≥30 days of active T2 daemon-host operation with zero moderation strikes.
+- Merged ≥3 non-trivial PRs into `TinyAssets/` OR ≥30 days of active T2 daemon-host operation with zero moderation strikes.
 - Explicit written acceptance of the SUCCESSION.md responsibilities (including the "I will pay bills if host is unreachable for >30 days" clause; optional if a separate operations fund exists).
 - Two-factor auth enabled on GitHub + any service with shared access.
 - Time-zone diversity preferred: admin pool should not all be in the same ±3-hour band.
@@ -68,9 +68,9 @@ A specifically named person who becomes primary operator if host is unreachable 
 
 **Activation path:**
 1. An admin-pool member believes host is unreachable >30d (checked via: no git commits, no email response, no public activity).
-2. They post a signed message to `Workflow/` repo issue labeled `succession`.
+2. They post a signed message to `TinyAssets/` repo issue labeled `succession`.
 3. If the succession lead (or alternate) concurs within 7 days, they become primary operator.
-4. Primary operator inherits the host's access (via §3 secret-vault access) but NOT the host's personal identity. Communications are signed as "Workflow succession operator" not as the host.
+4. Primary operator inherits the host's access (via §3 secret-vault access) but NOT the host's personal identity. Communications are signed as "TinyAssets succession operator" not as the host.
 5. If host returns, they resume primary — no permission-reclaim drama. Succession was interim.
 
 ### 2.3 Bills-paying party
@@ -119,7 +119,7 @@ The policy above applies to the **real-currency phase**. We split discipline by 
 
 ### 3.1 Vault of record
 
-**Primary vault:** `1Password` team vault named `Workflow-Prod`, OR Supabase Vault for Supabase-native secrets. Lead-over-time.
+**Primary vault:** `1Password` team vault named `TinyAssets-Prod`, OR Supabase Vault for Supabase-native secrets. Lead-over-time.
 
 Members with access (launch-seed):
 - Host (full admin)
@@ -134,18 +134,18 @@ Rotation policy:
 
 | Secret | Vault path | Used for | Rotation |
 |---|---|---|---|
-| Supabase service-role key | `Workflow-Prod/supabase/service-role` | Edge Functions + batcher scripts | 180d |
-| Supabase anon (public) key | `Workflow-Prod/supabase/anon` | Public clients, gateway | 180d |
-| Supabase JWT secret | `Workflow-Prod/supabase/jwt-secret` | Gateway JWT verify + SvelteKit SSR | 180d; requires coordinated deploy |
-| Cloudflare API token (scoped: purge-cache + zones:edit for `tinyassets.io`) | `Workflow-Prod/cloudflare/api-token` | GH Action cache purge + DNS updates | 180d |
-| Fly.io access token | `Workflow-Prod/fly/access-token` | CI deploys | 180d |
-| `workflow-catalog-bot[bot]` GitHub App private key (PEM) | `Workflow-Prod/github-apps/catalog-bot.pem` | Postgres→catalog export sync | 180d |
-| GoDaddy account login | `Workflow-Prod/godaddy/account` | Domain renewal, static file SFTP | 180d |
-| Treasury wallet seed phrase — `workflow-testnet-treasury-v0` (Base Sepolia, chain_id=84532) | **Default path: `~/.workflow-secrets/base-sepolia-treasury-v0.txt`** (host-local, OUTSIDE the project folder per §3.0 testnet-phase posture). Override via `WORKFLOW_TREASURY_KEY_PATH` env var (see `prototype/full-platform-v0/.env.example`). Public address `0x3023f144fdaEC0F3E5F75125D55B9BAe3AEEdEb1` committed to `prototype/full-platform-v0/treasury_config.toml`. **Testnet phase: multiple rotations expected; no vault required.** Real-currency phase flips to 2-of-3 multisig (Safe) + vault per §3.0 — until then, moving real money is launch-checklist-blocked. | 1% fee settlement destination | Rotations expected during testnet iteration. Mainnet migration is a separate flow (multisig + vault, not a rotation of this key). |
-| Windows EV code-signing cert + password | `Workflow-Prod/signing/windows-ev` | Tray .exe signing | On procurement + on expiry |
-| Apple Developer ID certs | `Workflow-Prod/signing/apple-dev-id` | Tray .dmg signing + notarization | On procurement + on expiry |
-| Sentry project DSN | `Workflow-Prod/sentry/dsn` | Crash reports | Rarely |
-| Plausible self-host admin password | `Workflow-Prod/plausible/admin` | Analytics dashboard | 90d |
+| Supabase service-role key | `TinyAssets-Prod/supabase/service-role` | Edge Functions + batcher scripts | 180d |
+| Supabase anon (public) key | `TinyAssets-Prod/supabase/anon` | Public clients, gateway | 180d |
+| Supabase JWT secret | `TinyAssets-Prod/supabase/jwt-secret` | Gateway JWT verify + SvelteKit SSR | 180d; requires coordinated deploy |
+| Cloudflare API token (scoped: purge-cache + zones:edit for `tinyassets.io`) | `TinyAssets-Prod/cloudflare/api-token` | GH Action cache purge + DNS updates | 180d |
+| Fly.io access token | `TinyAssets-Prod/fly/access-token` | CI deploys | 180d |
+| `tinyassets-catalog-bot[bot]` GitHub App private key (PEM) | `TinyAssets-Prod/github-apps/catalog-bot.pem` | Postgres→catalog export sync | 180d |
+| GoDaddy account login | `TinyAssets-Prod/godaddy/account` | Domain renewal, static file SFTP | 180d |
+| Treasury wallet seed phrase — `tinyassets-testnet-treasury-v0` (Base Sepolia, chain_id=84532) | **Default path: `~/.tinyassets-secrets/base-sepolia-treasury-v0.txt`** (host-local, OUTSIDE the project folder per §3.0 testnet-phase posture). Override via `TINYASSETS_TREASURY_KEY_PATH` env var (see `prototype/full-platform-v0/.env.example`). Public address `0x3023f144fdaEC0F3E5F75125D55B9BAe3AEEdEb1` committed to `prototype/full-platform-v0/treasury_config.toml`. **Testnet phase: multiple rotations expected; no vault required.** Real-currency phase flips to 2-of-3 multisig (Safe) + vault per §3.0 — until then, moving real money is launch-checklist-blocked. | 1% fee settlement destination | Rotations expected during testnet iteration. Mainnet migration is a separate flow (multisig + vault, not a rotation of this key). |
+| Windows EV code-signing cert + password | `TinyAssets-Prod/signing/windows-ev` | Tray .exe signing | On procurement + on expiry |
+| Apple Developer ID certs | `TinyAssets-Prod/signing/apple-dev-id` | Tray .dmg signing + notarization | On procurement + on expiry |
+| Sentry project DSN | `TinyAssets-Prod/sentry/dsn` | Crash reports | Rarely |
+| Plausible self-host admin password | `TinyAssets-Prod/plausible/admin` | Analytics dashboard | 90d |
 
 ### 3.3 What's explicitly NOT in the vault
 
@@ -159,7 +159,7 @@ Rotation policy:
 
 ### 4.1 Domain expiry prevention
 
-- `tinyassets.io` auto-renews on host's GoDaddy account. Expiry: documented in vault at `Workflow-Prod/godaddy/account`.
+- `tinyassets.io` auto-renews on host's GoDaddy account. Expiry: documented in vault at `TinyAssets-Prod/godaddy/account`.
 - **5-year pre-pay recommended before launch.** GoDaddy supports multi-year registration; this buys time even if billing breaks.
 - **Fallback registrar:** if GoDaddy itself becomes unreliable (account suspension, company shutdown), the domain can be transferred. Transfer path documented in §4.2.
 - **Monitoring:** a weekly cron pings `tinyassets.io` and checks WHOIS expiry date; if <60 days, alerts `ops@tinyassets.io`. Spec for this monitor: it runs outside the primary stack (GitHub Actions with `curl` + `whois` parse), so it still fires if the primary stack is down.
@@ -167,7 +167,7 @@ Rotation policy:
 ### 4.2 Domain transfer procedure
 
 If the domain needs to move registrars:
-1. Log into GoDaddy at account `Workflow-Prod/godaddy/account`.
+1. Log into GoDaddy at account `TinyAssets-Prod/godaddy/account`.
 2. Unlock the domain (GoDaddy dashboard → domain settings → unlock).
 3. Request EPP (transfer auth) code. Email delivery to account owner.
 4. At the new registrar: initiate transfer with EPP code + domain name.
@@ -196,15 +196,15 @@ Future post-launch feature: a smart-contract treasury bill-payer that pulls from
 
 ### 5.2 Supabase project
 
-- Project ID + URL: in vault at `Workflow-Prod/supabase/project-info`.
-- Migrations live in `Workflow/supabase/migrations/` (PR-reviewed; no manual DDL in production).
+- Project ID + URL: in vault at `TinyAssets-Prod/supabase/project-info`.
+- Migrations live in `TinyAssets/supabase/migrations/` (PR-reviewed; no manual DDL in production).
 - Backups: Supabase Pro auto-backs-up daily for 7 days. **Additional weekly pg_dump to S3-compatible storage** (Cloudflare R2 or Backblaze B2) — runbook for restore in §6.
 - Connection limits: Pro plan supports 60 direct connections + pooled via pgbouncer.
 - Realtime connection envelope: 2,500 concurrent soft-included, $10/mo per 1k extra.
 
 ### 5.3 Fly.io Machines
 
-- App names: `workflow-gateway` (MCP gateway per #27), `workflow-web` (SvelteKit dynamic routes per #35). Deploy configs in `Workflow/fly/`.
+- App names: `tinyassets-gateway` (MCP gateway per #27), `tinyassets-web` (SvelteKit dynamic routes per #35). Deploy configs in `TinyAssets/fly/`.
 - Autoscale: `min=2, max=8` per region. Regions: `ord` primary, `fra` secondary.
 - Cost: ~$10-15/mo/region at `min=2`.
 - If Fly.io becomes unavailable: **fallback to Hetzner CX11 boxes** (~€6/mo each) running the same Docker images. Migration runbook documented in §6.2.
@@ -212,8 +212,8 @@ Future post-launch feature: a smart-contract treasury bill-payer that pulls from
 ### 5.4 GitHub infrastructure
 
 - Org: TBD name (currently host's personal account; **must migrate to a named org pre-launch** for bus-factor ≥ 2).
-- Repos: `Workflow/` (platform) + `Workflow-catalog/` (content export).
-- GitHub App: `workflow-catalog-bot` — scoped to `Workflow-catalog/` only.
+- Repos: `TinyAssets/` (platform) + `TinyAssets-catalog/` (content export).
+- GitHub App: `tinyassets-catalog-bot` — scoped to `TinyAssets-catalog/` only.
 - Org admin count: ≥2 before launch.
 - Branch protection: `main` on both repos requires PR + at least 1 approval from admin-pool member.
 
@@ -232,17 +232,17 @@ Future post-launch feature: a smart-contract treasury bill-payer that pulls from
 **Symptoms:** `tinyassets.io/mcp` returns 5xx (or any non-2xx JSON-RPC response), Claude.ai MCP connector fails handshake, `scripts/mcp_public_canary.py` exits non-zero. Diagnostic split: probe `mcp.tinyassets.io/mcp` directly (bypasses the Worker) — if that's green and apex is red, the Worker or its route is the broken link; if both are red, the tunnel or daemon is down.
 
 1. Check Fly.io status page. If Fly outage, wait + monitor.
-2. Check `fly machine list --app workflow-gateway` — are Machines healthy?
+2. Check `fly machine list --app tinyassets-gateway` — are Machines healthy?
 3. Check Supabase status — gateway depends on Postgres + Realtime.
-4. If config-bug suspected: `fly releases --app workflow-gateway` + rollback last known good (`fly deploy --image <prior-image-id>`).
-5. If still down after 30 min: post banner on `tinyassets.io` via static-host emergency template (`Workflow/scripts/emergency-banner.sh`).
+4. If config-bug suspected: `fly releases --app tinyassets-gateway` + rollback last known good (`fly deploy --image <prior-image-id>`).
+5. If still down after 30 min: post banner on `tinyassets.io` via static-host emergency template (`TinyAssets/scripts/emergency-banner.sh`).
 
 ### 6.2 If Fly.io itself is unavailable
 
 **Symptoms:** Fly.io status page confirms regional or global outage.
 
 1. Spin up Hetzner CX11 box (~5 min via Hetzner Cloud console using vault-stored API token).
-2. Run `Workflow/scripts/migrate-to-hetzner.sh` — Docker-compose with both gateway + web images.
+2. Run `TinyAssets/scripts/migrate-to-hetzner.sh` — Docker-compose with both gateway + web images.
 3. Update Cloudflare DNS: `mcp.tinyassets.io` A record → Hetzner box IP.
 4. TLS propagates via Cloudflare Origin CA (no new cert needed).
 5. Return to Fly when their outage resolves; Cloudflare DNS switch reverts.
@@ -258,7 +258,7 @@ Future post-launch feature: a smart-contract treasury bill-payer that pulls from
 ### 6.4 If host is unreachable >30 days
 
 Activate §2.2 succession procedure:
-1. Admin-pool member opens `succession` issue in `Workflow/` repo.
+1. Admin-pool member opens `succession` issue in `TinyAssets/` repo.
 2. Succession lead concurs within 7 days.
 3. Succession lead gains full admin access via vault.
 4. Weekly status reports posted publicly until host returns OR succession becomes permanent.
@@ -291,12 +291,12 @@ Extreme but possible. Migration paths documented in `docs/specs/full-platform-mi
 Every box below MUST be checked before any public launch announcement:
 
 - [ ] Admin pool has ≥2 named members (host + ≥1 co-maintainer).
-- [ ] Co-maintainer has verified access to vault at `Workflow-Prod`.
+- [ ] Co-maintainer has verified access to vault at `TinyAssets-Prod`.
 - [ ] Succession lead + alternate named.
 - [ ] Bills-paying fallback documented (who pays if host unreachable).
 - [ ] Domain `tinyassets.io` pre-paid for ≥2 years.
 - [ ] Domain expiry monitor cron running (outside the primary stack).
-- [ ] GitHub org created + `Workflow/` + `Workflow-catalog/` transferred + ≥2 admins.
+- [ ] GitHub org created + `TinyAssets/` + `TinyAssets-catalog/` transferred + ≥2 admins.
 - [ ] Windows EV + macOS Developer ID certs procured + in vault.
 - [ ] Treasury wallet migrated from single-key to 2-of-3 multisig (if any real money flows).
 - [ ] Weekly S3 pg_dump + restore-test done within last 30 days.
@@ -317,7 +317,7 @@ Every box below MUST be checked before any public launch announcement:
 | Q5 | Succession lead vs. co-maintainer — can these be the same person? Yes at launch (minimal admin pool); separate once pool grows to ≥3. |
 | Q6 | Multi-sig wallet product — Safe (formerly Gnosis Safe) is the standard for EVM-based chains like Base. Confirm Safe is acceptable vs. other options (Argent, etc.). |
 | Q7 | Backup encryption key — pg_dump to S3 should be client-side-encrypted with a key stored in the vault. Which encryption scheme? Recommend `age` (simple + modern). |
-| Q8 | Public transparency cadence — publish a "state of Workflow" blog post monthly, quarterly, or on-demand? Recommend monthly during launch year, then quarterly. |
+| Q8 | Public transparency cadence — publish a "state of TinyAssets" blog post monthly, quarterly, or on-demand? Recommend monthly during launch year, then quarterly. |
 
 ---
 

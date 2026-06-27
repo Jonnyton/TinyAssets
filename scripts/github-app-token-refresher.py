@@ -3,9 +3,9 @@
 
 The script intentionally uses stdlib plus the system openssl binary instead of
 adding Python package dependencies to the host. It writes the minted token into
-/etc/workflow/env through deploy/install-workflow-env.sh as:
+/etc/tinyassets/env through deploy/install-tinyassets-env.sh as:
 
-    WORKFLOW_GITHUB_PR_CAPABILITIES={"Jonnyton/Workflow":"<token>"}
+    TINYASSETS_GITHUB_PR_CAPABILITIES={"Jonnyton/TinyAssets":"<token>"}
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from pathlib import Path
 API_ROOT = os.environ.get("GITHUB_API_ROOT", "https://api.github.com")
 APP_ID = os.environ.get("GITHUB_APP_ID", "").strip()
 INSTALLATION_ID = os.environ.get("GITHUB_APP_INSTALLATION_ID", "").strip()
-REPO = os.environ.get("WORKFLOW_GITHUB_PR_CAPABILITIES_REPO", "Jonnyton/Workflow")
-ENV_HELPER = Path(os.environ.get("WORKFLOW_ENV_HELPER", "/opt/workflow/deploy/install-workflow-env.sh"))
+REPO = os.environ.get("TINYASSETS_GITHUB_PR_CAPABILITIES_REPO", "Jonnyton/TinyAssets")
+ENV_HELPER = Path(os.environ.get("TINYASSETS_ENV_HELPER", "/opt/tinyassets/deploy/install-tinyassets-env.sh"))
 PRIVATE_KEY_FILE = os.environ.get("GITHUB_APP_PRIVATE_KEY_FILE", "").strip()
 PRIVATE_KEY_B64 = os.environ.get("GITHUB_APP_PRIVATE_KEY_B64", "").strip()
 
@@ -109,7 +109,7 @@ def _install_capability(token: str) -> None:
         raise SystemExit(f"env helper does not exist: {ENV_HELPER}")
     capability = json.dumps({REPO: token}, separators=(",", ":"))
     result = subprocess.run(
-        ["bash", str(ENV_HELPER), "set", "WORKFLOW_GITHUB_PR_CAPABILITIES"],
+        ["bash", str(ENV_HELPER), "set", "TINYASSETS_GITHUB_PR_CAPABILITIES"],
         input=capability,
         text=True,
         capture_output=True,
@@ -117,7 +117,7 @@ def _install_capability(token: str) -> None:
     )
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "").strip()[:500]
-        raise SystemExit(f"failed to install WORKFLOW_GITHUB_PR_CAPABILITIES: {err}")
+        raise SystemExit(f"failed to install TINYASSETS_GITHUB_PR_CAPABILITIES: {err}")
 
 
 def main() -> int:
@@ -132,7 +132,7 @@ def main() -> int:
     finally:
         if tmp is not None:
             tmp.cleanup()
-    print(f"installed WORKFLOW_GITHUB_PR_CAPABILITIES for {REPO}")
+    print(f"installed TINYASSETS_GITHUB_PR_CAPABILITIES for {REPO}")
     return 0
 
 

@@ -14,16 +14,16 @@ from typing import Any, Callable
 
 import pytest
 
-from workflow.branches import BranchDefinition
-from workflow.graph_compiler import compile_branch
+from tinyassets.branches import BranchDefinition
+from tinyassets.graph_compiler import compile_branch
 
 
 @pytest.fixture
 def branch_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
 
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, Path(tmp_path)

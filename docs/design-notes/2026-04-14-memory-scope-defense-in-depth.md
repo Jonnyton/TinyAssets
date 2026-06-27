@@ -7,11 +7,11 @@ superseded_by: docs/design-notes/2026-04-15-memory-scope-tiered.md
 
 **Status:** Design spike (planner). Promotes to dev task after host sign-off.
 **Related:** STATUS.md Work row "Memory-scope defense-in-depth".
-**Target files:** `workflow/memory/scoping.py`, `workflow/retrieval/agentic_search.py`, `workflow/retrieval/phase_context.py`.
+**Target files:** `tinyassets/memory/scoping.py`, `tinyassets/retrieval/agentic_search.py`, `tinyassets/retrieval/phase_context.py`.
 
 ## Context
 
-The MCP-layer invariant (`HARD RULE — UNIVERSE ISOLATION`) and the `ScopeResolver` in `workflow/memory/scoping.py` both assume every fact carries a `universe_id`. Today, the physical guarantee is **path-based**: each universe has its own `knowledge.db` and its own LanceDB directory (see `workflow/knowledge/knowledge_graph.py:33-38`, `workflow/retrieval/vector_store.py:38-48` — both hard-fail on CWD-relative defaults). If the right path is passed, isolation holds. If the wrong path is passed — or if a singleton connection is reused across universe boundaries — facts from universe A leak into universe B with no row-level guard to catch it.
+The MCP-layer invariant (`HARD RULE — UNIVERSE ISOLATION`) and the `ScopeResolver` in `tinyassets/memory/scoping.py` both assume every fact carries a `universe_id`. Today, the physical guarantee is **path-based**: each universe has its own `knowledge.db` and its own LanceDB directory (see `tinyassets/knowledge/knowledge_graph.py:33-38`, `tinyassets/retrieval/vector_store.py:38-48` — both hard-fail on CWD-relative defaults). If the right path is passed, isolation holds. If the wrong path is passed — or if a singleton connection is reused across universe boundaries — facts from universe A leak into universe B with no row-level guard to catch it.
 
 This spike asks: should universe_id be a row-level tag on every KG/vector row as a second line of defense, behind the per-universe DB-path boundary?
 
@@ -19,7 +19,7 @@ This spike asks: should universe_id be a row-level tag on every KG/vector row as
 
 | Layer | Row-level universe_id? | Enforcement |
 |---|---|---|
-| `episodic` (SQLite: scenes, facts, promises, reflections) | **Yes** — column on every table (`workflow/memory/episodic.py:23,35,48,57`); all queries filter by it. | Row-tagged. |
+| `episodic` (SQLite: scenes, facts, promises, reflections) | **Yes** — column on every table (`tinyassets/memory/episodic.py:23,35,48,57`); all queries filter by it. | Row-tagged. |
 | `ScopedMemoryRouter.store` | **Yes** — `to_filter_dict()` emits `universe_id` into `scope` dict on every write (`scoping.py:189-207,481-503`). | Row-tagged — but `store()` is currently a placeholder stub that doesn't persist. |
 | `knowledge_graph.py` KG tables (entities, edges, facts, communities) | **No** — schema at `knowledge_graph.py:54-110` has zero universe column. | Path-only (one DB per universe). |
 | `vector_store.py` LanceDB `prose_chunks` | **No** — schema at `vector_store.py:103-114` has zero universe column. | Path-only (one directory per universe). |
@@ -48,14 +48,14 @@ The abstraction layer is `ScopedMemoryRouter`, and the interface is already shap
 
 - **`agentic_search.run_phase_retrieval`** currently constructs a bare `KnowledgeGraph(kg_path)` and passes it to `RetrievalRouter` with no scope object. Change: it takes a `MemoryScope` (from `state["scope"]` or derived from `state["universe_id"]`) and passes it to the retrieval router. Router appends `WHERE universe_id = ?` to every KG query and a LanceDB `.where("universe_id = '...'")` clause to every vector search.
 - **`phase_context.PhaseConfig`** stays unchanged — phase-aware retrieval is orthogonal to scope-aware retrieval. They compose.
-- **Invariant:** no code path in `workflow/retrieval/*` issues a query without a `MemoryScope`. Enforce with a type signature, not documentation. `RetrievalRouter.query(..., scope: MemoryScope)` — no default.
+- **Invariant:** no code path in `tinyassets/retrieval/*` issues a query without a `MemoryScope`. Enforce with a type signature, not documentation. `RetrievalRouter.query(..., scope: MemoryScope)` — no default.
 - **Double-check layer:** after results return, a thin assertion in the router drops any row whose `universe_id` doesn't match `scope.universe_id` and logs a loud warning. Cheap and catches bugs that slip past the WHERE clause (e.g. someone bypasses the router).
 
 ## 4. What breaks if we skip this
 
 Concrete failure modes, all path-based-isolation is a single point of failure:
 
-1. **Singleton bleed.** `runtime.knowledge_graph` is a module-global (`workflow/memory/archival.py:120`). If the daemon switches universes mid-process without resetting the singleton, queries hit the wrong DB. No row-level tag catches this.
+1. **Singleton bleed.** `runtime.knowledge_graph` is a module-global (`tinyassets/memory/archival.py:120`). If the daemon switches universes mid-process without resetting the singleton, queries hit the wrong DB. No row-level tag catches this.
 2. **Test-fixture contamination.** `reset_db()` exists in `vector_store.py:52` specifically because test suites hit this. Production gets no `reset_db`.
 3. **Future feature: cross-universe tools.** The moment one workflow reads from two universes (a "compare-universes" node, a benchmarking tool, a moderator dashboard), path-isolation stops working by design — but we'll already have added the reads, and row-level tags are the only way to filter after.
 4. **Archival shard consolidation.** If we ever move to a shared archival store (cheaper than N SQLite files, easier to back up, easier to snapshot atomically), path-isolation is gone. Row tagging now makes that migration a config flip, not a rewrite.
@@ -93,4 +93,4 @@ Stage 1 proves the interface without touching storage. Stage 2 earns its keep on
 
 1. Is per-universe `knowledge.db` the long-term plan, or are we moving to a shared archival store? (Answer changes urgency of Stage 2.)
 2. Should `ScopedMemoryRouter.store()` — currently a placeholder — get finished as part of this work, or remain deferred?
-3. Flag name for Stage 2? `WORKFLOW_ROW_SCOPED_ARCHIVAL`?
+3. Flag name for Stage 2? `TINYASSETS_ROW_SCOPED_ARCHIVAL`?

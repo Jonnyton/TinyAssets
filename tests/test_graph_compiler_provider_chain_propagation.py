@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import json
 
-from workflow.exceptions import AllProvidersExhaustedError
-from workflow.graph_compiler import (
+from tinyassets.exceptions import AllProvidersExhaustedError
+from tinyassets.graph_compiler import (
     CompilerError,
     _emit_failed_event,
     _wrap_provider_failure,

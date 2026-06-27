@@ -1,0 +1,17 @@
+# TinyAssets autoheal timer — pairs with tinyassets-autoheal.service.
+#
+# Every 2 minutes: with the worker healthcheck at interval 60s /
+# retries 3, a wedged worker is marked unhealthy within ~4 minutes and
+# restarted within ~6 — versus the 7 DAYS the 2026-06 dormancy lasted.
+
+[Unit]
+Description=Timer for TinyAssets autoheal (restart unhealthy containers)
+Requires=tinyassets-autoheal.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=tinyassets-autoheal.service
+
+[Install]
+WantedBy=timers.target

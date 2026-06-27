@@ -20,7 +20,7 @@ git push workflow, subscription management, and race semantics.
       <task-id>.yaml
 ```
 
-`<repo_root>` is the git repo the Workflow daemon runs inside.
+`<repo_root>` is the git repo the TinyAssets daemon runs inside.
 Each directory under `goal_pool/` is a **Goal slug** (kebab-case). Slugs should
 match the `goal_id` in the Goals table where applicable.
 
@@ -88,7 +88,7 @@ and parse inside the Branch.
 
 The pool directory lives at `<repo_root>/goal_pool/`. Resolution order:
 
-1. **`WORKFLOW_REPO_ROOT` env var** — explicit override. Takes precedence.
+1. **`TINYASSETS_REPO_ROOT` env var** — explicit override. Takes precedence.
 2. **Git-detect upward** — walk parent directories from `<universe_path>` until
    `.git/` is found. Matches the "local-first, git-native" PLAN.md model.
 3. **RuntimeError** — if neither resolves. Pool producer returns `[]` and logs
@@ -97,11 +97,11 @@ The pool directory lives at `<repo_root>/goal_pool/`. Resolution order:
    {
      "status": "rejected",
      "error": "repo_root_not_resolvable",
-     "hint": "Set WORKFLOW_REPO_ROOT or run the daemon from inside a git checkout."
+     "hint": "Set TINYASSETS_REPO_ROOT or run the daemon from inside a git checkout."
    }
    ```
 
-**Pytest fixtures:** pin `WORKFLOW_REPO_ROOT` to a `tmp_path`. No fake `.git`
+**Pytest fixtures:** pin `TINYASSETS_REPO_ROOT` to a `tmp_path`. No fake `.git`
 scaffold required. See `tests/test_phase_f_goal_pool.py` for examples.
 
 ---
@@ -181,25 +181,25 @@ max_pool_tasks_per_cycle: 5      # cap pool tasks emitted per cycle (default 5)
 goal_affinity_coefficient: 1.0  # bumps goal_pool tier scoring
 ```
 
-Also set the environment flag: `WORKFLOW_GOAL_POOL=on`.
+Also set the environment flag: `TINYASSETS_GOAL_POOL=on`.
 
 ### Flag lifecycle — restart required
 
-`WORKFLOW_GOAL_POOL` is a **registration-gate** flag: it is read once at module
+`TINYASSETS_GOAL_POOL` is a **registration-gate** flag: it is read once at module
 import time by the `register_if_enabled()` side-effect at the bottom of
-`workflow/producers/goal_pool.py`. Flipping the env var on a live Universe
+`tinyassets/producers/goal_pool.py`. Flipping the env var on a live Universe
 Server has no effect until the process restarts — the producer was either
 registered at startup or it wasn't.
 
-Operators: after changing `WORKFLOW_GOAL_POOL`, restart the Workflow daemon
+Operators: after changing `TINYASSETS_GOAL_POOL`, restart the TinyAssets daemon
 (tray → "Restart All" or equivalent). Verify via the MCP `list_subscriptions`
 response — `config_vs_subscriptions_drift` will read `"ok"` or
 `"pool_enabled_no_subs"` when the producer registered; pool MCP actions return
 `{"status": "not_available"}` when it did not.
 
 The two behavior-gate flags in the Phase F matrix
-(`WORKFLOW_UNIFIED_EXECUTION`, `WORKFLOW_DISPATCHER_ENABLED`) are read on every
-cycle and take effect without restart. Only `WORKFLOW_GOAL_POOL` is
+(`TINYASSETS_UNIFIED_EXECUTION`, `TINYASSETS_DISPATCHER_ENABLED`) are read on every
+cycle and take effect without restart. Only `TINYASSETS_GOAL_POOL` is
 restart-gated in this phase. See `docs/exec-plans/daemon_task_economy_rollout.md`
 "Cross-phase notes → Flag lifecycle" for the full registration-gate vs
 behavior-gate breakdown across all workflow flags.
@@ -213,9 +213,9 @@ universe lives outside the repo checkout, or the `.git/` directory is elsewhere
 (e.g. worktrees, submodules, or a detached layout). The walk may also settle on
 the wrong `.git` if your universe is nested under an unrelated repo.
 
-Fix: set `WORKFLOW_REPO_ROOT` in the Workflow daemon environment to the
+Fix: set `TINYASSETS_REPO_ROOT` in the TinyAssets daemon environment to the
 absolute path of the repo that owns `goal_pool/`. This takes precedence over
-the walk. `WORKFLOW_REPO_ROOT` is read on every resolution call, so it takes
+the walk. `TINYASSETS_REPO_ROOT` is read on every resolution call, so it takes
 effect on the next producer cycle without restart.
 
 ---

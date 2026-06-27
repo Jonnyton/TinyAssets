@@ -16,7 +16,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from workflow.universe_server import (
+from tinyassets.universe_server import (
     get_status,
     mcp,
 )
@@ -140,7 +140,7 @@ def test_get_status_never_errors_on_missing_activity_log() -> None:
 def _write_activity_log(tmp_path, lines):
     """Write `lines` to a universe's activity.log. Returns universe_id."""
     import os
-    os.environ["WORKFLOW_DATA_DIR"] = str(tmp_path)
+    os.environ["TINYASSETS_DATA_DIR"] = str(tmp_path)
     udir = tmp_path / "track_q_universe"
     udir.mkdir(parents=True, exist_ok=True)
     (udir / "activity.log").write_text(
@@ -197,7 +197,7 @@ def test_get_status_evidence_caveats_flag_empty_log(tmp_path) -> None:
     """Track Q — when activity.log is empty, per-field caveats must flag
     BOTH activity_log_tail AND last_n_calls as unreliable."""
     import os
-    os.environ["WORKFLOW_DATA_DIR"] = str(tmp_path)
+    os.environ["TINYASSETS_DATA_DIR"] = str(tmp_path)
     udir = tmp_path / "empty_universe"
     udir.mkdir(parents=True, exist_ok=True)
     payload = json.loads(get_status(universe_id="empty_universe"))
@@ -244,7 +244,7 @@ def _get_endpoint_hint(
     for key in (
         "OLLAMA_HOST", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY",
         "XAI_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
-        "WORKFLOW_ALLOW_API_KEY_PROVIDERS", "CODEX_HOME",
+        "TINYASSETS_ALLOW_API_KEY_PROVIDERS", "CODEX_HOME",
         # claude is "bound" only with binary AND subscription auth; clear both
         # auth sources so the default is not-authed and tests opt in explicitly.
         "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
@@ -253,7 +253,7 @@ def _get_endpoint_hint(
     for key, val in env.items():
         monkeypatch.setenv(key, val)
     if api_key_opt_in:
-        monkeypatch.setenv("WORKFLOW_ALLOW_API_KEY_PROVIDERS", "1")
+        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
 
     def _which(cmd, *args, **kwargs):
         return which_map.get(cmd)
@@ -261,7 +261,7 @@ def _get_endpoint_hint(
     monkeypatch.setattr("shutil.which", _which)
     monkeypatch.setattr(_shutil, "which", _which)
     monkeypatch.setattr(
-        "workflow.api.status.Path.home",
+        "tinyassets.api.status.Path.home",
         lambda: home or (Path.cwd() / ".workflow-test-empty-home"),
     )
 
@@ -573,7 +573,7 @@ def test_get_status_schema_contract() -> None:
 def test_get_status_session_boundary_no_prior_when_empty_log(tmp_path) -> None:
     """Universe with no activity returns prior_session_context_available=false."""
     import os
-    os.environ["WORKFLOW_DATA_DIR"] = str(tmp_path)
+    os.environ["TINYASSETS_DATA_DIR"] = str(tmp_path)
     udir = tmp_path / "empty_sb_universe"
     udir.mkdir(parents=True, exist_ok=True)
     payload = json.loads(get_status(universe_id="empty_sb_universe"))
@@ -587,7 +587,7 @@ def test_get_status_session_boundary_prior_when_log_has_user(tmp_path, monkeypat
     """Universe with activity for current user returns prior_session_context_available=true."""
     user = "test_session_user"
     monkeypatch.setenv("UNIVERSE_SERVER_USER", user)
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = tmp_path / "active_sb_universe"
     udir.mkdir(parents=True, exist_ok=True)
     (udir / "activity.log").write_text(

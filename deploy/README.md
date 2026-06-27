@@ -1,6 +1,6 @@
-# Workflow deploy — build + run
+# TinyAssets deploy — build + run
 
-Artifacts for running the Workflow daemon on any Linux host. Per
+Artifacts for running the TinyAssets daemon on any Linux host. Per
 `docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`, this
 directory holds provider-agnostic deploy material (Row A container
 image, Row C tunnel config, future Row D provider-specific wiring).
@@ -9,13 +9,13 @@ image, Row C tunnel config, future Row D provider-specific wiring).
 
 ```bash
 # From repo root
-docker build -t workflow-daemon .
+docker build -t tinyassets-daemon .
 ```
 
 Multi-stage build. Builder stage installs build-essential + rust
 toolchain (lancedb native wheel is sometimes source-only). Final stage
 is `python:3.11-slim` + runtime-only C deps (`libgomp1`, `tini`,
-`ca-certificates`), non-root user `workflow:1001`.
+`ca-certificates`), non-root user `tinyassets:1001`.
 
 First build takes ~5-10 min on a cold cache (rust toolchain + lancedb
 wheel compilation dominate). Subsequent builds hit the layer cache
@@ -31,18 +31,18 @@ mkdir -p ./data
 docker run --rm \
     -p 8001:8001 \
     -v "$(pwd)/data:/data" \
-    -e WORKFLOW_DATA_DIR=/data \
-    --name workflow-daemon \
-    workflow-daemon
+    -e TINYASSETS_DATA_DIR=/data \
+    --name tinyassets-daemon \
+    tinyassets-daemon
 ```
 
 - `-p 8001:8001` — MCP streamable-http binds to `0.0.0.0:8001` by
-  default (see `workflow.universe_server.main`).
+  default (see `tinyassets.universe_server.main`).
 - `-v $(pwd)/data:/data` — host bind-mount for daemon state. Required
-  once Row B lands (paths routed through `WORKFLOW_DATA_DIR`); until
+  once Row B lands (paths routed through `TINYASSETS_DATA_DIR`); until
   then, best-effort — the daemon may still write to hardcoded host
   paths that won't persist.
-- `-e WORKFLOW_DATA_DIR=/data` — anchors all on-disk state to the
+- `-e TINYASSETS_DATA_DIR=/data` — anchors all on-disk state to the
   bind-mounted volume.
 
 ### Verify MCP initialize
@@ -64,7 +64,7 @@ curl -sS -X POST http://localhost:8001/mcp \
 ```
 
 Expect an SSE-framed JSON-RPC response with `result.serverInfo.name` =
-`"workflow"` and `result.protocolVersion` echoed back. This is the
+`"tinyassets"` and `result.protocolVersion` echoed back. This is the
 same shape `scripts/mcp_public_canary.py` exercises.
 
 Or use the repo's canary directly:
@@ -78,12 +78,12 @@ healthy end-to-end.
 
 ## Image surface (what ships)
 
-- `workflow/` — engine + MCP server.
+- `tinyassets/` — engine + MCP server.
 - `domains/` — registered domain skills.
 - `pyproject.toml` — dep manifest (installed via `pip install -e .` in the builder stage).
 - Virtual env at `/opt/venv` (from builder stage).
-- Non-root user `workflow` (uid 1001).
-- `EXPOSE 8001`, `ENTRYPOINT` via `tini`, `CMD python -m workflow.universe_server`.
+- Non-root user `tinyassets` (uid 1001).
+- `EXPOSE 8001`, `ENTRYPOINT` via `tini`, `CMD python -m tinyassets.universe_server`.
 
 ## What does NOT ship
 
@@ -107,15 +107,15 @@ for any provider-agnostic test you want to run.
 
 ## Data-dir contract
 
-`WORKFLOW_DATA_DIR` is the canonical env var for the on-disk state
-root. Resolution order (see `workflow.storage.data_dir`):
+`TINYASSETS_DATA_DIR` is the canonical env var for the on-disk state
+root. Resolution order (see `tinyassets.storage.data_dir`):
 
-1. `$WORKFLOW_DATA_DIR` if set + non-empty.
-2. Platform default: `%APPDATA%\Workflow` on Windows, `~/.workflow`
+1. `$TINYASSETS_DATA_DIR` if set + non-empty.
+2. Platform default: `%APPDATA%\TinyAssets` on Windows, `~/.tinyassets`
    elsewhere.
 
 All three paths resolve to absolute paths — no CWD-relative drift.
-In a container, set `-e WORKFLOW_DATA_DIR=/data` + `-v host:/data`
+In a container, set `-e TINYASSETS_DATA_DIR=/data` + `-v host:/data`
 and every write lands in the bind mount.
 
 See AGENTS.md §Configuration for the full env-var table.
@@ -125,7 +125,7 @@ See AGENTS.md §Configuration for the full env-var table.
 Inside the container, the same canary works:
 
 ```bash
-docker exec -it workflow-daemon \
+docker exec -it tinyassets-daemon \
     python scripts/mcp_public_canary.py --url http://127.0.0.1:8001/mcp
 ```
 
@@ -135,7 +135,7 @@ in whichever orchestrator deploys the image.
 ## Stopping
 
 ```bash
-docker stop workflow-daemon
+docker stop tinyassets-daemon
 # SIGTERM → tini → uvicorn graceful shutdown → exit 0
 ```
 

@@ -9,9 +9,9 @@ import styles from "../page.module.css";
 
 const MCP_URL = "https://tinyassets.io/mcp";
 const MCP_BARE = MCP_URL.replace("https://", "");
-const GH_REPO = "https://github.com/Jonnyton/Workflow";
-const GH_ISSUES = "https://github.com/Jonnyton/Workflow/issues";
-const GH_CONTRIBUTING = "https://github.com/Jonnyton/Workflow/blob/main/CONTRIBUTING.md";
+const GH_REPO = "https://github.com/Jonnyton/TinyAssets";
+const GH_ISSUES = "https://github.com/Jonnyton/TinyAssets/issues";
+const GH_CONTRIBUTING = "https://github.com/Jonnyton/TinyAssets/blob/main/CONTRIBUTING.md";
 
 // ── Six persona starter prompts — each copyable, each works today
 // via the universe / goals / wiki tools. ──
@@ -20,7 +20,7 @@ const PROMPTS: Prompt[] = [
   {
     persona: "The researcher",
     flavor: "orient first",
-    text: "Inspect my Workflow universe and show me what goals exist.",
+    text: "Inspect my TinyAssets universe and show me what goals exist.",
   },
   {
     persona: "The maker",
@@ -246,7 +246,7 @@ export default function StartClient() {
                 connectors. On ChatGPT specifically, custom connectors require a paid
                 plan with developer mode turned on, and availability still varies by
                 workspace and region. We track where that actually stands here:
-                {" "}<a href={GH_ISSUES} target="_blank" rel="noreferrer">current status on Workflow on GitHub ↗</a>.
+                {" "}<a href={GH_ISSUES} target="_blank" rel="noreferrer">current status on TinyAssets on GitHub ↗</a>.
               </p>
             </article>
           </div>
@@ -297,7 +297,7 @@ export default function StartClient() {
           <p className="eyebrow">entry four · other ways in</p>
           <h2 id="oss-title">Or run the engine yourself.</h2>
           <p className="oss__lede">
-            Tiny is the public face of <strong>Workflow</strong>, an open-source
+            Tiny is the public face of <strong>TinyAssets</strong>, an open-source
             engine. You don&apos;t need to host anything to use the connector above — but
             if you&apos;d rather run it locally or read the code, both paths are real.
           </p>
@@ -309,7 +309,7 @@ export default function StartClient() {
                 public.
               </p>
               <pre className="oss__pre"><code>git clone {GH_REPO}.git</code></pre>
-              <a className="oss__cta" href={GH_REPO} target="_blank" rel="noreferrer">Workflow on GitHub ↗</a>
+              <a className="oss__cta" href={GH_REPO} target="_blank" rel="noreferrer">TinyAssets on GitHub ↗</a>
             </article>
             <article className="oss__card">
               <h3 className="oss__h">Run it locally</h3>

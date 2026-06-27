@@ -18,8 +18,8 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolated_wiki(tmp_path, monkeypatch):
     wiki_root = tmp_path / "wiki"
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     yield wiki_root
 
 
@@ -47,9 +47,9 @@ def _branch_dict(
 
 
 def test_matching_page_returned(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
-    wiki_root = Path(os.environ["WORKFLOW_WIKI_PATH"])
+    wiki_root = Path(os.environ["TINYASSETS_WIKI_PATH"])
     _make_page(wiki_root, "plans", "my-branch-plan", textwrap.dedent("""\
         ---
         title: My Branch Plan
@@ -65,7 +65,7 @@ def test_matching_page_returned(tmp_path):
 
 
 def test_no_matches_returns_empty_list(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
     result = _related_wiki_pages(_branch_dict("no-such-branch-xyz"))
     assert result["items"] == []
@@ -73,7 +73,7 @@ def test_no_matches_returns_empty_list(tmp_path):
 
 
 def test_related_wiki_pages_key_never_missing(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
     result = _related_wiki_pages(_branch_dict("ghost-branch"))
     assert "items" in result
@@ -81,9 +81,9 @@ def test_related_wiki_pages_key_never_missing(tmp_path):
 
 
 def test_matched_via_reflects_matching_terms(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
-    wiki_root = Path(os.environ["WORKFLOW_WIKI_PATH"])
+    wiki_root = Path(os.environ["TINYASSETS_WIKI_PATH"])
     _make_page(wiki_root, "plans", "node-and-branch", textwrap.dedent("""\
         ---
         title: Node And Branch
@@ -100,9 +100,9 @@ def test_matched_via_reflects_matching_terms(tmp_path):
 
 
 def test_summary_truncates_at_140_chars(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
-    wiki_root = Path(os.environ["WORKFLOW_WIKI_PATH"])
+    wiki_root = Path(os.environ["TINYASSETS_WIKI_PATH"])
     long_body = "x" * 200
     _make_page(wiki_root, "plans", "long-doc", textwrap.dedent(f"""\
         ---
@@ -119,9 +119,9 @@ def test_summary_truncates_at_140_chars(tmp_path):
 
 
 def test_top_20_cap_sets_truncated_count(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
-    wiki_root = Path(os.environ["WORKFLOW_WIKI_PATH"])
+    wiki_root = Path(os.environ["TINYASSETS_WIKI_PATH"])
     for i in range(25):
         _make_page(wiki_root, "plans", f"page-{i:03d}", textwrap.dedent(f"""\
             ---
@@ -137,16 +137,16 @@ def test_top_20_cap_sets_truncated_count(tmp_path):
 
 
 def test_empty_branch_dict_returns_empty():
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
     result = _related_wiki_pages({})
     assert result == {"items": [], "truncated_count": 0}
 
 
 def test_branch_with_no_node_defs_still_matches_by_branch_id(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
-    wiki_root = Path(os.environ["WORKFLOW_WIKI_PATH"])
+    wiki_root = Path(os.environ["TINYASSETS_WIKI_PATH"])
     _make_page(wiki_root, "notes", "branch-only", textwrap.dedent("""\
         ---
         title: Branch Only
@@ -160,9 +160,9 @@ def test_branch_with_no_node_defs_still_matches_by_branch_id(tmp_path):
 
 
 def test_node_match_only_also_returned(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
-    wiki_root = Path(os.environ["WORKFLOW_WIKI_PATH"])
+    wiki_root = Path(os.environ["TINYASSETS_WIKI_PATH"])
     _make_page(wiki_root, "notes", "node-only", textwrap.dedent("""\
         ---
         title: Node Only
@@ -178,9 +178,9 @@ def test_node_match_only_also_returned(tmp_path):
 
 
 def test_sorted_by_match_count_descending(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
-    wiki_root = Path(os.environ["WORKFLOW_WIKI_PATH"])
+    wiki_root = Path(os.environ["TINYASSETS_WIKI_PATH"])
     _make_page(wiki_root, "notes", "both-match", textwrap.dedent("""\
         ---
         title: Both Match
@@ -205,9 +205,9 @@ def test_sorted_by_match_count_descending(tmp_path):
 
 
 def test_each_item_has_required_fields(tmp_path):
-    from workflow.api.branches import _related_wiki_pages
+    from tinyassets.api.branches import _related_wiki_pages
 
-    wiki_root = Path(os.environ["WORKFLOW_WIKI_PATH"])
+    wiki_root = Path(os.environ["TINYASSETS_WIKI_PATH"])
     _make_page(wiki_root, "notes", "fields-check", textwrap.dedent("""\
         ---
         title: Fields Check
@@ -233,7 +233,7 @@ def test_describe_branch_response_contains_related_wiki_pages_key(tmp_path, monk
     """describe_branch JSON must include related_wiki_pages field."""
     from unittest.mock import patch
 
-    from workflow.api.branches import _ext_branch_describe
+    from tinyassets.api.branches import _ext_branch_describe
 
     branch_data = {
         "branch_def_id": "my-integration-branch",
@@ -246,9 +246,9 @@ def test_describe_branch_response_contains_related_wiki_pages_key(tmp_path, monk
     # Patch the real daemon_server module, not a compatibility alias.
     # Also patch list_branch_definitions + list_branch_versions called for lineage.
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_data),
-        patch("workflow.daemon_server.list_branch_definitions", return_value=[]),
-        patch("workflow.branch_versions.list_branch_versions", return_value=[]),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_data),
+        patch("tinyassets.daemon_server.list_branch_definitions", return_value=[]),
+        patch("tinyassets.branch_versions.list_branch_versions", return_value=[]),
     ):
         result_json = _ext_branch_describe({"branch_def_id": "my-integration-branch"})
 
@@ -263,7 +263,7 @@ def test_get_branch_response_contains_related_wiki_pages_key(tmp_path, monkeypat
     """get_branch JSON must include related_wiki_pages field."""
     from unittest.mock import patch
 
-    from workflow.api.branches import _ext_branch_get
+    from tinyassets.api.branches import _ext_branch_get
 
     branch_data = {
         "branch_def_id": "my-get-branch",
@@ -276,9 +276,9 @@ def test_get_branch_response_contains_related_wiki_pages_key(tmp_path, monkeypat
         "author": "test-user",
     }
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_data),
-        patch("workflow.daemon_server.list_gate_claims", return_value=[]),
-        patch("workflow.api.market._gates_enabled", return_value=False),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_data),
+        patch("tinyassets.daemon_server.list_gate_claims", return_value=[]),
+        patch("tinyassets.api.market._gates_enabled", return_value=False),
     ):
         result_json = _ext_branch_get({"branch_def_id": "my-get-branch"})
 
@@ -293,7 +293,7 @@ def test_describe_branch_related_wiki_pages_not_missing_when_no_matches(tmp_path
     """related_wiki_pages must be [] not missing when no wiki pages match."""
     from unittest.mock import patch
 
-    from workflow.api.branches import _ext_branch_describe
+    from tinyassets.api.branches import _ext_branch_describe
 
     branch_data = {
         "branch_def_id": "orphan-branch-no-wiki",
@@ -304,9 +304,9 @@ def test_describe_branch_related_wiki_pages_not_missing_when_no_matches(tmp_path
         "state_schema": [],
     }
     with (
-        patch("workflow.daemon_server.get_branch_definition", return_value=branch_data),
-        patch("workflow.daemon_server.list_branch_definitions", return_value=[]),
-        patch("workflow.branch_versions.list_branch_versions", return_value=[]),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_data),
+        patch("tinyassets.daemon_server.list_branch_definitions", return_value=[]),
+        patch("tinyassets.branch_versions.list_branch_versions", return_value=[]),
     ):
         result_json = _ext_branch_describe({"branch_def_id": "orphan-branch-no-wiki"})
 

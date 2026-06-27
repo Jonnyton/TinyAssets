@@ -67,8 +67,8 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/daemon-watchdog.timer"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "set -e; \
-               sudo mkdir -p /opt/workflow/deploy; \
-               sudo install -m 0755 -o root -g root /tmp/daemon-watchdog.sh /opt/workflow/deploy/daemon-watchdog.sh; \
+               sudo mkdir -p /opt/tinyassets/deploy; \
+               sudo install -m 0755 -o root -g root /tmp/daemon-watchdog.sh /opt/tinyassets/deploy/daemon-watchdog.sh; \
                sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.service /etc/systemd/system/daemon-watchdog.service; \
                sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.timer /etc/systemd/system/daemon-watchdog.timer; \
                sudo systemctl daemon-reload; \
@@ -78,7 +78,7 @@ jobs:
         run: |
           echo "Restart reason: ${{ inputs.reason }}"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; sudo systemctl reset-failed workflow-daemon.service || true; sudo systemctl restart workflow-daemon.service"
+              "set -e; sudo systemctl reset-failed tinyassets-daemon.service || true; sudo systemctl restart tinyassets-daemon.service"
 
       - name: Wait for public canary
         run: |

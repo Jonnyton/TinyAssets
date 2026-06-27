@@ -24,7 +24,7 @@ import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 import domains.fantasy_daemon.phases._provider_stub as _provider_stub  # noqa: E402
-from workflow.providers import call as _provider_call  # noqa: E402
+from tinyassets.providers import call as _provider_call  # noqa: E402
 
 # Force mock provider responses
 _provider_call.set_force_mock(True)
@@ -34,8 +34,8 @@ from domains.fantasy_daemon.phases.commit import commit  # noqa: E402
 from domains.fantasy_daemon.phases.draft import draft  # noqa: E402
 from domains.fantasy_daemon.phases.orient import orient  # noqa: E402
 from domains.fantasy_daemon.phases.plan import plan  # noqa: E402
-from workflow.desktop.dashboard import DashboardHandler  # noqa: E402
-from workflow.evaluation.structural import StructuralEvaluator, StructuralResult  # noqa: E402
+from tinyassets.desktop.dashboard import DashboardHandler  # noqa: E402
+from tinyassets.evaluation.structural import StructuralEvaluator, StructuralResult  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -101,8 +101,8 @@ class TestOrientRetrievalIntegration:
 
     def test_orient_populates_retrieved_context_with_kg(self, base_state, tmp_db):
         """When KG has data, retrieved_context should be non-empty."""
-        from workflow.knowledge.knowledge_graph import KnowledgeGraph
-        from workflow.knowledge.models import GraphEntity
+        from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+        from tinyassets.knowledge.models import GraphEntity
 
         kg_path = tmp_db + ".kg"
         kg = KnowledgeGraph(kg_path)
@@ -150,7 +150,7 @@ class TestOrientRetrievalIntegration:
         # Patch the router class at its import source
         mock_router_cls = MagicMock()
         mock_instance = mock_router_cls.return_value
-        from workflow.retrieval.router import RetrievalResult
+        from tinyassets.retrieval.router import RetrievalResult
         empty = RetrievalResult(
             facts=[], relationships=[], prose_chunks=[],
             community_summaries=[], sources=[], token_count=0,
@@ -162,7 +162,7 @@ class TestOrientRetrievalIntegration:
         mock_instance.query = mock_query
 
         with patch(
-            "workflow.retrieval.router.RetrievalRouter", mock_router_cls,
+            "tinyassets.retrieval.router.RetrievalRouter", mock_router_cls,
         ):
             from domains.fantasy_daemon.phases.orient import _run_retrieval
             _run_retrieval(base_state, "test-scene")
@@ -178,7 +178,7 @@ class TestOrientRetrievalIntegration:
 
     def test_orient_passes_enriched_state_to_memory_manager(self, base_state):
         """MemoryManager should see the freshly assembled orient_result contract."""
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         captured: dict[str, Any] = {}
 
@@ -201,8 +201,8 @@ class TestOrientRetrievalIntegration:
         from unittest.mock import patch
 
         from domains.fantasy_daemon.phases.orient import _run_retrieval
-        from workflow import runtime_singletons as runtime
-        from workflow.knowledge.models import (
+        from tinyassets import runtime_singletons as runtime
+        from tinyassets.knowledge.models import (
             FactWithContext,
             RetrievalResult,
             SourceType,
@@ -238,7 +238,7 @@ class TestOrientRetrievalIntegration:
         fake_kg = FakeKG()
         runtime.knowledge_graph = fake_kg
 
-        with patch("workflow.retrieval.router.RetrievalRouter", FakeRouter):
+        with patch("tinyassets.retrieval.router.RetrievalRouter", FakeRouter):
             ctx = _run_retrieval(base_state, "test-scene")
 
         assert fake_kg.closed is False
@@ -314,13 +314,13 @@ class TestMemoryManagerIntegration:
         Uses monkeypatch so the global is automatically reverted even if
         the test raises.  This prevents mock leakage across test ordering.
         """
-        import workflow.runtime_singletons as runtime
+        import tinyassets.runtime_singletons as runtime
 
         monkeypatch.setattr(runtime, "memory_manager", None)
 
     def test_orient_calls_memory_manager(self, base_state, monkeypatch):
         """Orient should call assemble_context with the enriched orient state."""
-        import workflow.runtime_singletons as runtime
+        import tinyassets.runtime_singletons as runtime
 
         mock_mgr = MagicMock()
         mock_mgr.assemble_context.return_value = {
@@ -339,7 +339,7 @@ class TestMemoryManagerIntegration:
 
     def test_plan_calls_memory_manager(self, base_state, monkeypatch):
         """Plan should call assemble_context('plan', state)."""
-        import workflow.runtime_singletons as runtime
+        import tinyassets.runtime_singletons as runtime
 
         mock_mgr = MagicMock()
         mock_mgr.assemble_context.return_value = {"recent_beats": []}
@@ -351,7 +351,7 @@ class TestMemoryManagerIntegration:
 
     def test_draft_calls_memory_manager(self, base_state, monkeypatch):
         """Draft should call assemble_context('draft', state)."""
-        import workflow.runtime_singletons as runtime
+        import tinyassets.runtime_singletons as runtime
 
         mock_mgr = MagicMock()
         mock_mgr.assemble_context.return_value = {"tone": "dark"}
@@ -366,7 +366,7 @@ class TestMemoryManagerIntegration:
 
     def test_commit_calls_memory_manager(self, base_state, monkeypatch):
         """Commit should call assemble_context('evaluate', state)."""
-        import workflow.runtime_singletons as runtime
+        import tinyassets.runtime_singletons as runtime
 
         mock_mgr = MagicMock()
         mock_mgr.assemble_context.return_value = {"eval_context": True}
@@ -384,7 +384,7 @@ class TestMemoryManagerIntegration:
 
     def test_nodes_work_without_memory_manager(self, base_state, monkeypatch):
         """All nodes should work when runtime.memory_manager is None."""
-        import workflow.runtime_singletons as runtime
+        import tinyassets.runtime_singletons as runtime
 
         monkeypatch.setattr(runtime, "memory_manager", None)
         result = orient(base_state)
@@ -393,7 +393,7 @@ class TestMemoryManagerIntegration:
 
     def test_commit_stores_to_memory_on_accept(self, base_state, monkeypatch):
         """Commit should call store_scene_result on accept."""
-        import workflow.runtime_singletons as runtime
+        import tinyassets.runtime_singletons as runtime
 
         mock_mgr = MagicMock()
         mock_mgr.assemble_context.return_value = {}
@@ -452,7 +452,7 @@ class TestProviderIntegration:
 
     def test_real_router_has_call_sync(self):
         """ProviderRouter should expose call_sync for sync nodes."""
-        from workflow.providers.router import ProviderRouter
+        from tinyassets.providers.router import ProviderRouter
 
         router = ProviderRouter()
         assert hasattr(router, "call_sync")
@@ -706,7 +706,7 @@ class TestDaemonController:
 
     def test_daemon_controller_initializes(self):
         """DaemonController should initialize without errors."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         controller = DaemonController(
@@ -718,14 +718,14 @@ class TestDaemonController:
 
     def test_build_provider_router(self):
         """_build_provider_router should return a configured router."""
-        from workflow.__main__ import _build_provider_router
+        from tinyassets.__main__ import _build_provider_router
 
         router = _build_provider_router()
         assert hasattr(router, "call_sync")
 
     def test_daemon_controller_has_signal_handling(self):
         """Entry point should define signal handlers."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         controller = DaemonController(
             universe_path="/tmp/test",
@@ -737,20 +737,20 @@ class TestDaemonController:
         assert controller._stop_event.is_set()
 
     def test_daemon_state_initializing(self):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         c = DaemonController(universe_path="/tmp/test", no_tray=True)
         assert c.daemon_state == "initializing"
 
     def test_daemon_state_running(self):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         c = DaemonController(universe_path="/tmp/test", no_tray=True)
         c._ready.set()
         assert c.daemon_state == "running"
 
     def test_daemon_state_paused(self):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         c = DaemonController(universe_path="/tmp/test", no_tray=True)
         c._ready.set()
@@ -758,7 +758,7 @@ class TestDaemonController:
         assert c.daemon_state == "paused"
 
     def test_daemon_state_idle(self):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         c = DaemonController(universe_path="/tmp/test", no_tray=True)
         c._stop_event.set()
@@ -769,7 +769,7 @@ class TestDaemonController:
         import threading
         import time
 
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         pause_file = Path(universe) / ".pause"
@@ -797,8 +797,8 @@ class TestDaemonController:
         assert resumed.wait(timeout=1.0)
 
     def test_write_status_file(self, tmp_db):
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -824,8 +824,8 @@ class TestDaemonController:
         assert "last_updated" in data
 
     def test_handle_node_output_tracks_scene_id(self, tmp_db):
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -838,8 +838,8 @@ class TestDaemonController:
         assert c._current_scene_id == "ch3-sc2"
 
     def test_handle_node_output_tracks_verdict(self, tmp_db):
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -859,8 +859,8 @@ class TestDaemonController:
     # fresh design, not resurrection from git history.
 
     def test_handle_node_output_writes_status(self, tmp_db):
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -878,7 +878,7 @@ class TestDaemonController:
         assert data["current_scene_id"] == "s1"
 
     def test_combined_log_calls_callback(self, tmp_db):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         lines: list[str] = []
@@ -890,7 +890,7 @@ class TestDaemonController:
         assert lines == ["test line"]
 
     def test_combined_log_writes_activity_file(self, tmp_db):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -910,7 +910,7 @@ class TestDaemonController:
         assert lines[0].startswith("[")
 
     def test_combined_log_no_callback(self, tmp_db):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -922,7 +922,7 @@ class TestDaemonController:
         assert log_path.exists()
 
     def test_activity_log_append_only(self, tmp_db):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -942,7 +942,7 @@ class TestDaemonController:
 
     def test_emit_node_log_orient_writes_activity(self, tmp_db):
         """Orient node output should write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -963,7 +963,7 @@ class TestDaemonController:
 
     def test_emit_node_log_plan_writes_activity(self, tmp_db):
         """Plan node output should write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -982,7 +982,7 @@ class TestDaemonController:
 
     def test_emit_node_log_draft_writes_activity(self, tmp_db):
         """Draft node output should write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -997,7 +997,7 @@ class TestDaemonController:
 
     def test_emit_node_log_draft_revision_writes_activity(self, tmp_db):
         """Revision draft should be labelled in activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1012,7 +1012,7 @@ class TestDaemonController:
 
     def test_emit_node_log_commit_accept_writes_activity(self, tmp_db):
         """Commit accept should write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1029,7 +1029,7 @@ class TestDaemonController:
 
     def test_emit_node_log_commit_hard_failure_writes_activity(self, tmp_db):
         """Commit hard failure should write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1050,7 +1050,7 @@ class TestDaemonController:
 
     def test_emit_node_log_select_task_writes_activity(self, tmp_db):
         """Select_task node output should write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1071,7 +1071,7 @@ class TestDaemonController:
 
     def test_emit_node_log_worldbuild_signals_writes_activity(self, tmp_db):
         """Worldbuild with signals should write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1092,7 +1092,7 @@ class TestDaemonController:
 
     def test_emit_node_log_worldbuild_generated_writes_activity(self, tmp_db):
         """Worldbuild gap-fill should write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1112,7 +1112,7 @@ class TestDaemonController:
 
     def test_emit_node_log_reflect_writes_activity(self, tmp_db):
         """Reflect node output should write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1135,7 +1135,7 @@ class TestDaemonController:
 
     def test_emit_node_log_no_dashboard_still_writes(self, tmp_db):
         """Activity logging should work even without a dashboard."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1153,7 +1153,7 @@ class TestDaemonController:
 
     def test_handle_node_output_writes_activity_without_dashboard(self, tmp_db):
         """_handle_node_output should write activity.log without dashboard."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1170,7 +1170,7 @@ class TestDaemonController:
 
     def test_emit_node_log_unknown_node_no_crash(self, tmp_db):
         """Unknown node names should not crash or write to activity.log."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1184,7 +1184,7 @@ class TestDaemonController:
 
     def test_full_scene_cycle_writes_activity_trail(self, tmp_db):
         """A complete orient->plan->draft->commit cycle writes a trail."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1304,8 +1304,8 @@ class TestProgressFile:
     """DaemonController writes progress.md alongside status.json."""
 
     def test_write_progress_file(self, tmp_db):
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1326,7 +1326,7 @@ class TestProgressFile:
         assert "Writing Progress" in content
 
     def test_progress_file_no_dashboard(self, tmp_db):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1340,8 +1340,8 @@ class TestProgressFile:
 
     def test_progress_updates_with_status(self, tmp_db):
         """_handle_node_output should write both status.json and progress.md."""
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1552,8 +1552,8 @@ class TestCreativeBriefing:
     def test_progress_includes_briefing_after_chapter(self, tmp_db):
         """After _generate_creative_briefing, progress.md should include
         the briefing section."""
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1572,8 +1572,8 @@ class TestCreativeBriefing:
 
     def test_progress_without_briefing_has_no_separator(self, tmp_db):
         """Without a briefing, progress.md should just have stats."""
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1590,7 +1590,7 @@ class TestCreativeBriefing:
 
     def test_generate_creative_briefing_caches_result(self, tmp_db):
         """_generate_creative_briefing should populate the cache."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1608,7 +1608,7 @@ class TestCreativeBriefing:
 
     def test_generate_briefing_reads_prose_from_disk(self, tmp_db):
         """The briefing generator should find scene prose in chapter subdirs."""
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
         chapter_dir = Path(universe) / "output" / "book-1" / "chapter-01"
@@ -1626,8 +1626,8 @@ class TestCreativeBriefing:
 
     def test_handle_node_output_triggers_briefing(self, tmp_db):
         """_handle_node_output should trigger briefing on chapter_summary."""
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = tempfile.mkdtemp()
         c = DaemonController(
@@ -1655,8 +1655,8 @@ class TestStateMismatchFix:
     def test_progress_shows_idle_when_stopped(self, tmp_path, tmp_db):
         """When daemon is idle, progress.md should say 'N chapters complete'
         not 'Chapter N+1 in progress'."""
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = str(tmp_path / "idle-universe")
         Path(universe).mkdir()
@@ -1679,8 +1679,8 @@ class TestStateMismatchFix:
 
     def test_progress_shows_in_progress_when_running(self, tmp_path, tmp_db):
         """When daemon is running, progress should say 'Chapter N+1 in progress'."""
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = str(tmp_path / "running-universe")
         Path(universe).mkdir()
@@ -1700,8 +1700,8 @@ class TestStateMismatchFix:
 
     def test_cleanup_writes_final_status(self, tmp_path, tmp_db):
         """_cleanup should write a final status.json with idle state."""
-        from workflow.__main__ import DaemonController
-        from workflow.desktop.dashboard import DashboardHandler
+        from tinyassets.__main__ import DaemonController
+        from tinyassets.desktop.dashboard import DashboardHandler
 
         universe = str(tmp_path / "cleanup-universe")
         Path(universe).mkdir()
@@ -1908,8 +1908,8 @@ class TestIndexerRegexFallback:
 
     def test_regex_fallback_populates_kg(self, tmp_path):
         """When provider returns empty, regex fallback adds entities to KG."""
-        from workflow.ingestion.indexer import index_text
-        from workflow.knowledge.knowledge_graph import KnowledgeGraph
+        from tinyassets.ingestion.indexer import index_text
+        from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
         kg_path = str(tmp_path / "knowledge.db")
         kg = KnowledgeGraph(kg_path)
@@ -1933,8 +1933,8 @@ class TestIndexerRegexFallback:
 
     def test_regex_fallback_on_invalid_json(self, tmp_path):
         """When provider returns non-JSON, regex fallback kicks in."""
-        from workflow.ingestion.indexer import index_text
-        from workflow.knowledge.knowledge_graph import KnowledgeGraph
+        from tinyassets.ingestion.indexer import index_text
+        from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
         kg_path = str(tmp_path / "knowledge.db")
         kg = KnowledgeGraph(kg_path)
@@ -1958,8 +1958,8 @@ class TestIndexerRegexFallback:
         """When provider returns valid JSON, LLM extraction is used."""
         import json
 
-        from workflow.ingestion.indexer import index_text
-        from workflow.knowledge.knowledge_graph import KnowledgeGraph
+        from tinyassets.ingestion.indexer import index_text
+        from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
         kg_path = str(tmp_path / "knowledge.db")
         kg = KnowledgeGraph(kg_path)
@@ -2003,7 +2003,7 @@ class TestEditorialReader:
 
     def test_parse_editorial_response(self):
         """Valid editorial response should parse correctly."""
-        from workflow.evaluation.editorial import _parse_editorial_response
+        from tinyassets.evaluation.editorial import _parse_editorial_response
 
         raw = json.dumps({
             "protect": ["vivid imagery", "strong character voice"],
@@ -2025,14 +2025,14 @@ class TestEditorialReader:
 
     def test_parse_editorial_invalid_json(self):
         """Non-JSON response should return None."""
-        from workflow.evaluation.editorial import _parse_editorial_response
+        from tinyassets.evaluation.editorial import _parse_editorial_response
 
         result = _parse_editorial_response("This is not JSON")
         assert result is None
 
     def test_parse_editorial_code_fences(self):
         """JSON wrapped in markdown code fences should still parse."""
-        from workflow.evaluation.editorial import _parse_editorial_response
+        from tinyassets.evaluation.editorial import _parse_editorial_response
 
         raw = '```json\n{"protect": ["good pacing"], "concerns": [], "next_scene": ""}\n```'
         result = _parse_editorial_response(raw)
@@ -2042,7 +2042,7 @@ class TestEditorialReader:
     def test_editorial_skips_on_hard_failure(self):
         """Editorial reader should be skipped on structural hard failure."""
         from domains.fantasy_daemon.phases.commit import _run_editorial
-        from workflow.evaluation.structural import StructuralResult
+        from tinyassets.evaluation.structural import StructuralResult
 
         structural = StructuralResult(
             checks=[], aggregate_score=0.0,
@@ -2053,7 +2053,7 @@ class TestEditorialReader:
 
     def test_editorial_skips_mock_response(self):
         """Editorial reader should return None for mock responses."""
-        from workflow.evaluation.editorial import read_editorial
+        from tinyassets.evaluation.editorial import read_editorial
 
         result = read_editorial("Some prose")
         # With _FORCE_MOCK=True, call_provider returns mock -> None
@@ -2115,7 +2115,7 @@ class TestEditorialVerdict:
     def test_accept_without_editorial(self):
         """No editorial -> accept."""
         from domains.fantasy_daemon.phases.commit import _compute_editorial_verdict
-        from workflow.evaluation.structural import StructuralResult
+        from tinyassets.evaluation.structural import StructuralResult
 
         structural = StructuralResult(
             checks=[], aggregate_score=0.8,
@@ -2127,8 +2127,8 @@ class TestEditorialVerdict:
     def test_revert_on_hard_failure(self):
         """Structural hard failure -> revert."""
         from domains.fantasy_daemon.phases.commit import _compute_editorial_verdict
-        from workflow.evaluation.editorial import EditorialNotes
-        from workflow.evaluation.structural import StructuralResult
+        from tinyassets.evaluation.editorial import EditorialNotes
+        from tinyassets.evaluation.structural import StructuralResult
 
         structural = StructuralResult(
             checks=[], aggregate_score=0.0,
@@ -2141,11 +2141,11 @@ class TestEditorialVerdict:
     def test_second_draft_on_clearly_wrong(self):
         """Clearly wrong concern -> second_draft (first attempt)."""
         from domains.fantasy_daemon.phases.commit import _compute_editorial_verdict
-        from workflow.evaluation.editorial import (
+        from tinyassets.evaluation.editorial import (
             EditorialConcern,
             EditorialNotes,
         )
-        from workflow.evaluation.structural import StructuralResult
+        from tinyassets.evaluation.structural import StructuralResult
 
         structural = StructuralResult(
             checks=[], aggregate_score=0.8,
@@ -2164,11 +2164,11 @@ class TestEditorialVerdict:
     def test_accept_on_second_draft_even_with_clearly_wrong(self):
         """Clearly wrong on second draft -> accept (never block)."""
         from domains.fantasy_daemon.phases.commit import _compute_editorial_verdict
-        from workflow.evaluation.editorial import (
+        from tinyassets.evaluation.editorial import (
             EditorialConcern,
             EditorialNotes,
         )
-        from workflow.evaluation.structural import StructuralResult
+        from tinyassets.evaluation.structural import StructuralResult
 
         structural = StructuralResult(
             checks=[], aggregate_score=0.8,
@@ -2185,11 +2185,11 @@ class TestEditorialVerdict:
     def test_accept_with_non_wrong_concerns(self):
         """Concerns that aren't clearly_wrong -> accept."""
         from domains.fantasy_daemon.phases.commit import _compute_editorial_verdict
-        from workflow.evaluation.editorial import (
+        from tinyassets.evaluation.editorial import (
             EditorialConcern,
             EditorialNotes,
         )
-        from workflow.evaluation.structural import StructuralResult
+        from tinyassets.evaluation.structural import StructuralResult
 
         structural = StructuralResult(
             checks=[], aggregate_score=0.8,
@@ -2214,7 +2214,7 @@ class TestTunnelManagement:
         """_start_tunnel returns None when cloudflared is not found."""
         from unittest.mock import patch
 
-        from workflow.__main__ import _start_tunnel
+        from tinyassets.__main__ import _start_tunnel
 
         with patch("shutil.which", return_value=None):
             result = _start_tunnel(8321)
@@ -2224,7 +2224,7 @@ class TestTunnelManagement:
         """_start_tunnel starts a quick tunnel when no name given."""
         from unittest.mock import patch
 
-        from workflow.__main__ import _start_tunnel
+        from tinyassets.__main__ import _start_tunnel
 
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -2254,7 +2254,7 @@ class TestTunnelManagement:
         """_start_tunnel runs a named tunnel when name is given."""
         from unittest.mock import patch
 
-        from workflow.__main__ import _start_tunnel
+        from tinyassets.__main__ import _start_tunnel
 
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -2277,7 +2277,7 @@ class TestTunnelManagement:
         """_start_tunnel registers atexit handler for orphan prevention."""
         from unittest.mock import patch
 
-        from workflow.__main__ import _start_tunnel, _stop_tunnel
+        from tinyassets.__main__ import _start_tunnel, _stop_tunnel
 
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -2297,7 +2297,7 @@ class TestTunnelManagement:
         """On Windows, _start_tunnel sets CREATE_NO_WINDOW | DETACHED_PROCESS."""
         from unittest.mock import patch
 
-        from workflow.__main__ import _start_tunnel
+        from tinyassets.__main__ import _start_tunnel
 
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -2322,7 +2322,7 @@ class TestTunnelManagement:
         import io
         from unittest.mock import patch
 
-        from workflow.__main__ import _drain_tunnel_stderr
+        from tinyassets.__main__ import _drain_tunnel_stderr
 
         # Simulate cloudflared stderr output with a URL line
         fake_stderr = io.BytesIO(
@@ -2346,7 +2346,7 @@ class TestTunnelManagement:
 
     def test_stop_tunnel_terminates_process(self):
         """_stop_tunnel should terminate a running tunnel process."""
-        from workflow.__main__ import _stop_tunnel
+        from tinyassets.__main__ import _stop_tunnel
 
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None  # still running
@@ -2357,7 +2357,7 @@ class TestTunnelManagement:
 
     def test_stop_tunnel_skips_already_exited(self):
         """_stop_tunnel should skip processes that already exited."""
-        from workflow.__main__ import _stop_tunnel
+        from tinyassets.__main__ import _stop_tunnel
 
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 0  # already exited
@@ -2386,18 +2386,18 @@ class TestTrayMode:
 
     def test_run_tray_mode_importable(self):
         """_run_tray_mode should be importable."""
-        from workflow.__main__ import _run_tray_mode
+        from tinyassets.__main__ import _run_tray_mode
         assert callable(_run_tray_mode)
 
     def test_pyw_contains_tray_flag(self):
-        """workflow.pyw should pass --tray to main()."""
-        pyw = Path(__file__).resolve().parent.parent / "workflow.pyw"
+        """tinyassets.pyw should pass --tray to main()."""
+        pyw = Path(__file__).resolve().parent.parent / "tinyassets.pyw"
         text = pyw.read_text(encoding="utf-8")
         assert "--tray" in text
 
     def test_pyw_uses_port_8321(self):
-        """workflow.pyw should use port 8321."""
-        pyw = Path(__file__).resolve().parent.parent / "workflow.pyw"
+        """tinyassets.pyw should use port 8321."""
+        pyw = Path(__file__).resolve().parent.parent / "tinyassets.pyw"
         text = pyw.read_text(encoding="utf-8")
         assert "8321" in text
 
@@ -2407,7 +2407,7 @@ class TestTrayMode:
         from unittest.mock import MagicMock
 
         import fantasy_daemon.__main__ as main_mod
-        from workflow.__main__ import (
+        from tinyassets.__main__ import (
             _drain_tunnel_stderr,
             _tunnel_url_ready,
         )

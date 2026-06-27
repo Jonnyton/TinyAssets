@@ -2,9 +2,9 @@
 
 Spec: drafts/concepts/selector-branch-contract.md
 Implementation:
-  * workflow/api/market.py::_action_goal_set_selector
-  * workflow/daemon_server.py::set_selector_branch
-  * workflow/api/quality_leaderboard.py — consumes the binding
+  * tinyassets/api/market.py::_action_goal_set_selector
+  * tinyassets/daemon_server.py::set_selector_branch
+  * tinyassets/api/quality_leaderboard.py — consumes the binding
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ import pytest
 def env(tmp_path: Path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("_FORCE_MOCK", "true")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
     importlib.reload(us)
@@ -62,8 +62,8 @@ def _seed_published_branch(us, base, name="selector-candidate"):
             us, "extensions", "add_state_field",
             branch_def_id=bid, field_name=field, field_type="str",
         )
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import get_branch_definition
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import get_branch_definition
     branch_dict = get_branch_definition(base, branch_def_id=bid)
     version = publish_branch_version(base, branch_dict, publisher="alice")
     return version.branch_version_id
@@ -75,12 +75,12 @@ def _seed_published_branch(us, base, name="selector-candidate"):
 
 
 def test_set_selector_action_in_goal_actions():
-    from workflow.api.market import _GOAL_ACTIONS
+    from tinyassets.api.market import _GOAL_ACTIONS
     assert "set_selector" in _GOAL_ACTIONS
 
 
 def test_set_selector_in_goal_write_actions():
-    from workflow.api.market import _GOAL_WRITE_ACTIONS
+    from tinyassets.api.market import _GOAL_WRITE_ACTIONS
     assert "set_selector" in _GOAL_WRITE_ACTIONS
 
 
@@ -221,8 +221,8 @@ def _publish_effectful_branch(base, name="effectful-selector"):
     would silently fire external writes on every leaderboard read —
     set_selector_branch must reject the bind.
     """
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import (
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
         get_branch_definition,
         save_branch_definition,
     )
@@ -300,7 +300,7 @@ def test_set_selector_storage_layer_raises_selector_has_effects(env):
     us, base = env
     gid = _seed_goal(us)
     bvid = _publish_effectful_branch(base)
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         SelectorHasEffectsError,
         set_selector_branch,
     )
@@ -341,8 +341,8 @@ def _publish_branch_with_invoke_branch_spec(base, name="invoking-selector"):
     still spawn a child run via invoke_branch_spec — the child's
     completion fires the child's effectors. Bind must reject.
     """
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import (
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
         get_branch_definition,
         save_branch_definition,
     )
@@ -405,8 +405,8 @@ def _publish_branch_with_invoke_branch_version_spec(
 ):
     """Same idea but using ``invoke_branch_version_spec`` (frozen
     child snapshot) instead of ``invoke_branch_spec``."""
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import (
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
         get_branch_definition,
         save_branch_definition,
     )
@@ -499,7 +499,7 @@ def test_set_selector_storage_layer_raises_on_child_invoker(env):
     us, base = env
     gid = _seed_goal(us)
     bvid = _publish_branch_with_invoke_branch_spec(base)
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         SelectorHasEffectsError,
         set_selector_branch,
     )
@@ -515,8 +515,8 @@ def test_set_selector_storage_layer_raises_on_child_invoker(env):
 def test_set_selector_rejects_branch_with_both_effects_and_invoke(env):
     """A branch with both direct effects AND a child invoker must
     surface both violation classes in the error message."""
-    from workflow.branch_versions import publish_branch_version
-    from workflow.daemon_server import (
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
         get_branch_definition,
         save_branch_definition,
     )

@@ -1,16 +1,16 @@
 ---
-title: Task #10 prep — workflow/api/status.py extraction scope
+title: Task #10 prep — tinyassets/api/status.py extraction scope
 date: 2026-04-26
 author: dev
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md §4.2 (`status.py`), §8 step 3
-target_task: #10 — Extract workflow/api/status.py (decomp audit step 3)
+target_task: #10 — Extract tinyassets/api/status.py (decomp audit step 3)
 gates_on: #8 ships first; #9 land order independent (#10 may go before or after #9).
 ---
 
 # Task #10 pre-flight scope
 
-Read-only scope for extracting `get_status()` and its support helpers from `workflow/universe_server.py` into a new `workflow/api/status.py`.
+Read-only scope for extracting `get_status()` and its support helpers from `tinyassets/universe_server.py` into a new `tinyassets/api/status.py`.
 
 ---
 
@@ -95,7 +95,7 @@ All via `from workflow.universe_server import ...` — none via `workflow.api.st
 | `tests/test_storage_utilization_universe.py` | `get_status` | 4 |
 | `tests/test_universe_list_observability.py:17` | `_action_list_universes, get_status` | 1 (mixed; `_action_list_universes` is universe.py territory, not status.py) |
 
-**Total:** ~17 test imports across 8 files, all via `workflow.universe_server`. Audit §7 Strategy 1 (back-compat re-export shim) preserves these unchanged. After #10 lands, `workflow/universe_server.py` adds:
+**Total:** ~17 test imports across 8 files, all via `workflow.universe_server`. Audit §7 Strategy 1 (back-compat re-export shim) preserves these unchanged. After #10 lands, `tinyassets/universe_server.py` adds:
 ```python
 from workflow.api.status import get_status  # noqa: F401  back-compat re-export
 ```
@@ -125,7 +125,7 @@ The only adjacent partial moves are:
 | **Total moved out of universe_server.py** | **~425** |
 | Back-compat re-export block added to universe_server.py | ~3 |
 | **Net reduction in universe_server.py** | **~422** |
-| New `workflow/api/status.py` size | **~450** (with imports + docstring) |
+| New `tinyassets/api/status.py` size | **~450** (with imports + docstring) |
 
 **Audit said ~470.** Reality ~450. Within 5% — audit's LOC estimate solid for #10.
 
@@ -156,11 +156,11 @@ Estimated wall time: 30-45 min (smaller than #9, no test edits, contiguous block
 1. **Confirm #8 has landed** (helpers extraction).
 2. **Confirm `mcp` instance pattern from #9** (or settle it independently if #10 ships first).
 3. **Locate `get_sandbox_status`** import target — grep for `def get_sandbox_status` to confirm it lives at the path L13959 imports from.
-4. **Create `workflow/api/status.py`:**
+4. **Create `tinyassets/api/status.py`:**
    - Module docstring referencing audit + extraction date.
    - Imports: `from workflow.api.helpers import _base_path, _default_universe, _universe_dir` (the 3 it actually uses) + `mcp` per §4.
    - Move L13564–13994 verbatim (banner + `_policy_hash` + `@mcp.tool` + `get_status`).
-5. **Update `workflow/universe_server.py`:**
+5. **Update `tinyassets/universe_server.py`:**
    - Delete L13564–13994.
    - Add to back-compat shim block: `from workflow.api.status import get_status  # noqa: F401`.
 6. **No test edits required.**
@@ -168,13 +168,13 @@ Estimated wall time: 30-45 min (smaller than #9, no test edits, contiguous block
 8. **Verification:**
    - `pytest tests/test_get_status_primitive.py tests/test_sandbox_status.py tests/test_sandbox_unavailable.py tests/test_storage_inspect.py tests/test_storage_utilization_universe.py tests/test_startup_file_probe.py tests/test_bug029_chain_drain.py tests/test_universe_list_observability.py` → green (~17 imports exercised).
    - `pytest -q` → full suite green.
-   - `ruff check workflow/api/status.py workflow/universe_server.py` → clean.
+   - `ruff check tinyassets/api/status.py tinyassets/universe_server.py` → clean.
 
 **Files in eventual #10 SHIP handoff:**
-- `workflow/api/status.py` (NEW, ~450 LOC)
-- `workflow/universe_server.py` (~422 LOC removed + ~3 re-export added)
-- `packaging/claude-plugin/.../workflow/api/status.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
+- `tinyassets/api/status.py` (NEW, ~450 LOC)
+- `tinyassets/universe_server.py` (~422 LOC removed + ~3 re-export added)
+- `packaging/claude-plugin/.../tinyassets/api/status.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
 
 4 files, +453 / -422 LOC net.
 

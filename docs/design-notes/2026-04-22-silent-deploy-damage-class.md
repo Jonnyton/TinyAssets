@@ -6,7 +6,7 @@ status: research
 
 *Date:* 2026-04-22. *Author:* navigator. *Triggering incident:* ~18h dark on
 `tinyassets.io/mcp` starting 07:22 UTC 2026-04-21, rooted at `deploy-prod.yml`'s
-`sudo sed -i` silently regressing `/etc/workflow/env` from `640` to `600` —
+`sudo sed -i` silently regressing `/etc/tinyassets/env` from `640` to `600` —
 unit runs as `User=workflow`, file became unreadable, `docker compose`
 crash-looped 67 times, cloudflared never came up. Zero alarms paged the host.
 
@@ -42,13 +42,13 @@ follow-up.**
    FS), the scrub step exits 0 and the next step deploys onto a broken file.
 
 3. **`deploy-prod.yml:209` Rollback on failure** — same `sudo sed -i` on
-   `/etc/workflow/env`. **Patched** (chown + chmod at 210-211, no `test -r`).
+   `/etc/tinyassets/env`. **Patched** (chown + chmod at 210-211, no `test -r`).
    Same concern as #2: missing read-assert. **Rollback is the worst place for
    a silent regression** — it fires only when something is already wrong, so
    a second silent break here extends an outage instead of shortening it.
 
 4. **`p0-outage-triage.yml:98-102` Attempt compose restart** — does not
-   mutate env, but does `docker compose ... --env-file /etc/workflow/env`.
+   mutate env, but does `docker compose ... --env-file /etc/tinyassets/env`.
    If env perms are already bad (as in the 04-21 incident), compose silently
    re-fails. Triage path has **no env-readable precheck** — it would have
    looped the same failure the deploy did. This is why the auto-triage
@@ -64,7 +64,7 @@ follow-up.**
    `echo > ... && chmod 0440 && visudo -c -q`. Correct: perms are set
    explicitly *and* verified. Good template.
 
-7. **`backup.sh` / `backup-restore.sh`** — no `/etc/workflow/env` mutation.
+7. **`backup.sh` / `backup-restore.sh`** — no `/etc/tinyassets/env` mutation.
    `backup-restore.sh:133` does `rm -rf ${VOLUME_DIR:?}/*` before extract,
    which is aggressive but on the restore volume, not critical-path config.
    Out of scope.
@@ -73,12 +73,12 @@ follow-up.**
    Clean.
 
 9. **`dr-drill.yml`** — only `chmod`s SSH keys (`600`/`700`), which is the
-   correct target mode for those files. No /etc/workflow/env touches.
+   correct target mode for those files. No /etc/tinyassets/env touches.
 
 ### Latent risk the patch doesn't cover
 
-Any **future** script that edits `/etc/workflow/env` (or its sibling files
-under `/etc/workflow/`) has no structural reason *not* to drop perms. The
+Any **future** script that edits `/etc/tinyassets/env` (or its sibling files
+under `/etc/tinyassets/`) has no structural reason *not* to drop perms. The
 knowledge "sed -i on this file breaks the daemon" lives in a comment at
 `deploy-prod.yml:121-126` — a tribal-knowledge defense, not a structural one.
 
@@ -92,28 +92,28 @@ catching a different failure mode:
 
 ### 1. Editor helper — `deploy/edit-env.sh`
 
-A single sanctioned mutator for `/etc/workflow/env` (and any future
-permission-sensitive config under `/etc/workflow/`). Takes a sed expression
+A single sanctioned mutator for `/etc/tinyassets/env` (and any future
+permission-sensitive config under `/etc/tinyassets/`). Takes a sed expression
 or key-value pair. Contract:
 
-- `sed -i` against a tempfile in `/etc/workflow/` (same filesystem, atomic rename).
+- `sed -i` against a tempfile in `/etc/tinyassets/` (same filesystem, atomic rename).
 - `chown root:workflow` + `chmod 640` on the temp before rename.
-- `sudo -u workflow test -r /etc/workflow/env` **after** rename.
+- `sudo -u workflow test -r /etc/tinyassets/env` **after** rename.
 - Any failure = exit non-zero + `ls -l` the file to stderr.
 
 Every GHA step that currently calls `sudo sed -i` on env becomes
-`sudo /opt/workflow/deploy/edit-env.sh KEY=VALUE`. The structural invariant
+`sudo /opt/tinyassets/deploy/edit-env.sh KEY=VALUE`. The structural invariant
 moves from tribal-knowledge comment into executable code that exists on the
 box and is test-covered. Bootstrap installs it as part of Row D.
 
 Cost: ~40 LOC of bash + one unit test. Payoff: no future call site can
 accidentally recreate the P0.
 
-### 2. Pre-commit / CI invariant — "no raw `sed -i` on /etc/workflow"
+### 2. Pre-commit / CI invariant — "no raw `sed -i` on /etc/tinyassets"
 
 A simple grep-level lint added to pre-commit + GHA PR gate: fail if any
 shell / YAML file outside `deploy/edit-env.sh` itself contains `sudo sed -i
-.*/etc/workflow`. This is the `invariant-5` pattern already in use for env
+.*/etc/tinyassets`. This is the `invariant-5` pattern already in use for env
 var reads (per AGENTS.md "Configuration — environment variables"). Cheap,
 structural, self-documenting.
 
@@ -130,7 +130,7 @@ journal fills with identical failures, but the user-visible signal is only
 "cloudflared sidecar never healthy." An `ENV-UNREADABLE` marker:
 
 - Can be grepped by watchdog.py as a fast-fail signal (see §c below).
-- Surfaces in `journalctl -u workflow-daemon` immediately, cutting
+- Surfaces in `journalctl -u tinyassets-daemon` immediately, cutting
   first-manual-diagnosis time from ~minutes of reading crash dumps to
   one-line.
 - Makes ship-logs.sh alerts interpretable without SSH.
@@ -148,7 +148,7 @@ journal fills with identical failures, but the user-visible signal is only
 - P0 auto-triage fired and *restarted compose* — which, against an
   unreadable env, crash-looped again. Triage `if: steps.reprobe.outputs.color
   == 'red'` added `needs-human` label. That label does not page.
-- Watchdog on the box runs `systemctl restart workflow-daemon` on 3
+- Watchdog on the box runs `systemctl restart tinyassets-daemon` on 3
   consecutive reds. Same underlying cause (env file unreadable) → same
   re-crash. Watchdog is blind to config-bricked states by design.
 
@@ -191,10 +191,10 @@ the pager.
 **"before restart, try the known-class fixes"** step:
 
 - If `journalctl` contains `ENV-UNREADABLE` → run the known good
-  `chown root:workflow /etc/workflow/env && chmod 640 /etc/workflow/env`.
+  `chown root:workflow /etc/tinyassets/env && chmod 640 /etc/tinyassets/env`.
 - Then restart. Then reprobe.
 
-This turns the specific class of failure (`/etc/workflow/env` perms) from
+This turns the specific class of failure (`/etc/tinyassets/env` perms) from
 *needs-human* into *auto-healed*, closing the exact 04-21 P0 path end-to-end.
 Other classes stay `needs-human` — we don't generalize; we encode what
 we've seen.
@@ -215,7 +215,7 @@ we've seen.
 Alarm-path architecture is not explicitly in PLAN.md today. The closest
 section is the uptime / complete-system-24/7 forever rule (AGENTS.md
 top-of-file) and the `observability + uptime` env var table
-(`WORKFLOW_MCP_CANARY_URL`, `WORKFLOW_DEPRECATIONS`, `TAB_WATCHDOG_*`).
+(`TINYASSETS_MCP_CANARY_URL`, `TINYASSETS_DEPRECATIONS`, `TAB_WATCHDOG_*`).
 
 Proposed new PLAN.md module heading (for host approval):
 

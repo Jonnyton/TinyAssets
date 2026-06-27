@@ -20,8 +20,8 @@ jobs:
     steps:
       - name: Fresh clone (simulate OSS contributor path)
         run: |
-          git clone --depth 1 https://github.com/${{ github.repository }} /tmp/workflow-fresh
-          cd /tmp/workflow-fresh
+          git clone --depth 1 https://github.com/${{ github.repository }} /tmp/tinyassets-fresh
+          cd /tmp/tinyassets-fresh
           git rev-parse HEAD
 
       - uses: actions/setup-python@v5
@@ -29,40 +29,40 @@ jobs:
           python-version: '3.11'
 
       - name: Create venv
-        working-directory: /tmp/workflow-fresh
+        working-directory: /tmp/tinyassets-fresh
         run: python -m venv .venv
 
       - name: pip install -e .
-        working-directory: /tmp/workflow-fresh
+        working-directory: /tmp/tinyassets-fresh
         run: |
           source .venv/bin/activate
           python -m pip install --upgrade pip
           pip install -e .
 
       - name: Top-level import smoke
-        working-directory: /tmp/workflow-fresh
+        working-directory: /tmp/tinyassets-fresh
         run: |
           source .venv/bin/activate
-          python -c "import workflow; print('workflow imported from', workflow.__file__ if hasattr(workflow, '__file__') else '<namespace>')"
+          python -c "import tinyassets; print('workflow imported from', tinyassets.__file__ if hasattr(workflow, '__file__') else '<namespace>')"
 
       - name: Structural smoke script
-        working-directory: /tmp/workflow-fresh
+        working-directory: /tmp/tinyassets-fresh
         run: |
           source .venv/bin/activate
           python scripts/tier3_smoke.py
 
       - name: Import-graph smoke
-        working-directory: /tmp/workflow-fresh
+        working-directory: /tmp/tinyassets-fresh
         run: |
           source .venv/bin/activate
           # Catches the 2026-04-19 P0 class — missing-symbol regressions
-          # at package import time. Checks primary targets (workflow.storage
-          # + consumer surfaces) + every workflow/** package that declares
+          # at package import time. Checks primary targets (tinyassets.storage
+          # + consumer surfaces) + every tinyassets/** package that declares
           # __all__.
           python scripts/import_graph_smoke.py --verbose
 
       - name: Smoke pytest
-        working-directory: /tmp/workflow-fresh
+        working-directory: /tmp/tinyassets-fresh
         run: |
           source .venv/bin/activate
           pip install pytest
@@ -71,7 +71,7 @@ jobs:
       - name: Capture failing commit SHA
         id: commit
         if: failure()
-        working-directory: /tmp/workflow-fresh
+        working-directory: /tmp/tinyassets-fresh
         run: |
           sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
@@ -118,7 +118,7 @@ jobs:
               title: `Tier-3 OSS clone smoke failed — ${shortSha} @ ${new Date().toISOString()}`,
               labels: [label],
               body: [
-                `Auto-opened by the tier3-oss-clone-nightly workflow.`,
+                `Auto-opened by the tier3-oss-clone-nightly tinyassets.`,
                 ``,
                 `- **Failing commit:** \`${sha}\``,
                 `- **Run:** ${runUrl}`,

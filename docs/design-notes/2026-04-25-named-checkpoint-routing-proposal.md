@@ -23,7 +23,7 @@ Add `decision_checkpoints: dict[str, str]` field to `BranchDefinition`. Maps sta
 ## 2. Schema
 
 ```python
-# workflow/branches.py — extend BranchDefinition
+# tinyassets/branches.py — extend BranchDefinition
 @dataclass
 class BranchDefinition:
     # ... existing fields ...
@@ -35,7 +35,7 @@ class BranchDefinition:
 
 ### Naming — `decision_checkpoints`, not `checkpoints`
 
-`workflow/branches.py:217` already has `checkpoints: list[dict[str, Any]]` on **NodeDefinition** for per-node **partial-credit checkpoints** (escrow + gate-bonus distribution per `project_designer_royalties_and_bounties`). That's a different concept on a different object.
+`tinyassets/branches.py:217` already has `checkpoints: list[dict[str, Any]]` on **NodeDefinition** for per-node **partial-credit checkpoints** (escrow + gate-bonus distribution per `project_designer_royalties_and_bounties`). That's a different concept on a different object.
 
 Disambiguating with `decision_checkpoints` prevents confusion:
 - `NodeDefinition.checkpoints` — per-node partial-credit (escrow primitive).
@@ -63,7 +63,7 @@ Both forms continue to work — proposal is additive; migration is opt-in.
 
 ## 3. Lookup primitive
 
-Internal helper in `workflow/branches.py`:
+Internal helper in `tinyassets/branches.py`:
 
 ```python
 def resolve_checkpoint(branch: BranchDefinition, target: str) -> str:
@@ -95,7 +95,7 @@ def resolve_checkpoint(branch: BranchDefinition, target: str) -> str:
 
 ### Compile-time resolution
 
-`workflow/graph_compiler.py` (in `_compile_conditional_edges` and any future `_compile_route_back_targets` for Task #53 integration):
+`tinyassets/graph_compiler.py` (in `_compile_conditional_edges` and any future `_compile_route_back_targets` for Task #53 integration):
 
 ```python
 for cond_edge in branch.conditional_edges:
@@ -240,7 +240,7 @@ Aids navigator triage. "The regression was at the @manual-review checkpoint, not
 - Closes self-evolving-platform-vision §4 row "Decision-routing": `docs/design-notes/2026-04-25-self-evolving-platform-vision.md` line 122.
 - Composes with route-back verdict: `docs/design-notes/2026-04-25-gate-route-back-verb-proposal.md` (Task #53).
 - Composes with surgical rollback / `caused_regression` metadata: `docs/design-notes/2026-04-25-surgical-rollback-proposal.md` (Task #57); attribution-layer-specs §1.5.
-- Disambiguates from existing `NodeDefinition.checkpoints` (partial-credit primitive): `workflow/branches.py:205-217`.
-- Existing routing primitive being extended: `workflow/branches.py:307-308` (`conditional_edges` shape) + `:339-358` (`EdgeDefinition`).
-- Compile site: `workflow/graph_compiler.py` (whichever `_compile_conditional_edges` or equivalent function builds the LangGraph CompiledGraph from `BranchDefinition`).
-- Validate site: `workflow/branches.py:920-960` (`BranchDefinition.validate()`).
+- Disambiguates from existing `NodeDefinition.checkpoints` (partial-credit primitive): `tinyassets/branches.py:205-217`.
+- Existing routing primitive being extended: `tinyassets/branches.py:307-308` (`conditional_edges` shape) + `:339-358` (`EdgeDefinition`).
+- Compile site: `tinyassets/graph_compiler.py` (whichever `_compile_conditional_edges` or equivalent function builds the LangGraph CompiledGraph from `BranchDefinition`).
+- Validate site: `tinyassets/branches.py:920-960` (`BranchDefinition.validate()`).

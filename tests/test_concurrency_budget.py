@@ -11,13 +11,13 @@ from __future__ import annotations
 import threading
 import time
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import ConcurrencyTracker, compile_branch
+from tinyassets.graph_compiler import ConcurrencyTracker, compile_branch
 
 # ════════════════════════════════════════════════════════════════════
 # Helpers

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from workflow.learning.craft_cards import CraftCard, generate_craft_cards
-from workflow.learning.criteria_discovery import (
+from tinyassets.learning.craft_cards import CraftCard, generate_craft_cards
+from tinyassets.learning.criteria_discovery import (
     DiscoveredCriterion,
     discover_criteria,
 )
-from workflow.learning.style_rules import (
+from tinyassets.learning.style_rules import (
     LearningSystem,
     Observation,
     StyleRule,
@@ -497,7 +497,7 @@ class TestReflexionWithEditorial:
     """Test that reflexion uses editorial notes."""
 
     def test_template_critique_uses_editorial(self):
-        from workflow.memory.reflexion import ReflexionEngine
+        from tinyassets.memory.reflexion import ReflexionEngine
 
         engine = ReflexionEngine()
         editorial = {

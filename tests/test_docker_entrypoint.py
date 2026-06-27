@@ -102,13 +102,13 @@ def _run_entrypoint(
 
     env = {
         # ENV-UNREADABLE sentinel — at least one must be set.
-        "WORKFLOW_IMAGE": "test:stub",
+        "TINYASSETS_IMAGE": "test:stub",
         # Keep API-key stripping silent (truthy).
-        "WORKFLOW_ALLOW_API_KEY_PROVIDERS": "0",
+        "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "0",
         "HOME": _bash_path(home),
         "CODEX_HOME": _bash_path(codex_dir),
         "CLAUDE_CONFIG_DIR": _bash_path(claude_dir),
-        "WORKFLOW_PACKAGE_ROOT": _bash_path(pkg_root),
+        "TINYASSETS_PACKAGE_ROOT": _bash_path(pkg_root),
     }
     env.update(env_extra)
 
@@ -133,8 +133,8 @@ def _run_entrypoint(
         # Drop any inherited codex/claude auth env that would confuse the test,
         # then re-add only what env_extra explicitly provides.
         for _var in (
-            "WORKFLOW_CODEX_AUTH_JSON_B64",
-            "WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64",
+            "TINYASSETS_CODEX_AUTH_JSON_B64",
+            "TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64",
             "CLAUDE_CODE_OAUTH_TOKEN",
         ):
             full_env.pop(_var, None)
@@ -160,7 +160,7 @@ def test_seeds_auth_when_env_set_and_file_missing(tmp_path):
     seed_payload = '{"OPENAI_API_KEY":"sk-seeded","tokens":{"id_token":"seeded"}}'
     result, auth_file, _ = _run_entrypoint(
         tmp_path,
-        env_extra={"WORKFLOW_CODEX_AUTH_JSON_B64": _b64(seed_payload)},
+        env_extra={"TINYASSETS_CODEX_AUTH_JSON_B64": _b64(seed_payload)},
         create_existing_auth=None,
     )
     # First start: prep code creates parent dir; this test pre-creates it
@@ -186,13 +186,13 @@ def test_preserves_auth_when_env_set_and_file_present(tmp_path):
     """REGRESSION GUARD for 2026-05-20 outage.
 
     A rotated auth.json must NOT be overwritten by an older
-    WORKFLOW_CODEX_AUTH_JSON_B64 value on container restart.
+    TINYASSETS_CODEX_AUTH_JSON_B64 value on container restart.
     """
     rotated_payload = '{"tokens":{"refresh_token":"rotated-fresh-token-v3"}}'
     stale_env_payload = '{"tokens":{"refresh_token":"stale-bootstrap-token-v1"}}'
     result, auth_file, _ = _run_entrypoint(
         tmp_path,
-        env_extra={"WORKFLOW_CODEX_AUTH_JSON_B64": _b64(stale_env_payload)},
+        env_extra={"TINYASSETS_CODEX_AUTH_JSON_B64": _b64(stale_env_payload)},
         create_existing_auth=rotated_payload,
     )
     assert result.returncode == 0, (
@@ -218,7 +218,7 @@ def test_preserves_auth_when_env_unset_and_file_present(tmp_path):
     rotated_payload = '{"tokens":{"refresh_token":"volume-only-token"}}'
     result, auth_file, _ = _run_entrypoint(
         tmp_path,
-        env_extra={},  # no WORKFLOW_CODEX_AUTH_JSON_B64
+        env_extra={},  # no TINYASSETS_CODEX_AUTH_JSON_B64
         create_existing_auth=rotated_payload,
     )
     assert result.returncode == 0, (
@@ -241,7 +241,7 @@ def test_seeds_claude_credentials_when_env_set_and_file_missing(tmp_path):
     seed_payload = '{"claudeAiOauth":{"accessToken":"seeded-tok"}}'
     result, _, claude_cred = _run_entrypoint(
         tmp_path,
-        env_extra={"WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64": _b64(seed_payload)},
+        env_extra={"TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64": _b64(seed_payload)},
         create_existing_claude_cred=None,
     )
     assert result.returncode == 0, (
@@ -259,7 +259,7 @@ def test_preserves_claude_credentials_when_env_set_and_file_present(tmp_path):
     stale = '{"claudeAiOauth":{"refreshToken":"stale-bootstrap"}}'
     result, _, claude_cred = _run_entrypoint(
         tmp_path,
-        env_extra={"WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64": _b64(stale)},
+        env_extra={"TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64": _b64(stale)},
         create_existing_claude_cred=rotated,
     )
     assert result.returncode == 0

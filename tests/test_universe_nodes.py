@@ -51,7 +51,7 @@ from domains.fantasy_daemon.phases.worldbuild import (
     _write_canon_marker,
     worldbuild,
 )
-from workflow.notes import add_note, update_note_status
+from tinyassets.notes import add_note, update_note_status
 
 # -----------------------------------------------------------------------
 # worldbuild tests
@@ -74,7 +74,7 @@ class TestWorldbuild:
         promotion_result.asp_rule_candidates = []
         mgr.run_promotion_gates.return_value = promotion_result
 
-        with patch("workflow.runtime_singletons.memory_manager", mgr):
+        with patch("tinyassets.runtime_singletons.memory_manager", mgr):
             state = {"world_state_version": 5}
             result = worldbuild(state)
         assert result["world_state_version"] == 6
@@ -126,7 +126,7 @@ class TestWorldbuild:
         promotion_result.asp_rule_candidates = []
         mgr.run_promotion_gates.return_value = promotion_result
 
-        with patch("workflow.runtime_singletons.memory_manager", mgr):
+        with patch("tinyassets.runtime_singletons.memory_manager", mgr):
             state = {"world_state_version": 0}
             result = worldbuild(state)
 
@@ -140,7 +140,7 @@ class TestWorldbuild:
         assert result["quality_trace"][0]["promoted_facts"] == 0
 
     def test_graceful_when_manager_fails(self):
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         mgr = MagicMock()
         mgr.run_promotion_gates.side_effect = RuntimeError("oops")
@@ -474,7 +474,7 @@ class TestWorldbuildCanonGeneration:
 
     def test_reads_direction_notes_into_prompt(self, tmp_path):
         """Direction notes should be read when present."""
-        from workflow.notes import add_note
+        from tinyassets.notes import add_note
 
         universe_dir = self._make_universe(
             tmp_path, "Fantasy world premise."
@@ -793,7 +793,7 @@ class TestWorldbuildCanonGeneration:
         would index external content. Containment skips it: with only an
         escaping symlink present, ``index_text`` is never called.
         """
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         universe_dir = tmp_path / "universe"
         canon_dir = universe_dir / "canon"
@@ -817,7 +817,7 @@ class TestWorldbuildCanonGeneration:
                 patch.object(runtime, "vector_store", sentinel), \
                 patch.object(runtime, "embed_fn", None), \
                 patch(
-                    "workflow.ingestion.indexer.index_text", _fake_index_text
+                    "tinyassets.ingestion.indexer.index_text", _fake_index_text
                 ):
             _trigger_kg_reindex({"_universe_path": str(universe_dir)})
         assert indexed["count"] == 0
@@ -845,7 +845,7 @@ class TestWorldbuildCanonGeneration:
     # the target), so an entry that is itself an escaping symlink must be
     # resolved + rejected *before* any stat touches the external target.
     # Every canon enumeration now routes through
-    # ``workflow.ingestion.canon_io.iter_canon_files`` (the chokepoint),
+    # ``tinyassets.ingestion.canon_io.iter_canon_files`` (the chokepoint),
     # which calls ``resolve_within_canon`` per entry before touching
     # ``is_file``. These tests patch the chokepoint's resolver to reject one
     # specific filename, then assert ``Path.is_file`` is never invoked for
@@ -865,7 +865,7 @@ class TestWorldbuildCanonGeneration:
         patched resolver raises ``ValueError`` for ``reject_name`` (simulating
         an escaping entry) and resolves everything else normally.
         """
-        from workflow.ingestion.canon_names import (
+        from tinyassets.ingestion.canon_names import (
             resolve_within_canon as _real_resolve,
         )
 
@@ -898,7 +898,7 @@ class TestWorldbuildCanonGeneration:
 
         fake_resolve, spy_is_file, events = self._ordering_spy("escape.md")
         with patch(
-            "workflow.ingestion.canon_io.resolve_within_canon",
+            "tinyassets.ingestion.canon_io.resolve_within_canon",
             fake_resolve,
         ), patch.object(Path, "is_file", spy_is_file):
             existing = _scan_existing_canon(canon_dir)
@@ -929,7 +929,7 @@ class TestWorldbuildCanonGeneration:
             return "premise"
 
         with patch(
-            "workflow.ingestion.canon_io.resolve_within_canon",
+            "tinyassets.ingestion.canon_io.resolve_within_canon",
             fake_resolve,
         ), patch.object(Path, "is_file", spy_is_file), patch(
             "domains.fantasy_daemon.phases._provider_stub.call_provider",
@@ -947,7 +947,7 @@ class TestWorldbuildCanonGeneration:
 
     def test_trigger_kg_reindex_resolves_before_stat(self, tmp_path):
         """``_trigger_kg_reindex`` resolves containment before ``is_file``."""
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         universe_dir = tmp_path / "universe"
         canon_dir = universe_dir / "canon"
@@ -967,11 +967,11 @@ class TestWorldbuildCanonGeneration:
                 patch.object(runtime, "vector_store", sentinel), \
                 patch.object(runtime, "embed_fn", None), \
                 patch(
-                    "workflow.ingestion.canon_io.resolve_within_canon",
+                    "tinyassets.ingestion.canon_io.resolve_within_canon",
                     fake_resolve,
                 ), \
                 patch.object(Path, "is_file", spy_is_file), \
-                patch("workflow.ingestion.indexer.index_text", _fake_index_text):
+                patch("tinyassets.ingestion.indexer.index_text", _fake_index_text):
             _trigger_kg_reindex({"_universe_path": str(universe_dir)})
 
         # Escaping entry never stat'd nor indexed; legitimate entry indexed.
@@ -993,7 +993,7 @@ class TestWorldbuildCanonGeneration:
 
         fake_resolve, spy_is_file, events = self._ordering_spy("magic_system.md")
         with patch(
-            "workflow.ingestion.canon_io.resolve_within_canon",
+            "tinyassets.ingestion.canon_io.resolve_within_canon",
             fake_resolve,
         ), patch.object(Path, "is_file", spy_is_file), patch(
             "domains.fantasy_daemon.phases.worldbuild._handle_new_element",
@@ -1014,7 +1014,7 @@ class TestWorldbuildCanonGeneration:
 
         fake_resolve, spy_is_file, events = self._ordering_spy("magic_system.md")
         with patch(
-            "workflow.ingestion.canon_io.resolve_within_canon",
+            "tinyassets.ingestion.canon_io.resolve_within_canon",
             fake_resolve,
         ), patch.object(Path, "is_file", spy_is_file), patch(
             "domains.fantasy_daemon.phases.worldbuild._handle_new_element",
@@ -1420,7 +1420,7 @@ class TestUniverseCycle:
         assert result["health"]["cycles_completed"] == 4
 
     def test_calls_memory_cleanup(self):
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         mgr = MagicMock()
         mgr.evict_old_data.return_value = 5
@@ -1450,7 +1450,7 @@ class TestUniverseCycle:
         assert result["quality_trace"][0]["evicted_records"] == 0
 
     def test_graceful_when_manager_fails(self):
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         mgr = MagicMock()
         mgr.evict_old_data.side_effect = RuntimeError("fail")
@@ -1531,7 +1531,7 @@ class TestReflect:
         assert trace["node"] == "reflect"
 
     def test_reflexion_runs_with_manager(self):
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         mgr = MagicMock()
         reflexion_result = MagicMock()
@@ -1555,7 +1555,7 @@ class TestReflect:
         assert result["quality_trace"][0]["reflexion_ran"] is False
 
     def test_reflexion_failure_is_graceful(self):
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         mgr = MagicMock()
         mgr.run_reflexion.side_effect = RuntimeError("boom")
@@ -2586,7 +2586,7 @@ class TestReflectSignalDriven:
 
     def test_model_tier_guard_still_works(self, tmp_path):
         """Model quality tier guard should still prevent weak overwrites."""
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         universe_dir = self._make_universe(
             tmp_path,

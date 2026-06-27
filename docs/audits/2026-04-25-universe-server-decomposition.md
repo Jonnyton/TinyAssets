@@ -21,7 +21,7 @@ Produce the concrete move-map that Phase 2 implementation needs:
 
 ## 2. Current state
 
-`workflow/universe_server.py` — 13,067 LOC, 490 KB as of 2026-04-25.
+`tinyassets/universe_server.py` — 13,067 LOC, 490 KB as of 2026-04-25.
 
 **Top-level MCP tools:**
 
@@ -36,7 +36,7 @@ Produce the concrete move-map that Phase 2 implementation needs:
 
 **Preamble (helpers, imports, config):** L1–957, ~957 LOC — shared across all tools.
 
-The 2026-04-19 spaghetti audit's §#1 proposed extracting sub-dispatch tables into `workflow/api/branches.py`, `workflow/api/runs.py`, etc. with a FastMCP `mount()` integration shell. This audit validates that shape and provides the exact file assignments.
+The 2026-04-19 spaghetti audit's §#1 proposed extracting sub-dispatch tables into `tinyassets/api/branches.py`, `tinyassets/api/runs.py`, etc. with a FastMCP `mount()` integration shell. This audit validates that shape and provides the exact file assignments.
 
 ---
 
@@ -72,7 +72,7 @@ The 2026-04-19 spaghetti audit's §#1 proposed extracting sub-dispatch tables in
 ### 4.1 Target layout
 
 ```
-workflow/
+tinyassets/
   api/
     __init__.py           # mcp instance + mount points; the thin integration shell
     universe_helpers.py   # shared helpers: _universe_dir, _default_universe, _base_path,
@@ -89,7 +89,7 @@ workflow/
 
 Domain actions (`query_world`, premise, canon, give_direction, submit_request) leave `universe_server.py` per the companion audit and land in `domains/fantasy_daemon/api/`.
 
-**Integration shell (`workflow/api/__init__.py`):**
+**Integration shell (`tinyassets/api/__init__.py`):**
 
 ```python
 from workflow.mcp_setup import mcp   # FastMCP instance (extracted from universe_server preamble)
@@ -131,9 +131,9 @@ Owns `get_status()` MCP tool and its helpers. Minor dependency on `workflow.stor
 **`universe_helpers.py`** (~200–400 LOC extracted from preamble)
 The preamble (L1–957) mixes: imports, global constants, path helper functions (`_universe_dir`, `_default_universe`, `_base_path`), JSON helpers (`_read_json`, `_read_text`), wiki path helpers (`_find_all_pages`), and the FastMCP instance setup.
 
-Extraction target: move all `def _*` helpers out of the preamble and into `universe_helpers.py`. The FastMCP instance (`mcp = FastMCP(...)`) and its prompt registrations move to `workflow/api/__init__.py`. What remains in preamble is just imports + constants + the `universe_server.py` shim that delegates to the new submodules.
+Extraction target: move all `def _*` helpers out of the preamble and into `universe_helpers.py`. The FastMCP instance (`mcp = FastMCP(...)`) and its prompt registrations move to `tinyassets/api/__init__.py`. What remains in preamble is just imports + constants + the `universe_server.py` shim that delegates to the new submodules.
 
-**`workflow/universe_server.py` (residual shim):**
+**`tinyassets/universe_server.py` (residual shim):**
 After extraction, `universe_server.py` becomes a ~100-LOC routing shell that:
 - Imports submodules (triggering their tool/action registrations)
 - Exports `mcp` for the MCP entry point
@@ -169,7 +169,7 @@ Used by 1–2 submodules — can move with the primary consumer and be imported 
 | `_apply_patch_op()` | `branches.py` | None |
 | `_query_world_db()` | `domains/fantasy_daemon/api/world_state.py` | None |
 | `_add_canon_entry()`, `_ingest_canon()` | `domains/fantasy_daemon/api/world_state.py` | None |
-| storage utilization helpers | stay in `workflow/storage/__init__.py` | status.py imports from there |
+| storage utilization helpers | stay in `tinyassets/storage/__init__.py` | status.py imports from there |
 
 ---
 
@@ -177,7 +177,7 @@ Used by 1–2 submodules — can move with the primary consumer and be imported 
 
 ### Pattern A: Single `mcp` instance, action handlers imported at module level
 
-`workflow/api/__init__.py` creates `mcp = FastMCP(...)`. Submodules import `mcp` and use `@mcp.tool()` decorators. This is the current pattern — extraction just splits the single file into submodules that all decorate the same `mcp` object.
+`tinyassets/api/__init__.py` creates `mcp = FastMCP(...)`. Submodules import `mcp` and use `@mcp.tool()` decorators. This is the current pattern — extraction just splits the single file into submodules that all decorate the same `mcp` object.
 
 **Pro:** Zero behavior change; existing tool names/docs preserved.
 **Con:** All submodules must import `mcp` from `workflow.api`; creates a `workflow.api -> workflow.api.branches -> workflow.api` circular import risk. Solved by: `mcp` lives in `workflow.mcp_setup` (a leaf module with no project dependencies), imported by both `workflow.api` and each submodule.
@@ -208,7 +208,7 @@ mcp.mount("branches", branches_mcp)   # tools become "branches_build_branch" etc
 
 **Strategy 1 (recommended): Keep `workflow.universe_server` as an aggregator shim**
 
-`workflow/universe_server.py` becomes:
+`tinyassets/universe_server.py` becomes:
 ```python
 from workflow.api.branches import *   # noqa: F401,F403
 from workflow.api.runs import *

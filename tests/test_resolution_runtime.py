@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from workflow.resolution import (
+from tinyassets.resolution import (
     EvidenceCitation,
     ResolutionScope,
     ResolverInput,

@@ -1,2 +1,2 @@
-"""Shim: use workflow.memory.versioning instead."""
-from workflow.memory.versioning import *  # noqa: F401,F403
+"""Shim: use tinyassets.memory.versioning instead."""
+from tinyassets.memory.versioning import *  # noqa: F401,F403

@@ -1,8 +1,8 @@
-"""Task #14 — direct tests for `workflow.api.market` after decomp Step 7.
+"""Task #14 — direct tests for `tinyassets.api.market` after decomp Step 7.
 
 Legacy goals/gates/escrow/outcome/attribution tests still cover the
-chatbot-facing `workflow.universe_server` MCP wrappers. This file exercises
-`workflow.api.market` directly to lock in the canonical implementation surface.
+chatbot-facing `tinyassets.universe_server` MCP wrappers. This file exercises
+`tinyassets.api.market` directly to lock in the canonical implementation surface.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from workflow.api import market as mkt_mod
-from workflow.api.market import (
+from tinyassets.api import market as mkt_mod
+from tinyassets.api.market import (
     _ATTRIBUTION_ACTIONS,
     _ESCROW_ACTIONS,
     _GATE_EVENT_ACTIONS,
@@ -164,7 +164,7 @@ def test_goal_directory_action_aliases_dispatch_to_canonical_actions(
     monkeypatch, provider_action, canonical_action, kwargs,
 ):
     """ChatGPT can route directory tool names through legacy Goals."""
-    from workflow.api import branches as branches_mod
+    from tinyassets.api import branches as branches_mod
 
     monkeypatch.setattr(branches_mod, "_ensure_workflow_db", lambda: None)
     seen = {}
@@ -316,7 +316,7 @@ def test_universe_server_goals_and_gates_are_decorated_wrappers():
     """The us.goals + us.gates are NEW callables (decorated) wrapping
     market.goals + market.gates. They are NOT the same object as the
     market plain callables (because @mcp.tool wraps them)."""
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     # FastMCP wraps the function; just verify they're callable.
     assert callable(us.goals)
     assert callable(us.gates)

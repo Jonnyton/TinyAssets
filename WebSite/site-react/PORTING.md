@@ -50,7 +50,7 @@ redesign, do NOT "improve" copy.
    button (plain `<a>`/`<button>` + ported classes), do NOT swap in the DS Button.
 7. **Already-ported shared components** (import from `../../components/...`):
    `VitalSigns` (`variant?:"hero"|"strip"`), `Ladder` (`rungs,start,compact`),
-   `Tick` (`href,label,external`), `Term` (`def,children`), `WorkflowMark` (`size`).
+   `Tick` (`href,label,external`), `Term` (`def,children`), `TinyAssetsMark` (`size`).
 8. **Other shared components** the source imports (ChatDemo, Playground, LiveBadge,
    LiveSourceBar, MoodPill, ChapterFolio, TokenDisclaimer, etc.): to avoid collisions
    with other parallel porters, port them **co-located** under `app/<route>/_components/`

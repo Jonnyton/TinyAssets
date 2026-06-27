@@ -18,9 +18,9 @@ import pytest
 def p4_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -32,7 +32,7 @@ def _call(us, action, **kwargs):
 
 
 def _wait(run_id: str, timeout: float = 20.0) -> None:
-    from workflow.runs import wait_for
+    from tinyassets.runs import wait_for
 
     wait_for(run_id, timeout=timeout)
 
@@ -349,7 +349,7 @@ def test_run_branch_records_lineage(p4_env):
     rid1 = _run(us, bid)
     rid2 = _run(us, bid)
 
-    from workflow.runs import get_lineage
+    from tinyassets.runs import get_lineage
 
     lin1 = get_lineage(base, rid1)
     lin2 = get_lineage(base, rid2)
@@ -376,7 +376,7 @@ def test_run_branch_resume_from_records_explicit_source_run(p4_env):
     )
     _wait(resumed["run_id"])
 
-    from workflow.runs import get_lineage
+    from tinyassets.runs import get_lineage
 
     lineage = get_lineage(base, resumed["run_id"])
     assert lineage is not None
@@ -414,7 +414,7 @@ def test_run_branch_resume_from_carries_source_inputs_when_absent(p4_env):
     )
     _wait(resumed["run_id"])
 
-    from workflow.runs import get_run
+    from tinyassets.runs import get_run
 
     run_record = get_run(base, resumed["run_id"])
     assert run_record is not None
@@ -465,7 +465,7 @@ def test_update_node_records_edit_audit(p4_env):
     _call(us, "update_node", branch_def_id=bid, node_id="n",
           prompt_template="Refined: {x}")
 
-    from workflow.runs import list_node_edit_audits
+    from tinyassets.runs import list_node_edit_audits
 
     audits = list_node_edit_audits(base, branch_def_id=bid)
     assert len(audits) == 1
@@ -486,7 +486,7 @@ def test_update_node_carries_judgment_attribution(p4_env):
           prompt_template="Better: {x}",
           triggered_by_judgment_id=jr["judgment_id"])
 
-    from workflow.runs import list_node_edit_audits
+    from tinyassets.runs import list_node_edit_audits
 
     audits = list_node_edit_audits(base, branch_def_id=bid)
     assert audits[0]["triggered_by_judgment_id"] == jr["judgment_id"]
@@ -502,7 +502,7 @@ def test_run_lineage_surfaces_edits_since_parent(p4_env):
           prompt_template="Refined: {x}")
     rid2 = _run(us, bid)
 
-    from workflow.runs import get_lineage
+    from tinyassets.runs import get_lineage
 
     lin2 = get_lineage(base, rid2)
     assert "n" in lin2["edits_since_parent"]
@@ -561,7 +561,7 @@ def test_mission5_loop_end_to_end(p4_env):
     assert cmp["topology_changed"] is True
 
     # Lineage shows rid2's parent as rid1 + the edit.
-    from workflow.runs import get_lineage
+    from tinyassets.runs import get_lineage
 
     lin = get_lineage(base, rid2)
     assert lin["parent_run_id"] == rid1
@@ -581,7 +581,7 @@ def test_judgments_survive_module_reload(p4_env):
     # Simulate restart by reloading the module.
     import importlib
 
-    from workflow import universe_server as us_mod
+    from tinyassets import universe_server as us_mod
 
     importlib.reload(us_mod)
 
@@ -602,7 +602,7 @@ def test_update_node_snapshots_body_in_audit(p4_env):
     _call(us, "update_node", branch_def_id=bid, node_id="n",
           prompt_template="Improved: {x}")
 
-    from workflow.runs import list_node_edit_audits
+    from tinyassets.runs import list_node_edit_audits
 
     audits = list_node_edit_audits(base, branch_def_id=bid, node_id="n")
     assert len(audits) == 1
@@ -678,7 +678,7 @@ def test_rollback_records_audit_row_with_rollback_kind(p4_env):
           prompt_template="v2: {x}")
     _call(us, "rollback_node", branch_def_id=bid, node_id="n")
 
-    from workflow.runs import list_node_edit_audits
+    from tinyassets.runs import list_node_edit_audits
 
     audits = list_node_edit_audits(base, branch_def_id=bid, node_id="n")
     kinds = [a["edit_kind"] for a in audits]

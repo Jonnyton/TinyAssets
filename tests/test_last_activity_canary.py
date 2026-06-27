@@ -385,8 +385,8 @@ def test_main_exit_two_on_stale(monkeypatch, capsys):
 
 
 def test_main_threshold_from_env(monkeypatch, capsys):
-    """WORKFLOW_LAST_ACTIVITY_THRESHOLD_MIN overrides the default."""
-    monkeypatch.setenv("WORKFLOW_LAST_ACTIVITY_THRESHOLD_MIN", "120")
+    """TINYASSETS_LAST_ACTIVITY_THRESHOLD_MIN overrides the default."""
+    monkeypatch.setenv("TINYASSETS_LAST_ACTIVITY_THRESHOLD_MIN", "120")
     # Reload so the argparse default picks up the new env.
     import importlib
     importlib.reload(lac)

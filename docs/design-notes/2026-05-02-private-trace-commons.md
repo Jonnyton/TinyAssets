@@ -33,7 +33,7 @@ Per the Claude review verdict, the original radar proposal's 5 typed surfaces ar
 
 ## The Brain Module memory_kind
 
-The Brain Module's memory_kinds registry was established via open-brain v2 slice A (#904). Existing kinds (per `workflow/daemon_brain.py`):
+The Brain Module's memory_kinds registry was established via open-brain v2 slice A (#904). Existing kinds (per `tinyassets/daemon_brain.py`):
 
 - `semantic` — Stable facts, concepts, durable domain knowledge.
 - `episodic` — Specific observed events, runs, source episodes.
@@ -113,9 +113,9 @@ Per the OpenTraces audit open question #5: an AcceptanceScenario might want to a
 
 ## What changes in code
 
-1. `workflow/daemon_brain.py` MEMORY_KIND_REGISTRY: add `"session_trace_summary": "Reviewed narrative summary of one session; references raw artifacts, not raw payloads."` to the dict.
+1. `tinyassets/daemon_brain.py` MEMORY_KIND_REGISTRY: add `"session_trace_summary": "Reviewed narrative summary of one session; references raw artifacts, not raw payloads."` to the dict.
 2. Update `VALID_MEMORY_KINDS` (frozenset) to include the new key (automatic if it's derived from the registry).
-3. Plugin mirror at `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/daemon_brain.py`: same change.
+3. Plugin mirror at `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/daemon_brain.py`: same change.
 4. Tests in `tests/test_daemon_brain.py`: one test asserts `session_trace_summary` is a recognized kind and can transition through the promotion lifecycle (uses the existing test_daemon_memory_lifecycle test pattern with the new kind).
 
 Total code surface: ~6 lines per file (canonical + mirror) + one new test function. The wiki composition pattern is content, not code.
@@ -139,7 +139,7 @@ Total code surface: ~6 lines per file (canonical + mirror) + one new test functi
 
 ## Verification (Slice 1 acceptance check)
 
-- [ ] `session_trace_summary` appears in `workflow/daemon_brain.py::MEMORY_KIND_REGISTRY`
+- [ ] `session_trace_summary` appears in `tinyassets/daemon_brain.py::MEMORY_KIND_REGISTRY`
 - [ ] Plugin mirror parity holds
 - [ ] One new test in `tests/test_daemon_brain.py` exercises the kind through the promotion state machine
 - [ ] Wiki composition pattern page exists at `pages/plans/composing-session-trace-summaries.md` with the worked example above

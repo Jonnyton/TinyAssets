@@ -7,7 +7,7 @@ Covers:
 - Already-archived files are skipped (idempotent re-run).
 - Per-file OSError is collected into errors[] and does not abort loop.
 - Missing runs_dir → empty result, no raise.
-- Env var `WORKFLOW_RUN_TRANSCRIPT_RETENTION_DAYS` drives default.
+- Env var `TINYASSETS_RUN_TRANSCRIPT_RETENTION_DAYS` drives default.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.storage.rotation import (
+from tinyassets.storage.rotation import (
     RotationResult,
     _retention_days_from_env,
     rotate_run_transcripts,
@@ -39,26 +39,26 @@ def _set_mtime(path: Path, seconds_ago: float, *, clock: float) -> None:
 class TestRetentionEnvParsing:
     def test_default_when_unset(self, monkeypatch):
         monkeypatch.delenv(
-            "WORKFLOW_RUN_TRANSCRIPT_RETENTION_DAYS", raising=False,
+            "TINYASSETS_RUN_TRANSCRIPT_RETENTION_DAYS", raising=False,
         )
         assert _retention_days_from_env() == 30
 
     def test_valid_int(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_RUN_TRANSCRIPT_RETENTION_DAYS", "7")
+        monkeypatch.setenv("TINYASSETS_RUN_TRANSCRIPT_RETENTION_DAYS", "7")
         assert _retention_days_from_env() == 7
 
     def test_non_integer_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv(
-            "WORKFLOW_RUN_TRANSCRIPT_RETENTION_DAYS", "abc",
+            "TINYASSETS_RUN_TRANSCRIPT_RETENTION_DAYS", "abc",
         )
         assert _retention_days_from_env() == 30
 
     def test_zero_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_RUN_TRANSCRIPT_RETENTION_DAYS", "0")
+        monkeypatch.setenv("TINYASSETS_RUN_TRANSCRIPT_RETENTION_DAYS", "0")
         assert _retention_days_from_env() == 30
 
     def test_negative_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_RUN_TRANSCRIPT_RETENTION_DAYS", "-5")
+        monkeypatch.setenv("TINYASSETS_RUN_TRANSCRIPT_RETENTION_DAYS", "-5")
         assert _retention_days_from_env() == 30
 
 

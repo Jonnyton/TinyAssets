@@ -1,4 +1,4 @@
-# Workflow daemon — Docker Compose for self-host deploys.
+# TinyAssets daemon — Docker Compose for self-host deploys.
 #
 # Self-host migration Row D per
 # docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
@@ -17,45 +17,45 @@
 # reaches it via Docker's default bridge at daemon:8001. Only the
 # loopback is exposed for host-side canary probes.
 #
-# Secrets: sourced from /etc/workflow/env (the env_file below). Host
+# Secrets: sourced from /etc/tinyassets/env (the env_file below). Host
 # provisions that file with chmod 600 per HETZNER-DEPLOY.md. Never
 # commit real values to this repo.
 #
 # Dev use:
 #   # Render this compose against a local env file for smoke tests.
-#   cp deploy/workflow-env.template /tmp/workflow-env
+#   cp deploy/tinyassets-env.template /tmp/tinyassets-env
 #   # ...fill in real values...
-#   docker compose -f deploy/compose.yml --env-file /tmp/workflow-env up
+#   docker compose -f deploy/compose.yml --env-file /tmp/tinyassets-env up
 
 services:
   daemon:
     # Required immutable image reference. Production writes a digest ref
     # resolved from the short-SHA tag emitted by build-image.yml.
-    image: ${WORKFLOW_IMAGE:?Set WORKFLOW_IMAGE to an immutable ghcr.io/jonnyton/workflow-daemon@sha256:<digest> ref}
-    container_name: workflow-daemon
+    image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}
+    container_name: tinyassets-daemon
     restart: unless-stopped
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
-    # Image CMD already runs `python -m workflow.universe_server`.
+    # Image CMD already runs `python -m tinyassets.universe_server`.
     # Expose loopback only; cloudflared reaches via Docker network.
     ports:
       - "127.0.0.1:8001:8001"
     environment:
       HOME: /app
-      WORKFLOW_DATA_DIR: /data
-      # Persist Codex subscription auth on the shared workflow-data volume.
+      TINYASSETS_DATA_DIR: /data
+      # Persist Codex subscription auth on the shared tinyassets-data volume.
       # daemon + worker intentionally share one auth.json lineage; do not
       # split CODEX_HOME per service or duplicate the single-use refresh token.
       CODEX_HOME: /data/.codex
-      # Persist Claude subscription auth on the shared workflow-data volume.
+      # Persist Claude subscription auth on the shared tinyassets-data volume.
       CLAUDE_CONFIG_DIR: /data/.claude
-      WORKFLOW_REPO_ROOT: /data/community-pool
-      WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
-      WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
+      TINYASSETS_REPO_ROOT: /data/community-pool
+      TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
+      TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
       # Fleet activation only. Goal-pool/marketplace economy stays dark
       # until the PR-177 follow-on intentionally unstubs it.
-      WORKFLOW_GOAL_POOL: "off"
+      TINYASSETS_GOAL_POOL: "off"
       # Coding-lane eval gates (S2 output-rubric + S3 trajectory) — ENFORCE.
       # Host-approved flip 2026-06-25: the auto-ship MCP action
       # (validate_ship_packet) now BLOCKS on a conclusive rubric/trajectory FAIL
@@ -63,14 +63,14 @@ services:
       # enforce the deployed default. NOT exercised by the autonomous loop — only
       # by explicit ship-validation calls — so the flip cannot wedge the loop.
       # Rollback: set to "warn" (or revert this line) + recreate the daemon.
-      WORKFLOW_AUTO_SHIP_RUBRIC_MODE: "enforce"
-      WORKFLOW_AUTO_SHIP_TRAJECTORY_MODE: "enforce"
+      TINYASSETS_AUTO_SHIP_RUBRIC_MODE: "enforce"
+      TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE: "enforce"
       # Pass through anything in the env file.
-      WORKFLOW_MCP_CANARY_URL: ${WORKFLOW_MCP_CANARY_URL:-https://tinyassets.io/mcp}
+      TINYASSETS_MCP_CANARY_URL: ${TINYASSETS_MCP_CANARY_URL:-https://tinyassets.io/mcp}
     env_file:
-      - /etc/workflow/env
+      - /etc/tinyassets/env
     volumes:
-      - workflow-data:/data
+      - tinyassets-data:/data
     healthcheck:
       # Use the same canary shape as Layer-1 / tier-3 / docker-build
       # CI. Python already in the image.
@@ -81,14 +81,14 @@ services:
       retries: 3
       start_period: 60s
     labels:
-      org.workflow.component: daemon
-      org.workflow.role: mcp-server
+      org.tinyassets.component: daemon
+      org.tinyassets.role: mcp-server
 
   cloudflared:
     # Official image, pinned to a known-stable tag + digest. Bump by
     # hand after testing on a staging box.
     image: cloudflare/cloudflared:2026.3.0@sha256:6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0
-    container_name: workflow-tunnel
+    container_name: tinyassets-tunnel
     restart: unless-stopped
     # cloudflared runs in host network namespace so that the tunnel's
     # dashboard-configured ingress rule `http://localhost:8001` resolves
@@ -102,17 +102,17 @@ services:
     # Tunnel token auth (shape A per Row C).
     command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     env_file:
-      - /etc/workflow/env
+      - /etc/tinyassets/env
     depends_on:
       daemon:
         condition: service_healthy
     labels:
-      org.workflow.component: tunnel
-      org.workflow.role: cloudflare-ingress
+      org.tinyassets.component: tunnel
+      org.tinyassets.role: cloudflare-ingress
 
   # Row K — log aggregation sidecar. Tails daemon + cloudflared stdout
   # via the Docker socket. Ships to Better Stack when
-  # BETTERSTACK_SOURCE_TOKEN is set in /etc/workflow/env; otherwise
+  # BETTERSTACK_SOURCE_TOKEN is set in /etc/tinyassets/env; otherwise
   # logs are captured by compose stdout (journald) only.
   #
   # vector-entrypoint.sh builds /run/vector-config/ at startup:
@@ -121,23 +121,23 @@ services:
   # This prevents 401 error noise when the token is unset.
   logs:
     image: timberio/vector:0.40.0-alpine@sha256:7a81fdd62e056321055a9e4bdec4073d752ecf68f4c192e676b85001721523c2
-    container_name: workflow-logs
+    container_name: tinyassets-logs
     restart: unless-stopped
     env_file:
-      - /etc/workflow/env
+      - /etc/tinyassets/env
     entrypoint: ["/bin/sh", "/etc/vector/vector-entrypoint.sh"]
     volumes:
-      - /opt/workflow/deploy/vector.yaml:/etc/vector/vector.yaml:ro
-      - /opt/workflow/deploy/vector-betterstack.yaml:/etc/vector/vector-betterstack.yaml:ro
-      - /opt/workflow/deploy/vector-entrypoint.sh:/etc/vector/vector-entrypoint.sh:ro
+      - /opt/tinyassets/deploy/vector.yaml:/etc/vector/vector.yaml:ro
+      - /opt/tinyassets/deploy/vector-betterstack.yaml:/etc/vector/vector-betterstack.yaml:ro
+      - /opt/tinyassets/deploy/vector-entrypoint.sh:/etc/vector/vector-entrypoint.sh:ro
       # Docker socket access so vector's docker_logs source can tail
       # container stdout. Read-only — we never modify containers.
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - daemon
     labels:
-      org.workflow.component: logs
-      org.workflow.role: log-forwarder
+      org.tinyassets.component: logs
+      org.tinyassets.role: log-forwarder
 
   # Cloud-side node-executor fleet. This is the small "4 runtimes up"
   # slice: two Codex workers and two Claude workers, all serving the
@@ -153,30 +153,30 @@ services:
   # workers claiming tasks in the same universe file race for the lock;
   # loser sees status != pending and returns None. No double-claim possible.
   worker: &cloud_worker_base
-    image: ${WORKFLOW_IMAGE:?Set WORKFLOW_IMAGE to an immutable ghcr.io/jonnyton/workflow-daemon@sha256:<digest> ref}
-    container_name: workflow-worker
+    image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}
+    container_name: tinyassets-worker
     restart: unless-stopped
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
-    command: ["python", "-m", "workflow.cloud_worker", "--provider", "codex"]
+    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "codex"]
     environment: &cloud_worker_env
       HOME: /app
-      WORKFLOW_DATA_DIR: /data
+      TINYASSETS_DATA_DIR: /data
       CODEX_HOME: /data/.codex
       CLAUDE_CONFIG_DIR: /data/.claude
-      WORKFLOW_REPO_ROOT: /data/community-pool
-      WORKFLOW_ALLOW_API_KEY_PROVIDERS: "0"
-      WORKFLOW_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
-      WORKFLOW_GOAL_POOL: "off"
-      WORKFLOW_PAID_MARKET: "off"
-      WORKFLOW_WORKER_ID: codex-1
-      WORKFLOW_WORKER_MODEL: gpt-5
+      TINYASSETS_REPO_ROOT: /data/community-pool
+      TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
+      TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
+      TINYASSETS_GOAL_POOL: "off"
+      TINYASSETS_PAID_MARKET: "off"
+      TINYASSETS_WORKER_ID: codex-1
+      TINYASSETS_WORKER_MODEL: gpt-5
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-1
     env_file:
-      - /etc/workflow/env
+      - /etc/tinyassets/env
     volumes:
-      - workflow-data:/data
+      - tinyassets-data:/data
     depends_on:
       daemon:
         condition: service_healthy
@@ -185,54 +185,54 @@ services:
     # this container's beat goes stale or pickable work sits unclaimed
     # (the 2026-06 dormancy class: container "healthy" 37h while no
     # claims happened). NOTE: compose does NOT restart unhealthy
-    # containers by itself — deploy/workflow-autoheal.timer on the host
-    # restarts any workflow container that reports unhealthy.
+    # containers by itself — deploy/tinyassets-autoheal.timer on the host
+    # restarts any TinyAssets container that reports unhealthy.
     healthcheck:
-      test: ["CMD", "python", "-m", "workflow.cloud_worker_healthcheck"]
+      test: ["CMD", "python", "-m", "tinyassets.cloud_worker_healthcheck"]
       interval: 60s
       timeout: 15s
       retries: 3
       start_period: 120s
     labels:
-      org.workflow.component: worker
-      org.workflow.role: node-executor
+      org.tinyassets.component: worker
+      org.tinyassets.role: node-executor
 
   worker-codex-2:
     <<: *cloud_worker_base
-    container_name: workflow-worker-codex-2
+    container_name: tinyassets-worker-codex-2
     environment:
       <<: *cloud_worker_env
-      WORKFLOW_WORKER_ID: codex-2
-      WORKFLOW_WORKER_MODEL: gpt-5
+      TINYASSETS_WORKER_ID: codex-2
+      TINYASSETS_WORKER_MODEL: gpt-5
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-2
 
   worker-claude-1:
     <<: *cloud_worker_base
-    container_name: workflow-worker-claude-1
-    command: ["python", "-m", "workflow.cloud_worker", "--provider", "claude-code"]
+    container_name: tinyassets-worker-claude-1
+    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "claude-code"]
     environment:
       <<: *cloud_worker_env
-      WORKFLOW_WORKER_ID: claude-1
-      WORKFLOW_WORKER_MODEL: claude
+      TINYASSETS_WORKER_ID: claude-1
+      TINYASSETS_WORKER_MODEL: claude
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-1
 
   worker-claude-2:
     <<: *cloud_worker_base
-    container_name: workflow-worker-claude-2
-    command: ["python", "-m", "workflow.cloud_worker", "--provider", "claude-code"]
+    container_name: tinyassets-worker-claude-2
+    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "claude-code"]
     environment:
       <<: *cloud_worker_env
-      WORKFLOW_WORKER_ID: claude-2
-      WORKFLOW_WORKER_MODEL: claude
+      TINYASSETS_WORKER_ID: claude-2
+      TINYASSETS_WORKER_MODEL: claude
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-2
 
 volumes:
-  workflow-data:
-    name: workflow-data
+  tinyassets-data:
+    name: tinyassets-data
     # Local named volume backed by Docker's default driver. Backups
     # (Row J) snapshot this to Hetzner Storage Box.
 
 networks:
   default:
-    name: workflow-net
+    name: tinyassets-net
     # Default bridge; cloudflared reaches daemon via `daemon:8001`.

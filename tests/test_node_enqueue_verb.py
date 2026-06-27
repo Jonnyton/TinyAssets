@@ -20,16 +20,16 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-import workflow.api.helpers as helpers
-import workflow.branch_tasks as bt
-import workflow.daemon_server as ds
-from workflow.branches import (
+import tinyassets.api.helpers as helpers
+import tinyassets.branch_tasks as bt
+import tinyassets.daemon_server as ds
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.graph_compiler import (
+from tinyassets.graph_compiler import (
     CompilerError,
     NodeEnqueueContext,
     compile_branch,
@@ -116,8 +116,8 @@ def _run(b, *, invocation_depth=0, thread="t", context=None, base_path="/fake/ba
 
 
 def test_enqueue_disabled_by_default(monkeypatch):
-    # No WORKFLOW_NODE_ENQUEUE_ENABLED → fail-closed, ships dark.
-    monkeypatch.delenv("WORKFLOW_NODE_ENQUEUE_ENABLED", raising=False)
+    # No TINYASSETS_NODE_ENQUEUE_ENABLED → fail-closed, ships dark.
+    monkeypatch.delenv("TINYASSETS_NODE_ENQUEUE_ENABLED", raising=False)
     b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
     with pytest.raises(CompilerError) as exc:
         _run(b, thread="enq-off")
@@ -125,7 +125,7 @@ def test_enqueue_disabled_by_default(monkeypatch):
 
 
 def test_enqueue_happy_path_appends_at_depth_1(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     captured = _patch_storage(monkeypatch)
 
     b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
@@ -146,8 +146,8 @@ def test_enqueue_happy_path_appends_at_depth_1(monkeypatch):
 
 
 def test_enqueue_carries_parent_depth_plus_one(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_MAX_DEPTH", "5")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_DEPTH", "5")
     captured = _patch_storage(monkeypatch)
 
     b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
@@ -158,8 +158,8 @@ def test_enqueue_carries_parent_depth_plus_one(monkeypatch):
 
 def test_enqueue_depth_cap_refuses(monkeypatch):
     # Default cap is 2; a run already at depth 2 would enqueue at depth 3.
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.delenv("WORKFLOW_NODE_ENQUEUE_MAX_DEPTH", raising=False)
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.delenv("TINYASSETS_NODE_ENQUEUE_MAX_DEPTH", raising=False)
     captured = _patch_storage(monkeypatch)
 
     b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
@@ -170,8 +170,8 @@ def test_enqueue_depth_cap_refuses(monkeypatch):
 
 
 def test_enqueue_per_run_budget_refuses_second(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_MAX_PER_RUN", "1")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", "1")
     captured = _patch_storage(monkeypatch)
 
     b = _branch(ENQUEUE_TWICE, ["enqueue_branch_run"])
@@ -183,7 +183,7 @@ def test_enqueue_per_run_budget_refuses_second(monkeypatch):
 
 def test_enqueue_requires_tools_allowed(monkeypatch):
     # Even enabled, the node must declare the verb in tools_allowed.
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     b = _branch(ENQUEUE_ONE, [])  # not declared
     with pytest.raises(CompilerError) as exc:
         _run(b, thread="enq-gate")
@@ -191,7 +191,7 @@ def test_enqueue_requires_tools_allowed(monkeypatch):
 
 
 def test_enqueue_requires_branch_def_id(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     _patch_storage(monkeypatch)
     src = (
         "def run(state):\n"
@@ -208,7 +208,7 @@ def test_enqueue_requires_branch_def_id(monkeypatch):
 
 def test_enqueue_refuses_without_trusted_universe(monkeypatch):
     # Absent trusted context (e.g. a direct, non-dispatched run) → fail closed.
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     captured = _patch_storage(monkeypatch)
     b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
     with pytest.raises(CompilerError) as exc:
@@ -219,7 +219,7 @@ def test_enqueue_refuses_without_trusted_universe(monkeypatch):
 
 def test_enqueue_refuses_foreign_universe(monkeypatch):
     # A node may not target a universe other than the run's own.
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     captured = _patch_storage(monkeypatch)
     b = _branch(ENQUEUE_FOREIGN_UNIVERSE, ["enqueue_branch_run"])
     with pytest.raises(CompilerError) as exc:
@@ -231,7 +231,7 @@ def test_enqueue_refuses_foreign_universe(monkeypatch):
 # ── Fix 3: target branch authority (reuses existing visibility model) ─────────
 
 def test_enqueue_refuses_unknown_branch(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     captured = _patch_storage(monkeypatch)
 
     def _missing(base_path, *, branch_def_id):
@@ -246,7 +246,7 @@ def test_enqueue_refuses_unknown_branch(monkeypatch):
 
 
 def test_enqueue_refuses_private_branch_non_owner(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     captured = _patch_storage(
         monkeypatch, branch_meta={"visibility": "private", "author": "someone_else"},
     )
@@ -258,7 +258,7 @@ def test_enqueue_refuses_private_branch_non_owner(monkeypatch):
 
 
 def test_enqueue_allows_private_branch_owner(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     captured = _patch_storage(
         monkeypatch, branch_meta={"visibility": "private", "author": "me"},
     )
@@ -271,8 +271,8 @@ def test_enqueue_allows_private_branch_owner(monkeypatch):
 # ── Fix 2: spawn lineage stamping + cap surfacing ────────────────────────────
 
 def test_enqueue_stamps_parent_and_origin(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_MAX_DEPTH", "5")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_DEPTH", "5")
     captured = _patch_storage(monkeypatch)
     b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
     _run(
@@ -288,7 +288,7 @@ def test_enqueue_ignores_branch_authored_request_type(monkeypatch):
     # request_type steers scheduler class + privileged downstream handling
     # (e.g. bug_investigation direct-execution). A source node must NOT be able
     # to pick it through enqueue_branch_run — it's forced to "branch_run".
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     captured = _patch_storage(monkeypatch)
     src = (
         "def run(state):\n"
@@ -303,7 +303,7 @@ def test_enqueue_ignores_branch_authored_request_type(monkeypatch):
 
 
 def test_enqueue_surfaces_queue_cap_as_compiler_error(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     _patch_storage(monkeypatch)
 
     def _raise(upath, task, **caps):

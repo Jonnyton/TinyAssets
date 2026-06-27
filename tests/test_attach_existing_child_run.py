@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from workflow.api.runs import _action_attach_existing_child_run
-from workflow.runs import create_run, get_run, update_run_status
+from tinyassets.api.runs import _action_attach_existing_child_run
+from tinyassets.runs import create_run, get_run, update_run_status
 
 
 def _make_run(
@@ -39,7 +39,7 @@ def _make_run(
 def attach_env(tmp_path, monkeypatch):
     base = tmp_path / "data"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     return base
 
 
@@ -125,7 +125,7 @@ def test_attach_existing_child_run_does_not_leave_parent_waiting(attach_env):
 
 
 def test_extensions_routes_attach_existing_child_run(attach_env):
-    from workflow.universe_server import extensions
+    from tinyassets.universe_server import extensions
 
     parent_id = _waiting_parent(attach_env)
     child_id = _completed_child(attach_env)

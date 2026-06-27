@@ -28,9 +28,9 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -170,7 +170,7 @@ class TestExplicitNodeRefCopiesCanonicalBody:
         assert result.get("status") == "added", result
 
         # Confirm the branch now carries the canonical body, not a hollow node.
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
         branch = get_branch_definition(base, branch_def_id=bid)
         nd = next(
             n for n in branch["node_defs"]
@@ -196,7 +196,7 @@ class TestExplicitNodeRefCopiesCanonicalBody:
             intent="copy",
         )
         assert result.get("status") == "added", result
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
         branch = get_branch_definition(base, branch_def_id=bid)
         nd = next(
             n for n in branch["node_defs"]
@@ -249,7 +249,7 @@ class TestExplicitNodeRefCopiesCanonicalBody:
         target = _call(us, "extensions", "build_branch",
                        spec_json=json.dumps(target_spec))
         assert target["status"] == "built", target
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
         branch = get_branch_definition(base, branch_def_id=target["branch_def_id"])
         nd = next(
             n for n in branch["node_defs"]
@@ -299,7 +299,7 @@ class TestExplicitNodeRefCopiesCanonicalBody:
                       spec_json=json.dumps(spec))
         assert built["status"] == "built", built
 
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
         branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
         nd = next(
             n for n in branch["node_defs"]
@@ -328,7 +328,7 @@ class TestExplicitNodeRefCopiesCanonicalBody:
                       spec_json=json.dumps(spec))
         assert built["status"] == "built", built
 
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
         branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
         nd = next(
             n for n in branch["node_defs"]
@@ -512,7 +512,7 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
                       spec_json=json.dumps(spec))
         assert built["status"] == "built", built
 
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
         branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
         nd = next(
             n for n in branch["node_defs"]
@@ -550,9 +550,9 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
                       spec_json=json.dumps(spec))
         assert built["status"] == "built", built
 
-        from workflow.branches import BranchDefinition
-        from workflow.daemon_server import get_branch_definition
-        from workflow.graph_compiler import UnapprovedNodeError, compile_branch
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.daemon_server import get_branch_definition
+        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
 
         branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
         bdef = BranchDefinition.from_dict(branch)
@@ -588,9 +588,9 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
                       spec_json=json.dumps(spec))
         assert built["status"] == "built", built
 
-        from workflow.branches import BranchDefinition
-        from workflow.daemon_server import get_branch_definition
-        from workflow.graph_compiler import compile_branch
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.daemon_server import get_branch_definition
+        from tinyassets.graph_compiler import compile_branch
 
         branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
         nd = next(
@@ -608,14 +608,14 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
         ``source_code`` must be refused at compile, independent of the
         authoring path.
         """
-        from workflow.api.branches import _source_code_hash
-        from workflow.branches import (
+        from tinyassets.api.branches import _source_code_hash
+        from tinyassets.branches import (
             BranchDefinition,
             EdgeDefinition,
             GraphNodeRef,
             NodeDefinition,
         )
-        from workflow.graph_compiler import UnapprovedNodeError, compile_branch
+        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
 
         approved_src = "def run(state): return {}\n"
         running_src = "def run(state): return {'x': 1}\n"  # different body
@@ -677,7 +677,7 @@ class TestPatchNodesSourceOverrideCannotForgeApproval:
         return bid
 
     def _persisted_node(self, base, bid):
-        from workflow.daemon_server import get_branch_definition
+        from tinyassets.daemon_server import get_branch_definition
 
         branch = get_branch_definition(base, branch_def_id=bid)
         return next(
@@ -712,9 +712,9 @@ class TestPatchNodesSourceOverrideCannotForgeApproval:
             branch_def_id=bid, field="source_code", value=self.MALICIOUS_SRC,
         )
 
-        from workflow.branches import BranchDefinition
-        from workflow.daemon_server import get_branch_definition
-        from workflow.graph_compiler import UnapprovedNodeError, compile_branch
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.daemon_server import get_branch_definition
+        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
 
         branch = get_branch_definition(base, branch_def_id=bid)
         bdef = BranchDefinition.from_dict(branch)
@@ -739,9 +739,9 @@ class TestPatchNodesSourceOverrideCannotForgeApproval:
         assert after["approved_source_hash"], after
 
         # Still compiles cleanly — provenance hash still matches the source.
-        from workflow.branches import BranchDefinition
-        from workflow.daemon_server import get_branch_definition
-        from workflow.graph_compiler import compile_branch
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.daemon_server import get_branch_definition
+        from tinyassets.graph_compiler import compile_branch
 
         branch = get_branch_definition(base, branch_def_id=bid)
         compile_branch(BranchDefinition.from_dict(branch))

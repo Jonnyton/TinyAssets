@@ -1,16 +1,16 @@
 ---
-title: Step 7 prep — workflow/api/market.py extraction scope
+title: Step 7 prep — tinyassets/api/market.py extraction scope
 date: 2026-04-26
 author: dev
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md §4.5 (`market.py`), §8 step 7
-target_task: Decomp audit Step 7 — Extract workflow/api/market.py
-gates_on: Steps 1-6 ✅ landed (4f98654, 32b919c, ab61da5, 80108fb, 555712e, cdbafe3). Step 7 sequenced after Step 6 — both Steps 7 and 8 must serialize because both edit `workflow/universe_server.py`. After Step 7 SHIP, Step 8 (branches.py) follows immediately.
+target_task: Decomp audit Step 7 — Extract tinyassets/api/market.py
+gates_on: Steps 1-6 ✅ landed (4f98654, 32b919c, ab61da5, 80108fb, 555712e, cdbafe3). Step 7 sequenced after Step 6 — both Steps 7 and 8 must serialize because both edit `tinyassets/universe_server.py`. After Step 7 SHIP, Step 8 (branches.py) follows immediately.
 ---
 
 # Step 7 (`market.py`) pre-flight scope
 
-Read-only scope for extracting the paid-market economy primitives — goals, gates, gate events, outcomes, attribution, escrow — from `workflow/universe_server.py` into a new `workflow/api/market.py`. Same freshness-check protocol as Steps 1-6 prep (audit prescription verified against current code; line numbers re-grepped post-Step-6).
+Read-only scope for extracting the paid-market economy primitives — goals, gates, gate events, outcomes, attribution, escrow — from `tinyassets/universe_server.py` into a new `tinyassets/api/market.py`. Same freshness-check protocol as Steps 1-6 prep (audit prescription verified against current code; line numbers re-grepped post-Step-6).
 
 ---
 
@@ -123,7 +123,7 @@ Read-only scope for extracting the paid-market economy primitives — goals, gat
 
 ### 3.2 Does market.py depend on shared #8 helpers?
 
-**Yes:** Most handlers use `_base_path()`. After Steps 1-6 landed (4f98654 + others), market.py imports `_base_path` from `workflow/api/helpers.py`. `_default_universe`, `_universe_dir`, `_read_json`, `_read_text` likely also used by some handlers — verify at extraction time.
+**Yes:** Most handlers use `_base_path()`. After Steps 1-6 landed (4f98654 + others), market.py imports `_base_path` from `tinyassets/api/helpers.py`. `_default_universe`, `_universe_dir`, `_read_json`, `_read_text` likely also used by some handlers — verify at extraction time.
 
 ### 3.3 Does market.py depend on universe_server preamble helpers?
 
@@ -204,7 +204,7 @@ Searched broadly across `tests/`. Likely import patterns:
 | `tests/test_attribution*.py` | `_action_record_remix`, `_action_get_provenance` | varies |
 | `tests/test_canonical_branch_mcp.py:115,126` | `_GOAL_ACTIONS` (back-compat re-export already needed for #11) | 2 |
 
-**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After Step 7 lands, `workflow/universe_server.py` adds re-export block for ~35 symbols (the 5 dispatch dicts + 23 handlers + `goals`/`gates` impl callables + `_dispatch_goal_action`).
+**Strategy:** Audit §7 Strategy 1 (back-compat re-export shim) preserves all imports. After Step 7 lands, `tinyassets/universe_server.py` adds re-export block for ~35 symbols (the 5 dispatch dicts + 23 handlers + `goals`/`gates` impl callables + `_dispatch_goal_action`).
 
 **Confirmation needed at extraction time:** grep `tests/` for direct imports of `_action_escrow_*`, `_action_record_outcome`, `_action_record_remix`, `_action_goal_*`, `_action_gates_*`, `_action_*_gate_event`. Pre-export each name found.
 
@@ -216,7 +216,7 @@ Searched broadly across `tests/`. Likely import patterns:
 
 Searched for evidence that any market-scope symbols already shipped to a submodule (e.g. `workflow.api.market`, `workflow.escrow`, `workflow.outcomes`, `workflow.attribution`). **None found in the API layer.**
 
-Note: there ARE storage-layer modules (`workflow/escrow.py`, `workflow/outcomes.py`, `workflow/goals.py`, etc.) — these are the persistence backends that the market action handlers wrap. Different namespaces. Inside market.py, imports stay as `from workflow.goals import ...` (storage), `from workflow.escrow import ...` (storage), etc. **Verify no name collision** at extraction time — the new file is `workflow/api/market.py`, not `workflow/market.py`.
+Note: there ARE storage-layer modules (`tinyassets/escrow.py`, `tinyassets/outcomes.py`, `tinyassets/goals.py`, etc.) — these are the persistence backends that the market action handlers wrap. Different namespaces. Inside market.py, imports stay as `from workflow.goals import ...` (storage), `from workflow.escrow import ...` (storage), etc. **Verify no name collision** at extraction time — the new file is `tinyassets/api/market.py`, not `tinyassets/market.py`.
 
 Adjacent partial moves: only the 5 helpers in #8 — most market handlers already use `_base_path` from helpers.py.
 
@@ -235,7 +235,7 @@ Adjacent partial moves: only the 5 helpers in #8 — most market handlers alread
 | Back-compat re-export block added to universe_server.py | ~45 |
 | `@mcp.tool` wrappers for `goals` + `gates` (preserved) | ~250 (decorators + signatures + docstrings + delegations) |
 | **Net reduction in universe_server.py** | **~1,940** |
-| New `workflow/api/market.py` size | **~2,300** (with imports + module docstring) |
+| New `tinyassets/api/market.py` size | **~2,300** (with imports + module docstring) |
 
 **Audit said ~1,813.** Reality ~2,237 — about 23% over (gates Phase 6.1 expansion + new gate_event handlers since audit). The wrappers preserved in universe_server.py reduce net shrink by ~250 LOC vs the full-move ideal.
 
@@ -251,7 +251,7 @@ Adjacent partial moves: only the 5 helpers in #8 — most market handlers alread
 
 4. **`_dispatch_goal_action` vs no `_dispatch_*` for escrow/outcome/attribution/gates.** Goals is the only block with dispatch glue (because `goals()` MCP tool is standalone like `gates()`). Escrow/outcome/attribution dispatch is inlined in `extensions()` body. Gates handlers are dispatched inline via `gates()` MCP tool body itself (verify by reading `gates()` body — likely uses `_GATES_ACTIONS.get(action)` plus `_GATE_EVENT_ACTIONS.get(action)` directly).
 
-5. **Storage-layer namespace overlap.** `workflow/goals.py`, `workflow/escrow.py`, etc. exist as storage backends. New `workflow/api/market.py` imports from those (`from workflow.goals import propose_goal, ...`). Same pattern as runs.py importing `workflow.runs` storage. Verify no naming confusion at extraction time.
+5. **Storage-layer namespace overlap.** `tinyassets/goals.py`, `tinyassets/escrow.py`, etc. exist as storage backends. New `tinyassets/api/market.py` imports from those (`from workflow.goals import propose_goal, ...`). Same pattern as runs.py importing `workflow.runs` storage. Verify no naming confusion at extraction time.
 
 6. **Pre-commit canonical-vs-plugin parity check** — same as previous steps. Run `python packaging/claude-plugin/build_plugin.py`.
 
@@ -269,7 +269,7 @@ Estimated wall time: **90-120 min** (largest extraction; double Step 4's surface
 
 1. **Confirm Steps 1-6 landed.** ✅ All 6 commits in main as of writing.
 2. **Re-grep external symbol set** with AST scan (same script pattern as Steps 4-6 prep verification): identify exact set of universe_server-internal symbols the moved code references. Lazy-import each in the consuming function.
-3. **Create `workflow/api/market.py`:**
+3. **Create `tinyassets/api/market.py`:**
    - Module docstring referencing audit + extraction date + the 5 source ranges + dispatch table inventory + Pattern A2 explanation for the dual `goals`/`gates` MCP wrappers.
    - Imports: `from workflow.api.helpers import _base_path` + (any other helpers actually used per AST scan) + std-lib + typing + `logging.getLogger("universe_server.market")`.
    - Move 5 source-range chunks in this order (matches source order; minimizes diff confusion):
@@ -278,7 +278,7 @@ Estimated wall time: **90-120 min** (largest extraction; double Step 4's surface
      3. Attribution handlers + `_ATTRIBUTION_ACTIONS` (L7387–L7574)
      4. Goals: TOOL 3 banner + 9 handlers + `_GOAL_ACTIONS` + `_GOAL_WRITE_ACTIONS` + `_dispatch_goal_action` + the `goals()` BODY (without `@mcp.tool` decorator) (L7579–L8472)
      5. Gates: TOOL 3b banner + 9 main handlers + 6 gate_event handlers + `_GATE_EVENT_ACTIONS` + `_GATES_ACTIONS` + the `gates()` BODY (without `@mcp.tool` decorator) (L8475–L9369)
-4. **Update `workflow/universe_server.py`:**
+4. **Update `tinyassets/universe_server.py`:**
    - Delete the 5 source ranges in REVERSE order to avoid line-shift confusion (5,4,3,2,1).
    - Add to back-compat shim block (after the existing #11/#12/#13 re-export blocks):
      ```python
@@ -315,15 +315,15 @@ Estimated wall time: **90-120 min** (largest extraction; double Step 4's surface
    - `pytest tests/test_goals_*.py tests/test_gates_*.py tests/test_escrow_*.py tests/test_outcome*.py tests/test_attribution*.py -q` → green.
    - `pytest -k "goals or gates or escrow or outcome or attribution or market" -q` → cross-cutting smoke.
    - `pytest -q` → full suite green (highly recommended given LOC volume).
-   - `ruff check workflow/api/market.py workflow/universe_server.py` → clean.
-   - **Visual check:** `git diff workflow/universe_server.py | grep -c "^-def _action_"` should equal 27 (4 escrow + 3 outcomes + 2 attribution + 9 goals + 9 gates main, but NOT the 6 gate_event handlers because those go to `_GATE_EVENT_ACTIONS` which moves with the gates section). Actually let me recount: 4+3+2+9+9+6 = **33 `_action_` defs deleted**. Anything else means an accidental pull or skip.
+   - `ruff check tinyassets/api/market.py tinyassets/universe_server.py` → clean.
+   - **Visual check:** `git diff tinyassets/universe_server.py | grep -c "^-def _action_"` should equal 27 (4 escrow + 3 outcomes + 2 attribution + 9 goals + 9 gates main, but NOT the 6 gate_event handlers because those go to `_GATE_EVENT_ACTIONS` which moves with the gates section). Actually let me recount: 4+3+2+9+9+6 = **33 `_action_` defs deleted**. Anything else means an accidental pull or skip.
 
 **Files in eventual Step 7 SHIP handoff:**
-- `workflow/api/market.py` (NEW, ~2,300 LOC — largest extraction)
-- `workflow/universe_server.py` (~1,940 LOC removed + ~45 re-export added + ~250 wrapper-preservation = net ~−1,650)
+- `tinyassets/api/market.py` (NEW, ~2,300 LOC — largest extraction)
+- `tinyassets/universe_server.py` (~1,940 LOC removed + ~45 re-export added + ~250 wrapper-preservation = net ~−1,650)
 - `tests/test_api_market.py` (NEW, 60-80 tests recommended given the surface area)
-- `packaging/claude-plugin/.../workflow/api/market.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
+- `packaging/claude-plugin/.../tinyassets/api/market.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
 
 5 files, +2,400 / −1,650 LOC net.
 

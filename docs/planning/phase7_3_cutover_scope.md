@@ -75,13 +75,13 @@ composite-commit shape question but otherwise parallel-safe.
 **Recommendation: one module-global `SqliteCachedBackend` instance
 per process, lazily initialized on first use.**
 
-- Lives in a new `workflow/storage/__init__.py` function
+- Lives in a new `tinyassets/storage/__init__.py` function
   `get_backend() -> StorageBackend` that memoizes.
 - Construction reads `repo_root` from the git detection in
   `git_bridge.is_enabled()`. When `is_enabled()` returns False,
   returns a `SqliteOnlyBackend` — dev/test environments without a
   repo keep working.
-- Env var `WORKFLOW_STORAGE_BACKEND` overrides (per §6 below).
+- Env var `TINYASSETS_STORAGE_BACKEND` overrides (per §6 below).
 - Thread safety: `SqliteCachedBackend` methods are stateless modulo
   the `self._stage_hook` call; `git_bridge.commit` serializes via
   the process-local lock (7.2 §5e risk). Concurrent `save_branch`
@@ -158,8 +158,8 @@ Total new tests: ~70-80. In line with Phase 4's 44-test ship.
 `sqlite_only` vs `sqlite_cached` in spec §Architecture.**
 
 ```
-WORKFLOW_STORAGE_BACKEND=sqlite_only    # safe fallback
-WORKFLOW_STORAGE_BACKEND=sqlite_cached  # 7.3 default after cutover
+TINYASSETS_STORAGE_BACKEND=sqlite_only    # safe fallback
+TINYASSETS_STORAGE_BACKEND=sqlite_cached  # 7.3 default after cutover
 ```
 
 Default behavior:
@@ -175,7 +175,7 @@ breaks in production, revert the cluster's PR; don't live with a
 half-cutover indefinitely.
 
 **Tray / host operator control:** surface the env var in
-`workflow/desktop/tray.py` menu once G2/G3 land — a "Storage mode"
+`tinyassets/desktop/tray.py` menu once G2/G3 land — a "Storage mode"
 submenu with `sqlite_only` / `sqlite_cached` radio options. Lets the
 user fall back without touching env vars. Out of 7.3 scope; file as
 a 7.5 polish item.
@@ -217,9 +217,9 @@ Four tasks; H1 is blocking, H2-H4 parallel after H1.
 Wire `get_backend()` module-level singleton. Add
 `force: bool = False` kwarg threading. Define the
 `local_edit_conflict` response shape in the dispatcher layer. Wire
-`WORKFLOW_STORAGE_BACKEND` env var. No handler cutover yet.
+`TINYASSETS_STORAGE_BACKEND` env var. No handler cutover yet.
 
-**Files:** `workflow/storage/__init__.py`, `workflow/universe_server.py`
+**Files:** `tinyassets/storage/__init__.py`, `tinyassets/universe_server.py`
 (dispatcher helpers only), `tests/test_phase7_3_backend_factory.py`.
 **Depends on:** G1, G2, G3.
 **Risk:** low. Pure plumbing.
@@ -231,7 +231,7 @@ Three handlers: `_action_goal_propose`, `_action_goal_update`,
 `get_backend().save_goal_and_commit(goal, author, message)`. Handle
 the cross-file `goals.bind` case with a branch-path dirty-check.
 
-**Files:** `workflow/universe_server.py` (3 handlers),
+**Files:** `tinyassets/universe_server.py` (3 handlers),
 `tests/test_phase7_3_goals_cutover.py`.
 **Depends on:** H1.
 **Parallel-safe with:** H3.
@@ -243,7 +243,7 @@ Five append-style handlers: `create_branch`, `add_node`,
 one branch YAML + potentially one node YAML. Simple `save_branch_and_commit`
 wrap.
 
-**Files:** `workflow/universe_server.py` (5 handlers),
+**Files:** `tinyassets/universe_server.py` (5 handlers),
 `tests/test_phase7_3_branch_single_cutover.py`.
 **Depends on:** H1.
 **Parallel-safe with:** H2.
@@ -256,8 +256,8 @@ commit semantics — N YAMLs staged, one commit. G3's
 `save_branch_and_commit` must accept `extra_paths: list[Path]` for
 multi-file writes. Coordinate with G3 on the signature.
 
-**Files:** `workflow/universe_server.py` (5 handlers),
-`workflow/storage/backend.py` (signature extension),
+**Files:** `tinyassets/universe_server.py` (5 handlers),
+`tinyassets/storage/backend.py` (signature extension),
 `tests/test_phase7_3_branch_composite_cutover.py`,
 `tests/test_phase7_3_integration.py`.
 **Depends on:** H1, H2 merged, H3 merged.

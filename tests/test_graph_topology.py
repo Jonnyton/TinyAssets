@@ -35,7 +35,7 @@ from domains.fantasy_daemon.graphs.universe import (
     route_dispatched_task,
     should_continue_universe,
 )
-from workflow.checkpointing import compile_all_graphs
+from tinyassets.checkpointing import compile_all_graphs
 
 # -----------------------------------------------------------------------
 # Graph compilation tests
@@ -511,8 +511,8 @@ class TestOrientRetrieval:
     def test_orient_returns_retrieval_context_with_kg(self, tmp_path, tmp_story_db):
         """Orient should populate retrieved_context when a KG is available."""
         from domains.fantasy_daemon.phases.orient import orient
-        from workflow.knowledge.knowledge_graph import KnowledgeGraph
-        from workflow.knowledge.models import (
+        from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+        from tinyassets.knowledge.models import (
             FactWithContext,
             GraphEntity,
             SourceType,
@@ -581,8 +581,8 @@ class TestOrientRetrieval:
     def test_orient_retrieved_context_has_hipporag_source(self, tmp_path, tmp_story_db):
         """Orient queries about relationships should route through hipporag."""
         from domains.fantasy_daemon.phases.orient import orient
-        from workflow.knowledge.knowledge_graph import KnowledgeGraph
-        from workflow.knowledge.models import (
+        from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+        from tinyassets.knowledge.models import (
             FactWithContext,
             GraphEdge,
             GraphEntity,

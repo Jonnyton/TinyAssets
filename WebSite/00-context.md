@@ -36,7 +36,7 @@
 - **Lead with Workflow** as the primary product (matches the GoDaddy draft direction)
 - **Token (Tiny Assets) is secondary** — future reward mechanism, small section on the site, not the headline
 - Build as **custom HTML/JS** to host on the GoDaddy domain (likely static hosting, not the GoDaddy site builder)
-- Project lives at `C:\Users\Jonathan\Projects\Workflow\WebSite`
+- Project lives at `C:\Users\Jonathan\Projects\TinyAssets\WebSite`
 
 ## What's still missing
 - The actual HTML/CSS/JS source of the Claude design (can't scrape — JS blocked on claude.ai by browser extension)

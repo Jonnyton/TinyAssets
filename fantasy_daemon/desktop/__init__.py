@@ -1,2 +1,2 @@
-"""Shim: use workflow.desktop instead."""
-from workflow.desktop import *  # noqa: F401,F403
+"""Shim: use tinyassets.desktop instead."""
+from tinyassets.desktop import *  # noqa: F401,F403

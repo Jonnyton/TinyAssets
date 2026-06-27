@@ -5,7 +5,7 @@ Covers two defect fixes landed together:
 1. ``add_canon`` previously wrote directly to ``canon/<filename>`` and
    did NOT emit the ``synthesize_source`` signal — premise/canon/entity
    synthesis never fired on MCP uploads. Now routes through
-   :func:`workflow.ingestion.core.ingest_file` so the signal fires.
+   :func:`tinyassets.ingestion.core.ingest_file` so the signal fires.
 
 2. ``add_canon_from_path`` is a new action for large uploads. The MCP
    client passes an **absolute server-side path**; the server reads
@@ -22,9 +22,9 @@ from pathlib import Path
 
 import pytest
 
-import workflow.api.engine_helpers as eh
-import workflow.api.universe as us
-from workflow.enrichment_signals import load_enrichment_signals
+import tinyassets.api.engine_helpers as eh
+import tinyassets.api.universe as us
+from tinyassets.enrichment_signals import load_enrichment_signals
 
 
 def _call(action: str, **kwargs) -> dict:
@@ -58,7 +58,7 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     base = tmp_path / "output"
     uid = "test-uni"
     (base / uid).mkdir(parents=True)
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "test-user")
     return uid
@@ -385,13 +385,13 @@ class TestAddCanonFromPathRejections:
 
 
 class TestAddCanonFromPathWhitelist:
-    """``WORKFLOW_UPLOAD_WHITELIST`` opt-in enforcement."""
+    """``TINYASSETS_UPLOAD_WHITELIST`` opt-in enforcement."""
 
     def test_whitelist_unset_accepts_any_absolute(
         self, universe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Default/demo behavior preserved: unset whitelist → accept."""
-        monkeypatch.delenv("WORKFLOW_UPLOAD_WHITELIST", raising=False)
+        monkeypatch.delenv("TINYASSETS_UPLOAD_WHITELIST", raising=False)
         src = tmp_path / "open.md"
         src.write_text("open content", encoding="utf-8")
         out = _call("add_canon_from_path", path=str(src))
@@ -401,7 +401,7 @@ class TestAddCanonFromPathWhitelist:
     def test_whitelist_set_accepts_path_under_prefix(
         self, universe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("WORKFLOW_UPLOAD_WHITELIST", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_UPLOAD_WHITELIST", str(tmp_path))
         src = tmp_path / "inside.md"
         src.write_text("inside content", encoding="utf-8")
         out = _call("add_canon_from_path", path=str(src))
@@ -419,7 +419,7 @@ class TestAddCanonFromPathWhitelist:
         bad_file = forbidden / "secret.md"
         bad_file.write_text("secret", encoding="utf-8")
 
-        monkeypatch.setenv("WORKFLOW_UPLOAD_WHITELIST", str(allowed))
+        monkeypatch.setenv("TINYASSETS_UPLOAD_WHITELIST", str(allowed))
         out = _call("add_canon_from_path", path=str(bad_file))
         assert "error" in out
         assert "whitelist" in out["error"].lower()
@@ -438,7 +438,7 @@ class TestAddCanonFromPathWhitelist:
         bad_file = forbidden / "secret.md"
         bad_file.write_text("secret", encoding="utf-8")
 
-        monkeypatch.setenv("WORKFLOW_UPLOAD_WHITELIST", str(allowed))
+        monkeypatch.setenv("TINYASSETS_UPLOAD_WHITELIST", str(allowed))
         traversal = allowed / ".." / "forbidden" / "secret.md"
         out = _call("add_canon_from_path", path=str(traversal))
         assert "error" in out
@@ -459,7 +459,7 @@ class TestAddCanonFromPathWhitelist:
         file_b.write_text("b", encoding="utf-8")
 
         monkeypatch.setenv(
-            "WORKFLOW_UPLOAD_WHITELIST", f"{dir_a};{dir_b}",
+            "TINYASSETS_UPLOAD_WHITELIST", f"{dir_a};{dir_b}",
         )
         assert "error" not in _call("add_canon_from_path", path=str(file_a))
         assert "error" not in _call("add_canon_from_path", path=str(file_b))
@@ -469,7 +469,7 @@ class TestAddCanonFromPathWhitelist:
     ) -> None:
         """Drive-letter colons on Windows must not get mis-split."""
         monkeypatch.setenv(
-            "WORKFLOW_UPLOAD_WHITELIST",
+            "TINYASSETS_UPLOAD_WHITELIST",
             r"C:\Users\Jonathan\Desktop;D:\data",
         )
         prefixes = eh._upload_whitelist_prefixes()
@@ -485,13 +485,13 @@ class TestAddCanonFromPathWhitelist:
     def test_whitelist_unset_helper_returns_none(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.delenv("WORKFLOW_UPLOAD_WHITELIST", raising=False)
+        monkeypatch.delenv("TINYASSETS_UPLOAD_WHITELIST", raising=False)
         assert eh._upload_whitelist_prefixes() is None
 
     def test_whitelist_empty_string_is_none(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("WORKFLOW_UPLOAD_WHITELIST", "")
+        monkeypatch.setenv("TINYASSETS_UPLOAD_WHITELIST", "")
         assert eh._upload_whitelist_prefixes() is None
 
 

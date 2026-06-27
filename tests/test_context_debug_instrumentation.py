@@ -1,4 +1,4 @@
-"""Tests for WORKFLOW_DEBUG_CONTEXT=1 instrumentation.
+"""Tests for TINYASSETS_DEBUG_CONTEXT=1 instrumentation.
 
 Task #3 diagnostic pass: when CoreMemory exceeds budget, a flag-gated
 per-field breakdown logs the culprits at WARNING level. Off by default
@@ -10,8 +10,8 @@ import logging
 
 import pytest
 
-from workflow.exceptions import ContextBundleOverflowError
-from workflow.memory.manager import (
+from tinyassets.exceptions import ContextBundleOverflowError
+from tinyassets.memory.manager import (
     MAX_CONTEXT_TOKENS,
     MemoryManager,
     _debug_context_enabled,
@@ -20,17 +20,17 @@ from workflow.memory.manager import (
 
 class TestDebugContextFlag:
     def test_flag_off_by_default(self, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_DEBUG_CONTEXT", raising=False)
+        monkeypatch.delenv("TINYASSETS_DEBUG_CONTEXT", raising=False)
         assert _debug_context_enabled() is False
 
     @pytest.mark.parametrize("value", ["1", "on", "true", "yes", "TRUE", "Yes"])
     def test_flag_truthy_values(self, monkeypatch, value):
-        monkeypatch.setenv("WORKFLOW_DEBUG_CONTEXT", value)
+        monkeypatch.setenv("TINYASSETS_DEBUG_CONTEXT", value)
         assert _debug_context_enabled() is True
 
     @pytest.mark.parametrize("value", ["0", "off", "false", "no", ""])
     def test_flag_falsy_values(self, monkeypatch, value):
-        monkeypatch.setenv("WORKFLOW_DEBUG_CONTEXT", value)
+        monkeypatch.setenv("TINYASSETS_DEBUG_CONTEXT", value)
         assert _debug_context_enabled() is False
 
 
@@ -52,14 +52,14 @@ def _oversized_state() -> dict:
 
 class TestBreakdownLogging:
     def test_breakdown_emitted_when_flag_on(self, monkeypatch, caplog):
-        monkeypatch.setenv("WORKFLOW_DEBUG_CONTEXT", "1")
+        monkeypatch.setenv("TINYASSETS_DEBUG_CONTEXT", "1")
         mgr = MemoryManager(universe_id="debug-test", db_path=":memory:")
         state = _oversized_state()
 
         # Irreducible world_state payload → trim cannot reach budget →
         # BUG-024 fix raises ContextBundleOverflowError (loud, not silent).
         # The debug breakdown should still emit before the raise.
-        with caplog.at_level(logging.WARNING, logger="workflow.memory.manager"):
+        with caplog.at_level(logging.WARNING, logger="tinyassets.memory.manager"):
             with pytest.raises(ContextBundleOverflowError):
                 mgr.assemble_context("orient", state)
 
@@ -71,11 +71,11 @@ class TestBreakdownLogging:
         assert any("CONTEXT-DEBUG bundle breakdown" in m for m in messages)
 
     def test_breakdown_silent_when_flag_off(self, monkeypatch, caplog):
-        monkeypatch.delenv("WORKFLOW_DEBUG_CONTEXT", raising=False)
+        monkeypatch.delenv("TINYASSETS_DEBUG_CONTEXT", raising=False)
         mgr = MemoryManager(universe_id="debug-test", db_path=":memory:")
         state = _oversized_state()
 
-        with caplog.at_level(logging.WARNING, logger="workflow.memory.manager"):
+        with caplog.at_level(logging.WARNING, logger="tinyassets.memory.manager"):
             with pytest.raises(ContextBundleOverflowError):
                 mgr.assemble_context("orient", state)
 
@@ -86,7 +86,7 @@ class TestBreakdownLogging:
         assert not any("CONTEXT-DEBUG" in m for m in messages)
 
     def test_breakdown_not_emitted_when_under_budget(self, monkeypatch, caplog):
-        monkeypatch.setenv("WORKFLOW_DEBUG_CONTEXT", "1")
+        monkeypatch.setenv("TINYASSETS_DEBUG_CONTEXT", "1")
         mgr = MemoryManager(universe_id="debug-test", db_path=":memory:")
 
         state = {
@@ -97,7 +97,7 @@ class TestBreakdownLogging:
             },
         }
 
-        with caplog.at_level(logging.WARNING, logger="workflow.memory.manager"):
+        with caplog.at_level(logging.WARNING, logger="tinyassets.memory.manager"):
             mgr.assemble_context("orient", state)
 
         mgr.close()

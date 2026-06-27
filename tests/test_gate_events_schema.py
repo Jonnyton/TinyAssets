@@ -1,4 +1,4 @@
-"""Tests for workflow.gate_events schema — DDL, dataclasses, status transitions."""
+"""Tests for tinyassets.gate_events schema — DDL, dataclasses, status transitions."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from workflow.gate_events import (
+from tinyassets.gate_events import (
     VERIFICATION_STATUSES,
     GateEvent,
     GateEventCite,

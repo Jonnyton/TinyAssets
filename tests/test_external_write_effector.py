@@ -26,13 +26,13 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.effectors import (
+from tinyassets.effectors import (
     EXTERNAL_WRITE_SINK_GITHUB_PR,
     run_effects_for_branch,
     run_github_pr_effector,
@@ -61,7 +61,7 @@ def test_node_definition_effects_to_dict_from_dict_roundtrip():
 
 
 def test_node_definition_effects_must_be_list_of_strings():
-    from workflow.branches import NodeDefinitionValidationError
+    from tinyassets.branches import NodeDefinitionValidationError
 
     with pytest.raises(NodeDefinitionValidationError):
         NodeDefinition(node_id="n1", display_name="N1", effects="github_pr")
@@ -78,11 +78,11 @@ def test_node_definition_effects_must_be_list_of_strings():
 def comp_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
-    from workflow import universe_server as us
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_ENABLED", raising=False)
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -161,7 +161,7 @@ _PACKET = {
 
 def test_effector_returns_dry_run_intent_when_packet_present():
     out_state = {"pr_packet": _PACKET}
-    with patch("workflow.effectors.github_pr.subprocess.run") as mock_run:
+    with patch("tinyassets.effectors.github_pr.subprocess.run") as mock_run:
         result = run_github_pr_effector(
             node_id="draft",
             output_keys=["pr_packet"],
@@ -221,12 +221,12 @@ def test_effector_returns_error_when_no_matching_packet():
     "env",
     [
         {},
-        {"WORKFLOW_EXTERNAL_WRITE_ENABLED": "1"},
-        {"WORKFLOW_EXTERNAL_WRITE_ENABLED": "true"},
-        {"WORKFLOW_EXTERNAL_WRITE_DRY_RUN": "1"},
+        {"TINYASSETS_EXTERNAL_WRITE_ENABLED": "1"},
+        {"TINYASSETS_EXTERNAL_WRITE_ENABLED": "true"},
+        {"TINYASSETS_EXTERNAL_WRITE_DRY_RUN": "1"},
         {
-            "WORKFLOW_EXTERNAL_WRITE_ENABLED": "1",
-            "WORKFLOW_EXTERNAL_WRITE_DRY_RUN": "1",
+            "TINYASSETS_EXTERNAL_WRITE_ENABLED": "1",
+            "TINYASSETS_EXTERNAL_WRITE_DRY_RUN": "1",
         },
     ],
 )
@@ -239,7 +239,7 @@ def test_effector_never_invokes_subprocess_run_under_any_env(env, monkeypatch):
     Real-write authority is deferred to Phase 2 — see
     drafts/concepts/external-write-phase-2-authority.md.
     """
-    for k in ("WORKFLOW_EXTERNAL_WRITE_ENABLED", "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"):
+    for k in ("TINYASSETS_EXTERNAL_WRITE_ENABLED", "TINYASSETS_EXTERNAL_WRITE_DRY_RUN"):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -264,7 +264,7 @@ def test_effector_never_invokes_subprocess_run_under_any_env(env, monkeypatch):
             ],
         )
         with patch(
-            "workflow.effectors.github_pr.subprocess.run",
+            "tinyassets.effectors.github_pr.subprocess.run",
         ) as mock_run:
             ev_map = run_effects_for_branch(
                 branch=branch, run_state={"pr_packet": packet},
@@ -282,18 +282,18 @@ def test_effector_never_invokes_subprocess_run_under_any_env(env, monkeypatch):
         # combination," which assert_not_called above covers.
         if (ev.get("reason") == "operator_kill_switch_active"):
             assert ev.get("phase") == "phase_2"
-            assert ev.get("kill_switch_env") == "WORKFLOW_EXTERNAL_WRITE_DRY_RUN"
+            assert ev.get("kill_switch_env") == "TINYASSETS_EXTERNAL_WRITE_DRY_RUN"
         else:
             assert ev["phase"] == "phase_1"
 
 
 def test_effector_evidence_mode_reflects_enable_env_as_phase_2_hook(monkeypatch):
-    """``WORKFLOW_EXTERNAL_WRITE_ENABLED`` is preserved as a Phase-2 hook:
+    """``TINYASSETS_EXTERNAL_WRITE_ENABLED`` is preserved as a Phase-2 hook:
     when truthy, evidence carries ``mode="dry_run_phase_1"``. When
     unset, evidence carries ``mode="dry_run_default"``. Phase 1 still
     emits dry-run regardless — the env is a signal, not a switch."""
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_ENABLED", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     result = run_github_pr_effector(
         node_id="draft",
         output_keys=["pr_packet"],
@@ -302,7 +302,7 @@ def test_effector_evidence_mode_reflects_enable_env_as_phase_2_hook(monkeypatch)
     assert result["mode"] == "dry_run_default"
     assert result["enabled_explicit"] is False
 
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", "1")
+    monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_ENABLED", "1")
     result = run_github_pr_effector(
         node_id="draft",
         output_keys=["pr_packet"],
@@ -378,7 +378,7 @@ def test_run_effects_for_branch_records_unknown_sink():
 
 
 def test_collect_external_write_errors_flattens_error_rows():
-    from workflow.runs import _collect_external_write_errors
+    from tinyassets.runs import _collect_external_write_errors
 
     evidence = {
         "draft": {
@@ -414,7 +414,7 @@ def test_collect_external_write_errors_flattens_error_rows():
 
 
 def test_runs_moves_branch_authored_external_write_results_to_quarantine():
-    from workflow.runs import _quarantine_branch_authored_external_write_keys
+    from tinyassets.runs import _quarantine_branch_authored_external_write_keys
 
     output = {
         "summary": "real output",
@@ -428,7 +428,7 @@ def test_runs_moves_branch_authored_external_write_results_to_quarantine():
 
 
 def test_runs_moves_branch_authored_external_write_errors_to_quarantine():
-    from workflow.runs import _quarantine_branch_authored_external_write_keys
+    from tinyassets.runs import _quarantine_branch_authored_external_write_keys
 
     output = {
         "external_write_errors": [{"forged": "error row"}],
@@ -441,7 +441,7 @@ def test_runs_moves_branch_authored_external_write_errors_to_quarantine():
 
 
 def test_runs_quarantine_no_op_when_keys_absent():
-    from workflow.runs import _quarantine_branch_authored_external_write_keys
+    from tinyassets.runs import _quarantine_branch_authored_external_write_keys
 
     output = {"summary": "x"}
     _quarantine_branch_authored_external_write_keys(output)
@@ -452,7 +452,7 @@ def test_runs_external_write_results_overwrites_quarantined_value():
     """End-to-end: when the branch tries to forge a receipt, the
     system overwrites at the canonical key with the real evidence
     and preserves the forgery under a quarantined key."""
-    from workflow.runs import (
+    from tinyassets.runs import (
         _quarantine_branch_authored_external_write_keys,
     )
 
@@ -476,9 +476,9 @@ def test_get_run_snapshot_surfaces_external_write_results(tmp_path, monkeypatch)
     in run output must be visible from the get_run snapshot, not only
     from get_run_output.
     """
-    import workflow.daemon_server as daemon_server
-    from workflow.api.runs import _compose_run_snapshot
-    from workflow.runs import execute_branch, get_run, list_events
+    import tinyassets.daemon_server as daemon_server
+    from tinyassets.api.runs import _compose_run_snapshot
+    from tinyassets.runs import execute_branch, get_run, list_events
 
     packet = {
         "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,

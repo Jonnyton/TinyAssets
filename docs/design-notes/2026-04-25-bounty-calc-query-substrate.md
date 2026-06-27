@@ -16,7 +16,7 @@ status: active
 
 Two artifacts:
 
-1. **`workflow/attribution/bounty_calc.py`** module — `bounty_calc_query_template(...)` returns a parameterized SQL string + helper functions (`decay_coeff`, `compose_filters`).
+1. **`tinyassets/attribution/bounty_calc.py`** module — `bounty_calc_query_template(...)` returns a parameterized SQL string + helper functions (`decay_coeff`, `compose_filters`).
 2. **`extensions action=query_bounty_pool`** MCP read action — thin wrapper exposing the calc to chatbots.
 
 The substrate (#1) is engine-side, reusable across chatbot dispatch + scheduled bounty cycles + ad-hoc analyses. The MCP action (#2) is user-facing surface using "bounty pool" vocabulary. **Two-name pattern:** `attribution` is the engine concept; `bounty_pool` is the user-facing concept.
@@ -25,14 +25,14 @@ The substrate (#1) is engine-side, reusable across chatbot dispatch + scheduled 
 
 ---
 
-## 2. Module location — `workflow/attribution/bounty_calc.py`
+## 2. Module location — `tinyassets/attribution/bounty_calc.py`
 
-Under existing `workflow/attribution/` (sibling to attribution-layer-specs impl). NOT a new `workflow/economics/` package — that overstates scope. Engine concept is attribution; user-facing concept is bounty pool. Two-name pattern.
+Under existing `tinyassets/attribution/` (sibling to attribution-layer-specs impl). NOT a new `tinyassets/economics/` package — that overstates scope. Engine concept is attribution; user-facing concept is bounty pool. Two-name pattern.
 
 Module exports:
 
 ```python
-# workflow/attribution/bounty_calc.py
+# tinyassets/attribution/bounty_calc.py
 """Reusable bounty-calc query substrate.
 
 Composes Task #48 contribution_events ledger (IN-direction) with
@@ -67,7 +67,7 @@ def bounty_calc_query_template(
     # ... see §3 for the SQL ...
 ```
 
-Configurable via `WORKFLOW_LINEAGE_MAX_DEPTH` env var (introducing this — checked existing repo, not yet defined).
+Configurable via `TINYASSETS_LINEAGE_MAX_DEPTH` env var (introducing this — checked existing repo, not yet defined).
 
 ---
 
@@ -167,7 +167,7 @@ extensions action=query_bounty_pool
 
 Read-only action per #59 / #74 ledger-discipline pattern. No contribution_events emitted for query operations. **No storage-auth check** (read-only; same orthogonality as #74 author_patch_notes per §4 there).
 
-The handler at `workflow/universe_server.py` `_action_extensions_query_bounty_pool` calls `bounty_calc_query_template` from the `workflow/attribution/bounty_calc.py` module, executes via the existing sqlite3 connection helper, and returns the result shape above.
+The handler at `tinyassets/universe_server.py` `_action_extensions_query_bounty_pool` calls `bounty_calc_query_template` from the `tinyassets/attribution/bounty_calc.py` module, executes via the existing sqlite3 connection helper, and returns the result shape above.
 
 ---
 
@@ -305,6 +305,6 @@ Read-only action; no storage-auth check needed. Same orthogonality as #74 author
 - Companion principle: `project_designer_royalties_and_bounties.md` — remix-economy lineage credit (Carol→Bob via decay).
 - Existing schema reuse:
   - `contribution_events` (per #48 §1) + 4 indexes (`occurred_at`, `actor_id+occurred_at`, `source_artifact_id+kind`, `source_run_id`).
-  - `branch_definitions.fork_from` (`workflow/daemon_server.py` — fork_from migration block; grep `fork_from` for current location).
-- Existing dispatch pattern reference: `workflow/universe_server.py` `_action_extensions_*` registry.
+  - `branch_definitions.fork_from` (`tinyassets/daemon_server.py` — fork_from migration block; grep `fork_from` for current location).
+- Existing dispatch pattern reference: `tinyassets/universe_server.py` `_action_extensions_*` registry.
 - Convention for grep-anchored references (per #77 line-drift fix): file references that depend on line numbers should describe the region semantically rather than pin exact lines.

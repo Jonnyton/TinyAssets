@@ -4,7 +4,7 @@ Setup (run ONCE by the human host, not by user-sim):
 
     powershell -Command "Start-Process 'C:\\Users\\Jonathan\\AppData\\Local\\ms-playwright\\chromium-1208\\chrome-win64\\chrome.exe' -ArgumentList '--user-data-dir=C:\\Users\\Jonathan\\.claude-ai-profile','--remote-debugging-port=9222','--no-first-run','--disable-blink-features=AutomationControlled','https://claude.ai/new'"
 
-Then log into claude.ai in that window, ensure the Workflow custom connector is enabled, and keep the window visible. Single-tab rule: user-sim will navigate the existing tab, not open new ones.
+Then log into claude.ai in that window, ensure the TinyAssets custom connector is enabled, and keep the window visible. Single-tab rule: user-sim will navigate the existing tab, not open new ones.
 
 Usage (user-sim):
 
@@ -60,13 +60,13 @@ NOTEPAD = ROOT / "output" / "user_sim_session.md"
 
 CHROME_BIN = Path(
     os.environ.get(
-        "WORKFLOW_CHROME_BIN",
+        "TINYASSETS_CHROME_BIN",
         r"C:\Users\Jonathan\AppData\Local\ms-playwright\chromium-1208\chrome-win64\chrome.exe",
     )
 )
 CHROME_PROFILE = Path(
     os.environ.get(
-        "WORKFLOW_CHROME_PROFILE",
+        "TINYASSETS_CHROME_PROFILE",
         str(Path.home() / ".claude-ai-profile"),
     )
 )
@@ -154,7 +154,7 @@ def _launch_chrome() -> None:
     if not CHROME_BIN.exists():
         raise RuntimeError(
             f"Chrome binary not found at {CHROME_BIN}. "
-            f"Set WORKFLOW_CHROME_BIN env var to override."
+            f"Set TINYASSETS_CHROME_BIN env var to override."
         )
     CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
     args = [
@@ -621,8 +621,8 @@ _INLINE_ALWAYS_ALLOW_PROBE = r"""
   if (!/Claude wants to use/i.test(allText)) {
     return {found: false, reason: 'no permission card text'};
   }
-  if (!/Workflow(?: Server)?|Universe Server/i.test(allText)) {
-    return {found: false, reason: 'not Workflow Server card'};
+  if (!/TinyAssets(?: Server)?|Universe Server/i.test(allText)) {
+    return {found: false, reason: 'not TinyAssets Server card'};
   }
   const buttons = Array.from(document.querySelectorAll('button'));
   const btn = buttons.find(b => {
@@ -649,7 +649,7 @@ def _dismiss_inline_permission_card(page) -> int:
 
     The newer UX is NOT a modal (no role=dialog / aria-modal). It's an
     inline card in the chat transcript — which the dialog-scoped
-    selectors miss. Scoped to Workflow-Server cards only to avoid
+    selectors miss. Scoped to TinyAssets-Server cards only to avoid
     random clicks. Returns 1 on click, 0 on no-op / miss.
     """
     try:
@@ -696,7 +696,7 @@ def _dismiss_dialogs(page) -> int:
     _drain_auto_dismiss_log(page)
     # Inline permission card (Claude.ai's newer non-modal UX) first —
     # the dialog-scoped selectors below can't see it. Strictly gated
-    # to Workflow-Server cards so we never click arbitrary buttons.
+    # to TinyAssets-Server cards so we never click arbitrary buttons.
     inline_clicked = _dismiss_inline_permission_card(page)
     if inline_clicked:
         _dismiss_cooldown_until = time.monotonic() + 3.0
@@ -1854,9 +1854,9 @@ def cmd_ask(message: str) -> int:
         _append_trace("CLAUDE -> USER_SIM", body)
 
         # Optional per-turn screenshot for artifact visual verification.
-        # Opt-in via WORKFLOW_CLAUDE_CHAT_SCREENSHOTS=1 so normal runs stay
+        # Opt-in via TINYASSETS_CLAUDE_CHAT_SCREENSHOTS=1 so normal runs stay
         # cheap. Saved alongside the trace under output/claude_chat_turns/.
-        if os.environ.get("WORKFLOW_CLAUDE_CHAT_SCREENSHOTS") == "1":
+        if os.environ.get("TINYASSETS_CLAUDE_CHAT_SCREENSHOTS") == "1":
             try:
                 shot_dir = ROOT / "output" / "claude_chat_turns"
                 shot_dir.mkdir(parents=True, exist_ok=True)

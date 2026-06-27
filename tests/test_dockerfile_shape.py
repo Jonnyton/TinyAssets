@@ -3,9 +3,9 @@
 Verifies:
 - codex CLI install layer is present in the Dockerfile
 - nodejs runtime is included in the final stage
-- WORKFLOW_CODEX_AUTH_JSON_B64 is referenced in workflow-env.template
+- TINYASSETS_CODEX_AUTH_JSON_B64 is referenced in tinyassets-env.template
 - OPENAI_API_KEY remains a blank deprecated placeholder
-- compose.yml env_file passes /etc/workflow/env to the daemon service
+- compose.yml env_file passes /etc/tinyassets/env to the daemon service
 - The codex module copy layer is present
 
 These are static text-parse tests — they don't require Docker to be
@@ -22,11 +22,11 @@ DOCKERFILE = REPO_ROOT / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
 GITIGNORE = REPO_ROOT / ".gitignore"
 COMPOSE = REPO_ROOT / "deploy" / "compose.yml"
-ENV_TEMPLATE = REPO_ROOT / "deploy" / "workflow-env.template"
+ENV_TEMPLATE = REPO_ROOT / "deploy" / "tinyassets-env.template"
 ENTRYPOINT = REPO_ROOT / "deploy" / "docker-entrypoint.sh"
 CODEX_KEEPALIVE = REPO_ROOT / ".github" / "workflows" / "codex-auth-keepalive.yml"
 CLAUDE_KEEPALIVE = REPO_ROOT / ".github" / "workflows" / "claude-auth-keepalive.yml"
-CODEX_PROVIDER = REPO_ROOT / "workflow" / "providers" / "codex_provider.py"
+CODEX_PROVIDER = REPO_ROOT / "tinyassets" / "providers" / "codex_provider.py"
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +228,7 @@ def test_dockerfile_ships_plan_md_for_live_review_context():
     )
     assert "COPY --from=builder /build/PLAN.md /app/PLAN.md" in text, (
         "Final image must place PLAN.md at /app/PLAN.md, matching "
-        "workflow.api.universe._repo_root() in the container"
+        "tinyassets.api.universe._repo_root() in the container"
     )
 
 
@@ -257,15 +257,15 @@ def test_local_git_credentials_stay_out_of_git_and_docker_context():
 
 
 # ---------------------------------------------------------------------------
-# workflow-env.template — subscription auth + deprecated API-key placeholder
+# tinyassets-env.template — subscription auth + deprecated API-key placeholder
 # ---------------------------------------------------------------------------
 
 
 def test_env_template_has_codex_subscription_auth_bundle():
-    """workflow-env.template must include a Codex subscription auth placeholder."""
+    """tinyassets-env.template must include a Codex subscription auth placeholder."""
     text = ENV_TEMPLATE.read_text(encoding="utf-8")
-    assert "WORKFLOW_CODEX_AUTH_JSON_B64" in text, (
-        "workflow-env.template must expose the Codex subscription auth bundle path"
+    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in text, (
+        "tinyassets-env.template must expose the Codex subscription auth bundle path"
     )
 
 
@@ -275,10 +275,10 @@ def test_env_template_has_claude_subscription_config_dir():
 
 
 def test_env_template_has_openai_api_key():
-    """workflow-env.template keeps OPENAI_API_KEY as a deprecated placeholder."""
+    """tinyassets-env.template keeps OPENAI_API_KEY as a deprecated placeholder."""
     text = ENV_TEMPLATE.read_text(encoding="utf-8")
     assert "OPENAI_API_KEY" in text, (
-        "workflow-env.template must mention OPENAI_API_KEY so operators know it is deprecated"
+        "tinyassets-env.template must mention OPENAI_API_KEY so operators know it is deprecated"
     )
 
 
@@ -291,7 +291,7 @@ def test_env_template_openai_key_is_placeholder():
                 f"OPENAI_API_KEY must be a blank placeholder; found: {value!r}"
             )
             return
-    raise AssertionError("OPENAI_API_KEY= line not found in workflow-env.template")
+    raise AssertionError("OPENAI_API_KEY= line not found in tinyassets-env.template")
 
 
 # ---------------------------------------------------------------------------
@@ -300,10 +300,10 @@ def test_env_template_openai_key_is_placeholder():
 
 
 def test_compose_daemon_uses_env_file():
-    """daemon service in compose.yml must load /etc/workflow/env."""
+    """daemon service in compose.yml must load /etc/tinyassets/env."""
     text = COMPOSE.read_text(encoding="utf-8")
-    assert "/etc/workflow/env" in text, (
-        "compose.yml daemon service must reference /etc/workflow/env as env_file "
+    assert "/etc/tinyassets/env" in text, (
+        "compose.yml daemon service must reference /etc/tinyassets/env as env_file "
         "so subscription auth material and other secrets are passed to the container"
     )
 
@@ -321,9 +321,9 @@ def test_compose_requires_explicit_workflow_image_without_latest_default():
         "worker-claude-2",
     ):
         image = data["services"][service_name].get("image", "")
-        assert "${WORKFLOW_IMAGE:?" in image, (
-            f"{service_name} image must require WORKFLOW_IMAGE instead of "
-            "defaulting to ghcr.io/jonnyton/workflow-daemon:latest"
+        assert "${TINYASSETS_IMAGE:?" in image, (
+            f"{service_name} image must require TINYASSETS_IMAGE instead of "
+            "defaulting to ghcr.io/jonnyton/tinyassets-daemon:latest"
         )
         assert ":latest" not in image
 
@@ -348,8 +348,8 @@ def test_compose_env_file_covers_daemon_service():
         ef if isinstance(ef, str) else ef.get("path", "")
         for ef in daemon_env_files
     ]
-    assert any("/etc/workflow/env" in v for v in env_file_values), (
-        "daemon service env_file must include /etc/workflow/env"
+    assert any("/etc/tinyassets/env" in v for v in env_file_values), (
+        "daemon service env_file must include /etc/tinyassets/env"
     )
 
 
@@ -370,12 +370,12 @@ def test_compose_codex_auth_home_is_shared_data_volume():
         volumes = service.get("volumes") or []
         assert environment.get("CODEX_HOME") == "/data/.codex", (
             f"{service_name} must use /data/.codex so Codex CLI and "
-            "get_status look at the persistent workflow-data volume"
+            "get_status look at the persistent tinyassets-data volume"
         )
-        assert "workflow-data:/data" in volumes, (
-            f"{service_name} must mount workflow-data at /data"
+        assert "tinyassets-data:/data" in volumes, (
+            f"{service_name} must mount tinyassets-data at /data"
         )
-        assert "/var/lib/workflow-codex:/app/.codex" not in volumes
+        assert "/var/lib/tinyassets-codex:/app/.codex" not in volumes
 
 
 def test_compose_claude_config_dir_is_shared_data_volume():
@@ -394,7 +394,7 @@ def test_compose_claude_config_dir_is_shared_data_volume():
         environment = service.get("environment") or {}
         volumes = service.get("volumes") or []
         assert environment.get("CLAUDE_CONFIG_DIR") == "/data/.claude"
-        assert "workflow-data:/data" in volumes
+        assert "tinyassets-data:/data" in volumes
 
 
 def test_compose_declares_four_pinned_cloud_workers_with_goal_pool_off():
@@ -402,16 +402,16 @@ def test_compose_declares_four_pinned_cloud_workers_with_goal_pool_off():
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     services = data["services"]
     expected = {
-        "worker": ("workflow-worker", "codex", "codex-1", "cloud-droplet-codex-1"),
+        "worker": ("tinyassets-worker", "codex", "codex-1", "cloud-droplet-codex-1"),
         "worker-codex-2": (
-            "workflow-worker-codex-2", "codex", "codex-2", "cloud-droplet-codex-2",
+            "tinyassets-worker-codex-2", "codex", "codex-2", "cloud-droplet-codex-2",
         ),
         "worker-claude-1": (
-            "workflow-worker-claude-1", "claude-code", "claude-1",
+            "tinyassets-worker-claude-1", "claude-code", "claude-1",
             "cloud-droplet-claude-1",
         ),
         "worker-claude-2": (
-            "workflow-worker-claude-2", "claude-code", "claude-2",
+            "tinyassets-worker-claude-2", "claude-code", "claude-2",
             "cloud-droplet-claude-2",
         ),
     }
@@ -422,9 +422,9 @@ def test_compose_declares_four_pinned_cloud_workers_with_goal_pool_off():
         command = service.get("command") or []
         assert service["container_name"] == container
         assert command[-2:] == ["--provider", provider]
-        assert environment.get("WORKFLOW_WORKER_ID") == worker_id
+        assert environment.get("TINYASSETS_WORKER_ID") == worker_id
         assert environment.get("UNIVERSE_SERVER_HOST_USER") == host_user
-        assert environment.get("WORKFLOW_GOAL_POOL") == "off"
+        assert environment.get("TINYASSETS_GOAL_POOL") == "off"
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +465,7 @@ def test_entrypoint_script_exists():
 
 def test_entrypoint_installs_codex_auth_bundle():
     text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert "WORKFLOW_CODEX_AUTH_JSON_B64" in text
+    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in text
     assert 'CODEX_HOME="${CODEX_HOME:-/data/.codex}"' in text
     assert "base64 -d" in text
     assert "auth.json" in text, (
@@ -495,13 +495,13 @@ def test_entrypoint_does_not_login_with_api_key():
     )
     assert "codex login" not in executable_text
     assert "--with-api-key" not in executable_text, (
-        "default Workflow daemons must not authenticate Codex with OPENAI_API_KEY"
+        "default TinyAssets daemons must not authenticate Codex with OPENAI_API_KEY"
     )
 
 
 def test_entrypoint_strips_api_key_providers_by_default():
     text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert "WORKFLOW_ALLOW_API_KEY_PROVIDERS" in text
+    assert "TINYASSETS_ALLOW_API_KEY_PROVIDERS" in text
     assert "OPENAI_API_KEY" in text
     assert 'unset "${_name}"' in text, (
         "entrypoint must strip API-key provider env vars unless explicitly enabled"
@@ -512,7 +512,7 @@ def test_entrypoint_replaces_auth_bundle_atomically():
     text = ENTRYPOINT.read_text(encoding="utf-8")
     assert "mktemp" in text
     assert "mv " in text
-    assert "failed to decode WORKFLOW_CODEX_AUTH_JSON_B64" in text, (
+    assert "failed to decode TINYASSETS_CODEX_AUTH_JSON_B64" in text, (
         "entrypoint must atomically replace Codex auth when a bundle is provided"
     )
 
@@ -522,7 +522,7 @@ def test_codex_auth_keepalive_exercises_shared_codex_home():
     assert "workflow_dispatch" in text
     assert "schedule:" in text
     assert "DO_SSH_KEY" in text
-    assert "docker exec -e CODEX_HOME=/data/.codex workflow-daemon codex exec" in text
+    assert "docker exec -e CODEX_HOME=/data/.codex tinyassets-daemon codex exec" in text
 
 
 def test_claude_auth_keepalive_exercises_shared_config_dir():
@@ -530,7 +530,7 @@ def test_claude_auth_keepalive_exercises_shared_config_dir():
     assert "workflow_dispatch" in text
     assert "schedule:" in text
     assert "DO_SSH_KEY" in text
-    assert "docker exec -e CLAUDE_CONFIG_DIR=/data/.claude workflow-daemon claude -p" in text
+    assert "docker exec -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude -p" in text
 
 
 def test_entrypoint_execs_cmd():

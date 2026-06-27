@@ -93,7 +93,7 @@ Per Q10-host RESOLVED (community-flagged moderation), the full moderation surfac
 First-draft is complete when this sequence works in production (not just in a test):
 
 1. **Tier-2 host installs the tray** (existing #23 work). Tray registers with control plane via Track D — declares ≥1 capability `(node_type, llm_model)` pair with `visibility=paid` and a price floor.
-2. **Tier-1 user opens Claude.ai** + invokes Workflow MCP connector. Posts a paid request via `submit_request` (Track C MCP action) for a node matching the tier-2 host's declared capability.
+2. **Tier-1 user opens Claude.ai** + invokes TinyAssets MCP connector. Posts a paid request via `submit_request` (Track C MCP action) for a node matching the tier-2 host's declared capability.
 3. **Control plane broadcasts** (Track E + A) on the realtime channel `bids:<capability_id>`. The tier-2 daemon's bid-polling loop sees the request.
 4. **Daemon places a bid** (Track D bid-polling) at-or-above the floor, below the requester's max. Bid lands in Postgres `bids` table.
 5. **Requester (chatbot) reviews bids** via `list_bids_for_my_request` MCP action (Track C). Picks the winning bid (lowest price meeting requirements, or first-available for time-pressure).

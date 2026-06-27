@@ -18,7 +18,7 @@ import pytest
 
 def _reload_stub():
     """Force a fresh import of the stub so module-level registration reruns."""
-    mod_name = "workflow.providers.call"
+    mod_name = "tinyassets.providers.call"
     if mod_name in sys.modules:
         del sys.modules[mod_name]
     return importlib.import_module(mod_name)
@@ -26,7 +26,7 @@ def _reload_stub():
 
 @pytest.fixture
 def reset_stub():
-    mod_name = "workflow.providers.call"
+    mod_name = "tinyassets.providers.call"
     saved = sys.modules.pop(mod_name, None)
     yield
     sys.modules.pop(mod_name, None)

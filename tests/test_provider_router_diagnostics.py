@@ -16,19 +16,19 @@ from __future__ import annotations
 
 import pytest
 
-from workflow.exceptions import (
+from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderError,
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from workflow.providers.base import BaseProvider, ModelConfig, ProviderResponse
-from workflow.providers.diagnostics import (
+from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.providers.diagnostics import (
     ProviderAttemptDiagnostic,
     build_chain_state,
     classify_unavailable,
 )
-from workflow.providers.router import ProviderRouter
+from tinyassets.providers.router import ProviderRouter
 
 
 class FailingProvider(BaseProvider):
@@ -179,7 +179,7 @@ class TestAllProvidersExhaustedError:
 class TestProviderRouterDiagnostics:
     @pytest.mark.asyncio
     async def test_router_attaches_attempts_and_chain_state(self, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_ALLOW_API_KEY_PROVIDERS", raising=False)
+        monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
         router = ProviderRouter(
             providers={
                 "codex": FailingProvider(

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from workflow.producers import producer_interface_enabled, run_producers
-from workflow.work_targets import (
+from tinyassets.producers import producer_interface_enabled, run_producers
+from tinyassets.work_targets import (
     ROLE_NOTES,
     choose_authorial_targets,
     ensure_seed_targets,

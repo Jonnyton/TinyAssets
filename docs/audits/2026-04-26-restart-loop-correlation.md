@@ -42,7 +42,7 @@ behavior. Recommended remediation in §6.
 | Total lines | 603 |
 | Date range | 2026-04-21T04:04 → 2026-04-25T23:22 UTC |
 | Unique alarm types | 1 (`WATCHDOG_RESTART`) |
-| Unique service targets | 1 (`workflow-daemon.service`) |
+| Unique service targets | 1 (`tinyassets-daemon.service`) |
 | Unique probe URLs | 1 (`http://127.0.0.1:8001/mcp`) |
 | Unique minute-events | 65 |
 | Unique second-events | 84 (some events straddle a one-second boundary) |
@@ -74,7 +74,7 @@ alarm_line = (
 `reds={threshold}` is the **configured threshold** (not
 `consecutive_reds`). In production the threshold is hardcoded
 `DEFAULT_THRESHOLD = 3` (`scripts/watchdog.py:57`) and the only deployed
-unit `deploy/workflow-watchdog.service` accepts no `--threshold` arg, so
+unit `deploy/tinyassets-watchdog.service` accepts no `--threshold` arg, so
 production writes always emit `reds=3`.
 
 Two findings flow from this:
@@ -195,7 +195,7 @@ reflects droplet behavior. Per this audit, **§7 is operating on
 contaminated signal.** Two paths forward:
 
 1. **Quick fix:** §7 should observe the **droplet's own** alarm log
-   (e.g., `/var/log/workflow-watchdog.log` or whatever the deployed
+   (e.g., `/var/log/tinyassets-watchdog.log` or whatever the deployed
    path resolves to on the droplet — TBD by host inspection), NOT the
    repo-relative `.agents/uptime_alarms.log`. The runbook's `tail -F
    .agents/uptime_alarms.log` is monitoring the wrong file.
@@ -229,7 +229,7 @@ host-specific absolute default, e.g.:
 
 ```python
 ALARM_LOG = Path(
-    os.environ.get("WORKFLOW_WATCHDOG_ALARM_LOG", "/var/log/workflow/uptime_alarms.log")
+    os.environ.get("TINYASSETS_WATCHDOG_ALARM_LOG", "/var/log/tinyassets/uptime_alarms.log")
 )
 ```
 
@@ -326,7 +326,7 @@ grep -oE 'reds=[0-9]+' .agents/uptime_alarms.log | sort -u
 # Expected: only reds=1, reds=3, reds=5.
 
 # Step 3: confirm the production unit hardcodes threshold=3
-grep -A1 'ExecStart' deploy/workflow-watchdog.service
+grep -A1 'ExecStart' deploy/tinyassets-watchdog.service
 # Expected: bare `python3 watchdog.py` with no --threshold arg.
 
 # Step 4: confirm tests use thresholds 1 and 5

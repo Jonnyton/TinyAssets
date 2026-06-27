@@ -24,9 +24,9 @@ import pytest
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -61,7 +61,7 @@ def _insert_run(base: Path, *, branch_def_id: str, status: str = "completed",
     import time
     import uuid
 
-    from workflow.runs import _connect, initialize_runs_db
+    from tinyassets.runs import _connect, initialize_runs_db
     initialize_runs_db(base)
     run_id = uuid.uuid4().hex[:16]
     started_at = time.time() + started_offset

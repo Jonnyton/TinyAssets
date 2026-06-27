@@ -1,17 +1,17 @@
 # MCPB Packaging
 
-The official MCPB packaging path lives under `packaging/mcpb/`. Auto-built from the live `workflow/` package per design-note `2026-04-14-packaging-mirror-decision.md` (Option 1) — no shim, no hand-maintained snapshot.
+The official MCPB packaging path lives under `packaging/mcpb/`. Auto-built from the live `tinyassets/` package per design-note `2026-04-14-packaging-mirror-decision.md` (Option 1) — no shim, no hand-maintained snapshot.
 
 ## What is checked in
 
 - `packaging/mcpb/manifest.json`: spec-aligned MCPB manifest template
-- `packaging/mcpb/pyproject.toml`: bundle runtime config — declares the MCP-control-plane subset of `workflow/`'s deps
+- `packaging/mcpb/pyproject.toml`: bundle runtime config — declares the MCP-control-plane subset of `tinyassets/`'s deps
 - `packaging/mcpb/server.py`: stdio entrypoint that imports `workflow.universe_server` from the bundled package
-- `packaging/mcpb/build_bundle.py`: stages the bundle source, runs an import probe, then validates / packs `workflow-universe-server.mcpb`
+- `packaging/mcpb/build_bundle.py`: stages the bundle source, runs an import probe, then validates / packs `tinyassets-universe-server.mcpb`
 
 ## Source of truth
 
-The repository source of truth for the packaged server is `workflow/universe_server.py` (and the rest of the `workflow/` package it imports). `build_bundle.py` stages the entire `workflow/` tree into `packaging/dist/workflow-universe-server-src/workflow/` and then runs a subprocess import probe (`python -c "import workflow.universe_server"` against the staged dir) to confirm the bundle is launchable before packing.
+The repository source of truth for the packaged server is `tinyassets/universe_server.py` (and the rest of the `tinyassets/` package it imports). `build_bundle.py` stages the entire `tinyassets/` tree into `packaging/dist/tinyassets-universe-server-src/tinyassets/` and then runs a subprocess import probe (`python -c "import workflow.universe_server"` against the staged dir) to confirm the bundle is launchable before packing.
 
 The legacy `fantasy_author/universe_server.py` shim path is no longer in the bundle. It survives in the repo only for runtime callers (`fantasy_author/__main__.py`, `universe_tray.py`) until the Author → Daemon mass-rename completes.
 
@@ -52,7 +52,7 @@ The bundle then launches `packaging/mcpb/server.py`, which inserts the bundle ro
 
 ## CI
 
-`.github/workflows/build-bundle.yml` runs the stage + import probe on every push to main and on every PR that touches `workflow/` or `packaging/`. On a tagged release, the workflow also packs the `.mcpb` and uploads it as a release asset.
+`.github/workflows/build-bundle.yml` runs the stage + import probe on every push to main and on every PR that touches `tinyassets/` or `packaging/`. On a tagged release, the workflow also packs the `.mcpb` and uploads it as a release asset.
 
 ## Notes
 

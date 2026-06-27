@@ -11,7 +11,7 @@ Usage
     python scripts/claim_check.py --provider codex-gpt5-desktop
     python scripts/claim_check.py --provider codex-gpt5-desktop --check-files scripts/claim_check.py
     python scripts/claim_check.py --provider codex-gpt5-desktop \
-        --check-files "workflow/api/runs.py, tests/"
+        --check-files "tinyassets/api/runs.py, tests/"
     python scripts/claim_check.py --provider codex-gpt5-desktop --json
     python scripts/claim_check.py --provider cursor --reap
     python scripts/claim_check.py --provider cursor-gpt55 --reap

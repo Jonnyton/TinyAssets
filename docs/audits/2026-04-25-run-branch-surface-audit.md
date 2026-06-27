@@ -3,7 +3,7 @@
 **Date:** 2026-04-25
 **Author:** navigator
 **Scope:** read-only audit. Answers questions A-F about the runner / `run_branch` action: signature, internal call chain, what `run_branch_version` would change, backward-compat surface, test footprint, convergence with dev-2-2's Task #54. NO design proposal. Lead routes redesign as follow-on.
-**Surfaces read:** `workflow/universe_server.py:7248-7370` (`_action_run_branch`); `workflow/universe_server.py:4489-4510` (`_resolve_branch_id`); `workflow/runs.py:981-1040` (`_prepare_run`); `workflow/runs.py:1499-1565` (`execute_branch_async`); `workflow/runs.py:1603-1700` (`resume_run`); `workflow/runs.py:90-180` (runs DDL); `workflow/branch_versions.py:1-240` (publish + storage); `workflow/branches.py:692-741` (`BranchDefinition.from_dict`); `tests/test_run_branch_failure_taxonomy.py`, `tests/test_canonical_branch.py`, `tests/test_canonical_branch_mcp.py`, `tests/test_branch_name_resolution.py`, `tests/test_runs_schema_migration.py`.
+**Surfaces read:** `tinyassets/universe_server.py:7248-7370` (`_action_run_branch`); `tinyassets/universe_server.py:4489-4510` (`_resolve_branch_id`); `tinyassets/runs.py:981-1040` (`_prepare_run`); `tinyassets/runs.py:1499-1565` (`execute_branch_async`); `tinyassets/runs.py:1603-1700` (`resume_run`); `tinyassets/runs.py:90-180` (runs DDL); `tinyassets/branch_versions.py:1-240` (publish + storage); `tinyassets/branches.py:692-741` (`BranchDefinition.from_dict`); `tests/test_run_branch_failure_taxonomy.py`, `tests/test_canonical_branch.py`, `tests/test_canonical_branch_mcp.py`, `tests/test_branch_name_resolution.py`, `tests/test_runs_schema_migration.py`.
 
 ---
 
@@ -21,7 +21,7 @@ This audit converges with dev-2-2's Task #54 (runner branch_def_id vs. branch_ve
 
 ## A. Today's `run_branch` action signature
 
-**Location:** `workflow/universe_server.py:7248-7370` (`_action_run_branch`).
+**Location:** `tinyassets/universe_server.py:7248-7370` (`_action_run_branch`).
 
 **Registry:** `_RUN_ACTIONS["run_branch"] = _action_run_branch` at line 8424. `run_branch` is in `_RUN_WRITE_ACTIONS` set at 8438 (mutates durable state, writes to runs table).
 
@@ -255,20 +255,20 @@ The third is the most interesting failure mode. As the BranchDefinition schema e
 
 ## References
 
-- `workflow/universe_server.py:7248-7370` — `_action_run_branch`.
-- `workflow/universe_server.py:4489-4510` — `_resolve_branch_id` (live-def resolver).
-- `workflow/universe_server.py:8424` — `_RUN_ACTIONS` registry.
-- `workflow/universe_server.py:8438` — `_RUN_WRITE_ACTIONS` set.
-- `workflow/universe_server.py:8489` — `_action_publish_version`.
-- `workflow/runs.py:981-1040` — `_prepare_run` + run_lineage write.
-- `workflow/runs.py:1499-1565` — `execute_branch_async`.
-- `workflow/runs.py:1603-1700` — `resume_run` (handles `branch_version_mismatch` reason).
-- `workflow/runs.py:90-180` — runs + run_lineage + node_edit_audit DDL.
-- `workflow/branch_versions.py:25-41` — `branch_versions` DDL.
-- `workflow/branch_versions.py:109-179` — `publish_branch_version`.
-- `workflow/branch_versions.py:182-239` — `get_branch_version` + `_row_to_version`.
-- `workflow/branches.py:692-741` — `BranchDefinition.from_dict`.
-- `workflow/daemon_server.py:2002` — `get_branch_definition` (live).
+- `tinyassets/universe_server.py:7248-7370` — `_action_run_branch`.
+- `tinyassets/universe_server.py:4489-4510` — `_resolve_branch_id` (live-def resolver).
+- `tinyassets/universe_server.py:8424` — `_RUN_ACTIONS` registry.
+- `tinyassets/universe_server.py:8438` — `_RUN_WRITE_ACTIONS` set.
+- `tinyassets/universe_server.py:8489` — `_action_publish_version`.
+- `tinyassets/runs.py:981-1040` — `_prepare_run` + run_lineage write.
+- `tinyassets/runs.py:1499-1565` — `execute_branch_async`.
+- `tinyassets/runs.py:1603-1700` — `resume_run` (handles `branch_version_mismatch` reason).
+- `tinyassets/runs.py:90-180` — runs + run_lineage + node_edit_audit DDL.
+- `tinyassets/branch_versions.py:25-41` — `branch_versions` DDL.
+- `tinyassets/branch_versions.py:109-179` — `publish_branch_version`.
+- `tinyassets/branch_versions.py:182-239` — `get_branch_version` + `_row_to_version`.
+- `tinyassets/branches.py:692-741` — `BranchDefinition.from_dict`.
+- `tinyassets/daemon_server.py:2002` — `get_branch_definition` (live).
 - `tests/test_run_branch_failure_taxonomy.py`, `tests/test_canonical_branch*.py`, `tests/test_branch_name_resolution.py`, `tests/test_bug_investigation_*.py`, `tests/test_runs_schema_migration.py`.
 - Roadmap reference: `docs/design-notes/2026-04-25-primitive-shipment-roadmap.md` Phase A item 6.
 - G1 audit: `docs/audits/2026-04-25-canonical-primitive-audit.md` Gap #4.

@@ -1,7 +1,7 @@
 """Tests for query_runs — cross-run state query primitive.
 
 Spec: docs/vetted-specs.md §Cross-run state query primitive.
-Implementation: workflow/runs.py::query_runs + universe_server.py::_action_query_runs.
+Implementation: tinyassets/runs.py::query_runs + universe_server.py::_action_query_runs.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _init(base_path: Path) -> None:
-    from workflow.daemon_server import initialize_author_server
+    from tinyassets.daemon_server import initialize_author_server
     initialize_author_server(base_path)
 
 
@@ -25,7 +25,7 @@ def _seed_run(
     actor: str = "alice",
     output: dict | None = None,
 ) -> str:
-    from workflow.runs import create_run, update_run_status
+    from tinyassets.runs import create_run, update_run_status
     run_id = create_run(
         base_path,
         branch_def_id=branch_def_id,
@@ -40,8 +40,8 @@ def _seed_run(
 
 
 def _query(monkeypatch, tmp_path, **kwargs):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-    from workflow.universe_server import extensions
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.universe_server import extensions
     return json.loads(extensions(action="query_runs", **kwargs))
 
 
@@ -310,21 +310,21 @@ class TestQueryRunsInterruptedExclusion:
 
 class TestQueryRunsUnit:
     def test_query_runs_direct_call_empty(self, tmp_path):
-        from workflow.runs import query_runs
+        from tinyassets.runs import query_runs
         _init(tmp_path)
         result = query_runs(tmp_path)
         assert result["rows"] == []
         assert result["count"] == 0
 
     def test_query_runs_returns_seeded_run(self, tmp_path):
-        from workflow.runs import query_runs
+        from tinyassets.runs import query_runs
         _init(tmp_path)
         _seed_run(tmp_path, branch_def_id="b1")
         result = query_runs(tmp_path, branch_def_id="b1")
         assert result["count"] == 1
 
     def test_query_runs_limit_enforced(self, tmp_path):
-        from workflow.runs import query_runs
+        from tinyassets.runs import query_runs
         _init(tmp_path)
         for _ in range(10):
             _seed_run(tmp_path)
@@ -332,20 +332,20 @@ class TestQueryRunsUnit:
         assert result["count"] == 3
 
     def test_query_runs_max_limit_1000(self, tmp_path):
-        from workflow.runs import query_runs
+        from tinyassets.runs import query_runs
         _init(tmp_path)
         result = query_runs(tmp_path, limit=99999)
         assert result["count"] == 0  # empty db; just confirming no crash
 
     def test_query_runs_select_projection(self, tmp_path):
-        from workflow.runs import query_runs
+        from tinyassets.runs import query_runs
         _init(tmp_path)
         _seed_run(tmp_path, output={"x": 7})
         result = query_runs(tmp_path, select=["x"])
         assert result["rows"][0]["fields"]["x"] == 7
 
     def test_query_runs_aggregate_count(self, tmp_path):
-        from workflow.runs import query_runs
+        from tinyassets.runs import query_runs
         _init(tmp_path)
         _seed_run(tmp_path, status="completed")
         _seed_run(tmp_path, status="failed")

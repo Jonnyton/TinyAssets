@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Workflow daemon watchdog every two minutes
+Description=Run TinyAssets daemon watchdog every two minutes
 Requires=daemon-watchdog.service
 
 [Timer]

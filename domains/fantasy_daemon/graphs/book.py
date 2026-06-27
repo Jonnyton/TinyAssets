@@ -24,7 +24,7 @@ from domains.fantasy_daemon.state.book_state import BookState
 def _get_config_scenes_target() -> int:
     """Read scenes_target from universe config, default 3."""
     try:
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
         return runtime.universe_config.scenes_target
     except Exception:
         return 3

@@ -1,4 +1,4 @@
-# LibreChat Runtime Proof - Workflow MCP Directory
+# LibreChat Runtime Proof - TinyAssets MCP Directory
 
 Date: 2026-05-01
 Host: LibreChat
@@ -35,7 +35,7 @@ mcpSettings:
 mcpServers:
   workflow:
     title: "Workflow"
-    description: "Directory-safe Workflow MCP endpoint"
+    description: "Directory-safe TinyAssets MCP endpoint"
     type: "streamable-http"
     url: "https://tinyassets.io/mcp-directory"
     timeout: 30000
@@ -98,7 +98,7 @@ submit_workflow_request_mcp_workflow
 Prompt sent through LibreChat's agent chat route:
 
 ```text
-Call the Workflow MCP tool get_workflow_status now. Do not answer from memory. After the tool result, reply with reachable=true or reachable=false and quote one exact returned field name/value.
+Call the TinyAssets MCP tool get_workflow_status now. Do not answer from memory. After the tool result, reply with reachable=true or reachable=false and quote one exact returned field name/value.
 ```
 
 Important request detail:
@@ -127,7 +127,7 @@ tool_call.output included active_host.host_id="host", universe_exists=true, pres
 assistant final text: reachable=true; active_host.host_id: host
 ```
 
-This proves LibreChat invoked the Workflow MCP server and produced a
+This proves LibreChat invoked the TinyAssets MCP server and produced a
 user-visible response grounded in `get_workflow_status`.
 
 One earlier API attempt with a raw `tools` array but no `ephemeralAgent.mcp`

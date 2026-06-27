@@ -1,2 +1,2 @@
-"""Shim: use workflow.retrieval.vector_store instead."""
-from workflow.retrieval.vector_store import *  # noqa: F401,F403
+"""Shim: use tinyassets.retrieval.vector_store instead."""
+from tinyassets.retrieval.vector_store import *  # noqa: F401,F403

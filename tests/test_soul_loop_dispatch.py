@@ -4,7 +4,7 @@ When a universe is soul-declared with a real ``loop_branch_def_id``, the daemon
 runs that user-built branch directly via ``execute_branch`` (the same path that
 runs claimed BranchTasks — so it gets its own state schema + the trusted in-node
 enqueue context) and skips the fantasy cycle. Gated behind
-``WORKFLOW_SOUL_LOOP_DISPATCH``; default off leaves soulless/legacy universes
+``TINYASSETS_SOUL_LOOP_DISPATCH``; default off leaves soulless/legacy universes
 untouched.
 
 See docs/design-notes/2026-06-03-soul-loop-dispatch-activation-plan.md.
@@ -15,7 +15,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import fantasy_daemon.__main__ as dm
-import workflow.cloud_worker as cw
+import tinyassets.cloud_worker as cw
 
 LEGACY = "fantasy_author:universe_cycle_wrapper"
 
@@ -36,27 +36,27 @@ class _FakeBranch:
 
 def _patch_common(monkeypatch, tmp_path, *, loop_dispatch, captured):
     monkeypatch.setattr(
-        "workflow.api.universe._universe_loop_dispatch", loop_dispatch,
+        "tinyassets.api.universe._universe_loop_dispatch", loop_dispatch,
     )
-    monkeypatch.setattr("workflow.storage.data_dir", lambda: tmp_path)
-    monkeypatch.setattr("workflow.branches.BranchDefinition", _FakeBranch)
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+    monkeypatch.setattr("tinyassets.branches.BranchDefinition", _FakeBranch)
 
     def _exec(base_path, **kwargs):
         captured.append(kwargs)
         return SimpleNamespace(run_id="run-1", status="completed")
 
-    monkeypatch.setattr("workflow.runs.execute_branch", _exec)
+    monkeypatch.setattr("tinyassets.runs.execute_branch", _exec)
 
 
 # ── flag ─────────────────────────────────────────────────────────────────────
 
 def test_flag_default_off(monkeypatch):
-    monkeypatch.delenv("WORKFLOW_SOUL_LOOP_DISPATCH", raising=False)
+    monkeypatch.delenv("TINYASSETS_SOUL_LOOP_DISPATCH", raising=False)
     assert dm._soul_loop_dispatch_enabled() is False
 
 
 def test_flag_on(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
     assert dm._soul_loop_dispatch_enabled() is True
 
 
@@ -98,7 +98,7 @@ def test_declared_loop_runs_via_execute_branch_with_enqueue_context(
         captured=captured,
     )
     monkeypatch.setattr(
-        "workflow.daemon_server.get_branch_definition",
+        "tinyassets.daemon_server.get_branch_definition",
         lambda base_path, *, branch_def_id: {"branch_def_id": branch_def_id},
     )
     handled = dm.DaemonController._try_execute_soul_loop(
@@ -115,7 +115,7 @@ def test_declared_loop_runs_via_execute_branch_with_enqueue_context(
 
 
 def _seed_pending_child(universe_path, tid="child-1"):
-    from workflow.branch_tasks import BranchTask, append_task
+    from tinyassets.branch_tasks import BranchTask, append_task
     append_task(universe_path, BranchTask(
         branch_task_id=tid, branch_def_id="0ca6e9c97f65",
         universe_id="u", trigger_source="owner_queued",
@@ -125,8 +125,8 @@ def _seed_pending_child(universe_path, tid="child-1"):
 
 def test_pick_inactive_when_all_dispatch_flags_off(monkeypatch, tmp_path):
     # Baseline: neither unified-execution nor soul-loop → pick stays gated off.
-    monkeypatch.delenv("WORKFLOW_UNIFIED_EXECUTION", raising=False)
-    monkeypatch.delenv("WORKFLOW_SOUL_LOOP_DISPATCH", raising=False)
+    monkeypatch.delenv("TINYASSETS_UNIFIED_EXECUTION", raising=False)
+    monkeypatch.delenv("TINYASSETS_SOUL_LOOP_DISPATCH", raising=False)
     _seed_pending_child(tmp_path)
     claimed, _inputs = dm._try_dispatcher_pick(tmp_path, "daemon-x")
     assert claimed is None
@@ -136,8 +136,8 @@ def test_soul_loop_mode_keeps_queue_unstarved(monkeypatch, tmp_path):
     # Codex regression: with soul-loop ON (and UNIFIED_EXECUTION OFF), the
     # dispatcher pick must still claim pending child tasks the driver enqueued
     # — otherwise the driver re-runs each cycle and the children starve.
-    monkeypatch.delenv("WORKFLOW_UNIFIED_EXECUTION", raising=False)
-    monkeypatch.setenv("WORKFLOW_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.delenv("TINYASSETS_UNIFIED_EXECUTION", raising=False)
+    monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
     _seed_pending_child(tmp_path, tid="child-42")
     claimed, _inputs = dm._try_dispatcher_pick(tmp_path, "daemon-x")
     assert claimed is not None
@@ -158,7 +158,7 @@ def test_declared_loop_not_found_refuses_no_fantasy_fallback(
         raise KeyError(branch_def_id)
 
     monkeypatch.setattr(
-        "workflow.daemon_server.get_branch_definition", _missing,
+        "tinyassets.daemon_server.get_branch_definition", _missing,
     )
     handled = dm.DaemonController._try_execute_soul_loop(_stub(tmp_path), "u")
     # Souled+declared but branch missing → HANDLED (refuse), must NOT fall
@@ -172,7 +172,7 @@ def test_declared_loop_not_found_refuses_no_fantasy_fallback(
 def test_cloud_worker_defaults_to_fantasy_spawn_when_flag_off(
     monkeypatch, tmp_path,
 ):
-    monkeypatch.delenv("WORKFLOW_SOUL_LOOP_DISPATCH", raising=False)
+    monkeypatch.delenv("TINYASSETS_SOUL_LOOP_DISPATCH", raising=False)
     calls: list[dict[str, object]] = []
 
     def fake_spawn(universe, *, module="fantasy_daemon", extra_args=None):
@@ -197,9 +197,9 @@ def test_cloud_worker_defaults_to_fantasy_spawn_when_flag_off(
 def test_cloud_worker_routes_declared_soul_loop_to_workflow_module(
     monkeypatch, tmp_path,
 ):
-    monkeypatch.setenv("WORKFLOW_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
     monkeypatch.setattr(
-        "workflow.api.universe._universe_loop_dispatch",
+        "tinyassets.api.universe._universe_loop_dispatch",
         lambda udir: ("branch-123", {"has_soul": True}),
     )
     calls: list[dict[str, object]] = []
@@ -226,9 +226,9 @@ def test_cloud_worker_routes_declared_soul_loop_to_workflow_module(
 def test_cloud_worker_keeps_legacy_module_for_soulless_or_legacy_loop(
     monkeypatch, tmp_path,
 ):
-    monkeypatch.setenv("WORKFLOW_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
     monkeypatch.setattr(
-        "workflow.api.universe._universe_loop_dispatch",
+        "tinyassets.api.universe._universe_loop_dispatch",
         lambda udir: (LEGACY, {"has_soul": False}),
     )
 
@@ -240,7 +240,7 @@ def test_workflow_cli_allows_non_fantasy_domain_for_declared_soul_loop(
 ):
     import sys
 
-    import workflow.__main__ as workflow_main
+    import tinyassets.__main__ as workflow_main
 
     created: list[dict[str, object]] = []
 
@@ -254,18 +254,18 @@ def test_workflow_cli_allows_non_fantasy_domain_for_declared_soul_loop(
         def start(self):
             return None
 
-    monkeypatch.setenv("WORKFLOW_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
     monkeypatch.setattr(
-        "workflow.api.universe._universe_loop_dispatch",
+        "tinyassets.api.universe._universe_loop_dispatch",
         lambda udir: ("branch-123", {"has_soul": True}),
     )
-    monkeypatch.setattr("workflow.discovery.auto_register", lambda registry: None)
+    monkeypatch.setattr("tinyassets.discovery.auto_register", lambda registry: None)
     monkeypatch.setattr(
-        "workflow.registry.default_registry.get",
+        "tinyassets.registry.default_registry.get",
         lambda domain: SimpleNamespace(name=domain),
     )
     monkeypatch.setattr(
-        "workflow.registry.default_registry.list_domains",
+        "tinyassets.registry.default_registry.list_domains",
         lambda: ["research_daemon"],
     )
     monkeypatch.setattr(
@@ -276,7 +276,7 @@ def test_workflow_cli_allows_non_fantasy_domain_for_declared_soul_loop(
         sys,
         "argv",
         [
-            "python -m workflow",
+            "python -m tinyassets",
             "--domain",
             "research_daemon",
             "--universe",

@@ -16,7 +16,7 @@ Compile a validated `BranchDefinition` into a live LangGraph + SqliteSaver and r
 
 ## Design decisions
 
-1. **Compiler is a pure function.** `BranchDefinition → StateGraph` lives in `workflow/graph_compiler.py`. No side effects. Takes a validated branch + resolved tool allowlist, returns a compiled StateGraph. Compiler failures are programmer errors, not user errors (user errors are caught by `validate_branch`).
+1. **Compiler is a pure function.** `BranchDefinition → StateGraph` lives in `tinyassets/graph_compiler.py`. No side effects. Takes a validated branch + resolved tool allowlist, returns a compiled StateGraph. Compiler failures are programmer errors, not user errors (user errors are caught by `validate_branch`).
 
 2. **TypedDict synthesized at runtime.** The state_schema JSON blob is materialized into a dynamic TypedDict with `Annotated[list, operator.add]` for `reducer=append` fields, `Annotated[dict, dict_merge]` for `merge`, plain field for `overwrite`. Honors PLAN.md hard rule #5.
 
@@ -27,7 +27,7 @@ Compile a validated `BranchDefinition` into a live LangGraph + SqliteSaver and r
    - `source_code` nodes: require host `approved=True` (existing NodeDefinition field). Unapproved source-code nodes are rejected at compile time, not runtime. The existing `_ext_register` dangerous-pattern guard (`os.system`, `subprocess`, `eval`, `exec`, `__import__`) still applies.
    - Conditional edges run a predicate synthesized from the source node's `output_keys` — no user-code routing function in v1. Routing reads a single declared output key and maps its value through the `conditions` dict. Richer routers are future work.
 
-5. **Runs are async by default.** Phone-based users cannot hold a 30-minute chat open. `run_branch` returns immediately with a `run_id`; execution happens in a background task within the Workflow Server process. Clients poll `get_run` or call `stream_run` for incremental updates.
+5. **Runs are async by default.** Phone-based users cannot hold a 30-minute chat open. `run_branch` returns immediately with a `run_id`; execution happens in a background task within the TinyAssets Server process. Clients poll `get_run` or call `stream_run` for incremental updates.
 
 ## MCP actions (extend `extensions` tool)
 

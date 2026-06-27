@@ -96,7 +96,7 @@ def _run_with_fake_keygen(monkeypatch, tmp_path, pubkey_present: bool) -> list:
 
     # Write fake key files that the script will read.
     fake_priv = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n"
-    fake_pub = "ssh-ed25519 AAAA workflow-backup-key\n"
+    fake_pub = "ssh-ed25519 AAAA tinyassets-backup-key\n"
 
     real_td = __import__("tempfile").TemporaryDirectory
 
@@ -227,7 +227,7 @@ def test_do_key_exists_matches_on_key_body(monkeypatch) -> None:
 def test_do_register_key_parses_response() -> None:
     fake_post_response = (
         '{"ssh_key": {"id": 42, "fingerprint": "de:ad:be:ef", '
-        '"public_key": "ssh-ed25519 AAAA", "name": "workflow-deploy-backup"}}'
+        '"public_key": "ssh-ed25519 AAAA", "name": "tinyassets-deploy-backup"}}'
     ).encode()
 
     class _FakeResp:
@@ -239,8 +239,8 @@ def test_do_register_key_parses_response() -> None:
         return _FakeResp()
 
     rec = bsk._do_register_key(
-        "tok", "ssh-ed25519 AAAA workflow-backup-key",
-        "workflow-deploy-backup",
+        "tok", "ssh-ed25519 AAAA tinyassets-backup-key",
+        "tinyassets-deploy-backup",
         opener=fake_opener,
     )
     assert rec["id"] == 42
@@ -260,7 +260,7 @@ def test_print_only_emits_private_pem_to_stdout(monkeypatch, tmp_path, capsys):
         "-----BEGIN OPENSSH PRIVATE KEY-----\n"
         "STDOUT-PEM\n-----END OPENSSH PRIVATE KEY-----\n"
     )
-    fake_pub = "ssh-ed25519 AAAAFAKE workflow-backup-key\n"
+    fake_pub = "ssh-ed25519 AAAAFAKE tinyassets-backup-key\n"
     real_td = __import__("tempfile").TemporaryDirectory
 
     class _PatchedTD:
@@ -290,7 +290,7 @@ def test_default_mode_writes_key_files_to_out_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(bsk, "_pubkey_already_present", lambda *a: True)
 
     fake_priv = "-----BEGIN OPENSSH PRIVATE KEY-----\nFILE-PEM\n-----END OPENSSH PRIVATE KEY-----\n"
-    fake_pub = "ssh-ed25519 AAAAFAKE workflow-backup-key\n"
+    fake_pub = "ssh-ed25519 AAAAFAKE tinyassets-backup-key\n"
     real_td = __import__("tempfile").TemporaryDirectory
 
     class _PatchedTD:
@@ -337,7 +337,7 @@ def test_do_register_skipped_when_no_token(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(bsk, "_do_key_exists", lambda *a: False)
 
     fake_priv = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE\n-----END OPENSSH PRIVATE KEY-----\n"
-    fake_pub = "ssh-ed25519 AAAA workflow-backup-key\n"
+    fake_pub = "ssh-ed25519 AAAA tinyassets-backup-key\n"
     real_td = __import__("tempfile").TemporaryDirectory
 
     class _PatchedTD:
@@ -371,7 +371,7 @@ def test_do_register_runs_when_token_set(monkeypatch, tmp_path) -> None:
     )
 
     fake_priv = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE\n-----END OPENSSH PRIVATE KEY-----\n"
-    fake_pub = "ssh-ed25519 AAAA workflow-backup-key\n"
+    fake_pub = "ssh-ed25519 AAAA tinyassets-backup-key\n"
     real_td = __import__("tempfile").TemporaryDirectory
 
     class _PatchedTD:
@@ -396,6 +396,6 @@ def test_do_register_runs_when_token_set(monkeypatch, tmp_path) -> None:
 
 def test_default_key_name_and_do_label_constants() -> None:
     """Regression guard — runbook + vault path depend on these names."""
-    assert bsk.DEFAULT_KEY_NAME == "workflow_deploy_backup_ed25519"
-    assert bsk.DEFAULT_DO_KEY_LABEL == "workflow-deploy-backup"
+    assert bsk.DEFAULT_KEY_NAME == "tinyassets_deploy_backup_ed25519"
+    assert bsk.DEFAULT_DO_KEY_LABEL == "tinyassets-deploy-backup"
     assert bsk.DO_API_KEYS == "https://api.digitalocean.com/v2/account/keys"

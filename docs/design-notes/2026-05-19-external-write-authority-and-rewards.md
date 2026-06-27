@@ -116,7 +116,7 @@ written", "methodology check passes", "all authors signed", "submitted",
 
 ### 5. The project itself having a voice
 
-The Workflow project is its own universe — branches can be bound to a
+The TinyAssets project is its own universe — branches can be bound to a
 Goal like "Workflow ships v1.0" or "Workflow's public blog publishes a
 weekly digest." The platform *is* the contributor base; founders + a wide
 contributor pool drive PRs.

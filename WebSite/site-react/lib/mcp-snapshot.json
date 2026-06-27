@@ -26,8 +26,8 @@
     },
     {
       "id": "dd187997039b",
-      "name": "Connect public web sources to Workflow universes",
-      "summary": "Let a chatbot fetch a public source URL, store the snapshot in a Workflow universe through MCP, preserve attribution/provenance, and route proposed changes through branch/gate review before promotion. Echoes of the Cosmos Reddit/RSS is the first live example.",
+      "name": "Connect public web sources to TinyAssets universes",
+      "summary": "Let a chatbot fetch a public source URL, store the snapshot in a TinyAssets universe through MCP, preserve attribution/provenance, and route proposed changes through branch/gate review before promotion. Echoes of the Cosmos Reddit/RSS is the first live example.",
       "tags": [
         "public-source",
         "mcp",
@@ -43,7 +43,7 @@
     {
       "id": "4ff5862cc26d",
       "name": "Route a patch request through investigation, PR, release, and live observation",
-      "summary": "Community-driven live-state loop for Workflow changes. Any patch request starts as a wiki report, runs through the best known investigation branch, passes gate review, dispatches a coding-team branch to produce a PR, passes further gates, and is then observed after landing with real or simulated users. The goal is long-horizon self-improvement: gates can send work backward with edits whenever evidence shows the patch did not land or did not work as intended.",
+      "summary": "Community-driven live-state loop for TinyAssets changes. Any patch request starts as a wiki report, runs through the best known investigation branch, passes gate review, dispatches a coding-team branch to produce a PR, passes further gates, and is then observed after landing with real or simulated users. The goal is long-horizon self-improvement: gates can send work backward with edits whenever evidence shows the patch did not land or did not work as intended.",
       "tags": [
         "patch-loop",
         "community",
@@ -57,8 +57,8 @@
     },
     {
       "id": "f10caea2e437",
-      "name": "Turn a Workflow bug into a patch packet",
-      "summary": "Given a filed Workflow bug report, produce an actionable patch packet: normalized bug summary, minimal repro, likely root cause map, implementation sketch, regression tests, and attachable maintainer comment. Intended to be run automatically after wiki action=file_bug via the canonical branch for this goal.",
+      "name": "Turn a TinyAssets bug into a patch packet",
+      "summary": "Given a filed TinyAssets bug report, produce an actionable patch packet: normalized bug summary, minimal repro, likely root cause map, implementation sketch, regression tests, and attachable maintainer comment. Intended to be run automatically after wiki action=file_bug via the canonical branch for this goal.",
       "tags": [
         "bugs",
         "patch-packet",
@@ -389,7 +389,7 @@
       },
       {
         "slug": "drafts/concepts/workflow-patterns.md",
-        "title": "Workflow Patterns"
+        "title": "TinyAssets Patterns"
       },
       {
         "slug": "drafts/notes/community-change-loop-v1-builder-notes.md",
@@ -409,11 +409,11 @@
       },
       {
         "slug": "drafts/projects/workflow-redesign-2026-04.md",
-        "title": "Workflow Redesign Session — April 2026"
+        "title": "TinyAssets Redesign Session — April 2026"
       },
       {
         "slug": "drafts/workflows/agent-teams-as-graphs.md",
-        "title": "Agent Teams as Workflow Graphs"
+        "title": "Agent Teams as TinyAssets Graphs"
       }
     ]
   },

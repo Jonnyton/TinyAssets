@@ -16,14 +16,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from workflow.universe_self_model import (
+from tinyassets.universe_self_model import (
     SEED_QUESTIONS,
     SELF_MODEL_DIR,
     SeedQuestion,
     ensure_self_model,
     read_self_model,
 )
-from workflow.wiki.okf_export import OKF_VERSION, _validate_index, _validate_log
+from tinyassets.wiki.okf_export import OKF_VERSION, _validate_index, _validate_log
 
 # ─────────────────────────────────────────────────────────────────────
 # Seed bundle creation

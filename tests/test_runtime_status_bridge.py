@@ -5,7 +5,7 @@ Covers:
   and ``_remove_runtime_status`` on shutdown.
 - ``UniverseServerManager._read_runtime_status`` freshness gate.
 - ``UniverseServerManager.hover_text`` provider suffix.
-- ``--provider`` CLI validation + WORKFLOW_PIN_WRITER env var.
+- ``--provider`` CLI validation + TINYASSETS_PIN_WRITER env var.
 """
 
 from __future__ import annotations
@@ -139,15 +139,15 @@ def test_write_runtime_status_empty_pin_serializes_to_empty_string(
 
 @pytest.fixture
 def tray_manager(tmp_path, monkeypatch):
-    """UniverseServerManager with PROJECT_DIR + WORKFLOW_DATA_DIR pointed
+    """UniverseServerManager with PROJECT_DIR + TINYASSETS_DATA_DIR pointed
     at a tmp tree.
 
     Avoids the real GTK/pystray init by instantiating the class only far
     enough to exercise the pure-logic methods.
 
     Post-Task-#7 the tray reads ``data_dir()`` (via
-    ``workflow.storage.data_dir``) rather than ``PROJECT_DIR / "output"``,
-    so we pin ``WORKFLOW_DATA_DIR`` to a tmp root and create the
+    ``tinyassets.storage.data_dir``) rather than ``PROJECT_DIR / "output"``,
+    so we pin ``TINYASSETS_DATA_DIR`` to a tmp root and create the
     universe directory there. ``PROJECT_DIR`` is still monkeypatched for
     tray-local state (log dir, singleton lock, etc.).
     """
@@ -161,19 +161,19 @@ def tray_manager(tmp_path, monkeypatch):
     sys.modules["pystray"].Menu = type("Menu", (), {"SEPARATOR": object()})
     sys.modules["pystray"].MenuItem = object
 
-    # Pin data_dir() to a throwaway root BEFORE importing workflow_tray
+    # Pin data_dir() to a throwaway root BEFORE importing tinyassets_tray
     # (manager's __init__ calls _read_active_universe which reads
     # data_dir()).
     data_root = tmp_path / "data"
     data_root.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(data_root))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
 
-    # Point workflow_tray at our tmp project root for tray-local state.
-    import workflow_tray
+    # Point tinyassets_tray at our tmp project root for tray-local state.
+    import tinyassets_tray
 
-    importlib.reload(workflow_tray)
-    monkeypatch.setattr(workflow_tray, "PROJECT_DIR", tmp_path)
-    monkeypatch.setattr(workflow_tray, "LOG_DIR", tmp_path / "logs")
+    importlib.reload(tinyassets_tray)
+    monkeypatch.setattr(tinyassets_tray, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(tinyassets_tray, "LOG_DIR", tmp_path / "logs")
 
     # Create <data_dir>/<universe>/ so the manager picks it up via
     # data_dir()-anchored resolution.
@@ -182,7 +182,7 @@ def tray_manager(tmp_path, monkeypatch):
     universe_dir.mkdir(parents=True)
     (universe_dir / "PROGRAM.md").write_text("premise", encoding="utf-8")
 
-    mgr = workflow_tray.UniverseServerManager()
+    mgr = tinyassets_tray.UniverseServerManager()
     mgr._active_universe = universe
     return mgr, universe_dir
 
@@ -266,7 +266,7 @@ def test_hover_text_no_suffix_when_status_absent(tray_manager) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI: --provider validation + WORKFLOW_PIN_WRITER env var
+# CLI: --provider validation + TINYASSETS_PIN_WRITER env var
 # ---------------------------------------------------------------------------
 
 
@@ -290,7 +290,7 @@ def test_cli_help_mentions_provider_flag() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Router: WORKFLOW_PIN_WRITER narrows chain and fails loudly on exhaustion
+# Router: TINYASSETS_PIN_WRITER narrows chain and fails loudly on exhaustion
 # ---------------------------------------------------------------------------
 
 
@@ -303,8 +303,8 @@ class _RecordingProvider:
         self.calls = 0
 
     async def complete(self, prompt, system, cfg):
-        from workflow.exceptions import ProviderUnavailableError
-        from workflow.providers.base import ProviderResponse
+        from tinyassets.exceptions import ProviderUnavailableError
+        from tinyassets.providers.base import ProviderResponse
 
         self.calls += 1
         if self._fail:
@@ -320,17 +320,17 @@ class _RecordingProvider:
 
 @pytest.fixture
 def _clear_pin(monkeypatch):
-    monkeypatch.delenv("WORKFLOW_PIN_WRITER", raising=False)
+    monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
     yield
 
 
 def test_router_pins_to_env_var_provider(monkeypatch, _clear_pin) -> None:
-    from workflow.providers.router import ProviderRouter
+    from tinyassets.providers.router import ProviderRouter
 
     pinned = _RecordingProvider("codex")
     other = _RecordingProvider("claude-code")
     router = ProviderRouter(providers={"codex": pinned, "claude-code": other})
-    monkeypatch.setenv("WORKFLOW_PIN_WRITER", "codex")
+    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
 
     import asyncio
     resp = asyncio.run(router.call("writer", "p", "s"))
@@ -343,15 +343,15 @@ def test_router_pins_to_env_var_provider(monkeypatch, _clear_pin) -> None:
 def test_router_pinned_writer_raises_on_exhaustion_no_fallback(
     monkeypatch, _clear_pin,
 ) -> None:
-    from workflow.exceptions import AllProvidersExhaustedError
-    from workflow.providers.router import ProviderRouter
+    from tinyassets.exceptions import AllProvidersExhaustedError
+    from tinyassets.providers.router import ProviderRouter
 
     pinned = _RecordingProvider("codex", fail=True)
     would_succeed = _RecordingProvider("ollama-local")
     router = ProviderRouter(
         providers={"codex": pinned, "ollama-local": would_succeed},
     )
-    monkeypatch.setenv("WORKFLOW_PIN_WRITER", "codex")
+    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
 
     import asyncio
     with pytest.raises(AllProvidersExhaustedError) as ei:
@@ -366,13 +366,13 @@ def test_router_pinned_writer_raises_on_exhaustion_no_fallback(
 def test_router_pin_does_not_affect_non_writer_roles(
     monkeypatch, _clear_pin,
 ) -> None:
-    """Judge ensemble / extract should ignore WORKFLOW_PIN_WRITER."""
-    from workflow.providers.router import ProviderRouter
+    """Judge ensemble / extract should ignore TINYASSETS_PIN_WRITER."""
+    from tinyassets.providers.router import ProviderRouter
 
     p1 = _RecordingProvider("codex")
     p2 = _RecordingProvider("claude-code")
     router = ProviderRouter(providers={"codex": p1, "claude-code": p2})
-    monkeypatch.setenv("WORKFLOW_PIN_WRITER", "codex")
+    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
 
     import asyncio
     # 'extract' chain starts with codex so it still resolves to codex here,

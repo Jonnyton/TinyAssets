@@ -18,8 +18,8 @@ import json
 
 import pytest
 
-from workflow.contribution_events import _EMIT_FAILURES, _connect
-from workflow.runs import (
+from tinyassets.contribution_events import _EMIT_FAILURES, _connect
+from tinyassets.runs import (
     RUN_STATUS_CANCELLED,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
@@ -140,7 +140,7 @@ class TestTerminalStatusEmits:
         assert ev["source_artifact_kind"] == "branch_version"
 
     def test_completed_run_emits_full_identity_tuple(self, tmp_path):
-        from workflow.daemon_registry import create_daemon
+        from tinyassets.daemon_registry import create_daemon
 
         daemon = create_daemon(
             tmp_path,
@@ -221,7 +221,7 @@ class TestEmitFailureDecoupled:
     def test_emit_raise_preserves_status_update(self, tmp_path, monkeypatch):
         """If record_contribution_event raises, run.status STILL updates AND
         _EMIT_FAILURES counter increments AND a warning is logged."""
-        from workflow import contribution_events as ce
+        from tinyassets import contribution_events as ce
 
         run_id = _fresh_run(tmp_path)
 
@@ -283,13 +283,13 @@ def _seed_branch_with_authored_nodes(
 ) -> "BranchDefinition":  # noqa: F821 — string annotation; real type imported in body
     """Create a real BranchDefinition with NodeDefinitions whose authors are
     set per the node_authors mapping. Single-node default keeps tests focused."""
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
         NodeDefinition,
     )
-    from workflow.daemon_server import (
+    from tinyassets.daemon_server import (
         initialize_author_server,
         save_branch_definition,
     )
@@ -350,7 +350,7 @@ class TestDesignUsedEmits:
         """A node with non-anonymous author fires one design_used per
         successful step — kind=node_def, source_artifact_id=node_def_id,
         actor_id=author."""
-        from workflow.runs import execute_branch_async
+        from tinyassets.runs import execute_branch_async
 
         branch = _seed_branch_with_authored_nodes(
             tmp_path,
@@ -359,7 +359,7 @@ class TestDesignUsedEmits:
         outcome = execute_branch_async(
             tmp_path, branch=branch, inputs={}, actor="runner",
         )
-        from workflow.runs import wait_for
+        from tinyassets.runs import wait_for
         wait_for(outcome.run_id, timeout=10.0)
 
         events = _design_used_events(tmp_path, outcome.run_id)
@@ -378,7 +378,7 @@ class TestDesignUsedEmits:
     def test_anonymous_author_skips_emit(self, tmp_path):
         """Default 'anonymous' author skips emit — orphan-row prevention.
         Only registered actors (non-default author) get credited."""
-        from workflow.runs import execute_branch_async, wait_for
+        from tinyassets.runs import execute_branch_async, wait_for
 
         branch = _seed_branch_with_authored_nodes(
             tmp_path,
@@ -394,7 +394,7 @@ class TestDesignUsedEmits:
 
     def test_multi_node_run_emits_per_node(self, tmp_path):
         """Two authored nodes each fire one design_used in step order."""
-        from workflow.runs import execute_branch_async, wait_for
+        from tinyassets.runs import execute_branch_async, wait_for
 
         branch = _seed_branch_with_authored_nodes(
             tmp_path,
@@ -417,8 +417,8 @@ class TestDesignUsedEmits:
     def test_synthetic_system_node_id_does_not_emit(self, tmp_path):
         """Direct _on_node call with a __-prefixed node_id never emits.
         Tests the system-event filter without needing a full run."""
-        from workflow.contribution_events import _connect as ce_connect
-        from workflow.runs import _invoke_graph  # noqa: F401 — verifies symbol importable
+        from tinyassets.contribution_events import _connect as ce_connect
+        from tinyassets.runs import _invoke_graph  # noqa: F401 — verifies symbol importable
 
         branch = _seed_branch_with_authored_nodes(
             tmp_path, node_authors={"n1": "alice"},
@@ -426,7 +426,7 @@ class TestDesignUsedEmits:
         # We can't easily invoke _on_node directly (it's a closure inside
         # _invoke_graph). Instead drive a full run, then verify no
         # contribution event has graph_node_id starting with "__".
-        from workflow.runs import execute_branch_async, wait_for
+        from tinyassets.runs import execute_branch_async, wait_for
 
         outcome = execute_branch_async(
             tmp_path, branch=branch, inputs={}, actor="runner",
@@ -450,7 +450,7 @@ class TestDesignUsedEmits:
         """Same (run_id, step_index, node_def_id) tuple cannot emit twice —
         deterministic event_id + INSERT OR IGNORE. Verified by inspecting
         for any duplicate (step_index, node_def_id) pairs."""
-        from workflow.runs import execute_branch_async, wait_for
+        from tinyassets.runs import execute_branch_async, wait_for
 
         branch = _seed_branch_with_authored_nodes(
             tmp_path,
@@ -473,7 +473,7 @@ class TestDesignUsedEmits:
     def test_design_used_findable_by_bounty_calc_query(self, tmp_path):
         """The §4 recursive-CTE bounty calc finds production-emitted
         design_used events with correct actor attribution."""
-        from workflow.runs import execute_branch_async, wait_for
+        from tinyassets.runs import execute_branch_async, wait_for
 
         branch = _seed_branch_with_authored_nodes(
             tmp_path,

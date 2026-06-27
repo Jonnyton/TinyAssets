@@ -19,7 +19,7 @@ import pytest
 
 def test_discover_domains() -> None:
     """Test that domain discovery finds fantasy_daemon and research_probe."""
-    from workflow.discovery import discover_domains
+    from tinyassets.discovery import discover_domains
 
     domains = discover_domains()
 
@@ -35,7 +35,7 @@ def test_discover_domains_empty_nonexistent() -> None:
 
     This is a graceful fallback and shouldn't raise an exception.
     """
-    from workflow.discovery import discover_domains
+    from tinyassets.discovery import discover_domains
 
     # The actual domains/ directory exists in the test environment,
     # but this test documents the expected behavior if it didn't.
@@ -45,7 +45,7 @@ def test_discover_domains_empty_nonexistent() -> None:
 
 
 def test_fantasy_author_skill_loadable() -> None:
-    """Test that workflow.skill.FantasyAuthorDomain can be imported."""
+    """Test that tinyassets.skill.FantasyAuthorDomain can be imported."""
     from domains.fantasy_daemon.skill import FantasyAuthorDomain
 
     domain = FantasyAuthorDomain()
@@ -77,8 +77,8 @@ def test_research_probe_skill_loadable() -> None:
 
 def test_auto_register_populates_registry() -> None:
     """Test that auto_register discovers and registers all domains."""
-    from workflow.discovery import auto_register
-    from workflow.registry import DomainRegistry
+    from tinyassets.discovery import auto_register
+    from tinyassets.registry import DomainRegistry
 
     registry = DomainRegistry()
     assert registry.list_domains() == []
@@ -95,8 +95,8 @@ def test_auto_register_populates_registry() -> None:
 
 def test_registry_get_returns_registered_domain() -> None:
     """Test that registry.get() returns a registered domain instance."""
-    from workflow.discovery import auto_register
-    from workflow.registry import DomainRegistry
+    from tinyassets.discovery import auto_register
+    from tinyassets.registry import DomainRegistry
 
     registry = DomainRegistry()
     auto_register(registry)
@@ -112,7 +112,7 @@ def test_registry_get_returns_registered_domain() -> None:
 
 def test_registry_get_returns_none_for_missing() -> None:
     """Test that registry.get() returns None for unregistered domains."""
-    from workflow.registry import DomainRegistry
+    from tinyassets.registry import DomainRegistry
 
     registry = DomainRegistry()
     result = registry.get("nonexistent_domain")
@@ -121,7 +121,7 @@ def test_registry_get_returns_none_for_missing() -> None:
 
 def test_default_registry_exported() -> None:
     """Test that a default_registry is exported for convenience."""
-    from workflow.registry import default_registry
+    from tinyassets.registry import default_registry
 
     assert default_registry is not None
     # The default registry may be empty (no auto_register called yet)
@@ -138,7 +138,7 @@ def test_default_registry_exported() -> None:
 
 def test_create_app_returns_fastapi() -> None:
     """Test that create_app returns a FastAPI instance."""
-    from workflow.api import create_app
+    from tinyassets.api import create_app
 
     app = create_app()
 
@@ -150,9 +150,9 @@ def test_create_app_returns_fastapi() -> None:
 
 def test_create_app_with_registry() -> None:
     """Test that create_app accepts a registry parameter."""
-    from workflow.api import create_app
-    from workflow.discovery import auto_register
-    from workflow.registry import DomainRegistry
+    from tinyassets.api import create_app
+    from tinyassets.discovery import auto_register
+    from tinyassets.registry import DomainRegistry
 
     registry = DomainRegistry()
     auto_register(registry)
@@ -185,19 +185,19 @@ def test_fantasy_daemon_configure_export() -> None:
 
 
 def test_workflow_main_parses() -> None:
-    """Test that workflow/__main__.py parses as valid Python."""
+    """Test that tinyassets/__main__.py parses as valid Python."""
     main_file = Path(__file__).parent.parent / "workflow" / "__main__.py"
-    assert main_file.exists(), f"workflow/__main__.py not found at {main_file}"
+    assert main_file.exists(), f"tinyassets/__main__.py not found at {main_file}"
 
     source = main_file.read_text()
     try:
         ast.parse(source)
     except SyntaxError as e:
-        pytest.fail(f"workflow/__main__.py has syntax error: {e}")
+        pytest.fail(f"tinyassets/__main__.py has syntax error: {e}")
 
 
 def test_workflow_main_has_main_function() -> None:
-    """Test that workflow/__main__.py defines a main() function."""
+    """Test that tinyassets/__main__.py defines a main() function."""
     main_file = Path(__file__).parent.parent / "workflow" / "__main__.py"
     source = main_file.read_text()
     tree = ast.parse(source)
@@ -208,11 +208,11 @@ def test_workflow_main_has_main_function() -> None:
         if isinstance(node, ast.FunctionDef)
     ]
 
-    assert "main" in func_names, "main() function not defined in workflow/__main__.py"
+    assert "main" in func_names, "main() function not defined in tinyassets/__main__.py"
 
 
 def test_workflow_main_has_argparser() -> None:
-    """Test that workflow/__main__.py defines argument parsing."""
+    """Test that tinyassets/__main__.py defines argument parsing."""
     main_file = Path(__file__).parent.parent / "workflow" / "__main__.py"
     source = main_file.read_text()
     tree = ast.parse(source)
@@ -224,28 +224,28 @@ def test_workflow_main_has_argparser() -> None:
     ]
 
     assert "_build_argparser" in func_names, (
-        "argument parser builder not found in workflow/__main__.py"
+        "argument parser builder not found in tinyassets/__main__.py"
     )
 
 
 # ============================================================================
-# Workflow Package Tests
+# TinyAssets Package Tests
 # ============================================================================
 
 
 def test_workflow_exports_discovery() -> None:
     """Test that workflow package exports discovery utilities."""
-    import workflow
+    import tinyassets
 
     assert hasattr(workflow, "discover_domains")
     assert hasattr(workflow, "auto_register")
-    assert callable(workflow.discover_domains)
-    assert callable(workflow.auto_register)
+    assert callable(tinyassets.discover_domains)
+    assert callable(tinyassets.auto_register)
 
 
 def test_workflow_exports_registry() -> None:
     """Test that workflow package exports registry utilities."""
-    import workflow
+    import tinyassets
 
     assert hasattr(workflow, "DomainRegistry")
     assert hasattr(workflow, "default_registry")
@@ -253,15 +253,15 @@ def test_workflow_exports_registry() -> None:
 
 def test_workflow_exports_protocols() -> None:
     """Test that workflow package exports domain protocols."""
-    import workflow
+    import tinyassets
 
     assert hasattr(workflow, "Domain")
     assert hasattr(workflow, "DomainConfig")
 
 
 def test_workflow_all_exports_complete() -> None:
-    """Test that workflow.__all__ includes key symbols."""
-    import workflow
+    """Test that tinyassets.__all__ includes key symbols."""
+    import tinyassets
 
     expected = [
         "DomainRegistry",
@@ -273,8 +273,8 @@ def test_workflow_all_exports_complete() -> None:
     ]
 
     for symbol in expected:
-        assert symbol in workflow.__all__, f"{symbol} not in workflow.__all__"
-        assert hasattr(workflow, symbol), f"{symbol} not exported from workflow"
+        assert symbol in tinyassets.__all__, f"{symbol} not in tinyassets.__all__"
+        assert hasattr(workflow, symbol), f"{symbol} not exported from tinyassets"
 
 
 # ============================================================================

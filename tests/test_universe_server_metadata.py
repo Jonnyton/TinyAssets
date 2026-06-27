@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from workflow.universe_server import mcp
+from tinyassets.universe_server import mcp
 
 
 def _list_tools():
@@ -51,7 +51,7 @@ class TestUniverseServerMetadata:
         control_station = prompts["control_station"]
         assert control_station.title == "Control Station Guide"
         assert {"control", "daemon", "multiplayer", "operations"} <= control_station.tags
-        assert "Workflow Server" in control_station.description
+        assert "TinyAssets Server" in control_station.description
 
         extension_guide = prompts["extension_guide"]
         assert extension_guide.title == "Extension Authoring Guide"

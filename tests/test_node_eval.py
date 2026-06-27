@@ -1,6 +1,6 @@
 """Tests for the node-performance evaluator / auto-promotion engine.
 
-`workflow/node_eval.py` tracks per-node execution outcomes in a SQLite
+`tinyassets/node_eval.py` tracks per-node execution outcomes in a SQLite
 DB and auto-promotes / auto-flags nodes based on success-rate and
 eval-score thresholds. Load-bearing for the autoresearch track (§33):
 an unreliable evaluator would silently promote bad nodes or flag good
@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from workflow.node_eval import (
+from tinyassets.node_eval import (
     FLAGGING_MAX_CONSECUTIVE_FAILURES,
     FLAGGING_MAX_SUCCESS_RATE,
     FLAGGING_MIN_EXECUTIONS,
@@ -31,7 +31,7 @@ from workflow.node_eval import (
 
 @pytest.fixture
 def evaluator(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     db = tmp_path / "node_eval.db"
     ev = NodeEvaluator(db_path=db)
     yield ev

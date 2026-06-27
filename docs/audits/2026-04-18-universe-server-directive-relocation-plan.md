@@ -1,4 +1,4 @@
-# #15 Mitigation Scope — `workflow/universe_server.py` Directive Relocation
+# #15 Mitigation Scope — `tinyassets/universe_server.py` Directive Relocation
 
 **Date:** 2026-04-18
 **Author:** dev (task #18 pre-draft for blocked task #15)
@@ -110,7 +110,7 @@ No existing tests pin any of the 3 target phrases as literal substrings (grep ac
 
 Tests that MAY touch the rewrite surface:
 - `tests/test_universe_server_framing.py` — pins "workflow builder" + non-fiction domain examples in server instructions + control_station prompt. My proposed rewrites preserve both. Re-run after edits; should pass without changes.
-- `tests/test_universe_server_metadata.py` — pins `control_station.description` contains "Workflow Server" (from #7). Unchanged by this work.
+- `tests/test_universe_server_metadata.py` — pins `control_station.description` contains "TinyAssets Server" (from #7). Unchanged by this work.
 
 No test changes anticipated. If any assertion fails unexpectedly, fix by adjusting the pin to the new canonical phrasing rather than reinstating the directive.
 
@@ -122,7 +122,7 @@ No test changes anticipated. If any assertion fails unexpectedly, fix by adjusti
 4. Rewrite `extensions` docstring (biggest diff — ~150-line delete).
 5. Rewrite `universe`, `goals`, `gates`, `wiki` docstrings (scrub behavioral prose, trim to I/O contract).
 6. Rephrase `SIMULATION BAN` tail in `_BRANCH_DESIGN_GUIDE_PROMPT`.
-7. `ruff check workflow/universe_server.py`.
+7. `ruff check tinyassets/universe_server.py`.
 8. `pytest tests/test_universe_server_framing.py tests/test_universe_server_metadata.py` — smoke both framing pins hold.
 9. Hand to verifier for full suite.
 
@@ -131,6 +131,6 @@ Estimated execution: 25–40 min.
 ## 7. Out-of-scope (not this plan)
 
 - Tool `description` fields in the `ToolAnnotations` blocks (separate from docstrings) — inventory if any carry directives; scoped in §2 follow-up if present.
-- `workflow/universe_server.py` module-level docstring (L1-50) — header prose, not transmitted as MCP metadata.
-- Phrase audits on OTHER files (`workflow/daemon_server.py`, `fantasy_daemon/api.py`) — if directives leaked there, separate task.
+- `tinyassets/universe_server.py` module-level docstring (L1-50) — header prose, not transmitted as MCP metadata.
+- Phrase audits on OTHER files (`tinyassets/daemon_server.py`, `fantasy_daemon/api.py`) — if directives leaked there, separate task.
 - Packaging-mirror refresh — auto-handled by `build_plugin.py` on next build.

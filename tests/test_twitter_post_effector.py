@@ -6,14 +6,14 @@ import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from workflow.branches import NodeDefinition
-from workflow.effectors import (
+from tinyassets.branches import NodeDefinition
+from tinyassets.effectors import (
     EXTERNAL_WRITE_SINK_TWITTER_POST,
     run_effects_for_branch,
     run_twitter_post_effector,
 )
-from workflow.storage.effector_consents import grant_consent
-from workflow.storage.external_write_receipts import (
+from tinyassets.storage.effector_consents import grant_consent
+from tinyassets.storage.external_write_receipts import (
     STATUS_SUCCEEDED,
     lookup_receipt,
 )
@@ -54,9 +54,9 @@ def test_package_exports_twitter_post_effector():
 def test_twitter_post_dry_run_env_returns_would_post_before_network(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", "1")
+    monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", "1")
     post = Mock()
-    monkeypatch.setattr("workflow.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
 
     result = run_twitter_post_effector(
         node_id="emit",
@@ -74,13 +74,13 @@ def test_twitter_post_dry_run_env_returns_would_post_before_network(
 
 
 def test_twitter_post_authority_denied_fails_closed(tmp_path, monkeypatch):
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     monkeypatch.setattr(
-        "workflow.effectors.twitter_post.resolve_soul_effect_authority",
+        "tinyassets.effectors.twitter_post.resolve_soul_effect_authority",
         lambda *_args, **_kwargs: "denied",
     )
     post = Mock()
-    monkeypatch.setattr("workflow.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
 
     result = run_twitter_post_effector(
         node_id="emit",
@@ -103,9 +103,9 @@ def test_twitter_post_authority_denied_fails_closed(tmp_path, monkeypatch):
 def test_twitter_post_missing_consent_dry_runs_before_credentials(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     post = Mock()
-    monkeypatch.setattr("workflow.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
 
     result = run_twitter_post_effector(
         node_id="emit",
@@ -122,7 +122,7 @@ def test_twitter_post_missing_consent_dry_runs_before_credentials(
 
 
 def test_twitter_post_success_records_post_evidence(tmp_path, monkeypatch):
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     _set_credentials(monkeypatch)
     grant_consent(
         tmp_path,
@@ -138,7 +138,7 @@ def test_twitter_post_success_records_post_evidence(tmp_path, monkeypatch):
         assert credentials.api_key == "api-key"
         return {"data": {"id": "1234567890"}}
 
-    monkeypatch.setattr("workflow.effectors.twitter_post._post_tweet", fake_post)
+    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", fake_post)
 
     result = run_twitter_post_effector(
         node_id="emit",
@@ -166,7 +166,7 @@ def test_twitter_post_success_records_post_evidence(tmp_path, monkeypatch):
 def test_twitter_post_idempotency_dedup_uses_recorded_evidence(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     _set_credentials(monkeypatch)
     grant_consent(
         tmp_path,
@@ -175,7 +175,7 @@ def test_twitter_post_idempotency_dedup_uses_recorded_evidence(
         granted_by="tester",
     )
     post = Mock(return_value={"data": {"id": "first"}})
-    monkeypatch.setattr("workflow.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
 
     first = run_twitter_post_effector(
         node_id="emit",
@@ -201,7 +201,7 @@ def test_twitter_post_idempotency_dedup_uses_recorded_evidence(
 def test_twitter_post_derives_idempotency_hint_when_omitted(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     _set_credentials(monkeypatch)
     grant_consent(
         tmp_path,
@@ -210,7 +210,7 @@ def test_twitter_post_derives_idempotency_hint_when_omitted(
         granted_by="tester",
     )
     monkeypatch.setattr(
-        "workflow.effectors.twitter_post._post_tweet",
+        "tinyassets.effectors.twitter_post._post_tweet",
         lambda **_kwargs: {"data": {"id": "derived"}},
     )
     packet = _packet(idempotency_hint="")
@@ -238,7 +238,7 @@ def test_twitter_post_rejects_payload_handle_mismatch_with_destination(
     payload handle must be REJECTED and no post attempted. This is the
     PR-1374 authorization-bypass regression guard.
     """
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     # Active consent + authority for the authorized destination only.
     grant_consent(
         tmp_path,
@@ -247,7 +247,7 @@ def test_twitter_post_rejects_payload_handle_mismatch_with_destination(
         granted_by="tester",
     )
     monkeypatch.setattr(
-        "workflow.effectors.twitter_post.resolve_soul_effect_authority",
+        "tinyassets.effectors.twitter_post.resolve_soul_effect_authority",
         lambda *_args, **_kwargs: "undeclared",
     )
     # Daemon env carries valid per-handle credentials for the @other account
@@ -258,7 +258,7 @@ def test_twitter_post_rejects_payload_handle_mismatch_with_destination(
     monkeypatch.setenv("TWITTER_OTHER_ACCESS_TOKEN_SECRET", "other-access-secret")
 
     post = Mock()
-    monkeypatch.setattr("workflow.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
 
     packet = _packet(payload={"handle": "@other"})
     result = run_twitter_post_effector(
@@ -289,7 +289,7 @@ def test_twitter_post_payload_handle_matching_destination_is_allowed(
     """A payload handle that resolves to the SAME account as the authorized
     destination is fine — the binding check only blocks divergence, not a
     redundant restatement of the authorized account."""
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     _set_credentials(monkeypatch)
     grant_consent(
         tmp_path,
@@ -298,7 +298,7 @@ def test_twitter_post_payload_handle_matching_destination_is_allowed(
         granted_by="tester",
     )
     monkeypatch.setattr(
-        "workflow.effectors.twitter_post._post_tweet",
+        "tinyassets.effectors.twitter_post._post_tweet",
         lambda **_kwargs: {"data": {"id": "match-ok"}},
     )
 

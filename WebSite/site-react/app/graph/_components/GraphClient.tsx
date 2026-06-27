@@ -124,7 +124,7 @@ export default function GraphClient() {
   const copyTimer = useRef<number | null>(null);
   const copyReadPrompt = useCallback(async (path: string) => {
     const clean = path.replace(/\.md$/, "");
-    const prompt = `Read the wiki page "${clean}" from my Workflow connector`;
+    const prompt = `Read the wiki page "${clean}" from my TinyAssets connector`;
     try {
       await navigator.clipboard.writeText(prompt);
       setCopiedPath(path);
@@ -654,7 +654,7 @@ export default function GraphClient() {
                           type="button"
                           className="row__copy"
                           onClick={() => copyReadPrompt(p.path)}
-                          title={`Copy: Read the wiki page "${p.path}" from my Workflow connector`}
+                          title={`Copy: Read the wiki page "${p.path}" from my TinyAssets connector`}
                         >
                           {copiedPath === p.path ? "copied ✓" : "copy read prompt"}
                         </button>

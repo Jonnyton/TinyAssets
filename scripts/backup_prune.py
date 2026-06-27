@@ -24,8 +24,8 @@ import sys
 # own. (Before 2026-06-10 the delete set was computed as all-names minus
 # kept, which would have deleted any unrecognized file at the dest.)
 TIER_PATTERNS = (
-    r"^workflow-data-\d.*\.tar\.gz$",
-    r"^workflow-brain-\d.*\.tar\.gz$",
+    r"^tinyassets-data-\d.*\.tar\.gz$",
+    r"^tinyassets-brain-\d.*\.tar\.gz$",
 )
 
 

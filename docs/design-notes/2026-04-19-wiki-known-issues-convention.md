@@ -193,8 +193,8 @@ Chatbots need a stable vocabulary so `Surface:` values aggregate
 cleanly across entries. Propose: `<tool>.<action>` for MCP-tool bugs,
 bare subsystem name for everything else. Enumeration:
 
-**MCP tool surfaces** (five coarse tools on the Workflow MCP server,
-plus the stdio shim — confirmed against `workflow/universe_server.py`
+**MCP tool surfaces** (five coarse tools on the TinyAssets MCP server,
+plus the stdio shim — confirmed against `tinyassets/universe_server.py`
 @mcp.tool definitions):
 
 - `universe.<action>` — e.g. `universe.inspect`, `universe.add_canon_from_path`,
@@ -212,7 +212,7 @@ plus the stdio shim — confirmed against `workflow/universe_server.py`
 - `tray` — Windows tray app / `tab_watchdog.py`.
 - `daemon` — background daemon (`workflow.daemon_server`, domain engines).
 - `deploy` — Docker / compose / cloudflared infrastructure.
-- `storage` — `workflow/storage/` resolvers and backends.
+- `storage` — `tinyassets/storage/` resolvers and backends.
 - `skills/<skill-name>` — `.claude/skills/` or `.agents/skills/` skill defects.
 - `wiki-mcp` — separate `wiki-mcp/server.js` bridge (distinct from `wiki.*`).
 - `user-sim` — user-simulator teammate / `claude_chat.py` skill.
@@ -252,9 +252,9 @@ descriptions. No re-derivation needed.
   arrays (`["node.output"]`). Never a bare string.
 - **First seen:** 2026-04-19, user chat while patching the
   `research_paper_7node` v2 workflow. Source:
-  `workflow/universe_server.py:5404-5407` (patch path) and
-  `workflow/universe_server.py:4160-4161` (add_node path). Mirror
-  defect in `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/universe_server.py`.
+  `tinyassets/universe_server.py:5404-5407` (patch path) and
+  `tinyassets/universe_server.py:4160-4161` (add_node path). Mirror
+  defect in `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py`.
 - **Related:** Task #1 in the task system; dev fix in flight.
 ```
 
@@ -265,8 +265,8 @@ descriptions. No re-derivation needed.
   container); storage.wiki_path()
 - **Severity:** high
 - **Status:** open
-- **Repro:** Deploy the Workflow MCP server in Docker with
-  `WORKFLOW_WIKI_PATH=C:\Users\Jonathan\Projects\Wiki` (or legacy
+- **Repro:** Deploy the TinyAssets MCP server in Docker with
+  `TINYASSETS_WIKI_PATH=C:\Users\Jonathan\Projects\Wiki` (or legacy
   `WIKI_PATH`) inherited from a Windows host's env. Call any `wiki`
   action inside the container.
 - **Observed:** Server replies
@@ -277,17 +277,17 @@ descriptions. No re-derivation needed.
 - **Expected:** Per hard-rule #8 (fail loudly), the resolver should
   detect a Windows-style path on a Linux runtime and either reject
   with a clear error
-  (`"WORKFLOW_WIKI_PATH=... is a Windows path but we're on Linux — refusing"`)
-  or fall back to `$WORKFLOW_DATA_DIR/wiki` with a loud warning. Silent
+  (`"TINYASSETS_WIKI_PATH=... is a Windows path but we're on Linux — refusing"`)
+  or fall back to `$TINYASSETS_DATA_DIR/wiki` with a loud warning. Silent
   join is the failure mode.
-- **Workaround:** Set `WORKFLOW_WIKI_PATH=/data/wiki` (or another
+- **Workaround:** Set `TINYASSETS_WIKI_PATH=/data/wiki` (or another
   Linux-native absolute path) explicitly in the container's environment
   overrides. Do not inherit the host-machine value.
 - **First seen:** 2026-04-19, user chat while probing in-container
-  wiki access. Source: `workflow/storage/__init__.py` (the `wiki_path`
+  wiki access. Source: `tinyassets/storage/__init__.py` (the `wiki_path`
   resolver landed in commit 5b2a282 but does not detect cross-OS
   path leakage). Mirror in
-  `packaging/claude-plugin/plugins/workflow-universe-server/runtime/workflow/storage/__init__.py`.
+  `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/storage/__init__.py`.
 - **Related:** Task #2 in the task system; blocks landing of this
   `known-issues` page itself.
 ```

@@ -9,9 +9,9 @@ import Tick from "../../../components/Tick";
 import Term from "../../../components/Term";
 import styles from "../page.module.css";
 
-const GH_REPO = "https://github.com/Jonnyton/Workflow";
-const GH_ISSUES = "https://github.com/Jonnyton/Workflow/issues";
-const README_QUICKSTART = "https://github.com/Jonnyton/Workflow#quick-start-for-contributors";
+const GH_REPO = "https://github.com/Jonnyton/TinyAssets";
+const GH_ISSUES = "https://github.com/Jonnyton/TinyAssets/issues";
+const README_QUICKSTART = "https://github.com/Jonnyton/TinyAssets#quick-start-for-contributors";
 
 // ── Baked first paint, visibly stamped, upgraded by a live read on mount. ──
 const SNAPSHOT_DATE = "10 Jun 2026";
@@ -91,7 +91,7 @@ export default function HostClient() {
   // ── The real local path, verified against the repo. ──
   // README quick-start: clone → venv → pip install -e .[dev]. Entry points
   // (pyproject [project.scripts] / [project.gui-scripts]): `workflow` is the
-  // tray GUI launcher, `workflow-mcp` runs the MCP server standalone. There is
+  // tray GUI launcher, `tinyassets-mcp` runs the MCP server standalone. There is
   // no published installer in releases, so the tray ships from source today.
   const [os, setOs] = React.useState<"windows" | "mac" | "linux">("windows");
   const venvLine =
@@ -100,15 +100,15 @@ export default function HostClient() {
       : "python -m venv .venv && source .venv/bin/activate";
   const quickstart =
     `git clone ${GH_REPO}.git\n` +
-    `cd Workflow\n` +
+    `cd TinyAssets\n` +
     `${venvLine}\n` +
     `pip install -e .[dev]\n` +
     `\n` +
     `# launch the tray (summons + manages your daemons)\n` +
-    `workflow\n` +
+    `tinyassets\n` +
     `\n` +
     `# or run just the MCP server your chatbot connects to\n` +
-    `workflow-mcp`;
+    `tinyassets-mcp`;
 
   const [copied, setCopied] = React.useState(false);
   const copyTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -149,7 +149,7 @@ export default function HostClient() {
             <a className="btn btn--ghost" href="#run-it">Run it yourself ↓</a>
           </div>
           <p className="cover__naming">
-            <strong>Tiny</strong> is the public face of <strong>Workflow</strong>,
+            <strong>Tiny</strong> is the public face of <strong>TinyAssets</strong>,
             an open-source engine. Same code whether it runs on the public box or on
             yours.
           </p>
@@ -206,7 +206,7 @@ export default function HostClient() {
           <p className="run__lede">
             Python 3.11+. Clone, install in editable mode, and you have a local
             daemon to summon. These commands are the repo&apos;s own quick-start — the
-            <code>workflow</code> tray and <code>workflow-mcp</code> server are the
+            <code>workflow</code> tray and <code>tinyassets-mcp</code> server are the
             documented entry points, not invented for this page.
           </p>
 

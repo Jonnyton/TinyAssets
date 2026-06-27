@@ -4,8 +4,8 @@ Covers the lifecycle (pending -> queued | failed | skipped), read API
 (get_receipt, recent_attempts, orphan_attempts, health_summary), and
 response shape (TriggerReceipt.to_response).
 
-Each test uses an isolated tempfile sqlite db via the ``WORKFLOW_TRIGGER
-_RECEIPTS_DB`` env override so tests don't touch real WORKFLOW_DATA_DIR.
+Each test uses an isolated tempfile sqlite db via the ``TINYASSETS_TRIGGER
+_RECEIPTS_DB`` env override so tests don't touch real TINYASSETS_DATA_DIR.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.wiki import trigger_receipts as tr
+from tinyassets.wiki import trigger_receipts as tr
 
 
 @pytest.fixture

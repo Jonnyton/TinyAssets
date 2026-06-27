@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Live connector exposes exactly the five canonical handles
-The live MCP server `workflow/universe_server.py` (served at `https://tinyassets.io/mcp`) SHALL register exactly five user-facing tools — `read.graph`, `write.graph`, `run.graph`, `read.page`, `write.page` — as the canonical user surface. `get_status` MAY remain as a read affordance and registered MCP prompts MAY remain, but no other user-facing data/compute tool SHALL be advertised as canonical.
+The live MCP server `tinyassets/universe_server.py` (served at `https://tinyassets.io/mcp`) SHALL register exactly five user-facing tools — `read.graph`, `write.graph`, `run.graph`, `read.page`, `write.page` — as the canonical user surface. `get_status` MAY remain as a read affordance and registered MCP prompts MAY remain, but no other user-facing data/compute tool SHALL be advertised as canonical.
 
 #### Scenario: tools/list advertises the five handles
 - **WHEN** an MCP client calls `tools/list` against the live `/mcp` endpoint
@@ -9,7 +9,7 @@ The live MCP server `workflow/universe_server.py` (served at `https://tinyassets
 - **AND** no enumerated legacy action (e.g. `build_branch`, `submit_request`) is exposed as a top-level tool
 
 ### Requirement: Handles dispatch to existing primitive handlers via shape, with no behavior change
-Each handle SHALL act as a thin router that maps a `shape=` parameter and payload onto the EXISTING `workflow/api/*` action handlers. `run.graph` SHALL be the only verb that produces a Run. The collapse SHALL NOT alter primitive behavior, run semantics, scoping, or storage; it changes only the surface shape.
+Each handle SHALL act as a thin router that maps a `shape=` parameter and payload onto the EXISTING `tinyassets/api/*` action handlers. `run.graph` SHALL be the only verb that produces a Run. The collapse SHALL NOT alter primitive behavior, run semantics, scoping, or storage; it changes only the surface shape.
 
 #### Scenario: write.graph creates a node via the existing handler
 - **WHEN** a client calls `write.graph` with `shape=node` and a node payload

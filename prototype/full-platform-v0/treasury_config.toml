@@ -26,7 +26,7 @@ is_active                = true
 #            the project folder; gitignored by `.secrets/` + `*.seed`
 #            patterns, but stored at a home-dir path to avoid accidental
 #            project-folder backup / rm-rf loss).
-#   Override: set WORKFLOW_TREASURY_KEY_PATH env var (see .env.example).
+#   Override: set TINYASSETS_TREASURY_KEY_PATH env var (see .env.example).
 #
 # Testnet-phase posture (host directive 2026-04-19 task #65): secrets
 # live outside the project folder; no vault this iteration. Real-currency

@@ -54,7 +54,7 @@ Mirrors my #54 sibling-action pattern. Two `NodeDefinition` fields:
 ### Schema
 
 ```python
-# workflow/branches.py — NodeDefinition gets a new optional field
+# tinyassets/branches.py — NodeDefinition gets a new optional field
 @dataclass
 class NodeDefinition:
     # ... existing fields ...
@@ -80,7 +80,7 @@ class NodeDefinition:
 
 ### Validation
 
-`BranchDefinition.validate()` (extending `workflow/branches.py:920-960`):
+`BranchDefinition.validate()` (extending `tinyassets/branches.py:920-960`):
 
 - A node MUST NOT carry both `invoke_branch_spec` AND `invoke_branch_version_spec` — mutually exclusive (matches the existing rule that a node can't have both `invoke_branch_spec` and `prompt_template`).
 - `branch_version_id` is required when `invoke_branch_version_spec` is set.
@@ -89,7 +89,7 @@ class NodeDefinition:
 
 ### Runtime: sibling compiler builder
 
-`workflow/graph_compiler.py` gains `_build_invoke_branch_version_node` mirroring `_build_invoke_branch_node` (lines 1189-1261). The new builder calls `execute_branch_version_async` (the helper from #54, now committed) instead of `execute_branch`. Otherwise identical.
+`tinyassets/graph_compiler.py` gains `_build_invoke_branch_version_node` mirroring `_build_invoke_branch_node` (lines 1189-1261). The new builder calls `execute_branch_version_async` (the helper from #54, now committed) instead of `execute_branch`. Otherwise identical.
 
 The shared `_DispatchInvokeBranchCommon` helper (NEW) holds the input-mapping + output-mapping + on_child_fail logic so the two builders don't duplicate. Both call into it.
 
@@ -102,7 +102,7 @@ The audit established that today's `_build_invoke_branch_node` does NOT inspect 
 ### Structured outcome extension
 
 ```python
-# workflow/runs.py — RunOutcome gains a new field (NULLABLE, additive)
+# tinyassets/runs.py — RunOutcome gains a new field (NULLABLE, additive)
 
 @dataclass
 class ChildFailure:
@@ -135,7 +135,7 @@ on_child_fail: Literal["propagate", "default", "retry"] = "propagate"
 
 ### Retry budget — per-spec with global cap
 
-Per-spec `retry_budget` (default 1) lets a chatbot mark a critical sub-branch as more aggressive without making every sub-branch retry-heavy. **Global cap `WORKFLOW_MAX_CHILD_RETRIES_TOTAL` env var (default 5)** prevents retry-storm pathology — across all sub-branch retries in a single parent run, no more than N retries fire in total. Cap reached → behaves like `"propagate"` regardless of per-spec budget.
+Per-spec `retry_budget` (default 1) lets a chatbot mark a critical sub-branch as more aggressive without making every sub-branch retry-heavy. **Global cap `TINYASSETS_MAX_CHILD_RETRIES_TOTAL` env var (default 5)** prevents retry-storm pathology — across all sub-branch retries in a single parent run, no more than N retries fire in total. Cap reached → behaves like `"propagate"` regardless of per-spec budget.
 
 ### Why default=propagate
 
@@ -150,10 +150,10 @@ The audit gap #10 + the 4-deep-blocking deadlock pattern establish the risk: wit
 ### Two-pool model
 
 ```
-parent_pool: ThreadPoolExecutor(max_workers=WORKFLOW_RUN_POOL_SIZE, default 4)
+parent_pool: ThreadPoolExecutor(max_workers=TINYASSETS_RUN_POOL_SIZE, default 4)
   - Top-level runs (no parent context) execute here.
 
-child_pool: ThreadPoolExecutor(max_workers=WORKFLOW_CHILD_POOL_SIZE, default 6)
+child_pool: ThreadPoolExecutor(max_workers=TINYASSETS_CHILD_POOL_SIZE, default 6)
   - Child runs (any depth ≥ 1) execute here.
   - Sized MAX_INVOKE_BRANCH_DEPTH + 1 by default.
 ```
@@ -176,7 +176,7 @@ Default child pool size = `MAX_INVOKE_BRANCH_DEPTH + 1 = 6`. Reasoning:
 - +1 buffer slot lets a sibling at any level fire without blocking on the deepest chain.
 - Under steady-state, total worker count = parent_pool (4) + child_pool (6) = 10 threads. Acceptable for SQLite-backed daemon.
 
-Both pools are env-configurable: `WORKFLOW_RUN_POOL_SIZE` (already exists, was `_DEFAULT_MAX_WORKERS`) and `WORKFLOW_CHILD_POOL_SIZE` (new, default 6).
+Both pools are env-configurable: `TINYASSETS_RUN_POOL_SIZE` (already exists, was `_DEFAULT_MAX_WORKERS`) and `TINYASSETS_CHILD_POOL_SIZE` (new, default 6).
 
 ### Parent run depth detection
 
@@ -228,7 +228,7 @@ Beyond the integration test above:
 - `on_child_fail="propagate"` parent run terminates with structured error.
 - `on_child_fail="default"` parent continues; output_mapping populates from `default_outputs` or None.
 - `on_child_fail="retry"` re-fires child up to `retry_budget`; falls through to propagate after exhaustion.
-- Global retry cap `WORKFLOW_MAX_CHILD_RETRIES_TOTAL` enforced across multiple sub-branches in one parent.
+- Global retry cap `TINYASSETS_MAX_CHILD_RETRIES_TOTAL` enforced across multiple sub-branches in one parent.
 - Two-pool isolation: parent-pool exhaustion does NOT block child runs.
 - Child actor inheritance: child run_id's `actor` field == parent's actor when `child_actor` unset.
 - Explicit `child_actor` override: child run_id's `actor` field == override value.
@@ -240,13 +240,13 @@ Estimate: ~12 new tests in `test_sub_branch_invocation.py` extension + 4 in new 
 
 ## 8. Open questions
 
-1. **Per-spec retry budget vs global cap interaction.** RECOMMENDED: per-spec `retry_budget` (default 1) honored AS LONG AS global counter < `WORKFLOW_MAX_CHILD_RETRIES_TOTAL` (default 5). Global cap ALWAYS wins. Closed.
+1. **Per-spec retry budget vs global cap interaction.** RECOMMENDED: per-spec `retry_budget` (default 1) honored AS LONG AS global counter < `TINYASSETS_MAX_CHILD_RETRIES_TOTAL` (default 5). Global cap ALWAYS wins. Closed.
 
 2. **Child actor inheritance default.** RECOMMENDED: parent's actor by default; explicit `child_actor` field for override. Closed per lead's pre-draft note.
 
 3. **State-schema validation strictness.** RECOMMENDED: strict at validate-time. Branches without declared `state_schema` get a warning, not an error. Closed.
 
-4. **Pool size config.** RECOMMENDED: `WORKFLOW_CHILD_POOL_SIZE` env, default 6 (= `MAX_INVOKE_BRANCH_DEPTH + 1`). Closed.
+4. **Pool size config.** RECOMMENDED: `TINYASSETS_CHILD_POOL_SIZE` env, default 6 (= `MAX_INVOKE_BRANCH_DEPTH + 1`). Closed.
 
 5. **Goal-aware "invoke canonical for goal X" wrapper.** Belongs in Task #59 (`goals action=resolve_canonical`), NOT here. This proposal stops at running a known `branch_version_id`. The chain "goal_id → canonical → invoke" is split: #59 handles the goal-to-version resolution; this proposal handles the version-to-execution. Confirmed split. Closed.
 
@@ -276,6 +276,6 @@ Estimate: ~12 new tests in `test_sub_branch_invocation.py` extension + 4 in new 
 - Variant canonicals: `docs/design-notes/2026-04-25-variant-canonicals-proposal.md` (Task #47).
 - Contribution ledger: `docs/design-notes/2026-04-25-contribution-ledger-proposal.md` (Task #48) — `child_failures` and `on_child_fail` policies emit `execute_step` / `caused_regression` events correctly.
 - Future pair: Task #59 `goals action=resolve_canonical` — supplies the (goal_id, scope_token) → branch_version_id resolution this proposal's `invoke_branch_version_spec` consumes.
-- Existing primitive: `workflow/branches.py:215-243` (NodeDefinition), `:920-960` (validate), `workflow/graph_compiler.py:1185-1380` (compiler builders), `workflow/runs.py:2087-2129` (recursion cap + poll helper).
+- Existing primitive: `tinyassets/branches.py:215-243` (NodeDefinition), `:920-960` (validate), `tinyassets/graph_compiler.py:1185-1380` (compiler builders), `tinyassets/runs.py:2087-2129` (recursion cap + poll helper).
 - Existing tests: `tests/test_sub_branch_invocation.py`.
 - Strategic context: `docs/audits/2026-04-23-navigator-full-corpus-synthesis.md` §B4; `docs/design-notes/2026-04-25-self-evolving-platform-vision.md` lines 79, 116, 194.

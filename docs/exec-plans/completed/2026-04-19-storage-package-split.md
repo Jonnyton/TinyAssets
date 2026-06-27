@@ -1,10 +1,10 @@
-# `daemon_server.py` → `workflow/storage/` Package Split — Execution Plan
+# `daemon_server.py` → `tinyassets/storage/` Package Split — Execution Plan
 
 **Date:** 2026-04-19
 **Author:** navigator
-**Status:** Pre-staged dev-executable plan. Sequenced as **R7** in `docs/exec-plans/active/2026-04-19-refactor-dispatch-sequence.md`. Heavier than R2 (bid cluster); establishes the second canonical Module Layout subpackage precedent (`workflow/storage/`).
-**Depends on R7a (`docs/exec-plans/active/2026-04-19-r7a-phase7-to-catalog.md`)** — frees `workflow/storage/` from Phase 7 catalog backend before R7 splits daemon_server into storage/ context modules. Discovered via dev-flagged collision 2026-04-19; resolved with verdict **Option C** (Phase 7 → `workflow/catalog/`).
-**Scope:** Split `workflow/daemon_server.py` (3,575 LOC, ~113 functions/classes, 25 CREATE TABLE statements, 5+ bounded contexts) into `workflow/storage/` package modules organized by storage context.
+**Status:** Pre-staged dev-executable plan. Sequenced as **R7** in `docs/exec-plans/active/2026-04-19-refactor-dispatch-sequence.md`. Heavier than R2 (bid cluster); establishes the second canonical Module Layout subpackage precedent (`tinyassets/storage/`).
+**Depends on R7a (`docs/exec-plans/active/2026-04-19-r7a-phase7-to-catalog.md`)** — frees `tinyassets/storage/` from Phase 7 catalog backend before R7 splits daemon_server into storage/ context modules. Discovered via dev-flagged collision 2026-04-19; resolved with verdict **Option C** (Phase 7 → `tinyassets/catalog/`).
+**Scope:** Split `tinyassets/daemon_server.py` (3,575 LOC, ~113 functions/classes, 25 CREATE TABLE statements, 5+ bounded contexts) into `tinyassets/storage/` package modules organized by storage context.
 **Effort:** ~2 dev-days. Single contributor. Sequenced after R2 + (post-Q4) so storage-package commit lands as the second canonical Module Layout commit.
 
 ---
@@ -19,9 +19,9 @@
 
 ## 2. The five bounded contexts
 
-Reading the 25 CREATE TABLE statements (`daemon_server.py:106-440`) + the function definitions reveals five clean bounded contexts. Each becomes a submodule under `workflow/storage/`.
+Reading the 25 CREATE TABLE statements (`daemon_server.py:106-440`) + the function definitions reveals five clean bounded contexts. Each becomes a submodule under `tinyassets/storage/`.
 
-### 2.1 `workflow/storage/accounts.py` — accounts + auth + sessions + capabilities
+### 2.1 `tinyassets/storage/accounts.py` — accounts + auth + sessions + capabilities
 
 **Schema:**
 - `user_accounts` (line 128)
@@ -40,7 +40,7 @@ Reading the 25 CREATE TABLE statements (`daemon_server.py:106-440`) + the functi
 - `resolve_bearer_token` (line 676)
 - `actor_has_capability` (line 717)
 
-### 2.2 `workflow/storage/universes_branches.py` — universes + branches + snapshots
+### 2.2 `tinyassets/storage/universes_branches.py` — universes + branches + snapshots
 
 **Schema:**
 - `universes` (line 109)
@@ -68,7 +68,7 @@ Reading the 25 CREATE TABLE statements (`daemon_server.py:106-440`) + the functi
 - `get_snapshot` (line 1061)
 - `list_snapshots` (line 1074)
 
-### 2.3 `workflow/storage/daemons.py` — daemon (author) definitions + forks + runtime instances
+### 2.3 `tinyassets/storage/daemons.py` — daemon (author) definitions + forks + runtime instances
 
 **Schema:**
 - `author_definitions` (line 159) — note: per author-daemon rename §3, this table renames to `daemon_definitions` in Phase 3 (B1). Until then, keeps current name; the *module* uses `daemons.py` to reflect the target taxonomy.
@@ -87,7 +87,7 @@ Reading the 25 CREATE TABLE statements (`daemon_server.py:106-440`) + the functi
 - `get_runtime_instance` (line 1238)
 - `list_runtime_instances` (line 1249)
 
-### 2.4 `workflow/storage/requests_votes.py` — user requests + vote windows + ballots + action records
+### 2.4 `tinyassets/storage/requests_votes.py` — user requests + vote windows + ballots + action records
 
 **Schema:**
 - `user_requests` (line 227)
@@ -108,7 +108,7 @@ Reading the 25 CREATE TABLE statements (`daemon_server.py:106-440`) + the functi
 - `record_action` (line 1554)
 - `list_actions` (line 1604)
 
-### 2.5 `workflow/storage/notes_work_targets.py` — universe notes + work-targets + hard priorities + unreconciled writes
+### 2.5 `tinyassets/storage/notes_work_targets.py` — universe notes + work-targets + hard priorities + unreconciled writes
 
 **Schema:**
 - `universe_notes` (line 278)
@@ -121,7 +121,7 @@ Reading the 25 CREATE TABLE statements (`daemon_server.py:106-440`) + the functi
 - `list_note_dicts` (line 1629)
 - (… other notes + work-target functions starting around line 1625, full list to enumerate during implementation)
 
-### 2.6 `workflow/storage/goals_gates.py` — goals + gate claims + leaderboard reads
+### 2.6 `tinyassets/storage/goals_gates.py` — goals + gate claims + leaderboard reads
 
 **Schema:**
 - `goals` (line 341)
@@ -134,7 +134,7 @@ Reading the 25 CREATE TABLE statements (`daemon_server.py:106-440`) + the functi
 
 ---
 
-## 3. Shared concerns kept in `workflow/storage/__init__.py`
+## 3. Shared concerns kept in `tinyassets/storage/__init__.py`
 
 Three things stay shared across all five context modules:
 
@@ -150,11 +150,11 @@ Three things stay shared across all five context modules:
 
 Mirrors the R2 (bid) pattern + Author→Daemon Phase 1 Part 2.5 pattern.
 
-`workflow/daemon_server.py` (NEW shim, replaces the existing god-module):
+`tinyassets/daemon_server.py` (NEW shim, replaces the existing god-module):
 ```python
 """Back-compat shim: workflow.daemon_server re-exports workflow.storage.
 
-The 3,575-LOC god-module split into workflow/storage/{accounts,
+The 3,575-LOC god-module split into tinyassets/storage/{accounts,
 universes_branches, daemons, requests_votes, notes_work_targets,
 goals_gates}.py during R7 of the refactor dispatch sequence (see
 docs/exec-plans/active/2026-04-19-storage-package-split.md).
@@ -228,11 +228,11 @@ from workflow.storage import (
     universe_id_from_path,
 )
 
-# Surfacing the deprecation warning is gated behind WORKFLOW_DEPRECATIONS
+# Surfacing the deprecation warning is gated behind TINYASSETS_DEPRECATIONS
 # so noisy CI runs don't trigger every consumer; explicit opt-in for now,
 # default-on warning in v0.3.0 release after one cycle.
 import os
-if os.environ.get("WORKFLOW_DEPRECATIONS", "").lower() in {"1", "true", "yes"}:
+if os.environ.get("TINYASSETS_DEPRECATIONS", "").lower() in {"1", "true", "yes"}:
     warnings.warn(
         "workflow.daemon_server is a back-compat shim; migrate imports to "
         "workflow.storage.<context>",
@@ -251,13 +251,13 @@ Per spaghetti-audit hotspot #2 evidence, `daemon_server.py` has only 3 import-fa
 
 | File | Current import | New import |
 |---|---|---|
-| `workflow/universe_server.py` | (search for `from workflow.daemon_server import …` and `from workflow import daemon_server`) | Migrate each to `from workflow.storage.<context> import …` |
+| `tinyassets/universe_server.py` | (search for `from workflow.daemon_server import …` and `from workflow import daemon_server`) | Migrate each to `from workflow.storage.<context> import …` |
 | `tests/test_author_server_api.py` | (similar search) | Same. |
 | `fantasy_daemon/__main__.py` | (similar search) | Same. |
 
 **Discipline:** all sweeps go through *new* paths (`workflow.storage.accounts`, etc.). Top-level shim catches *external* callers only — internal callers should never depend on the shim.
 
-**Migration script:** `git grep -l 'from workflow.daemon_server\|workflow\.daemon_server' --` + a sed script per call-site. ~30 minutes including manual review of which context to route each call to.
+**Migration script:** `git grep -l 'from workflow.daemon_server\|tinyassets\.daemon_server' --` + a sed script per call-site. ~30 minutes including manual review of which context to route each call to.
 
 ---
 
@@ -265,11 +265,11 @@ Per spaghetti-audit hotspot #2 evidence, `daemon_server.py` has only 3 import-fa
 
 ### Commit 1 — package scaffolding + shared helpers + initialize_author_server
 
-**Files:** `workflow/storage/__init__.py` + mirror. Move `_connect()`, path helpers, `initialize_author_server()`. Top-level shim NOT yet in place.
+**Files:** `tinyassets/storage/__init__.py` + mirror. Move `_connect()`, path helpers, `initialize_author_server()`. Top-level shim NOT yet in place.
 
 **Suggested message:**
 ```
-storage: scaffold workflow/storage/ package with shared helpers + DB init
+storage: scaffold tinyassets/storage/ package with shared helpers + DB init
 
 R7 commit 1/6 — first scaffolding commit. All schema CREATE TABLE
 statements remain in __init__.py for now; context modules added in
@@ -280,28 +280,28 @@ No behavior change; no call-site updates yet.
 
 ### Commits 2-6 — one per context module
 
-Each commit moves the functions for one bounded context into `workflow/storage/<context>.py`, removes them from `daemon_server.py`, updates `__init__.py` re-exports.
+Each commit moves the functions for one bounded context into `tinyassets/storage/<context>.py`, removes them from `daemon_server.py`, updates `__init__.py` re-exports.
 
-**Commit 2:** `workflow/storage/accounts.py` (R7.2)
-**Commit 3:** `workflow/storage/universes_branches.py` (R7.3)
-**Commit 4:** `workflow/storage/daemons.py` (R7.4)
-**Commit 5:** `workflow/storage/requests_votes.py` (R7.5)
-**Commit 6:** `workflow/storage/notes_work_targets.py` + `workflow/storage/goals_gates.py` (R7.6 — bundled because both are smaller)
+**Commit 2:** `tinyassets/storage/accounts.py` (R7.2)
+**Commit 3:** `tinyassets/storage/universes_branches.py` (R7.3)
+**Commit 4:** `tinyassets/storage/daemons.py` (R7.4)
+**Commit 5:** `tinyassets/storage/requests_votes.py` (R7.5)
+**Commit 6:** `tinyassets/storage/notes_work_targets.py` + `tinyassets/storage/goals_gates.py` (R7.6 — bundled because both are smaller)
 
 **After commit 6:** `daemon_server.py` becomes the back-compat shim (per §4). Update the 3 internal call sites (§5) to use new paths.
 
 **Suggested final commit message:**
 ```
-storage: complete workflow/storage/ split — daemon_server.py becomes shim
+storage: complete tinyassets/storage/ split — daemon_server.py becomes shim
 
-R7 commit 6/6 — final finalization. workflow/daemon_server.py is now
+R7 commit 6/6 — final finalization. tinyassets/daemon_server.py is now
 a back-compat shim re-exporting workflow.storage.<context> public API
 for one deprecation cycle. All 3 internal call sites migrated to new
 paths.
 
 Closes spaghetti audit hotspot #2.
-Sets workflow/storage/ as the second canonical Module Layout
-subpackage (after workflow/bid/ from R2).
+Sets tinyassets/storage/ as the second canonical Module Layout
+subpackage (after tinyassets/bid/ from R2).
 ```
 
 **Verification per commit:**
@@ -354,7 +354,7 @@ subpackage (after workflow/bid/ from R2).
 - **6 atomic commits, ~2 dev-days total.** One contributor; do not parallelize across devs (single coherent split).
 - **Pure namespace moves**, zero semantic change, zero schema change.
 - **Sequenced post-R2, pre-R5.** R12 also depends on R7.
-- **Establishes `workflow/storage/` as the second canonical Module Layout subpackage** (R2 was the first). After R7 lands, refactor pattern is fully demonstrated and R5 (the universe_server giant) has proven precedent.
+- **Establishes `tinyassets/storage/` as the second canonical Module Layout subpackage** (R2 was the first). After R7 lands, refactor pattern is fully demonstrated and R5 (the universe_server giant) has proven precedent.
 - **One naming asymmetry to comment** (R7 module = `daemons.py`, SQL tables = `author_definitions` until rename Phase 3 B1).
 
 When host approves Q4 (PLAN.md.draft), R7 dispatches second (after R2 lands) as the second canonical Module Layout commit. Pre-staged here so dispatch is zero-latency.

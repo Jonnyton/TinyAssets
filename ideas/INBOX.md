@@ -29,7 +29,7 @@ half-formed experiments.
   Links: navigator's 2026-04-27 chain-break review (chat record); persona memory `priya_ramaswamy/`; `ideas/PIPELINE.md` "Recency primitives" row; `docs/specs/2026-04-27-recency-and-continue-branch-primitives.md`; `docs/specs/2026-04-27-recency-continue-fixture-pack.md`; `docs/exec-plans/active/2026-04-27-post-18-recency-continue-implementation-cards.md`.
 
 - [2026-04-27] (source: navigator-userim-review, owner: dev post-#18, status: dev-ready-after-18, priority: post-uptime, size: medium) **`run_branch resume_from=<run_id>` — explicit "extend prior run" parameter.** Priya signal #6 + Devin Session 2 echoed. "Extend the sweep" / "continue branch" has no clean Workflow path — chatbot has to semantically infer "clone this branch, add nodes, re-run with extended inputs." Same root concern as INBOX 2026-04-24 entry but with concrete API shape proposal.
-  Files (when scoped): `workflow/api/runs.py` (add `resume_from=<run_id>` to existing `run_branch`); tests.
+  Files (when scoped): `tinyassets/api/runs.py` (add `resume_from=<run_id>` to existing `run_branch`); tests.
   Depends: #18 lock clears.
   Verification: persona replay plus live MCP `run_branch` call with `resume_from` proves chatbot routes to the existing run surface instead of re-scaffolding.
   Triaged 2026-04-27; refreshed 2026-05-01: MERGED with 2026-04-24 "Extend run / continue branch" entry into PIPELINE row "Continue-run resume primitive". No standalone `continue_branch` action; active dev-ready row is in `STATUS.md`.
@@ -172,3 +172,6 @@ half-formed experiments.
 - [2026-06-25] (source: user-chat, owner: unassigned, status: captured) PRE-EXISTING (not mine): 11 tests in tests/test_dispatcher_queue.py fail on clean origin/main b4e3f31b — universe_loop_not_declared on submit + IndexError/empty-queue on cancel/list/clamp invariants. Likely a soul-loop-declaration fixture drift (queue ops now require a declared universe loop). Found during loop-lease-reclaim work; unrelated to lease reclaim. Triage separately.
   Next: triage and choose whether this belongs in STATUS.md, PLAN.md, a design note, or an exec plan
   Links: -
+- [2026-06-27] (source: user-chat, owner: codex-gpt5-desktop, status: promoted) **Tiny/TinyAssets naming and Workflow retirement.**
+  Host decision: Tiny is the personified intelligence users and developers interact with; TinyAssets is the website, platform, GitHub/repository, distribution, and app/listing brand; Workflow/workflow is only a migration compatibility name and retires after staged replacement.
+  Promoted to: `PLAN.md` Canonical Naming Boundary; `docs/design-notes/2026-06-27-tinyassets-rename-migration.md`; `docs/exec-plans/active/2026-06-27-tinyassets-rename-migration.md`; STATUS.md Work row "TinyAssets rename migration plan".

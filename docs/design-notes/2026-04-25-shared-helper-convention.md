@@ -38,10 +38,10 @@ The split is at the **resolution boundary**, not at the **execution boundary**. 
 
 | Layer | Symbol | Source |
 |---|---|---|
-| Thin def-form | `execute_branch_async(branch=...)` | `workflow/runs.py` |
-| Thin version-form | `execute_branch_version_async(branch_version_id=...)` | `workflow/runs.py` (NEW per #54) |
-| Shared core | `_execute_branch_core(branch=..., branch_version_id=None)` | `workflow/runs.py` (NEW per #54) |
-| MCP wrappers | `_action_run_branch` (existing) + `_action_run_branch_version` (NEW) | `workflow/universe_server.py` |
+| Thin def-form | `execute_branch_async(branch=...)` | `tinyassets/runs.py` |
+| Thin version-form | `execute_branch_version_async(branch_version_id=...)` | `tinyassets/runs.py` (NEW per #54) |
+| Shared core | `_execute_branch_core(branch=..., branch_version_id=None)` | `tinyassets/runs.py` (NEW per #54) |
+| MCP wrappers | `_action_run_branch` (existing) + `_action_run_branch_version` (NEW) | `tinyassets/universe_server.py` |
 
 The version-form resolves `branch_version_id` via `get_branch_version` → `BranchDefinition.from_dict(snapshot)` → calls `_execute_branch_core` with `branch_version_id` populated for run-row provenance.
 
@@ -49,11 +49,11 @@ The version-form resolves `branch_version_id` via `get_branch_version` → `Bran
 
 | Layer | Symbol | Source |
 |---|---|---|
-| Thin def-form spec | `invoke_branch_spec` (existing) on NodeDefinition | `workflow/branches.py` |
-| Thin version-form spec | `invoke_branch_version_spec` (NEW per #56) on NodeDefinition | `workflow/branches.py` |
-| Thin def-form builder | `_build_invoke_branch_node` (existing) | `workflow/graph_compiler.py` |
-| Thin version-form builder | `_build_invoke_branch_version_node` (NEW per #56) | `workflow/graph_compiler.py` |
-| Shared core | `_DispatchInvokeBranchCommon` (NEW per #56) | `workflow/graph_compiler.py` |
+| Thin def-form spec | `invoke_branch_spec` (existing) on NodeDefinition | `tinyassets/branches.py` |
+| Thin version-form spec | `invoke_branch_version_spec` (NEW per #56) on NodeDefinition | `tinyassets/branches.py` |
+| Thin def-form builder | `_build_invoke_branch_node` (existing) | `tinyassets/graph_compiler.py` |
+| Thin version-form builder | `_build_invoke_branch_version_node` (NEW per #56) | `tinyassets/graph_compiler.py` |
+| Shared core | `_DispatchInvokeBranchCommon` (NEW per #56) | `tinyassets/graph_compiler.py` |
 
 `_DispatchInvokeBranchCommon` holds the input-mapping + output-mapping + `on_child_fail` policy logic. The two builders construct closures around it; the only difference between def-form and version-form is the resolution step (`get_branch_definition` vs. `get_branch_version`).
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from workflow.daemon_brain import (
+from tinyassets.daemon_brain import (
     DaemonBrain,
     build_daemon_brain_packet,
     capture_daemon_memory,
@@ -17,9 +17,9 @@ from workflow.daemon_brain import (
     review_daemon_memory,
     search_daemon_memory,
 )
-from workflow.daemon_memory import build_daemon_memory_packet
-from workflow.daemon_registry import create_daemon
-from workflow.daemon_wiki import daemon_wiki_root, scaffold_daemon_wiki
+from tinyassets.daemon_memory import build_daemon_memory_packet
+from tinyassets.daemon_registry import create_daemon
+from tinyassets.daemon_wiki import daemon_wiki_root, scaffold_daemon_wiki
 
 
 def _create_daemon(base: Path, name: str) -> dict:

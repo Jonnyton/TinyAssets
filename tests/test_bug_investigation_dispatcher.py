@@ -6,13 +6,13 @@ import json
 
 import pytest
 
-from workflow.branch_tasks import BranchTask, append_task, read_queue
-from workflow.bug_investigation import (
+from tinyassets.branch_tasks import BranchTask, append_task, read_queue
+from tinyassets.bug_investigation import (
     REQUEST_TYPE_BUG_INVESTIGATION,
     enqueue_investigation_request,
     format_investigation_comment,
 )
-from workflow.dispatcher import (
+from tinyassets.dispatcher import (
     get_request_type_priorities,
     load_dispatcher_config,
     prefers_request_type,
@@ -24,7 +24,7 @@ from workflow.dispatcher import (
 
 class TestEnqueueInvestigationRequest:
     def test_creates_dispatcher_entry_with_bug_investigation_type(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         request_id = enqueue_investigation_request(
             bug_ref={"bug_id": "BUG-001", "title": "crash on load"},
             canonical_branch_def_id="branch-abc",
@@ -40,7 +40,7 @@ class TestEnqueueInvestigationRequest:
         assert task.status == "pending"
 
     def test_returns_request_id_not_run_id(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         request_id = enqueue_investigation_request(
             bug_ref={"bug_id": "BUG-002"},
             canonical_branch_def_id="branch-xyz",
@@ -51,7 +51,7 @@ class TestEnqueueInvestigationRequest:
         assert request_id.count("-") == 4
 
     def test_inputs_contain_bug_payload(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         enqueue_investigation_request(
             bug_ref={"bug_id": "BUG-003", "title": "null pointer", "severity": "critical"},
             canonical_branch_def_id="branch-abc",
@@ -66,7 +66,7 @@ class TestEnqueueInvestigationRequest:
         assert "Severity: critical" in inputs["request_text"]
 
     def test_merge_instant_effort_metadata_uses_fast_lane(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         enqueue_investigation_request(
             bug_ref={
                 "bug_id": "PR-004",
@@ -94,7 +94,7 @@ class TestEnqueueInvestigationRequest:
         assert "Dispatch Lane: merge-instant-fast-lane" in task.inputs["request_text"]
 
     def test_raises_if_no_branch_def_id(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         with pytest.raises(ValueError, match="canonical_branch_def_id"):
             enqueue_investigation_request(
                 bug_ref={"bug_id": "BUG-004"},
@@ -103,8 +103,8 @@ class TestEnqueueInvestigationRequest:
             )
 
     def test_raises_if_request_type_not_in_priorities(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", "paid_market,branch_run")
-        with pytest.raises(RuntimeError, match="not in WORKFLOW_REQUEST_TYPE_PRIORITIES"):
+        monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "paid_market,branch_run")
+        with pytest.raises(RuntimeError, match="not in TINYASSETS_REQUEST_TYPE_PRIORITIES"):
             enqueue_investigation_request(
                 bug_ref={"bug_id": "BUG-005"},
                 canonical_branch_def_id="branch-abc",
@@ -112,7 +112,7 @@ class TestEnqueueInvestigationRequest:
             )
 
     def test_universe_id_inferred_from_base_path_name(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         universe_dir = tmp_path / "my-universe"
         universe_dir.mkdir()
         enqueue_investigation_request(
@@ -124,7 +124,7 @@ class TestEnqueueInvestigationRequest:
         assert queue[0].universe_id == "my-universe"
 
     def test_explicit_universe_id_overrides_path_name(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         enqueue_investigation_request(
             bug_ref={"bug_id": "BUG-007"},
             canonical_branch_def_id="branch-abc",
@@ -140,30 +140,30 @@ class TestEnqueueInvestigationRequest:
 
 class TestPrefersRequestType:
     def test_unset_env_accepts_all_types(self, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         assert prefers_request_type("bug_investigation") is True
         assert prefers_request_type("branch_run") is True
         assert prefers_request_type("paid_market") is True
 
     def test_empty_env_accepts_all_types(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", "")
+        monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "")
         assert prefers_request_type("bug_investigation") is True
 
     def test_daemon_with_bug_investigation_in_priorities_claims_it(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", "bug_investigation,paid_market")
+        monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation,paid_market")
         assert prefers_request_type("bug_investigation") is True
 
     def test_daemon_without_bug_investigation_does_not_claim(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", "paid_market,branch_run")
+        monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "paid_market,branch_run")
         assert prefers_request_type("bug_investigation") is False
 
     def test_priorities_order_preserved(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", "bug_investigation,paid_market")
+        monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation,paid_market")
         priorities = get_request_type_priorities()
         assert priorities == ["bug_investigation", "paid_market"]
 
     def test_whitespace_trimmed_in_priorities(self, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", " bug_investigation , branch_run ")
+        monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", " bug_investigation , branch_run ")
         assert prefers_request_type("bug_investigation") is True
         assert prefers_request_type("branch_run") is True
 
@@ -187,7 +187,7 @@ class TestSelectNextTaskRequestTypeFilter:
         return task
 
     def test_daemon_with_priorities_only_claims_matching_type(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+        monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
         self._make_task(tmp_path, request_type="branch_run", task_id="branch-task")
         self._make_task(tmp_path, request_type="bug_investigation", task_id="bug-task")
         config = load_dispatcher_config(tmp_path)
@@ -196,7 +196,7 @@ class TestSelectNextTaskRequestTypeFilter:
         assert selected.request_type == "bug_investigation"
 
     def test_daemon_without_priorities_claims_any_type(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         self._make_task(tmp_path, request_type="bug_investigation")
         config = load_dispatcher_config(tmp_path)
         selected = select_next_task(tmp_path, config=config)
@@ -204,7 +204,7 @@ class TestSelectNextTaskRequestTypeFilter:
         assert selected.request_type == "bug_investigation"
 
     def test_no_matching_tasks_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", "paid_market")
+        monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "paid_market")
         self._make_task(tmp_path, request_type="bug_investigation")
         config = load_dispatcher_config(tmp_path)
         selected = select_next_task(tmp_path, config=config)
@@ -268,7 +268,7 @@ class TestBranchTaskRequestTypeField:
         """Tasks written before the field existed default gracefully."""
         import uuid
 
-        from workflow.branch_tasks import queue_path
+        from tinyassets.branch_tasks import queue_path
         task_dict = {
             "branch_task_id": str(uuid.uuid4()),
             "branch_def_id": "b1",
@@ -355,19 +355,19 @@ class TestBugInvestigationDirectRunRouting:
         self, tmp_path, monkeypatch
     ):
         from fantasy_daemon.__main__ import _try_execute_claimed_branch_task
-        from workflow.runs import (
+        from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
             create_run,
             update_run_status,
         )
 
-        monkeypatch.setattr("workflow.storage.data_dir", lambda: tmp_path)
+        monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
         monkeypatch.setattr(
-            "workflow.api.branches._resolve_branch_id",
+            "tinyassets.api.branches._resolve_branch_id",
             lambda requested, base_path: "branch-1",
         )
         monkeypatch.setattr(
-            "workflow.daemon_server.get_branch_definition",
+            "tinyassets.daemon_server.get_branch_definition",
             lambda base_path, branch_def_id: {"branch_def_id": branch_def_id},
         )
 
@@ -375,7 +375,7 @@ class TestBugInvestigationDirectRunRouting:
             def validate(self):
                 return []
 
-        from workflow.branches import BranchDefinition
+        from tinyassets.branches import BranchDefinition
         monkeypatch.setattr(
             BranchDefinition,
             "from_dict",
@@ -385,7 +385,7 @@ class TestBugInvestigationDirectRunRouting:
         def _should_not_execute(*args, **kwargs):
             raise AssertionError("completed durable run should be reused")
 
-        monkeypatch.setattr("workflow.runs.execute_branch", _should_not_execute)
+        monkeypatch.setattr("tinyassets.runs.execute_branch", _should_not_execute)
 
         run_id = create_run(
             tmp_path,
@@ -440,7 +440,7 @@ class TestBugInvestigationPatchPacketWriteBack:
         )
 
         page = self._make_bug_page(tmp_path)
-        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        monkeypatch.setattr("tinyassets.storage.wiki_path", lambda: tmp_path)
         task = BranchTask(
             branch_task_id="bt-bug",
             branch_def_id="change-loop",
@@ -473,7 +473,7 @@ class TestBugInvestigationPatchPacketWriteBack:
         )
 
         page = self._make_bug_page(tmp_path)
-        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        monkeypatch.setattr("tinyassets.storage.wiki_path", lambda: tmp_path)
         task = BranchTask(
             branch_task_id="bt-bug",
             branch_def_id="change-loop",
@@ -499,7 +499,7 @@ class TestBugInvestigationPatchPacketWriteBack:
         )
 
         page = self._make_bug_page(tmp_path)
-        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        monkeypatch.setattr("tinyassets.storage.wiki_path", lambda: tmp_path)
         task = BranchTask(
             branch_task_id="bt-bug",
             branch_def_id="change-loop",
@@ -531,7 +531,7 @@ class TestBugInvestigationPatchPacketWriteBack:
         )
 
         page = self._make_bug_page(tmp_path)
-        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        monkeypatch.setattr("tinyassets.storage.wiki_path", lambda: tmp_path)
         task = BranchTask(
             branch_task_id="bt-bug",
             branch_def_id="change-loop",
@@ -546,7 +546,7 @@ class TestBugInvestigationPatchPacketWriteBack:
             {
                 "child_candidate_patch_packet": (
                     "The patch packet is in "
-                    "[candidate_patch_packet.md](/tmp/workflow/candidate_patch_packet.md:1)."
+                    "[candidate_patch_packet.md](/tmp/tinyassets/candidate_patch_packet.md:1)."
                 ),
                 "child_run_id": "e12caa6629ff48d6",
                 "coding_packet": {
@@ -570,7 +570,7 @@ class TestBugInvestigationPatchPacketWriteBack:
         )
 
         page = self._make_bug_page(tmp_path)
-        monkeypatch.setattr("workflow.storage.wiki_path", lambda: tmp_path)
+        monkeypatch.setattr("tinyassets.storage.wiki_path", lambda: tmp_path)
         task = BranchTask(
             branch_task_id="bt-bug",
             branch_def_id="change-loop",

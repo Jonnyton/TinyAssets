@@ -1,17 +1,17 @@
-# Dockerfile for the Workflow daemon (MCP server).
+# Dockerfile for the TinyAssets daemon (MCP server).
 #
 # Per docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md Row A:
 # provider-agnostic container image that ships to Fly.io, Hetzner, or any
 # Linux host. No Fly-specific config baked in; that lives in Row D.
 #
 # Build:
-#     docker build -t workflow-daemon .
+#     docker build -t tinyassets-daemon .
 #
 # Run (local smoke):
 #     docker run -p 8001:8001 \
 #       -v $(pwd)/data:/data \
-#       -e WORKFLOW_DATA_DIR=/data \
-#       workflow-daemon
+#       -e TINYASSETS_DATA_DIR=/data \
+#       tinyassets-daemon
 #
 # MCP initialize probe (after run):
 #     curl -sS -X POST http://localhost:8001/mcp \
@@ -109,10 +109,10 @@ WORKDIR /build
 # Copy project metadata + source so editable install works.
 COPY pyproject.toml ./
 COPY PLAN.md ./
-COPY workflow/ ./workflow/
+COPY tinyassets/ ./tinyassets/
 COPY domains/ ./domains/
 # fantasy_daemon is the node-execution runtime invoked by
-# workflow.cloud_worker. Without it in the image, the cloud worker
+# tinyassets.cloud_worker. Without it in the image, the cloud worker
 # supervisor crash-loops with `No module named fantasy_daemon`.
 COPY fantasy_daemon/ ./fantasy_daemon/
 
@@ -138,7 +138,7 @@ ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329
 # runtime; the codex module tree is COPY'd from the builder.
 #
 # GitHub CLI (gh) — the github_pull_request effector shells out to
-# `gh pr create` (workflow/effectors/github_pr.py). Without gh on the
+# `gh pr create` (tinyassets/effectors/github_pr.py). Without gh on the
 # runtime PATH the effector fails with error_kind=gh_not_installed
 # (BUG-110), which blocks every real PR open from the patch-request loop.
 # Installed from cli.github.com before curl is purged below.
@@ -169,8 +169,8 @@ RUN apt-get update && \
     && apt-get purge -y curl gnupg \
     && rm -f /tmp/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/* && \
-    groupadd --system --gid 1001 workflow && \
-    useradd --system --uid 1001 --gid workflow --home /app --shell /bin/bash workflow
+    groupadd --system --gid 1001 tinyassets && \
+    useradd --system --uid 1001 --gid tinyassets --home /app --shell /bin/bash tinyassets
 
 # Copy the codex install tree from builder and install the flock
 # wrapper as /usr/local/bin/codex. The wrapper takes an exclusive
@@ -192,7 +192,7 @@ WORKDIR /app
 
 # Copy the populated venv + source from the builder.
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /build/workflow /app/workflow
+COPY --from=builder /build/tinyassets /app/tinyassets
 COPY --from=builder /build/domains /app/domains
 COPY --from=builder /build/fantasy_daemon /app/fantasy_daemon
 COPY --from=builder /build/pyproject.toml /app/pyproject.toml
@@ -201,7 +201,7 @@ COPY --from=builder /build/PLAN.md /app/PLAN.md
 # Static data files required at runtime.
 # world_rules.lp is the ASP constraint program; asp_engine.py resolves it
 # relative to the package root (parents[2]/data/). The *.db files in data/
-# are runtime state and live in WORKFLOW_DATA_DIR, not here.
+# are runtime state and live in TINYASSETS_DATA_DIR, not here.
 COPY data/world_rules.lp /app/data/world_rules.lp
 
 # Stdlib-only MCP canary — reused across Layer-1 (local), tier-3 GHA,
@@ -217,15 +217,15 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
-# Data directory — Row B will wire WORKFLOW_DATA_DIR through all
+# Data directory — Row B will wire TINYASSETS_DATA_DIR through all
 # on-disk state. For now, /data is the expected bind-mount target;
 # operators supply it via `-v /host/path:/data` + the env var below.
-ENV WORKFLOW_DATA_DIR=/data
+ENV TINYASSETS_DATA_DIR=/data
 RUN mkdir -p /data && \
     chmod +x /app/docker-entrypoint.sh && \
-    chown -R workflow:workflow /data /app
+    chown -R tinyassets:tinyassets /data /app
 
-USER workflow
+USER tinyassets
 
 EXPOSE 8001
 
@@ -235,5 +235,5 @@ EXPOSE 8001
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker-entrypoint.sh"]
 
 # Default command — the FastMCP streamable-http server on 0.0.0.0:8001.
-# Matches `if __name__ == "__main__": main()` in workflow/universe_server.py.
-CMD ["python", "-m", "workflow.universe_server"]
+# Matches `if __name__ == "__main__": main()` in tinyassets/universe_server.py.
+CMD ["python", "-m", "tinyassets.universe_server"]

@@ -43,15 +43,15 @@ Read STATUS.md current state + `.agents/activity.log` from 2026-04-24 onward + w
 
 ## 2. Per-P1 reconciliation
 
-### P1.1 — ChatGPT publish blocked (`Workflow DEV` Plus/private app)
+### P1.1 — ChatGPT publish blocked (`TinyAssets DEV` Plus/private app)
 
 **Source:** STATUS.md Concern row 18.
 **Origin:** Filed during Mara session 2026-04-24, escalated to P1 2026-04-26 per provider-parity principle.
-**Root cause:** OpenAI workspace-policy issue — `Workflow DEV` connector was published as Plus-tier private app, not workspace admin. To publish to workspace requires re-registration as admin.
+**Root cause:** OpenAI workspace-policy issue — `TinyAssets DEV` connector was published as Plus-tier private app, not workspace admin. To publish to workspace requires re-registration as admin.
 **Wiki bug?** None — operational, not a server bug.
 **Actionable from team?** NO — host action (re-register the OpenAI app as workspace admin) OR OpenAI escalation.
 **Current state:** UNCHANGED since filing. No team-side fix exists.
-**Recommendation:** **RETAIN as host-action concern** but reframe — this isn't a code bug, it's a host operational task. Move from generic "P1" to a `host-action` row in the Work table with a 1-line target ("re-register Workflow DEV as workspace admin in OpenAI ChatGPT settings").
+**Recommendation:** **RETAIN as host-action concern** but reframe — this isn't a code bug, it's a host operational task. Move from generic "P1" to a `host-action` row in the Work table with a 1-line target ("re-register TinyAssets DEV as workspace admin in OpenAI ChatGPT settings").
 
 ### P1.2 — ChatGPT connector approval bug (Update Node errored, retry saved v2)
 

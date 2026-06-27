@@ -7,13 +7,13 @@ and the two source normalizers.
 
 from __future__ import annotations
 
-from workflow.evaluation import (
+from tinyassets.evaluation import (
     CodingTrajectoryEvaluation,
     coding_trajectory_from_packet,
     coding_trajectory_from_run,
     evaluate_coding_trajectory,
 )
-from workflow.evaluation.coding_process import MIN_APPLICABLE_CHECKS
+from tinyassets.evaluation.coding_process import MIN_APPLICABLE_CHECKS
 
 # ── Fail-open / inconclusive contract ───────────────────────────────────────────
 

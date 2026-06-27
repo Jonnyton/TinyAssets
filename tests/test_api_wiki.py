@@ -1,7 +1,7 @@
-"""Task #9 — direct tests for `workflow.api.wiki` after decomp Step 2.
+"""Task #9 — direct tests for `tinyassets.api.wiki` after decomp Step 2.
 
-The legacy test files (`test_wiki_*.py`) import from `workflow.universe_server`
-to cover chatbot-facing MCP wrappers. This file exercises `workflow.api.wiki`
+The legacy test files (`test_wiki_*.py`) import from `tinyassets.universe_server`
+to cover chatbot-facing MCP wrappers. This file exercises `tinyassets.api.wiki`
 directly to lock in the canonical implementation surface.
 """
 
@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from workflow.api import wiki as wiki_mod
-from workflow.api.wiki import (
+from tinyassets.api import wiki as wiki_mod
+from tinyassets.api.wiki import (
     _BUG_DEDUP_THRESHOLD,
     _BUGS_CATEGORY,
     _KIND_ROUTING,
@@ -43,8 +43,8 @@ from workflow.api.wiki import (
 def wiki_env(tmp_path, monkeypatch):
     """Isolated wiki root, scaffold pre-built."""
     wiki_root = tmp_path / "wiki"
-    monkeypatch.setenv("WORKFLOW_WIKI_PATH", str(wiki_root))
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _ensure_wiki_scaffold(wiki_root)
     return wiki_root
 
@@ -733,10 +733,10 @@ def test_wiki_file_bug_queued_investigation_returns_branch_task_lease_shape(
     universe_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-universe")
     monkeypatch.setenv(
-        "WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID",
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID",
         "bug-investigation-branch",
     )
-    monkeypatch.delenv("WORKFLOW_REQUEST_TYPE_PRIORITIES", raising=False)
+    monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
 
     res = json.loads(
         wiki(

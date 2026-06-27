@@ -2,11 +2,11 @@
 status: active
 ---
 
-# Workflow MCP — Tool Return Shape Guidelines
+# TinyAssets MCP — Tool Return Shape Guidelines
 
 **Status:** standing checklist for all MCP tool returns.
 **Source:** `docs/research/claude_ai_rendering_behaviors.md` (2026-04-12).
-**Audience:** dev, dev-2, any future contributor adding a Workflow MCP action.
+**Audience:** dev, dev-2, any future contributor adding a TinyAssets MCP action.
 
 ## Default return shape
 

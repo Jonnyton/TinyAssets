@@ -19,13 +19,13 @@ import time
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
     GraphNodeRef,
     NodeDefinition,
 )
-from workflow.runs import (
+from tinyassets.runs import (
     NODE_STATUS_PENDING,
     NODE_STATUS_RAN,
     NODE_STATUS_RUNNING,
@@ -40,9 +40,9 @@ def us_env(tmp_path, monkeypatch):
     suite. Returns (us_module, base_path)."""
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -124,7 +124,7 @@ def test_compiler_emits_starting_then_ran_per_node():
     (phase=ran)."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     events: list[dict] = []
 
@@ -157,7 +157,7 @@ def test_compiler_starting_event_includes_prompt_preview():
     'working on: ...' context without waiting for the response."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     starting_events: list[dict] = []
 
@@ -193,7 +193,7 @@ def test_on_node_records_running_then_ran_events(us_env):
     """The runner's ``_on_node`` maps phase=starting → NODE_STATUS_RUNNING
     and phase=ran → NODE_STATUS_RAN, with distinct step_indexes so the
     run_events table doesn't collide on primary key."""
-    from workflow.runs import wait_for
+    from tinyassets.runs import wait_for
 
     us, base = us_env
     bid = _build_two_node_branch(us)
@@ -255,8 +255,8 @@ def test_build_node_status_map_surfaces_running_during_flight():
 def test_slow_provider_starting_event_fires_before_completion(us_env):
     """With a slow provider, the starting event is visible to polling
     clients BEFORE the ran event lands — the whole point of #60."""
-    from workflow.daemon_server import get_branch_definition
-    from workflow.runs import execute_branch_async, wait_for
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.runs import execute_branch_async, wait_for
 
     us, base = us_env
     bid = _build_two_node_branch(us)

@@ -9,13 +9,13 @@ import json
 
 import pytest
 
-from workflow.runs import initialize_runs_db
-from workflow.universe_server import extensions
+from tinyassets.runs import initialize_runs_db
+from tinyassets.universe_server import extensions
 
 
 @pytest.fixture(autouse=True)
 def _set_data_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     initialize_runs_db(tmp_path)
 
 
@@ -102,7 +102,7 @@ class TestRecordRemix:
         assert abs(result["credit_share"] - 0.3) < 1e-9
 
     def test_record_credit_persists_identity_tuple(self, tmp_path):
-        from workflow.api.market import _action_record_remix
+        from tinyassets.api.market import _action_record_remix
 
         result = json.loads(_action_record_remix({
             "parent_branch_def_id": "branch-A",
@@ -116,7 +116,7 @@ class TestRecordRemix:
         }))
         assert result["status"] == "recorded"
 
-        from workflow.runs import _connect
+        from tinyassets.runs import _connect
 
         with _connect(tmp_path) as conn:
             row = conn.execute(
@@ -263,7 +263,7 @@ class TestCrossUniverseIsolation:
         universe1.mkdir()
         universe2.mkdir()
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(universe1))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(universe1))
         initialize_runs_db(universe1)
         extensions(
             action="record_remix",
@@ -276,7 +276,7 @@ class TestCrossUniverseIsolation:
         ))
         assert result_u1["count"] == 1
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(universe2))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(universe2))
         initialize_runs_db(universe2)
         result_u2 = json.loads(extensions(
             action="get_provenance",

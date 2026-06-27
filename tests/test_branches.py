@@ -1,4 +1,4 @@
-"""Tests for workflow.branches — Community Branches data models."""
+"""Tests for tinyassets.branches — Community Branches data models."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from workflow.branches import (
+from tinyassets.branches import (
     VALID_FIELD_TYPES,
     VALID_PHASES,
     VALID_REDUCERS,
@@ -534,7 +534,7 @@ class TestBranchDefinition:
         assert any("collides with a graph node ID" in e for e in errors)
 
     def test_state_field_graph_node_collision_suggestion_names_both_sides(self):
-        from workflow.api.branches import _errors_to_suggestions
+        from tinyassets.api.branches import _errors_to_suggestions
 
         b = _make_sample_branch()
         b.state_schema.append({"name": "orient", "type": "str"})

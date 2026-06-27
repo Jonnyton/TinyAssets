@@ -1,7 +1,7 @@
 """Fantasy-domain prompt assembly + provider calls for graph nodes.
 
 The general, domain-agnostic LLM-call primitive (``call_provider``, the router,
-force-mock, ``last_provider``) now lives in :mod:`workflow.providers.call` — the
+force-mock, ``last_provider``) now lives in :mod:`tinyassets.providers.call` — the
 engine's shared bridge. This module keeps the *fantasy-specific* prompt builders
 and deterministic mock fixtures, and routes its LLM calls through that general
 primitive.
@@ -9,7 +9,7 @@ primitive.
 ``call_provider`` is re-exported here (it is imported for this module's own
 ``call_for_*`` helpers) so existing fantasy-domain callers that do
 ``from ..._provider_stub import call_provider`` keep working. Engine code must
-import from :mod:`workflow.providers.call` directly (de-fantasy import boundary).
+import from :mod:`tinyassets.providers.call` directly (de-fantasy import boundary).
 Read force-mock via ``is_force_mock()`` rather than a module global.
 """
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from workflow.providers.call import call_provider, is_force_mock
+from tinyassets.providers.call import call_provider, is_force_mock
 
 __all__ = [
     "call_provider",
@@ -286,7 +286,7 @@ def _mock_extraction_response(prose: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Fantasy-domain provider calls (route through workflow.providers.call)
+# Fantasy-domain provider calls (route through tinyassets.providers.call)
 # ---------------------------------------------------------------------------
 
 

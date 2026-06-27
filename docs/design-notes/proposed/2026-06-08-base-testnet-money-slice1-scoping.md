@@ -35,7 +35,7 @@ docs.base.org/base-chain/network-information/network-faucets.
 ## 3. Components
 
 1. **Settlement-backend interface** — `settle_batch(recipient_wallet, amount_base_units) -> tx_ref`.
-   Backends selected by env `WORKFLOW_SETTLEMENT_BACKEND`:
+   Backends selected by env `TINYASSETS_SETTLEMENT_BACKEND`:
    - `internal` (default): marks settled, `tx_ref` = local id. No behavior change.
    - `base_sepolia`: ERC-20 USDC transfer; `tx_ref` = on-chain tx hash.
 2. **Payout-wallet registry** — `actor_id → (address, chain_id)`. New `payout_wallet`
@@ -46,7 +46,7 @@ docs.base.org/base-chain/network-information/network-faucets.
 4. **Withdraw action** — `escrow_withdraw`: a recipient settles their off-chain
    spendable balance on-chain. On success: `settle_batch` → debit off-chain balance
    + write `settlement_batch` row + tx_hash. On-demand (testnet MVP), not a cron.
-5. **Config / secrets** — custodial key in vault (`WORKFLOW_BASE_SEPOLIA_KEY`), USDC
+5. **Config / secrets** — custodial key in vault (`TINYASSETS_BASE_SEPOLIA_KEY`), USDC
    contract addr, RPC URL, `min_payout`, chain_id. All env/config → testnet→mainnet
    is a config change, not a code deploy.
 

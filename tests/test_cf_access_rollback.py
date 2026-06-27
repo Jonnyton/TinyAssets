@@ -37,7 +37,7 @@ TOKEN = "fake-api-token"
 
 EXISTING_APP = {
     "uid": "app-uuid-existing",
-    "name": "workflow-mcp-worker-gate",
+    "name": "tinyassets-mcp-worker-gate",
     "domain": rb.APP_DOMAIN,
 }
 OTHER_APP = {

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fantasy_daemon.__main__ import _build_branch_task_observers
-from workflow.branch_tasks import (
+from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
     claim_task,

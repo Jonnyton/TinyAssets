@@ -3,7 +3,7 @@
 # Dot-source to export into the caller's shell:
 #   . .\scripts\load_secrets.ps1
 #
-# Vendor selection: $env:WORKFLOW_SECRETS_VENDOR — "1password" (default),
+# Vendor selection: $env:TINYASSETS_SECRETS_VENDOR — "1password" (default),
 # "bitwarden", or "plaintext" (migration opt-out).
 #
 # Exit semantics mirror the bash loader. When dot-sourced, uses
@@ -13,13 +13,13 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $KeysFile = Join-Path $RepoRoot "scripts\secrets_keys.txt"
-$PlaintextPath = if ($env:WORKFLOW_SECRETS_PLAINTEXT_PATH) {
-    $env:WORKFLOW_SECRETS_PLAINTEXT_PATH
+$PlaintextPath = if ($env:TINYASSETS_SECRETS_PLAINTEXT_PATH) {
+    $env:TINYASSETS_SECRETS_PLAINTEXT_PATH
 } else {
     Join-Path $HOME "workflow-secrets.env"
 }
-$Vendor = if ($env:WORKFLOW_SECRETS_VENDOR) { $env:WORKFLOW_SECRETS_VENDOR } else { "1password" }
-$VaultName = if ($env:WORKFLOW_SECRETS_VAULT) { $env:WORKFLOW_SECRETS_VAULT } else { "workflow" }
+$Vendor = if ($env:TINYASSETS_SECRETS_VENDOR) { $env:TINYASSETS_SECRETS_VENDOR } else { "1password" }
+$VaultName = if ($env:TINYASSETS_SECRETS_VAULT) { $env:TINYASSETS_SECRETS_VAULT } else { "tinyassets" }
 
 function Fail-LoadSecrets {
     param([int]$Code, [string]$Message)
@@ -140,11 +140,11 @@ switch ($Vendor) {
     "bitwarden" { Load-Bitwarden }
     "plaintext" { Load-Plaintext }
     default {
-        if ($env:WORKFLOW_SECRETS_PLAINTEXT_FALLBACK -eq "1" -and (Test-Path $PlaintextPath)) {
-            Write-Warning "[load_secrets] unknown vendor '$Vendor'; falling back to plaintext (WORKFLOW_SECRETS_PLAINTEXT_FALLBACK=1)"
+        if ($env:TINYASSETS_SECRETS_PLAINTEXT_FALLBACK -eq "1" -and (Test-Path $PlaintextPath)) {
+            Write-Warning "[load_secrets] unknown vendor '$Vendor'; falling back to plaintext (TINYASSETS_SECRETS_PLAINTEXT_FALLBACK=1)"
             Load-Plaintext
         } else {
-            Fail-LoadSecrets 10 "unknown WORKFLOW_SECRETS_VENDOR='$Vendor' (expected: 1password | bitwarden | plaintext)"
+            Fail-LoadSecrets 10 "unknown TINYASSETS_SECRETS_VENDOR='$Vendor' (expected: 1password | bitwarden | plaintext)"
         }
     }
 }

@@ -39,7 +39,7 @@ from domains.fantasy_daemon.phases.world_state_db import (
     get_recent_scenes,
     init_db,
 )
-from workflow.ingestion.canon_io import iter_canon_files
+from tinyassets.ingestion.canon_io import iter_canon_files
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,7 @@ def _detect_premise_mismatch(
     the retrieved facts and prose contain premise-relevant terms vs
     foreign terms from other universes.  Deterministic, no LLM calls.
     """
-    from workflow.evaluation.structural import _extract_premise_terms
+    from tinyassets.evaluation.structural import _extract_premise_terms
 
     premise = ""
     wf = state.get("workflow_instructions") or {}
@@ -669,7 +669,7 @@ def _build_world_state_snapshot(
 
     `characters` is intentionally NOT embedded here — MemoryManager
     loads them separately via `load_characters(orient_result["characters"])`
-    at `workflow/memory/manager.py:_assemble_orient`. Storing them inside
+    at `tinyassets/memory/manager.py:_assemble_orient`. Storing them inside
     world_state caused CoreMemory to count each character twice (the
     48535-token fixed-overflow, BUG-024).
     """
@@ -685,14 +685,14 @@ def _build_world_state_snapshot(
 
 def _assemble_memory(state: dict[str, Any], phase: str) -> dict:
     """Compatibility wrapper around the shared search policy."""
-    from workflow.retrieval.agentic_search import assemble_memory_context
+    from tinyassets.retrieval.agentic_search import assemble_memory_context
 
     return assemble_memory_context(state, phase)
 
 
 def _assemble_search_context(state: dict[str, Any], phase: str) -> dict[str, Any]:
     """Build the unified search surface for the orient phase."""
-    from workflow.retrieval.agentic_search import assemble_phase_search_context
+    from tinyassets.retrieval.agentic_search import assemble_phase_search_context
 
     return assemble_phase_search_context(state, phase)
 
@@ -736,7 +736,7 @@ def _extract_pov_and_tier(
     # 2. Look up access_tier from the KG entity table
     if pov_character:
         try:
-            from workflow import runtime_singletons as runtime
+            from tinyassets import runtime_singletons as runtime
 
             kg = runtime.knowledge_graph
             if kg is not None:
@@ -756,7 +756,7 @@ def _run_retrieval(
     access_tier: int = 0,
 ) -> dict[str, Any]:
     """Compatibility wrapper around the shared phase retrieval policy."""
-    from workflow.retrieval.agentic_search import run_phase_retrieval
+    from tinyassets.retrieval.agentic_search import run_phase_retrieval
 
     retrieval_state = dict(state)
     retrieval_state.setdefault("orient_result", {})
@@ -769,7 +769,7 @@ def _run_retrieval(
 
 def _build_orient_query(state: dict[str, Any], scene_id: str) -> str:
     """Compatibility wrapper around the shared query builder."""
-    from workflow.retrieval.agentic_search import build_phase_query
+    from tinyassets.retrieval.agentic_search import build_phase_query
 
     return build_phase_query(state, "orient", scene_id=scene_id)
 

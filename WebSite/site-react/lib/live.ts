@@ -584,7 +584,7 @@ function workflowRunSummary(workflowId: string, run: GitHubWorkflowRun | null): 
 
 async function fetchLatestWorkflowRun(workflowId: string, warnings: string[]): Promise<GitHubWorkflowRun | null> {
   try {
-    const res = await fetchWithTimeout(`https://api.github.com/repos/Jonnyton/Workflow/actions/workflows/${workflowId}/runs?per_page=1`, {
+    const res = await fetchWithTimeout(`https://api.github.com/repos/Jonnyton/TinyAssets/actions/workflows/${workflowId}/runs?per_page=1`, {
       headers: { Accept: 'application/vnd.github+json' }
     });
     if (!res.ok) throw new Error(`GitHub workflow ${workflowId} ${res.status}`);
@@ -598,7 +598,7 @@ async function fetchLatestWorkflowRun(workflowId: string, warnings: string[]): P
 
 async function fetchIssuesForLabel(label: string, warnings: string[]): Promise<GitHubIssue[]> {
   try {
-    const res = await fetchWithTimeout(`https://api.github.com/repos/Jonnyton/Workflow/issues?state=open&labels=${encodeURIComponent(label)}&per_page=12`, {
+    const res = await fetchWithTimeout(`https://api.github.com/repos/Jonnyton/TinyAssets/issues?state=open&labels=${encodeURIComponent(label)}&per_page=12`, {
       headers: { Accept: 'application/vnd.github+json' }
     });
     if (!res.ok) throw new Error(`GitHub issues ${label} ${res.status}`);
@@ -797,7 +797,7 @@ async function fetchCommunityLoopWatchFeed(warnings: string[]): Promise<PatchLoo
   }
 
   try {
-    const issuesRes = await fetchWithTimeout('https://api.github.com/repos/Jonnyton/Workflow/issues?state=open&labels=community-loop-red&per_page=1', {
+    const issuesRes = await fetchWithTimeout('https://api.github.com/repos/Jonnyton/TinyAssets/issues?state=open&labels=community-loop-red&per_page=1', {
       headers: { Accept: 'application/vnd.github+json' }
     });
     if (!issuesRes.ok) throw new Error(`GitHub issues ${issuesRes.status}`);

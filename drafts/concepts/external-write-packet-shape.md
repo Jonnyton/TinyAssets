@@ -26,7 +26,7 @@ as a packet whose `sink` matches the declared effect.
 ```json
 {
   "sink": "github_pull_request",
-  "destination": "Jonnyton/Workflow",
+  "destination": "Jonnyton/TinyAssets",
   "payload": {
     "title": "PR title — required.",
     "body":  "PR body — required, may be empty string.",
@@ -48,7 +48,7 @@ as a packet whose `sink` matches the declared effect.
   Unknown sinks return `error_kind="unknown_sink"` instead of writing.
 - **`destination`** (string, required for real writes in Phase 2) —
   per-sink destination identifier. For ``github_pull_request`` this is
-  the ``owner/repo`` slug, e.g. ``"Jonnyton/Workflow"``. The Phase 2
+  the ``owner/repo`` slug, e.g. ``"Jonnyton/TinyAssets"``. The Phase 2
   authority gates (capability env + consent grant) key off this value
   exactly; no wildcard or case-insensitive match. **Backward compat:**
   packets that OMIT `destination` continue to land on the Phase-1
@@ -111,9 +111,9 @@ Evidence (Phase 2 dry-run from a closed gate):
   "dry_run": true,
   "phase": "phase_2",
   "reason": "missing_capability" | "missing_consent" | "concurrent_in_flight" | "operator_kill_switch_active",
-  "destination": "Jonnyton/Workflow",
-  "capability_env_var": "WORKFLOW_GITHUB_PR_CAPABILITIES",
-  "capability_lookup_failed_for": "Jonnyton/Workflow",
+  "destination": "Jonnyton/TinyAssets",
+  "capability_env_var": "TINYASSETS_GITHUB_PR_CAPABILITIES",
+  "capability_lookup_failed_for": "Jonnyton/TinyAssets",
   "intent": <packet>,
   "matched_output_key": "..."
 }
@@ -123,7 +123,7 @@ Evidence (Phase 2 dry-run from a closed gate):
 when the reason is `missing_capability`. Round-2 (Codex P1.2) replaced
 the round-1 per-destination suffix env (which collapsed `octo/my.repo`
 and `octo/my_repo` to the same env name) with the JSON-map
-`WORKFLOW_GITHUB_PR_CAPABILITIES` env; the dry-run evidence names the
+`TINYASSETS_GITHUB_PR_CAPABILITIES` env; the dry-run evidence names the
 literal destination string the host needs to add to that map.
 
 Evidence (Phase 2 idempotency dedup hit):
@@ -132,7 +132,7 @@ Evidence (Phase 2 idempotency dedup hit):
 {
   "idempotency_dedup_hit": true,
   "phase": "phase_2",
-  "destination": "Jonnyton/Workflow",
+  "destination": "Jonnyton/TinyAssets",
   "matched_output_key": "...",
   "evidence": <recorded-evidence>,
   "recorded_run_id": "<original run that produced the PR>",
@@ -143,7 +143,7 @@ Evidence (Phase 2 idempotency dedup hit):
 
 ## Operator kill switch
 
-`WORKFLOW_EXTERNAL_WRITE_DRY_RUN` is the operator panic-button
+`TINYASSETS_EXTERNAL_WRITE_DRY_RUN` is the operator panic-button
 override. When truthy on the daemon's env, the effector **always**
 returns dry-run evidence — ALL gates (capability + consent +
 idempotency reservation) are bypassed; no real write fires for this
@@ -157,7 +157,7 @@ The dry-run evidence shape under this override:
   "dry_run": true,
   "phase": "phase_2",
   "reason": "operator_kill_switch_active",
-  "kill_switch_env": "WORKFLOW_EXTERNAL_WRITE_DRY_RUN",
+  "kill_switch_env": "TINYASSETS_EXTERNAL_WRITE_DRY_RUN",
   "intent": <packet>,
   "matched_output_key": "..."
 }

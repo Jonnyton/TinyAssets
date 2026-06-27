@@ -1,0 +1,23 @@
+# TinyAssets daemon state backup — nightly 03:00 UTC.
+#
+# Self-host migration Row J per
+# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+
+[Unit]
+Description=Timer for TinyAssets daemon state backup
+Requires=tinyassets-backup.service
+
+[Timer]
+# 03:00 UTC nightly. Low-traffic window for most regions; 3h before
+# the 07:17 UTC tier-3 OSS clone nightly (so backup completes before
+# CI hits the box).
+OnCalendar=03:00 UTC
+AccuracySec=5min
+# Persistent=true so a missed backup (box was off at 02:00) runs on
+# next boot. State backup is a scheduled batch job, unlike the
+# watchdog probe.
+Persistent=true
+Unit=tinyassets-backup.service
+
+[Install]
+WantedBy=timers.target

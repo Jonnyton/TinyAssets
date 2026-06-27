@@ -1,23 +1,23 @@
 """Tests for gate_event MCP wiring in extensions action group.
 
 Spec: docs/vetted-specs.md §gate_event — real-world outcome attestation primitive.
-Implementation: workflow/universe_server.py _action_*_gate_event functions.
+Implementation: tinyassets/universe_server.py _action_*_gate_event functions.
 """
 
 from __future__ import annotations
 
 import json
 
-from workflow.branch_versions import publish_branch_version
-from workflow.daemon_server import (
+from tinyassets.branch_versions import publish_branch_version
+from tinyassets.daemon_server import (
     initialize_author_server,
     save_branch_definition,
 )
-from workflow.runs import initialize_runs_db
+from tinyassets.runs import initialize_runs_db
 
 
 def _seed_bv(base_path, branch_id: str = "b1", publisher: str = "alice") -> str:
-    from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+    from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
 
     initialize_author_server(base_path)
     nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")
@@ -37,9 +37,9 @@ def _seed_bv(base_path, branch_id: str = "b1", publisher: str = "alice") -> str:
 
 class TestAttestGateEvent:
     def test_attest_returns_event_id(self, tmp_path, monkeypatch):
-        from workflow.api.market import _action_attest_gate_event
+        from tinyassets.api.market import _action_attest_gate_event
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
         initialize_runs_db(tmp_path)
 
@@ -56,9 +56,9 @@ class TestAttestGateEvent:
         assert result["cite_count"] == 1
 
     def test_attest_missing_goal_id_errors(self, tmp_path, monkeypatch):
-        from workflow.api.market import _action_attest_gate_event
+        from tinyassets.api.market import _action_attest_gate_event
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         initialize_runs_db(tmp_path)
 
         result = json.loads(_action_attest_gate_event({
@@ -71,9 +71,9 @@ class TestAttestGateEvent:
         assert "error" in result
 
     def test_attest_invalid_cites_json_errors(self, tmp_path, monkeypatch):
-        from workflow.api.market import _action_attest_gate_event
+        from tinyassets.api.market import _action_attest_gate_event
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         initialize_runs_db(tmp_path)
 
         result = json.loads(_action_attest_gate_event({
@@ -88,12 +88,12 @@ class TestAttestGateEvent:
 
 class TestVerifyGateEvent:
     def test_verify_changes_status(self, tmp_path, monkeypatch):
-        from workflow.api.market import (
+        from tinyassets.api.market import (
             _action_attest_gate_event,
             _action_verify_gate_event,
         )
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
         initialize_runs_db(tmp_path)
 
@@ -115,21 +115,21 @@ class TestVerifyGateEvent:
         assert result["verification_status"] == "verified"
 
     def test_verify_missing_event_id_errors(self, tmp_path, monkeypatch):
-        from workflow.api.market import _action_verify_gate_event
+        from tinyassets.api.market import _action_verify_gate_event
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         initialize_runs_db(tmp_path)
 
         result = json.loads(_action_verify_gate_event({"event_id": "", "verifier_id": "bob"}))
         assert "error" in result
 
     def test_same_actor_cannot_verify_own_attestation(self, tmp_path, monkeypatch):
-        from workflow.api.market import (
+        from tinyassets.api.market import (
             _action_attest_gate_event,
             _action_verify_gate_event,
         )
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
         initialize_runs_db(tmp_path)
 
@@ -149,7 +149,7 @@ class TestVerifyGateEvent:
 
 class TestDisputeRetractGateEvent:
     def _attest(self, tmp_path, monkeypatch, bvid: str) -> str:
-        from workflow.api.market import _action_attest_gate_event
+        from tinyassets.api.market import _action_attest_gate_event
 
         att = json.loads(_action_attest_gate_event({
             "goal_id": "g1",
@@ -161,9 +161,9 @@ class TestDisputeRetractGateEvent:
         return att["event_id"]
 
     def test_dispute_changes_status(self, tmp_path, monkeypatch):
-        from workflow.api.market import _action_dispute_gate_event
+        from tinyassets.api.market import _action_dispute_gate_event
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
         initialize_runs_db(tmp_path)
         eid = self._attest(tmp_path, monkeypatch, bvid)
@@ -177,9 +177,9 @@ class TestDisputeRetractGateEvent:
         assert result["verification_status"] == "disputed"
 
     def test_retract_changes_status(self, tmp_path, monkeypatch):
-        from workflow.api.market import _action_retract_gate_event
+        from tinyassets.api.market import _action_retract_gate_event
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
         initialize_runs_db(tmp_path)
         eid = self._attest(tmp_path, monkeypatch, bvid)
@@ -193,9 +193,9 @@ class TestDisputeRetractGateEvent:
         assert result["verification_status"] == "retracted"
 
     def test_dispute_missing_event_id(self, tmp_path, monkeypatch):
-        from workflow.api.market import _action_dispute_gate_event
+        from tinyassets.api.market import _action_dispute_gate_event
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         initialize_runs_db(tmp_path)
         result = json.loads(
             _action_dispute_gate_event({"event_id": "", "disputed_by": "bob", "reason": "x"})
@@ -205,12 +205,12 @@ class TestDisputeRetractGateEvent:
 
 class TestGetListGateEvents:
     def test_get_gate_event_roundtrip(self, tmp_path, monkeypatch):
-        from workflow.api.market import (
+        from tinyassets.api.market import (
             _action_attest_gate_event,
             _action_get_gate_event,
         )
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
         initialize_runs_db(tmp_path)
 
@@ -229,20 +229,20 @@ class TestGetListGateEvents:
         assert len(result["cites"]) == 1
 
     def test_get_gate_event_not_found(self, tmp_path, monkeypatch):
-        from workflow.api.market import _action_get_gate_event
+        from tinyassets.api.market import _action_get_gate_event
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         initialize_runs_db(tmp_path)
         result = json.loads(_action_get_gate_event({"event_id": "no-such-id"}))
         assert "error" in result
 
     def test_list_gate_events_by_goal(self, tmp_path, monkeypatch):
-        from workflow.api.market import (
+        from tinyassets.api.market import (
             _action_attest_gate_event,
             _action_list_gate_events,
         )
 
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
         initialize_runs_db(tmp_path)
 
@@ -260,8 +260,8 @@ class TestGetListGateEvents:
         assert result["count"] == 3
 
     def test_extensions_routes_attest(self, tmp_path, monkeypatch):
-        from workflow.universe_server import extensions
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        from tinyassets.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
         initialize_runs_db(tmp_path)
 
@@ -276,8 +276,8 @@ class TestGetListGateEvents:
         assert result["status"] == "attested"
 
     def test_extensions_routes_list(self, tmp_path, monkeypatch):
-        from workflow.universe_server import extensions
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        from tinyassets.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         initialize_runs_db(tmp_path)
 
         result = json.loads(extensions(

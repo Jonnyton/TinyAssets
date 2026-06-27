@@ -1,6 +1,6 @@
 """PR-127 — leaderboard-driven canonical resolution.
 
-Direct unit tests on ``workflow.api.canonical_dispatch``:
+Direct unit tests on ``tinyassets.api.canonical_dispatch``:
 
   * No canonical set + auto OFF -> no_canonical_handler error.
   * Canonical set + auto OFF -> returns stored canonical verbatim.
@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.api.canonical_dispatch import (
+from tinyassets.api.canonical_dispatch import (
     IN_FLIGHT_WINDOW_SECONDS,
     SOURCE_CANONICAL_STORED,
     SOURCE_LEADERBOARD_NO_CHANGE,
@@ -45,15 +45,15 @@ from workflow.api.canonical_dispatch import (
     is_in_flight_for_version,
     resolve_canonical_for_run,
 )
-from workflow.branch_versions import publish_branch_version
-from workflow.daemon_server import (
+from tinyassets.branch_versions import publish_branch_version
+from tinyassets.daemon_server import (
     initialize_author_server,
     save_branch_definition,
     save_goal,
     set_canonical_branch,
     update_goal,
 )
-from workflow.runs import (
+from tinyassets.runs import (
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_RUNNING,
@@ -113,14 +113,14 @@ def _mock_selector_passthrough(monkeypatch):
             ],
         }
     monkeypatch.setattr(
-        "workflow.api.quality_leaderboard.dispatch_selector",
+        "tinyassets.api.quality_leaderboard.dispatch_selector",
         _passthrough,
     )
 
 
 @pytest.fixture
 def base_path(tmp_path: Path, monkeypatch) -> Path:
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     initialize_author_server(tmp_path)
     initialize_runs_db(tmp_path)
     return tmp_path
@@ -158,7 +158,7 @@ def _make_goal(
             "min_completed_runs_for_canonical": min_runs,
         },
     )
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     return get_goal(base_path, goal_id=goal_id)
 
 
@@ -336,7 +336,7 @@ def test_auto_refresh_swaps_canonical_when_top_meets_threshold(base_path):
     assert resolution["candidate_completed_runs"] >= 3
 
     # The stored canonical actually moved.
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     refreshed_goal = get_goal(base_path, goal_id="g1")
     assert refreshed_goal["canonical_branch_version_id"] == new_bvid
 
@@ -396,7 +396,7 @@ def test_threshold_blocks_swap_when_top_has_insufficient_runs(base_path):
     )
     assert resolution["candidate_completed_runs"] < 5
     # Canonical unchanged in storage.
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     refreshed_goal = get_goal(base_path, goal_id="g1")
     assert refreshed_goal["canonical_branch_version_id"] == old_bvid
 
@@ -455,7 +455,7 @@ def test_in_flight_run_blocks_refresh(base_path):
     assert resolution["in_flight_run_id"] == rid
     assert resolution["in_flight_status"] == "running"
     # Stored canonical unchanged.
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     refreshed_goal = get_goal(base_path, goal_id="g1")
     assert refreshed_goal["canonical_branch_version_id"] == old_bvid
 
@@ -523,7 +523,7 @@ def test_stale_in_flight_does_not_block_refresh(base_path):
     )
     update_run_status(base_path, rid, status=RUN_STATUS_RUNNING)
     # Backdate the row beyond the in-flight window.
-    from workflow.runs import _connect
+    from tinyassets.runs import _connect
     long_ago = time.time() - (IN_FLIGHT_WINDOW_SECONDS + 60.0)
     with _connect(base_path) as conn:
         conn.execute(
@@ -667,7 +667,7 @@ def test_in_flight_window_excludes_old_runs(base_path):
         inputs={}, branch_version_id=bvid,
     )
     update_run_status(base_path, rid, status=RUN_STATUS_RUNNING)
-    from workflow.runs import _connect
+    from tinyassets.runs import _connect
     long_ago = time.time() - (IN_FLIGHT_WINDOW_SECONDS + 1.0)
     with _connect(base_path) as conn:
         conn.execute(
@@ -715,13 +715,13 @@ def _mark_version_rolled_back(
 ) -> None:
     """Flip a branch_version row to status='rolled_back' via direct
     SQL. There's no public ``rollback_branch_version`` helper in
-    ``workflow.branch_versions`` today, and the tests need a stable
+    ``tinyassets.branch_versions`` today, and the tests need a stable
     way to drive the rolled-back state. ISO-8601 timestamp matches the
     column's TEXT type (see _row_to_version in branch_versions.py).
     """
     from datetime import datetime, timezone
 
-    from workflow.branch_versions import _connect, initialize_branch_versions_db
+    from tinyassets.branch_versions import _connect, initialize_branch_versions_db
 
     initialize_branch_versions_db(base_path)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -778,7 +778,7 @@ def _publish_version_with_distinct_content(
     makes "publish two different versions of the same branch_def_id"
     impossible without varying a real snapshot field.
     """
-    from workflow.branch_versions import publish_branch_version
+    from tinyassets.branch_versions import publish_branch_version
     branch_dict = {
         "branch_def_id": branch_def_id,
         "name": branch_def_id,
@@ -904,7 +904,7 @@ def test_set_canonical_accepts_active_version(base_path):
         base_path, goal_id="g1",
         branch_version_id=bvid, set_by="host",
     )
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     goal = get_goal(base_path, goal_id="g1")
     assert goal["canonical_branch_version_id"] == bvid
 
@@ -1000,7 +1000,7 @@ def test_caller_viewer_cannot_promote_their_private_branch(base_path):
     )
     assert resolution["branch_def_id"] == "public-incumbent"
     # Stored canonical actually unchanged.
-    from workflow.daemon_server import get_goal
+    from tinyassets.daemon_server import get_goal
     refreshed_goal = get_goal(base_path, goal_id="g1")
     assert refreshed_goal["canonical_branch_version_id"] == pub_bvid
 

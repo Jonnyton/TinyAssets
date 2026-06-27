@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from workflow.work_targets import (
+from tinyassets.work_targets import (
     HARD_PRIORITY_ACTIVE,
     collect_soft_conflicts,
     finalize_eligible_discards,

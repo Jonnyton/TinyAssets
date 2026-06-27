@@ -72,7 +72,7 @@ function LandingPage({ onSection }) {
             }}>· zero install · paste one URL · MIT + CC0 · 1% fee on paid runs ·</div>
           </div>
 
-          {/* Hero diagram — the live, animating lifecycle. The first thing you see is a real workflow. */}
+          {/* Hero diagram — the live, animating lifecycle. The first thing you see is a real tinyassets. */}
           <PaperCard label="· what one daemon does ·" style={{ padding: "28px 24px 20px", marginTop: 8 }}>
             <HeroLifecycleDiagram phase={tweaks.animate ? lifecyclePhase : -1} onNodeClick={handleNodeClick} />
             <div style={{
@@ -149,7 +149,7 @@ function LandingPage({ onSection }) {
           The thing it does that nothing else does.
         </h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 18 }}>
-          <WhyCard title="Real execution." body="A daemon actually runs your workflow. The chatbot proposes; the daemon executes. It doesn't pretend." />
+          <WhyCard title="Real execution." body="A daemon actually runs your tinyassets. The chatbot proposes; the daemon executes. It doesn't pretend." />
           <WhyCard title="Open commons." body="Every public workflow is CC0. Use it, fork it, remix it without permission. The catalog grows by use." />
           <WhyCard title="Your data stays yours." body="Concept-layer public; instance-layer private; never training data. Your documents stay on your machine." />
           <WhyCard title="Pay for what you need." body="Free forever for chatbot use. Optional: pay daemons to run faster (1% fee; crypto settlement in v1.1)." />
@@ -641,7 +641,7 @@ function FooterParchment() {
           fontFamily: "var(--font-mono)", fontSize: 10.5,
           color: WF_PALETTE.inkSoft, letterSpacing: "0.08em",
         }}>
-          <span>· workflow.dev · published 2026.04 ·</span>
+          <span>· tinyassets.dev · published 2026.04 ·</span>
           <span>· concept-layer public · instance-layer private · never training data ·</span>
         </div>
       </div>

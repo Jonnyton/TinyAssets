@@ -17,27 +17,27 @@ import json
 
 import pytest
 
-from workflow.effectors.authority import (
+from tinyassets.effectors.authority import (
     AUTHORIZED,
     DENIED,
     UNDECLARED,
     effect_authority_key,
     resolve_soul_effect_authority,
 )
-from workflow.effectors.github_pr import (
+from tinyassets.effectors.github_pr import (
     _CAPABILITIES_ENV,
     EXTERNAL_WRITE_SINK_GITHUB_PR,
     run_github_pr_effector,
 )
-from workflow.storage.effector_consents import grant_consent
-from workflow.universe_soul import (
+from tinyassets.storage.effector_consents import grant_consent
+from tinyassets.universe_soul import (
     effect_authority_from_soul,
     read_universe_soul,
     render_soul_markdown,
     write_universe_soul,
 )
 
-_DESTINATION = "Jonnyton/Workflow"
+_DESTINATION = "Jonnyton/TinyAssets"
 _GRANT = f"{EXTERNAL_WRITE_SINK_GITHUB_PR}:{_DESTINATION}"
 
 
@@ -51,8 +51,8 @@ def universe_dir(tmp_path):
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     monkeypatch.delenv(_CAPABILITIES_ENV, raising=False)
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_ENABLED", raising=False)
-    monkeypatch.delenv("WORKFLOW_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_ENABLED", raising=False)
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
 
 
 def _set_capability(monkeypatch, destination: str, token: str) -> None:

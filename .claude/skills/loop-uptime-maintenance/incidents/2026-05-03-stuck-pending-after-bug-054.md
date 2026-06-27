@@ -77,7 +77,7 @@ Next-time improvement: stuck_pending crossing a threshold (e.g., 5min) should em
 
 The three named candidates (supervisor restart loop, dispatcher disabled, daemon wedged) each have a different right response. Container-restart (layer 1 self-heal) handles supervisor crash but not "supervisor running but stuck." That's the gap.
 
-A simple autonomous response: when stuck_pending exceeds a longer threshold (e.g., 10min, well past the 5min alarm), trigger a watchdog-supervised dispatcher reset. The systemd unit + workflow-watchdog.timer pattern is already in place; this would be a new watchdog probe specifically for "queue is full and dispatcher isn't moving it" — distinct from "process exists or doesn't."
+A simple autonomous response: when stuck_pending exceeds a longer threshold (e.g., 10min, well past the 5min alarm), trigger a watchdog-supervised dispatcher reset. The systemd unit + tinyassets-watchdog.timer pattern is already in place; this would be a new watchdog probe specifically for "queue is full and dispatcher isn't moving it" — distinct from "process exists or doesn't."
 
 Ship: a small new probe in the watchdog timer that reads queue state via the same surface mcp_probe uses, and on stuck_pending threshold-cross, sends SIGTERM+SIGKILL to the dispatcher subprocess and lets the supervisor restart it. This is a layer-1.5 fix: between container-restart (layer 1) and GHA p0-outage-triage (layer 2).
 

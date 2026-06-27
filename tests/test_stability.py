@@ -15,7 +15,7 @@ from typing import Any
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from workflow.providers import call as _provider_stub  # noqa: E402
+from tinyassets.providers import call as _provider_stub  # noqa: E402
 
 _provider_stub.set_force_mock(True)
 
@@ -25,8 +25,8 @@ from domains.fantasy_daemon.phases.commit import commit  # noqa: E402
 from domains.fantasy_daemon.phases.diagnose import diagnose  # noqa: E402
 from domains.fantasy_daemon.phases.select_task import select_task  # noqa: E402
 from domains.fantasy_daemon.phases.universe_cycle import universe_cycle  # noqa: E402
-from workflow.memory.promises import SeriesPromiseTracker  # noqa: E402
-from workflow.memory.versioning import OutputVersionStore  # noqa: E402
+from tinyassets.memory.promises import SeriesPromiseTracker  # noqa: E402
+from tinyassets.memory.versioning import OutputVersionStore  # noqa: E402
 
 
 def _make_scene_state(
@@ -326,7 +326,7 @@ class TestCrossBookPromises:
 
     def test_book_close_wires_promise_promotion(self):
         """book_close node should call promote_from_book."""
-        import workflow.runtime_singletons as runtime
+        import tinyassets.runtime_singletons as runtime
 
         tracker = SeriesPromiseTracker(":memory:", "test")
         runtime.promise_tracker = tracker
@@ -389,7 +389,7 @@ class TestOutputVersioning:
 
     def test_commit_node_saves_to_version_store(self, tmp_path):
         """Commit node should save draft to version store when wired."""
-        import workflow.runtime_singletons as runtime
+        import tinyassets.runtime_singletons as runtime
 
         store = OutputVersionStore(":memory:", "test")
         db_path = str(tmp_path / "version_commit.db")

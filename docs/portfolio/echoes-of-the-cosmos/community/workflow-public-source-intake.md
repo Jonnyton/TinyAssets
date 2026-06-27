@@ -16,7 +16,7 @@ The source channel is r/EchoesoftheCosmos. Workflow treats the subreddit, RSS fe
 ## MCP Pattern
 
 1. Fetch a public source URL with a chatbot web tool, browser, or HTTP client.
-2. Submit the source snapshot to Workflow MCP with `universe add_canon` or `wiki ingest`.
+2. Submit the source snapshot to TinyAssets MCP with `universe add_canon` or `wiki ingest`.
 3. Run the `Echoes Reddit source intake` branch with `universe_id`, `source_url`, `fetched_at`, and `source_snapshot`.
 4. Review the source manifest, contribution packet, and canon gate decision.
 5. Promote reviewed material to canon or a GitHub PR.

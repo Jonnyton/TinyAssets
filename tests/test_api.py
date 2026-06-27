@@ -423,7 +423,7 @@ class TestPremise:
         assert resp.json()["source"] == "PROGRAM.md"
 
     def test_get_premise_falls_back_to_soul(self, client, universe_dir):
-        from workflow.universe_soul import write_universe_soul
+        from tinyassets.universe_soul import write_universe_soul
 
         write_universe_soul(
             universe_dir,
@@ -1221,7 +1221,7 @@ class TestListCanonSources:
         # state via the helper rather than rereading the legacy file the daemon
         # no longer writes — a legacy reread can pass spuriously while canonical
         # is missing or wrong.
-        from workflow.enrichment_signals import load_enrichment_signals
+        from tinyassets.enrichment_signals import load_enrichment_signals
 
         signals = load_enrichment_signals(universe_dir)
         synth = [
@@ -1451,7 +1451,7 @@ class TestDaemonSwitching:
         """Starting a universe when no daemon is running should start one."""
         # Retargeted to fantasy_daemon.api: the test reaches into private
         # globals (_daemon, _daemon_thread, _start_daemon_for). The
-        # workflow.api shim (workflow/api/__init__.py) does a wildcard
+        # tinyassets.api shim (tinyassets/api/__init__.py) does a wildcard
         # re-export which does not forward writes to module-level names,
         # so ``api_mod._daemon = mock`` patches the shim's own binding
         # rather than the real module the running handlers read. Until
@@ -1625,7 +1625,7 @@ class TestActivityBounds:
 
 class TestDaemonReady:
     def test_daemon_state_initializing(self):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         controller = DaemonController(universe_path="/tmp/test")
         assert not controller._ready.is_set()
@@ -1635,7 +1635,7 @@ class TestDaemonReady:
         assert controller.daemon_state == "running"
 
     def test_daemon_state_paused_after_ready(self):
-        from workflow.__main__ import DaemonController
+        from tinyassets.__main__ import DaemonController
 
         controller = DaemonController(universe_path="/tmp/test")
         controller._ready.set()
@@ -1721,7 +1721,7 @@ class TestPutOutput:
 
 class TestServeFlag:
     def test_serve_arg_exists(self):
-        from workflow.__main__ import main
+        from tinyassets.__main__ import main
 
         assert callable(main)
 

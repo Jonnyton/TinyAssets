@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from workflow.config import UniverseConfig, load_universe_config
+from tinyassets.config import UniverseConfig, load_universe_config
 
 
 class TestUniverseConfigDefaults:
@@ -158,12 +158,12 @@ class TestRuntimeConfigIntegration:
     """Test that runtime.universe_config is properly typed."""
 
     def test_runtime_has_default_config(self):
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         assert isinstance(runtime.universe_config, UniverseConfig)
 
     def test_reset_restores_default_config(self):
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
 
         runtime.universe_config = UniverseConfig(temperature=0.1)
         runtime.reset()

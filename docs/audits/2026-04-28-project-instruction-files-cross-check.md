@@ -17,7 +17,7 @@ audience: lead, host (selectively)
 All repo-local action items from this audit are now closed:
 
 - Finding #3 is closed: AGENTS now uses stable concrete Files examples
-  (`workflow/api/wiki.py, workflow/storage/__init__.py`), not
+  (`tinyassets/api/wiki.py, tinyassets/storage/__init__.py`), not
   `author_server.py`.
 - Findings #4/#5/#6 are closed in AGENTS: no-destructive-git is Hard Rule
   13, plugin mirror rebuild is in Testing, and audit-decay is in Truth And
@@ -41,11 +41,11 @@ Read 4 files (~750 lines total). Found:
 
 | # | Severity | File:line | Finding | Recommended action |
 |---|---|---|---|---|
-| 1 | **RESOLVED 2026-04-28** | `AGENTS.md:169` | Original stale branding ("Universe Server MCP connector") is gone; current text says "installed Workflow MCP connector at `https://tinyassets.io/mcp`". | No action. |
-| 2 | **RESOLVED 2026-04-28** | `CLAUDE_LEAD_OPS.md:129` | Original stale branding ("Restart the Universe Server") is gone; current text says "Restart the Workflow MCP server when new code needs to go live." | No action. |
+| 1 | **RESOLVED 2026-04-28** | `AGENTS.md:169` | Original stale branding ("Universe Server MCP connector") is gone; current text says "installed TinyAssets MCP connector at `https://tinyassets.io/mcp`". | No action. |
+| 2 | **RESOLVED 2026-04-28** | `CLAUDE_LEAD_OPS.md:129` | Original stale branding ("Restart the Universe Server") is gone; current text says "Restart the TinyAssets MCP server when new code needs to go live." | No action. |
 | 3 | **STALE-EXAMPLE** | `AGENTS.md:204` | "Be concrete: `api.py, author_server.py` not `backend`." `author_server.py` is the in-flight Arc B rename target — already a `_rename_compat` shim per current state, scheduled for deletion in Phase 5. Using it as a "be-concrete" example teaches future contributors a name that's about to disappear. | Replace example with two stable canonical-tree filenames, e.g. `api.py, daemon_server.py` or `runs.py, market.py`. |
 | 4 | **COVERAGE GAP** | `AGENTS.md` (no section) | No-destructive-git rule is host-explicit standing rule per lead memory `feedback_git_destructive` + dev memory `feedback_no_git_stash_for_diagnostics` + navigator memory `feedback_no_diagnostic_stash` + (just-saved) dev-2 memory. Rule lives in 4 agent memories but NOT in AGENTS.md proper. New contributor / new agent without those memories doesn't see the rule. | Add a 1-line "**No destructive git ops without approval.**" entry under either Hard Rules or a new "Git Discipline" subsection. References agent memory for fuller context. |
-| 5 | **COVERAGE GAP** | `AGENTS.md` (no section) | Plugin-mirror-rebuild rule (`python packaging/claude-plugin/build_plugin.py` after `workflow/*` canonical edits, otherwise pre-commit blocks the commit) lives in dev memory + navigator memory + (just-saved) dev-2 memory. Not codified in AGENTS.md or any shared truth file. | Add a 1-line entry under Testing or a new "Packaging Mirrors" subsection. References `packaging/INDEX.md` for the broader packaging map. |
+| 5 | **COVERAGE GAP** | `AGENTS.md` (no section) | Plugin-mirror-rebuild rule (`python packaging/claude-plugin/build_plugin.py` after `tinyassets/*` canonical edits, otherwise pre-commit blocks the commit) lives in dev memory + navigator memory + (just-saved) dev-2 memory. Not codified in AGENTS.md or any shared truth file. | Add a 1-line entry under Testing or a new "Packaging Mirrors" subsection. References `packaging/INDEX.md` for the broader packaging map. |
 | 6 | **COVERAGE GAP** | `AGENTS.md` (no section) | Audit-staleness rule (audits >24h are routinely stale; freshness-check before dispatching) lives in 4 agent memories (dev/navigator/lead/dev-2). The "Truth And Freshness" section L104-111 covers verification-claim freshness but not audit-doc freshness specifically. | Add a 1-line entry under "Truth And Freshness" — "**Audit docs decay too.** Run a freshness check (git log + grep + spot-read) on any audit older than ~24h before dispatching its prescriptions." References memory. |
 | 7 | **INTERNAL CONTRADICTION (low severity)** | `AGENTS.md:53` vs current STATUS.md size | "STATUS.md … ≤4 KB / 60 lines." STATUS.md as of 2026-04-28 is 60 lines but ~5.2 KB (lines are dense). Either the byte budget is canonical and STATUS is over budget, or the line budget is canonical and the byte budget is informational. | Clarify in AGENTS.md whether the budget is byte-canonical or line-canonical. STATUS.md often hits the budget edge; ambiguity costs reader/janitor confidence. |
 

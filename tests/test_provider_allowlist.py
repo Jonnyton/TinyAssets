@@ -10,12 +10,12 @@ import os
 
 import pytest
 
-from workflow import runtime_singletons as runtime
-from workflow.config import UniverseConfig
-from workflow.exceptions import AllProvidersExhaustedError
-from workflow.providers.base import BaseProvider, ModelConfig, ProviderResponse
-from workflow.providers.quota import QuotaTracker
-from workflow.providers.router import ProviderRouter
+from tinyassets import runtime_singletons as runtime
+from tinyassets.config import UniverseConfig
+from tinyassets.exceptions import AllProvidersExhaustedError
+from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.providers.quota import QuotaTracker
+from tinyassets.providers.router import ProviderRouter
 
 
 class _FakeProvider(BaseProvider):
@@ -46,18 +46,18 @@ def _run(coro):
 def isolated_universe_config():
     """Snapshot + restore runtime_singletons.universe_config across tests."""
     saved = runtime.universe_config
-    saved_pin = os.environ.get("WORKFLOW_PIN_WRITER")
+    saved_pin = os.environ.get("TINYASSETS_PIN_WRITER")
     runtime.universe_config = UniverseConfig()
-    if "WORKFLOW_PIN_WRITER" in os.environ:
-        del os.environ["WORKFLOW_PIN_WRITER"]
+    if "TINYASSETS_PIN_WRITER" in os.environ:
+        del os.environ["TINYASSETS_PIN_WRITER"]
     try:
         yield
     finally:
         runtime.universe_config = saved
         if saved_pin is not None:
-            os.environ["WORKFLOW_PIN_WRITER"] = saved_pin
-        elif "WORKFLOW_PIN_WRITER" in os.environ:
-            del os.environ["WORKFLOW_PIN_WRITER"]
+            os.environ["TINYASSETS_PIN_WRITER"] = saved_pin
+        elif "TINYASSETS_PIN_WRITER" in os.environ:
+            del os.environ["TINYASSETS_PIN_WRITER"]
 
 
 def _router_with_all_providers() -> tuple[
@@ -203,7 +203,7 @@ def test_call_with_policy_filters_policy_attempt_order_by_allowlist(
 
 
 # ---------------------------------------------------------------------------
-# 6. WORKFLOW_PIN_WRITER × allowlist: pin in allowlist -> works
+# 6. TINYASSETS_PIN_WRITER × allowlist: pin in allowlist -> works
 # ---------------------------------------------------------------------------
 
 
@@ -212,7 +212,7 @@ def test_pin_writer_in_allowlist_succeeds(isolated_universe_config):
     runtime.universe_config = UniverseConfig(
         allowed_providers=["ollama-local"],
     )
-    os.environ["WORKFLOW_PIN_WRITER"] = "ollama-local"
+    os.environ["TINYASSETS_PIN_WRITER"] = "ollama-local"
     router, providers = _router_with_all_providers()
 
     resp = _run(router.call("writer", "p", "s"))
@@ -222,7 +222,7 @@ def test_pin_writer_in_allowlist_succeeds(isolated_universe_config):
 
 
 # ---------------------------------------------------------------------------
-# 7. WORKFLOW_PIN_WRITER × allowlist: pin NOT in allowlist -> hard-fail
+# 7. TINYASSETS_PIN_WRITER × allowlist: pin NOT in allowlist -> hard-fail
 # ---------------------------------------------------------------------------
 
 
@@ -233,7 +233,7 @@ def test_pin_writer_disjoint_from_allowlist_hard_fails(
     runtime.universe_config = UniverseConfig(
         allowed_providers=["ollama-local"],
     )
-    os.environ["WORKFLOW_PIN_WRITER"] = "claude-code"
+    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
     router, providers = _router_with_all_providers()
 
     with pytest.raises(AllProvidersExhaustedError) as exc_info:

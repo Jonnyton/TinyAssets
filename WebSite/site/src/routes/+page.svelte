@@ -124,7 +124,7 @@
       date: '4 Jun 2026',
       title: 'First real change shipped end-to-end.',
       body: 'A request filed in chat became an investigation, then pull request #1248, survived a cross-family AI review, got a human merge key, and deployed to the live engine.',
-      tick: { href: 'https://github.com/Jonnyton/Workflow/pull/1248', label: 'PR #1248', external: true }
+      tick: { href: 'https://github.com/Jonnyton/TinyAssets/pull/1248', label: 'PR #1248', external: true }
     },
     {
       date: '5 Jun 2026',
@@ -135,7 +135,7 @@
       date: '5–9 Jun 2026',
       title: 'Asleep while the repairs waited.',
       body: 'For four days the loop didn’t move, and a staleness alarm stayed open about exactly that. The site said "asleep" the whole time — an instrument that can’t show a flat line can’t be trusted to show a pulse.',
-      tick: { href: 'https://github.com/Jonnyton/Workflow/issues?q=is%3Aissue+label%3Ap0-outage', label: 'canary alarm trail', external: true }
+      tick: { href: 'https://github.com/Jonnyton/TinyAssets/issues?q=is%3Aissue+label%3Ap0-outage', label: 'canary alarm trail', external: true }
     }
   ];
 
@@ -179,10 +179,10 @@
 </script>
 
 <svelte:head>
-  <title>Tiny — a small living engine that turns chat into finished work</title>
+  <title>TinyAssets — meet Tiny, the engine that turns chat into finished work</title>
   <meta
     name="description"
-    content="Tiny is the public face of Workflow, an open-source engine. Connect your chatbot to one URL, name a goal, and it runs real multi-step work — with live vital signs, evidence-gated outcome ladders, and a self-patching loop you can watch."
+    content="TinyAssets is the open-source platform behind Tiny, the personified intelligence you meet through MCP. Connect your chatbot to one URL, name a goal, and Tiny runs real multi-step work with live vital signs and evidence-gated outcomes."
   />
   {@html `<script type="application/ld+json">${JSON.stringify(faqJsonLd)}<\/script>`}
 </svelte:head>
@@ -201,8 +201,9 @@
         you'd paste into your chatbot.
       </p>
       <p class="cover__naming">
-        Formally: <strong>Tiny</strong> is the public face of
-        <strong>Workflow</strong>, an open-source engine. One body, two names.
+        Formally: <strong>TinyAssets</strong> is the platform.
+        <strong>Tiny</strong> is the intelligence you meet inside it, shaped
+        as an extension of the founder's will.
       </p>
       <div class="cover__actions">
         <a class="btn btn--primary" href="/start">Put me to work →</a>
@@ -294,7 +295,7 @@
           a human key. Or clone the engine and work on it directly.
         </p>
         <a class="path__cta" href="/build">ways to contribute →</a>
-        <a class="path__cta path__cta--alt" href="https://github.com/Jonnyton/Workflow" target="_blank" rel="noreferrer">Workflow on GitHub ↗</a>
+        <a class="path__cta path__cta--alt" href="https://github.com/Jonnyton/TinyAssets" target="_blank" rel="noreferrer">TinyAssets on GitHub ↗</a>
         <p class="path__voice voice">— every patch makes me start smarter.</p>
       </li>
     </ul>

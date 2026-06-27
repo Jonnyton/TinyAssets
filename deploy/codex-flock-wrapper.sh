@@ -2,8 +2,8 @@
 # Codex CLI cross-container serialization wrapper.
 #
 # deploy/compose.yml sets CODEX_HOME=/data/.codex in the
-# workflow-daemon and Codex worker-fleet containers so Codex's in-place
-# refresh chain survives container restarts on the shared workflow-data
+# tinyassets-daemon and Codex worker-fleet containers so Codex's in-place
+# refresh chain survives container restarts on the shared tinyassets-data
 # volume. Codex's official CI/CD
 # auth guide warns that one auth.json must NOT be shared across
 # concurrent runners — concurrent refresh attempts race the rotation

@@ -23,10 +23,10 @@ The runtime proof used an in-process config override so the user's real
 $out = Join-Path $env:TEMP 'workflow-codex-mcp-toolcall-last.txt'
 Remove-Item -LiteralPath $out -ErrorAction SilentlyContinue
 codex exec --ephemeral --sandbox read-only -m gpt-5.2 `
-  -C C:\Users\Jonathan\Projects\Workflow `
+  -C C:\Users\Jonathan\Projects\TinyAssets `
   -c 'mcp_servers.workflow.url="https://tinyassets.io/mcp-directory"' `
   -o $out `
-  "Use only the configured Workflow MCP server, not shell commands. List the available Workflow MCP tools you can see, call the read-only get_workflow_status tool if available, and return the tool list plus one exact field name/value from the result. If you cannot access the Workflow MCP tools, say exactly what blocked you."
+  "Use only the configured TinyAssets MCP server, not shell commands. List the available TinyAssets MCP tools you can see, call the read-only get_workflow_status tool if available, and return the tool list plus one exact field name/value from the result. If you cannot access the TinyAssets MCP tools, say exactly what blocked you."
 ```
 
 The first attempt with the repo-configured default model failed before tool use:

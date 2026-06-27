@@ -1,16 +1,16 @@
 ---
-title: Task #9 prep — workflow/api/wiki.py extraction scope
+title: Task #9 prep — tinyassets/api/wiki.py extraction scope
 date: 2026-04-26
 author: dev
 status: pre-flight scoping (no edits yet)
 companion: docs/audits/2026-04-25-universe-server-decomposition.md §4.2 (`wiki.py`), §8 step 2
-target_task: #9 — Extract workflow/api/wiki.py (decomp audit step 2)
+target_task: #9 — Extract tinyassets/api/wiki.py (decomp audit step 2)
 gates_on: #8 ships first; #9 inherits universe_server.py's already-modified preamble + helper imports.
 ---
 
 # Task #9 pre-flight scope
 
-Read-only scope for extracting the wiki subsystem from `workflow/universe_server.py` into a new `workflow/api/wiki.py`. Same freshness-check protocol as #8 prep — verify audit prescription against current code before trusting the spec.
+Read-only scope for extracting the wiki subsystem from `tinyassets/universe_server.py` into a new `tinyassets/api/wiki.py`. Same freshness-check protocol as #8 prep — verify audit prescription against current code before trusting the spec.
 
 ---
 
@@ -51,7 +51,7 @@ Read-only scope for extracting the wiki subsystem from `workflow/universe_server
 ### 2.2 Path helpers (4 ARE already #8 candidates; rest stay inline to wiki.py)
 | Helper | Line | Notes |
 |---|---|---|
-| `_wiki_root` | 12064 | Moves in #8 to `workflow/api/helpers.py`. After #8 lands, this is an import in wiki.py, not a def. |
+| `_wiki_root` | 12064 | Moves in #8 to `tinyassets/api/helpers.py`. After #8 lands, this is an import in wiki.py, not a def. |
 | `_wiki_pages_dir` | 12080 | Moves in #8. |
 | `_wiki_drafts_dir` | 12084 | Moves in #8. |
 | `_wiki_raw_dir` | 12088 | Stays in wiki.py — only used by `_wiki_ingest`. |
@@ -102,7 +102,7 @@ Read-only scope for extracting the wiki subsystem from `workflow/universe_server
 
 `get_status` does NOT call any `_wiki_*` symbols. `wiki()` does NOT call `get_status` or any `_action_run_routing_evidence` / `_policy_hash` helpers. Sections are cleanly separable.
 
-**Indirect overlap — both depend on shared #8 helpers:** `_universe_dir`, `_default_universe`, `_base_path`, `_read_json`, `_read_text`, `_find_all_pages`, `_wiki_pages_dir`, `_wiki_drafts_dir`, `_wiki_root`. After #8 lands, both wiki.py and status.py import these from `workflow/api/helpers.py`. No circularity.
+**Indirect overlap — both depend on shared #8 helpers:** `_universe_dir`, `_default_universe`, `_base_path`, `_read_json`, `_read_text`, `_find_all_pages`, `_wiki_pages_dir`, `_wiki_drafts_dir`, `_wiki_root`. After #8 lands, both wiki.py and status.py import these from `tinyassets/api/helpers.py`. No circularity.
 
 **Internal wiki ↔ wiki cross-helper refs are dense:** the 12 action handlers call ~10 internal helpers; all stay in wiki.py.
 
@@ -112,7 +112,7 @@ Read-only scope for extracting the wiki subsystem from `workflow/universe_server
 
 ## 4. FastMCP `mcp` instance — same Pattern A as #8 audit §6
 
-Per audit §6 + current `workflow/api/__init__.py` state: Pattern A (single `mcp` instance shared via decorator imports). New `wiki.py` will need to import `mcp` from a leaf module to avoid the `workflow.api → workflow.api.wiki → workflow.api` cycle.
+Per audit §6 + current `tinyassets/api/__init__.py` state: Pattern A (single `mcp` instance shared via decorator imports). New `wiki.py` will need to import `mcp` from a leaf module to avoid the `workflow.api → workflow.api.wiki → workflow.api` cycle.
 
 **Recommendation:** Audit suggests creating `workflow.mcp_setup` as a leaf module. This is a Phase 0 dependency for ALL future submodule extractions (#9, #10, and the rest of the audit's 8-step plan). May be worth landing as a separate prep step before #9 to keep #9 focused.
 
@@ -136,7 +136,7 @@ All via `from workflow.universe_server import ...` — none via `workflow.api.wi
 | `tests/test_describe_branch_wiki_pages.py` | `_related_wiki_pages` | 11 (NOT a wiki symbol — `_related_wiki_pages` lives at L5030, in branches.py territory; NOT moving in #9) |
 | `docs/design-notes/2026-04-25-canary-to-patch-request-spec.md:84` | `_wiki_file_bug` | 1 (doc-snippet, not real import) |
 
-**Strategy:** All 17 production test imports go through `workflow.universe_server` namespace. Audit §7 Strategy 1 (keep universe_server as aggregator shim) preserves these unchanged. After #9 lands, `workflow/universe_server.py` adds:
+**Strategy:** All 17 production test imports go through `workflow.universe_server` namespace. Audit §7 Strategy 1 (keep universe_server as aggregator shim) preserves these unchanged. After #9 lands, `tinyassets/universe_server.py` adds:
 ```python
 from workflow.api.wiki import (  # back-compat re-export
     wiki, _ensure_wiki_scaffold, _WIKI_CATEGORIES,
@@ -167,7 +167,7 @@ The only wiki-adjacent partial move is the 4 path helpers landing in #8 (`_wiki_
 | **Total moved out of universe_server.py** | **~1,370** |
 | Back-compat re-export block added to universe_server.py | ~10 |
 | **Net reduction in universe_server.py** | **~1,360** |
-| New `workflow/api/wiki.py` size | **~1,400** (with imports) |
+| New `tinyassets/api/wiki.py` size | **~1,400** (with imports) |
 
 **Audit said ~1,312.** Reality ~1,370. Within 5% — audit's LOC estimate is actually closer than its symbol count.
 
@@ -196,11 +196,11 @@ Estimated wall time: 60-90 min (larger than #8 because of the 17-test-import sur
 1. **Decision-point:** confirm `mcp` instance pattern (§4). If lead picks (a) leaf-module extraction, do that as a separate sub-step first. If (b), proceed with `from workflow.universe_server import mcp` inside wiki.py.
 2. **Confirm #21 has landed** (or coordinate with anyone editing `_wiki_file_bug`).
 3. **Confirm #8 has landed** (4 helpers extracted to `helpers.py` are import targets in wiki.py).
-4. **Create `workflow/api/wiki.py`:**
+4. **Create `tinyassets/api/wiki.py`:**
    - Header: module docstring referencing audit + extraction date.
    - Imports: `from workflow.api.helpers import _wiki_root, _wiki_pages_dir, _wiki_drafts_dir, _find_all_pages, _base_path, _default_universe, _universe_dir, _read_json, _read_text` + the `mcp` instance per §4 decision.
    - Move all symbols from §2.1, §2.3, §2.4, §2.5 verbatim. Preserve docstrings + behavior.
-5. **Update `workflow/universe_server.py`:**
+5. **Update `tinyassets/universe_server.py`:**
    - Delete L12031–13602 (the wiki section).
    - Add back-compat re-export block at end of file or in a dedicated shim section:
      ```python
@@ -215,14 +215,14 @@ Estimated wall time: 60-90 min (larger than #8 because of the 17-test-import sur
 8. **Verification:**
    - `pytest tests/test_wiki_*.py tests/test_get_status_primitive.py` → green.
    - `pytest -q` → full suite green.
-   - `ruff check workflow/api/wiki.py workflow/universe_server.py` → clean.
+   - `ruff check tinyassets/api/wiki.py tinyassets/universe_server.py` → clean.
 
 **Files in eventual #9 SHIP handoff:**
-- `workflow/api/wiki.py` (NEW, ~1,400 LOC)
-- `workflow/universe_server.py` (~1,360 LOC removed + ~10 re-export shim added)
-- `packaging/claude-plugin/.../workflow/api/wiki.py` (NEW mirror)
-- `packaging/claude-plugin/.../workflow/universe_server.py` (mirror)
-- Possibly `workflow/mcp_setup.py` (NEW leaf module) if §4 decision is (a).
+- `tinyassets/api/wiki.py` (NEW, ~1,400 LOC)
+- `tinyassets/universe_server.py` (~1,360 LOC removed + ~10 re-export shim added)
+- `packaging/claude-plugin/.../tinyassets/api/wiki.py` (NEW mirror)
+- `packaging/claude-plugin/.../tinyassets/universe_server.py` (mirror)
+- Possibly `tinyassets/mcp_setup.py` (NEW leaf module) if §4 decision is (a).
 
 5–6 files, +1,420 / -1,360 LOC net.
 

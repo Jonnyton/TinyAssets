@@ -214,7 +214,7 @@ def _emit_self_pause_note(
     if not base:
         return
     try:
-        from workflow.notes import add_note
+        from tinyassets.notes import add_note
         add_note(
             base,
             source="system",
@@ -236,7 +236,7 @@ def _run_memory_cleanup(state: dict[str, Any], current_chapter: int) -> int:
 
     Returns the number of records evicted, or 0 if no manager.
     """
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     mgr = runtime.memory_manager
     if mgr is None:
@@ -260,7 +260,7 @@ def _check_cross_universe_synthesis(state: dict[str, Any]) -> str:
     """
     from pathlib import Path
 
-    from workflow.enrichment_signals import load_enrichment_signals
+    from tinyassets.enrichment_signals import load_enrichment_signals
 
     # Only check when current universe has no pending synthesis
     current_path = state.get("_universe_path", "")

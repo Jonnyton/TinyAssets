@@ -6,7 +6,7 @@
 
 ## 1. What the spec says 7.2 does
 
-New module `workflow/git_bridge.py` — a thin wrapper over
+New module `tinyassets/git_bridge.py` — a thin wrapper over
 `subprocess.run(["git", ...])`. Four calls:
 
 - `stage(path)` — `git add <path>`.
@@ -51,14 +51,14 @@ this; it only adds `git add` behind the write.
 ### 2c. Zero existing git integration in Python
 
 Grep confirms: no `subprocess` call to `git`, no `GitPython`, no
-`pygit2`, no `dulwich` anywhere in `workflow/`. 7.2 is greenfield
+`pygit2`, no `dulwich` anywhere in `tinyassets/`. 7.2 is greenfield
 from the Python side. That's good — no drift to reconcile.
 
 ### 2d. Actor identity surface
 
-`workflow/universe_server.py:162 _current_actor()` still reads
+`tinyassets/universe_server.py:162 _current_actor()` still reads
 `UNIVERSE_SERVER_USER` env var, defaults `"anonymous"`. §7.4 replaces
-this with FastMCP context + `WORKFLOW_GITHUB_USERNAME`. 7.2 doesn't
+this with FastMCP context + `TINYASSETS_GITHUB_USERNAME`. 7.2 doesn't
 need to wait for 7.4 — it can accept `author` as a parameter and
 stay neutral.
 
@@ -109,7 +109,7 @@ This is the reviewer's flagged question. Three models:
 - **(A)** `author = _current_actor()` — every mutation is
   attributed to the MCP user. Clean provenance; git log shows
   who did what.
-- **(B)** `author = "workflow-daemon <noreply@workflow>"` —
+- **(B)** `author = "tinyassets-daemon <noreply@workflow>"` —
   single identity for all daemon-driven commits. Simple, uniform,
   but loses the attribution the action_records ledger carried.
 - **(C)** Hybrid — actor in commit *message*, daemon in commit
@@ -121,7 +121,7 @@ actions" principle and spec §7.4 ("author is the GitHub identity…
 falls back to anonymous"). Concrete shape: `commit(message, author)`
 takes an author string the caller provides; default behavior in
 `universe_server.py` is `author = _current_actor_email()` where
-that helper falls back `anonymous <noreply@workflow-daemon>` when
+that helper falls back `anonymous <noreply@tinyassets-daemon>` when
 the env var is unset. The unverified-email concern is real on
 public contributions (see risk §5c) but not for solo local runs
 where the whole repo is the user's.
@@ -232,7 +232,7 @@ blast radius. Revisit after 7.3 is live.
 
 ## 4. Suggested dev tasks
 
-### Task G1 — `workflow/git_bridge.py` module
+### Task G1 — `tinyassets/git_bridge.py` module
 
 **Scope:** implement the four spec surfaces + helpers, with full
 test coverage.
@@ -259,7 +259,7 @@ Tests use `tmp_path` + real `git init` to verify behavior end-to-end
 (git binary is assumed present on CI; tests skip when absent). Mock
 `gh` via PATH manipulation or a stub script.
 
-**Files:** `workflow/git_bridge.py` (new), `tests/test_git_bridge.py` (new).
+**Files:** `tinyassets/git_bridge.py` (new), `tests/test_git_bridge.py` (new).
 **Depends on:** nothing. Can start immediately.
 
 ### Task G2 — wire `SqliteCachedBackend` to `git_bridge.stage`
@@ -278,7 +278,7 @@ repo is git-enabled.
   a return value on `save_branch` / `save_goal`.
 - Fix backend's drift-tolerance mode per §3g option 1.
 
-**Files:** `workflow/storage/backend.py`,
+**Files:** `tinyassets/storage/backend.py`,
 `tests/test_storage_phase7_backend.py`.
 **Depends on:** G1. Parallel-safe with G3.
 
@@ -297,7 +297,7 @@ one transactional-ish call. 7.3 cutover will use these, not bare
   backend is configured with — decouples from `_current_actor()`
   import.
 
-**Files:** `workflow/storage/backend.py` (additive),
+**Files:** `tinyassets/storage/backend.py` (additive),
 `tests/test_storage_phase7_backend.py` (new cases).
 **Depends on:** G1. Parallel-safe with G2.
 
@@ -357,7 +357,7 @@ emit `"bob@example.com"` as commit author without verifying. On
 public repos, unverified emails show up in contributor stats and
 potentially in GitHub's block-list. Mitigations:
 
-- Use `noreply` emails by default: `anonymous <noreply@workflow-daemon>`.
+- Use `noreply` emails by default: `anonymous <noreply@tinyassets-daemon>`.
 - Don't auto-push unless the user explicitly invokes
   `publish_to_remote` (§7.3).
 - When pushing to a shared repo, require a verified GitHub identity

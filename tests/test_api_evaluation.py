@@ -1,9 +1,9 @@
-"""Task #12 — direct tests for `workflow.api.evaluation` after decomp Step 5.
+"""Task #12 — direct tests for `tinyassets.api.evaluation` after decomp Step 5.
 
 The legacy test files (test_publish_version.py, test_rollback.py,
 test_branch_evaluation_iteration.py, test_branch_versions_rollback_columns.py)
 reach the evaluation handlers via the `extensions` MCP tool. This file
-exercises `workflow.api.evaluation` directly to lock in the canonical
+exercises `tinyassets.api.evaluation` directly to lock in the canonical
 implementation surface.
 """
 
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import json
 
-from workflow.api import evaluation as eval_mod
-from workflow.api.evaluation import (
+from tinyassets.api import evaluation as eval_mod
+from tinyassets.api.evaluation import (
     _BRANCH_VERSION_ACTIONS,
     _JUDGMENT_ACTIONS,
     _JUDGMENT_WRITE_ACTIONS,
@@ -142,8 +142,8 @@ def test_action_publish_version_missing_branch_def_id_returns_error():
 
 
 # Arc A re-export shims removed in Task #18 retarget sweep.
-# The legacy `from workflow.universe_server import _JUDGMENT_ACTIONS, ...`
-# imports were rewritten to canonical `workflow.api.evaluation` paths during
+# The legacy `from tinyassets.universe_server import _JUDGMENT_ACTIONS, ...`
+# imports were rewritten to canonical `tinyassets.api.evaluation` paths during
 # the sweep. The shim-identity tests that previously lived here would now
 # tautologically fail and contradict the no-shims-ever rule, so they were
 # deleted alongside the shim block.

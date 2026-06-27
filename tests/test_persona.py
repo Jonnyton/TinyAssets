@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from workflow.persona import Persona, resolve_persona
-from workflow.universe_soul import (
+from tinyassets.persona import Persona, resolve_persona
+from tinyassets.universe_soul import (
     DEFAULT_DOMAIN_SHAPE,
     read_universe_soul,
     write_universe_soul,
@@ -182,7 +182,7 @@ def test_get_status_surfaces_self_model_not_fed_purpose(
     """get_status surfaces the persona's learned self-model — and does NOT
     recite the hand-authored soul.purpose as the persona's identity (the bug).
     get_status seeds a blank self-model, so a universe is curious by default."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     uid = "persona_universe"
     udir = tmp_path / uid
     udir.mkdir(parents=True, exist_ok=True)
@@ -194,7 +194,7 @@ def test_get_status_surfaces_self_model_not_fed_purpose(
         purpose="run the patch loop",
     )
 
-    from workflow.api.status import get_status
+    from tinyassets.api.status import get_status
 
     payload = json.loads(get_status(universe_id=uid))
     # persona is first so text-only clients (truncating payload) keep it.
@@ -226,11 +226,11 @@ def test_get_status_persona_block_present_when_no_soul(
 ) -> None:
     """A universe with no soul still gets a curious, unnamed persona — the brain
     is blank and wants to learn who it is."""
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     uid = "soulless_universe"
     (tmp_path / uid).mkdir(parents=True, exist_ok=True)
 
-    from workflow.api.status import get_status
+    from tinyassets.api.status import get_status
 
     payload = json.loads(get_status(universe_id=uid))
     assert "persona" in payload
@@ -245,7 +245,7 @@ def test_get_status_persona_block_present_when_no_soul(
 
 
 def test_control_station_prompt_carries_embody_markers() -> None:
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     text = _CONTROL_STATION_PROMPT
     assert "first person" in text
@@ -258,7 +258,7 @@ def test_control_station_prompt_carries_embody_markers() -> None:
 
 
 def test_server_instructions_carry_embody_markers() -> None:
-    from workflow.universe_server import mcp
+    from tinyassets.universe_server import mcp
 
     text = mcp.instructions or ""
     assert "embody" in text
@@ -275,7 +275,7 @@ def test_server_instructions_carry_embody_markers() -> None:
 
 
 def test_write_graph_persona_target_is_retired() -> None:
-    from workflow.universe_server import write_graph
+    from tinyassets.universe_server import write_graph
 
     out = json.loads(write_graph(target="persona", graph_id="pu", name="Tiny"))
     assert out.get("error") == "unknown_target"
@@ -293,7 +293,7 @@ def test_write_graph_persona_target_is_retired() -> None:
 
 
 def test_control_station_prompt_demands_whole_turn_embodiment() -> None:
-    from workflow.api.prompts import _CONTROL_STATION_PROMPT
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     # Collapse prose line-wraps so phrase checks don't break on newlines.
     compact = " ".join(_CONTROL_STATION_PROMPT.split())
@@ -308,7 +308,7 @@ def test_control_station_prompt_demands_whole_turn_embodiment() -> None:
 
 
 def test_server_instructions_demand_whole_turn_embodiment() -> None:
-    from workflow.universe_server import mcp
+    from tinyassets.universe_server import mcp
 
     text = mcp.instructions or ""
     assert "whole turn" in text

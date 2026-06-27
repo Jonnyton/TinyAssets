@@ -17,12 +17,12 @@ import os
 
 import pytest
 
-from workflow import runtime_singletons as runtime
-from workflow.config import UniverseConfig
-from workflow.exceptions import AllProvidersExhaustedError
-from workflow.providers.base import BaseProvider, ModelConfig, ProviderResponse
-from workflow.providers.quota import QuotaTracker
-from workflow.providers.router import ProviderRouter
+from tinyassets import runtime_singletons as runtime
+from tinyassets.config import UniverseConfig
+from tinyassets.exceptions import AllProvidersExhaustedError
+from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.providers.quota import QuotaTracker
+from tinyassets.providers.router import ProviderRouter
 
 
 class _FakeProvider(BaseProvider):
@@ -74,12 +74,12 @@ def _auth_probe(dead: set[str]):
 def isolated_universe_config():
     """Snapshot + restore runtime config and routing-relevant env per test.
 
-    Clears ``WORKFLOW_PIN_WRITER`` and ``WORKFLOW_ALLOW_API_KEY_PROVIDERS`` so
+    Clears ``TINYASSETS_PIN_WRITER`` and ``TINYASSETS_ALLOW_API_KEY_PROVIDERS`` so
     tests are hermetic regardless of the host env: with api-key providers
     enabled, ``test_all_subscription_dead_falls_to_local`` would correctly pick
     ``gemini-free`` before ``ollama-local`` and break the assertion.
     """
-    _NEUTRALIZE = ("WORKFLOW_PIN_WRITER", "WORKFLOW_ALLOW_API_KEY_PROVIDERS")
+    _NEUTRALIZE = ("TINYASSETS_PIN_WRITER", "TINYASSETS_ALLOW_API_KEY_PROVIDERS")
     saved_config = runtime.universe_config
     saved_env = {k: os.environ.get(k) for k in _NEUTRALIZE}
     runtime.universe_config = UniverseConfig()
@@ -187,7 +187,7 @@ def test_dead_auth_recorded_as_auth_invalid_in_attempts(isolated_universe_config
 
 
 def test_pinned_dead_auth_writer_hard_fails(isolated_universe_config):
-    os.environ["WORKFLOW_PIN_WRITER"] = "claude-code"
+    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
     router, providers = _router(dead={"claude-code"})
 
     with pytest.raises(AllProvidersExhaustedError) as exc:
@@ -202,7 +202,7 @@ def test_pinned_dead_auth_writer_hard_fails(isolated_universe_config):
 
 
 def test_pinned_healthy_writer_runs(isolated_universe_config):
-    os.environ["WORKFLOW_PIN_WRITER"] = "codex"
+    os.environ["TINYASSETS_PIN_WRITER"] = "codex"
     router, providers = _router(dead={"claude-code"})
 
     resp = _run(router.call("writer", "p", "s"))

@@ -3,13 +3,13 @@ title: Memory-scope Stage 2c flip-readiness checklist
 date: 2026-04-27
 author: dev-2
 status: pre-flip checklist (not yet dispatched — depends on 30d clean watch ending ≥2026-05-16)
-load-bearing-question: What besides setting `WORKFLOW_TIERED_SCOPE=on` is required to flip Stage 2c safely, and what does rollback look like if it regresses?
+load-bearing-question: What besides setting `TINYASSETS_TIERED_SCOPE=on` is required to flip Stage 2c safely, and what does rollback look like if it regresses?
 relates-to:
   - docs/design-notes/2026-04-15-memory-scope-tiered.md (canonical tiered-scope spec)
   - docs/exec-plans/completed/2026-04-16-memory-scope-stage-2b.md (2b ship plan; 2c is the §9 deferred set)
-  - workflow/retrieval/router.py (flag reader + assertion implementation)
-  - workflow/memory/scoping.py (MemoryScope + NodeScope shape)
-  - workflow/api/runs.py:1118 (`get_memory_scope_status` self-audit tool)
+  - tinyassets/retrieval/router.py (flag reader + assertion implementation)
+  - tinyassets/memory/scoping.py (MemoryScope + NodeScope shape)
+  - tinyassets/api/runs.py:1118 (`get_memory_scope_status` self-audit tool)
 audience: dev (executor), navigator (observer), lead (gate)
 ---
 
@@ -24,7 +24,7 @@ audience: dev (executor), navigator (observer), lead (gate)
 
 ## 1. What flipping the flag actually changes
 
-Per `docs/design-notes/2026-04-15-memory-scope-tiered.md` §6 + `workflow/retrieval/router.py:359-491`:
+Per `docs/design-notes/2026-04-15-memory-scope-tiered.md` §6 + `tinyassets/retrieval/router.py:359-491`:
 
 | Surface | Flag OFF (today) | Flag ON (post-flip) |
 |---|---|---|
@@ -38,42 +38,42 @@ Per `docs/design-notes/2026-04-15-memory-scope-tiered.md` §6 + `workflow/retrie
 
 ## 2. Tests that must pass with flag on
 
-Pre-flip dev ritual: run these test files with `WORKFLOW_TIERED_SCOPE=on` set in env. All currently green per file inspection.
+Pre-flip dev ritual: run these test files with `TINYASSETS_TIERED_SCOPE=on` set in env. All currently green per file inspection.
 
-- `tests/test_memory_scope_stage_2b3.py` — already has `monkeypatch.setenv("WORKFLOW_TIERED_SCOPE", "on")` cases for: 4-tier assertion, mismatch drop, NULL passthrough, ACL fixture. Covers the core flip semantics. **Required green.**
+- `tests/test_memory_scope_stage_2b3.py` — already has `monkeypatch.setenv("TINYASSETS_TIERED_SCOPE", "on")` cases for: 4-tier assertion, mismatch drop, NULL passthrough, ACL fixture. Covers the core flip semantics. **Required green.**
 - `tests/test_memory_scope_stage_2b.py` — write-site threading tests; flag-agnostic by design (writes always tag regardless of flag). **Required green** (regression check that 2b.2 behavior unchanged).
 - `tests/test_memory_scope_stage_2a.py` — schema/ACL foundation. **Required green.**
 - Full retrieval test suite (`tests/test_retrieval*.py`, `tests/test_router*.py` if any retrieval-router-flavored) — flag should not regress existing retrieval behavior. **Required green.**
 - `tests/test_self_auditing_tools.py` — exercises `get_memory_scope_status`; tool should reflect flag-on state correctly post-flip. **Required green.**
-- Full `pytest` suite — Stage 2b's "regression: full suite green with `WORKFLOW_TIERED_SCOPE=0`" criterion (exec plan §7) gets a sibling: full suite green with `WORKFLOW_TIERED_SCOPE=1`. **Required green.**
+- Full `pytest` suite — Stage 2b's "regression: full suite green with `TINYASSETS_TIERED_SCOPE=0`" criterion (exec plan §7) gets a sibling: full suite green with `TINYASSETS_TIERED_SCOPE=1`. **Required green.**
 
 **Pre-flip command (verifier-owned):**
 
 ```bash
 # Targeted gate
-WORKFLOW_TIERED_SCOPE=on pytest tests/test_memory_scope_stage_2b3.py tests/test_memory_scope_stage_2b.py tests/test_memory_scope_stage_2a.py tests/test_self_auditing_tools.py -v
+TINYASSETS_TIERED_SCOPE=on pytest tests/test_memory_scope_stage_2b3.py tests/test_memory_scope_stage_2b.py tests/test_memory_scope_stage_2a.py tests/test_self_auditing_tools.py -v
 
 # Full-suite gate (if targeted is green)
-WORKFLOW_TIERED_SCOPE=on pytest -q
+TINYASSETS_TIERED_SCOPE=on pytest -q
 ```
 
-If full-suite reveals failures: those tests assumed flag-off behavior implicitly. Each one is either (a) a real regression to fix, or (b) needs a `monkeypatch.delenv("WORKFLOW_TIERED_SCOPE", raising=False)` guard. Tag with `# Stage 2c flip discovered:` so the audit trail is clear.
+If full-suite reveals failures: those tests assumed flag-off behavior implicitly. Each one is either (a) a real regression to fix, or (b) needs a `monkeypatch.delenv("TINYASSETS_TIERED_SCOPE", raising=False)` guard. Tag with `# Stage 2c flip discovered:` so the audit trail is clear.
 
 ## 3. Callers that branch on flag state
 
-Surfaced via grep `WORKFLOW_TIERED_SCOPE|tiered_scope_enabled` across the canonical tree:
+Surfaced via grep `TINYASSETS_TIERED_SCOPE|tiered_scope_enabled` across the canonical tree:
 
 | Site | Behavior gated | Action on flip |
 |---|---|---|
-| `workflow/retrieval/router.py:367` | `tiered_scope_enabled()` reader (canonical). | None — reads new value naturally. |
-| `workflow/retrieval/router.py:408` | `assert_scope_match` early-out for sub-tiers. | None — naturally activates sub-tier checks. |
-| `workflow/retrieval/router.py:451` | `_drop_cross_universe_rows` log tag. | None — log tag flips to `tiered_flag=on`. |
-| `workflow/api/runs.py:1140-1185` | `get_memory_scope_status` self-audit tool — derives `active_enforcement_tiers`, caveats, and next-steps from flag. | None — naturally returns the on-state shape post-flip. **Verify chatbot output:** the "Set WORKFLOW_TIERED_SCOPE=on" next-step suggestion should disappear; chatbot consumers may have memorized "the suggestion to set the flag" — communicate the change. |
-| `workflow/universe_server.py:535` | Docstring reference only — no runtime branch. | None. |
-| `workflow/memory/scoping.py:21,244,322` | Docstring references only. | None. |
-| `workflow/daemon_server.py:3401` | Comment reference. | None. |
-| `workflow/knowledge/knowledge_graph.py:245` | Docstring reference. | None. |
-| `workflow/ingestion/indexer.py:59` | Docstring reference. | None. |
+| `tinyassets/retrieval/router.py:367` | `tiered_scope_enabled()` reader (canonical). | None — reads new value naturally. |
+| `tinyassets/retrieval/router.py:408` | `assert_scope_match` early-out for sub-tiers. | None — naturally activates sub-tier checks. |
+| `tinyassets/retrieval/router.py:451` | `_drop_cross_universe_rows` log tag. | None — log tag flips to `tiered_flag=on`. |
+| `tinyassets/api/runs.py:1140-1185` | `get_memory_scope_status` self-audit tool — derives `active_enforcement_tiers`, caveats, and next-steps from flag. | None — naturally returns the on-state shape post-flip. **Verify chatbot output:** the "Set TINYASSETS_TIERED_SCOPE=on" next-step suggestion should disappear; chatbot consumers may have memorized "the suggestion to set the flag" — communicate the change. |
+| `tinyassets/universe_server.py:535` | Docstring reference only — no runtime branch. | None. |
+| `tinyassets/memory/scoping.py:21,244,322` | Docstring references only. | None. |
+| `tinyassets/daemon_server.py:3401` | Comment reference. | None. |
+| `tinyassets/knowledge/knowledge_graph.py:245` | Docstring reference. | None. |
+| `tinyassets/ingestion/indexer.py:59` | Docstring reference. | None. |
 
 **No production code branches on the flag besides the router + self-audit tool.** The flip surface is small and localized.
 
@@ -85,7 +85,7 @@ Two gaps where current code does NOT match the design's "Stage 2c on" semantics:
 
 **Design (§6 line 278):** "Private universes actually reject cross-universe reads."
 
-**Code today:** ACL functions exist (`workflow/daemon_server.py: universe_is_private, universe_access_permission, grant_universe_access, list_universe_acl`) but no read path consults them. Flipping the flag does NOT wire the ACL — it only turns on sub-tier row filtering.
+**Code today:** ACL functions exist (`tinyassets/daemon_server.py: universe_is_private, universe_access_permission, grant_universe_access, list_universe_acl`) but no read path consults them. Flipping the flag does NOT wire the ACL — it only turns on sub-tier row filtering.
 
 **Decision needed before flip:**
 - Option A — flip flag with ACL still un-wired; defer ACL hard-reject to Stage 2d. Honest scope; doc the deferral. **Recommend.**
@@ -116,11 +116,11 @@ The 30d clean watch is monitoring `retrieval.scope_mismatch` warnings in `activi
 
 1. Verifier runs §2 test gate: targeted + full suite, both with flag on. Block on green.
 2. Resolve §4 inconsistencies (recommend: doc as deferred to 2d, no code change).
-3. Land a 1-line commit: change AGENTS.md "Configuration" table default from `off (Stage 1 monitoring; flip to on at Stage 2c per task #19)` to `on (Stage 2c shipped <date>)`. NO router-code change — the flag still defaults to "off" if env var unset (the router reads `os.environ.get("WORKFLOW_TIERED_SCOPE", "off")`); the *deployment surface* (tray, container env, deploy scripts) is what flips.
-4. Update tray + container env to set `WORKFLOW_TIERED_SCOPE=on` by default. Surfaces:
+3. Land a 1-line commit: change AGENTS.md "Configuration" table default from `off (Stage 1 monitoring; flip to on at Stage 2c per task #19)` to `on (Stage 2c shipped <date>)`. NO router-code change — the flag still defaults to "off" if env var unset (the router reads `os.environ.get("TINYASSETS_TIERED_SCOPE", "off")`); the *deployment surface* (tray, container env, deploy scripts) is what flips.
+4. Update tray + container env to set `TINYASSETS_TIERED_SCOPE=on` by default. Surfaces:
    - `deploy/*` env files (per-environment config)
    - `fantasy_daemon/__main__.py` if there's a default-env injection
-   - tray-runtime preferences `~/.workflow/preferences.json` if relevant
+   - tray-runtime preferences `~/.tinyassets/preferences.json` if relevant
    - GitHub Actions deploy step (rotates env to host)
 5. Restart daemon + canary check (`get_memory_scope_status` should return `tiered_scope_enabled: true`).
 6. Watch `retrieval.scope_mismatch` rate for 7 days post-flip. If any non-zero rate → §7 rollback.
@@ -131,8 +131,8 @@ The 30d clean watch is monitoring `retrieval.scope_mismatch` warnings in `activi
 
 The flag is the rollback knob. No code revert needed; just flip the env var back.
 
-1. Set `WORKFLOW_TIERED_SCOPE=off` in deployment env.
-2. Restart daemon (Workflow MCP server). Per `feedback_restart_daemon` memory: tray is the canonical restart path; auto-comes-back in ~2-5s. Verify via `POST /mcp initialize`.
+1. Set `TINYASSETS_TIERED_SCOPE=off` in deployment env.
+2. Restart daemon (TinyAssets MCP server). Per `feedback_restart_daemon` memory: tray is the canonical restart path; auto-comes-back in ~2-5s. Verify via `POST /mcp initialize`.
 3. Confirm via `get_memory_scope_status` MCP tool: `tiered_scope_enabled` should report `false`.
 4. Open a STATUS.md Concerns row documenting the regression observation + rollback timestamp.
 5. Investigate the regression cause:
@@ -154,8 +154,8 @@ The flag is the rollback knob. No code revert needed; just flip the env var back
 
 - Canonical spec: `docs/design-notes/2026-04-15-memory-scope-tiered.md`
 - Stage 2b ship plan: `docs/exec-plans/completed/2026-04-16-memory-scope-stage-2b.md`
-- Code: `workflow/retrieval/router.py:359-491`, `workflow/memory/scoping.py`
-- Self-audit tool: `workflow/api/runs.py:1118` (`get_memory_scope_status`)
-- AGENTS.md "Configuration — environment variables" table row for `WORKFLOW_TIERED_SCOPE`
+- Code: `tinyassets/retrieval/router.py:359-491`, `tinyassets/memory/scoping.py`
+- Self-audit tool: `tinyassets/api/runs.py:1118` (`get_memory_scope_status`)
+- AGENTS.md "Configuration — environment variables" table row for `TINYASSETS_TIERED_SCOPE`
 - STATUS.md Work row: `Memory-scope Stage 2c flag — 30d clean — monitoring`
 - Stage 2b.1/2/3 commits: `5944ca1` (2b.1), `d053468` (2b.2), `e25bd3b` (2b.3)

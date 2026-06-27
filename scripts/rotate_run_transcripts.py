@@ -1,8 +1,8 @@
 """CLI entry for run-transcript rotation (BUG-023 Phase 2).
 
-Wraps :func:`workflow.storage.rotation.rotate_run_transcripts` so systemd
+Wraps :func:`tinyassets.storage.rotation.rotate_run_transcripts` so systemd
 or docker compose can schedule it. Reads retention from
-``WORKFLOW_RUN_TRANSCRIPT_RETENTION_DAYS`` (default 30).
+``TINYASSETS_RUN_TRANSCRIPT_RETENTION_DAYS`` (default 30).
 
 Usage:
     python -m scripts.rotate_run_transcripts            # full rotation
@@ -20,20 +20,20 @@ import json
 import logging
 import sys
 
-from workflow.storage import data_dir
-from workflow.storage.rotation import (
+from tinyassets.storage import data_dir
+from tinyassets.storage.rotation import (
     _retention_days_from_env,
     rotate_run_transcripts,
 )
 
-logger = logging.getLogger("workflow.rotate_run_transcripts")
+logger = logging.getLogger("tinyassets.rotate_run_transcripts")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--retention-days", type=int, default=None,
-        help="Override WORKFLOW_RUN_TRANSCRIPT_RETENTION_DAYS.",
+        help="Override TINYASSETS_RUN_TRANSCRIPT_RETENTION_DAYS.",
     )
     parser.add_argument(
         "--dry-run", action="store_true",

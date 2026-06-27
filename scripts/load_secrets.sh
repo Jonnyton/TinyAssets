@@ -9,7 +9,7 @@
 #
 # Vendor selection
 # ----------------
-# WORKFLOW_SECRETS_VENDOR chooses the backend. Supported:
+# TINYASSETS_SECRETS_VENDOR chooses the backend. Supported:
 #   1password       — uses `op` CLI. Default. Best UX.
 #   bitwarden       — uses `bw` CLI. OSS-friendly alternative.
 #   plaintext       — reads $HOME/workflow-secrets.env. Migration-period
@@ -17,7 +17,7 @@
 #
 # Migration opt-out
 # -----------------
-# During the vault cutover period, set WORKFLOW_SECRETS_PLAINTEXT_FALLBACK=1
+# During the vault cutover period, set TINYASSETS_SECRETS_PLAINTEXT_FALLBACK=1
 # to accept the plaintext file when the chosen vendor CLI isn't installed.
 # Remove this opt-out after the host confirms the vault works.
 #
@@ -40,9 +40,9 @@ set -u
 
 _REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 _KEYS_FILE="${_REPO_ROOT}/scripts/secrets_keys.txt"
-_PLAINTEXT_PATH="${WORKFLOW_SECRETS_PLAINTEXT_PATH:-${HOME}/workflow-secrets.env}"
-_VENDOR="${WORKFLOW_SECRETS_VENDOR:-1password}"
-_VAULT_NAME="${WORKFLOW_SECRETS_VAULT:-workflow}"
+_PLAINTEXT_PATH="${TINYASSETS_SECRETS_PLAINTEXT_PATH:-${HOME}/workflow-secrets.env}"
+_VENDOR="${TINYASSETS_SECRETS_VENDOR:-1password}"
+_VAULT_NAME="${TINYASSETS_SECRETS_VAULT:-workflow}"
 _EMIT_EXPORTS=0
 
 for arg in "$@"; do
@@ -145,7 +145,7 @@ _load_bitwarden() {
   while IFS= read -r key; do
     [ -z "$key" ] && continue
     # `bw get password <item-name>` returns just the password string.
-    # Items in the "workflow" folder/collection are named after the key.
+    # Items in the "tinyassets" folder/collection are named after the key.
     local value
     value=$(bw get password "${key}" 2>/dev/null) || true
     if [ -z "$value" ]; then
@@ -195,7 +195,7 @@ _load_plaintext() {
     return $?
   fi
   echo "[load_secrets] plaintext: loaded $(_read_keys | wc -l | tr -d ' ') key(s) from ${_PLAINTEXT_PATH}" >&2
-  echo "[load_secrets] WARN: plaintext mode is migration-period only. Cut over to a vault and unset WORKFLOW_SECRETS_VENDOR=plaintext." >&2
+  echo "[load_secrets] WARN: plaintext mode is migration-period only. Cut over to a vault and unset TINYASSETS_SECRETS_VENDOR=plaintext." >&2
 }
 
 # --- dispatch ---------------------------------------------------------
@@ -209,12 +209,12 @@ case "${_VENDOR}" in
     # Unknown vendor. If plaintext-fallback opt-out is enabled and the
     # file exists, fall through to plaintext with a warning. Otherwise
     # fail loudly — no silent drift.
-    if [ "${WORKFLOW_SECRETS_PLAINTEXT_FALLBACK:-0}" = "1" ] \
+    if [ "${TINYASSETS_SECRETS_PLAINTEXT_FALLBACK:-0}" = "1" ] \
        && [ -f "${_PLAINTEXT_PATH}" ]; then
-      echo "[load_secrets] WARN: unknown vendor '${_VENDOR}'; falling back to plaintext (WORKFLOW_SECRETS_PLAINTEXT_FALLBACK=1)" >&2
+      echo "[load_secrets] WARN: unknown vendor '${_VENDOR}'; falling back to plaintext (TINYASSETS_SECRETS_PLAINTEXT_FALLBACK=1)" >&2
       _load_plaintext || _dispatch_rc=$?
     else
-      _fail 10 "unknown WORKFLOW_SECRETS_VENDOR='${_VENDOR}' (expected: 1password | bitwarden | plaintext)" \
+      _fail 10 "unknown TINYASSETS_SECRETS_VENDOR='${_VENDOR}' (expected: 1password | bitwarden | plaintext)" \
         || _dispatch_rc=$?
     fi
     ;;

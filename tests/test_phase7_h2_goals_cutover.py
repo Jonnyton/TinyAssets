@@ -9,7 +9,7 @@ in ``tmp_path``. Verifies:
   response (caught once in ``_dispatch_goal_action``); SQLite stays
   untouched on refusal.
 - ``force=True`` overrides the dirty refusal.
-- ``WORKFLOW_STORAGE_BACKEND=sqlite_only`` and "no git repo" both keep
+- ``TINYASSETS_STORAGE_BACKEND=sqlite_only`` and "no git repo" both keep
   the legacy behavior — handlers still work, no YAML, no commits.
 """
 
@@ -52,14 +52,14 @@ def repo_env(tmp_path, monkeypatch):
     _init_repo(tmp_path)
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    monkeypatch.delenv("WORKFLOW_STORAGE_BACKEND", raising=False)
-    monkeypatch.delenv("WORKFLOW_GIT_AUTHOR", raising=False)
+    monkeypatch.delenv("TINYASSETS_STORAGE_BACKEND", raising=False)
+    monkeypatch.delenv("TINYASSETS_GIT_AUTHOR", raising=False)
 
-    from workflow.catalog import invalidate_backend_cache
+    from tinyassets.catalog import invalidate_backend_cache
     invalidate_backend_cache()
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
 
     yield us, tmp_path, base
@@ -73,13 +73,13 @@ def no_git_env(tmp_path, monkeypatch):
     """No git repo at parent — backend auto-probes to SqliteOnly."""
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    monkeypatch.delenv("WORKFLOW_STORAGE_BACKEND", raising=False)
+    monkeypatch.delenv("TINYASSETS_STORAGE_BACKEND", raising=False)
 
-    from workflow.catalog import invalidate_backend_cache
+    from tinyassets.catalog import invalidate_backend_cache
     invalidate_backend_cache()
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
     importlib.reload(us)
 
     yield us, tmp_path, base
@@ -179,14 +179,14 @@ def test_update_force_overrides_dirty(repo_env):
 
 def _seed_branch(us, name: str = "Demo branch") -> str:
     """Create a minimal branch via build_branch → return branch_def_id."""
-    from workflow.api.helpers import _base_path
-    from workflow.branches import (
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
         NodeDefinition,
     )
-    from workflow.daemon_server import save_branch_definition
+    from tinyassets.daemon_server import save_branch_definition
 
     b = BranchDefinition(name=name, author="alice", entry_point="n1")
     b.node_defs = [NodeDefinition(node_id="n1", display_name="N1")]
@@ -228,10 +228,10 @@ def test_bind_writes_branch_yaml_in_one_commit(repo_env):
 
 
 def test_sqlite_only_env_skips_yaml_and_commits(repo_env, monkeypatch):
-    """WORKFLOW_STORAGE_BACKEND=sqlite_only: handlers work, no YAML, no commit."""
+    """TINYASSETS_STORAGE_BACKEND=sqlite_only: handlers work, no YAML, no commit."""
     us, repo, _base = repo_env
-    monkeypatch.setenv("WORKFLOW_STORAGE_BACKEND", "sqlite_only")
-    from workflow.catalog import invalidate_backend_cache
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_only")
+    from tinyassets.catalog import invalidate_backend_cache
     invalidate_backend_cache()
 
     before = _commit_count(repo)

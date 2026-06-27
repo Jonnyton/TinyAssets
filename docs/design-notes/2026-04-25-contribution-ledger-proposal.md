@@ -97,11 +97,11 @@ The naïve approach is to emit one event per ancestor every time a `design_used`
 
 | Surface | Emit site | Code path | What's added |
 |---|---|---|---|
-| 1. Daemon-host step | `update_run_status()` step-finalize path | `workflow/runs.py:331-377` | New sibling `record_contribution_event(event_type='execute_step', actor_id=daemon_actor_id, source_run_id=run_id, weight=1.0, ...)` call. Daemon's actor_id is captured at run claim time (today's `runs.actor` field). |
-| 2. Designer (branch / node) | Same step-finalize as #1 + `record_event()` | `workflow/runs.py:434-450` | At each step, after running a node referencing branch_version_id V, emit `design_used` with actor_id=branch author, source_artifact_id=V, source_artifact_kind='branch_version'. Per-node references emit per-node events with kind='node_def'. |
-| 3. Repo PR | NEW path — GitHub webhook handler | NEW file (does not exist yet). Lives alongside `workflow/api/` if HTTP, else `workflow/integrations/github_webhook.py`. | On `pull_request.closed` with `merged=true` AND label = `patch-request`, insert `code_committed` event with actor_id=PR author Workflow id, source_artifact_id=PR url, source_artifact_kind='github_pr'. |
+| 1. Daemon-host step | `update_run_status()` step-finalize path | `tinyassets/runs.py:331-377` | New sibling `record_contribution_event(event_type='execute_step', actor_id=daemon_actor_id, source_run_id=run_id, weight=1.0, ...)` call. Daemon's actor_id is captured at run claim time (today's `runs.actor` field). |
+| 2. Designer (branch / node) | Same step-finalize as #1 + `record_event()` | `tinyassets/runs.py:434-450` | At each step, after running a node referencing branch_version_id V, emit `design_used` with actor_id=branch author, source_artifact_id=V, source_artifact_kind='branch_version'. Per-node references emit per-node events with kind='node_def'. |
+| 3. Repo PR | NEW path — GitHub webhook handler | NEW file (does not exist yet). Lives alongside `tinyassets/api/` if HTTP, else `tinyassets/integrations/github_webhook.py`. | On `pull_request.closed` with `merged=true` AND label = `patch-request`, insert `code_committed` event with actor_id=PR author Workflow id, source_artifact_id=PR url, source_artifact_kind='github_pr'. |
 | 4. Lineage (N-gen) | Derived at distribution-time, not emit-time | Bounty calculator (NEW). Reads `branch_definitions.fork_from` (`daemon_server.py:404-411`) + ancestor walk. | NO emit-site. Derived from the leaf `design_used` event by walking `fork_from` and applying decay coefficient. |
-| 5. Helpful chatbot-action | Gate-series evaluator citing wiki content | `workflow/universe_server.py:13102` (`_wiki_file_bug` write) is the upstream emit; the evaluator's cite-decision is the actual emit trigger. | When a gate's evaluator returns a decision payload that names a wiki page or chatbot artifact (BUG-NNN, drafts/foo) as evidence, evaluator emits `feedback_provided` with actor_id=wiki page author, source_artifact_id=page slug, kind='wiki_page'. Anti-spam: NO emit unless a gate explicitly cites. |
+| 5. Helpful chatbot-action | Gate-series evaluator citing wiki content | `tinyassets/universe_server.py:13102` (`_wiki_file_bug` write) is the upstream emit; the evaluator's cite-decision is the actual emit trigger. | When a gate's evaluator returns a decision payload that names a wiki page or chatbot artifact (BUG-NNN, drafts/foo) as evidence, evaluator emits `feedback_provided` with actor_id=wiki page author, source_artifact_id=page slug, kind='wiki_page'. Anti-spam: NO emit unless a gate explicitly cites. |
 
 **Note on surface 1 vs 2 atomicity:** both fire on the same step-finalize transaction. The handler emits BOTH events (daemon-host = 1 event, designer = 1+ events per artifact referenced) inside the same `_connect()` block alongside the existing `update_run_status()` + `record_event()` calls. SQLite `BEGIN/COMMIT` covers all writes atomically. One-table model means one shared table for both, no cross-table coordination.
 
@@ -178,7 +178,7 @@ Add `goals action=list_my_contributions` MCP action that reads from this table f
 
 2. **Negative events (E19 `caused_regression`) — same table or separate?** Recommend **same table with negative weight.** Reasons: (a) bounty calc and reputation calc both need to read positive AND negative in one query — separating doubles the read code; (b) the canary attribution flow naturally produces a row with negative weight when a rollback identifies the offending artifact; (c) the schema's `weight REAL` already supports it. Host can override toward a separate `regression_events` table for clearer audit.
 
-3. **Lineage-decay coefficient location — config-as-code, or per-event metadata?** Recommend **config-as-code in `workflow/economics/decay.py` or similar** (matches project memory `project_designer_royalties_and_bounties`'s "platform parameter, not per-user choice"). Per-event metadata storage would make decay tuning a data migration. Host can override toward escrow-setter-customizable per-event decay if escrow customization wins precedence.
+3. **Lineage-decay coefficient location — config-as-code, or per-event metadata?** Recommend **config-as-code in `tinyassets/economics/decay.py` or similar** (matches project memory `project_designer_royalties_and_bounties`'s "platform parameter, not per-user choice"). Per-event metadata storage would make decay tuning a data migration. Host can override toward escrow-setter-customizable per-event decay if escrow customization wins precedence.
 
 4. **Run cancellation / failed step — emit zero-weight events, or no event?** Recommend **emit no event for cancelled/failed steps.** Reasons: (a) the daemon didn't complete useful work (claimer payment is a separate question handled by the runs row's `status` field, not by contributions); (b) adding zero-weight events bloats the table without adding bounty signal; (c) regression attribution is a separate explicit `caused_regression` event with its own decision path. Host can override.
 
@@ -205,8 +205,8 @@ Add `goals action=list_my_contributions` MCP action that reads from this table f
 - Sibling design: `docs/design-notes/2026-04-25-variant-canonicals-proposal.md` (G1 follow-on; matching audit-style discipline).
 - Underlying audit: `docs/audits/2026-04-25-canonical-primitive-audit.md` (G1).
 - Existing schema:
-  - `runs` table — `workflow/runs.py:95-111` (per-run row; `provider_used`/`model`/`token_count` from Tasks #20/#24).
-  - `run_events` table — `workflow/runs.py:116-127` (per-step event log; emit-site precedent).
-  - `branch_definitions.fork_from` — `workflow/daemon_server.py:404-411` (lineage substrate).
-  - `branch_versions` (publish path) — `workflow/branch_versions.py:109` (immutable artifact id).
-- Emit-site files audited: `workflow/runs.py`, `workflow/branch_versions.py`, `workflow/daemon_server.py`, `workflow/universe_server.py`.
+  - `runs` table — `tinyassets/runs.py:95-111` (per-run row; `provider_used`/`model`/`token_count` from Tasks #20/#24).
+  - `run_events` table — `tinyassets/runs.py:116-127` (per-step event log; emit-site precedent).
+  - `branch_definitions.fork_from` — `tinyassets/daemon_server.py:404-411` (lineage substrate).
+  - `branch_versions` (publish path) — `tinyassets/branch_versions.py:109` (immutable artifact id).
+- Emit-site files audited: `tinyassets/runs.py`, `tinyassets/branch_versions.py`, `tinyassets/daemon_server.py`, `tinyassets/universe_server.py`.

@@ -33,10 +33,10 @@ function Contribute({ onNavigate }) {
               Platform: MIT. Catalog (goals, gates, prompts): CC0. Fork either.
             </p>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Button variant="primary" size="lg" onClick={() => window.open("https://github.com/Jonnyton/Workflow", "_blank")}>
-                <span style={{ marginRight: 6 }}>↗</span> github.com/Jonnyton/Workflow
+              <Button variant="primary" size="lg" onClick={() => window.open("https://github.com/Jonnyton/TinyAssets", "_blank")}>
+                <span style={{ marginRight: 6 }}>↗</span> github.com/Jonnyton/TinyAssets
               </Button>
-              <Button variant="ghost" size="lg" onClick={() => window.open("https://github.com/Jonnyton/Workflow/blob/main/PLAN.md", "_blank")}>
+              <Button variant="ghost" size="lg" onClick={() => window.open("https://github.com/Jonnyton/TinyAssets/blob/main/PLAN.md", "_blank")}>
                 Read PLAN.md
               </Button>
             </div>
@@ -85,7 +85,7 @@ function Contribute({ onNavigate }) {
                 These are the active fronts in the monorepo. Each maps to a PLAN.md section. Claim one on GitHub — the maintainer triage loop runs twice a week.
               </p>
             </div>
-            <Button variant="ghost" onClick={() => window.open("https://github.com/Jonnyton/Workflow/issues?q=is%3Aissue+is%3Aopen+label%3Ahelp-wanted", "_blank")}>
+            <Button variant="ghost" onClick={() => window.open("https://github.com/Jonnyton/TinyAssets/issues?q=is%3Aissue+is%3Aopen+label%3Ahelp-wanted", "_blank")}>
               All open issues →
             </Button>
           </div>
@@ -184,7 +184,7 @@ function Contribute({ onNavigate }) {
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Button variant="ghost" onClick={() => onNavigate("connect")}>① Add connector</Button>
             <Button variant="secondary" onClick={() => onNavigate("host")}>② Summon daemon</Button>
-            <Button variant="primary" onClick={() => window.open("https://github.com/Jonnyton/Workflow", "_blank")}>
+            <Button variant="primary" onClick={() => window.open("https://github.com/Jonnyton/TinyAssets", "_blank")}>
               ③ Vibe-code with us ↗
             </Button>
           </div>
@@ -249,7 +249,7 @@ function TerminalCard() {
         <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-3)" }}>zsh — ~/src</div>
       </div>
       <div style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.8, padding: "18px 20px" }}>
-        <div><span style={{ color: "var(--fg-3)" }}>$</span> <span style={{ color: "var(--fg-1)" }}>git clone https://github.com/Jonnyton/Workflow</span></div>
+        <div><span style={{ color: "var(--fg-3)" }}>$</span> <span style={{ color: "var(--fg-1)" }}>git clone https://github.com/Jonnyton/TinyAssets</span></div>
         <div style={{ color: "var(--fg-3)" }}>  Cloning into 'Workflow'... 4271 objects, done.</div>
         <div style={{ marginTop: 6 }}><span style={{ color: "var(--fg-3)" }}>$</span> <span style={{ color: "var(--fg-1)" }}>cd Workflow && poetry install</span></div>
         <div style={{ color: "var(--fg-3)" }}>  Resolving dependencies... 142 packages installed.</div>
@@ -258,7 +258,7 @@ function TerminalCard() {
         <div style={{ marginTop: 6 }}><span style={{ color: "var(--fg-3)" }}>$</span> <span style={{ color: "var(--fg-1)" }}>poetry run workflow summon claim-first-iterative</span></div>
         <div style={{ color: "var(--signal-live)" }}>  ● daemon::claim-first::local · live</div>
         <div style={{ color: "var(--fg-3)" }}>  ∙ dashboard: localhost:7349 · tray ready</div>
-        <div style={{ color: "var(--fg-3)" }}>  ∙ hot-reload watching fantasy_daemon/, workflow/</div>
+        <div style={{ color: "var(--fg-3)" }}>  ∙ hot-reload watching fantasy_daemon/, tinyassets/</div>
         <div style={{ marginTop: 10 }}><span style={{ color: "var(--violet-200)" }}>$ edit → save → daemon restarts with new soul</span></div>
       </div>
     </div>

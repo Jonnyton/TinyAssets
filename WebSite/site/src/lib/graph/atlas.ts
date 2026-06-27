@@ -126,7 +126,7 @@ export const CATEGORY_BLURB: Record<CategoryId, string> = {
 };
 
 const REPO_ID = 'repo';
-export const REPO_URL = 'https://github.com/Jonnyton/Workflow';
+export const REPO_URL = 'https://github.com/Jonnyton/TinyAssets';
 
 /** The same public filter the rest of the site uses. */
 export function isPublicGoal(g: { name?: string; visibility?: string }): boolean {
@@ -257,8 +257,8 @@ export function buildAtlas(snap: Snapshotish): Atlas {
   nodes.push({
     id: REPO_ID,
     kind: 'repo',
-    label: 'Jonnyton/Workflow',
-    sub: 'the repo',
+    label: 'TinyAssets',
+    sub: 'repo path Jonnyton/TinyAssets',
     refId: REPO_URL,
     x: CENTER.x,
     y: CENTER.y,

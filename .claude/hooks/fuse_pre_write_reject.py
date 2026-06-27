@@ -3,7 +3,7 @@
 
 Background: PostToolUse guard (.claude/hooks/fuse_write_truncation_guard.py)
 catches truncation AFTER it happens. After the 4th truncation incident
-(2026-05-02, workflow/api/status.py), the auto-iterate ladder escalates
+(2026-05-02, tinyassets/api/status.py), the auto-iterate ladder escalates
 to PreToolUse REJECTION so the agent never even attempts the unreliable
 path on existing files.
 

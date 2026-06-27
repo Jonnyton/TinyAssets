@@ -41,7 +41,7 @@ def fake_repo(tmp_path: Path) -> Path:
     """Fresh git repo with a `refs/remotes/origin/main` ref pointing at HEAD.
 
     Layout:
-      workflow/api/branches.py       — fake action-map file containing a
+      tinyassets/api/branches.py       — fake action-map file containing a
                                        `validate_branch` map entry to
                                        simulate the dev-cohit-#2 case.
       docs/notes/bug042-mention.md   — file mentions BUG-042 by id.

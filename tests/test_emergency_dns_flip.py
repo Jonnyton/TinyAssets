@@ -133,7 +133,7 @@ def test_duplicate_dns_record_match_fails_closed():
 def test_delete_worker_route_deletes_exact_pattern_match():
     client = FakeClient([
         {"result": [
-            {"id": "route-1", "pattern": "tinyassets.io/mcp*", "script": "workflow-mcp-router"},
+            {"id": "route-1", "pattern": "tinyassets.io/mcp*", "script": "tinyassets-mcp-router"},
             {"id": "route-2", "pattern": "tinyassets.io/catalog*", "script": "catalog"},
         ]},
         {"result": {"id": "route-1"}},

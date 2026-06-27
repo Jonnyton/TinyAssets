@@ -18,9 +18,9 @@
 
   const MCP_URL = 'https://tinyassets.io/mcp';
   const MCP_BARE = MCP_URL.replace('https://', '');
-  const GH_REPO = 'https://github.com/Jonnyton/Workflow';
-  const GH_ISSUES = 'https://github.com/Jonnyton/Workflow/issues';
-  const GH_CONTRIBUTING = 'https://github.com/Jonnyton/Workflow/blob/main/CONTRIBUTING.md';
+  const GH_REPO = 'https://github.com/Jonnyton/TinyAssets';
+  const GH_ISSUES = 'https://github.com/Jonnyton/TinyAssets/issues';
+  const GH_CONTRIBUTING = 'https://github.com/Jonnyton/TinyAssets/blob/main/CONTRIBUTING.md';
 
   // ── Copyable MCP URL chip (same idiom as home's urlchip). ──
   let copied = $state(false);
@@ -51,7 +51,7 @@
     {
       persona: 'The researcher',
       flavor: 'orient first',
-      text: 'Inspect my Workflow universe and show me what goals exist.'
+      text: 'Tiny: inspect my universe and show me what goals exist.'
     },
     {
       persona: 'The maker',
@@ -250,7 +250,7 @@
           connectors. On ChatGPT specifically, custom connectors require a paid
           plan with developer mode turned on, and availability still varies by
           workspace and region. We track where that actually stands here:
-          <a href={GH_ISSUES} target="_blank" rel="noreferrer">current status on Workflow on GitHub ↗</a>.
+          <a href={GH_ISSUES} target="_blank" rel="noreferrer">current TinyAssets status on GitHub ↗</a>.
         </p>
       </article>
     </div>
@@ -301,9 +301,10 @@
     <p class="eyebrow">entry four · other ways in</p>
     <h2 id="oss-title">Or run the engine yourself.</h2>
     <p class="oss__lede">
-      Tiny is the public face of <strong>Workflow</strong>, an open-source
-      engine. You don't need to host anything to use the connector above — but
-      if you'd rather run it locally or read the code, both paths are real.
+      <strong>TinyAssets</strong> is the open-source platform.
+      <strong>Tiny</strong> is the intelligence you meet through the connector
+      above. You don't need to host anything to use it — but if you'd rather
+      run it locally or read the code, both paths are real.
     </p>
     <div class="oss">
       <article class="oss__card">
@@ -313,7 +314,7 @@
           public.
         </p>
         <pre class="oss__pre"><code>git clone {GH_REPO}.git</code></pre>
-        <a class="oss__cta" href={GH_REPO} target="_blank" rel="noreferrer">Workflow on GitHub ↗</a>
+        <a class="oss__cta" href={GH_REPO} target="_blank" rel="noreferrer">TinyAssets on GitHub ↗</a>
       </article>
       <article class="oss__card">
         <h3 class="oss__h">Run it locally</h3>

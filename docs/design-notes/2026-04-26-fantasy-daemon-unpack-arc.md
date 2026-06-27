@@ -7,9 +7,9 @@ status_detail: design note — pre-stages host scope decision
 companion:
   - docs/audits/2026-04-26-architecture-edges-sweep.md §A.1 (the finding this note responds to)
   - docs/audits/2026-04-27-project-wide-shim-audit.md (Arc B handles the IMPORT-PATH rename; this note handles the PACKAGE-CONTENT relocation)
-  - docs/exec-plans/active/2026-04-15-author-to-daemon-rename.md ("Phase 5 bridge" mentioned in workflow/__main__.py)
+  - docs/exec-plans/active/2026-04-15-author-to-daemon-rename.md ("Phase 5 bridge" mentioned in tinyassets/__main__.py)
   - feedback_no_shims_ever (host directive 2026-04-27)
-load-bearing-question: When + how do we close the Phase 5 bridge so the `fantasy_daemon/` top-level package dies completely, with engine code in `workflow/` and domain code in `domains/fantasy_daemon/` per AGENTS.md "Engine and Domains"?
+load-bearing-question: When + how do we close the Phase 5 bridge so the `fantasy_daemon/` top-level package dies completely, with engine code in `tinyassets/` and domain code in `domains/fantasy_daemon/` per AGENTS.md "Engine and Domains"?
 audience: lead, host (final go/defer decision; if go, scheduling + scope)
 ---
 
@@ -21,7 +21,7 @@ After deeper inventory, A.1 from the architecture-edges audit is **smaller than 
 
 - **118 of 122 .py files in `fantasy_daemon/` are SHIMS** (`from workflow.X import *` or `from domains.fantasy_daemon.X import *` re-exports). They violate `feedback_no_shims_ever`.
 - **Only 4 files have actual content:** `__main__.py` (2295 LOC, daemon CLI/orchestrator), `api.py` (2625 LOC, FastAPI HTTP layer), `branch_registrations.py` (113 LOC, Phase D node decls), `testing/__main__.py` (3 LOC, vestigial error-stub).
-- The whole package is a **Phase 5 bridge** per `workflow/__main__.py:30-39`. The bridge already exists; closing it means hoisting the 4 content files into canonical homes and deleting all shims.
+- The whole package is a **Phase 5 bridge** per `tinyassets/__main__.py:30-39`. The bridge already exists; closing it means hoisting the 4 content files into canonical homes and deleting all shims.
 
 **Recommendation:** **APPROVE as a 4-phase arc**, sequenced AFTER Arc B/C/Phase 6. ~6-10h total dev work; LOW-MEDIUM risk per phase. Closes the rename arc completely (alongside Arc B/C/Phase 6 closing the import/env-var/data layers).
 
@@ -35,40 +35,40 @@ The original "multi-week structural arc" framing was based on the 122-file count
 
 | Subdir | File count | Pattern | Target |
 |---|---|---|---|
-| `auth/` | 4 | `Shim: use workflow.auth instead.` | `workflow/auth/` |
-| `checkpointing/` | 2 | `Shim: use workflow.checkpointing instead.` | `workflow/checkpointing/` |
-| `constraints/` | 4 | Shim → `workflow/constraints/` | `workflow/constraints/` |
-| `desktop/` | 8 | Shim → `workflow/desktop/` | `workflow/desktop/` |
-| `evaluation/` | 4 | Shim → `workflow/evaluation/` | `workflow/evaluation/` |
-| `ingestion/` | 6 | Shim → `workflow/ingestion/` | `workflow/ingestion/` |
-| `knowledge/` | 7 | Shim → `workflow/knowledge/` | `workflow/knowledge/` |
-| `learning/` | 4 | Shim → `workflow/learning/` | `workflow/learning/` |
-| `memory/` | 10 | Shim → `workflow/memory/` | `workflow/memory/` |
-| `planning/` | 3 | Shim → `workflow/planning/` | `workflow/planning/` |
-| `providers/` | 10 | Shim → `workflow/providers/` | `workflow/providers/` |
-| `retrieval/` | 5 | Shim → `workflow/retrieval/` | `workflow/retrieval/` |
-| `testing/` | 1 | Shim → `workflow/testing/` (`__init__.py`) | `workflow/testing/` |
-| `utils/` | 2 | Shim → `workflow/utils/` | `workflow/utils/` |
+| `auth/` | 4 | `Shim: use workflow.auth instead.` | `tinyassets/auth/` |
+| `checkpointing/` | 2 | `Shim: use workflow.checkpointing instead.` | `tinyassets/checkpointing/` |
+| `constraints/` | 4 | Shim → `tinyassets/constraints/` | `tinyassets/constraints/` |
+| `desktop/` | 8 | Shim → `tinyassets/desktop/` | `tinyassets/desktop/` |
+| `evaluation/` | 4 | Shim → `tinyassets/evaluation/` | `tinyassets/evaluation/` |
+| `ingestion/` | 6 | Shim → `tinyassets/ingestion/` | `tinyassets/ingestion/` |
+| `knowledge/` | 7 | Shim → `tinyassets/knowledge/` | `tinyassets/knowledge/` |
+| `learning/` | 4 | Shim → `tinyassets/learning/` | `tinyassets/learning/` |
+| `memory/` | 10 | Shim → `tinyassets/memory/` | `tinyassets/memory/` |
+| `planning/` | 3 | Shim → `tinyassets/planning/` | `tinyassets/planning/` |
+| `providers/` | 10 | Shim → `tinyassets/providers/` | `tinyassets/providers/` |
+| `retrieval/` | 5 | Shim → `tinyassets/retrieval/` | `tinyassets/retrieval/` |
+| `testing/` | 1 | Shim → `tinyassets/testing/` (`__init__.py`) | `tinyassets/testing/` |
+| `utils/` | 2 | Shim → `tinyassets/utils/` | `tinyassets/utils/` |
 | `graphs/` | 5 | Shim → `domains/fantasy_daemon/graphs/` | `domains/fantasy_daemon/graphs/` |
 | `state/` | 6 | Shim → `domains/fantasy_daemon/state/` | `domains/fantasy_daemon/state/` |
 | `nodes/` | 23 | Shim → `domains/fantasy_daemon/phases/` (note: nodes ↔ phases naming drift) | `domains/fantasy_daemon/phases/` |
-| **TOP-LEVEL .py shims** (excluding 4 non-shim files) | 13 | `branches.py`, `runtime.py` (sys.modules rebind), `author_server.py` (sys.modules rebind), `mcp_server.py`, `notes.py`, `node_eval.py`, `node_sandbox.py`, `packets.py`, `protocols.py`, `work_targets.py`, `config.py`, `exceptions.py`, `universe_server.py` | various `workflow/*` modules |
+| **TOP-LEVEL .py shims** (excluding 4 non-shim files) | 13 | `branches.py`, `runtime.py` (sys.modules rebind), `author_server.py` (sys.modules rebind), `mcp_server.py`, `notes.py`, `node_eval.py`, `node_sandbox.py`, `packets.py`, `protocols.py`, `work_targets.py`, `config.py`, `exceptions.py`, `universe_server.py` | various `tinyassets/*` modules |
 | **TOTAL SHIMS** | **118** | | |
 
 ### 1.2 Non-shim files (4 with actual content)
 
 | File | LOC | Role | Callers |
 |---|---|---|---|
-| `fantasy_daemon/__main__.py` | 2295 | Daemon CLI + orchestrator (DaemonController, tunnel helpers, signal handling, tray launch). The Phase 5 BRIDGE source — `workflow/__main__.py` re-imports `DaemonController` from here. | `workflow/__main__.py`, `workflow/cloud_worker.py`, `tests/test_cloud_worker.py`, `tests/test_unified_execution.py`, `tests/test_integration.py` |
-| `fantasy_daemon/api.py` | 2625 | FastAPI HTTP layer — multi-universe file-based adapter, session/author/branch/runtime/ledger endpoints | `tests/test_api.py`, `tests/test_api_edge_cases.py`, `tests/test_author_server_api.py`, `tests/test_rest_votes_behavior.py`, `tests/test_work_targets.py`, `tests/test_workflow_runtime.py`, `workflow/api/__init__.py` |
+| `fantasy_daemon/__main__.py` | 2295 | Daemon CLI + orchestrator (DaemonController, tunnel helpers, signal handling, tray launch). The Phase 5 BRIDGE source — `tinyassets/__main__.py` re-imports `DaemonController` from here. | `tinyassets/__main__.py`, `tinyassets/cloud_worker.py`, `tests/test_cloud_worker.py`, `tests/test_unified_execution.py`, `tests/test_integration.py` |
+| `fantasy_daemon/api.py` | 2625 | FastAPI HTTP layer — multi-universe file-based adapter, session/author/branch/runtime/ledger endpoints | `tests/test_api.py`, `tests/test_api_edge_cases.py`, `tests/test_author_server_api.py`, `tests/test_rest_votes_behavior.py`, `tests/test_work_targets.py`, `tests/test_workflow_runtime.py`, `tinyassets/api/__init__.py` |
 | `fantasy_daemon/branch_registrations.py` | 113 | Phase D node-registration helper — registers fantasy-author domain-trusted opaque nodes | `tests/test_unified_execution.py` |
 | `fantasy_daemon/testing/__main__.py` | 3 | Error-stub: `raise SystemExit("GPT testing harness removed — use MCP client testing instead.")` | none — vestigial |
 
 **Key insight:** 4 files. The 122-count was misleading. The 118 shims are the no-shims-ever cleanup target; the 4 content files are relocation targets.
 
-### 1.3 Phase 5 bridge — `workflow/__main__.py`
+### 1.3 Phase 5 bridge — `tinyassets/__main__.py`
 
-`workflow/__main__.py:30-39` documents the bridge:
+`tinyassets/__main__.py:30-39` documents the bridge:
 
 ```
 # Re-export DaemonController + tunnel helpers from ``fantasy_daemon.__main__``
@@ -81,7 +81,7 @@ from fantasy_daemon.__main__ import (
 )
 ```
 
-**The bridge already exists.** Closing it = hoisting `fantasy_daemon/__main__.py`'s content into `workflow/__main__.py` (and/or `workflow/desktop/launcher.py`, `workflow/runtime_singletons.py`) and deleting the bridge re-export block.
+**The bridge already exists.** Closing it = hoisting `fantasy_daemon/__main__.py`'s content into `tinyassets/__main__.py` (and/or `tinyassets/desktop/launcher.py`, `tinyassets/runtime_singletons.py`) and deleting the bridge re-export block.
 
 ---
 
@@ -89,13 +89,13 @@ from fantasy_daemon.__main__ import (
 
 Per `AGENTS.md` §"Engine and Domains" (canonicalized in `PLAN.md` §"Engine And Domains"):
 
-> Engine code lives in `workflow/`. Domain-specific code lives in `domains/<domain>/`.
+> Engine code lives in `tinyassets/`. Domain-specific code lives in `domains/<domain>/`.
 
 Current state breaks this in three ways:
 
-1. **Shim sprawl** — 118 shim files mask the canonical home. A new contributor's `git grep "from fantasy_daemon"` returns hits across `workflow/`, `tests/`, `scripts/`, all of which resolve to either `workflow.X` or `domains.fantasy_daemon.X`. The shims are pure indirection.
-2. **Bridge module is engine code in domain location** — `fantasy_daemon/__main__.py` is the Workflow daemon's entry point + orchestrator. It uses `langgraph`, runs the tray, manages cloud-worker subprocess spawn. NOT fantasy-domain logic. Should be in `workflow/__main__.py` or `workflow/desktop/launcher.py`.
-3. **Bridge module is fantasy-flavored prose** — `__main__.py` docstring says "Fantasy Author daemon entry point. Usage: `python -m fantasy_author`...". The CLI surface is engine-grade ("`python -m workflow --domain fantasy_author ...`" per `workflow/__main__.py`), but `fantasy_daemon/__main__.py` still pretends to be fantasy-specific.
+1. **Shim sprawl** — 118 shim files mask the canonical home. A new contributor's `git grep "from fantasy_daemon"` returns hits across `tinyassets/`, `tests/`, `scripts/`, all of which resolve to either `workflow.X` or `domains.fantasy_daemon.X`. The shims are pure indirection.
+2. **Bridge module is engine code in domain location** — `fantasy_daemon/__main__.py` is the TinyAssets daemon's entry point + orchestrator. It uses `langgraph`, runs the tray, manages cloud-worker subprocess spawn. NOT fantasy-domain logic. Should be in `tinyassets/__main__.py` or `tinyassets/desktop/launcher.py`.
+3. **Bridge module is fantasy-flavored prose** — `__main__.py` docstring says "Fantasy Author daemon entry point. Usage: `python -m fantasy_author`...". The CLI surface is engine-grade ("`python -m tinyassets --domain fantasy_author ...`" per `tinyassets/__main__.py`), but `fantasy_daemon/__main__.py` still pretends to be fantasy-specific.
 
 Per `feedback_no_shims_ever` directive: **the 118 shims are forbidden.** Closing this arc satisfies the policy at every layer (alongside Arc B/C/Phase 6 closing import/env-var/data).
 
@@ -108,12 +108,12 @@ After unpack:
 | Location | Contents |
 |---|---|
 | `fantasy_daemon/` | **DELETED.** Top-level package no longer exists. |
-| `workflow/__main__.py` | Already delegates; absorbs `DaemonController` class + orchestration logic. CLI entry: `python -m workflow [--domain fantasy_daemon] ...`. |
-| `workflow/desktop/launcher.py` | Already exists (workflow-canonical 841 LOC); receives any tray-launch helpers currently in `fantasy_daemon/__main__.py`. |
-| `workflow/api/http.py` (new) OR `workflow/http_api.py` (new) | `fantasy_daemon/api.py` content lands here. 2625 LOC FastAPI HTTP layer. Top-level location preserves existing `from workflow.api.X import` patterns; rename `fantasy_daemon.api` → `workflow.api.http` (or `workflow.http_api` to avoid `workflow/api/api.py`). |
-| `domains/fantasy_daemon/registrations.py` (new) OR `workflow/registrations/fantasy.py` (new) | `fantasy_daemon/branch_registrations.py` (113 LOC). This is fantasy-domain-specific (per docstring: "Register fantasy-author domain-trusted opaque nodes"); should live in `domains/fantasy_daemon/`. |
+| `tinyassets/__main__.py` | Already delegates; absorbs `DaemonController` class + orchestration logic. CLI entry: `python -m tinyassets [--domain fantasy_daemon] ...`. |
+| `tinyassets/desktop/launcher.py` | Already exists (workflow-canonical 841 LOC); receives any tray-launch helpers currently in `fantasy_daemon/__main__.py`. |
+| `tinyassets/api/http.py` (new) OR `tinyassets/http_api.py` (new) | `fantasy_daemon/api.py` content lands here. 2625 LOC FastAPI HTTP layer. Top-level location preserves existing `from workflow.api.X import` patterns; rename `fantasy_daemon.api` → `workflow.api.http` (or `workflow.http_api` to avoid `tinyassets/api/api.py`). |
+| `domains/fantasy_daemon/registrations.py` (new) OR `tinyassets/registrations/fantasy.py` (new) | `fantasy_daemon/branch_registrations.py` (113 LOC). This is fantasy-domain-specific (per docstring: "Register fantasy-author domain-trusted opaque nodes"); should live in `domains/fantasy_daemon/`. |
 | `fantasy_daemon/testing/__main__.py` (3 LOC stub) | **DELETE.** Vestigial — already raises SystemExit. No replacement needed. |
-| `python -m fantasy_daemon` invocation | **REPLACED** by `python -m workflow --domain fantasy_daemon`. CLI back-compat: keep `python -m fantasy_daemon` as a 5-line stub that calls `workflow.__main__.main(['--domain', 'fantasy_daemon', ...])` for one release cycle, then delete. (Even this is a shim — only acceptable if scoped within the same arc per `feedback_no_shims_ever`.) |
+| `python -m fantasy_daemon` invocation | **REPLACED** by `python -m tinyassets --domain fantasy_daemon`. CLI back-compat: keep `python -m fantasy_daemon` as a 5-line stub that calls `workflow.__main__.main(['--domain', 'fantasy_daemon', ...])` for one release cycle, then delete. (Even this is a shim — only acceptable if scoped within the same arc per `feedback_no_shims_ever`.) |
 
 **Net delta:**
 - 118 shim files deleted
@@ -127,31 +127,31 @@ After unpack:
 
 ## 4. Migration arc — phase split
 
-### Phase 1 — `fantasy_daemon/api.py` → `workflow/http_api.py`
+### Phase 1 — `fantasy_daemon/api.py` → `tinyassets/http_api.py`
 
 **Scope:** Move 2625-LOC FastAPI HTTP layer to canonical engine location.
 
 **Steps:**
-1. `git mv fantasy_daemon/api.py workflow/http_api.py` (or `workflow/api/http.py` — name pick is a host decision per §7).
-2. Update 7 caller import paths (6 tests + `workflow/api/__init__.py`).
-3. Verify FastAPI app launches: `python -m workflow --domain fantasy_daemon --api --port 8000` (path through `workflow/__main__.py:--api`).
+1. `git mv fantasy_daemon/api.py tinyassets/http_api.py` (or `tinyassets/api/http.py` — name pick is a host decision per §7).
+2. Update 7 caller import paths (6 tests + `tinyassets/api/__init__.py`).
+3. Verify FastAPI app launches: `python -m tinyassets --domain fantasy_daemon --api --port 8000` (path through `tinyassets/__main__.py:--api`).
 4. `pytest tests/test_api.py tests/test_api_edge_cases.py tests/test_author_server_api.py tests/test_rest_votes_behavior.py tests/test_work_targets.py tests/test_workflow_runtime.py -q` green.
-5. Remove `from fantasy_daemon.api import ...` re-export if `workflow/api/__init__.py` had one.
+5. Remove `from fantasy_daemon.api import ...` re-export if `tinyassets/api/__init__.py` had one.
 
 **Effort:** ~2-3h. **Risk:** LOW (mechanical move + import retarget; tests verify behavior unchanged).
 
 ### Phase 2 — `fantasy_daemon/__main__.py` → close Phase 5 bridge
 
-**Scope:** Hoist 2295-LOC daemon CLI/orchestrator into `workflow/__main__.py` + `workflow/desktop/launcher.py` (or `workflow/runtime/daemon.py` new).
+**Scope:** Hoist 2295-LOC daemon CLI/orchestrator into `tinyassets/__main__.py` + `tinyassets/desktop/launcher.py` (or `tinyassets/runtime/daemon.py` new).
 
 **Steps:**
 1. Inventory `fantasy_daemon/__main__.py` content. Likely splits:
-   - `DaemonController` class + threading + signal handling → `workflow/runtime/daemon.py` (new) OR `workflow/desktop/launcher.py` (existing)
-   - Tunnel helpers (cloudflared subprocess spawn, etc.) → already in `workflow/desktop/launcher.py` or new `workflow/desktop/tunnel.py`
-   - Argparse + main() entry → `workflow/__main__.py` directly
-2. Delete the Phase 5 bridge block in `workflow/__main__.py:30-39` (`import fantasy_daemon.__main__ as _fa_main` + the re-export).
+   - `DaemonController` class + threading + signal handling → `tinyassets/runtime/daemon.py` (new) OR `tinyassets/desktop/launcher.py` (existing)
+   - Tunnel helpers (cloudflared subprocess spawn, etc.) → already in `tinyassets/desktop/launcher.py` or new `tinyassets/desktop/tunnel.py`
+   - Argparse + main() entry → `tinyassets/__main__.py` directly
+2. Delete the Phase 5 bridge block in `tinyassets/__main__.py:30-39` (`import fantasy_daemon.__main__ as _fa_main` + the re-export).
 3. Update test imports: `from fantasy_daemon.__main__ import DaemonController` → `from workflow.runtime.daemon import DaemonController` (or wherever it lands).
-4. Update `workflow/cloud_worker.py:49` docstring `"Spawn ``python -m fantasy_daemon --universe <path> --no-tray``"` → `"Spawn ``python -m workflow --domain fantasy_daemon --universe <path> --no-tray``"`.
+4. Update `tinyassets/cloud_worker.py:49` docstring `"Spawn ``python -m fantasy_daemon --universe <path> --no-tray``"` → `"Spawn ``python -m tinyassets --domain fantasy_daemon --universe <path> --no-tray``"`.
 5. CLI back-compat decision (host §7.4): provide `python -m fantasy_daemon` stub or break and document the migration?
 
 **Effort:** ~3-4h (the file is large + has subtle concurrency / tray / signal interactions). **Risk:** MEDIUM — runtime orchestration code; full pytest + tray smoke-launch required.
@@ -172,7 +172,7 @@ After unpack:
 **Scope:** After Phases 1-3, every `fantasy_daemon/X` import path resolves through shims to canonical paths. Delete the shims + the vestigial `testing/__main__.py`.
 
 **Steps:**
-1. Verify no canonical-tree code imports from `fantasy_daemon/*` (except via Phase 5 bridge already closed). `git grep -rE "from fantasy_daemon|import fantasy_daemon" workflow/ domains/ scripts/ tests/` → expect 0 hits in non-test code; tests should already be migrated by §3.2 below.
+1. Verify no canonical-tree code imports from `fantasy_daemon/*` (except via Phase 5 bridge already closed). `git grep -rE "from fantasy_daemon|import fantasy_daemon" tinyassets/ domains/ scripts/ tests/` → expect 0 hits in non-test code; tests should already be migrated by §3.2 below.
 2. **Test migration prerequisite:** Arc B Phase 2 + this arc's Phase 1+2+3 caller-migrations must land first. Tests like `tests/test_api.py` currently import `from fantasy_daemon.api import ...` — those need to point at the new canonical path.
 3. `git rm -r fantasy_daemon/`. (Note: this deletes the directory entirely. Per `feedback_no_shims_ever` and `feedback_no_destructive_git_ops_without_asking`, host approves the rm in advance via §7.)
 4. CLI back-compat: if §7.4 chose KEEP-STUB, leave `fantasy_daemon/__main__.py` as a 5-line argparse-and-delegate stub. Otherwise full delete.
@@ -190,7 +190,7 @@ After unpack:
 ### Phase 1 (api.py move) — LOW risk
 
 - Mechanical move + import retarget. No behavior change.
-- 7 callers identified; all in tests/ + workflow/api/__init__.py.
+- 7 callers identified; all in tests/ + tinyassets/api/__init__.py.
 - Mitigation: per-caller-file pytest after import retarget.
 
 ### Phase 2 (__main__.py hoist) — MEDIUM risk
@@ -198,15 +198,15 @@ After unpack:
 The largest risk in the arc.
 
 - File is 2295 LOC of daemon orchestration: signal handlers, threading, cloudflared subprocess spawn, tray-launch, atexit handlers, langgraph SqliteSaver wiring.
-- Hoisting it requires deciding the new home (single file vs split across `workflow/runtime/`, `workflow/desktop/`, `workflow/__main__.py`).
+- Hoisting it requires deciding the new home (single file vs split across `tinyassets/runtime/`, `tinyassets/desktop/`, `tinyassets/__main__.py`).
 - Existing test surface monkeypatches `workflow.__main__.threading` — need to preserve the symbol after hoist.
 - Plugin mirror has its own copy via `packaging/claude-plugin/build_plugin.py`.
 
 **Mitigations:**
 - Run full `pytest -q` after hoist (not just affected files).
-- Manual verification: `python -m workflow --domain fantasy_daemon --no-tray` boots the daemon end-to-end; `python -m workflow --domain fantasy_daemon --api --port 8000` boots the HTTP layer.
-- Tray-launch smoke: `python -m workflow --domain fantasy_daemon` (with tray) launches the tray icon successfully.
-- If hoist requires splitting across multiple workflow/ files, do it in a single commit so tests don't see a half-hoisted intermediate state.
+- Manual verification: `python -m tinyassets --domain fantasy_daemon --no-tray` boots the daemon end-to-end; `python -m tinyassets --domain fantasy_daemon --api --port 8000` boots the HTTP layer.
+- Tray-launch smoke: `python -m tinyassets --domain fantasy_daemon` (with tray) launches the tray icon successfully.
+- If hoist requires splitting across multiple tinyassets/ files, do it in a single commit so tests don't see a half-hoisted intermediate state.
 
 ### Phase 3 (branch_registrations.py) — LOW risk
 
@@ -264,11 +264,11 @@ This arc closes **the rename's package layer** (after Arc B closes import-path l
 
 1. **Approve the arc?** Recommend yes — completes the rename arc at the package layer; aligns with `feedback_no_shims_ever`. Alternative is "leave fantasy_daemon/ as a 118-shim alias package indefinitely" — viable but inconsistent with the rule.
 2. **Confirm sequencing post-Arc C/Phase 6?** Arc B Phase 2+3 are now satisfied; this arc still waits on Arc C + Phase 6 if we want every rename layer closed before package deletion.
-3. **Pick the new home for `api.py`:** `workflow/http_api.py` (top-level workflow module — recommend) or `workflow/api/http.py` (under api/ subpackage). Recommendation: `workflow/http_api.py` — avoids `workflow/api/api.py` collision with the `workflow/api/` MCP-tool subpackage which exports `extensions`, `branches`, `runs`, etc.
+3. **Pick the new home for `api.py`:** `tinyassets/http_api.py` (top-level workflow module — recommend) or `tinyassets/api/http.py` (under api/ subpackage). Recommendation: `tinyassets/http_api.py` — avoids `tinyassets/api/api.py` collision with the `tinyassets/api/` MCP-tool subpackage which exports `extensions`, `branches`, `runs`, etc.
 4. **Pick `__main__.py` hoist target:**
-   - Option A: hoist into `workflow/__main__.py` directly (single file, ~3000 LOC after merge)
-   - Option B: split — `DaemonController` class to `workflow/runtime/daemon.py` (new), tunnel helpers to `workflow/desktop/tunnel.py` (new), argparse main() in `workflow/__main__.py`
-   - Recommend Option B — keeps `workflow/__main__.py` lean, separates concerns.
+   - Option A: hoist into `tinyassets/__main__.py` directly (single file, ~3000 LOC after merge)
+   - Option B: split — `DaemonController` class to `tinyassets/runtime/daemon.py` (new), tunnel helpers to `tinyassets/desktop/tunnel.py` (new), argparse main() in `tinyassets/__main__.py`
+   - Recommend Option B — keeps `tinyassets/__main__.py` lean, separates concerns.
 5. **CLI back-compat:** keep `python -m fantasy_daemon` as a 5-line argparse-and-delegate stub for one release cycle, OR break immediately?
    - KEEP-STUB: lower friction for any user invoking the CLI directly; one-arc shim per `feedback_no_shims_ever` (transient shim with deletion in same arc — allowed)
    - BREAK: cleaner. Documentation update + one release-note entry.
@@ -288,7 +288,7 @@ This arc closes **the rename's package layer** (after Arc B closes import-path l
 - `feedback_no_destructive_git_ops_without_asking` — `git rm -r fantasy_daemon/` requires explicit host approval per §7.
 - `AGENTS.md` "Engine and Domains" section — the principle this arc honors.
 - `PLAN.md` §"Engine And Domains" — same principle, design-truth surface.
-- `workflow/__main__.py:30-39` — Phase 5 bridge that this arc closes.
+- `tinyassets/__main__.py:30-39` — Phase 5 bridge that this arc closes.
 
 ---
 
@@ -296,7 +296,7 @@ This arc closes **the rename's package layer** (after Arc B closes import-path l
 
 Per host directive 2026-04-27 ("don't unplug, button up the edges"):
 
-This arc DOESN'T remove behavior. The FastAPI HTTP layer keeps serving the same endpoints. The daemon CLI keeps booting the same way (with one new flag invocation pattern: `python -m workflow --domain fantasy_daemon` vs `python -m fantasy_daemon`). The plugin keeps working after a minor-version bump.
+This arc DOESN'T remove behavior. The FastAPI HTTP layer keeps serving the same endpoints. The daemon CLI keeps booting the same way (with one new flag invocation pattern: `python -m tinyassets --domain fantasy_daemon` vs `python -m fantasy_daemon`). The plugin keeps working after a minor-version bump.
 
 It RELOCATES code from a domain-named top-level package (where engine code shouldn't live) to its canonical engine home. The 118 shims being deleted carry zero logic — they're pure re-exports kept alive during the rename window. Deleting them changes nothing about runtime behavior.
 

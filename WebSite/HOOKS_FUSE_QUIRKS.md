@@ -51,7 +51,7 @@ for both `Write` and `Edit`:
 both `Write` and `Edit`. If the target path exists AND is under the
 FUSE mount, the hook rejects the call before it runs and prints the
 heredoc/fuse_safe_write recipe. This is the rung added 2026-05-02 after
-the next recurrence on `workflow/api/status.py`.
+the next recurrence on `tinyassets/api/status.py`.
 
 Wired into `.claude/settings.json` under `hooks.PreToolUse[matcher="Write"]`
 plus `[matcher="Edit"]` (PreToolUse) and `hooks.PostToolUse[...]` (PostToolUse).
@@ -85,7 +85,7 @@ and should be hardened immediately:
 | 1  | First mcp-snapshot.json truncate          | atomic temp+rename in snapshot script                                                      |
 | 2  | package.json + ChatDemo truncate          | initial PostToolUse Write hook                                                             |
 | 3  | graph/+page.svelte Edit truncate          | hook now also matches Edit + Edit-mode substring check + standing rule documented in CLAUDE.md |
-| 4  | workflow/api/status.py Edit truncate (2026-05-02 Cowork session, mid-PR for get_status.supervisor_liveness) | PreToolUse REJECT hook for Edit/Write on any FUSE path + `scripts/fuse_safe_write.py` Cowork-callable wrapper + reiterate-on-recurrence directive added to CLAUDE.md so Cowork sessions catch the standing rule on session start |
+| 4  | tinyassets/api/status.py Edit truncate (2026-05-02 Cowork session, mid-PR for get_status.supervisor_liveness) | PreToolUse REJECT hook for Edit/Write on any FUSE path + `scripts/fuse_safe_write.py` Cowork-callable wrapper + reiterate-on-recurrence directive added to CLAUDE.md so Cowork sessions catch the standing rule on session start |
 
 If it happens again the next iteration is:
 **A startup-banner block in CLAUDE.md / a SessionStart hook that prints

@@ -1,4 +1,4 @@
-"""WORKFLOW_UNIFIED_EXECUTION unified-execution tests.
+"""TINYASSETS_UNIFIED_EXECUTION unified-execution tests.
 
 Covers docs/specs/phase_d_preflight.md §4.4:
 - Compiler-extension tests (5): opaque-node resolution + error modes.
@@ -33,7 +33,7 @@ def clean_registry():
     """Reset the domain registry between tests so monkey-patches
     don't leak across test boundaries.
     """
-    from workflow import domain_registry
+    from tinyassets import domain_registry
     saved = dict(domain_registry._REGISTRY)
     yield domain_registry
     domain_registry._REGISTRY.clear()
@@ -67,7 +67,7 @@ def _minimal_branch(
     synthesized TypedDict lets callers pass input dicts through the
     StateGraph filter.
     """
-    from workflow.branches import (
+    from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
         GraphNodeRef,
@@ -123,7 +123,7 @@ def test_opaque_node_resolves_via_registry(clean_registry):
         return {"seen": True}
 
     clean_registry.register_domain_callable("testdom", "x", fake)
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     branch = _minimal_branch(domain_id="testdom")
     compiled = compile_branch(branch)
@@ -140,7 +140,7 @@ def test_source_code_node_run_sees_top_level_helpers(clean_registry):
     helper raised NameError (the live `name '_text' is not defined`).
     A single exec namespace restores module-level visibility.
     """
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     src = (
         "def _text(value):\n"
@@ -160,7 +160,7 @@ def test_unregistered_opaque_node_raises_compiler_error(clean_registry):
     """A body-less node whose (domain_id, node_id) is not in the
     registry raises CompilerError at compile time, not at runtime.
     """
-    from workflow.graph_compiler import CompilerError, compile_branch
+    from tinyassets.graph_compiler import CompilerError, compile_branch
 
     branch = _minimal_branch(domain_id="testdom")  # nothing registered
     with pytest.raises(CompilerError) as exc_info:
@@ -173,7 +173,7 @@ def test_opaque_node_bypasses_source_code_validation(clean_registry):
     per-node `approved` flag is irrelevant. Domain registry is the
     trust boundary.
     """
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     clean_registry.register_domain_callable(
         "testdom", "x", lambda s: {"ok": True},
@@ -192,7 +192,7 @@ def test_empty_domain_id_raises_on_bodyless_node():
     """Empty domain_id + no template + no source = malformed Branch.
     Raises CompilerError, not a silent pass-through.
     """
-    from workflow.graph_compiler import CompilerError, compile_branch
+    from tinyassets.graph_compiler import CompilerError, compile_branch
 
     branch = _minimal_branch(domain_id="")  # no domain, no body
     with pytest.raises(CompilerError):
@@ -203,7 +203,7 @@ def test_template_path_unchanged_by_domain_id_thread(clean_registry):
     """Passing domain_id doesn't affect prompt_template dispatch —
     template nodes still compile normally regardless.
     """
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.graph_compiler import compile_branch
 
     branch = _minimal_branch(
         domain_id="testdom",
@@ -288,7 +288,7 @@ def test_flag_off_uses_direct_graph(monkeypatch):
     """Flag off → `_run_graph` constructs graph via
     `build_universe_graph()` directly.
     """
-    monkeypatch.delenv("WORKFLOW_UNIFIED_EXECUTION", raising=False)
+    monkeypatch.delenv("TINYASSETS_UNIFIED_EXECUTION", raising=False)
     from fantasy_daemon.__main__ import _workflow_unified_execution_enabled
     assert _workflow_unified_execution_enabled() is False
 
@@ -298,7 +298,7 @@ def test_flag_on_uses_compile_branch(monkeypatch, fresh_registrations):
     and calls `compile_branch`. Returns a StateGraph, same shape the
     direct path returns.
     """
-    monkeypatch.setenv("WORKFLOW_UNIFIED_EXECUTION", "1")
+    monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", "1")
     from langgraph.graph import StateGraph
 
     from fantasy_daemon.__main__ import (
@@ -330,9 +330,9 @@ def test_flag_parsing_accepts_common_truthy_spellings(
     monkeypatch, flag_value, expected,
 ):
     """Flag parser matches `_gates_enabled()` pattern from
-    `workflow/universe_server.py`.
+    `tinyassets/universe_server.py`.
     """
-    monkeypatch.setenv("WORKFLOW_UNIFIED_EXECUTION", flag_value)
+    monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", flag_value)
     from fantasy_daemon.__main__ import _workflow_unified_execution_enabled
     assert _workflow_unified_execution_enabled() is expected
 
@@ -349,11 +349,11 @@ def test_flag_on_compile_failure_raises_no_silent_fallthrough(
     flag-on, `_build_unified_graph_builder` must raise — NOT silently
     fall through to the direct path. Preflight §4.8 R11.
     """
-    monkeypatch.setenv("WORKFLOW_UNIFIED_EXECUTION", "1")
+    monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", "1")
     # Clear and intentionally do NOT register the wrapper.
     clean_registry.clear_registry()
     from fantasy_daemon.__main__ import _build_unified_graph_builder
-    from workflow.graph_compiler import CompilerError
+    from tinyassets.graph_compiler import CompilerError
 
     with pytest.raises(CompilerError):
         _build_unified_graph_builder()
@@ -411,7 +411,7 @@ def test_producer_registry_no_double_registration(fresh_registrations):
     object id so identical re-registrations still show as one slot.
     """
     import fantasy_daemon.branch_registrations  # re-import is idempotent
-    from workflow import domain_registry as dr
+    from tinyassets import domain_registry as dr
 
     # Simulate two imports (re-registration).
     importlib.reload(fantasy_daemon.branch_registrations)
@@ -494,7 +494,7 @@ def test_worldbuild_soft_stop_clears_when_branch_task_queue_has_work(tmp_path):
     exiting when the durable BranchTask queue has pickable work.
     """
     from fantasy_daemon.branch_registrations import clear_restartable_soft_stop
-    from workflow.branch_tasks import BranchTask, append_task
+    from tinyassets.branch_tasks import BranchTask, append_task
 
     append_task(
         tmp_path,
@@ -584,7 +584,7 @@ def test_flag_on_boundary_state_resumes_only_six_fields(
 
 def test_flag_off_default_is_off(monkeypatch):
     """No env var set → flag is off. Direct path is the default."""
-    monkeypatch.delenv("WORKFLOW_UNIFIED_EXECUTION", raising=False)
+    monkeypatch.delenv("TINYASSETS_UNIFIED_EXECUTION", raising=False)
     from fantasy_daemon.__main__ import _workflow_unified_execution_enabled
     assert _workflow_unified_execution_enabled() is False
 

@@ -6,7 +6,7 @@
 
 ## Problem
 
-The `github_pull_request` effector (`workflow/effectors/github_pr.py`) opens a PR
+The `github_pull_request` effector (`tinyassets/effectors/github_pr.py`) opens a PR
 by shelling out to `gh pr create --repo <dest> --title --body --base --head`.
 It never creates or pushes the head branch, and it **ignores the packet's
 `changes_json` entirely** — `_invoke_gh_pr_create(payload, destination)` only
@@ -28,7 +28,7 @@ external_write_results.open_pr.github_pull_request = {
   "stderr": "pull request create failed: GraphQL: Head sha can't be blank,
              Base sha can't be blank, No commits between main and
              autolab/probe-v3-k9x4m2, Head ref must be a branch (createPullRequest)",
-  "destination": "Jonnyton/Workflow", "phase": "phase_2"
+  "destination": "Jonnyton/TinyAssets", "phase": "phase_2"
 }
 ```
 
@@ -49,8 +49,8 @@ PR *shell* between two refs, but cannot produce the head ref from a change set.
 ## Constraint: no git checkout in the runtime image
 
 The daemon runtime image (root `Dockerfile`, second stage) COPYs only the
-Python package trees (`workflow/`, `domains/`, `fantasy_daemon/`, …). There is
-**no `.git` checkout of `Jonnyton/Workflow`** on the daemon and **no `git`
+Python package trees (`tinyassets/`, `domains/`, `fantasy_daemon/`, …). There is
+**no `.git` checkout of `Jonnyton/TinyAssets`** on the daemon and **no `git`
 binary** in the runtime apt block. So a "clone → write files → commit → push"
 approach would require adding: the `git` binary (another image line, a
 BUG-110-shaped follow-on), a runtime clone (network + disk + a push-scoped
@@ -93,7 +93,7 @@ loudly (no silent empty-branch PR).
 ## Open questions for review (checker:codex)
 
 1. **Token scope.** The gh auth the effector reaches GitHub with — is it
-   `contents:write` + `pull_requests:write` for `Jonnyton/Workflow`? Git Data
+   `contents:write` + `pull_requests:write` for `Jonnyton/TinyAssets`? Git Data
    API writes need `contents:write`. Confirm before build.
 2. **Idempotency across the new steps.** The existing reservation covers the PR
    create. A re-run that already created the ref but failed at `pr create`

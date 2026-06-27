@@ -17,8 +17,8 @@ if (Test-Path $workdir) {
   Remove-Item -Recurse -Force $workdir
 }
 
-Write-Host "1/4  Cloning Jonnyton/Workflow main into $workdir ..."
-git clone --depth=1 --branch=main https://github.com/Jonnyton/Workflow.git $workdir
+Write-Host "1/4  Cloning Jonnyton/TinyAssets main into $workdir ..."
+git clone --depth=1 --branch=main https://github.com/Jonnyton/TinyAssets.git $workdir
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Set-Location $workdir
@@ -36,7 +36,7 @@ Write-Host "4/4  Pushed. Fast-forward main to ship the fix:"
 Write-Host "     git push origin website/fix-live-crashes:main"
 Write-Host ""
 Write-Host "Or open a PR:"
-Write-Host "     https://github.com/Jonnyton/Workflow/compare/main...website/fix-live-crashes?expand=1"
+Write-Host "     https://github.com/Jonnyton/TinyAssets/compare/main...website/fix-live-crashes?expand=1"
 Write-Host ""
 Write-Host "After merge, .github/workflows/deploy-site.yml redeploys to GitHub Pages"
 Write-Host "and tinyassets.io serves the patched site (/wiki, /graph fixed; favicon.ico"

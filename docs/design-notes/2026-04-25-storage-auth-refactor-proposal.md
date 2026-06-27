@@ -14,7 +14,7 @@ status: active
 
 ## 1. Recommendation summary
 
-Add explicit `actor_id` arg to high-blast-radius storage helpers + introduce small policy module `workflow/storage/authority.py`. Each helper calls a `check_*_authority(base_path, actor_id, ...)` function at the top; `AuthorizationError` is raised on denial; MCP layer translates to structured error.
+Add explicit `actor_id` arg to high-blast-radius storage helpers + introduce small policy module `tinyassets/storage/authority.py`. Each helper calls a `check_*_authority(base_path, actor_id, ...)` function at the top; `AuthorizationError` is raised on denial; MCP layer translates to structured error.
 
 **Top tradeoff axis:** **least magic vs. least boilerplate.** Going least-magic — explicit args are easiest to test, debug, and audit. Boilerplate cost is bounded (~6 helpers in Phase 1).
 
@@ -26,10 +26,10 @@ The `set_by` arg today is for AUDIT TRAIL, not authorization. Today's storage la
 
 ---
 
-## 2. Schema sketch — `workflow/storage/authority.py`
+## 2. Schema sketch — `tinyassets/storage/authority.py`
 
 ```python
-# workflow/storage/authority.py — NEW module
+# tinyassets/storage/authority.py — NEW module
 """Defense-in-depth authority checks for storage-layer writes.
 
 Today's storage helpers trust callers: docstrings say "caller must
@@ -217,7 +217,7 @@ The v2 set follows the same recipe later — Phase 1 is the high-blast-radius sl
 
 ### Step 0 — define authority module
 
-Create `workflow/storage/authority.py` with `AuthorizationError` + the 4 `check_*_authority` functions. Tests cover each rule in isolation:
+Create `tinyassets/storage/authority.py` with `AuthorizationError` + the 4 `check_*_authority` functions. Tests cover each rule in isolation:
 
 - `check_set_canonical_authority` — actor=goal.author allowed, actor=host allowed, actor=stranger denied, scope=user:self allowed, scope=user:other denied, scope=tier:* denied (current).
 - `check_rollback_authority` — actor=host allowed, actor=anyone-else denied.
@@ -272,7 +272,7 @@ Today's daemon is single-process. Future multi-process / federated deployments (
 
 ## 7. Open questions
 
-1. **AuthorizationError → MCP error class mapping.** RECOMMENDED: new `_format_authorization_error(exc)` helper in `workflow/universe_server.py` returning `{"status": "rejected", "error": str(exc), "authority_required": exc.operation, "actor_id": exc.actor_id}`. Standard MCP error shape; chatbot can render "you can't do X; <reason>." Closed.
+1. **AuthorizationError → MCP error class mapping.** RECOMMENDED: new `_format_authorization_error(exc)` helper in `tinyassets/universe_server.py` returning `{"status": "rejected", "error": str(exc), "authority_required": exc.operation, "actor_id": exc.actor_id}`. Standard MCP error shape; chatbot can render "you can't do X; <reason>." Closed.
 
 2. **Host actor identification.** RECOMMENDED: keep using `os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")` via `_host_actor()` helper in this module. Single source of truth; storage authority module imports the same env helper that universe_server.py + #57 use. Don't fork. Closed.
 
@@ -301,18 +301,18 @@ Today's daemon is single-process. Future multi-process / federated deployments (
 ## 9. References
 
 - Pair-read finding source: navigator's #65 (pair-read on #57 surgical rollback) — flagged the storage-layer trust gap.
-- Concrete gap quote: `workflow/daemon_server.py:2453-2475` (`set_canonical_branch` docstring "Caller must validate authority").
+- Concrete gap quote: `tinyassets/daemon_server.py:2453-2475` (`set_canonical_branch` docstring "Caller must validate authority").
 - Authority model lift: `docs/design-notes/2026-04-25-variant-canonicals-proposal.md` §4 (Task #47).
 - Defense-in-depth target: `docs/design-notes/2026-04-25-surgical-rollback-proposal.md` §5 (Task #57 — `runs action=rollback_merge` host-only assertion).
 - Sibling proposals (orthogonal but cited):
   - Task #48 contribution ledger — actor_id is identity, not auth.
   - Task #66 TypedPatchNotes — `author_actor_id` is identity, not auth.
 - Phase 1 helper locations:
-  - `set_canonical_branch` — `workflow/daemon_server.py:2453`
-  - `update_branch_definition` — `workflow/daemon_server.py:2135`
-  - `save_branch_definition` — `workflow/daemon_server.py:1971`
-  - `delete_goal` — `workflow/daemon_server.py:2635`
+  - `set_canonical_branch` — `tinyassets/daemon_server.py:2453`
+  - `update_branch_definition` — `tinyassets/daemon_server.py:2135`
+  - `save_branch_definition` — `tinyassets/daemon_server.py:1971`
+  - `delete_goal` — `tinyassets/daemon_server.py:2635`
 - Companion principle: `project_user_builds_we_enable.md` — every helper that writes user content must verify the writer is authorized.
 - Companion convention: `docs/design-notes/2026-04-25-design-proposal-pattern-convention.md` — this proposal follows the 5-move pattern (investigate → tradeoff → recommendation → opens → SHIP).
 - Existing MCP-layer auth checks (perimeter that stays intact):
-  - `workflow/universe_server.py:10648-10658` (`_action_goal_set_canonical` — actor vs goal author + host).
+  - `tinyassets/universe_server.py:10648-10658` (`_action_goal_set_canonical` — actor vs goal author + host).

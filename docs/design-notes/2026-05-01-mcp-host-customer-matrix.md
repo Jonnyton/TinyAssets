@@ -7,7 +7,7 @@ Last checked: 2026-05-01 against selected public vendor docs.
 This matrix keeps Workflow customer planning broader than Claude and OpenAI.
 A Workflow customer is anyone operating an MCP-capable host: a hosted chatbot,
 IDE agent, local model shell, enterprise agent builder, self-hosted chat UI, or
-custom app that can connect to a Workflow MCP server.
+custom app that can connect to a TinyAssets MCP server.
 
 The proof source for public claims remains
 `docs/ops/mcp-host-proof-registry.md`. If a host is not verified there, website
@@ -41,7 +41,7 @@ account, different connected apps."
 
 | Host surface | User shape | Likely Workflow path | Discovery/install path | Status | Minimum proof |
 |---|---|---|---|---|---|
-| Official MCP Registry | Any registry-aware MCP host | `https://tinyassets.io/mcp-directory` | Published `server.json` | published-live | 2026-05-01 API search returned `io.github.Jonnyton/workflow-universe-server` active/latest |
+| Official MCP Registry | Any registry-aware MCP host | `https://tinyassets.io/mcp-directory` | Published `server.json` | published-live | 2026-05-01 API search returned `io.github.Jonnyton/tinyassets-universe-server` active/latest |
 | Claude Connectors Directory | Logged-in Claude users/admins | `https://tinyassets.io/mcp-directory` | Anthropic directory review | packet-ready; submission-needed | Directory install plus live Claude tool call |
 | Claude custom connector | Logged-in Claude users | `https://tinyassets.io/mcp` | Custom connector settings | protocol-live; UI proof refresh needed | Claude.ai trace with visible result |
 | ChatGPT App Directory | Eligible logged-in ChatGPT users/admins | `https://tinyassets.io/mcp-directory` plus app metadata/widget if required | OpenAI app submission | packet-ready; submission-needed | App Directory install without Developer Mode |

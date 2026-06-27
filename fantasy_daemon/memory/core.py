@@ -1,2 +1,2 @@
-"""Shim: use workflow.memory.core instead."""
-from workflow.memory.core import *  # noqa: F401,F403
+"""Shim: use tinyassets.memory.core instead."""
+from tinyassets.memory.core import *  # noqa: F401,F403

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.branch_tasks import (
+from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
     claim_task,

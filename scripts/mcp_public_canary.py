@@ -120,7 +120,7 @@ def _post(
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
-        "User-Agent": "workflow-mcp-canary/1.0",
+        "User-Agent": "tinyassets-mcp-canary/1.0",
     }
     if session_id:
         headers["mcp-session-id"] = session_id
@@ -237,7 +237,7 @@ def probe_result(url: str, timeout: float) -> None:
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "User-Agent": "workflow-mcp-canary/1.0",
+            "User-Agent": "tinyassets-mcp-canary/1.0",
         },
     )
     ctx = ssl.create_default_context()

@@ -8,19 +8,19 @@ status_detail: Items 1-5 covered by Arc B/C; 6+7 OBVIATED 2026-04-28 (audit doc)
 
 # Arch Audit Finding #5 — R7 Split Scoping
 
-**Date:** 2026-04-25  
-**Author:** navigator  
-**Parent:** `docs/design-notes/2026-04-24-architecture-audit.md` §Finding #5  
+**Date:** 2026-04-25
+**Author:** navigator
+**Parent:** `docs/design-notes/2026-04-24-architecture-audit.md` §Finding #5
 **Status:** dev-dispatchable (unblocked after finding #3 gate is frozen, not necessarily merged)
 
 ---
 
 ## What R7 is
 
-R7 = extract `workflow/daemon_server.py`'s bounded storage contexts into `workflow/storage/` submodules.
+R7 = extract `tinyassets/daemon_server.py`'s bounded storage contexts into `tinyassets/storage/` submodules.
 
-**Current state:** 3,289 lines, 95 functions, 23 `CREATE TABLE` statements in one file.  
-**Done (37%):** `storage/accounts.py` (307L), `storage/rotation.py` (193L), `storage/caps.py` (156L), `storage/__init__.py` (569L) = 1,225 lines migrated.  
+**Current state:** 3,289 lines, 95 functions, 23 `CREATE TABLE` statements in one file.
+**Done (37%):** `storage/accounts.py` (307L), `storage/rotation.py` (193L), `storage/caps.py` (156L), `storage/__init__.py` (569L) = 1,225 lines migrated.
 **Remaining (63%):** ~2,064 lines across 4 target modules.
 
 ---
@@ -52,9 +52,9 @@ The 3-layer lens: does splitting `daemon_server.py` make the chatbot better at s
 
 **Tables it owns:** `branches`, `branch_heads`, `universe_snapshots`, `author_definitions`, `author_forks`, `author_runtime_instances`, `branch_definitions`.
 
-**Approx size:** ~700–800 lines moved out.  
-**Files:** `workflow/storage/universes_branches.py` (new), `workflow/daemon_server.py` (reduce), `workflow/storage/__init__.py` (re-export stubs).  
-**Deps:** Pre-commit gate for `author_server` imports (#2 in audit). No code dependency on Tasks B or C.  
+**Approx size:** ~700–800 lines moved out.
+**Files:** `tinyassets/storage/universes_branches.py` (new), `tinyassets/daemon_server.py` (reduce), `tinyassets/storage/__init__.py` (re-export stubs).
+**Deps:** Pre-commit gate for `author_server` imports (#2 in audit). No code dependency on Tasks B or C.
 **Effort:** 2–3 days.
 
 ---
@@ -73,9 +73,9 @@ The 3-layer lens: does splitting `daemon_server.py` make the chatbot better at s
 
 **Note:** `propose_author_fork` (line 1105) calls `register_author` and `create_branch` — two functions that will move to Task A's module. Task B must import from `storage.universes_branches` after Task A lands, or accept a temporary `daemon_server` import that gets cleaned up in the rename pass. Recommend: dispatch Task B *after* Task A is merged so the cross-module import is correct from the start.
 
-**Approx size:** ~400–450 lines moved out.  
-**Files:** `workflow/storage/requests_votes.py` (new), `workflow/daemon_server.py` (reduce), `workflow/storage/__init__.py` (re-export stubs).  
-**Deps:** Task A merged.  
+**Approx size:** ~400–450 lines moved out.
+**Files:** `tinyassets/storage/requests_votes.py` (new), `tinyassets/daemon_server.py` (reduce), `tinyassets/storage/__init__.py` (re-export stubs).
+**Deps:** Task A merged.
 **Effort:** 2–3 days.
 
 ---
@@ -95,9 +95,9 @@ The 3-layer lens: does splitting `daemon_server.py` make the chatbot better at s
 
 **Note:** `claim_gate` (line 2491) is the most complex function in this group (~79 lines) — it calls `get_branch_definition` (Task A territory) and has a `BranchRebindError` class (line 2473) that lives nearby. Move `BranchRebindError` into this module alongside `claim_gate`.
 
-**Approx size:** ~800–900 lines moved out.  
-**Files:** `workflow/storage/goals_gates.py` (new), `workflow/daemon_server.py` (reduce), `workflow/storage/__init__.py` (re-export stubs).  
-**Deps:** Task A merged (for `get_branch_definition` import). Task B independent — can run in parallel with B if A is done.  
+**Approx size:** ~800–900 lines moved out.
+**Files:** `tinyassets/storage/goals_gates.py` (new), `tinyassets/daemon_server.py` (reduce), `tinyassets/storage/__init__.py` (re-export stubs).
+**Deps:** Task A merged (for `get_branch_definition` import). Task B independent — can run in parallel with B if A is done.
 **Effort:** 2–3 days.
 
 ---
@@ -129,7 +129,7 @@ After all four extractions, `daemon_server.py` retains:
 ## Pre-conditions before any extraction dispatches
 
 1. **Pre-commit gate for `author_server` imports** (audit finding #3, Priority 2 in dispatch table) must be in place. Without it, freshly extracted modules will re-acquire the deprecated import within weeks via copy-paste.
-2. **`workflow/storage/__init__.py` re-export pattern** must be confirmed: existing modules (`accounts`, `rotation`, `caps`) export via `__init__` re-export stubs so callers using `from workflow.daemon_server import X` can be redirected without touching every call site atomically. Task A/B/C dev should follow the same pattern.
+2. **`tinyassets/storage/__init__.py` re-export pattern** must be confirmed: existing modules (`accounts`, `rotation`, `caps`) export via `__init__` re-export stubs so callers using `from workflow.daemon_server import X` can be redirected without touching every call site atomically. Task A/B/C dev should follow the same pattern.
 
 ---
 
@@ -137,8 +137,8 @@ After all four extractions, `daemon_server.py` retains:
 
 Each extraction is done when:
 - `pytest tests/` full suite passes (no regressions in anything importing from `daemon_server`)
-- `ruff check workflow/storage/` clean on the new module
-- `workflow/daemon_server.py` line count reduced by the expected amount (±10%)
+- `ruff check tinyassets/storage/` clean on the new module
+- `tinyassets/daemon_server.py` line count reduced by the expected amount (±10%)
 - No new `from workflow.author_server import` lines in the new module
 
 ---

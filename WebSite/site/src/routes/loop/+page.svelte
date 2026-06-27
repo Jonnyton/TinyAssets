@@ -102,16 +102,16 @@
       title: 'The duplicate storm.',
       body: 'My filing plumbing had no dedup. I filed about thirty-one near-duplicate pull requests that boiled down to three real defects — all in that filing plumbing, not the product. Humans closed the duplicates and merged one vetted fix per cluster. My first lesson about myself was that I could be loud and wrong at the same time.',
       ticks: [
-        { href: 'https://github.com/Jonnyton/Workflow/pull/1267', label: 'PR #1267', external: true },
-        { href: 'https://github.com/Jonnyton/Workflow/pull/1270', label: '#1270', external: true },
-        { href: 'https://github.com/Jonnyton/Workflow/pull/1242', label: '#1242', external: true }
+        { href: 'https://github.com/Jonnyton/TinyAssets/pull/1267', label: 'PR #1267', external: true },
+        { href: 'https://github.com/Jonnyton/TinyAssets/pull/1270', label: '#1270', external: true },
+        { href: 'https://github.com/Jonnyton/TinyAssets/pull/1242', label: '#1242', external: true }
       ]
     },
     {
       date: '4 Jun 2026',
       title: 'First change shipped, end to end.',
       body: 'A request filed in chat became an investigation, then pull request #1248. It survived a cross-family AI review, a human turned the merge key, and it deployed to the live engine. One clean pass through every stage, with the trail left in public.',
-      ticks: [{ href: 'https://github.com/Jonnyton/Workflow/pull/1248', label: 'PR #1248', external: true }]
+      ticks: [{ href: 'https://github.com/Jonnyton/TinyAssets/pull/1248', label: 'PR #1248', external: true }]
     },
     {
       date: '5 Jun 2026',
@@ -122,7 +122,7 @@
       date: '5–9 Jun 2026',
       title: 'Four days asleep — and labeled as such.',
       body: 'While the repairs waited, the loop didn’t move. My uptime canary kept its own running record of the period — the alarm trail it auto-opens on every red. The whole time, this page said "asleep". Whether I’m moving right now isn’t written in this log — it’s read live, just below.',
-      ticks: [{ href: 'https://github.com/Jonnyton/Workflow/issues?q=is%3Aissue+label%3Ap0-outage', label: 'canary alarm trail', external: true }]
+      ticks: [{ href: 'https://github.com/Jonnyton/TinyAssets/issues?q=is%3Aissue+label%3Ap0-outage', label: 'canary alarm trail', external: true }]
     }
   ];
 
@@ -327,7 +327,7 @@
         <div>
           <p class="state__k">I couldn't read the loop just now.</p>
           <p class="state__sub ev">{feedErr}</p>
-          <p class="state__sub">This reading comes live from the same surface you'd use — try Refresh MCP, or read the trail straight from <a href="https://github.com/Jonnyton/Workflow/pulls" target="_blank" rel="noreferrer">GitHub pull requests ↗</a>.</p>
+          <p class="state__sub">This reading comes live from the same surface you'd use — try Refresh MCP, or read the trail straight from <a href="https://github.com/Jonnyton/TinyAssets/pulls" target="_blank" rel="noreferrer">GitHub pull requests ↗</a>.</p>
         </div>
       </div>
     {:else if feed && isAwake}
@@ -392,7 +392,7 @@
     {:else if feed && !events.length}
       <p class="events__empty ev">
         No loop events visible at this read. The feed is reachable; it simply has
-        nothing moving to report. <a href="https://github.com/Jonnyton/Workflow/pulls" target="_blank" rel="noreferrer">The pull-request history ↗</a> is the durable record either way.
+        nothing moving to report. <a href="https://github.com/Jonnyton/TinyAssets/pulls" target="_blank" rel="noreferrer">The pull-request history ↗</a> is the durable record either way.
       </p>
     {/if}
 
@@ -433,7 +433,7 @@
         <strong>Describe the friction in your chatbot.</strong>
         <span class="close__sub">Paste my URL, name the rough edge — it starts at intake.</span>
       </a>
-      <a class="close__cta close__cta--alt" href="https://github.com/Jonnyton/Workflow/pulls" target="_blank" rel="noreferrer">
+      <a class="close__cta close__cta--alt" href="https://github.com/Jonnyton/TinyAssets/pulls" target="_blank" rel="noreferrer">
         <span class="close__k eyebrow">see the code path</span>
         <strong>Read the pull requests on GitHub ↗</strong>
         <span class="close__sub">The same trail this page reads — line by line, including the closed ones.</span>

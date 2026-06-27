@@ -1,8 +1,8 @@
 {
-  "name": "tinyassets-workflow-site",
+  "name": "tinyassets-site",
   "version": "0.1.0",
   "private": true,
-  "description": "tinyassets.io — Workflow product landing site (Track B Phase 1)",
+  "description": "tinyassets.io — TinyAssets product landing site (Track B Phase 1)",
   "type": "module",
   "scripts": {
     "dev": "vite dev",

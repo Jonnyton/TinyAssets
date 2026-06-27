@@ -16,21 +16,21 @@
 # docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
 #
 # Idempotent: safe to re-run. Skips steps whose end-state is already
-# reached. No destructive actions; existing /opt/workflow or
-# /etc/workflow content is preserved.
+# reached. No destructive actions; existing /opt/tinyassets or
+# /etc/tinyassets content is preserved.
 #
 # Usage (on the target box, as root):
-#   curl -fsSL https://raw.githubusercontent.com/Jonnyton/Workflow/main/deploy/hetzner-bootstrap.sh -o /tmp/bootstrap.sh
+#   curl -fsSL https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/deploy/hetzner-bootstrap.sh -o /tmp/bootstrap.sh
 #   sudo bash /tmp/bootstrap.sh
 #
 # OR (local-clone):
 #   sudo bash deploy/hetzner-bootstrap.sh
 #
 # Post-bootstrap host action:
-#   1. Fill /etc/workflow/env with real secrets (CLOUDFLARE_TUNNEL_TOKEN,
+#   1. Fill /etc/tinyassets/env with real secrets (CLOUDFLARE_TUNNEL_TOKEN,
 #      SUPABASE_*, GITHUB_OAUTH_*).
-#   2. systemctl start workflow-daemon
-#   3. Verify: python3 /opt/workflow/scripts/mcp_public_canary.py
+#   2. systemctl start tinyassets-daemon
+#   3. Verify: python3 /opt/tinyassets/scripts/mcp_public_canary.py
 #      --url https://tinyassets.io/mcp --verbose
 
 set -euo pipefail
@@ -41,11 +41,11 @@ if [[ "${EUID}" -ne 0 ]]; then
     exit 1
 fi
 
-WORKFLOW_USER="workflow"
-WORKFLOW_UID=1001
-WORKFLOW_HOME="/opt/workflow"
-ENV_DIR="/etc/workflow"
-REPO_URL="https://github.com/Jonnyton/Workflow.git"
+TINYASSETS_USER="tinyassets"
+TINYASSETS_UID=1001
+TINYASSETS_HOME="/opt/tinyassets"
+ENV_DIR="/etc/tinyassets"
+REPO_URL="https://github.com/Jonnyton/TinyAssets.git"
 REPO_REF="main"
 
 log() { echo "[bootstrap] $*"; }
@@ -138,64 +138,64 @@ else
     log "${DOCKER_DAEMON_JSON} already configured correctly"
 fi
 
-# ----- 3. workflow user ---------------------------------------------------
+# ----- 3. tinyassets user ---------------------------------------------------
 
-if ! id -u "${WORKFLOW_USER}" >/dev/null 2>&1; then
-    log "creating ${WORKFLOW_USER} user (uid ${WORKFLOW_UID})..."
+if ! id -u "${TINYASSETS_USER}" >/dev/null 2>&1; then
+    log "creating ${TINYASSETS_USER} user (uid ${TINYASSETS_UID})..."
     useradd --system \
-            --uid "${WORKFLOW_UID}" \
-            --home "${WORKFLOW_HOME}" \
+            --uid "${TINYASSETS_UID}" \
+            --home "${TINYASSETS_HOME}" \
             --create-home \
             --shell /usr/sbin/nologin \
-            --comment "Workflow daemon service account" \
-            "${WORKFLOW_USER}"
+            --comment "TinyAssets daemon service account" \
+            "${TINYASSETS_USER}"
 else
-    log "${WORKFLOW_USER} user already exists"
+    log "${TINYASSETS_USER} user already exists"
 fi
 
-# Add workflow user to docker group so it can issue docker compose
+# Add tinyassets user to docker group so it can issue docker compose
 # commands via the systemd unit.
-if ! id -nG "${WORKFLOW_USER}" | grep -qw docker; then
-    log "adding ${WORKFLOW_USER} to docker group..."
-    usermod -aG docker "${WORKFLOW_USER}"
+if ! id -nG "${TINYASSETS_USER}" | grep -qw docker; then
+    log "adding ${TINYASSETS_USER} to docker group..."
+    usermod -aG docker "${TINYASSETS_USER}"
 fi
 
 # ----- 4a. ensure deploy dir exists before any SCP / git-clone step --------
-# DR drill SCPs backup-restore.sh into /opt/workflow/deploy/ before git-clone
+# DR drill SCPs backup-restore.sh into /opt/tinyassets/deploy/ before git-clone
 # runs; the target must exist independently of the clone completing first.
-mkdir -p "${WORKFLOW_HOME}/deploy"
+mkdir -p "${TINYASSETS_HOME}/deploy"
 
-# ----- 4. repo checkout at /opt/workflow ----------------------------------
+# ----- 4. repo checkout at /opt/tinyassets ----------------------------------
 
-if [[ ! -d "${WORKFLOW_HOME}/.git" ]]; then
-    log "cloning repo into ${WORKFLOW_HOME}..."
+if [[ ! -d "${TINYASSETS_HOME}/.git" ]]; then
+    log "cloning repo into ${TINYASSETS_HOME}..."
     # Wipe any pre-existing non-git content (e.g. useradd created
-    # /opt/workflow as home, leaving it empty). Safe because the
+    # /opt/tinyassets as home, leaving it empty). Safe because the
     # directory only exists if we just created it.
-    rm -rf "${WORKFLOW_HOME}"
-    git clone --branch "${REPO_REF}" --depth 1 "${REPO_URL}" "${WORKFLOW_HOME}"
+    rm -rf "${TINYASSETS_HOME}"
+    git clone --branch "${REPO_REF}" --depth 1 "${REPO_URL}" "${TINYASSETS_HOME}"
 else
-    log "repo already present at ${WORKFLOW_HOME}; fetching latest..."
-    git -C "${WORKFLOW_HOME}" fetch --depth 1 origin "${REPO_REF}"
-    git -C "${WORKFLOW_HOME}" reset --hard "origin/${REPO_REF}"
+    log "repo already present at ${TINYASSETS_HOME}; fetching latest..."
+    git -C "${TINYASSETS_HOME}" fetch --depth 1 origin "${REPO_REF}"
+    git -C "${TINYASSETS_HOME}" reset --hard "origin/${REPO_REF}"
 fi
-chown -R "${WORKFLOW_USER}:${WORKFLOW_USER}" "${WORKFLOW_HOME}"
+chown -R "${TINYASSETS_USER}:${TINYASSETS_USER}" "${TINYASSETS_HOME}"
 
 # Make the compose.yml reachable at the path the systemd unit expects.
-if [[ ! -f "${WORKFLOW_HOME}/compose.yml" ]]; then
-    ln -sf "${WORKFLOW_HOME}/deploy/compose.yml" "${WORKFLOW_HOME}/compose.yml"
+if [[ ! -f "${TINYASSETS_HOME}/compose.yml" ]]; then
+    ln -sf "${TINYASSETS_HOME}/deploy/compose.yml" "${TINYASSETS_HOME}/compose.yml"
 fi
 
-# ----- 5. /etc/workflow env directory -------------------------------------
+# ----- 5. /etc/tinyassets env directory -------------------------------------
 
 mkdir -p "${ENV_DIR}"
-chown "root:${WORKFLOW_USER}" "${ENV_DIR}"
+chown "root:${TINYASSETS_USER}" "${ENV_DIR}"
 chmod 750 "${ENV_DIR}"
 
 if [[ ! -f "${ENV_DIR}/env" ]]; then
     log "creating ${ENV_DIR}/env from template (DO NOT FORGET TO FILL IN)..."
-    cp "${WORKFLOW_HOME}/deploy/workflow-env.template" "${ENV_DIR}/env"
-    chown "root:${WORKFLOW_USER}" "${ENV_DIR}/env"
+    cp "${TINYASSETS_HOME}/deploy/tinyassets-env.template" "${ENV_DIR}/env"
+    chown "root:${TINYASSETS_USER}" "${ENV_DIR}/env"
     chmod 640 "${ENV_DIR}/env"
     log "  → edit ${ENV_DIR}/env and fill in CLOUDFLARE_TUNNEL_TOKEN + SUPABASE_* + GITHUB_OAUTH_* before starting the service"
 else
@@ -204,47 +204,47 @@ fi
 
 # ----- 6. systemd unit install --------------------------------------------
 
-SYSTEMD_UNIT="/etc/systemd/system/workflow-daemon.service"
+SYSTEMD_UNIT="/etc/systemd/system/tinyassets-daemon.service"
 if [[ ! -f "${SYSTEMD_UNIT}" ]] \
-   || ! cmp -s "${WORKFLOW_HOME}/deploy/workflow-daemon.service" "${SYSTEMD_UNIT}"; then
-    log "installing workflow-daemon.service..."
-    cp "${WORKFLOW_HOME}/deploy/workflow-daemon.service" "${SYSTEMD_UNIT}"
+   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-daemon.service" "${SYSTEMD_UNIT}"; then
+    log "installing tinyassets-daemon.service..."
+    cp "${TINYASSETS_HOME}/deploy/tinyassets-daemon.service" "${SYSTEMD_UNIT}"
     systemctl daemon-reload
-    systemctl enable workflow-daemon
+    systemctl enable tinyassets-daemon
     log "  daemon unit installed + enabled (NOT started — fill env first)"
 else
-    log "workflow-daemon.service already current"
+    log "tinyassets-daemon.service already current"
 fi
 
 # Row L — watchdog unit + timer. Enabled immediately because it's
 # idempotent even before the main daemon starts — it just records
 # reds + waits to cross threshold.
-WATCHDOG_UNIT="/etc/systemd/system/workflow-watchdog.service"
-WATCHDOG_TIMER="/etc/systemd/system/workflow-watchdog.timer"
+WATCHDOG_UNIT="/etc/systemd/system/tinyassets-watchdog.service"
+WATCHDOG_TIMER="/etc/systemd/system/tinyassets-watchdog.timer"
 watchdog_changed=0
 if [[ ! -f "${WATCHDOG_UNIT}" ]] \
-   || ! cmp -s "${WORKFLOW_HOME}/deploy/workflow-watchdog.service" "${WATCHDOG_UNIT}"; then
-    cp "${WORKFLOW_HOME}/deploy/workflow-watchdog.service" "${WATCHDOG_UNIT}"
+   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-watchdog.service" "${WATCHDOG_UNIT}"; then
+    cp "${TINYASSETS_HOME}/deploy/tinyassets-watchdog.service" "${WATCHDOG_UNIT}"
     watchdog_changed=1
 fi
 if [[ ! -f "${WATCHDOG_TIMER}" ]] \
-   || ! cmp -s "${WORKFLOW_HOME}/deploy/workflow-watchdog.timer" "${WATCHDOG_TIMER}"; then
-    cp "${WORKFLOW_HOME}/deploy/workflow-watchdog.timer" "${WATCHDOG_TIMER}"
+   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-watchdog.timer" "${WATCHDOG_TIMER}"; then
+    cp "${TINYASSETS_HOME}/deploy/tinyassets-watchdog.timer" "${WATCHDOG_TIMER}"
     watchdog_changed=1
 fi
 if [[ "${watchdog_changed}" -eq 1 ]]; then
-    log "installed workflow-watchdog service + timer"
+    log "installed tinyassets-watchdog service + timer"
     systemctl daemon-reload
-    systemctl enable --now workflow-watchdog.timer
+    systemctl enable --now tinyassets-watchdog.timer
 else
-    log "workflow-watchdog service + timer already current"
+    log "tinyassets-watchdog service + timer already current"
 fi
 
-# Scoped sudoers rule — workflow user gets NOPASSWD ONLY for
-# `systemctl restart workflow-daemon.service`. Watchdog needs this when
+# Scoped sudoers rule — tinyassets user gets NOPASSWD ONLY for
+# `systemctl restart tinyassets-daemon.service`. Watchdog needs this when
 # threshold is crossed. No other sudo privileges granted.
-SUDOERS_FILE="/etc/sudoers.d/workflow-watchdog"
-SUDOERS_RULE="${WORKFLOW_USER} ALL=(root) NOPASSWD:/usr/bin/systemctl restart workflow-daemon.service"
+SUDOERS_FILE="/etc/sudoers.d/tinyassets-watchdog"
+SUDOERS_RULE="${TINYASSETS_USER} ALL=(root) NOPASSWD:/usr/bin/systemctl restart tinyassets-daemon.service"
 if [[ ! -f "${SUDOERS_FILE}" ]] || ! grep -qF "${SUDOERS_RULE}" "${SUDOERS_FILE}"; then
     log "installing scoped sudoers rule for watchdog restart..."
     echo "${SUDOERS_RULE}" > "${SUDOERS_FILE}"
@@ -262,49 +262,49 @@ fi
 # STORAGEBOX_* env is blank, backup.sh exits 1 with a clear message.
 # Enable-on-install gives ops a one-step "fill the creds and it
 # backs up tonight" flow instead of a forgotten-enable trap.
-BACKUP_UNIT="/etc/systemd/system/workflow-backup.service"
-BACKUP_TIMER="/etc/systemd/system/workflow-backup.timer"
+BACKUP_UNIT="/etc/systemd/system/tinyassets-backup.service"
+BACKUP_TIMER="/etc/systemd/system/tinyassets-backup.timer"
 backup_changed=0
 if [[ ! -f "${BACKUP_UNIT}" ]] \
-   || ! cmp -s "${WORKFLOW_HOME}/deploy/workflow-backup.service" "${BACKUP_UNIT}"; then
-    cp "${WORKFLOW_HOME}/deploy/workflow-backup.service" "${BACKUP_UNIT}"
+   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-backup.service" "${BACKUP_UNIT}"; then
+    cp "${TINYASSETS_HOME}/deploy/tinyassets-backup.service" "${BACKUP_UNIT}"
     backup_changed=1
 fi
 if [[ ! -f "${BACKUP_TIMER}" ]] \
-   || ! cmp -s "${WORKFLOW_HOME}/deploy/workflow-backup.timer" "${BACKUP_TIMER}"; then
-    cp "${WORKFLOW_HOME}/deploy/workflow-backup.timer" "${BACKUP_TIMER}"
+   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-backup.timer" "${BACKUP_TIMER}"; then
+    cp "${TINYASSETS_HOME}/deploy/tinyassets-backup.timer" "${BACKUP_TIMER}"
     backup_changed=1
 fi
 if [[ "${backup_changed}" -eq 1 ]]; then
-    log "installed workflow-backup service + timer"
+    log "installed tinyassets-backup service + timer"
     systemctl daemon-reload
-    systemctl enable --now workflow-backup.timer
+    systemctl enable --now tinyassets-backup.timer
 else
-    log "workflow-backup service + timer already current"
+    log "tinyassets-backup service + timer already current"
 fi
 
 # Weekly docker image prune — prevents disk fill from accumulated image
 # tags (each deploy pulls ~1.78 GB; without pruning 20 deploys fills
 # a 25 GB Droplet).
-PRUNE_UNIT="/etc/systemd/system/workflow-prune.service"
-PRUNE_TIMER="/etc/systemd/system/workflow-prune.timer"
+PRUNE_UNIT="/etc/systemd/system/tinyassets-prune.service"
+PRUNE_TIMER="/etc/systemd/system/tinyassets-prune.timer"
 prune_changed=0
 if [[ ! -f "${PRUNE_UNIT}" ]] \
-   || ! cmp -s "${WORKFLOW_HOME}/deploy/workflow-prune.service" "${PRUNE_UNIT}"; then
-    cp "${WORKFLOW_HOME}/deploy/workflow-prune.service" "${PRUNE_UNIT}"
+   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-prune.service" "${PRUNE_UNIT}"; then
+    cp "${TINYASSETS_HOME}/deploy/tinyassets-prune.service" "${PRUNE_UNIT}"
     prune_changed=1
 fi
 if [[ ! -f "${PRUNE_TIMER}" ]] \
-   || ! cmp -s "${WORKFLOW_HOME}/deploy/workflow-prune.timer" "${PRUNE_TIMER}"; then
-    cp "${WORKFLOW_HOME}/deploy/workflow-prune.timer" "${PRUNE_TIMER}"
+   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-prune.timer" "${PRUNE_TIMER}"; then
+    cp "${TINYASSETS_HOME}/deploy/tinyassets-prune.timer" "${PRUNE_TIMER}"
     prune_changed=1
 fi
 if [[ "${prune_changed}" -eq 1 ]]; then
-    log "installed workflow-prune service + timer"
+    log "installed tinyassets-prune service + timer"
     systemctl daemon-reload
-    systemctl enable --now workflow-prune.timer
+    systemctl enable --now tinyassets-prune.timer
 else
-    log "workflow-prune service + timer already current"
+    log "tinyassets-prune service + timer already current"
 fi
 
 # ----- 7. swap file -------------------------------------------------------
@@ -361,13 +361,13 @@ Next steps (host action required):
      (See deploy/HETZNER-DEPLOY.md for which values go where.)
 
   2. Start the service:
-       sudo systemctl start workflow-daemon
+       sudo systemctl start tinyassets-daemon
 
   3. Tail logs:
-       sudo journalctl -u workflow-daemon -f
+       sudo journalctl -u tinyassets-daemon -f
 
   4. Verify canary green:
-       python3 ${WORKFLOW_HOME}/scripts/mcp_public_canary.py \\
+       python3 ${TINYASSETS_HOME}/scripts/mcp_public_canary.py \\
            --url https://tinyassets.io/mcp --verbose
 
   If the canary comes back exit 0 with [canary] OK, the self-host

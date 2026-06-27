@@ -1,16 +1,16 @@
 # Claude Plugin Packaging
 
 This directory contains the Workflow plugin marketplace surface plus the
-packaged `workflow-universe-server` plugin.
+packaged `tinyassets-universe-server` plugin.
 
 ## Core
 
-- [Plugin README](plugins/workflow-universe-server/README.md)
+- [Plugin README](plugins/tinyassets-universe-server/README.md)
 
 ## Structure
 
 - `.claude-plugin/marketplace.json` - marketplace manifest
-- `plugins/workflow-universe-server/` - packaged plugin contents
+- `plugins/tinyassets-universe-server/` - packaged plugin contents
 
 ## Notes
 

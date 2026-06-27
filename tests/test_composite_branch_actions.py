@@ -25,9 +25,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 def comp_env(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
-    monkeypatch.setenv("WORKFLOW_DATA_DIR", str(base))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from workflow import universe_server as us
+    from tinyassets import universe_server as us
 
     importlib.reload(us)
     yield us, base
@@ -298,8 +298,8 @@ def test_build_branch_preserves_explicit_non_strict_input_isolation(comp_env):
     capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
     assert capture["strict_input_isolation"] is False
 
-    from workflow.branches import BranchDefinition
-    from workflow.graph_compiler import compile_branch
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.graph_compiler import compile_branch
 
     prompts: list[str] = []
 
@@ -321,7 +321,7 @@ def test_build_branch_preserves_explicit_non_strict_input_isolation(comp_env):
 
 def test_build_branch_fork_from_inherits_parent_topology(comp_env):
     us, base = comp_env
-    from workflow.branch_versions import publish_branch_version
+    from tinyassets.branch_versions import publish_branch_version
 
     parent = _call(us, "build_branch", spec_json=json.dumps({
         **RECIPE_SPEC,
@@ -515,7 +515,7 @@ def test_patch_branch_publishes_versioned_snapshot(comp_env):
     assert result["branch_version_id"]
     assert result["parent_version_id"]
 
-    from workflow.branch_versions import get_branch_version
+    from tinyassets.branch_versions import get_branch_version
 
     parent = get_branch_version(base, result["parent_version_id"])
     version = get_branch_version(base, result["branch_version_id"])
@@ -751,7 +751,7 @@ def test_patch_branch_update_node_rejects_unknown_field(comp_env):
     built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
     bid = built["branch_def_id"]
 
-    from workflow.branch_versions import list_branch_versions
+    from tinyassets.branch_versions import list_branch_versions
 
     before_versions = list_branch_versions(base, bid, limit=10)
     result = _call(

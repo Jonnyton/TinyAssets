@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# backup-restore.sh — restore workflow-data from a remote snapshot.
+# backup-restore.sh — restore tinyassets-data from a remote snapshot.
 #
 # Self-host migration Row J per
 # docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
 #
 # Pulls a named (or latest) archive from the rclone remote and restores
-# it into the workflow-data Docker named volume. Stops the daemon before
+# it into the tinyassets-data Docker named volume. Stops the daemon before
 # restore and restarts it after.
 #
 # Usage:
@@ -14,18 +14,18 @@
 #   sudo bash deploy/backup-restore.sh --list              # list available
 #   DRY_RUN=1 sudo bash deploy/backup-restore.sh           # show plan only
 #
-# Required env (same as backup.sh — from /etc/workflow/env):
+# Required env (same as backup.sh — from /etc/tinyassets/env):
 #   BACKUP_DEST   rclone destination URL (same value used by backup.sh)
 #
 # Optional env:
-#   BACKUP_VOLUME    Docker volume name (default: workflow-data)
+#   BACKUP_VOLUME    Docker volume name (default: tinyassets-data)
 #   DRY_RUN          "1" to skip all mutations
-#   BACKUP_LOG       log file path (default: /var/log/workflow-backup.log)
+#   BACKUP_LOG       log file path (default: /var/log/tinyassets-backup.log)
 #
 # Exit codes:
 #   0  restore complete (or DRY_RUN=1). Data is extracted; caller is
 #      responsible for starting the daemon (normally `docker compose up
-#      -d daemon` or `systemctl restart workflow-daemon`). The restore
+#      -d daemon` or `systemctl restart tinyassets-daemon`). The restore
 #      script intentionally does NOT start services — the DR drill
 #      workflow's dedicated "Start compose on drill Droplet" step owns
 #      that with full retry + probe logic, and coupling them here caused
@@ -40,9 +40,9 @@
 
 set -euo pipefail
 
-BACKUP_VOLUME="${BACKUP_VOLUME:-workflow-data}"
+BACKUP_VOLUME="${BACKUP_VOLUME:-tinyassets-data}"
 DRY_RUN="${DRY_RUN:-0}"
-BACKUP_LOG="${BACKUP_LOG:-/var/log/workflow-backup.log}"
+BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
 
 TIMESTAMP_ARG=""
 LIST_MODE=0
@@ -65,7 +65,7 @@ log() {
 
 if [[ -z "${BACKUP_DEST:-}" ]]; then
     log "ERROR: BACKUP_DEST is not set"
-    log "Set it in /etc/workflow/env, e.g.: BACKUP_DEST=s3://my-bucket/workflow-backups"
+    log "Set it in /etc/tinyassets/env, e.g.: BACKUP_DEST=s3://my-bucket/tinyassets-backups"
     exit 1
 fi
 
@@ -82,7 +82,7 @@ fi
 # ----- 3. resolve archive -----------------------------------------------
 
 if [[ -n "${TIMESTAMP_ARG}" ]]; then
-    TAR_NAME="workflow-data-${TIMESTAMP_ARG}.tar.gz"
+    TAR_NAME="tinyassets-data-${TIMESTAMP_ARG}.tar.gz"
 else
     TAR_NAME="$(rclone lsf --format tp "${BACKUP_DEST}/" 2>/dev/null \
         | sort -r \
@@ -108,8 +108,8 @@ fi
 
 # ----- 4. stop daemon ---------------------------------------------------
 
-log "stopping workflow-daemon..."
-docker stop workflow-daemon 2>/dev/null || log "  daemon was not running"
+log "stopping tinyassets-daemon..."
+docker stop tinyassets-daemon 2>/dev/null || log "  daemon was not running"
 
 # ----- 5. download archive ----------------------------------------------
 
@@ -162,6 +162,6 @@ log "  extract OK"
 
 log "restore complete. Data extracted into ${VOLUME_DIR}."
 log "NEXT — start the daemon via one of:"
-log "  docker compose -f /opt/workflow/deploy/compose.yml up -d daemon"
-log "  systemctl restart workflow-daemon"
+log "  docker compose -f /opt/tinyassets/deploy/compose.yml up -d daemon"
+log "  systemctl restart tinyassets-daemon"
 exit 0

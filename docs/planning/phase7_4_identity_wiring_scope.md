@@ -5,7 +5,7 @@
 
 ## 1. Today's actor flow
 
-**Entry point:** `workflow/universe_server.py:162`
+**Entry point:** `tinyassets/universe_server.py:162`
 `_current_actor()` returns `os.environ.get("UNIVERSE_SERVER_USER",
 "anonymous")`. A single env var, read per-call. No session
 scoping, no request context, no MCP header threading.
@@ -18,7 +18,7 @@ defaults to it. `_current_actor_or_anon()` at :5797 is a goals
 surface wrapper with identical behavior.
 
 **Auth provider is implemented but unwired** per dev-2's audit §1.
-`workflow/auth/provider.py` has `DevAuthProvider` and
+`tinyassets/auth/provider.py` has `DevAuthProvider` and
 `OAuthProvider` classes plus an `Identity` dataclass (`user_id`,
 `username`, `display_name`, `is_host` — **no email field**). The
 dispatcher never consults the auth provider; `_current_actor()`
@@ -71,13 +71,13 @@ to `anonymous` when the actor is empty, "anonymous", or unsafe.
   via the explicit config knob (§5).
 
 **Non-email display name** ("Workflow User") is deliberate: it
-makes "this commit came from the Workflow daemon on behalf of an
+makes "this commit came from the TinyAssets daemon on behalf of an
 actor" legible in `git log --oneline`'s author column without the
 user having to read the email. The daemon is a participating
 author; the actor is encoded in the email local part.
 
 **Escape hatch for users who want full GitHub attribution:**
-`WORKFLOW_GIT_AUTHOR` env var (§5) overrides the composite format
+`TINYASSETS_GIT_AUTHOR` env var (§5) overrides the composite format
 entirely and accepts a raw `"Alice <alice@real.email>"` string.
 
 ## 3. Anonymous / session-less fallback
@@ -111,7 +111,7 @@ of lines Alice wrote, Bob on lines Bob added in a later patch.
 Correct behavior.
 
 **Edge case — Alice's clone is configured with her real GitHub
-identity via `WORKFLOW_GIT_AUTHOR`, Bob's isn't.** Then Alice's
+identity via `TINYASSETS_GIT_AUTHOR`, Bob's isn't.** Then Alice's
 commits carry her real email, Bob's carry the composite. They
 coexist in the same history. GitHub's commit-verification UI will
 show Alice's as verified (if she's GPG-signing) and Bob's as
@@ -123,7 +123,7 @@ Two env vars, layered:
 
 - **`UNIVERSE_SERVER_USER`** (existing) — the actor slug. Used for
   the ledger actor column AND feeds the composite author format.
-- **`WORKFLOW_GIT_AUTHOR`** (new in 7.4) — when set, overrides the
+- **`TINYASSETS_GIT_AUTHOR`** (new in 7.4) — when set, overrides the
   composite format entirely. Accepts a raw `Name <email>` string.
   When unset, the composite is used.
 
@@ -156,7 +156,7 @@ def test_git_author_attribution_for_create_branch(tmp_repo):
     assert "alice" in blame.author_email
 ```
 
-Parallel tests for `WORKFLOW_GIT_AUTHOR` override, for anonymous
+Parallel tests for `TINYASSETS_GIT_AUTHOR` override, for anonymous
 fallback, for slug sanitization. All four tests live in
 `tests/test_git_author_identity.py`.
 
@@ -164,20 +164,20 @@ fallback, for slug sanitization. All four tests live in
 
 **Scope:** one small module + a single wire-in point.
 
-- New file `workflow/identity.py` (or a function added to
-  `workflow/git_bridge.py` if keeping the surface tight).
+- New file `tinyassets/identity.py` (or a function added to
+  `tinyassets/git_bridge.py` if keeping the surface tight).
   Contents: `git_author() -> str` — returns the composite string
-  per §2, reading `WORKFLOW_GIT_AUTHOR` override first, falling
+  per §2, reading `TINYASSETS_GIT_AUTHOR` override first, falling
   back to `UNIVERSE_SERVER_USER`-derived composite.
 - Slug sanitizer: lowercase, ASCII-only, `[^a-z0-9-]` → `-`,
   collapse runs, strip leading/trailing hyphens, max 64 chars.
-  Same shape as `workflow/storage/layout.slugify` — can reuse it.
+  Same shape as `tinyassets/storage/layout.slugify` — can reuse it.
 - Wire `git_bridge.commit()` default parameter or call site:
   when caller doesn't pass `author=`, default to
   `identity.git_author()`.
 - Test file as §6.
 
-**Files:** `workflow/identity.py` (new), `workflow/git_bridge.py`
+**Files:** `tinyassets/identity.py` (new), `tinyassets/git_bridge.py`
 (one default arg wire-in), `tests/test_git_author_identity.py`
 (new).
 **Depends on:** G1 (git_bridge module exists).

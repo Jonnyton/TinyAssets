@@ -136,7 +136,7 @@ def test_mirror_parity_detects_mismatch(tmp_path, monkeypatch):
     canon = tmp_path / "workflow"
     mirror = (
         tmp_path / "packaging" / "claude-plugin" / "plugins"
-        / "workflow-universe-server" / "runtime" / "workflow"
+        / "tinyassets-universe-server" / "runtime" / "workflow"
     )
     canon.mkdir(parents=True)
     mirror.mkdir(parents=True)
@@ -158,7 +158,7 @@ def test_mirror_parity_clean_passes(tmp_path, monkeypatch):
     canon = tmp_path / "workflow"
     mirror = (
         tmp_path / "packaging" / "claude-plugin" / "plugins"
-        / "workflow-universe-server" / "runtime" / "workflow"
+        / "tinyassets-universe-server" / "runtime" / "workflow"
     )
     canon.mkdir(parents=True)
     mirror.mkdir(parents=True)
@@ -192,7 +192,7 @@ def test_mirror_parity_ignores_canonical_only_files(tmp_path, monkeypatch):
     canon = tmp_path / "workflow"
     mirror = (
         tmp_path / "packaging" / "claude-plugin" / "plugins"
-        / "workflow-universe-server" / "runtime" / "workflow"
+        / "tinyassets-universe-server" / "runtime" / "workflow"
     )
     canon.mkdir(parents=True)
     mirror.mkdir(parents=True)

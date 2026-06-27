@@ -1,10 +1,10 @@
-# R7a — Move Phase 7 Storage to `workflow/catalog/`
+# R7a — Move Phase 7 Storage to `tinyassets/catalog/`
 
 **Date:** 2026-04-19
 **Author:** navigator
 **Status:** Pre-staged dev-executable plan. Sequenced as **R7a in `docs/exec-plans/active/2026-04-19-refactor-dispatch-sequence.md`** — ships immediately before R7 (storage split).
-**Trigger:** Dev-flagged collision: `workflow/storage/` is currently occupied by Phase 7 git-native catalog backend, but PLAN.md §Module Layout reserves `storage/` for the daemon_server-split bounded-context modules. R7 (per `docs/exec-plans/active/2026-04-19-storage-package-split.md`) cannot proceed until the path is freed.
-**Verdict:** **Option C — re-home Phase 7 to `workflow/catalog/`.** Reasoning in §1.
+**Trigger:** Dev-flagged collision: `tinyassets/storage/` is currently occupied by Phase 7 git-native catalog backend, but PLAN.md §Module Layout reserves `storage/` for the daemon_server-split bounded-context modules. R7 (per `docs/exec-plans/active/2026-04-19-storage-package-split.md`) cannot proceed until the path is freed.
+**Verdict:** **Option C — re-home Phase 7 to `tinyassets/catalog/`.** Reasoning in §1.
 
 ---
 
@@ -12,9 +12,9 @@
 
 | Option | What it does | Verdict |
 |---|---|---|
-| **A — different dir for daemon_server split** (`workflow/host_db/`, `workflow/multiplayer/`) | Renames the R7 target away from `storage/`. Requires PLAN.md §Module Layout amendment (replacing `storage/` with new name in the 5-subpackage commitment). Phase 7 keeps its current path. | **Rejected.** PLAN.md just promoted (Q4 ratified, `#64`); amending §Module Layout the same day undermines the architectural commitment. The 5-subpackage names are user-facing PLAN.md commitments, not internal aliases — changing them on the first conflict signals the layout isn't load-bearing. |
+| **A — different dir for daemon_server split** (`tinyassets/host_db/`, `tinyassets/multiplayer/`) | Renames the R7 target away from `storage/`. Requires PLAN.md §Module Layout amendment (replacing `storage/` with new name in the 5-subpackage commitment). Phase 7 keeps its current path. | **Rejected.** PLAN.md just promoted (Q4 ratified, `#64`); amending §Module Layout the same day undermines the architectural commitment. The 5-subpackage names are user-facing PLAN.md commitments, not internal aliases — changing them on the first conflict signals the layout isn't load-bearing. |
 | **B — co-habit under `storage/`** | Phase 7 catalog-serialization + daemon_server bounded-contexts share the same package. | **Rejected.** Conflates two distinct shapes: Phase 7 is YAML-export-and-git-reconciliation (catalog interchange format); daemon_server-split is bounded-context storage (accounts, requests, etc., shared `_connect()`). Different consumers, different schemas, different test surfaces. Recreates the spaghetti the audit was meant to undo. |
-| **C — re-home Phase 7 to `workflow/catalog/`** | Phase 7 moves to `workflow/catalog/`. Frees `storage/` for daemon_server split. ~17 fan-in to update. | **RECOMMENDED.** See below. |
+| **C — re-home Phase 7 to `tinyassets/catalog/`** | Phase 7 moves to `tinyassets/catalog/`. Frees `storage/` for daemon_server split. ~17 fan-in to update. | **RECOMMENDED.** See below. |
 | **D (lead's 4th)** — Phase 7 moves DOWN under `storage/catalog/`; daemon_server-split goes to `storage/host_db/`; new `storage/backend.py` becomes a generic protocol | Conceptually clean ("storage = any durable mechanism"). Adds 2 nesting levels for everything. | **Rejected.** Existing `storage/backend.py` is NOT a generic protocol — it's specifically the StorageBackend protocol for the YAML-vs-SQLite-cache cutover (Phase 7 spec). Calling it `storage/backend.py` post-rename misleads future readers. Forcing it generic adds engineering work + maintains a name that no longer reflects the file's role. |
 
 **Why C wins on first principles:**
@@ -32,14 +32,14 @@
 
 | Old path | New path |
 |---|---|
-| `workflow/storage/__init__.py` | `workflow/catalog/__init__.py` |
-| `workflow/storage/backend.py` | `workflow/catalog/backend.py` |
-| `workflow/storage/layout.py` | `workflow/catalog/layout.py` |
-| `workflow/storage/serializer.py` | `workflow/catalog/serializer.py` |
-| `packaging/.../runtime/workflow/storage/__init__.py` | `packaging/.../runtime/workflow/catalog/__init__.py` (mirror) |
-| `packaging/.../runtime/workflow/storage/backend.py` | `packaging/.../runtime/workflow/catalog/backend.py` (mirror) |
-| `packaging/.../runtime/workflow/storage/layout.py` | `packaging/.../runtime/workflow/catalog/layout.py` (mirror) |
-| `packaging/.../runtime/workflow/storage/serializer.py` | `packaging/.../runtime/workflow/catalog/serializer.py` (mirror) |
+| `tinyassets/storage/__init__.py` | `tinyassets/catalog/__init__.py` |
+| `tinyassets/storage/backend.py` | `tinyassets/catalog/backend.py` |
+| `tinyassets/storage/layout.py` | `tinyassets/catalog/layout.py` |
+| `tinyassets/storage/serializer.py` | `tinyassets/catalog/serializer.py` |
+| `packaging/.../runtime/tinyassets/storage/__init__.py` | `packaging/.../runtime/tinyassets/catalog/__init__.py` (mirror) |
+| `packaging/.../runtime/tinyassets/storage/backend.py` | `packaging/.../runtime/tinyassets/catalog/backend.py` (mirror) |
+| `packaging/.../runtime/tinyassets/storage/layout.py` | `packaging/.../runtime/tinyassets/catalog/layout.py` (mirror) |
+| `packaging/.../runtime/tinyassets/storage/serializer.py` | `packaging/.../runtime/tinyassets/catalog/serializer.py` (mirror) |
 
 **8 file moves total** (4 canonical + 4 mirror). All `git mv`.
 
@@ -49,10 +49,10 @@
 
 | File | Current imports | New imports |
 |---|---|---|
-| `workflow/identity.py:28` | `from workflow.storage.layout import slugify` | `from workflow.catalog.layout import slugify` |
-| `workflow/storage/backend.py:33,34,644` | self-relative — collapse to `from workflow.catalog.layout import …` etc. (or `from .layout import` pattern if the file uses sibling imports) | mechanical |
-| `workflow/storage/__init__.py:26,36,37` | self-relative re-exports | mechanical retarget |
-| `workflow/universe_server.py:44,8298,8417,8536` | `from workflow.storage import (…)` and `from workflow.storage.layout import slugify` | `from workflow.catalog import (…)` / `from workflow.catalog.layout import slugify` |
+| `tinyassets/identity.py:28` | `from workflow.storage.layout import slugify` | `from workflow.catalog.layout import slugify` |
+| `tinyassets/storage/backend.py:33,34,644` | self-relative — collapse to `from workflow.catalog.layout import …` etc. (or `from .layout import` pattern if the file uses sibling imports) | mechanical |
+| `tinyassets/storage/__init__.py:26,36,37` | self-relative re-exports | mechanical retarget |
+| `tinyassets/universe_server.py:44,8298,8417,8536` | `from workflow.storage import (…)` and `from workflow.storage.layout import slugify` | `from workflow.catalog import (…)` / `from workflow.catalog.layout import slugify` |
 | `tests/test_backend_factory.py:19` | `from workflow.storage import (…)` | `from workflow.catalog import (…)` |
 | `tests/test_outcome_gate_git_backend.py:74,118,141,150,173,199,225` | mixed `workflow.storage.*` imports | mechanical retarget |
 | `tests/test_phase7_h2_goals_cutover.py:60,80,233` | `from workflow.storage import invalidate_backend_cache` | `from workflow.catalog import invalidate_backend_cache` |
@@ -61,25 +61,25 @@
 
 **Discipline:** all sweeps go through *new* paths (`workflow.catalog.*`). **No back-compat shim** — Phase 7 is internal infrastructure (tests + universe_server), no external consumers depend on the old path. Per "No Phased Migrations" rule, ship end-state, no transitional aliases.
 
-**Migration script:** `git grep -l 'from workflow\.storage\|workflow\.storage' --` + sed retarget. ~10-15 minutes mechanical.
+**Migration script:** `git grep -l 'from tinyassets\.storage\|tinyassets\.storage' --` + sed retarget. ~10-15 minutes mechanical.
 
 ---
 
 ## 4. Single atomic commit
 
-### Commit — `refactor: move Phase 7 storage to workflow/catalog/`
+### Commit — `refactor: move Phase 7 storage to tinyassets/catalog/`
 
 **Files:**
 - 4 canonical `git mv` operations.
 - 4 packaging-mirror `git mv` operations.
 - ~17 import call-site updates across canonical + mirror + tests.
-- Update `workflow/storage/__init__.py` references inside `__init__.py` body to `workflow.catalog`.
+- Update `tinyassets/storage/__init__.py` references inside `__init__.py` body to `workflow.catalog`.
 
 **Suggested commit message:**
 ```
-refactor: move Phase 7 storage to workflow/catalog/
+refactor: move Phase 7 storage to tinyassets/catalog/
 
-Resolves a R7-blocking name collision: workflow/storage/ was occupied
+Resolves a R7-blocking name collision: tinyassets/storage/ was occupied
 by Phase 7 git-native catalog backend (YAML+SQLite cache for the
 github_as_catalog export path), but PLAN.md §Module Layout reserves
 storage/ for the daemon_server bounded-context split (R7).
@@ -92,7 +92,7 @@ word. Renaming aligns the path with the actual responsibility.
 - 8 file moves (4 canonical + 4 mirror).
 - ~17 import call-sites retargeted to workflow.catalog.*.
 - Zero behavior change. No shim — no external consumers.
-- Frees workflow/storage/ for R7 daemon_server split.
+- Frees tinyassets/storage/ for R7 daemon_server split.
 
 R7a in docs/exec-plans/active/2026-04-19-refactor-dispatch-sequence.md.
 ```
@@ -114,9 +114,9 @@ R7a in docs/exec-plans/active/2026-04-19-refactor-dispatch-sequence.md.
 
 ## 6. PLAN.md §Module Layout — does it need updating?
 
-**No.** PLAN.md §Module Layout already lists `workflow/storage/` as the canonical home for bounded-context storage layers (the daemon_server-split target). It does NOT mention Phase 7 or catalog work. Re-homing Phase 7 to `workflow/catalog/` doesn't contradict the §Module Layout commitment — it CLARIFIES it.
+**No.** PLAN.md §Module Layout already lists `tinyassets/storage/` as the canonical home for bounded-context storage layers (the daemon_server-split target). It does NOT mention Phase 7 or catalog work. Re-homing Phase 7 to `tinyassets/catalog/` doesn't contradict the §Module Layout commitment — it CLARIFIES it.
 
-However, **PLAN.md §Module Layout is incomplete** by not naming `workflow/catalog/`. After R7a lands, recommend a small PLAN.md amendment adding `workflow/catalog/` as a recognized subpackage (alongside auth/, checkpointing/, evaluation/, etc. — the "existing subpackages that already conform" list).
+However, **PLAN.md §Module Layout is incomplete** by not naming `tinyassets/catalog/`. After R7a lands, recommend a small PLAN.md amendment adding `tinyassets/catalog/` as a recognized subpackage (alongside auth/, checkpointing/, evaluation/, etc. — the "existing subpackages that already conform" list).
 
 **Specific amendment** (post-R7a):
 > Add to PLAN.md §Module Layout's "Existing subpackages that already conform" line:
@@ -147,9 +147,9 @@ R7a is mechanical, low-risk, ~30 min. Adds zero meaningful delay to R7 dispatch.
 
 ## 8. Update needed for R7 spec itself
 
-`docs/exec-plans/active/2026-04-19-storage-package-split.md` currently assumes `workflow/storage/` is empty. Add a one-line dependency note:
+`docs/exec-plans/active/2026-04-19-storage-package-split.md` currently assumes `tinyassets/storage/` is empty. Add a one-line dependency note:
 
-> **Depends on R7a (`2026-04-19-r7a-phase7-to-catalog.md`)** — frees `workflow/storage/` from Phase 7 catalog backend before R7 splits daemon_server into storage/ context modules.
+> **Depends on R7a (`2026-04-19-r7a-phase7-to-catalog.md`)** — frees `tinyassets/storage/` from Phase 7 catalog backend before R7 splits daemon_server into storage/ context modules.
 
 Doing this in the same nav turn as this R7a spec.
 
@@ -157,7 +157,7 @@ Doing this in the same nav turn as this R7a spec.
 
 ## 9. Summary for dispatcher
 
-- **R7a verdict: Option C (re-home Phase 7 to `workflow/catalog/`).** HIGH confidence, driven by spec name + responsibility shape, not taste.
+- **R7a verdict: Option C (re-home Phase 7 to `tinyassets/catalog/`).** HIGH confidence, driven by spec name + responsibility shape, not taste.
 - **Single atomic commit, ~30 min dev work.** 8 file moves + ~17 import retargets + optional 1-line PLAN.md amendment.
 - **Zero behavior change.** No shim (no external consumers).
 - **R7 unblocked** post-R7a.

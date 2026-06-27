@@ -12,7 +12,7 @@ from typing import Annotated
 
 from typing_extensions import TypedDict
 
-from workflow.universe_state import DomainNeutralUniverseState
+from tinyassets.universe_state import DomainNeutralUniverseState
 
 
 class ExecutionEnvelope(TypedDict):

@@ -32,8 +32,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from workflow.branches import BranchDefinition, NodeDefinition
-from workflow.providers.base import (
+from tinyassets.branches import BranchDefinition, NodeDefinition
+from tinyassets.providers.base import (
     SandboxUnavailableError,
     check_bwrap_failure,
     probe_sandbox_available,
@@ -195,7 +195,7 @@ class TestProbeSandboxAvailable:
 
 class TestGetSandboxStatusCaching:
     def test_probe_called_once_across_multiple_calls(self):
-        import workflow.providers.base as base_mod
+        import tinyassets.providers.base as base_mod
         original_cache = base_mod._sandbox_probe_cache
         try:
             base_mod._sandbox_probe_cache = None
@@ -248,10 +248,10 @@ class TestNodeDefinitionRequiresSandbox:
 
 class TestExtBranchValidateSandboxWarnings:
     def _call_validate(self, branch_dict: dict, bwrap_status: dict) -> dict:
-        from workflow.api.branches import _ext_branch_validate
+        from tinyassets.api.branches import _ext_branch_validate
 
-        with patch("workflow.daemon_server.get_branch_definition", return_value=branch_dict):
-            with patch("workflow.providers.base.get_sandbox_status", return_value=bwrap_status):
+        with patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict):
+            with patch("tinyassets.providers.base.get_sandbox_status", return_value=bwrap_status):
                 return json.loads(_ext_branch_validate({"branch_def_id": "b1"}))
 
     def test_warns_when_sandbox_unavailable_and_sandbox_node(self):
@@ -284,14 +284,14 @@ class TestExtBranchValidateSandboxWarnings:
         assert result["sandbox_warnings"] == []
 
     def test_missing_branch_returns_error(self):
-        from workflow.api.branches import _ext_branch_validate
+        from tinyassets.api.branches import _ext_branch_validate
 
-        with patch("workflow.daemon_server.get_branch_definition", side_effect=KeyError("b1")):
+        with patch("tinyassets.daemon_server.get_branch_definition", side_effect=KeyError("b1")):
             result = json.loads(_ext_branch_validate({"branch_def_id": "b1"}))
         assert "error" in result
 
     def test_missing_branch_def_id_returns_error(self):
-        from workflow.api.branches import _ext_branch_validate
+        from tinyassets.api.branches import _ext_branch_validate
 
         result = json.loads(_ext_branch_validate({}))
         assert "error" in result
@@ -303,9 +303,9 @@ class TestExtBranchValidateSandboxWarnings:
 
 class TestExtBranchListSandboxFilter:
     def _call_list(self, rows: list[dict], rs_filter: str = "") -> dict:
-        from workflow.api.branches import _ext_branch_list
+        from tinyassets.api.branches import _ext_branch_list
 
-        with patch("workflow.daemon_server.list_branch_definitions", return_value=rows):
+        with patch("tinyassets.daemon_server.list_branch_definitions", return_value=rows):
             kwargs: dict = {}
             if rs_filter:
                 kwargs["requires_sandbox"] = rs_filter
@@ -363,16 +363,16 @@ class TestExtBranchListSandboxFilter:
 
 class TestGetStatusSandboxStatus:
     def test_sandbox_status_key_present(self):
-        from workflow.universe_server import get_status
+        from tinyassets.universe_server import get_status
         fake_status = {"bwrap_available": False, "reason": "test host"}
-        with patch("workflow.providers.base.get_sandbox_status", return_value=fake_status):
+        with patch("tinyassets.providers.base.get_sandbox_status", return_value=fake_status):
             result = json.loads(get_status())
         assert "sandbox_status" in result
         assert result["sandbox_status"]["bwrap_available"] is False
 
     def test_sandbox_status_survives_probe_exception(self):
-        from workflow.universe_server import get_status
-        _target = "workflow.providers.base.get_sandbox_status"
+        from tinyassets.universe_server import get_status
+        _target = "tinyassets.providers.base.get_sandbox_status"
         with patch(_target, side_effect=RuntimeError("probe fail")):
             result = json.loads(get_status())
         assert "sandbox_status" in result
@@ -402,8 +402,8 @@ def _make_proc_mock(returncode: int, stdout: bytes, stderr: bytes) -> MagicMock:
 
 class TestClaudeProviderBwrapDetection:
     def test_raises_sandbox_unavailable_on_bwrap_stderr(self):
-        from workflow.providers.base import ModelConfig
-        from workflow.providers.claude_provider import ClaudeProvider
+        from tinyassets.providers.base import ModelConfig
+        from tinyassets.providers.claude_provider import ClaudeProvider
 
         bwrap_stderr = b"bwrap: No permissions to create a new namespace\n"
         proc = _make_proc_mock(returncode=0, stdout=b"some output", stderr=bwrap_stderr)
@@ -420,8 +420,8 @@ class TestClaudeProviderBwrapDetection:
                         asyncio.run(provider.complete("hello", "", ModelConfig()))
 
     def test_normal_stderr_does_not_raise(self):
-        from workflow.providers.base import ModelConfig
-        from workflow.providers.claude_provider import ClaudeProvider
+        from tinyassets.providers.base import ModelConfig
+        from tinyassets.providers.claude_provider import ClaudeProvider
 
         proc = _make_proc_mock(returncode=0, stdout=b"response text", stderr=b"normal warning")
 
@@ -439,8 +439,8 @@ class TestClaudeProviderBwrapDetection:
 
 class TestCodexProviderBwrapDetection:
     def test_raises_sandbox_unavailable_on_bwrap_stderr(self):
-        from workflow.providers.base import ModelConfig
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.base import ModelConfig
+        from tinyassets.providers.codex_provider import CodexProvider
 
         bwrap_stderr = b"bwrap: No permissions to create a new namespace\n"
         proc = _make_proc_mock(returncode=0, stdout=b"some output", stderr=bwrap_stderr)
@@ -457,8 +457,8 @@ class TestCodexProviderBwrapDetection:
                         asyncio.run(provider.complete("hello", "", ModelConfig()))
 
     def test_normal_stderr_does_not_raise(self):
-        from workflow.providers.base import ModelConfig
-        from workflow.providers.codex_provider import CodexProvider
+        from tinyassets.providers.base import ModelConfig
+        from tinyassets.providers.codex_provider import CodexProvider
 
         proc = _make_proc_mock(returncode=0, stdout=b"codex output", stderr=b"info log")
 

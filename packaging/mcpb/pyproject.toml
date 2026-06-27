@@ -3,11 +3,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "workflow-universe-server-mcpb"
+name = "tinyassets-universe-server-mcpb"
 version = "0.1.0"
-description = "Bundled runtime for the Workflow Server MCP bundle (auto-built from workflow/)."
+description = "Bundled runtime for the TinyAssets Server MCP bundle (auto-built from tinyassets/)."
 requires-python = ">=3.11"
-# Dep set is the MCP control-plane subset of workflow/'s pyproject.toml.
+# Dep set is the MCP control-plane subset of tinyassets/'s pyproject.toml.
 # Heavy domain-execution deps (lancedb, igraph, clingo, spacy, pystray,
 # pillow) are intentionally omitted: the MCP bundle exposes branch /
 # goal / gates / universe-status surfaces, not the per-domain daemon

@@ -2,7 +2,7 @@
 
 **Status:** Superseded 2026-04-12 by the GitHub-as-catalog direction. Retained as historical reference in case the hosted-runtime path ever becomes relevant. See `docs/research/github_as_catalog.md` for the shipping direction.
 
-Reference for running Workflow daemons on always-on shared infrastructure: any number of users, any number of daemons, host's machine OFF. Hybrid by default — when a user's desktop tray is online, it becomes a worker; when offline, cloud picks up. Self-host stays available but is no longer the only path. All costs are rough order-of-magnitude; items marked **unconfirmed** need live verification.
+Reference for running TinyAssets daemons on always-on shared infrastructure: any number of users, any number of daemons, host's machine OFF. Hybrid by default — when a user's desktop tray is online, it becomes a worker; when offline, cloud picks up. Self-host stays available but is no longer the only path. All costs are rough order-of-magnitude; items marked **unconfirmed** need live verification.
 
 Current runtime per universe (observed at `output/default-universe/`): `checkpoints.db` (LangGraph SqliteSaver), `knowledge.db`, `story.db`, `world_state.db`, LanceDB vector dir, plus prose/notes files. Roughly 4 SQLite DBs + 1 LanceDB + filesystem artifacts per universe. Multiple universes per user are expected.
 
@@ -32,7 +32,7 @@ Current runtime per universe (observed at `output/default-universe/`): `checkpoi
 | Turso (libSQL) | Per-tenant logical DB, 500 free | **Unconfirmed** libSQL compatibility | No | Medium |
 | LiteFS (Fly.io) | Distributed SQLite replication | Yes | No | Medium |
 
-**Recommendation:** Phase 1 per-tenant dir on Fly volume. Phase 2 swap to `PostgresSaver` (LangGraph-upstream, respects the SqliteSaver-not-Async hard rule), LanceDB per-tenant on object storage with local cache. LanceDB singleton in `workflow/retrieval/vector_store.py` must become per-tenant-keyed.
+**Recommendation:** Phase 1 per-tenant dir on Fly volume. Phase 2 swap to `PostgresSaver` (LangGraph-upstream, respects the SqliteSaver-not-Async hard rule), LanceDB per-tenant on object storage with local cache. LanceDB singleton in `tinyassets/retrieval/vector_store.py` must become per-tenant-keyed.
 
 ## 3. Auth (OAuth 2.1 + DCR per MCP spec 2025-03-26)
 
@@ -51,7 +51,7 @@ Current runtime per universe (observed at `output/default-universe/`): `checkpoi
 
 Enforcement points in current codebase:
 - **LLM tokens:** provider router with per-tenant counter (Redis/Upstash).
-- **Concurrent runs:** `workflow/runs.py` semaphore per tenant.
+- **Concurrent runs:** `tinyassets/runs.py` semaphore per tenant.
 - **Storage:** on-write check of per-tenant dir size.
 - **Request rate:** Cloudflare in front.
 

@@ -87,7 +87,7 @@ const LOG = [
     date: "4 Jun 2026",
     title: "First real change shipped end-to-end.",
     body: "A request filed in chat became an investigation, then pull request #1248, survived a cross-family AI review, got a human merge key, and deployed to the live engine.",
-    tick: { href: "https://github.com/Jonnyton/Workflow/pull/1248", label: "PR #1248", external: true }
+    tick: { href: "https://github.com/Jonnyton/TinyAssets/pull/1248", label: "PR #1248", external: true }
   },
   {
     date: "5 Jun 2026",
@@ -98,7 +98,7 @@ const LOG = [
     date: "5–9 Jun 2026",
     title: "Asleep while the repairs waited.",
     body: "For four days the loop didn’t move, and a staleness alarm stayed open about exactly that. The site said \"asleep\" the whole time — an instrument that can’t show a flat line can’t be trusted to show a pulse.",
-    tick: { href: "https://github.com/Jonnyton/Workflow/issues?q=is%3Aissue+label%3Ap0-outage", label: "canary alarm trail", external: true }
+    tick: { href: "https://github.com/Jonnyton/TinyAssets/issues?q=is%3Aissue+label%3Ap0-outage", label: "canary alarm trail", external: true }
   }
 ];
 
@@ -213,7 +213,7 @@ export default function HomeClient() {
             </p>
             <p className="cover__naming">
               Formally: <strong>Tiny</strong> is the public face of{" "}
-              <strong>Workflow</strong>, an open-source engine. One body, two names.
+              <strong>TinyAssets</strong>, an open-source engine.
             </p>
             <div className="cover__actions">
               <a className="btn btn--primary" href="/start">Put me to work →</a>
@@ -305,7 +305,7 @@ export default function HomeClient() {
                 a human key. Or clone the engine and work on it directly.
               </p>
               <a className="path__cta" href="/build">ways to contribute →</a>
-              <a className="path__cta path__cta--alt" href="https://github.com/Jonnyton/Workflow" target="_blank" rel="noreferrer">Workflow on GitHub ↗</a>
+              <a className="path__cta path__cta--alt" href="https://github.com/Jonnyton/TinyAssets" target="_blank" rel="noreferrer">TinyAssets on GitHub ↗</a>
               <p className="path__voice voice">— every patch makes me start smarter.</p>
             </li>
           </ul>

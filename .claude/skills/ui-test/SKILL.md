@@ -1,19 +1,19 @@
 ---
 name: ui-test
-description: Simulate a Claude.ai or ChatGPT user driving the Workflow daemon via the custom MCP connector. Use when testing the live end-user surface. Codex/OpenAI-family sessions use Claude.ai through the Codex in-app browser when available; Claude Code may use its CDP-backed Chrome route; Anthropic/Cowork may use ChatGPT. Type into the real chatbot UI, read the real rendered response, and log to a shared md with the lead. No MCP bypass. No browser tricks a human user could not do.
+description: Simulate a Claude.ai or ChatGPT user driving the TinyAssets daemon via the custom MCP connector. Use when testing the live end-user surface. Codex/OpenAI-family sessions use Claude.ai through the Codex in-app browser when available; Claude Code may use its CDP-backed Chrome route; Anthropic/Cowork may use ChatGPT. Type into the real chatbot UI, read the real rendered response, and log to a shared md with the lead. No MCP bypass. No browser tricks a human user could not do.
 ---
 
 # ui-test
 
-You simulate a real person chatting with Claude.ai or ChatGPT on their phone or laptop, using the Workflow MCP connector at `https://tinyassets.io/mcp` (the canonical URL installed by users). You do **not** call the MCP directly. You do **not** parse DOM metadata that a human user cannot see. You type into the chat box. You read the rendered response. You log what happened.
+You simulate a real person chatting with Claude.ai or ChatGPT on their phone or laptop, using the TinyAssets MCP connector at `https://tinyassets.io/mcp` (the canonical URL installed by users). You do **not** call the MCP directly. You do **not** parse DOM metadata that a human user cannot see. You type into the chat box. You read the rendered response. You log what happened.
 
 The human host is watching the browser tab. Your job is to look like a naive, curious user — one who does not know tool names, action parameters, or anything about the system's internals. If the chatbot doesn't understand you, that's a finding, not a problem to route around.
 
 ## Driver routes
 
 - **Codex / OpenAI-family route:** use the Codex in-app browser to open or continue `https://claude.ai/`. If the app context already shows a Claude.ai conversation, use that visible tab. Do not block this route on `scripts/claude_chat.py`, Chrome CDP, or `localhost:9222`; those are Claude Code harness details, not Codex in-app browser requirements.
-- **Claude Code route:** use the visible Chrome profile through `scripts/claude_chat.py`. This remains the default route for Claude team user-sim. Host-login Claude.ai access is not the proof requirement; Claude.ai is valid when a real browser session can use the Workflow connector.
-- **Anthropic / Cowork ChatGPT route:** when an Anthropic-family driver has browser or computer control, use ChatGPT when Developer Mode is enabled and the Workflow connector is added/visible in that same session. Do not verify in an isolated browser profile unless the host explicitly says that profile is the user-installed connector state. Claude Code on Windows can drive this route via `scripts/chatgpt_chat.py` (sibling of `claude_chat.py`, same CDP at `localhost:9222`, reuses the Chrome profile).
+- **Claude Code route:** use the visible Chrome profile through `scripts/claude_chat.py`. This remains the default route for Claude team user-sim. Host-login Claude.ai access is not the proof requirement; Claude.ai is valid when a real browser session can use the TinyAssets connector.
+- **Anthropic / Cowork ChatGPT route:** when an Anthropic-family driver has browser or computer control, use ChatGPT when Developer Mode is enabled and the TinyAssets connector is added/visible in that same session. Do not verify in an isolated browser profile unless the host explicitly says that profile is the user-installed connector state. Claude Code on Windows can drive this route via `scripts/chatgpt_chat.py` (sibling of `claude_chat.py`, same CDP at `localhost:9222`, reuses the Chrome profile).
 
 ## Proof standard
 
@@ -27,7 +27,7 @@ Every MCP tool the substrate exposes is consumed by both ChatGPT (OpenAI Apps SD
 
 Run the same call through both clients and verify clean response (no wedge, no 424, no silent timeout):
 
-1. **ChatGPT (Apps SDK strict surface)** — Developer Mode + Workflow connector + same MCP server. Test substrate-changing call (e.g., `wiki action=write`, `universe action=submit_request`).
+1. **ChatGPT (Apps SDK strict surface)** — Developer Mode + TinyAssets connector + same MCP server. Test substrate-changing call (e.g., `wiki action=write`, `universe action=submit_request`).
 2. **Claude.ai (Anthropic MCP)** — same connector, same call. Verify final rendered response includes both the tool result AND any post-call narration.
 
 If either client wedges, errors, or silently times out on a shape the other accepts, **treat as substrate bug** — fix the response shape, not the client expectation.
@@ -78,7 +78,7 @@ Codex is mechanically good at browser operation, but must not massage the chatbo
 
 ## Claude Code CDP setup
 
-Host one-time setup (Chrome launched with `--remote-debugging-port=9222` + the Workflow connector) — full command in `references/preflight-and-setup.md`. **Operational rule (Claude Code route): if `python scripts/claude_chat.py status` returns non-zero, the CDP-backed browser is down — SendMessage the lead and wait; do not proceed.** Not applicable to the Codex in-app browser route.
+Host one-time setup (Chrome launched with `--remote-debugging-port=9222` + the TinyAssets connector) — full command in `references/preflight-and-setup.md`. **Operational rule (Claude Code route): if `python scripts/claude_chat.py status` returns non-zero, the CDP-backed browser is down — SendMessage the lead and wait; do not proceed.** Not applicable to the Codex in-app browser route.
 
 ## CRITICAL — TAB HYGIENE (forever rule, every step)
 
@@ -95,7 +95,7 @@ This rule supersedes convenience. A stalled mission is better than a mission the
 
 ## CRITICAL — watch for the connector's per-tool approval dialog
 
-The Workflow MCP connector pops a per-tool approval dialog the FIRST time Claude.ai tries to invoke each tool name (`universe`, `extensions`, `wiki`, `goals`, `gates`, etc.). The dialog **does not always appear on the first prompt** — it fires whenever the bot decides to call a tool name it hasn't called this session. So a dialog could fire mid-mission, on prompt 4, when the bot decides to use `extensions` for the first time after only using `universe`.
+The TinyAssets MCP connector pops a per-tool approval dialog the FIRST time Claude.ai tries to invoke each tool name (`universe`, `extensions`, `wiki`, `goals`, `gates`, etc.). The dialog **does not always appear on the first prompt** — it fires whenever the bot decides to call a tool name it hasn't called this session. So a dialog could fire mid-mission, on prompt 4, when the bot decides to use `extensions` for the first time after only using `universe`.
 
 If you don't check the **"Always allow"** / **"Don't ask again for this tool"** option before clicking Approve, every subsequent call to that same tool re-prompts and your mission stalls in a slow approval loop.
 
@@ -163,7 +163,7 @@ Good test domains share: multi-step graph, state across steps, memory/retrieval 
 
 ## CRITICAL — Anchor every chat in the connector
 
-If your opening prompt doesn't pull the chatbot into the Workflow connector context, the bot will answer as a general assistant and never touch our MCP. That tests the base chatbot, not Workflow — worthless.
+If your opening prompt doesn't pull the chatbot into the TinyAssets connector context, the bot will answer as a general assistant and never touch our MCP. That tests the base chatbot, not Workflow — worthless.
 
 **Rule: every new chat begins with an opening prompt that explicitly references the connector.** Examples:
 
@@ -378,8 +378,8 @@ These are the only triggers that stop the mission outright. Everything else gets
 
 - Lead writes `LEAD STOP` or sends a stop message -> stop immediately. No "relaxed pace."
 - Claude Code route only: `claude_chat.py status` starts failing -> stop, SendMessage. (CDP is route-specific; does not apply to Codex.)
-- Codex in-app browser route only: the in-app browser becomes unavailable, leaves the visible Claude.ai mission tab, or cannot show the Workflow connector -> stop and log the exact harness blocker.
-- Anthropic / Cowork ChatGPT route only: ChatGPT browser context lost or Workflow connector becomes invisible in the Developer Mode composer -> stop and log the harness blocker.
+- Codex in-app browser route only: the in-app browser becomes unavailable, leaves the visible Claude.ai mission tab, or cannot show the TinyAssets connector -> stop and log the exact harness blocker.
+- Anthropic / Cowork ChatGPT route only: ChatGPT browser context lost or TinyAssets connector becomes invisible in the Developer Mode composer -> stop and log the harness blocker.
 - Bot refuses or errors repeatedly across multiple probes (not just one) -> stop and SendMessage; the repeated cross-probe failure is the signal, not any single bot reply.
 
 ## Never

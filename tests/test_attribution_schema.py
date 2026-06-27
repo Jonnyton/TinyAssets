@@ -1,4 +1,4 @@
-"""Tests for workflow.attribution schema — DDL, dataclasses, N-generation chains."""
+"""Tests for tinyassets.attribution schema — DDL, dataclasses, N-generation chains."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from workflow.attribution import (
+from tinyassets.attribution import (
     AttributionCredit,
     AttributionEdge,
     RemixProvenance,

@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from workflow.catalog import YamlRepoLayout
-from workflow.catalog.layout import slugify
+from tinyassets.catalog import YamlRepoLayout
+from tinyassets.catalog.layout import slugify
 
 
 def test_branch_path_goes_under_branches(tmp_path):
     layout = YamlRepoLayout(tmp_path)
     assert layout.branch_path("my-workflow") == (
-        tmp_path / "branches" / "my-workflow.yaml"
+        tmp_path / "branches" / "my-tinyassets.yaml"
     ).resolve()
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.runs import (
+from tinyassets.runs import (
     ack_teammate_message,
     create_run,
     initialize_runs_db,
@@ -359,10 +359,10 @@ class TestPlanApprovalFlow:
 
 class TestMessagingMcpActions:
     def test_messaging_send_action(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         run_id = _seed_run(tmp_path)
 
-        from workflow.universe_server import extensions
+        from tinyassets.universe_server import extensions
         result = json.loads(extensions(
             action="messaging_send",
             from_run_id=run_id,
@@ -374,10 +374,10 @@ class TestMessagingMcpActions:
         assert "delivered_at" in result
 
     def test_messaging_receive_action(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         run_id = _seed_run(tmp_path)
 
-        from workflow.universe_server import extensions
+        from tinyassets.universe_server import extensions
         extensions(
             action="messaging_send",
             from_run_id=run_id,
@@ -389,10 +389,10 @@ class TestMessagingMcpActions:
         assert result["count"] == 1
 
     def test_messaging_ack_action(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         run_id = _seed_run(tmp_path)
 
-        from workflow.universe_server import extensions
+        from tinyassets.universe_server import extensions
         send_result = json.loads(extensions(
             action="messaging_send",
             from_run_id=run_id,
@@ -408,16 +408,16 @@ class TestMessagingMcpActions:
         assert "acked_at" in ack_result
 
     def test_unknown_action_lists_messaging_actions(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-        from workflow.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        from tinyassets.universe_server import extensions
         result = json.loads(extensions(action="nonexistent_action_xyz"))
         assert "messaging_send" in result.get("available_actions", [])
         assert "messaging_receive" in result.get("available_actions", [])
         assert "messaging_ack" in result.get("available_actions", [])
 
     def test_send_with_bad_body_json_returns_error(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKFLOW_DATA_DIR", str(tmp_path))
-        from workflow.universe_server import extensions
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        from tinyassets.universe_server import extensions
         result = json.loads(extensions(
             action="messaging_send",
             from_run_id="any",
@@ -450,7 +450,7 @@ class TestSendMessageSpec:
     """
 
     def test_send_message_spec_writes_row(self, tmp_path):
-        from workflow.graph_compiler import compile_send_message_spec
+        from tinyassets.graph_compiler import compile_send_message_spec
 
         run_id = _seed_run(tmp_path)
         result = compile_send_message_spec(
@@ -466,7 +466,7 @@ class TestSendMessageSpec:
         assert messages[0]["message_type"] == "broadcast"
 
     def test_send_message_spec_generates_server_side_message_id(self, tmp_path):
-        from workflow.graph_compiler import compile_send_message_spec
+        from tinyassets.graph_compiler import compile_send_message_spec
 
         run_id = _seed_run(tmp_path)
         result = compile_send_message_spec(
@@ -481,7 +481,7 @@ class TestSendMessageSpec:
         assert len(result["message_id"]) > 0
 
     def test_send_message_spec_rejects_phantom_run_id(self, tmp_path):
-        from workflow.graph_compiler import compile_send_message_spec
+        from tinyassets.graph_compiler import compile_send_message_spec
 
         with pytest.raises(Exception):
             compile_send_message_spec(
@@ -501,7 +501,7 @@ class TestReceiveMessagesSpec:
     """
 
     def test_receive_messages_spec_returns_matching_rows(self, tmp_path):
-        from workflow.graph_compiler import compile_receive_messages_spec
+        from tinyassets.graph_compiler import compile_receive_messages_spec
 
         run_id = _seed_run(tmp_path)
         post_teammate_message(
@@ -523,7 +523,7 @@ class TestReceiveMessagesSpec:
     def test_receive_messages_spec_timeout0_returns_empty_when_no_messages(
         self, tmp_path
     ):
-        from workflow.graph_compiler import compile_receive_messages_spec
+        from tinyassets.graph_compiler import compile_receive_messages_spec
 
         _seed_run(tmp_path)
         result = compile_receive_messages_spec(
@@ -535,7 +535,7 @@ class TestReceiveMessagesSpec:
         assert result["messages"] == []
 
     def test_receive_messages_spec_returns_in_step_index_order(self, tmp_path):
-        from workflow.graph_compiler import compile_receive_messages_spec
+        from tinyassets.graph_compiler import compile_receive_messages_spec
 
         run_id = _seed_run(tmp_path)
         post_teammate_message(
@@ -558,7 +558,7 @@ class TestReceiveMessagesSpec:
         assert messages[1]["body"]["seq"] == 2
 
     def test_cross_run_isolation(self, tmp_path):
-        from workflow.graph_compiler import compile_receive_messages_spec
+        from tinyassets.graph_compiler import compile_receive_messages_spec
 
         run_a = _seed_run(tmp_path)
         run_b = create_run(
@@ -589,8 +589,8 @@ class TestSendMessageSpecCompileTimeValidation:
     """Compile-time validation: recipient_node_id not in branch raises error."""
 
     def test_unknown_recipient_raises_at_compile_time(self, tmp_path):
-        from workflow.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
-        from workflow.graph_compiler import validate_message_recipients
+        from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+        from tinyassets.graph_compiler import validate_message_recipients
 
         nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")
         branch = BranchDefinition(

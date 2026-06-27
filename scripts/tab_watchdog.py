@@ -17,7 +17,7 @@ Usage:
 
 If the CDP endpoint is unreachable (Chrome not launched), the watchdog
 sleeps and retries — it never raises. Intended to be launched by
-workflow_tray at session start, but safe to run standalone too.
+tinyassets_tray at session start, but safe to run standalone too.
 """
 
 from __future__ import annotations

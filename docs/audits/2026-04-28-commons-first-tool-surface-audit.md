@@ -27,13 +27,13 @@ The platform's **public** tool surface is small (6 MCP tools) — that's GOOD ag
 | **CONVENIENCE-COMPOSABLE — chatbot can build** | ~18 verbs | Helper rollups, named queries, status-formatters that the chatbot can reconstruct from primitives in <5 reasoning steps. |
 | **PRIMITIVE-GAP — flag for spec** | 3 verbs | Composition is structurally fragile (missing primitive earns a scope). |
 | **COMMONS-LEAK-RISK — verify principle compliance** | 2 surfaces | `add_canon_from_path` + private universe state both blur the commons-vs-host-resident line; need explicit principle annotation. |
-| **DUPLICATE-LEGACY-SURFACE — collapse** | 1 module | `workflow/mcp_server.py` ships **12 single-purpose stdio tools** that duplicate subsets of the 6 streamable-http canonical tools. |
+| **DUPLICATE-LEGACY-SURFACE — collapse** | 1 module | `tinyassets/mcp_server.py` ships **12 single-purpose stdio tools** that duplicate subsets of the 6 streamable-http canonical tools. |
 
 **Headlines:**
 
-1. **`workflow/mcp_server.py` is a primitive-set violation.** It exposes 12 separate single-purpose tools (`get_status`, `add_note`, `get_premise`, `set_premise`, `get_progress`, `get_work_targets`, `get_review_state`, `get_chapter`, `get_activity`, `pause`, `resume`, `add_canon`) where the canonical 6-tool surface (`universe`, `extensions`, `goals`, `gates`, `wiki`, `get_status`) covers the same capabilities. **Per minimal-primitives + commons-first, retire `mcp_server.py` toward a thin adapter that delegates to the canonical 6-tool surface.** Ship blocker check: any active stdio client still requires single-purpose tools? If no → retire.
+1. **`tinyassets/mcp_server.py` is a primitive-set violation.** It exposes 12 separate single-purpose tools (`get_status`, `add_note`, `get_premise`, `set_premise`, `get_progress`, `get_work_targets`, `get_review_state`, `get_chapter`, `get_activity`, `pause`, `resume`, `add_canon`) where the canonical 6-tool surface (`universe`, `extensions`, `goals`, `gates`, `wiki`, `get_status`) covers the same capabilities. **Per minimal-primitives + commons-first, retire `mcp_server.py` toward a thin adapter that delegates to the canonical 6-tool surface.** Ship blocker check: any active stdio client still requires single-purpose tools? If no → retire.
 2. **The Recency + continue_branch checkpoint applies here.** Both were host-approved 2026-04-26 BUT `project_minimal_primitives_principle` flags them for re-test under the principle. This audit recommends running the irreducibility-test BEFORE dev implements them.
-3. **`add_canon_from_path` is a commons-first edge case.** Pulls bytes from host-local filesystem into a universe. If the universe is public-commons, that path leaks private host content into the platform commons. The `WORKFLOW_UPLOAD_WHITELIST` env var is the existing primitive guard — but the principle compliance is implicit. Recommend explicit annotation: "this verb is the commons/host-resident boundary; chatbot is required to decide visibility per-piece per `project_privacy_per_piece_chatbot_judged`."
+3. **`add_canon_from_path` is a commons-first edge case.** Pulls bytes from host-local filesystem into a universe. If the universe is public-commons, that path leaks private host content into the platform commons. The `TINYASSETS_UPLOAD_WHITELIST` env var is the existing primitive guard — but the principle compliance is implicit. Recommend explicit annotation: "this verb is the commons/host-resident boundary; chatbot is required to decide visibility per-piece per `project_privacy_per_piece_chatbot_judged`."
 4. **18 verbs are convenience-composable.** Each represents 5-15 minutes of platform code that could retire in favor of a wiki composition-pattern page. Net tool-surface budget: ~70 → ~52, principle-aligned.
 5. **The 6-tool public surface itself is healthy.** No public-tool-level finding. The work is in pruning action verbs and collapsing the stdio shim.
 
@@ -60,7 +60,7 @@ The platform's **public** tool surface is small (6 MCP tools) — that's GOOD ag
 
 ### Surface inventory
 
-**Public MCP tools (streamable-http canonical):** 6 — `universe`, `extensions`, `goals`, `gates`, `wiki`, `get_status` (per `workflow/universe_server.py`).
+**Public MCP tools (streamable-http canonical):** 6 — `universe`, `extensions`, `goals`, `gates`, `wiki`, `get_status` (per `tinyassets/universe_server.py`).
 
 **Internal action verbs:**
 - `universe`: 27 verbs (universe-level operations: list, inspect, switch, create + canon CRUD + queue/dispatcher + ledger + control_daemon + premise + give_direction + query_world)
@@ -68,15 +68,15 @@ The platform's **public** tool surface is small (6 MCP tools) — that's GOOD ag
 - `wiki`: 16 verbs (read, search, list, write, consolidate, promote, ingest, supersede, lint, sync_projects, cosign_bug, file_bug + 4 helpers)
 - `goals` + `gates` + `get_status`: ~10 verbs total (goal action=create/list/get/propose/bind/set_canonical, gate action=*, get_status standalone)
 
-**Legacy stdio surface (`workflow/mcp_server.py`):** 12 separate `@mcp.tool` decorators — `get_status`, `add_note`, `get_premise`, `set_premise`, `get_progress`, `get_work_targets`, `get_review_state`, `get_chapter`, `get_activity`, `pause`, `resume`, `add_canon`.
+**Legacy stdio surface (`tinyassets/mcp_server.py`):** 12 separate `@mcp.tool` decorators — `get_status`, `add_note`, `get_premise`, `set_premise`, `get_progress`, `get_work_targets`, `get_review_state`, `get_chapter`, `get_activity`, `pause`, `resume`, `add_canon`.
 
 ---
 
 ## 2. Findings
 
-### F1 — `workflow/mcp_server.py` is a 12-tool legacy surface duplicating the canonical 6
+### F1 — `tinyassets/mcp_server.py` is a 12-tool legacy surface duplicating the canonical 6
 
-**Location:** `workflow/mcp_server.py` (~12 single-purpose `@mcp.tool` decorators).
+**Location:** `tinyassets/mcp_server.py` (~12 single-purpose `@mcp.tool` decorators).
 
 **What's wrong:** Every one of these 12 tools is a SUBSET of an action available on the canonical 6-tool surface:
 
@@ -102,7 +102,7 @@ The platform's **public** tool surface is small (6 MCP tools) — that's GOOD ag
 **Per user-capability:** stdio is the LOCAL-APP path (Claude Code desktop / Cowork desktop). Browser-only users never reach `mcp_server.py`. If the canonical tools work for browser-only AND can handle stdio routing, no user-capability regression.
 
 **Recommendation — DEV TASK F1:**
-- File: `workflow/mcp_server.py` (rewrite, ~200 LOC → ~30 LOC adapter)
+- File: `tinyassets/mcp_server.py` (rewrite, ~200 LOC → ~30 LOC adapter)
 - Action: replace the 12 single-purpose tools with a thin adapter that translates legacy stdio calls to the canonical action verbs. Delete the `@mcp.tool` decorators; route through `universe(action=...)` etc.
 - Depends: confirm no active stdio client requires the legacy tool-name shape (Claude Code stdio packaging audit).
 - Verify: integration test that all 12 legacy tool names still produce equivalent JSON via the adapter.
@@ -117,7 +117,7 @@ The platform's **public** tool surface is small (6 MCP tools) — that's GOOD ag
 **What `project_minimal_primitives_principle` says:**
 > Recency + continue_branch — approved by host 2026-04-26 BUT this principle invites re-evaluation. Test: can chatbot compose "what was I working on last week" from `query_runs` + author filter alone, in <5 steps? If yes → community-build pattern. If chatbot reliably fishes around, the primitive may earn its keep. Worth retesting under this principle.
 
-**Audit verdict:** The `query_runs` primitive already exists (per `workflow/api/runs.py`). The question is whether `query_runs(author=me, since=ts, ordered=desc, limit=N)` in 1-2 steps covers the recency intent.
+**Audit verdict:** The `query_runs` primitive already exists (per `tinyassets/api/runs.py`). The question is whether `query_runs(author=me, since=ts, ordered=desc, limit=N)` in 1-2 steps covers the recency intent.
 
 **Composition trace** (chatbot's likely path):
 1. `query_runs(author=user_id, ordered_by=created_at_desc, limit=10)` — gets last 10 runs by user.
@@ -145,11 +145,11 @@ The platform's **public** tool surface is small (6 MCP tools) — that's GOOD ag
 
 ### F3 — `add_canon_from_path` is the commons/host-resident boundary
 
-**Location:** `workflow/api/universe.py:_action_add_canon_from_path`.
+**Location:** `tinyassets/api/universe.py:_action_add_canon_from_path`.
 
-**What's wrong (per commons-first):** This verb reads bytes from the host's local filesystem (`WORKFLOW_UPLOAD_WHITELIST`-gated absolute paths) and stores them in a universe directory. If the universe later becomes public-commons material, those bytes leak from host to commons.
+**What's wrong (per commons-first):** This verb reads bytes from the host's local filesystem (`TINYASSETS_UPLOAD_WHITELIST`-gated absolute paths) and stores them in a universe directory. If the universe later becomes public-commons material, those bytes leak from host to commons.
 
-**Existing safeguard:** `WORKFLOW_UPLOAD_WHITELIST` env var (in AGENTS.md config table) — colon/semicolon-separated absolute path prefixes; unset = permissive.
+**Existing safeguard:** `TINYASSETS_UPLOAD_WHITELIST` env var (in AGENTS.md config table) — colon/semicolon-separated absolute path prefixes; unset = permissive.
 
 **Per principle:** the chatbot is supposed to make the per-piece visibility decision (per `project_privacy_per_piece_chatbot_judged`). Today, nothing in the verb's contract surfaces "this content is now in the commons by storage location" — chatbot has no introspection point.
 
@@ -160,10 +160,10 @@ The platform's **public** tool surface is small (6 MCP tools) — that's GOOD ag
 
 Then chatbot composes the user-facing narrative on top of the structured evidence. NOT a code refactor — an evidence-shape addition.
 
-- File: `workflow/api/universe.py` (`_action_add_canon_from_path`)
+- File: `tinyassets/api/universe.py` (`_action_add_canon_from_path`)
 - Effort: ~1h
 - Depends: nothing
-- Verify: test that response includes the 3 new keys; test that whitelist_check accurately reflects WORKFLOW_UPLOAD_WHITELIST state
+- Verify: test that response includes the 3 new keys; test that whitelist_check accurately reflects TINYASSETS_UPLOAD_WHITELIST state
 
 **Companion design-note refresh:** existing concern row "Privacy mode note has 3 host Qs: docs/design-notes/2026-04-18-privacy-modes-for-sensitive-workflows.md" — REFRAME under `project_privacy_via_community_composition` (privacy is community-build, not platform-shipped). The 3 host Qs may dissolve or change shape after the reframe.
 
@@ -221,7 +221,7 @@ Per `project_user_capability_axis`: every verb should work for browser-only AND 
 
 | ID | Title | Class | Effort | Dispatch-ready |
 |---|---|---|---|---|
-| **F1** | Collapse `workflow/mcp_server.py` 12 stdio tools → canonical-adapter | DUPLICATE-LEGACY | 2-3h | NO — needs auth-parity verification + stdio-client survey first |
+| **F1** | Collapse `tinyassets/mcp_server.py` 12 stdio tools → canonical-adapter | DUPLICATE-LEGACY | 2-3h | NO — needs auth-parity verification + stdio-client survey first |
 | **F2** | Recency / continue_branch principle re-test | NAV→HOST | 30 min navigator + host re-decision | navigator-ready (recommend: send re-test result to host) |
 | **F3** | `add_canon_from_path` self-auditing-tools annotation | PRIMITIVE-GAP-PROXY (clarification, not new feature) | 1h | YES, dev or dev-2 |
 | **F4** | Composition-patterns wiki page (18 verbs) | NAV-AUTHORED | 1-2h navigator | navigator-ready (gated on BUG-028 redeploy for wiki write) |
@@ -241,7 +241,7 @@ Per `project_user_capability_axis`: every verb should work for browser-only AND 
 3. **F3** — `add_canon_from_path` self-auditing annotation. ~1h. Verify: response includes 3 new keys.
 
 **Phase 3 — gated:**
-4. **F1** — `workflow/mcp_server.py` collapse. Gated on auth-parity audit + stdio-client survey. 2-3h dev.
+4. **F1** — `tinyassets/mcp_server.py` collapse. Gated on auth-parity audit + stdio-client survey. 2-3h dev.
 
 **Phase 4 — F4 push:**
 5. Once BUG-028 alias-fix is live in prod, push the composition-patterns wiki page (or have host do it via mcp_probe.py).
@@ -250,7 +250,7 @@ Per `project_user_capability_axis`: every verb should work for browser-only AND 
 
 ## 5. Decision asks for the lead → host
 
-1. **Approve F1 dispatch** (collapse `workflow/mcp_server.py` to thin adapter)? Recommend yes after auth-parity verification. Question for host: is any active client still using `add_note` / `get_premise` / etc. by name?
+1. **Approve F1 dispatch** (collapse `tinyassets/mcp_server.py` to thin adapter)? Recommend yes after auth-parity verification. Question for host: is any active client still using `add_note` / `get_premise` / etc. by name?
 2. **F2 — accept the principle re-test result?**
    - Retire Recency as platform primitive (community-build pattern via `query_runs`)?
    - Collapse continue_branch to `run_branch resume_from=` rather than new action verb?

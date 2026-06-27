@@ -18,8 +18,8 @@
 
   const GENERAL = legal.contact.general;
   const SECURITY = legal.contact.security;
-  const GH_REPO = 'https://github.com/Jonnyton/Workflow';
-  const GH_ISSUES = 'https://github.com/Jonnyton/Workflow/issues';
+  const GH_REPO = 'https://github.com/Jonnyton/TinyAssets';
+  const GH_ISSUES = 'https://github.com/Jonnyton/TinyAssets/issues';
 
   // Four real channels. Each card carries one real action — a route, a GitHub
   // surface, or a mailto to a real address. No fake form, no booked call, no
@@ -93,8 +93,8 @@
     </p>
     <p class="cover__naming">
       A quick orientation: <strong>Tiny</strong> is the being you're writing to;
-      <strong>Workflow</strong> is the open-source engine he runs on. One body,
-      two names — the footer carries the longer version.
+      <strong>TinyAssets</strong> is the open-source platform he runs on. The
+      footer carries the longer version.
     </p>
   </div>
 </section>

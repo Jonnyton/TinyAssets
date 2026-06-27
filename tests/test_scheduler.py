@@ -1,4 +1,4 @@
-"""Tests for workflow/scheduler.py — scheduled + event-triggered branch invocation.
+"""Tests for tinyassets/scheduler.py — scheduled + event-triggered branch invocation.
 
 Spec: docs/vetted-specs.md §Scheduled + event-triggered branch invocation.
 """
@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-from workflow.runs import initialize_runs_db
-from workflow.scheduler import (
+from tinyassets.runs import initialize_runs_db
+from tinyassets.scheduler import (
     MAX_SCHEDULES_PER_OWNER,
     MAX_SUBSCRIPTIONS_PER_OWNER,
     VALID_EVENT_TYPES,
@@ -297,7 +297,7 @@ class TestSchedulerTick:
         )
         s = self._make_scheduler(base_path, run_calls)
         matching = time.strptime("2026-04-24 12:30:00", "%Y-%m-%d %H:%M:%S")
-        with patch("workflow.scheduler.time") as mock_time:
+        with patch("tinyassets.scheduler.time") as mock_time:
             mock_time.time.return_value = time.mktime(matching)
             mock_time.localtime.return_value = matching
             s._fire_due_schedules()
@@ -310,7 +310,7 @@ class TestSchedulerTick:
         )
         s = self._make_scheduler(base_path, run_calls)
         non_matching = time.strptime("2026-04-24 12:31:00", "%Y-%m-%d %H:%M:%S")
-        with patch("workflow.scheduler.time") as mock_time:
+        with patch("tinyassets.scheduler.time") as mock_time:
             mock_time.time.return_value = time.mktime(non_matching)
             mock_time.localtime.return_value = non_matching
             s._fire_due_schedules()

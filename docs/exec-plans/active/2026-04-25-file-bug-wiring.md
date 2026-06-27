@@ -54,7 +54,7 @@ _maybe_enqueue_investigation(
 
 | Class | What it tests |
 |-------|---------------|
-| `TestEnvGate` | helper returns None when `WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID` is unset / empty / whitespace |
+| `TestEnvGate` | helper returns None when `TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID` is unset / empty / whitespace |
 | `TestEnqueuesWhenBound` | helper enqueues a `BranchTask` when env is bound; passes `universe_id`; arg `bug_id` overrides any frontmatter `bug_id` |
 | `TestGracefulFailure` | helper returns None on dispatcher rejection (RuntimeError), missing `bug_id`, ValueError from inner enqueue, `frontmatter=None` |
 

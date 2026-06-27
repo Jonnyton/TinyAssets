@@ -121,7 +121,7 @@ All five emit into the single `contribution_events` ledger (per #48 single-table
 
 - **Sybil scoring scales DISTRIBUTION, not events.** Events recorded at full weight (audit integrity); bounty distribution multiplies by `sybil_confidence_score`. Past distributions stay as-issued.
 - **Daemon-host credits don't bear regression liability** (#58 §6.3) — only designers and committers chose what to ship; daemons just executed. Regression-distribution skips `execute_step` events.
-- **Lineage decay coefficient α = 0.6, max_lineage_depth = 12.** Bounty calc result includes `truncated_at_depth` flag if cap fires. Storage in `workflow/economics/decay.py` (config-as-code; PR-required to change).
+- **Lineage decay coefficient α = 0.6, max_lineage_depth = 12.** Bounty calc result includes `truncated_at_depth` flag if cap fires. Storage in `tinyassets/economics/decay.py` (config-as-code; PR-required to change).
 - **Bounty distribution math** — 3-pass (positive_contributions + negative_contributions + sybil-scaled normalization). Sub-0.5% shares bucket into pool remainder. 48h challenge window before auto-distribute; navigator/quorum mediates disputes.
 - **Route-back attribution emission (CORRECTED from v1):** route-back invocations emit TWO events — `feedback_provided` for the original patch author (gate consumed their patch_notes as decision input) + `design_used` for the canonical's author (their canonical was used to handle the routed work). Replaces #53 §5's earlier "code_committed-like" placeholder. (Closure of the pair-read flag from `2026-04-25-audit-53-gate-route-back-solo.md` §2.)
 
@@ -296,7 +296,7 @@ All 18 ratified primitives in §4 except the three already implemented (variant 
 
 - `_execute_branch_core` shared helper extraction (split before #54 impl per pair-read #59 §3).
 - `_DispatchInvokeBranchCommon` shared helper extraction (split before #56 impl per pair-read #60 §4).
-- Two-pool config rename (`_DEFAULT_MAX_WORKERS` → `WORKFLOW_RUN_POOL_SIZE`) before two-pool dispatch logic.
+- Two-pool config rename (`_DEFAULT_MAX_WORKERS` → `TINYASSETS_RUN_POOL_SIZE`) before two-pool dispatch logic.
 - `PatchNotes` typed dataclass before #53 implementation.
 
 ---

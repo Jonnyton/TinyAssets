@@ -26,7 +26,7 @@ on:
         default: 's-2vcpu-2gb'
         type: string
       backup_source:
-        description: 'Backup tarball path on primary (default: latest in /var/backups/workflow/)'
+        description: 'Backup tarball path on primary (default: latest in /var/backups/tinyassets/)'
         required: false
         default: ''
         type: string
@@ -104,10 +104,10 @@ jobs:
           else
             latest=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "ls -t /var/backups/workflow/workflow-data-*.tar.gz 2>/dev/null | head -1" \
+                "ls -t /var/backups/tinyassets/tinyassets-data-*.tar.gz 2>/dev/null | head -1" \
                 2>&1 || echo '')
             if [ -z "$latest" ]; then
-              echo "::error::No backup found on primary at /var/backups/workflow/"
+              echo "::error::No backup found on primary at /var/backups/tinyassets/"
               exit 1
             fi
             echo "path=${latest}" >> "$GITHUB_OUTPUT"
@@ -140,7 +140,7 @@ jobs:
             key_resp=$(curl -sf -X POST \
                 -H "Authorization: Bearer ${DO_TOKEN}" \
                 -H "Content-Type: application/json" \
-                -d "{\"name\":\"workflow-drill-key\",\"public_key\":\"${PUB_KEY}\"}" \
+                -d "{\"name\":\"tinyassets-drill-key\",\"public_key\":\"${PUB_KEY}\"}" \
                 "https://api.digitalocean.com/v2/account/keys")
             key_id=$(echo "$key_resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['ssh_key']['id'])")
           else
@@ -160,13 +160,13 @@ jobs:
               -H "Authorization: Bearer ${DO_TOKEN}" \
               -H "Content-Type: application/json" \
               -d "{
-                \"name\": \"workflow-dr-drill\",
+                \"name\": \"tinyassets-dr-drill\",
                 \"region\": \"${DRILL_REGION}\",
                 \"size\": \"${DRILL_SIZE}\",
                 \"image\": \"${DRILL_IMAGE}\",
                 \"ssh_keys\": [${key_id}],
                 \"user_data\": $(echo "$user_data" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
-                \"tags\": [\"dr-drill\", \"workflow\"]
+                \"tags\": [\"dr-drill\", \"tinyassets\"]
               }" \
               "https://api.digitalocean.com/v2/droplets")
           droplet_id=$(echo "$droplet_resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['droplet']['id'])")
@@ -265,8 +265,8 @@ jobs:
               "cat '${BACKUP_PATH}'" \
               | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                     "root@${DRILL_IP}" \
-                    "mkdir -p /var/backups/workflow && \
-                     cat > /var/backups/workflow/${tarball}"
+                    "mkdir -p /var/backups/tinyassets && \
+                     cat > /var/backups/tinyassets/${tarball}"
           echo "Transferred: ${tarball}"
 
       - name: Restore on drill Droplet
@@ -277,11 +277,11 @@ jobs:
           # Copy the restore script and run it.
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/backup-restore.sh \
-              "root@${DRILL_IP}:/opt/workflow/deploy/backup-restore.sh"
+              "root@${DRILL_IP}:/opt/tinyassets/deploy/backup-restore.sh"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "root@${DRILL_IP}" \
-              "BACKUP_DEST=/var/backups/workflow DRY_RUN=0 \
-               bash /opt/workflow/deploy/backup-restore.sh" 2>&1
+              "BACKUP_DEST=/var/backups/tinyassets DRY_RUN=0 \
+               bash /opt/tinyassets/deploy/backup-restore.sh" 2>&1
 
       - name: Start compose on drill Droplet
         env:
@@ -295,7 +295,7 @@ jobs:
           # directly — no tunnel needed to validate restore integrity.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "root@${DRILL_IP}" \
-              "docker compose -f /opt/workflow/deploy/compose.yml up -d daemon" 2>&1
+              "docker compose -f /opt/tinyassets/deploy/compose.yml up -d daemon" 2>&1
           sleep 30
 
       - name: Probe drill Droplet directly
@@ -372,7 +372,7 @@ jobs:
             echo ""
             echo "## ${now} — PASS"
             echo ""
-            echo "- **Backup source:** \`$(basename ${BACKUP_PATH})\`"
+            echo "- **Backup source:** \`$(basename "${BACKUP_PATH}")\`"
             echo "- **Drill Droplet:** ID \`${DROPLET_ID}\`, IP \`${DRILL_IP}\`"
             echo "- **Size:** \`${{ inputs.drill_droplet_size }}\`"
             echo "- **Probe:** green (MCP status via SSH port-forward to localhost:8001)"
@@ -414,7 +414,7 @@ jobs:
               title: `DR drill FAILED — ${new Date().toISOString()}`,
               labels: [label],
               body: [
-                `Auto-opened by the DR drill workflow.`,
+                `Auto-opened by the DR drill tinyassets.`,
                 ``,
                 `- **Backup:** \`${process.env.BACKUP_PATH}\``,
                 `- **Drill Droplet IP:** \`${process.env.DRILL_IP}\` (LEFT UP for inspection)`,

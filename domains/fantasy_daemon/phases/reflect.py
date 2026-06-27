@@ -22,10 +22,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from workflow.enrichment_signals import load_enrichment_signals, state_enrichment_signals
-from workflow.ingestion.canon_io import iter_canon_files, safe_canon_path
-from workflow.universe_soul import premise_from_soul, read_legacy_premise
-from workflow.utils.json_parsing import parse_llm_json
+from tinyassets.enrichment_signals import load_enrichment_signals, state_enrichment_signals
+from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
+from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
+from tinyassets.utils.json_parsing import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def reflect(state: dict[str, Any]) -> dict[str, Any]:
     dict
         Partial state with ``quality_trace`` entry.
     """
-    from workflow import runtime_singletons as runtime
+    from tinyassets import runtime_singletons as runtime
 
     trace: dict[str, Any] = {
         "node": "reflect",
@@ -137,7 +137,7 @@ def _review_canon_quality(state: dict[str, Any]) -> dict[str, Any]:
     current_model = ""
     try:
         # Probe which provider is currently active
-        from workflow import runtime_singletons as runtime
+        from tinyassets import runtime_singletons as runtime
         if runtime.memory_manager is not None:
             # The provider name is tracked in state from the last call
             current_model = state.get("provider", "")

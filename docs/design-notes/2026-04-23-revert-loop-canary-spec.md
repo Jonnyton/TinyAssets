@@ -31,7 +31,7 @@ The activity log already carries the exact signal: "Draft: FAILED — provider
 returned empty prose", "Commit: score 0.00 -- REVERT", "Commit: reverting
 ... - draft provider failed". These land per scene, timestamped to the
 second. `get_status` exposes the tail + last_n_calls block already (per
-`workflow/universe_server.py::get_status`). No new surface needed.
+`tinyassets/universe_server.py::get_status`). No new surface needed.
 
 **Rejected alternative**: a new `/daemon/health` surface. Reasons:
 - activity_log_tail already contains the ground-truth events.
@@ -78,8 +78,8 @@ Start conservative to validate in prod before tightening:
   (`concordance` B54/B55 morning trace) showed ~1 REVERT per 15-20min
   under normal-failure conditions. 3 in 10min is 3x normal rate — safely
   separable from noise.
-- Tuning discipline: surface N/T as env vars (`WORKFLOW_REVERT_CANARY_N`,
-  `WORKFLOW_REVERT_CANARY_T_MIN`) so prod experience can adjust without
+- Tuning discipline: surface N/T as env vars (`TINYASSETS_REVERT_CANARY_N`,
+  `TINYASSETS_REVERT_CANARY_T_MIN`) so prod experience can adjust without
   code edits. Defaults above bake in the starting values.
 
 Iterate on N/T once the canary has been live through 7+ days of normal
@@ -140,7 +140,7 @@ activity_log_tail is stale, not the work state).
 Extend `scripts/triage_classify.py` to detect the canary's signal in the
 pre-restart diag bundle. Signal: presence of `REVERT ... - draft provider failed`
 pattern in recent activity log entries (diag already includes `journalctl
-workflow-daemon -n 80`, should also include activity log tail — tiny
+tinyassets-daemon -n 80`, should also include activity log tail — tiny
 change to the diag capture step).
 
 New class returned by classifier:
@@ -225,18 +225,18 @@ Six test surfaces:
 ## Rollout plan
 
 1. Ship `scripts/revert_loop_canary.py` + unit tests (independent of
-   workflow/classifier).
+   tinyassets/classifier).
 2. Wire as Layer-1d in `uptime-canary.yml` (WARN-only, no auto-repair yet).
    Run in WARN-only mode for 7 days. Collect false-positive rate.
 3. Add `provider_exhaustion` class to `triage_classify.py` + the repair
    step to `p0-outage-triage.yml`. Still gated: repair fires only if
-   `WORKFLOW_REVERT_AUTO_REPAIR=on`. Off by default.
-4. After 7 days of clean WARN signal, flip `WORKFLOW_REVERT_AUTO_REPAIR=on`
+   `TINYASSETS_REVERT_AUTO_REPAIR=on`. Off by default.
+4. After 7 days of clean WARN signal, flip `TINYASSETS_REVERT_AUTO_REPAIR=on`
    on prod. Canary now fires CRITICAL → p0-outage-triage → auto-halt +
    page.
-5. Add env-var tunables (`WORKFLOW_REVERT_CANARY_N`,
+5. Add env-var tunables (`TINYASSETS_REVERT_CANARY_N`,
    `_T_MIN`) to support operational experimentation without redeploys.
-6. Remove the `WORKFLOW_REVERT_AUTO_REPAIR` gate after 14 days clean
+6. Remove the `TINYASSETS_REVERT_AUTO_REPAIR` gate after 14 days clean
    operation post-rollout. Make CRITICAL → auto-repair the default.
 
 ## Dev scope estimate
