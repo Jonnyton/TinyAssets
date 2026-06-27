@@ -46,8 +46,8 @@ ExecStartPre=/bin/sh -c 'test -r /etc/tinyassets/env || { echo "ENV-UNREADABLE: 
 
 # docker compose up runs in foreground; systemd watches the PID.
 # The image's own tini PID-1 handles SIGTERM cleanly (Row A Dockerfile).
-ExecStart=/usr/bin/docker compose -f /opt/tinyassets/compose.yml up
-ExecStop=/usr/bin/docker compose -f /opt/tinyassets/compose.yml down --timeout 30
+ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up
+ExecStop=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml down --timeout 30
 
 # Restart posture. 10s delay avoids hot-loop on persistent failure;
 # StartLimitInterval/Burst caps cascading restarts to 5 in 5 min

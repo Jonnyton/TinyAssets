@@ -226,6 +226,12 @@ def test_systemd_unit_execstartpre_emits_canonical_marker():
     )
 
 
+def test_systemd_unit_compose_loads_tinyassets_env_for_interpolation():
+    text = _SYSTEMD_UNIT.read_text(encoding="utf-8")
+    assert "ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env" in text
+    assert "ExecStop=/usr/bin/docker compose --env-file /etc/tinyassets/env" in text
+
+
 def test_deploy_prod_yaml_sed_sites_emit_canonical_marker():
     """Helper-mediated invariant: every env-mutation site in the YAML
     invokes ``deploy/install-tinyassets-env.sh``, and the helper itself

@@ -349,7 +349,36 @@ def test_deploy_verifies_cloud_worker_running():
     assert "State.Running" in run_script
     assert "for i in $(seq 1 30)" in run_script
     assert "sleep 2" in run_script
+    assert "docker compose --env-file /etc/tinyassets/env" in run_script
     assert "exit 1" in run_script
+
+
+def test_deploy_retires_legacy_workflow_service_before_restart():
+    wf = _load()
+    steps = _steps(wf)
+    retire_idx = next(
+        (
+            i
+            for i, s in enumerate(steps)
+            if s.get("name") == "Retire legacy Workflow service"
+        ),
+        None,
+    )
+    deploy_idx = next(
+        (i for i, s in enumerate(steps) if s.get("name") == "Deploy new image"),
+        None,
+    )
+    assert retire_idx is not None
+    assert deploy_idx is not None
+    assert retire_idx < deploy_idx
+
+    run_script = steps[retire_idx].get("run", "") or ""
+    assert "workflow-daemon.service" in run_script
+    assert "workflow.service" in run_script
+    assert "/opt/workflow/compose.yml" in run_script
+    assert "/etc/workflow/env" in run_script
+    assert "workflow-tunnel" in run_script
+    assert "docker rm -f" in run_script
 
 
 def test_deploy_rejects_cloud_worker_workflow_universe_override():

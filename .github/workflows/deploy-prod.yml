@@ -399,6 +399,43 @@ jobs:
           ls -la "$CLAUDE_DIR" || true
           SH
 
+      - name: Retire legacy Workflow service
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+
+          for unit in workflow-daemon.service workflow.service; do
+            if systemctl list-unit-files "$unit" --no-legend 2>/dev/null | grep -q . \
+              || systemctl list-units "$unit" --all --no-legend 2>/dev/null | grep -q .; then
+              echo "retiring legacy unit ${unit}"
+              systemctl stop "$unit" || true
+              systemctl disable "$unit" || true
+            fi
+          done
+
+          for compose_file in /opt/workflow/compose.yml /opt/workflow/deploy/compose.yml; do
+            if [ -f "$compose_file" ]; then
+              echo "bringing down legacy compose stack from ${compose_file}"
+              if [ -f /etc/workflow/env ]; then
+                docker compose --env-file /etc/workflow/env -f "$compose_file" down --timeout 30 || true
+              else
+                docker compose -f "$compose_file" down --timeout 30 || true
+              fi
+            fi
+          done
+
+          legacy_ids="$(docker ps -aq --filter 'name=^/workflow-' || true)"
+          if [ -n "$legacy_ids" ]; then
+            echo "removing legacy workflow containers: ${legacy_ids}"
+            docker rm -f $legacy_ids || true
+          fi
+          for container in workflow-daemon workflow-tunnel workflow-logs workflow-worker; do
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          done
+          SH
+
       - name: Deploy new image
         id: deploy
         env:
@@ -617,7 +654,7 @@ jobs:
               echo "::error::${container} is not running after deploy; node execution fleet is not 24/7."
               ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                   "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                  "sudo docker compose -f /opt/tinyassets/compose.yml ps; sudo docker logs --tail 120 ${container} 2>&1 || true"
+                  "sudo docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml ps; sudo docker ps -a --filter name=${container}; sudo docker logs --tail 120 ${container} 2>&1 || true"
               exit 1
             fi
             if ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
