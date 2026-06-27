@@ -199,7 +199,7 @@ def test_rotate_token_deletes_both(monkeypatch):
     mock_client.request = MagicMock(side_effect=lambda *a, **kw: next(it))
 
     with patch("cf_access_rollback.make_cloudflare_client", return_value=mock_client):
-        _call_main(rb, ["--apply", "--rotate-token"])
+        _call_main(rb, ["--apply", "--rotate-token", "--skip-verify"])
 
     # Verify DELETE was called for both app and token
     calls = mock_client.request.call_args_list
@@ -233,7 +233,7 @@ def test_no_rotate_token_skips_token_delete(monkeypatch):
     mock_client.request = MagicMock(side_effect=lambda *a, **kw: next(it))
 
     with patch("cf_access_rollback.make_cloudflare_client", return_value=mock_client):
-        rc = _call_main(rb, ["--apply"])
+        rc = _call_main(rb, ["--apply", "--skip-verify"])
 
     assert rc == 0
     calls = mock_client.request.call_args_list
@@ -313,7 +313,7 @@ class _FakeHTTPResponse:
 
 def test_rollback_check_canonical_green_internal_ungated(capsys):
     """Canonical 200+serverInfo = GREEN; internal 200 = GREEN: ungated."""
-    canonical_body = json.dumps({"result": {"serverInfo": {"name": "workflow"}}}).encode()
+    canonical_body = json.dumps({"result": {"serverInfo": {"name": "tinyassets"}}}).encode()
     canonical_resp = _FakeHTTPResponse(200, canonical_body)
     internal_resp = _FakeHTTPResponse(200, b"")
 

@@ -25,8 +25,9 @@ def test_status_md_exists():
     assert (_REPO_ROOT / "STATUS.md").is_file(), "STATUS.md missing from repo root"
 
 
-def test_pyproject_has_workflow_name():
+def test_pyproject_has_tinyassets_name():
     pyproject = _REPO_ROOT / "pyproject.toml"
     assert pyproject.is_file(), "pyproject.toml missing from repo root"
     content = pyproject.read_text(encoding="utf-8")
-    assert 'name = "workflow"' in content, "pyproject.toml package name drifted"
+    assert 'name = "tinyassets"' in content, "pyproject.toml package name drifted"
+    assert 'name = "workflow"' not in content, "old package name leaked back into pyproject.toml"

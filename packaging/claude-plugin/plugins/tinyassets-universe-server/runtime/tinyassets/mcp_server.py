@@ -30,7 +30,7 @@ from tinyassets.universe_soul import (
 )
 
 mcp = FastMCP(
-    "workflow",
+    "tinyassets",
     instructions=(
         "TinyAssets daemon interface. Use these tools to monitor "
         "and guide an autonomous workflow daemon through notes. "

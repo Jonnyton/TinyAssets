@@ -50,15 +50,17 @@
 #      tinyassets user (post-write assert passes).
 #   1  bad invocation (unknown subcommand, missing args, missing key
 #      name, value containing forbidden chars).
-#   2  /etc/tinyassets/env missing — bootstrap should have created it.
+#   2  env bootstrap failed before install(1).
 #   3  install(1) failed.
 #   4  post-write readability assert failed (tinyassets user cannot read).
 
 set -euo pipefail
 
-ENV_FILE="/etc/tinyassets/env"
-ENV_OWNER="root:tinyassets"
-ENV_MODE="640"
+ENV_FILE="${TINYASSETS_ENV_FILE-/etc/tinyassets/env}"
+LEGACY_ENV_FILE="${TINYASSETS_LEGACY_ENV_FILE-/etc/workflow/env}"
+ENV_OWNER="${TINYASSETS_ENV_OWNER-root:tinyassets}"
+ENV_MODE="${TINYASSETS_ENV_MODE-640}"
+ENV_READ_USER="${TINYASSETS_ENV_READ_USER-tinyassets}"
 
 usage() {
     cat >&2 <<'EOF'
@@ -80,14 +82,84 @@ validate_key() {
     fi
 }
 
-# Read current file content. Required-exists — the bootstrap creates
-# this file on first install, so absence is a real failure not a
-# silent create-on-write.
-require_env_file() {
-    if [ ! -f "${ENV_FILE}" ]; then
-        echo "::error::${ENV_FILE} missing — bootstrap should have created it" >&2
+env_owner_user() {
+    printf '%s' "${ENV_OWNER%%:*}"
+}
+
+env_owner_group() {
+    if [[ "${ENV_OWNER}" == *:* ]]; then
+        printf '%s' "${ENV_OWNER#*:}"
+    else
+        id -gn "$(env_owner_user)" 2>/dev/null || id -gn
+    fi
+}
+
+owner_label() {
+    if [ -n "${ENV_OWNER}" ]; then
+        printf '%s' "${ENV_OWNER}"
+    else
+        printf '<current-user>'
+    fi
+}
+
+install_env_file() {
+    local src="$1"
+    local owner_args=()
+    if [ -n "${ENV_OWNER}" ]; then
+        owner_args=(-o "$(env_owner_user)" -g "$(env_owner_group)")
+    fi
+    install -m "${ENV_MODE}" "${owner_args[@]}" "${src}" "${ENV_FILE}"
+}
+
+# Confirm the tinyassets user can actually read the file. This is the
+# canary that the systemd unit's ExecStartPre would have tripped on.
+assert_readable() {
+    if [ -n "${ENV_READ_USER}" ]; then
+        if ! sudo -u "${ENV_READ_USER}" test -r "${ENV_FILE}"; then
+            echo "::error::ENV-UNREADABLE: ${ENV_FILE} not readable by user ${ENV_READ_USER} after install" >&2
+            ls -l "${ENV_FILE}" >&2 || true
+            exit 4
+        fi
+    elif ! test -r "${ENV_FILE}"; then
+        echo "::error::ENV-UNREADABLE: ${ENV_FILE} not readable after install" >&2
+        ls -l "${ENV_FILE}" >&2 || true
+        exit 4
+    fi
+}
+
+# Read current file content. If the renamed env file is missing on a
+# pre-cutover host, bootstrap it from /etc/workflow/env once. If there is
+# no legacy file, create an empty env file so the deploy can write the new
+# image pin and secrets through the same atomic helper.
+ensure_env_file() {
+    if [ -f "${ENV_FILE}" ]; then
+        return
+    fi
+
+    local env_dir
+    env_dir="$(dirname "${ENV_FILE}")"
+    if ! mkdir -p "${env_dir}"; then
+        echo "::error::failed to create ${env_dir}" >&2
         exit 2
     fi
+    if [ -n "${ENV_OWNER}" ]; then
+        chown "$(env_owner_user):$(env_owner_group)" "${env_dir}" || true
+        chmod 750 "${env_dir}" || true
+    fi
+
+    local src="/dev/null"
+    if [ -f "${LEGACY_ENV_FILE}" ]; then
+        src="${LEGACY_ENV_FILE}"
+        echo "::notice::${ENV_FILE} missing; bootstrapping from ${LEGACY_ENV_FILE}" >&2
+    else
+        echo "::notice::${ENV_FILE} missing; creating empty env file" >&2
+    fi
+
+    if ! install_env_file "${src}"; then
+        echo "::error::install(1) failed bootstrapping ${ENV_FILE}" >&2
+        exit 3
+    fi
+    assert_readable
 }
 
 # Atomic write of a buffer to ENV_FILE with correct owner + mode.
@@ -96,27 +168,16 @@ require_env_file() {
 atomic_install() {
     local content="$1"
     if ! printf '%s' "${content}" \
-            | install -m "${ENV_MODE}" -o root -g tinyassets \
-                /dev/stdin "${ENV_FILE}"; then
+            | install_env_file /dev/stdin; then
         echo "::error::install(1) failed writing ${ENV_FILE}" >&2
         exit 3
-    fi
-}
-
-# Confirm the tinyassets user can actually read the file. This is the
-# canary that the systemd unit's ExecStartPre would have tripped on.
-assert_readable() {
-    if ! sudo -u tinyassets test -r "${ENV_FILE}"; then
-        echo "::error::ENV-UNREADABLE: ${ENV_FILE} not readable by user tinyassets after install" >&2
-        ls -l "${ENV_FILE}" >&2 || true
-        exit 4
     fi
 }
 
 cmd_set() {
     local key="$1"
     validate_key "${key}"
-    require_env_file
+    ensure_env_file
 
     # Read new value from stdin (verbatim, including any trailing
     # newline the caller piped in — but we strip a single trailing
@@ -139,12 +200,12 @@ cmd_set() {
 
     atomic_install "${new_content}"$'\n'
     assert_readable
-    echo "set ${key} (${ENV_FILE} root:tinyassets ${ENV_MODE})"
+    echo "set ${key} (${ENV_FILE} $(owner_label) ${ENV_MODE})"
 }
 
 cmd_delete() {
     local key
-    require_env_file
+    ensure_env_file
 
     # Build a single awk filter that drops every requested KEY= line
     # in one pass.
@@ -160,7 +221,7 @@ cmd_delete() {
 
     atomic_install "${new_content}"$'\n'
     assert_readable
-    echo "deleted: $* (${ENV_FILE} root:tinyassets ${ENV_MODE})"
+    echo "deleted: $* (${ENV_FILE} $(owner_label) ${ENV_MODE})"
 }
 
 [ $# -ge 1 ] || usage

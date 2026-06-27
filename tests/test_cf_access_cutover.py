@@ -287,7 +287,7 @@ class _FakeHTTPResponse:
 
 def test_three_check_canonical_green(capsys):
     """Canonical URL returning 200 with 'serverInfo' in body → GREEN."""
-    canonical_body = json.dumps({"result": {"serverInfo": {"name": "workflow"}}}).encode()
+    canonical_body = json.dumps({"result": {"serverInfo": {"name": "tinyassets"}}}).encode()
 
     canonical_resp = _FakeHTTPResponse(200, canonical_body)
     internal_error = urllib.error.HTTPError(

@@ -46,7 +46,7 @@ class TestMCPServerSetup:
     """MCP server is properly configured."""
 
     def test_server_name(self):
-        assert mcp.name == "workflow"
+        assert mcp.name == "tinyassets"
 
 
 class TestUniverseDirResolution:
@@ -398,8 +398,9 @@ class TestMCPConfig:
         config_path = Path(__file__).parent.parent / ".mcp.example.json"
         data = json.loads(config_path.read_text(encoding="utf-8"))
         assert "mcpServers" in data
-        assert "workflow" in data["mcpServers"]
-        server = data["mcpServers"]["workflow"]
+        assert "tinyassets" in data["mcpServers"]
+        assert "workflow" not in data["mcpServers"]
+        server = data["mcpServers"]["tinyassets"]
         assert server["command"] == "python"
         assert "-m" in server["args"]
         assert "tinyassets.mcp_server" in server["args"]

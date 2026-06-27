@@ -263,7 +263,7 @@ def _load_hyperparameter_backends() -> tuple[Any, Any, str]:
         return (
             None,
             None,
-            f"scikit-learn / scipy not installed ({exc}); pip install workflow[scientific]",
+            f"scikit-learn / scipy not installed ({exc}); pip install tinyassets[scientific]",
         )
     return RandomForestRegressor, spearmanr, ""
 

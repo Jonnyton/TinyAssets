@@ -131,7 +131,7 @@ def test_build_plugin_purges_legacy_fantasy_author_snapshot():
             shutil.rmtree(legacy_dir)
 
 
-def test_plugin_server_imports_workflow_package():
+def test_plugin_server_imports_tinyassets_package():
     _run(PLUGIN_BUILD)
     probe = subprocess.run(
         [
@@ -151,18 +151,18 @@ def test_plugin_server_imports_workflow_package():
 # ─── shape parity ────────────────────────────────────────────────────
 
 
-def test_bundle_and_plugin_workflow_trees_match():
+def test_bundle_and_plugin_tinyassets_trees_match():
     """Both build scripts stage the same set of files from tinyassets/."""
     _run(MCPB_BUILD)
     _run(PLUGIN_BUILD)
     bundle_files = {
-        p.relative_to(DIST_STAGE / "workflow")
-        for p in (DIST_STAGE / "workflow").rglob("*")
+        p.relative_to(DIST_STAGE / "tinyassets")
+        for p in (DIST_STAGE / "tinyassets").rglob("*")
         if p.is_file()
     }
     plugin_files = {
-        p.relative_to(PLUGIN_RUNTIME / "workflow")
-        for p in (PLUGIN_RUNTIME / "workflow").rglob("*")
+        p.relative_to(PLUGIN_RUNTIME / "tinyassets")
+        for p in (PLUGIN_RUNTIME / "tinyassets").rglob("*")
         if p.is_file()
     }
     diff = bundle_files.symmetric_difference(plugin_files)

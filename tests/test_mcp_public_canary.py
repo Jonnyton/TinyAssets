@@ -25,7 +25,7 @@ def _scripted_post(tool_names):
                 "jsonrpc": "2.0", "id": 1,
                 "result": {
                     "protocolVersion": "2024-11-05",
-                    "serverInfo": {"name": "workflow", "version": "0.1.0"},
+                    "serverInfo": {"name": "tinyassets", "version": "0.1.0"},
                 },
             }).encode()
             return 200, {"mcp-session-id": "sess-1"}, body

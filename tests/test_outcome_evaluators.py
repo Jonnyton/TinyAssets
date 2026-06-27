@@ -449,7 +449,7 @@ class TestHyperparameterImportanceEvaluator:
     def test_skip_when_backends_missing(self, monkeypatch):
         from tinyassets.outcomes import evaluators as ev_mod
 
-        err_msg = "scikit-learn / scipy not installed; pip install workflow[scientific]"
+        err_msg = "scikit-learn / scipy not installed; pip install tinyassets[scientific]"
         monkeypatch.setattr(
             ev_mod,
             "_load_hyperparameter_backends",
@@ -460,7 +460,7 @@ class TestHyperparameterImportanceEvaluator:
         )
         assert result.verdict == "skip"
         assert "scikit-learn" in result.details["reason"]
-        assert "workflow[scientific]" in result.details["reason"]
+        assert "tinyassets[scientific]" in result.details["reason"]
 
     def test_empty_run_results_returns_skip(self):
         result = HyperparameterImportanceEvaluator().evaluate({"run_results": []})
