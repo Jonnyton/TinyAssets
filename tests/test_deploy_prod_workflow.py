@@ -330,6 +330,29 @@ def test_deploy_scrubs_stdio_only_workflow_universe_from_cloud_env():
     assert "delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE" in run_script
 
 
+def test_deploy_scrubs_legacy_workflow_env_from_cloud_env():
+    wf = _load()
+    scrub_step = next(
+        (s for s in _steps(wf) if s.get("name") == "Scrub stale cloud env overrides"),
+        None,
+    )
+    assert scrub_step is not None
+    run_script = scrub_step.get("run", "") or ""
+
+    for key in (
+        "WORKFLOW_IMAGE",
+        "WORKFLOW_DATA_DIR",
+        "WORKFLOW_MCP_CANARY_URL",
+        "WORKFLOW_CODEX_AUTH_JSON_B64",
+        "WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64",
+        "WORKFLOW_GITHUB_PR_CAPABILITIES",
+        "BACKUP_DEST",
+        "BACKUP_GH_REPO",
+        "LOG_DEST",
+    ):
+        assert key in run_script
+
+
 def test_deploy_verifies_cloud_worker_running():
     wf = _load()
     worker_step = next(
@@ -375,10 +398,19 @@ def test_deploy_retires_legacy_workflow_service_before_restart():
     run_script = steps[retire_idx].get("run", "") or ""
     assert "workflow-daemon.service" in run_script
     assert "workflow.service" in run_script
+    assert "workflow-watchdog.timer" in run_script
+    assert "workflow-backup.timer" in run_script
+    assert "workflow-ship-logs.timer" in run_script
+    assert "systemctl disable --now" in run_script
     assert "/opt/workflow/compose.yml" in run_script
     assert "/etc/workflow/env" in run_script
     assert "workflow-tunnel" in run_script
+    assert "workflow-worker-codex-2" in run_script
+    assert "workflow-worker-claude-1" in run_script
+    assert "workflow-worker-claude-2" in run_script
     assert "docker rm -f" in run_script
+    assert "rm -f \"$unit_file\"" in run_script
+    assert "systemctl mask workflow-daemon.service" in run_script
 
 
 def test_deploy_rejects_cloud_worker_workflow_universe_override():
@@ -601,6 +633,17 @@ def test_codex_volume_step_creates_dir_idempotently():
         "dir-create branch must be guarded by an existence check so the "
         "create-log line is skipped when the dir already exists"
     )
+
+
+def test_codex_volume_step_repairs_volume_root_for_auth_db():
+    wf = _load()
+    step = _codex_volume_step(wf)
+    run_script = step.get("run", "") or ""
+
+    assert 'chown "$TINYASSETS_UID:$TINYASSETS_GID" "$VOLUME_DIR"' in run_script
+    assert 'chmod 755 "$VOLUME_DIR"' in run_script
+    assert ".auth.db" in run_script
+    assert "unable to open database file" in run_script
 
 
 def test_codex_volume_step_migrates_from_running_container_once():

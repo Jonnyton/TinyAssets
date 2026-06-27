@@ -205,11 +205,15 @@ jobs:
       # Also strip TINYASSETS_UNIVERSE: it is a stdio-shim override, and
       # leaving it in the cloud env can bind tinyassets-worker to a
       # different universe than the public MCP default.
+      # Hard rename cutover: /etc/tinyassets/env may have been bootstrapped
+      # from /etc/workflow/env on first deploy. Strip every legacy
+      # WORKFLOW_* override and workflow-named backup/log target so the
+      # container environment no longer exposes retired product surfaces.
       - name: Scrub stale cloud env overrides
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE' \
+              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_DEST BACKUP_GH_REPO LOG_DEST" \
               < deploy/install-tinyassets-env.sh
 
       - name: Sync runtime deploy files
@@ -329,6 +333,17 @@ jobs:
           CODEX_DIR="$VOLUME_DIR/.codex"
           CLAUDE_DIR="$VOLUME_DIR/.claude"
 
+          # OAuth registration state lives directly at /data/.auth.db.
+          # The volume root must be writable by the container's uid 1001;
+          # otherwise every public MCP initialize request fails in
+          # OptionalOAuthProvider with sqlite3 "unable to open database file".
+          chown "$TINYASSETS_UID:$TINYASSETS_GID" "$VOLUME_DIR"
+          chmod 755 "$VOLUME_DIR"
+          find "$VOLUME_DIR" -maxdepth 1 -type f \
+            \( -name '.auth.db' -o -name '.auth.db-*' \) \
+            -exec chown "$TINYASSETS_UID:$TINYASSETS_GID" {} + \
+            -exec chmod 600 {} + || true
+
           # Create the directory if missing. mkdir -p is itself a no-op
           # when the path already exists.
           if [ ! -d "$CODEX_DIR" ]; then
@@ -406,12 +421,27 @@ jobs:
               'sudo bash -s' <<'SH'
           set -euo pipefail
 
-          for unit in workflow-daemon.service workflow.service; do
+          legacy_units=(
+            workflow-daemon.service
+            workflow.service
+            workflow-watchdog.timer
+            workflow-watchdog.service
+            workflow-backup.timer
+            workflow-backup.service
+            workflow-disk-watch.timer
+            workflow-disk-watch.service
+            workflow-prune.timer
+            workflow-prune.service
+            workflow-ship-logs.timer
+            workflow-ship-logs.service
+          )
+
+          for unit in "${legacy_units[@]}"; do
             if systemctl list-unit-files "$unit" --no-legend 2>/dev/null | grep -q . \
               || systemctl list-units "$unit" --all --no-legend 2>/dev/null | grep -q .; then
               echo "retiring legacy unit ${unit}"
+              systemctl disable --now "$unit" || true
               systemctl stop "$unit" || true
-              systemctl disable "$unit" || true
             fi
           done
 
@@ -426,14 +456,31 @@ jobs:
             fi
           done
 
-          legacy_ids="$(docker ps -aq --filter 'name=^/workflow-' || true)"
+          legacy_ids="$(docker ps -aq --filter 'name=^/workflow' || true)"
           if [ -n "$legacy_ids" ]; then
             echo "removing legacy workflow containers: ${legacy_ids}"
             docker rm -f $legacy_ids || true
           fi
-          for container in workflow-daemon workflow-tunnel workflow-logs workflow-worker; do
+          for container in \
+            workflow-daemon \
+            workflow-tunnel \
+            workflow-logs \
+            workflow-worker \
+            workflow-worker-codex-2 \
+            workflow-worker-claude-1 \
+            workflow-worker-claude-2; do
             docker rm -f "$container" >/dev/null 2>&1 || true
           done
+
+          for unit_file in /etc/systemd/system/workflow*.service /etc/systemd/system/workflow*.timer; do
+            if [ -e "$unit_file" ] || [ -L "$unit_file" ]; then
+              echo "removing legacy unit file ${unit_file}"
+              rm -f "$unit_file"
+            fi
+          done
+          systemctl daemon-reload
+          systemctl reset-failed "${legacy_units[@]}" || true
+          systemctl mask workflow-daemon.service workflow.service workflow-watchdog.timer || true
           SH
 
       - name: Deploy new image

@@ -232,6 +232,17 @@ def test_systemd_unit_compose_loads_tinyassets_env_for_interpolation():
     assert "ExecStop=/usr/bin/docker compose --env-file /etc/tinyassets/env" in text
 
 
+def test_systemd_start_limit_is_in_unit_section_not_service_section():
+    text = _SYSTEMD_UNIT.read_text(encoding="utf-8")
+    unit_section = text.split("[Service]", 1)[0]
+    service_section = text.split("[Service]", 1)[1].split("[Install]", 1)[0]
+
+    assert "StartLimitIntervalSec=300" in unit_section
+    assert "StartLimitBurst=5" in unit_section
+    assert "StartLimitIntervalSec" not in service_section
+    assert "StartLimitBurst" not in service_section
+
+
 def test_deploy_prod_yaml_sed_sites_emit_canonical_marker():
     """Helper-mediated invariant: every env-mutation site in the YAML
     invokes ``deploy/install-tinyassets-env.sh``, and the helper itself
