@@ -61,6 +61,8 @@ LEGACY_ENV_FILE="${TINYASSETS_LEGACY_ENV_FILE-/etc/workflow/env}"
 ENV_OWNER="${TINYASSETS_ENV_OWNER-root:tinyassets}"
 ENV_MODE="${TINYASSETS_ENV_MODE-640}"
 ENV_READ_USER="${TINYASSETS_ENV_READ_USER-tinyassets}"
+ENV_READ_USER_HOME="${TINYASSETS_ENV_READ_USER_HOME-/opt/tinyassets}"
+ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
 
 usage() {
     cat >&2 <<'EOF'
@@ -105,10 +107,75 @@ owner_label() {
 install_env_file() {
     local src="$1"
     local owner_args=()
+    ensure_owner_principals
     if [ -n "${ENV_OWNER}" ]; then
         owner_args=(-o "$(env_owner_user)" -g "$(env_owner_group)")
     fi
     install -m "${ENV_MODE}" "${owner_args[@]}" "${src}" "${ENV_FILE}"
+}
+
+ensure_group_exists() {
+    local group="$1"
+    [ -n "${group}" ] || return
+    if getent group "${group}" >/dev/null 2>&1; then
+        return
+    fi
+    if ! command -v groupadd >/dev/null 2>&1; then
+        echo "::error::group ${group} missing and groupadd unavailable" >&2
+        exit 2
+    fi
+    echo "::notice::creating system group ${group}" >&2
+    groupadd --system "${group}"
+}
+
+ensure_read_user_exists() {
+    [ -n "${ENV_READ_USER}" ] || return
+    if id -u "${ENV_READ_USER}" >/dev/null 2>&1; then
+        return
+    fi
+    if ! command -v useradd >/dev/null 2>&1; then
+        echo "::error::user ${ENV_READ_USER} missing and useradd unavailable" >&2
+        exit 2
+    fi
+
+    local primary_group=""
+    if [ -n "${ENV_OWNER}" ]; then
+        primary_group="$(env_owner_group)"
+        ensure_group_exists "${primary_group}"
+    fi
+
+    local user_args=(
+        --system
+        --home "${ENV_READ_USER_HOME}"
+        --create-home
+        --shell "${ENV_READ_USER_SHELL}"
+        --comment "TinyAssets daemon service account"
+    )
+    if [ -n "${primary_group}" ]; then
+        user_args+=(--gid "${primary_group}")
+    fi
+    echo "::notice::creating system user ${ENV_READ_USER}" >&2
+    useradd "${user_args[@]}" "${ENV_READ_USER}"
+}
+
+ensure_docker_membership() {
+    [ -n "${ENV_READ_USER}" ] || return
+    id -u "${ENV_READ_USER}" >/dev/null 2>&1 || return
+    getent group docker >/dev/null 2>&1 || return
+    if id -nG "${ENV_READ_USER}" | grep -qw docker; then
+        return
+    fi
+    if command -v usermod >/dev/null 2>&1; then
+        usermod -aG docker "${ENV_READ_USER}" || true
+    fi
+}
+
+ensure_owner_principals() {
+    if [ -n "${ENV_OWNER}" ]; then
+        ensure_group_exists "$(env_owner_group)"
+    fi
+    ensure_read_user_exists
+    ensure_docker_membership
 }
 
 # Confirm the tinyassets user can actually read the file. This is the
@@ -142,6 +209,7 @@ ensure_env_file() {
         echo "::error::failed to create ${env_dir}" >&2
         exit 2
     fi
+    ensure_owner_principals
     if [ -n "${ENV_OWNER}" ]; then
         chown "$(env_owner_user):$(env_owner_group)" "${env_dir}" || true
         chmod 750 "${env_dir}" || true

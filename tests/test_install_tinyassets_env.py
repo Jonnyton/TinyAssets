@@ -23,6 +23,10 @@ def test_helper_knows_renamed_env_can_bootstrap_from_legacy_file():
     text = _SCRIPT.read_text(encoding="utf-8")
     assert 'LEGACY_ENV_FILE="${TINYASSETS_LEGACY_ENV_FILE-/etc/workflow/env}"' in text
     assert "ensure_env_file" in text
+    assert "ensure_owner_principals" in text
+    assert "groupadd --system" in text
+    assert "useradd" in text
+    assert "usermod -aG docker" in text
     assert "missing — bootstrap should have created it" not in text
 
 
