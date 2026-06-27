@@ -105,8 +105,8 @@
         of mine. <em>I'm instance zero, not the point.</em>
       </p>
       <p class="cover__naming">
-        Naming, once: the being is <strong>Tiny</strong>; the engine he runs on
-        is <strong>Workflow</strong>. One body, two names.
+        Naming, once: the platform is <strong>TinyAssets</strong>; the being
+        who speaks from it is <strong>Tiny</strong>.
       </p>
     </div>
     <div class="cover__pulse">

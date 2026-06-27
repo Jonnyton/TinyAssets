@@ -1,6 +1,6 @@
 # TinyAssets Rename Migration Execution Plan
 
-Status: active planning lane
+Status: active implementation lane; Phase 0 landed, Phase 1 build/check verified
 Date: 2026-06-27
 Branch: `codex/tinyassets-rename-migration`
 Worktree: `../wf-tinyassets-rename-migration`
@@ -10,6 +10,8 @@ Worktree: `../wf-tinyassets-rename-migration`
 Retire `Workflow` / `workflow` as the project/platform namespace after migrating public, package, connector, env, data-path, and deployment surfaces to the Tiny/TinyAssets boundary.
 
 ## Phase 0: Land The Boundary
+
+Status: landed in commit `37b96996`.
 
 **Files:** `PLAN.md`, `docs/design-notes/2026-06-27-tinyassets-rename-migration.md`, this file, `STATUS.md`, `ideas/PIPELINE.md`, `ideas/INBOX.md`
 
@@ -28,7 +30,9 @@ Verification:
 
 ## Phase 1: Public Copy And OSS Front Door
 
-**Files:** `README.md`, `assets/brand/*`, `WebSite/site/src/lib/i18n/en.json`, `WebSite/design-source/source_copy/en.json`, website components that hard-code brand names, public docs that are install/readme/front-door surfaces.
+Status: build/check verified on branch `codex/tinyassets-rename-migration`.
+
+**Files:** `README.md`, `assets/brand/*`, `WebSite/site/{README.md,package.json,package-lock.json,src/**}`, `WebSite/design-source/source_copy/en.json`, website components that hard-code brand names, public docs that are install/readme/front-door surfaces.
 
 Acceptance:
 
@@ -42,6 +46,22 @@ Verification:
 - Website build/test per `website-editing` skill.
 - Browser screenshot proof for changed website pages.
 - `rg -n "Workflow|workflow" README.md assets WebSite/site/src WebSite/design-source/source_copy` reviewed and classified; no unclassified public-brand occurrences.
+
+Residual allowed in this phase:
+
+- Factual compatibility URLs and current local checkout paths such as `github.com/Jonnyton/Workflow` and `C:\Users\Jonathan\Projects\Workflow`.
+- Generated snapshots whose live upstream data still says Workflow; these move with connector/runtime/content migration phases.
+- Historical verbatim captures explicitly labeled legacy.
+- File/component names retained until package/import/asset rename phases move dependents.
+
+Verification results as of 2026-06-27:
+
+- `git diff --check` passed.
+- JSON parse check passed for site package files, i18n copy, design-source copy, token info, and legal info.
+- Targeted brand scans show only the migration design-note examples and the explicitly legacy verbatim chat capture for current-brand patterns.
+- `npm run check` passed with 0 errors and 7 pre-existing warnings.
+- `npm run build` passed and wrote `WebSite/site/build/`.
+- Local preview rendered `/`, `/start`, `/build`, and `/legal`; screenshots are in `output/tinyassets-rename/` (`home.png`, `start.png`, `build.png`, `legal.png`).
 
 ## Phase 2: App, Registry, Connector, And Directory Metadata
 

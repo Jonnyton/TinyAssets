@@ -257,8 +257,8 @@ export function buildAtlas(snap: Snapshotish): Atlas {
   nodes.push({
     id: REPO_ID,
     kind: 'repo',
-    label: 'Jonnyton/Workflow',
-    sub: 'the repo',
+    label: 'TinyAssets',
+    sub: 'repo path still Jonnyton/Workflow during migration',
     refId: REPO_URL,
     x: CENTER.x,
     y: CENTER.y,

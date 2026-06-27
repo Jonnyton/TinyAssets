@@ -12,7 +12,7 @@
       "Your chatbot designs it with you, pulling from a public library of workflow nodes built by other users. It reuses, remixes, or creates.",
       "When you're ready, a daemon runs it. The workflow produces real output \u2014 drafts, extractions, analyses \u2014 not a chatbot's guess at what the output might look like."
     ],
-    "why_section_title": "Why Workflow?",
+    "why_section_title": "Why TinyAssets?",
     "why_points": [
       "Real execution. The daemon actually runs your workflow; it doesn't pretend.",
       "Open commons. Every public workflow is CC0 \u2014 use it, remix it, build on it without permission.",
@@ -21,7 +21,7 @@
     ]
   },
   "goals": {
-    "title": "Workflow Goals",
+    "title": "TinyAssets Goals",
     "subtitle": "Browse public goals, related branches, and live commons context.",
     "empty_state": "No goals yet \u2014 check back after launch.",
     "filter_domain": "Domain",
@@ -54,42 +54,42 @@
     "examples": [
       {
         "category": "Accounting",
-        "invocation": "Workflow: process these invoice PDFs and post them to my accounting system.",
+        "invocation": "Tiny: process these invoice PDFs and post them to my accounting system.",
         "outcome": "Invoice-number extraction + GL-account match + Voyager/QuickBooks push. Human reviews any over a configurable threshold."
       },
       {
         "category": "Research",
-        "invocation": "Workflow: read these 5 papers and generate falsifiable hypotheses for my next experiment.",
+        "invocation": "Tiny: read these 5 papers and generate falsifiable hypotheses for my next experiment.",
         "outcome": "Prior-work synthesis + gap identification + 3\u20135 hypotheses ranked by testability \u00d7 novelty."
       },
       {
         "category": "Writing",
-        "invocation": "Workflow: refine this scene \u2014 tighten pacing, keep my voice, don't add new beats.",
+        "invocation": "Tiny: refine this scene \u2014 tighten pacing, keep my voice, don't add new beats.",
         "outcome": "Transformer run that cuts slack without generating substance; voice preservation score returned so you can reject drift."
       },
       {
         "category": "Cooking",
-        "invocation": "Workflow: scale this recipe from 4 servings to 14, keep the baking ratios honest.",
+        "invocation": "Tiny: scale this recipe from 4 servings to 14, keep the baking ratios honest.",
         "outcome": "Ingredient scaling with non-linear-leavening warnings; caller knows when to halve-and-double vs free-scale."
       },
       {
         "category": "Legal",
-        "invocation": "Workflow: pull all termination clauses out of this contract and compare to our standard template.",
+        "invocation": "Tiny: pull all termination clauses out of this contract and compare to our standard template.",
         "outcome": "Clause extraction + line-by-line diff against your template; flagged deviations for human review."
       },
       {
         "category": "Code",
-        "invocation": "Workflow: lint this Python module under strict rules and suggest refactors for the top 3 issues.",
+        "invocation": "Tiny: lint this Python module under strict rules and suggest refactors for the top 3 issues.",
         "outcome": "Rule-based lint + LLM-driven refactor suggestions ranked by downstream impact."
       },
       {
         "category": "Journalism",
-        "invocation": "Workflow: summarize these 12 interview transcripts and map where sources agree vs disagree.",
+        "invocation": "Tiny: summarize these 12 interview transcripts and map where sources agree vs disagree.",
         "outcome": "Multi-source synthesis with explicit disagreement mapping; citations back to each transcript line."
       },
       {
         "category": "Email",
-        "invocation": "Workflow: draft a reply to this thread in my voice, for my review before sending.",
+        "invocation": "Tiny: draft a reply to this thread in my voice, for my review before sending.",
         "outcome": "Draft created in Gmail drafts (never auto-sent); your voice profile preserved; you send manually."
       }
     ],
@@ -214,14 +214,14 @@
     "title": "Contribute",
     "tagline": "The platform itself is open source. So are the public goals. Two paths for two kinds of contribution.",
     "instructions": "Clone the repo, read CONTRIBUTING.md, submit a PR.",
-    "clone_cmd": "git clone https://github.com/Workflow/Workflow.git",
+    "clone_cmd": "git clone https://github.com/Jonnyton/Workflow.git",
     "platform_code_title": "Platform code (the engine)",
-    "platform_code_description": "The daemon engine, MCP gateway, web app, tray \u2014 all in the main Workflow repo. Standard fork-and-PR flow. MIT-licensed.",
+    "platform_code_description": "The daemon engine, MCP gateway, web app, tray \u2014 all in the main TinyAssets platform repo. The current GitHub path still uses Workflow during migration. Standard fork-and-PR flow. MIT-licensed.",
     "goals_content_title": "Public goals (the content)",
-    "goals_content_description": "Public nodes, goals, branches. Lives at Workflow-catalog/ repo. Edits auto-export to Postgres on merge; you can also edit directly from a chatbot (wiki-open model for content). CC0-licensed.",
+    "goals_content_description": "Public nodes, goals, branches. The catalog is the TinyAssets public-content surface; you can also edit directly from a chatbot (wiki-open model for content). CC0-licensed.",
     "step_by_step_title": "How to contribute",
     "step_by_step": [
-      "Pick which repo matches your change: Workflow/ for engine, Workflow-catalog/ for workflows.",
+      "Pick which surface matches your change: TinyAssets platform code or public goal/catalog content.",
       "Fork it on GitHub.",
       "Read CONTRIBUTING.md in the repo you forked \u2014 each has its own rules.",
       "Make your change, commit with `--signoff` (DCO required), push to your fork.",
@@ -236,7 +236,7 @@
     "what_to_work_on": [
       {
         "path": "Open issues",
-        "where": "github.com/Workflow/Workflow/issues (platform) + github.com/Workflow/Workflow-catalog/issues (content). Labels to watch: good-first-issue, help-wanted, track-X (where X \u2208 A-K)."
+        "where": "github.com/Jonnyton/Workflow/issues for the current TinyAssets platform repo while the repository rename is pending. Labels to watch: good-first-issue, help-wanted, track-X (where X \u2208 A-K)."
       },
       {
         "path": "Track work",
@@ -278,7 +278,7 @@
     "faq": [
       {
         "q": "What's the license?",
-        "a": "Platform code: MIT (standard permissive OSS). Workflow content (public goals): CC0-1.0 (public domain dedication). Both are maximum-permissive by design."
+        "a": "Platform code: MIT (standard permissive OSS). Public goal/catalog content: CC0-1.0 (public domain dedication). Both are maximum-permissive by design."
       },
       {
         "q": "Do I need a CLA?",
@@ -290,7 +290,7 @@
       },
       {
         "q": "Can I contribute without writing code?",
-        "a": "Yes \u2014 workflow content contributions (goal edits) happen via chatbot directly. No git required for that side. Git is for platform-code contributions."
+        "a": "Yes \u2014 public goal/catalog contributions happen via chatbot directly. No git required for that side. Git is for platform-code contributions."
       },
       {
         "q": "How fast do PRs merge?",

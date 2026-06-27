@@ -166,9 +166,9 @@
       <a class="btn btn--ghost" href="#run-it">Run it yourself ↓</a>
     </div>
     <p class="cover__naming">
-      <strong>Tiny</strong> is the public face of <strong>Workflow</strong>,
-      an open-source engine. Same code whether it runs on the public box or on
-      yours.
+      <strong>TinyAssets</strong> is the open-source platform.
+      <strong>Tiny</strong> is the public intelligence running on it. Same code
+      whether it runs on the public box or on yours.
     </p>
   </div>
 </section>

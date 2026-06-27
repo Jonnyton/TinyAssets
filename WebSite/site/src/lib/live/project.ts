@@ -86,8 +86,8 @@ export const initialRepoSnapshot = bakedRepo as RepoSnapshot;
 export const LENS_DEFINITIONS: Record<LensKey, LensDefinition> = {
   home: {
     eyebrow: 'Live command center',
-    title: 'Use Workflow. Watch it work. Help build it.',
-    question: 'Workflow lets your chatbot design and run real multi-step work through MCP. Connect it, open the live graph, or join the loop; each path reads current MCP and GitHub state.',
+    title: 'Use TinyAssets. Watch Tiny work. Help build the platform.',
+    question: 'TinyAssets lets your chatbot design and run real multi-step work through MCP. Connect it, open the live graph, or join the loop; each path reads current MCP and GitHub state.',
     watches: 'MCP commons + GitHub repo pulse',
     proof: 'Refresh either side; the readout below changes from the same sources the rest of the site uses.',
     primaryHref: '/graph',

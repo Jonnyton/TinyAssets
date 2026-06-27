@@ -1,4 +1,4 @@
-# Workflow — Plan
+# TinyAssets — Plan
 
 How the system should work and why. Architecture, principles, and the working theory of every module. PLAN.md is the reference everyone — humans, the auto-change loop, user chatbots — consults before building, so that the applicable module's shape is known before code is written.
 
@@ -8,7 +8,7 @@ For live state, see STATUS.md. For how to work on the project, see AGENTS.md. **
 
 ## Project Thesis
 
-**Workflow is a global goals engine.** Humanity declares shared Goals — research breakthroughs, novels, prosecutions, cures, open datasets — and a legion of diverse AI-augmented workflows pursues each Goal in parallel. Branches evolve, cross-pollinate, and get ranked by how far their outputs advance up each Goal's real-world outcome-gate ladder. The value is the evolving ecology of many workflows chasing the same outcomes and learning from each other.
+**TinyAssets is a global goals engine.** Humanity declares shared Goals — research breakthroughs, novels, prosecutions, cures, open datasets — and a legion of diverse AI-augmented workflows pursues each Goal in parallel. Branches evolve, cross-pollinate, and get ranked by how far their outputs advance up each Goal's real-world outcome-gate ladder. The value is the evolving ecology of many workflows chasing the same outcomes and learning from each other.
 
 No domain is privileged. Every Goal — research breakthroughs, novels, prosecutions, cures, open datasets, restoring a legacy app — stands in equal standing: each inherits the engine, not a topology. A reader should not be able to tell from the architecture which domain the engine was first exercised against. (Where the current code still privileges one domain as the default/only runtime, that is residue to remove, not design intent — tracked in `docs/audits/2026-06-24-fantasy-architecture-residue-audit.md`.)
 
@@ -36,7 +36,7 @@ Depth: lead memory `project_minimal_primitives_principle.md`.
 
 **Rule:** When a feature is proposed, the FIRST question is "could the community evolve this?" — not "should we build this?" Platform-build is the fallback, not the default. Imagine the implementation; sketch how a chatbot would compose it from existing primitives + wiki rubrics + remix material; if that sketch works, don't ship platform code.
 
-**Why:** Workflow's product soul is users + chatbots evolving the system through wiki + remix + autoresearch. Platform-shipped primitives are scarce, intentional, and expensive — they crowd out community evolution and lock users into our taste. Community-buildable features compound: every new primitive composition becomes a remixable artifact other users discover and extend. Platform-shipped features are frozen at ship date; community-evolved features iterate continuously across thousands of remixes.
+**Why:** TinyAssets' product soul is users + chatbots evolving the system through wiki + remix + autoresearch. Platform-shipped primitives are scarce, intentional, and expensive — they crowd out community evolution and lock users into our taste. Community-buildable features compound: every new primitive composition becomes a remixable artifact other users discover and extend. Platform-shipped features are frozen at ship date; community-evolved features iterate continuously across thousands of remixes.
 
 **How to apply:** Imagine the implementation first. Then ask: could the user's chatbot easily compose this from existing primitives (workflow nodes, evaluators, branches, gates, autoresearch, wiki content)? If yes → don't ship as platform primitive; surface the community-build path in the design note + idea triage. If no (structural gap) → identify the gap precisely, ship the smallest primitive that closes it, not the policy. Platform-build is justified only when the gap is structurally impossible to compose around, OR the platform-shipped version unblocks 10x more community evolution than it crowds out.
 
@@ -56,7 +56,7 @@ Depth: lead memory `project_privacy_via_community_composition.md`.
 
 **Rule:** Private data lives on host machines; public data lives in the platform commons. Three parts: (a) when a user builds a private branch / canon / universe, the data lives on a host; the platform/server **never stores** private content. (b) Platform-stored data is the open-source community commons — public-by-definition. (c) Community designs published to the commons become the tool surface for next users via discovery + similarity + remix; the platform doesn't build features, the community evolves them.
 
-**Why:** Per host directive 2026-04-27. Security architecture, not security policy — privacy is enforced by the platform never having the data. Identity alignment — Workflow is open-source community first, the platform's data space is for the community. Resource alignment — storage / serving / moderation costs of private data fall on the host. And the commons + remix engine is what makes minimal-primitives + community-build viable at scale: the platform ships discovery/similarity/ranking/attribution primitives; community ships features.
+**Why:** Per host directive 2026-04-27. Security architecture, not security policy — privacy is enforced by the platform never having the data. Identity alignment — TinyAssets is open-source community first, the platform's data space is for the community. Resource alignment — storage / serving / moderation costs of private data fall on the host. And the commons + remix engine is what makes minimal-primitives + community-build viable at scale: the platform ships discovery/similarity/ranking/attribution primitives; community ships features.
 
 **How to apply:** Before adding ANY platform feature, ask: "Could a user compose this from existing primitives + community remix?" If yes, the answer is to make discovery / similarity / remix work well, not to ship the feature. All platform-stored data is public-by-definition — no `is_private` flag on platform records (those records don't exist). Private branches don't have rows in platform metadata; the chatbot composes "this is private, keep it on host" without the platform's knowledge. Async availability is acceptable — private content is gated on a host being online; users-with-access who arrive when no host is online wait or get a graceful "no host online" signal. Anti-patterns: storing private data with platform-side encryption (still platform-resident), soft-private branches (a "private" flag breaks the architecture), discovery surfaces that bias toward platform-built content (commons content is equal first-class).
 
@@ -64,7 +64,7 @@ Depth: lead memory `project_commons_first_architecture.md`.
 
 ### 5. User capability axis — browser-only vs local-app, across providers
 
-**Rule:** Workflow has two basic user shapes for product-design purposes: **browser-only** (phone or computer; chats through web client — Claude.ai web, ChatGPT web; no local file system or code execution) and **local-app** (computer with chat-client app + computer-use access — Claude Code, ChatGPT desktop with computer-use; local file system, local code execution, daemon hosting). Orthogonal axis: MCP host provider. Claude and ChatGPT are P0 launch/discoverability gates, not the market boundary. Any user-facing chatbot, IDE agent, local model shell, enterprise agent builder, or custom app that can connect to a Workflow MCP server is part of the customer model; non-P0 hosts get explicit matrix-scoped support and caveats instead of being treated as invisible long tail.
+**Rule:** TinyAssets has two basic user shapes for product-design purposes: **browser-only** (phone or computer; chats through web client — Claude.ai web, ChatGPT web; no local file system or code execution) and **local-app** (computer with chat-client app + computer-use access — Claude Code, ChatGPT desktop with computer-use; local file system, local code execution, daemon hosting). Orthogonal axis: MCP host provider. Claude and ChatGPT are P0 launch/discoverability gates, not the market boundary. Any user-facing chatbot, IDE agent, local model shell, enterprise agent builder, or custom app that can connect to a TinyAssets MCP server is part of the customer model; non-P0 hosts get explicit matrix-scoped support and caveats instead of being treated as invisible long tail.
 
 **Why:** "Use Claude.ai instead" or "use Claude Code instead" is an anti-pattern. A real user is on whatever client they chose, and the platform reaches them there. Bugs that work on one provider but not another are P1 product bugs, not "use the other one." Don't second-class browser-only users — compensate via cleverness (host the daemon for them, publish results to shareable URLs, stream long outputs, save state to universe, compose chains that produce tangible deliverables, use platform scalability advantages like parallelism + retries + evaluators that no single browser session could do alone).
 
@@ -80,7 +80,7 @@ Depth: lead memory `project_user_capability_axis.md`; host matrix `docs/design-n
 
 ### Canonical Naming Boundary
 
-**Status: canonical as of 2026-06-27.** `Tiny` is the personified intelligence users and developers interact with. `TinyAssets` is the website, platform, distribution, GitHub/repository, and app/listing brand. `Workflow` / `workflow` is a migration-only compatibility name from the engineering discovery phase and must retire after each surface has a replacement, migration path, and verification gate.
+**Status: canonical as of 2026-06-27.** `Tiny` is the personified intelligence users and developers interact with: the acting persona shaped as an extension of the founder's will. `TinyAssets` is the website, platform, distribution, GitHub/repository, and app/listing brand. `Workflow` / `workflow` is a migration-only compatibility name from the engineering discovery phase and must retire after each surface has a replacement, migration path, and verification gate.
 
 This boundary does not retire the generic English noun "workflow" when it literally describes a user's process, graph, or branch. It does retire `Workflow` as a product/repository/connector name and `workflow` as a durable namespace label. New public copy, connector metadata, package names, env vars, data paths, and docs must prefer `TinyAssets` for the platform and `Tiny` for the acting persona. Any remaining `Workflow`/`workflow` reference must be classified as historical context, temporary compatibility, or a migration blocker with a planned removal.
 
@@ -117,7 +117,7 @@ These principles apply to every module. They do not own a module each; they cons
 
 **Context is a managed working set.** Prompts are lossy projections over durable state. The goal is not "pack more context" but "give the model the smallest high-signal working set for the current step."
 
-**Workflow state transitions are the core abstraction.** Orient, plan, draft, commit, learn, reflect, enrich, task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
+**Platform state transitions are the core abstraction.** Orient, plan, draft, commit, learn, reflect, enrich, task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
 
 **Every scaffold is a falsifiable hypothesis.** Counters, thresholds, phase gates, routing rules all encode a claim about model weakness. Prove the simpler approach fails before adding; prove removing hurts before defending. When a stronger model lands, re-test the harness. Trend toward less prescriptive control.
 
@@ -340,10 +340,10 @@ _Last audited: 2026-05-19_
 - *Layered evaluation.* Deterministic checks for provable failures; an editorial reader for natural-language critique; environment-grounded artifacts + traces for verification. One strong independent reader beats a committee of shallow scorers.
 - *Evals grade process and outcome.* Inspect retrieval choices, tool usage, stopping behavior, handoff quality, grounding, artifacts. When a run fails, traces should explain why.
 - *Evaluation is platform-wide, not fantasy-specific.* Fantasy judges, autoresearch metrics, moderation rubrics, real-world outcomes, and discovery ranking are instantiations of one `Evaluator` primitive.
-- *Native optimization, not an ASI-Evolve clone.* Workflow adopts the ASI-Evolve / AlphaEvolve lesson as an engine-native pattern: users ask through any MCP-connected chatbot; the platform runs bounded evaluator-driven optimization over nodes, branches, evaluators, prompts, policies, topology; accepted changes land through normal versioned/provenance-aware branch history. Do not vendor or parallel-run a separate ASI pipeline.
+- *Native optimization, not an ASI-Evolve clone.* TinyAssets adopts the ASI-Evolve / AlphaEvolve lesson as an engine-native pattern: users ask through any MCP-connected chatbot; the platform runs bounded evaluator-driven optimization over nodes, branches, evaluators, prompts, policies, topology; accepted changes land through normal versioned/provenance-aware branch history. Do not vendor or parallel-run a separate ASI pipeline.
 - *Community model.* Branches, nodes, evaluators, and lessons are remixable public commons when privacy policy permits. The platform preserves many competing solution families rather than collapsing to one "best" workflow.
 - *Safety model.* Candidate generators cannot edit the evaluator or the locked harness they are being judged by. Optimization runs declare editable surface, evaluator chain, budget, stop conditions, merge policy, provenance, and visibility up front. Private instance data must not be promoted into reusable cognition unless privacy layer permits.
-- *Acceptance Scenario Packs.* Host-approved 2026-05-02 direction (pending opposite-provider review): Workflow grows reusable long-horizon scenario packs combining user simulation, rubric checks, MCP/API or browser evidence, and artifact capture into `EvalResult` evidence. No vendoring of AgencyBench or its harness — define Workflow-native scenario contracts.
+- *Acceptance Scenario Packs.* Host-approved 2026-05-02 direction (pending opposite-provider review): TinyAssets grows reusable long-horizon scenario packs combining user simulation, rubric checks, MCP/API or browser evidence, and artifact capture into `EvalResult` evidence. No vendoring of AgencyBench or its harness — define TinyAssets-native scenario contracts.
 
 **Substrate:** `workflow/evaluation/`, `workflow/learning/`. `EvalResult` evidence/artifact/cost/freshness contract landed 2026-05-02. Canonical rationale: `docs/audits/2026-05-02-asi-evolve-architecture-implications.md`; integration design: `docs/design-notes/2026-05-02-community-evolvable-optimization-integration.md`.
 
@@ -494,7 +494,7 @@ Users / Hosts
     <->
 MCP-compatible clients / Host dashboard
     <->
-FastAPI + Workflow Server (MCP) control plane
+FastAPI + TinyAssets MCP Server control plane
     <->
 Daemon (LangGraph)
     |
@@ -549,9 +549,9 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 - **Writer self-indexes.** The writer produces entity and fact data when it commits. No separate extraction role is the end state.
 - **Editorial feedback, not scoring.** Natural-language notes about what works, what's concerning, and whether a concern is provably wrong. No numeric rubric in the core loop.
 - **Graph hierarchy is scaffolding.** Structure should emerge from the daemon's choices wherever possible, not fixed counters.
-- **Workflow Server, not single-user daemon.** Control plane runs in the cloud (currently DO Droplet, formerly a host laptop); many named users connect through MCP clients.
+- **TinyAssets MCP Server, not single-user daemon.** Control plane runs in the cloud (currently DO Droplet, formerly a host laptop); many named users connect through MCP clients.
 - **Multi-tenant by design, single-tenant today as N=1.** Every daemon-related design must scale from `(user, daemon)` to `(N users, M daemons per user)` without rewrite. Any architecture that would require a migration to multi-user is rejected. Memory `project_daemons_are_multi_tenant_by_design.md`.
-- **Workflow-first, domain-agnostic identity.** Fantasy authoring is an early benchmark domain, not the trunk.
+- **TinyAssets-first, domain-agnostic identity.** Fantasy authoring is an early benchmark domain, not the trunk.
 - **MCP clients + local host dashboard.** MCP is the shared collaborative surface; host operational controls live in a local dashboard.
 - **Daemons are the public agent identity.** Summonable, forkable, defined by durable soul files. Soul changes create new forks rather than overwriting.
 - **Daemon identity is platform-wide, not domain-specific authoring.** Migrate or rename the current `author_definitions` substrate into the general daemon registry. Content provenance retains `author_id` + `author_kind` discriminator.

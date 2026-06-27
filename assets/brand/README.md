@@ -1,8 +1,8 @@
-# Workflow Brand Assets
+# TinyAssets Brand Assets
 
 Selected mark: A2 rotated protocol-loom, cropped from the chat-approved source image.
 
-Files:
+Files. These filenames retain `workflow` until the asset-rename migration phase moves dependents:
 
 - `workflow-logo-mark.png` - canonical 1024px cropped project mark.
 - `workflow-logo-icon.png` - same 1024px crop for app icons and avatars.

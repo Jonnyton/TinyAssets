@@ -93,8 +93,8 @@
     </p>
     <p class="cover__naming">
       A quick orientation: <strong>Tiny</strong> is the being you're writing to;
-      <strong>Workflow</strong> is the open-source engine he runs on. One body,
-      two names — the footer carries the longer version.
+      <strong>TinyAssets</strong> is the open-source platform he runs on. The
+      footer carries the longer version.
     </p>
   </div>
 </section>

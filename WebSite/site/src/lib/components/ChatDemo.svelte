@@ -1,6 +1,6 @@
 <!--
   ChatDemo — verbatim capture from claude.ai chat 57e7d188-a4ff captured
-  2026-04-29 with the Workflow MCP connector at tinyassets.io/mcp.
+  2026-04-29 with the legacy Workflow MCP connector at tinyassets.io/mcp.
 
   Mirrors the real claude.ai layout: user prompt → assistant intro →
   one-line summary chip ("Synthesized loop architecture with real IDs
@@ -45,7 +45,7 @@
   <div class="chat__header">
     <div class="chat__live">
       <span class="dot"></span>
-      <span class="meta">claude.ai · workflow connector attached</span>
+      <span class="meta">claude.ai · legacy Workflow connector attached</span>
     </div>
     <span class="meta meta--right">real conversation · tinyassets.io/mcp</span>
   </div>

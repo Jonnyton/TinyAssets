@@ -6,14 +6,14 @@
   <title>Build — Tiny</title>
   <link rel="canonical" href="https://tinyassets.io/build" />
   <meta http-equiv="refresh" content="2;url=/build" />
-  <meta name="description" content="The contributor path is now Build — clone the engine, run it locally, and the real ways to contribute to Workflow." />
+  <meta name="description" content="The contributor path is now Build — clone the engine, run it locally, and the real ways to contribute to TinyAssets." />
 </svelte:head>
 
 <section class="moved">
   <p class="eyebrow">this page moved</p>
   <p class="moved__line">
     Contributing is now <em>Build</em> — clone the open engine, run it
-    locally, and every real way to help shape Workflow.
+    locally, and every real way to help shape TinyAssets.
   </p>
   <a class="moved__cta" href="/build">Go to Build →</a>
   <p class="moved__sub ev">/contribute → /build · taking you there in a moment</p>

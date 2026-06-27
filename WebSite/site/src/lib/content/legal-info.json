@@ -7,7 +7,7 @@
   "platform_repo": "https://github.com/Jonnyton/Workflow",
   "content_repo": "https://github.com/Jonnyton/Workflow-catalog",
   "operating_entity": {
-    "name": "Tiny Assets (operating entity TBD pending Wyoming DAO LLC formation)",
+    "name": "TinyAssets (operating entity TBD pending Wyoming DAO LLC formation)",
     "type": "Pre-formation; treat as unincorporated association at v0",
     "jurisdiction": "Delaware (default \u2014 counsel may relocate to Wyoming for DAO LLC)"
   },
@@ -28,7 +28,7 @@
     "display_name": "Destiny (tiny)",
     "symbol": "tiny",
     "workflow_test_currency": "test tiny on Base Sepolia",
-    "current_workflow_status": "Workflow touches only the Base Sepolia test currency until real Destiny (tiny) integration is explicitly opened.",
+    "current_workflow_status": "TinyAssets touches only the Base Sepolia test currency until real Destiny (tiny) integration is explicitly opened.",
     "intended_classification": "Digital tool / digital commodity (per SEC 2026 Project Crypto)",
     "is_security": false,
     "offers_yield": false,

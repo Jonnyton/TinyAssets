@@ -8,7 +8,7 @@ Owner: codex-gpt5-desktop
 
 `Workflow` was a working engineering name from the discovery phase. It still appears as the project root folder name, GitHub repository name, Python package, connector/app name, public docs name, deployment path, env-var prefix, data-volume name, and many historical references. That now conflicts with the product model:
 
-- `Tiny` is the personified intelligence users and developers interact with.
+- `Tiny` is the personified intelligence users and developers interact with: the acting persona shaped as an extension of the founder's will.
 - `TinyAssets` is the website, platform, repository, distribution, and app/listing brand.
 - `Workflow` / `workflow` is not a permanent internal substrate name. It exists only during migration and retires once replacements are proven.
 
@@ -20,7 +20,7 @@ The canonical boundary is:
 
 | Term | Meaning | Not this |
 |---|---|---|
-| `Tiny` | The acting personification: the intelligence/person users and developers talk to when a universe/persona is bound. | The repo, legal/product listing, package, or website brand. |
+| `Tiny` | The acting personification: the intelligence/person users and developers talk to when a universe/persona is bound, shaped as an extension of the founder's will. | The repo, legal/product listing, package, or website brand. |
 | `TinyAssets` | The platform, website, GitHub/repository, distribution, connector/app listing, and OSS project brand. | The first-person acting persona. |
 | `Workflow` / `workflow` | Migration-only compatibility name for existing imports, env vars, paths, registry IDs, installed connectors, historical docs, and user installs. | A durable product, repo, connector, package, or architecture brand. |
 | `workflow` as common noun | A plain-English process/sequence when literally describing user work. | A namespace, product, connector, or platform name. |

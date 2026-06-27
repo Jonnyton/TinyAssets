@@ -1,8 +1,8 @@
-# Workflow
+# TinyAssets
 
 **A global goals engine. Fully self-hostable, open-source (MIT platform / CC0 catalog), runs on your own infrastructure.** Humanity declares shared Goals — research breakthroughs, great novels, successful prosecutions, cures, open datasets, whatever people actually want done — and a legion of diverse AI-augmented workflows pursues each Goal in parallel. Branches evolve, cross-pollinate, and get ranked by how far their outputs advance up each Goal's real-world outcome-gate ladder. The system is built for whatever people collectively care about next.
 
-This repo contains substantial architecture and implementation work. The starter surfaces below help you navigate, extend, and connect — including via Obsidian if you use it.
+This repo contains substantial architecture and implementation work for TinyAssets. The starter surfaces below help you navigate, extend, and connect — including via Obsidian if you use it. The current checkout and package namespaces still include `Workflow` during the rename migration; treat those as compatibility labels, not the platform name.
 
 **Built by Jonathan Farnsworth** (jonathan.m.farnsworth@gmail.com, GitHub [@Jonnyton](https://github.com/Jonnyton)) — sole human author; the only co-authors are the project's own AI agents.
 
@@ -41,8 +41,8 @@ A coherent, dependency-verified stack (LangGraph / FastMCP / LanceDB / igraph / 
 Clone-to-green-tests in ~5 minutes on a clean machine:
 
 ```bash
-git clone https://github.com/Jonnyton/Workflow.git
-cd Workflow
+git clone https://github.com/Jonnyton/Workflow.git  # repo rename to TinyAssets is pending
+cd Workflow                                        # compatibility checkout name during migration
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .[dev]
 pytest -q                 # full suite — no API keys needed (tests mock providers)
@@ -61,7 +61,7 @@ Cross-platform notes:
 1. Read [STATUS.md](STATUS.md) for live state.
 2. Read [PLAN.md](PLAN.md) for architecture and design intent.
 3. Read [AGENTS.md](AGENTS.md) for process rules.
-4. Read [docs/project-lineage.md](docs/project-lineage.md) for how Workflow grew out of the earlier Hex, Echoes, Fantasy Writer, and Fantasy Author work.
+4. Read [docs/project-lineage.md](docs/project-lineage.md) for how TinyAssets grew out of the earlier Hex, Echoes, Fantasy Writer, and Fantasy Author work.
 5. Use `python scripts/docview.py` for large Markdown, text, and JSON files
    before any raw whole-file read.
 6. Capture loose user ideas in [ideas/INBOX.md](ideas/INBOX.md) or with

@@ -4,7 +4,7 @@
   line is one honest sentence pointing at disclosures, not a wallet rack.
 -->
 <script lang="ts">
-  import WorkflowMark from './WorkflowMark.svelte';
+  import TinyAssetsMark from './WorkflowMark.svelte';
   import legal from '$lib/content/legal-info.json';
 
   const year = new Date().getFullYear();
@@ -13,20 +13,21 @@
 <footer class="footer">
   <div class="container footer__naming">
     <div class="brand">
-      <WorkflowMark size={22} />
+      <TinyAssetsMark size={22} />
       <p class="naming">
-        <strong>Tiny</strong> is the public face of <strong>Workflow</strong> — an open-source
-        engine that runs real multi-step work for any goal. He lives at
-        <span class="ev">tinyassets.io</span>; his code lives on
-        <a href="https://github.com/Jonnyton/Workflow" target="_blank" rel="noreferrer">GitHub</a>.
-        Same thing, one body, two names.
+        <strong>TinyAssets</strong> is the platform. <strong>Tiny</strong> is the
+        intelligence you meet inside it: a working persona shaped by the
+        founder's will and pointed at real multi-step work. He lives at
+        <span class="ev">tinyassets.io</span>; the code still lives on
+        <a href="https://github.com/Jonnyton/Workflow" target="_blank" rel="noreferrer">GitHub</a>
+        while the repository rename migrates.
       </p>
     </div>
   </div>
 
   <div class="container footer__grid">
     <div class="col">
-      <span class="eyebrow">Use him</span>
+      <span class="eyebrow">Use Tiny</span>
       <ul>
         <li><a href="/start">Start — connect a chatbot</a></li>
         <li><a href="/goals">Goals — what's being worked on</a></li>
@@ -35,7 +36,7 @@
       </ul>
     </div>
     <div class="col">
-      <span class="eyebrow">Watch him</span>
+      <span class="eyebrow">Watch Tiny</span>
       <ul>
         <li><a href="/loop">The loop — how he patches himself</a></li>
         <li><a href="/commons">Commons — the public brain</a></li>
@@ -44,7 +45,7 @@
       </ul>
     </div>
     <div class="col">
-      <span class="eyebrow">Build him</span>
+      <span class="eyebrow">Build TinyAssets</span>
       <ul>
         <li><a href="/build">Contribute</a></li>
         <li><a href="/soul">Fork the pattern — souls</a></li>
@@ -72,7 +73,7 @@
   </div>
 
   <div class="container footer__bottom">
-    <span>© {year} Tiny Assets · MIT + CC0 · concept-public, instance-private</span>
+    <span>© {year} TinyAssets · MIT + CC0 · concept-public, instance-private</span>
     <span class="contact">
       <a href="mailto:{legal.contact.general}">{legal.contact.general}</a> ·
       <a href="mailto:{legal.contact.security}">{legal.contact.security}</a>

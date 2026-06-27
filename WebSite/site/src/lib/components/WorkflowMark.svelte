@@ -1,4 +1,4 @@
-<!-- WorkflowMark -- cropped from the selected A2 rotated chat image. -->
+<!-- TinyAssets mark -- cropped from the selected A2 rotated chat image. -->
 <script lang="ts">
   let {
     size = 28
@@ -6,8 +6,8 @@
 </script>
 
 <img
-  class="workflow-mark"
-  src="/workflow-mark.png"
+  class="tinyassets-mark"
+  src="/logo-mark.png"
   alt=""
   aria-hidden="true"
   width={size}
@@ -17,7 +17,7 @@
 />
 
 <style>
-  .workflow-mark {
+  .tinyassets-mark {
     display: block;
     flex-shrink: 0;
     width: var(--mark-size);
