@@ -85,9 +85,11 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>&1; \
                echo '---'; \
-               docker compose -f /opt/tinyassets/compose.yml ps 2>&1 | head -20; \
+               docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml ps 2>&1 | head -30; \
                echo '--- journalctl tinyassets-daemon ---'; \
                journalctl -u tinyassets-daemon --no-pager -n 80 2>&1 || true; \
+               echo '--- tinyassets-daemon logs ---'; \
+               docker logs tinyassets-daemon --tail 120 2>&1 || true; \
                echo '--- df -h ---'; \
                df -h 2>&1 || true; \
                echo '--- systemctl status tinyassets-daemon ---'; \

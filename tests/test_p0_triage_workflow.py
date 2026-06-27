@@ -132,6 +132,12 @@ def test_restart_uses_env_file():
     assert "--env-file /etc/tinyassets/env" in _text()
 
 
+def test_p0_diag_uses_env_file_and_daemon_logs():
+    text = _text()
+    assert "docker compose --env-file /etc/tinyassets/env" in text
+    assert "docker logs tinyassets-daemon --tail 120" in text
+
+
 def test_triage_uses_live_systemd_compose_file():
     text = _text()
     assert "/opt/tinyassets/compose.yml" in text

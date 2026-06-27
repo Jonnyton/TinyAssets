@@ -27,6 +27,8 @@ Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/deploy/HETZNER-DE
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -54,8 +56,6 @@ ExecStop=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyasse
 # (after which systemd refuses further restarts until manual reset).
 Restart=always
 RestartSec=10s
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # TimeoutStopSec > the cloudflared + daemon graceful-shutdown budgets.
 TimeoutStopSec=60s
