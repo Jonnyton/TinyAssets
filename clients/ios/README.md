@@ -16,5 +16,6 @@ open TinyAssets.xcodeproj
 ./scripts/build-simulator.sh
 ```
 
-The app currently checks `https://tinyassets.io/.well-known/oauth-protected-resource`
-and keeps WorkOS token storage as an explicit next slice.
+The app currently opens WorkOS AuthKit with PKCE, handles
+`tinyassets://auth/callback`, and shows the universe-agent chat shell. Token
+exchange and Keychain storage remain the next slice.

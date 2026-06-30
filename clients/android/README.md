@@ -24,4 +24,9 @@ Runtime device flow:
 adb devices -l
 .\gradlew.bat :app:installDebug --console=plain
 adb -s <serial> shell monkey -p io.tinyassets.mobile 1
+adb -s <serial> shell am start -W -a android.intent.action.VIEW -d "tinyassets://auth/callback?code=dev-code&state=<state-from-active-request>" io.tinyassets.mobile
 ```
+
+The app currently opens WorkOS AuthKit with PKCE, handles
+`tinyassets://auth/callback`, and shows the universe-agent chat shell. Token
+exchange and Android Keystore-backed storage remain the next slice.

@@ -48,6 +48,8 @@ OAuth fixes the owned universe(s) and embodied persona; one persona per universe
 
 **D9 — Amend the narrative spec (tasks, not applied in this draft):** §9 (embody/first-person + compactness), §3 (personification = projection of the whole mind), §7 (visitor floor enforced before voice).
 
+**D10 — Native mobile is a first-class TinyAssets surface.** The iPhone/Android app opens on the universe chat surface. WorkOS OAuth establishes the actor; the backend resolves the founder's main/active universe; the chat speaks as that universe's personification. Until token exchange and authorization-before-voice routing land, mobile clients may scaffold the UX but must honestly block real agent routing rather than simulating a completed persona.
+
 ## Risks / Trade-offs
 
 - **Prompt-enforced privacy** → moved to a real boundary: authorization before voice (D3); voice never sees unauthorized content.
@@ -64,6 +66,7 @@ Design change only — no runtime change in this draft. Ratified-spec amendments
 ## Open Questions
 
 - The "persona lens" parameterization — is interlocutor+surface literally a lens over the brain's `assemble(lens)`, or a separate voice-layer config? (Whichever, authorization stays in assembly per D3.)
+- Native mobile login redirect shape — custom scheme for development vs claimed HTTPS Universal Links / Android App Links for production.
 - Exact `control_station` trigger-language wording that embodies first-person without role-play sprawl (measure against the frozen tool-schema budget).
 - Durable cross-host actor binding for the same human (research-impl Gap #5) — improves T1 stability for visitors.
 - Whether outbound surfaces (Twitter/email) share the persona-lens machinery or only the voice hard-lines.

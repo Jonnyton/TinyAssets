@@ -11,6 +11,11 @@ All interaction with a universe, on every surface (MCP chatbot, Twitter, web, em
 - **WHEN** a universe acts on an external surface (e.g. the Twitter branch posts or replies)
 - **THEN** it does so as the universe's personification
 
+#### Scenario: native mobile opens as the universe chat surface
+- **WHEN** a user opens the iPhone or Android app
+- **THEN** the first product surface is the universe chat surface
+- **AND** it does not present a neutral tool dashboard as the primary experience
+
 ### Requirement: Authorization precedes voice — the floor is enforced before rendering
 Identity-tier, org-chart, and privacy-tier filtering SHALL be enforced in **brain assembly and action authorization, BEFORE any voice/persona rendering**. The voice/persona layer SHALL only style content that is already authorized for the interlocutor; it SHALL NOT receive private-tier content that it is merely instructed not to reveal. A `[composable]` persona script SHALL NOT be able to widen disclosure beyond what authorization already permitted.
 
@@ -59,6 +64,12 @@ A user's OAuth identity SHALL determine which universe(s) they own and therefore
 #### Scenario: ownership selects the embodied persona
 - **WHEN** a user authenticates via OAuth as the owner of universe X
 - **THEN** their chatbot embodies universe X's personification (T2/founder authority)
+
+#### Scenario: native mobile resolves the founder's universe after WorkOS login
+- **WHEN** a user signs into the iPhone or Android app through WorkOS
+- **THEN** the app uses the authenticated founder identity to resolve that founder's main or active universe
+- **AND** the chat surface is bound to that universe's personification
+- **AND** real message routing remains blocked until authorization-before-voice routing is available
 
 #### Scenario: a user bound to multiple universes embodies per active universe
 - **WHEN** a user owns more than one universe

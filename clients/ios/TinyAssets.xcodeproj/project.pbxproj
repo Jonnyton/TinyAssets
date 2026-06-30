@@ -12,6 +12,7 @@
 		100000000000000000000103 /* MCPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000203 /* MCPClient.swift */; };
 		100000000000000000000104 /* TinyAssetsIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000204 /* TinyAssetsIntents.swift */; };
 		100000000000000000000105 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000205 /* Assets.xcassets */; };
+		100000000000000000000106 /* AuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000208 /* AuthSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +23,7 @@
 		100000000000000000000205 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		100000000000000000000206 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		100000000000000000000207 /* TinyAssets.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TinyAssets.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		100000000000000000000208 /* AuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -48,6 +50,7 @@
 			children = (
 				100000000000000000000201 /* TinyAssetsApp.swift */,
 				100000000000000000000202 /* AppShell.swift */,
+				100000000000000000000208 /* AuthSession.swift */,
 				100000000000000000000203 /* MCPClient.swift */,
 				100000000000000000000204 /* TinyAssetsIntents.swift */,
 				100000000000000000000205 /* Assets.xcassets */,
@@ -137,6 +140,7 @@
 				100000000000000000000102 /* AppShell.swift in Sources */,
 				100000000000000000000103 /* MCPClient.swift in Sources */,
 				100000000000000000000104 /* TinyAssetsIntents.swift in Sources */,
+				100000000000000000000106 /* AuthSession.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

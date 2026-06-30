@@ -1,37 +1,58 @@
 package io.tinyassets.mobile
 
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun TinyAssetsApp(initialDestination: AppDestination = AppDestination.Home) {
+fun TinyAssetsApp(
+    initialDestination: AppDestination = AppDestination.Chat,
+    inboundIntent: Intent? = null,
+) {
     var selectedDestination by rememberSaveable { mutableStateOf(initialDestination) }
+    val authController = remember { MobileAuthController() }
+    var authState by remember { mutableStateOf<MobileAuthState>(MobileAuthState.SignedOut) }
+
+    LaunchedEffect(inboundIntent?.dataString) {
+        val redirectState = authController.receiveRedirect(inboundIntent?.data)
+        if (redirectState != null) {
+            authState = redirectState
+            selectedDestination = AppDestination.Chat
+        }
+    }
 
     TinyAssetsTheme {
         Scaffold(
@@ -54,9 +75,19 @@ fun TinyAssetsApp(initialDestination: AppDestination = AppDestination.Home) {
                     .padding(contentPadding),
             ) {
                 when (selectedDestination) {
-                    AppDestination.Home -> HomeScreen(onOpenMcp = { selectedDestination = AppDestination.Mcp })
+                    AppDestination.Chat -> UniverseChatScreen(
+                        authState = authState,
+                        authController = authController,
+                        onAuthStateChange = { authState = it },
+                    )
                     AppDestination.Mcp -> McpScreen()
-                    AppDestination.Settings -> SettingsScreen()
+                    AppDestination.Settings -> SettingsScreen(
+                        onSignOut = {
+                            authController.reset()
+                            authState = MobileAuthState.SignedOut
+                            selectedDestination = AppDestination.Chat
+                        },
+                    )
                 }
             }
         }
@@ -65,26 +96,133 @@ fun TinyAssetsApp(initialDestination: AppDestination = AppDestination.Home) {
 
 private val AppDestination.label: String
     get() = when (this) {
-        AppDestination.Home -> "Home"
+        AppDestination.Chat -> "Chat"
         AppDestination.Mcp -> "MCP"
         AppDestination.Settings -> "Settings"
     }
 
 @Composable
-private fun HomeScreen(onOpenMcp: () -> Unit) {
+private fun UniverseChatScreen(
+    authState: MobileAuthState,
+    authController: MobileAuthController,
+    onAuthStateChange: (MobileAuthState) -> Unit,
+) {
+    val uriHandler = LocalUriHandler.current
+    var draft by rememberSaveable { mutableStateOf("") }
+    var nextMessageId by rememberSaveable { mutableIntStateOf(2) }
+    val messages = remember {
+        mutableStateListOf(
+            ChatMessage(
+                id = 1,
+                role = ChatRole.Agent,
+                text = "Sign in with WorkOS and I will route you to your universe.",
+            ),
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        AuthPanel(
+            authState = authState,
+            onBeginSignIn = {
+                val request = authController.beginSignIn()
+                onAuthStateChange(MobileAuthState.AwaitingCallback)
+                uriHandler.openUri(request.authorizationUrl)
+            },
+            onRetry = {
+                authController.reset()
+                onAuthStateChange(MobileAuthState.SignedOut)
+            },
+        )
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(messages, key = { it.id }) { message ->
+                ChatBubble(message = message)
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 56.dp, max = 132.dp),
+                label = { Text("Message your universe agent") },
+                maxLines = 4,
+            )
+            Button(
+                enabled = draft.isNotBlank() && authState is MobileAuthState.CallbackReceived,
+                onClick = {
+                    val text = draft.trim()
+                    if (text.isEmpty()) {
+                        return@Button
+                    }
+                    messages.add(ChatMessage(id = nextMessageId++, role = ChatRole.User, text = text))
+                    messages.add(
+                        ChatMessage(
+                            id = nextMessageId++,
+                            role = ChatRole.Agent,
+                            text = "I have the shape of that request. Once token exchange and MCP chat routing land, this goes to your universe agent instead of staying local.",
+                        ),
+                    )
+                    draft = ""
+                },
+            ) {
+                Text("Send")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuthPanel(
+    authState: MobileAuthState,
+    onBeginSignIn: () -> Unit,
+    onRetry: () -> Unit,
+) {
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("TinyAssets", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-        Text(
-            "Native mobile control surface for the same MCP resource server used by chatbot clients.",
-            style = MaterialTheme.typography.bodyLarge,
-        )
-        Button(onClick = onOpenMcp) {
-            Text("Check MCP endpoint")
+        Text("Your universe", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        when (authState) {
+            MobileAuthState.SignedOut -> {
+                Text("Log in with WorkOS to talk to the agent for your universe.")
+                Button(onClick = onBeginSignIn) {
+                    Text("Continue with WorkOS")
+                }
+            }
+            MobileAuthState.AwaitingCallback -> {
+                Text("Waiting for WorkOS callback...")
+                Text(TinyAssetsConfig.mobileRedirectUri, style = MaterialTheme.typography.bodySmall)
+            }
+            is MobileAuthState.CallbackReceived -> {
+                Text("WorkOS callback received", fontWeight = FontWeight.Medium)
+                Text(
+                    "Authorization code ${authState.codePreview} and its PKCE verifier are in memory only. Token exchange and secure storage are the next slice.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            is MobileAuthState.Failed -> {
+                Text("Sign-in failed", fontWeight = FontWeight.Medium)
+                Text(authState.message, style = MaterialTheme.typography.bodySmall)
+                Button(onClick = onRetry) {
+                    Text("Try again")
+                }
+            }
         }
     }
 }
@@ -92,7 +230,7 @@ private fun HomeScreen(onOpenMcp: () -> Unit) {
 @Composable
 private fun McpScreen(client: McpClient = remember { McpClient() }) {
     var endpointState by remember { mutableStateOf<EndpointState>(EndpointState.Loading) }
-    var refreshKey by remember { mutableStateOf(0) }
+    var refreshKey by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(refreshKey) {
         endpointState = client.checkProtectedResourceMetadata().fold(
@@ -132,7 +270,7 @@ private fun McpScreen(client: McpClient = remember { McpClient() }) {
 }
 
 @Composable
-private fun SettingsScreen() {
+private fun SettingsScreen(onSignOut: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -142,7 +280,11 @@ private fun SettingsScreen() {
         Text("Connection", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
         SettingRow(label = "MCP", value = TinyAssetsConfig.mcpUrl)
         SettingRow(label = "AuthKit", value = TinyAssetsConfig.workOsAuthKitDomain)
+        SettingRow(label = "Redirect", value = TinyAssetsConfig.mobileRedirectUri)
         Text("Tokens belong in Android Keystore-backed storage after WorkOS OIDC is wired.")
+        Button(onClick = onSignOut) {
+            Text("Reset session")
+        }
     }
 }
 
@@ -155,6 +297,35 @@ private fun SettingRow(label: String, value: String) {
         Text(label, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(88.dp))
         Text(value, modifier = Modifier.weight(1f))
     }
+}
+
+@Composable
+private fun ChatBubble(message: ChatMessage) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        if (message.role == ChatRole.User) {
+            Spacer(modifier = Modifier.width(44.dp))
+        }
+        Card(modifier = Modifier.weight(1f, fill = false)) {
+            Text(
+                text = message.text,
+                modifier = Modifier.padding(12.dp),
+            )
+        }
+        if (message.role == ChatRole.Agent) {
+            Spacer(modifier = Modifier.width(44.dp))
+        }
+    }
+}
+
+private data class ChatMessage(
+    val id: Int,
+    val role: ChatRole,
+    val text: String,
+)
+
+private enum class ChatRole {
+    User,
+    Agent,
 }
 
 private sealed interface EndpointState {

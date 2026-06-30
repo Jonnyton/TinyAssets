@@ -1,9 +1,11 @@
 import Foundation
 
 enum TinyAssetsConfiguration {
+    static let workOSClientID = "client_01KW15P07QYSMF9CY4XXXJN520"
     static let mcpURL = URL(string: "https://tinyassets.io/mcp")!
     static let protectedResourceMetadataURL = URL(string: "https://tinyassets.io/.well-known/oauth-protected-resource")!
     static let workOSAuthKitDomain = "inventive-van-62-staging.authkit.app"
+    static let mobileRedirectURI = "tinyassets://auth/callback"
 }
 
 struct ProtectedResourceMetadata: Decodable {

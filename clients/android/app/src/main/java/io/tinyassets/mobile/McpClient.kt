@@ -12,9 +12,11 @@ data class EndpointCheck(
 )
 
 object TinyAssetsConfig {
+    const val workOsClientId = "client_01KW15P07QYSMF9CY4XXXJN520"
     const val mcpUrl = "https://tinyassets.io/mcp"
     const val protectedResourceMetadataUrl = "https://tinyassets.io/.well-known/oauth-protected-resource"
     const val workOsAuthKitDomain = "inventive-van-62-staging.authkit.app"
+    const val mobileRedirectUri = "tinyassets://auth/callback"
 }
 
 class McpClient {
