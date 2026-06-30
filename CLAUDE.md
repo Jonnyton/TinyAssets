@@ -34,19 +34,32 @@ judge with a different model than the writer" applied directly (basis:
 codebase already routes its prose-loop editorial judge to Codex, so the pattern
 has precedent.
 
-Reach for it whenever a different model or an independent perspective raises
-confidence:
-- **Opposite-provider review gate.** AGENTS.md §"Project Skills" requires
-  research-derived findings to get opposite-provider review before build / push
-  / live rollout. When Claude makes the finding, dispatch the review to Codex
-  via MCP and log the verdict (`approve` / `adapt` / `reject`) — don't wait for a
-  human to open a Codex session.
-- **Adversarial / second opinion** on a risky change, a surprising result, or a
-  finding you're about to act on — ask Codex to *refute* it.
-- **Diverse-perspective judging** (LLM-as-judge with a different model than the
-  writer); cross-checking before an evidence-before-completion claim.
-- **Fresh eyes when stuck** 3+ iterations on the same error (the stuck-loop
-  reflection rule in AGENTS.md).
+**Standing reflex — dispatch to Codex proactively; do not wait to be told.**
+You have a second model family in the harness; default to using it like you'd
+use a subagent or a teammate. At each checkpoint below the dispatch is a MUST,
+not an option. If you deliberately skip one, say so in one line and why — don't
+silently default to doing it yourself (that default-to-self bias is exactly what
+makes this reflex fail).
+
+- **Before presenting any review verdict, finding, or "looks correct" claim** —
+  dispatch the opposite-provider review gate to Codex (it re-checks sources +
+  actual code), log the verdict (`approve` / `adapt` / `reject`). AGENTS.md
+  §"Project Skills" already requires this for research-derived findings before
+  build / push / live rollout; do it without a human opening a Codex session.
+- **Before acting on a risky change, a surprising result, or a finding you're
+  about to ship** — get an adversarial second opinion: ask Codex to *refute* it.
+- **Before an evidence-before-completion / "done" claim on non-trivial work, or
+  before presenting a recommendation between options** — cross-check with a
+  diverse-perspective judge (different model than the writer).
+- **When stuck 3+ iterations on the same error** — hand it to Codex for fresh
+  eyes (the stuck-loop reflection rule in AGENTS.md).
+
+**Default to dispatch.** The bar is "would an independent model add
+confidence?", not "is it worth the cost?". When in doubt, dispatch — reserve
+self-only for trivial mechanical edits and pure lookups. The
+`codex_dispatch_nudge` hook fires this reflex at qualifying prompts, but the
+obligation stands whether or not the hook fires; treat a missing nudge as
+silence, not permission to skip.
 
 Discipline:
 - Reviews must be substantive — Codex re-checks sources + actual code, never
@@ -59,8 +72,10 @@ Discipline:
 - Calling Codex is an *additional* independent path — it does NOT bypass
   host/navigator gates or the live user-sim proof, and the result is logged like
   any other review (STATUS row / design note / activity log).
-- Mind cost: a Codex session is a real agent run. Use it where independence
-  matters, not for routine lookups.
+- Cost is real but secondary: a Codex session is a real agent run, so batch a
+  meaningful review scope into one dispatch rather than many tiny ones — but do
+  not let cost talk you out of a qualifying dispatch. Independence is the goal;
+  the spend is the price of it.
 
 ### Skills [Claude Code only]
 
