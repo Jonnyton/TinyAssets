@@ -23,6 +23,7 @@ Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| Mobile app scaffold - native iPhone + Android clients share WorkOS/MCP contract; no mobile-only backend | clients/ios, clients/android, docs/reference/mobile-app-setup.md | host directive 2026-06-30; WorkOS/AuthKit design; Android plugin source `SangkuOh/build-androidos-apps` v0.1.3 reviewed | claimed:codex-gpt5-desktop ACTIVE 2026-06-30 |
 | **Codex verdict ADAPT** — in-node enqueue #1214 stays dark; before flag flip add current-universe context, queue/lineage cap, branch target validation | tinyassets/graph_compiler.py, tinyassets/branch_tasks.py, fantasy_daemon/__main__.py, tests/test_node_enqueue_*.py | verdict filed in `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | **L4 reducer law** — `_dict_merge` (graph_compiler.py ~351 + plugin mirror) is shallow right-biased, non-convergent; fix to per-key lattice join or restrict to single-writer; both-provider confirmed 2026-06-10 (basis audit L4 + codex review adaptation #5) | tinyassets/graph_compiler.py, packaging/claude-plugin mirror, tests/ | coordinate with in-node enqueue row (shared file) | dev-ready |
 | External directory acceptance — PRs landed, public canaries green 2026-05-02T12:34-07:00; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |

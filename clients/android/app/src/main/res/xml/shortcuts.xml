@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_tinyassets"
+        android:shortcutId="open_mcp"
+        android:shortcutLongLabel="@string/shortcut_open_mcp_long"
+        android:shortcutShortLabel="@string/shortcut_open_mcp">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="tinyassets://mcp"
+            android:targetClass="io.tinyassets.mobile.MainActivity"
+            android:targetPackage="io.tinyassets.mobile" />
+    </shortcut>
+</shortcuts>
