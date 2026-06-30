@@ -3,12 +3,12 @@
     <shortcut
         android:enabled="true"
         android:icon="@drawable/ic_shortcut_tinyassets"
-        android:shortcutId="open_mcp"
-        android:shortcutLongLabel="@string/shortcut_open_mcp_long"
-        android:shortcutShortLabel="@string/shortcut_open_mcp">
+        android:shortcutId="open_app"
+        android:shortcutLongLabel="@string/shortcut_open_app_long"
+        android:shortcutShortLabel="@string/shortcut_open_app">
         <intent
             android:action="android.intent.action.VIEW"
-            android:data="tinyassets://mcp"
+            android:data="tinyassets://app"
             android:targetClass="io.tinyassets.mobile.MainActivity"
             android:targetPackage="io.tinyassets.mobile" />
     </shortcut>

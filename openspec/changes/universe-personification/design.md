@@ -48,7 +48,7 @@ OAuth fixes the owned universe(s) and embodied persona; one persona per universe
 
 **D9 — Amend the narrative spec (tasks, not applied in this draft):** §9 (embody/first-person + compactness), §3 (personification = projection of the whole mind), §7 (visitor floor enforced before voice).
 
-**D10 — Native mobile is a first-class TinyAssets surface.** The iPhone/Android app opens on the universe chat surface. WorkOS OAuth establishes the actor; the backend resolves the founder's main/active universe; the chat speaks as that universe's personification. Until token exchange and authorization-before-voice routing land, mobile clients may scaffold the UX but must honestly block real agent routing rather than simulating a completed persona.
+**D10 — Native mobile is a first-class TinyAssets surface.** The iPhone/Android app opens on a one-screen universe conversation surface, not a neutral app dashboard. WorkOS OAuth establishes the actor; the backend resolves the founder's main/active universe; the chat speaks as that universe's personification. Until token exchange and authorization-before-voice routing land, mobile clients may scaffold the UX but must honestly block real agent routing rather than simulating a completed persona. Local secure storage holds only the WorkOS credential; persona, soul, identity, and conversation history remain server-side.
 
 ## Risks / Trade-offs
 

@@ -15,7 +15,7 @@
 - [ ] 2.7 Honest fallback / degraded mode: no invented persona state; no embodiment-from-memory when no active universe/persona
 - [ ] 2.8 Persona behavior as a forkable `[composable]` default; substrate enforces only identity/authority/privacy floor
 - [ ] 2.9 Tool-selection regression tests (Claude + ChatGPT) proving embodiment does not degrade accuracy
-- [x] 2.10 Native mobile scaffold: iPhone/Android open on WorkOS-bound universe chat shell; real agent routing is explicitly blocked until token exchange + authorization-before-voice routing land
+- [x] 2.10 Native mobile scaffold: iPhone/Android open on a one-screen WorkOS-bound universe conversation surface; real agent routing is explicitly blocked until token exchange + authorization-before-voice routing land, with no local persona simulation
 
 ## 3. Cross-provider review
 

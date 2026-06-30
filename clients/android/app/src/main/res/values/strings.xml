@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">TinyAssets</string>
-    <string name="shortcut_open_mcp">Open MCP</string>
-    <string name="shortcut_open_mcp_long">Open TinyAssets MCP status</string>
+    <string name="shortcut_open_app">Open</string>
+    <string name="shortcut_open_app_long">Open TinyAssets</string>
 </resources>

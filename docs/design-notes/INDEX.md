@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## 2026-06-30
+
+- [TinyAssets — The App: Experience Design Note](2026-06-30-tinyassets-universe-app-experience.md) - **status: steering-input.** Native iOS/Android north star for `codex/mobile-app-scaffold` and OpenSpec `universe-personification` task 2.10: one-screen WorkOS-bound universe conversation surface; no dashboard front door, local persona simulation, or client-side identity/creation/persona state.
+
 ## 2026-05-03
 
 - [Multi-User TinyAssets Operating Model](2026-05-03-multi-user-tinyassets-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-tinyassets-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.

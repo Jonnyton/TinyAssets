@@ -10,19 +10,25 @@ mobile-only founder id, or mobile-only universe shape.
 
 OpenSpec alignment: this work belongs to `openspec/changes/universe-personification`.
 Native mobile is a first-class TinyAssets surface: the app opens as a
-WorkOS-bound universe chat surface, and the chat is the universe's
-personification once server-side authorization-before-voice routing is
-available. This scaffold completes task 2.10 only; it does not complete
+single WorkOS-bound universe conversation surface, and the chat is the
+universe's personification once server-side authorization-before-voice routing
+is available. This scaffold completes task 2.10 only; it does not complete
 authorization-before-voice, visitor tier binding, token exchange, or real MCP
 message routing.
+
+Experience note: `docs/design-notes/2026-06-30-tinyassets-universe-app-experience.md`
+is the app-specific steering note. It pins the feel: native mobile is a thin
+body surface/window for the server-side universe mind, not a dashboard or a
+place to reimplement identity, ownership, creation, persona state, or universe
+logic.
 
 Basic user experience:
 
 1. User opens the iPhone or Android app.
-2. The first screen is the universe chat surface.
-3. User taps "Continue with WorkOS".
+2. The first screen is the universe conversation surface.
+3. User taps "Sign in".
 4. WorkOS AuthKit handles login and redirects back to the app.
-5. The app exchanges the authorization code, stores tokens in platform-secure
+5. The next auth slice exchanges the authorization code, stores tokens in platform-secure
    storage, resolves the founder's main universe, and opens chat with that
    universe's agent.
 
@@ -30,10 +36,12 @@ Current scaffold state:
 
 - PKCE authorization URL construction exists on both platforms.
 - `tinyassets://auth/callback` redirect handling exists on both platforms.
-- The chat shell exists on both platforms.
+- The single conversation surface exists on both platforms.
+- There are no MCP/status/settings tabs in the app shell.
 - Token exchange, secure token persistence, founder-universe resolution, and
   real MCP chat routing are still next slices.
-- Chat messages in the scaffold stay local until MCP chat routing lands.
+- The scaffold does not send local chat messages or simulate a universe reply.
+- No persona, soul, identity, or conversation history is cached locally.
 
 Shared constants in both clients:
 
@@ -48,7 +56,9 @@ The next auth slice should use WorkOS/OIDC and platform credential storage:
 - iOS: Keychain.
 - Android: Android Keystore-backed encrypted storage.
 
-Provider API keys must not live in either mobile client.
+Provider API keys must not live in either mobile client. Persona/brain views
+must not be persisted locally; platform-secure storage is for the WorkOS
+credential only.
 
 The custom-scheme redirect is a development scaffold. Before distribution,
 prefer claimed HTTPS Universal Links / Android App Links for the OAuth redirect
@@ -90,6 +100,7 @@ Stack:
 - Gradle Kotlin DSL
 - Version catalog
 - Static shortcut and deep-link routing
+- One-screen app shell
 
 Build on a machine with Android Studio or Android SDK tools:
 
@@ -106,7 +117,7 @@ Runtime check:
 adb devices -l
 .\gradlew.bat :app:installDebug --console=plain
 adb -s <serial> shell monkey -p io.tinyassets.mobile 1
-adb -s <serial> shell am start -W -a android.intent.action.VIEW -d "tinyassets://mcp" io.tinyassets.mobile
+adb -s <serial> shell am start -W -a android.intent.action.VIEW -d "tinyassets://app" io.tinyassets.mobile
 adb -s <serial> shell am start -W -a android.intent.action.VIEW -d "tinyassets://auth/callback?code=dev-code&state=<state-from-active-request>" io.tinyassets.mobile
 ```
 
@@ -123,6 +134,7 @@ Gradle command, no `adb`, and no `ANDROID_HOME` / `ANDROID_SDK_ROOT`.
 - [ ] Store access/refresh tokens only in Keychain / Android Keystore-backed storage.
 - [ ] Resolve the caller's main universe from the authenticated founder.
 - [ ] Route chat messages through the MCP server to the caller's universe agent.
+- [ ] Keep the mobile app one-screen-first; status/settings remain secondary, not the front door.
 - [ ] Clear all local tokens and pending PKCE state on sign out.
 
 Primary references checked 2026-06-30:

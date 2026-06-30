@@ -15,10 +15,7 @@ class MainActivity : ComponentActivity() {
         inboundIntent.value = intent
         enableEdgeToEdge()
         setContent {
-            TinyAssetsApp(
-                initialDestination = destinationFromIntent(intent),
-                inboundIntent = inboundIntent.value,
-            )
+            TinyAssetsApp(inboundIntent = inboundIntent.value)
         }
     }
 
@@ -26,22 +23,5 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         inboundIntent.value = intent
-    }
-}
-
-enum class AppDestination {
-    Chat,
-    Mcp,
-    Settings,
-}
-
-fun destinationFromIntent(intent: Intent?): AppDestination {
-    val uri = intent?.data ?: return AppDestination.Chat
-    return when {
-        uri.scheme == "tinyassets" && uri.host == "auth" -> AppDestination.Chat
-        uri.scheme == "tinyassets" && uri.host == "mcp" -> AppDestination.Mcp
-        uri.path?.contains("mcp", ignoreCase = true) == true -> AppDestination.Mcp
-        uri.path?.contains("settings", ignoreCase = true) == true -> AppDestination.Settings
-        else -> AppDestination.Chat
     }
 }

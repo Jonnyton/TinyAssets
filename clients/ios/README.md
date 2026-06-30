@@ -17,5 +17,7 @@ open TinyAssets.xcodeproj
 ```
 
 The app currently opens WorkOS AuthKit with PKCE, handles
-`tinyassets://auth/callback`, and shows the universe-agent chat shell. Token
-exchange and Keychain storage remain the next slice.
+`tinyassets://auth/callback`, and shows a one-screen universe conversation
+surface. It does not send local messages or simulate a persona reply. Token
+exchange, Keychain storage, founder-universe resolution, and MCP chat routing
+remain the next slice.

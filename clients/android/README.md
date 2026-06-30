@@ -28,5 +28,7 @@ adb -s <serial> shell am start -W -a android.intent.action.VIEW -d "tinyassets:/
 ```
 
 The app currently opens WorkOS AuthKit with PKCE, handles
-`tinyassets://auth/callback`, and shows the universe-agent chat shell. Token
-exchange and Android Keystore-backed storage remain the next slice.
+`tinyassets://auth/callback`, and shows a one-screen universe conversation
+surface. It does not send local messages or simulate a persona reply. Token
+exchange, Android Keystore-backed storage, founder-universe resolution, and MCP
+chat routing remain the next slice.
