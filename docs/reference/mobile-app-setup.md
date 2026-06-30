@@ -88,6 +88,10 @@ open TinyAssets.xcodeproj
 The current Windows host cannot verify this build because `xcrun`/Xcode are not
 available.
 
+Windows shortcut: `scripts/launchers/tinyassets-ios.ps1` opens the iOS project
+folder and setup docs. It cannot run the iOS Simulator on Windows; use a Mac
+with Xcode for the actual build.
+
 ## Android client
 
 Path: `clients/android`
@@ -123,6 +127,24 @@ adb -s <serial> shell am start -W -a android.intent.action.VIEW -d "tinyassets:/
 
 The current Windows host cannot verify this build yet. It has Java 8 only, no
 Gradle command, no `adb`, and no `ANDROID_HOME` / `ANDROID_SDK_ROOT`.
+
+Windows shortcut: `scripts/launchers/tinyassets-android.ps1` opens the Android
+project in Android Studio when available, and offers `winget` installs for JDK
+17 / Android Studio when the local toolchain is incomplete.
+
+## Windows desktop shortcuts
+
+Create or refresh the host shortcuts from the repo:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\launchers\install-desktop-shortcuts.ps1
+```
+
+This creates:
+
+- `TinyAssets Android.lnk` -> Android project launcher.
+- `TinyAssets iOS.lnk` -> iOS project/docs launcher.
+- `TinyAssets Desktop.lnk` -> existing TinyAssets tray/server launcher.
 
 ## WorkOS setup checklist
 
