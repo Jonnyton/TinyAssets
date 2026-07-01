@@ -425,6 +425,18 @@ def test_workos_founder_with_write_can_propose_goal(workos_active) -> None:
     assert ident.user_id == "user_workos_123"
 
 
+def test_gates_record_conformance_pack_is_write_scoped(workos_active) -> None:
+    # record_conformance_pack is a durable write; it must be write-classified so
+    # anonymous resolve-always callers are denied.
+    from tinyassets.auth.middleware import auth_middleware, require_action_scope
+    from tinyassets.auth.provider import action_scope_for
+
+    assert action_scope_for("gates", "record_conformance_pack").effect == "write"
+    auth_middleware(None)  # anonymous
+    with pytest.raises(PermissionError):
+        require_action_scope("gates", "record_conformance_pack")
+
+
 def test_goals_impl_denies_anonymous_propose(
     workos_active, tmp_path, monkeypatch,
 ) -> None:

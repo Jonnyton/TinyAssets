@@ -589,6 +589,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         "define_ladder",
         "claim",
         "claim_from_branch_run",
+        "record_conformance_pack",
         "retract",
         "stake_bonus",
         "unstake_bonus",
