@@ -701,8 +701,17 @@ def _resolve_entry_universe(universe_id: str) -> str:
     if home and (base / home).is_dir():
         return home
 
-    # First contact — birth the founder's home universe. Best-effort: never
-    # fail a status read if creation errors (e.g. read-only FS).
+    # First contact — only a founder holding create authority births a universe.
+    # get_status must NOT be a scope bypass: honor the action-scope gate the
+    # same way an explicit `universe action=create_universe` would.
+    from tinyassets.auth.middleware import require_action_scope
+
+    try:
+        require_action_scope("universe", "create_universe")
+    except PermissionError:
+        return _default_universe()  # authenticated but lacks create scope
+
+    # Best-effort: never fail a status read if creation errors (e.g. read-only FS).
     try:
         from tinyassets.api.universe import _action_create_universe
 
@@ -727,6 +736,15 @@ def get_status(universe_id: str = "") -> str:
     decorated tool delegates to.
     """
     uid = _resolve_entry_universe(universe_id)
+    # Per-universe read gate: never expose a private universe's status / activity
+    # tail to an anonymous or non-granted caller. Public universes (public_read
+    # default) stay readable; a founder reads their own universe via their grant.
+    from tinyassets.api import permissions
+
+    if not permissions.universe_access_allows(uid, write=False):
+        return json.dumps(permissions.universe_access_error(
+            universe_id=uid, write=False, action="get_status", surface="universe",
+        ))
     udir = _universe_dir(uid)
     universe_exists = udir.is_dir()
     host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")

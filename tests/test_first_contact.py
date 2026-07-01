@@ -57,10 +57,10 @@ def _reset_auth():
     auth_middleware(None)
 
 
-def _login(sub: str = "founder-1") -> None:
+def _login(sub: str = "founder-1", caps: list[str] | None = None) -> None:
     ident = Identity(
         user_id=sub, username=sub,
-        capabilities=["read", "write", "costly", "submit_request", "list"],
+        capabilities=caps or ["read", "write", "costly", "submit_request", "list"],
     )
     set_provider(_StaticAuthProvider(ident))
     auth_middleware("ok")
@@ -126,6 +126,21 @@ def test_anonymous_first_contact_births_no_home(data_dir):
     assert get_founder_home(data_dir, "anonymous") == ""
     serial = [p for p in _universe_dirs(data_dir) if is_universe_serial(p.name)]
     assert serial == []
+
+
+def test_readonly_founder_does_not_birth_universe(data_dir):
+    # An authenticated founder whose token lacks create/costly scope must NOT
+    # birth a universe via get_status (get_status is not a scope bypass).
+    from tinyassets.api.status import get_status
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.ids import is_universe_serial
+
+    _login("reader-1", caps=["read", "submit_request", "list"])
+    json.loads(get_status())
+    assert get_founder_home(data_dir, "reader-1") == ""
+    # No generated (u-+ULID) universe was birthed. (get_status may still
+    # materialize the legacy `default-universe` fallback dir — pre-existing.)
+    assert [p for p in _universe_dirs(data_dir) if is_universe_serial(p.name)] == []
 
 
 def test_two_founders_get_distinct_homes(data_dir):

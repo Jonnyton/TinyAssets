@@ -1503,6 +1503,23 @@ def _action_list_run_receipts(kwargs: dict[str, Any]) -> str:
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
 
+    # Filter out receipts whose run belongs to a private universe the caller
+    # cannot read — covers the no-run_id enumeration mode too. Per-run cache so
+    # many receipts of one run cost one access check.
+    from tinyassets.runs import get_run as _get_run
+
+    _visible: dict[str, bool] = {}
+
+    def _receipt_visible(rc: dict[str, Any]) -> bool:
+        rid = str(rc.get("run_id") or "")
+        if not rid:
+            return True
+        if rid not in _visible:
+            rec = _get_run(_base_path(), rid)
+            _visible[rid] = rec is None or _run_read_allowed(rec)
+        return _visible[rid]
+
+    receipts = [rc for rc in receipts if _receipt_visible(rc)]
     return json.dumps({
         "receipts": receipts,
         "count": len(receipts),
@@ -1577,6 +1594,17 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
     active_tiers = all_tiers if flag_on else ["universe_id"]
 
     universe_id = (kwargs.get("universe_id") or "").strip() or _default_universe()
+    # Don't expose a private universe's activity.log / scope-mismatch warnings.
+    from tinyassets.api.permissions import (
+        universe_access_allows,
+        universe_access_error,
+    )
+
+    if not universe_access_allows(universe_id, write=False):
+        return json.dumps(universe_access_error(
+            universe_id=universe_id, write=False,
+            action="get_memory_scope_status", surface="extensions",
+        ))
     udir = _universe_dir(universe_id)
     log_content = _read_text(udir / "activity.log")
     mismatch_lines: list[str] = []

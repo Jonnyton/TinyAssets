@@ -861,6 +861,55 @@ class TestRunReadVisibility:
         assert f({"actor": "universe:priv"}) is False
         assert f({"actor": "host"}) is True
 
+    def test_get_status_of_private_universe_denied(self, universe_base):
+        from tinyassets.api.status import get_status
+
+        _make_private_universe(universe_base, "priv")
+        out = json.loads(get_status(universe_id="priv"))
+        assert out["error"] == "universe_access_denied"
+        assert out["required_permission"] == "read"
+
+    def test_get_status_of_public_universe_allowed(self, universe_base):
+        from tinyassets.api.status import get_status
+
+        _make_universe(universe_base, "pub")
+        out = json.loads(get_status(universe_id="pub"))
+        assert out.get("error") != "universe_access_denied"
+
+    def test_list_run_receipts_filters_private_in_all_modes(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.list_run_receipts",
+            lambda base, **kw: [
+                {"run_id": "r-pub", "receipt_type": "t"},
+                {"run_id": "r-priv", "receipt_type": "t"},
+            ],
+        )
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {
+                "r-pub": {"run_id": "r-pub", "actor": "universe:pub"},
+                "r-priv": {"run_id": "r-priv", "actor": "universe:priv"},
+            }.get(rid),
+        )
+        # no run_id (enumeration mode) — private receipt must be filtered out
+        out = json.loads(runs._action_list_run_receipts({}))
+        rids = {r["run_id"] for r in out["receipts"]}
+        assert "r-pub" in rids
+        assert "r-priv" not in rids
+
+    def test_get_memory_scope_status_private_denied(self, universe_base):
+        from tinyassets.api import runs
+
+        _make_private_universe(universe_base, "priv")
+        out = json.loads(runs._action_get_memory_scope_status({"universe_id": "priv"}))
+        assert out["error"] == "universe_access_denied"
+
 
 class TestScopeHeader:
     """#15: the dispatcher wraps every universe-scoped response with a
