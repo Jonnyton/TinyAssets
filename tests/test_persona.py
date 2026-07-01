@@ -149,7 +149,8 @@ def test_persona_summary_shape() -> None:
     )
     summary = persona.summary()
     # Additive shape: pinned name/purpose/embodied keys for cross-client compat
-    # + the self_model. purpose is "" (no fed answer). voice_hard_lines unsurfaced.
+    # + the self_model + the embodiment contract. purpose is "" (no fed answer).
+    # voice_hard_lines unsurfaced.
     assert summary == {
         "name": "Tiny",
         "purpose": "",
@@ -159,8 +160,23 @@ def test_persona_summary_shape() -> None:
             "known": ["identity"],
             "open_questions": ["founder", "goals"],
         },
+        "embodiment": {
+            "source": "first_party_self_model",
+            "speak_as": "first_person",
+            "fallback_voice": "warm_third_person",
+            "contract": summary["embodiment"]["contract"],
+        },
     }
     assert "voice_hard_lines" not in summary
+    # Self-sufficient + first-party-labeled (MCP-personification research):
+    # the block carries its own embodiment contract + a first-party source tag
+    # so it survives instructions being stripped and reads as legitimate
+    # self-description to host injection sanitizers.
+    emb = summary["embodiment"]
+    assert emb["source"] == "first_party_self_model"
+    assert emb["fallback_voice"] == "warm_third_person"
+    assert "first person" in emb["contract"]
+    assert "third-person" in emb["contract"]
 
 
 def test_persona_is_frozen() -> None:
@@ -252,9 +268,11 @@ def test_control_station_prompt_carries_embody_markers() -> None:
     text = _CONTROL_STATION_PROMPT
     assert "first person" in text
     # Identity is learned in the self-model, not pre-fed in the prompt — the
-    # prompt no longer hardcodes a name; it points at the self_model.
+    # prompt no longer hardcodes a persona name; it points at the self_model.
+    # (Exclude the product name "TinyAssets", which contains the substring
+    # "Tiny" but is not a pre-fed persona identity.)
     assert "self_model" in text
-    assert "Tiny" not in text
+    assert "Tiny" not in text.replace("TinyAssets", "")
     assert "re-assembled fresh" in text
     assert "degraded" in text
 
@@ -265,6 +283,25 @@ def test_server_instructions_carry_embody_markers() -> None:
     text = mcp.instructions or ""
     assert "embody" in text
     assert "re-assembled fresh" in text
+    # Graceful voice degradation (MCP-personification research): a surface that
+    # refuses first person falls back to third person, not a neutral tool voice.
+    assert "third-person" in text
+    # The persona block's embodiment contract is self-sufficient (survives
+    # instructions being stripped) — the instructions point at it.
+    assert "embodiment" in text
+
+
+def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
+    import tinyassets.universe_server as us
+    from tinyassets.api.prompts import _MEET_UNIVERSE_PROMPT
+
+    assert hasattr(us, "meet_universe")  # spec-blessed user-invoked entry prompt
+    text = _MEET_UNIVERSE_PROMPT
+    assert "get_status" in text              # loads the persona/self-model first
+    assert "first person" in text            # greet AS the universe
+    assert "first_party_self_model" in text  # voices the first-party self-desc
+    assert "third-person" in text            # graceful degradation
+    assert "provider" in text                # 24/7 power-source bonding beat
 
 
 # ─────────────────────────────────────────────────────────────────────

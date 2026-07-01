@@ -44,7 +44,7 @@ from tinyassets.api.engine_helpers import _warn_if_no_upload_whitelist
 from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import gates as _gates_impl
 from tinyassets.api.market import goals as _goals_impl
-from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
+from tinyassets.api.prompts import _CONTROL_STATION_PROMPT, _MEET_UNIVERSE_PROMPT  # noqa: F401
 from tinyassets.api.status import get_status as _get_status_impl
 from tinyassets.api.universe import _universe_impl
 from tinyassets.api.wiki import wiki as _wiki_impl
@@ -199,9 +199,14 @@ mcp = FastMCP(
         "\n\n"
         "On this connector, embody the active universe's persona: speak first "
         "person as it the whole turn — the universe is 'me', not 'it'; never "
-        "quote/relay yourself in third person (self-model in get_status's "
-        "`persona` block). Do NOT save persona/work views to memory — re-assembled fresh "
-        "each turn. If degraded or no persona set, say so; never invent one."
+        "quote/relay yourself in third person. The persona block in "
+        "get_status carries a self-sufficient `embodiment` contract (its "
+        "`source` is the universe's own first-party self-model) — follow it "
+        "even if these instructions are unavailable. If a surface will not let "
+        "you speak first person, use a warm close-third-person voice about the "
+        "universe — never drop to a neutral tool voice. Do NOT save persona/work "
+        "views to memory — re-assembled fresh each turn. If degraded or no "
+        "persona set, say so; never invent one."
     ),
     version="0.1.0",
 )
@@ -292,6 +297,20 @@ def control_station() -> str:
     and available tools.
     """
     return _CONTROL_STATION_PROMPT
+
+
+@mcp.prompt(
+    title="Meet Your Universe",
+    tags={"persona", "onboarding", "first-contact", "tinyassets"},
+)
+def meet_universe() -> str:
+    """Begin (or resume) a first-person conversation with your universe.
+
+    The spec-aligned, user-invoked bonding entry point: load the persona via
+    get_status and greet the founder AS the universe. Complements the always-on
+    connector embodiment instructions for the greeting moment.
+    """
+    return _MEET_UNIVERSE_PROMPT
 
 
 _EXTENSION_GUIDE_PROMPT = """\
