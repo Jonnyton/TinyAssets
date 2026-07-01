@@ -21,7 +21,12 @@ import pytest
 import tinyassets.api.universe as us
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
-from tinyassets.daemon_server import grant_universe_access
+from tinyassets.daemon_server import (
+    ensure_universe_registered,
+    ensure_universe_rules,
+    grant_universe_access,
+    update_universe_rules,
+)
 
 
 class _StaticAuthProvider(AuthProvider):
@@ -92,6 +97,19 @@ def _authenticate(user_id: str, scopes: list[str] | None = None) -> None:
 def _make_universe(base: Path, uid: str) -> Path:
     udir = base / uid
     udir.mkdir(parents=True)
+    return udir
+
+
+def _make_private_universe(base: Path, uid: str) -> Path:
+    """Create a universe made *private* the ratified way — via the
+    ``public_read`` visibility rule, NOT by seeding an ACL row. In the D0c
+    model ownership (ACL grants) and visibility (public_read) are orthogonal:
+    an admin grant alone does not hide a universe.
+    """
+    udir = _make_universe(base, uid)
+    ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    ensure_universe_rules(base, universe_id=uid)
+    update_universe_rules(base, universe_id=uid, updates={"public_read": False})
     return udir
 
 
@@ -189,8 +207,140 @@ class TestUniverseIdInResponses:
 
 
 class TestUniverseAclEnforcement:
+    """The D0c model: VISIBILITY is ``public_read`` (a missing rule = public);
+    OWNERSHIP is the ACL grant set. Writes always require an explicit ``write``
+    or ``admin`` grant. An admin grant does NOT make a universe private.
+    """
+
+    def test_anonymous_cannot_write_public_universe(self, universe_base):
+        # Dev/no-auth caller (anonymous). Reads are open on a public universe,
+        # but a write must be denied — an authenticated grant is required.
+        _make_universe(universe_base, "public")
+
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="public",
+            text="Anonymous write attempt.",
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["actor_id"] == "anonymous"
+        assert out["required_permission"] == "write"
+        assert not (universe_base / "public" / "PROGRAM.md").exists()
+
+    def test_anonymous_can_read_public_universe(self, universe_base):
+        _make_universe(universe_base, "public")
+
+        out = json.loads(us._universe_impl(action="inspect", universe_id="public"))
+
+        assert out["universe_id"] == "public"
+        assert "error" not in out
+
+    def test_authenticated_founder_cannot_write_public_universe_without_grant(
+        self, universe_base,
+    ):
+        # A universe with no ACL rows returns the public "read" convention for
+        # every actor; a write still requires an explicit write/admin grant.
+        _make_universe(universe_base, "other")
+        _authenticate(
+            "alice", ["tinyassets.universe.read", "tinyassets.universe.write"],
+        )
+
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="other",
+            text="Cross-universe write attempt.",
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["required_permission"] == "write"
+        assert out["actor_id"] == "alice"
+        assert not (universe_base / "other" / "PROGRAM.md").exists()
+
+    def test_public_universe_read_stays_open_for_authenticated_reader(
+        self, universe_base,
+    ):
+        _make_universe(universe_base, "public")
+        _authenticate("alice", ["tinyassets.universe.read"])
+
+        out = json.loads(us._universe_impl(action="inspect", universe_id="public"))
+
+        assert out["universe_id"] == "public"
+        assert "error" not in out
+
+    def test_create_universe_grants_creator_admin_write(self, universe_base):
+        # D0a: an authenticated founder OWNS the universe they create.
+        _authenticate(
+            "alice",
+            ["tinyassets.universe.costly", "tinyassets.universe.write"],
+        )
+
+        created = json.loads(us._universe_impl(
+            action="create_universe",
+            universe_id="mine",
+            text="A seed.",
+        ))
+        updated = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="mine",
+            text="Founder-owned update.",
+        ))
+
+        assert created["status"] == "created"
+        assert created["founder_id"] == "alice"
+        assert updated["status"] == "updated"
+        assert (universe_base / "mine" / "PROGRAM.md").read_text(
+            encoding="utf-8",
+        ) == "Founder-owned update."
+
+    def test_create_universe_denies_other_founder_write(self, universe_base):
+        # D0a: a *different* authenticated founder, even holding the write
+        # scope, cannot write a universe founded by someone else.
+        _authenticate(
+            "alice",
+            ["tinyassets.universe.costly", "tinyassets.universe.write"],
+        )
+        created = json.loads(us._universe_impl(
+            action="create_universe",
+            universe_id="alice-world",
+            text="Alice's seed.",
+        ))
+        assert created["founder_id"] == "alice"
+
+        _authenticate("bob", ["tinyassets.universe.write"])
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="alice-world",
+            text="Hostile cross-founder overwrite.",
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["required_permission"] == "write"
+        assert out["actor_id"] == "bob"
+
+    def test_owner_admin_grant_does_not_make_universe_private(self, universe_base):
+        # Ownership != visibility. An admin grant with no public_read=False rule
+        # leaves the universe publicly readable.
+        _make_universe(universe_base, "owned-public")
+        grant_universe_access(
+            universe_base,
+            universe_id="owned-public",
+            actor_id="owner",
+            permission="admin",
+            granted_by="owner",
+        )
+        _authenticate("reader", ["tinyassets.universe.read"])
+
+        out = json.loads(us._universe_impl(
+            action="inspect",
+            universe_id="owned-public",
+        ))
+
+        assert out["universe_id"] == "owned-public"
+        assert "error" not in out
+
     def test_private_universe_rejects_unlisted_reader(self, universe_base):
-        udir = _make_universe(universe_base, "private")
+        udir = _make_private_universe(universe_base, "private")
         (udir / "output").mkdir()
         (udir / "output" / "secret.md").write_text("secret", encoding="utf-8")
         grant_universe_access(
@@ -219,7 +369,7 @@ class TestUniverseAclEnforcement:
         assert read_out["error"] == "universe_access_denied"
 
     def test_private_universe_rejects_reader_write(self, universe_base):
-        _make_universe(universe_base, "private")
+        _make_private_universe(universe_base, "private")
         grant_universe_access(
             universe_base,
             universe_id="private",
@@ -241,7 +391,9 @@ class TestUniverseAclEnforcement:
         assert not (universe_base / "private" / "PROGRAM.md").exists()
 
     def test_private_universe_allows_granted_writer(self, universe_base):
-        _make_universe(universe_base, "private")
+        # {write, admin} write-set: a "write" grant CAN write (matches current
+        # main). Only no-grant / read-only actors are denied writes.
+        _make_private_universe(universe_base, "private")
         grant_universe_access(
             universe_base,
             universe_id="private",
@@ -263,9 +415,32 @@ class TestUniverseAclEnforcement:
             encoding="utf-8",
         ) == "Allowed update."
 
+    def test_private_universe_allows_owner_admin_write(self, universe_base):
+        _make_private_universe(universe_base, "private")
+        grant_universe_access(
+            universe_base,
+            universe_id="private",
+            actor_id="owner",
+            permission="admin",
+            granted_by="owner",
+        )
+
+        _authenticate("owner", ["tinyassets.universe.write"])
+
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="private",
+            text="Owner update.",
+        ))
+
+        assert out["status"] == "updated"
+        assert (universe_base / "private" / "PROGRAM.md").read_text(
+            encoding="utf-8",
+        ) == "Owner update."
+
     def test_list_filters_private_universes_without_grant(self, universe_base):
         _make_universe(universe_base, "public")
-        _make_universe(universe_base, "private")
+        _make_private_universe(universe_base, "private")
         grant_universe_access(
             universe_base,
             universe_id="private",
