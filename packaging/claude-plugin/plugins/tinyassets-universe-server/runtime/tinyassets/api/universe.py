@@ -112,6 +112,22 @@ def _env_actor_can(action: str, *, universe_id: str = "") -> bool:
     ).allowed
 
 
+# Daemon-scoped actions operate on a daemon's own operational memory (keyed by
+# daemon_id under daemon_wikis/), NOT on a universe brain. They are authorized by
+# daemon ownership / the autonomous daemon runtime, not the per-universe ACL.
+# Routing them through the universe ACL would (a) misattribute them to whatever
+# _default_universe() happens to resolve to and (b) break autonomous daemon
+# memory writes, which run with no founder OAuth grant.
+_DAEMON_SCOPED_ACTIONS: frozenset[str] = frozenset({
+    "daemon_memory_capture",
+    "daemon_memory_search",
+    "daemon_memory_list",
+    "daemon_memory_review",
+    "daemon_memory_promote",
+    "daemon_memory_status",
+})
+
+
 def _universe_acl_error(action: str, *, universe_id: str = "") -> str | None:
     """Gate a universe action against the single ACL path in
     ``tinyassets.api.permissions``.
@@ -119,9 +135,11 @@ def _universe_acl_error(action: str, *, universe_id: str = "") -> str | None:
     ``list`` and ``create_universe`` are exempt: ``list`` filters visibility
     per-universe inside ``_action_list_universes``; ``create_universe`` has no
     pre-existing universe to authorize against (it is scope-gated + founder-
-    granted on create instead).
+    granted on create instead). Daemon-scoped actions
+    (``_DAEMON_SCOPED_ACTIONS``) are exempt because they are not universe-brain
+    operations — see that set's comment.
     """
-    if action in {"list", "create_universe"}:
+    if action in {"list", "create_universe"} or action in _DAEMON_SCOPED_ACTIONS:
         return None
 
     uid = universe_id or _default_universe()
