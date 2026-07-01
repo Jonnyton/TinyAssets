@@ -43,9 +43,13 @@ registration. We host **no** authorization-server endpoints.
   **web-app client** pattern (cookies/sealed sessions) — wrong for an RS validating an
   incoming `Authorization: Bearer`. Misusing them throws `InvalidToken`. **Don't.**
 - For the RS: **PyJWT + `PyJWKClient`** (handles `kid` matching + key rotation + caching).
-  Use the SDK for exactly one thing so the URL isn't hardcoded:
-  `WorkOSClient(...).user_management.get_jwks_url(client_id)`.
-- **JWKS URL (confirmed):** `https://api.workos.com/sso/jwks/<WORKOS_CLIENT_ID>` (per client_id).
+  Read the JWKS URL from AS metadata (`.well-known/oauth-authorization-server`)
+  so it isn't hardcoded; it is the AuthKit-domain endpoint below.
+- **JWKS URL (RESOLVED, see VERIFY-flag 3):** `https://<AUTHKIT_DOMAIN>/oauth2/jwks`
+  (e.g. `https://inventive-van-62-staging.authkit.app/oauth2/jwks`). Do **NOT**
+  use the legacy SSO endpoint `https://api.workos.com/sso/jwks/<WORKOS_CLIENT_ID>`
+  or `user_management.get_jwks_url(...)` — that 200s but is the SSO JWKS, the
+  wrong key set for AuthKit access tokens.
 - Pin `algorithms=["RS256"]` (algorithm-substitution defense). Validate `iss` **and** `aud`.
 
 ## Token claims (AuthKit Sessions doc)

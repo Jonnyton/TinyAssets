@@ -24,7 +24,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-from tinyassets.api.helpers import _base_path, _default_universe, _universe_dir
+from tinyassets.api.helpers import (
+    _base_path,
+    _default_universe,
+    _designated_public_universe,
+    _universe_dir,
+)
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 
 
@@ -709,7 +714,10 @@ def _resolve_entry_universe(universe_id: str) -> str:
     try:
         require_action_scope("universe", "create_universe")
     except PermissionError:
-        return _default_universe()  # authenticated but lacks create scope
+        # Authenticated founder without create authority: resolve identity-bound,
+        # never through the host-global marker or another founder's serial home
+        # (spec: "First MCP contact"; the read-only-founder cross-founder leak).
+        return _designated_public_universe()
 
     # Best-effort: never fail a status read if creation errors (e.g. read-only FS).
     try:
@@ -725,7 +733,9 @@ def _resolve_entry_universe(universe_id: str) -> str:
         logging.getLogger("universe_server.status").warning(
             "first-contact home-universe create failed", exc_info=True,
         )
-    return _default_universe()
+    # Create authority but the create failed: still must not leak another
+    # founder's serial home or read the host-global marker.
+    return _designated_public_universe()
 
 
 def get_status(universe_id: str = "") -> str:

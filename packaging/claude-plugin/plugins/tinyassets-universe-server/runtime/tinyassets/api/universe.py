@@ -4646,13 +4646,23 @@ def _action_create_universe(
             ),
         }
 
-        # Auto-switch the daemon to the new universe
-        marker = base / ".active_universe"
-        marker.write_text(uid, encoding="utf-8")
-        result["note"] = (
-            f"Universe '{uid}' created. "
-            "Daemon will switch to it within ~10 seconds."
-        )
+        # Auto-switch the daemon to the new universe — ONLY for anonymous / dev
+        # single-tenant (tray) creates. An authenticated founder's create is a
+        # multi-tenant MCP operation: their universe is recorded as their
+        # ``founder_home`` binding (below), and per the universe-creation spec
+        # ("First MCP contact") the system must NOT use the host-global
+        # ``.active_universe`` marker to decide which universe a chatbot speaks
+        # as. Writing it on a founder create clobbers the marker to the
+        # last-created home and leaks it to other founders' omitted-scope reads.
+        if not permissions.is_authenticated_request():
+            marker = base / ".active_universe"
+            marker.write_text(uid, encoding="utf-8")
+            result["note"] = (
+                f"Universe '{uid}' created. "
+                "Daemon will switch to it within ~10 seconds."
+            )
+        else:
+            result["note"] = f"Universe '{uid}' created."
 
         # D0a founder-grant-on-create: the authenticated founder OWNS the
         # universe they create (admin grant) — the mechanism that makes the

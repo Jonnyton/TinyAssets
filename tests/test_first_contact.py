@@ -156,3 +156,38 @@ def test_two_founders_get_distinct_homes(data_dir):
     home_b = get_founder_home(data_dir, "founder-B")
     assert home_a and home_b and home_a != home_b
     assert len(_universe_dirs(data_dir)) == 2
+
+
+def test_founder_create_does_not_write_active_universe_marker(data_dir):
+    # universe-creation spec "First MCP contact": an authenticated founder's
+    # create records their `founder_home` binding but must NOT clobber the
+    # host-global `.active_universe` marker.
+    from tinyassets.api.status import _resolve_entry_universe
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.ids import is_universe_serial
+
+    _login("founder-A")
+    _resolve_entry_universe("")
+    home_a = get_founder_home(data_dir, "founder-A")
+    assert is_universe_serial(home_a)
+    assert not (data_dir / ".active_universe").exists()
+
+
+def test_readonly_founder_omitted_scope_does_not_leak_other_home(data_dir):
+    # Codex-reproduced cross-founder leak: founder A first contact births home
+    # u-A; founder B (authenticated, read-only, no home) then reads with no
+    # universe_id and must NOT be routed to A's serial home (previously leaked
+    # via the `.active_universe` marker A's create had clobbered).
+    from tinyassets.api.status import _resolve_entry_universe
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.ids import is_universe_serial
+
+    _login("founder-A")
+    _resolve_entry_universe("")
+    home_a = get_founder_home(data_dir, "founder-A")
+    assert is_universe_serial(home_a)
+
+    _login("reader-B", caps=["read", "submit_request", "list"])
+    resolved_b = _resolve_entry_universe("")
+    assert resolved_b != home_a               # no cross-founder leak
+    assert not is_universe_serial(resolved_b)  # never another founder's serial home
