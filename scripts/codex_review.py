@@ -18,7 +18,11 @@ Usage (typically backgrounded):
   python scripts/codex_review.py --out review.md --diff-base origin/main \
       --prompt "focus on the auth boundary"
 
-The verdict file ends with a line: `VERDICT: approve|adapt|reject` plus findings.
+Contract: the out file ALWAYS exists and ends in a `VERDICT:` line when this
+process exits — `approve|adapt|reject` from Codex, or `VERDICT: error` written
+by this wrapper on timeout / launch failure / empty output. Background callers
+poll the file; stderr of a background job is easy to lose, so failures must be
+readable in-band.
 """
 
 from __future__ import annotations
@@ -30,6 +34,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# A background review that outlives this is a stalled network/CLI, not a long
+# think. 30 min is generous for a repo-sized diff review.
+DEFAULT_TIMEOUT_S = 1800.0
 
 ADVERSARIAL_PREAMBLE = (
     "You are performing an opposite-provider (cross-family) code review. Be "
@@ -100,6 +108,71 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def _has_content(out: Path) -> bool:
+    try:
+        return out.exists() and out.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def ensure_verdict_file(out: Path, error: str | None) -> None:
+    """Guarantee the out file is present and readable for the background caller.
+
+    - Codex succeeded and wrote output: leave the file alone.
+    - Codex failed but wrote partial output: append the failure as a trailing
+      note (stderr of a background job is easy to lose; the file is the channel).
+    - No/empty output: write a `VERDICT: error` file so a poller never waits on
+      a file that will never appear, and never mistakes silence for approval.
+    """
+    if error is None and _has_content(out):
+        return
+    if error is None:
+        error = "codex exec exited 0 but wrote no output"
+    if _has_content(out):
+        with out.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n\n[codex_review] WARNING: {error}\n")
+        return
+    out.write_text(
+        "VERDICT: error\n"
+        f"[codex_review] no verdict produced: {error}\n"
+        "Do NOT treat this as approve — re-dispatch or fall back to an inline "
+        "mcp__codex__codex gate.\n",
+        encoding="utf-8",
+    )
+
+
+def run(args: argparse.Namespace) -> int:
+    args.cwd = to_native_path(args.cwd)
+    args.out = to_native_path(args.out)
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = build_cmd(args)
+    print(f"[codex_review] dispatching to Codex (read-only); verdict -> {args.out}", flush=True)
+    error: str | None = None
+    rc = 0
+    try:
+        proc = subprocess.run(cmd, timeout=args.timeout)
+        rc = proc.returncode
+        if rc != 0:
+            error = f"codex exec exited {rc}"
+    except subprocess.TimeoutExpired:
+        rc = 124
+        error = f"codex exec timed out after {args.timeout:.0f}s (killed)"
+    except FileNotFoundError:
+        rc = 127
+        error = (
+            f"codex executable not runnable: {cmd[0]!r}. "
+            "Set CODEX_BIN to the full path of codex.cmd (Windows) / codex."
+        )
+
+    if error:
+        print(f"[codex_review] {error}", file=sys.stderr)
+    ensure_verdict_file(out, error)
+    return rc
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         description="Background Codex review dispatcher (offloads to Codex's budget)."
@@ -112,27 +185,14 @@ def main() -> int:
         default=None,
         help="If set, ask Codex to review this branch's diff vs the given base branch.",
     )
-    args = p.parse_args()
-    args.cwd = to_native_path(args.cwd)
-    args.out = to_native_path(args.out)
-
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    cmd = build_cmd(args)
-    print(f"[codex_review] dispatching to Codex (read-only); verdict -> {args.out}", flush=True)
-    try:
-        proc = subprocess.run(cmd)
-    except FileNotFoundError:
-        print(
-            f"[codex_review] codex executable not runnable: {cmd[0]!r}. "
-            "Set CODEX_BIN to the full path of codex.cmd (Windows) / codex.",
-            file=sys.stderr,
-        )
-        return 127
-    if proc.returncode != 0:
-        print(f"[codex_review] codex exec exited {proc.returncode}", file=sys.stderr)
-    return proc.returncode
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_S,
+        help="Kill codex exec after this many seconds and write VERDICT: error "
+        f"(default {DEFAULT_TIMEOUT_S:.0f}).",
+    )
+    return run(p.parse_args())
 
 
 if __name__ == "__main__":

@@ -131,3 +131,98 @@ def test_nudge_render_steers_to_background_offload() -> None:
     assert "codex_review.py" in text
     assert "BACKGROUND offload" in text
     assert "mcp__codex__codex" in text  # still names the inline gate option
+
+
+# --- run(): background contract — the out file always exists ----------------
+
+
+def _run_args(out: Path, **kw) -> argparse.Namespace:
+    base = dict(prompt="ask", out=str(out), cwd=".", diff_base=None, timeout=5.0)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+@pytest.fixture()
+def _fixed_bin(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(cr, "resolve_codex", lambda: "CODEXBIN")
+
+
+def test_run_timeout_writes_error_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
+) -> None:
+    import subprocess
+
+    def boom(cmd, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
+
+    monkeypatch.setattr(cr.subprocess, "run", boom)
+    out = tmp_path / "verdict.md"
+    assert cr.run(_run_args(out)) == 124
+    text = out.read_text()
+    assert "VERDICT: error" in text
+    assert "timed out" in text
+
+
+def test_run_missing_binary_writes_error_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
+) -> None:
+    def boom(cmd, timeout=None):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(cr.subprocess, "run", boom)
+    out = tmp_path / "verdict.md"
+    assert cr.run(_run_args(out)) == 127
+    text = out.read_text()
+    assert "VERDICT: error" in text
+    assert "CODEX_BIN" in text
+
+
+def test_run_zero_exit_empty_output_writes_error_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
+) -> None:
+    # codex exec "succeeds" but never writes the file: a silent poller trap.
+    monkeypatch.setattr(
+        cr.subprocess, "run", lambda cmd, timeout=None: subprocess_completed(0)
+    )
+    out = tmp_path / "verdict.md"
+    assert cr.run(_run_args(out)) == 0
+    text = out.read_text()
+    assert "VERDICT: error" in text
+    assert "wrote no output" in text
+
+
+def test_run_success_leaves_codex_verdict_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
+) -> None:
+    out = tmp_path / "verdict.md"
+
+    def fake(cmd, timeout=None):
+        out.write_text("findings...\nVERDICT: approve\n")
+        return subprocess_completed(0)
+
+    monkeypatch.setattr(cr.subprocess, "run", fake)
+    assert cr.run(_run_args(out)) == 0
+    assert out.read_text() == "findings...\nVERDICT: approve\n"
+
+
+def test_run_nonzero_with_partial_output_appends_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
+) -> None:
+    out = tmp_path / "verdict.md"
+
+    def fake(cmd, timeout=None):
+        out.write_text("partial findings\n")
+        return subprocess_completed(3)
+
+    monkeypatch.setattr(cr.subprocess, "run", fake)
+    assert cr.run(_run_args(out)) == 3
+    text = out.read_text()
+    assert text.startswith("partial findings")  # partial output preserved
+    assert "WARNING" in text
+    assert "exited 3" in text
+
+
+def subprocess_completed(rc: int):
+    import subprocess
+
+    return subprocess.CompletedProcess(args=["codex"], returncode=rc)
