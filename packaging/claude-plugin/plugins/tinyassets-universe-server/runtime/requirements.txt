@@ -7,3 +7,4 @@ pyyaml>=6.0
 aiofiles>=24.1
 json-repair>=0.30
 tenacity>=9.0,<10.0
+pyjwt[crypto]>=2.8,<3.0

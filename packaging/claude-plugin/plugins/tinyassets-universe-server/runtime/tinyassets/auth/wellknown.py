@@ -177,12 +177,45 @@ def create_wellknown_routes() -> list[dict[str, Any]]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+async def _fetch_authkit_as_metadata(issuer: str) -> dict[str, Any] | None:
+    """Proxy AuthKit's Authorization Server Metadata as JSON (RFC 8414).
+
+    WorkOS AuthKit is the authorization server; we fetch and return its
+    published metadata so MCP clients that hit our AS-metadata endpoint get
+    AuthKit's real endpoints. Returns None on any fetch/parse error so the
+    caller can fall back to a redirect.
+    """
+    import asyncio
+
+    url = f"{issuer}/.well-known/oauth-authorization-server"
+
+    def _get() -> dict[str, Any] | None:
+        import json as _json
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                if getattr(resp, "status", 200) != 200:
+                    return None
+                data = _json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            logger.warning(
+                "AuthKit AS metadata proxy failed for %s", url, exc_info=True,
+            )
+            return None
+        return data if isinstance(data, dict) else None
+
+    return await asyncio.to_thread(_get)
+
+
 async def _handle_authz_server_metadata(request: Any) -> Any:
     """Serve authorization server metadata.
 
-    In WorkOS mode we are NOT the authorization server — AuthKit is. Redirect
-    discovery to AuthKit's own AS metadata rather than advertising self-hosted
-    ``/oauth/*`` endpoints (which this Resource Server does not implement).
+    In WorkOS mode we are NOT the authorization server — AuthKit is. Proxy
+    AuthKit's published AS metadata as JSON (per WorkOS AuthKit MCP docs)
+    rather than advertising self-hosted ``/oauth/*`` endpoints this Resource
+    Server does not implement. If the proxy fetch fails, fall back to a
+    redirect so discovery still resolves.
     """
     from starlette.responses import JSONResponse, RedirectResponse
 
@@ -192,6 +225,9 @@ async def _handle_authz_server_metadata(request: Any) -> Any:
             from tinyassets.auth.workos_provider import derive_endpoints
 
             issuer, _ = derive_endpoints(domain)
+            metadata = await _fetch_authkit_as_metadata(issuer)
+            if metadata is not None:
+                return JSONResponse(metadata)
             return RedirectResponse(
                 f"{issuer}/.well-known/oauth-authorization-server",
                 status_code=302,

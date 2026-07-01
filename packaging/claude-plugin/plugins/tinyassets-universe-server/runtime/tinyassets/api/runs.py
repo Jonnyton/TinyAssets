@@ -107,6 +107,44 @@ def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
     return None
 
 
+def _run_universe_id(record: dict[str, Any]) -> str:
+    """The universe a run is bound to, derived from its actor.
+
+    Branch runs are executed by a universe (actor ``universe:<uid>``), so the
+    actor carries the owning universe. A run with any other actor is not
+    universe-brain data.
+    """
+    actor = str((record or {}).get("actor") or "")
+    prefix = "universe:"
+    return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
+
+
+def _run_read_allowed(record: dict[str, Any]) -> bool:
+    """Whether the current caller may READ a run's data.
+
+    A universe-bound run is gated by that universe's read visibility: public
+    universes stay readable, a private universe (``public_read=false``) requires
+    a grant. Runs with no universe binding are not private-universe data.
+    """
+    uid = _run_universe_id(record)
+    if not uid:
+        return True
+    from tinyassets.api.permissions import universe_access_allows
+
+    return universe_access_allows(uid, write=False)
+
+
+def _run_read_denied_error(record: dict[str, Any], action: str) -> str:
+    from tinyassets.api.permissions import universe_access_error
+
+    return json.dumps(universe_access_error(
+        universe_id=_run_universe_id(record),
+        write=False,
+        action=action,
+        surface="extensions",
+    ))
+
+
 _EMPTY_LLM_RESPONSE_ACTION = (
     "Ask the host to check get_status provider availability/cooldowns and fix "
     "provider credentials or CLI, then rerun; only switch llm_type if get_status "
@@ -800,6 +838,8 @@ def _action_get_run(kwargs: dict[str, Any]) -> str:
     record = _get_run(_base_path(), rid)
     if record is None:
         return json.dumps({"error": f"Run '{rid}' not found."})
+    if not _run_read_allowed(record):
+        return _run_read_denied_error(record, "get_run")
 
     events = list_events(_base_path(), rid)
     return json.dumps(_compose_run_snapshot(record, events), default=str)
@@ -814,6 +854,8 @@ def _action_list_runs(kwargs: dict[str, Any]) -> str:
         status=kwargs.get("status", ""),
         limit=int(kwargs.get("limit", 50) or 50),
     )
+    # Do not expose runs of a private universe the caller cannot read.
+    rows = [r for r in rows if _run_read_allowed(r)]
     summaries = [
         {
             "run_id": r["run_id"],
@@ -1029,6 +1071,8 @@ def _action_get_run_output(kwargs: dict[str, Any]) -> str:
     record = _get_run(_base_path(), rid)
     if record is None:
         return json.dumps({"error": f"Run '{rid}' not found."})
+    if not _run_read_allowed(record):
+        return _run_read_denied_error(record, "get_run_output")
 
     field = kwargs.get("field_name", "").strip()
     output = record.get("output") or {}

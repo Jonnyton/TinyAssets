@@ -633,6 +633,78 @@ class TestUniverseWriteBoundaryBeyondUniverseTool:
         assert out["required_permission"] == "write"
 
 
+class TestRunReadVisibility:
+    """Slice-4 review (Codex): run read surfaces must not expose a private
+    universe's runs. get_run / get_run_output / list_runs gate by the run's
+    universe (derived from actor `universe:<uid>`) via universe_access_allows.
+    """
+
+    def test_run_read_allowed_helper(self, universe_base):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")           # public by default
+        _make_private_universe(universe_base, "priv")  # public_read=False
+        assert runs._run_read_allowed({"actor": "universe:pub"}) is True
+        assert runs._run_read_allowed({"actor": "universe:priv"}) is False
+        # A run not bound to a universe is not private-universe data.
+        assert runs._run_read_allowed({"actor": "host"}) is True
+
+    def test_get_run_output_denied_for_private_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {
+                "run_id": rid, "actor": "universe:priv",
+                "branch_def_id": "b", "status": "completed",
+                "output": {"secret": "leak"},
+            },
+        )
+        out = json.loads(runs._action_get_run_output({"run_id": "r1"}))
+        assert out["error"] == "universe_access_denied"
+        assert "leak" not in json.dumps(out)
+
+    def test_get_run_output_allowed_for_public_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {
+                "run_id": rid, "actor": "universe:pub",
+                "branch_def_id": "b", "status": "completed",
+                "output": {"ok": "1"},
+            },
+        )
+        out = json.loads(runs._action_get_run_output({"run_id": "r1"}))
+        assert out.get("error") != "universe_access_denied"
+        assert out.get("output", {}).get("ok") == "1"
+
+    def test_list_runs_filters_private_universe(self, universe_base, monkeypatch):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.list_runs",
+            lambda base, **kw: [
+                {"run_id": "r-pub", "actor": "universe:pub", "branch_def_id": "b",
+                 "run_name": "", "status": "completed"},
+                {"run_id": "r-priv", "actor": "universe:priv", "branch_def_id": "b",
+                 "run_name": "", "status": "completed"},
+            ],
+        )
+        out = json.loads(runs._action_list_runs({}))
+        ids = {r["run_id"] for r in out["runs"]}
+        assert "r-pub" in ids
+        assert "r-priv" not in ids
+
+
 class TestScopeHeader:
     """#15: the dispatcher wraps every universe-scoped response with a
     phone-legible `Universe: <id>` `text` lead-in, puts `universe_id`

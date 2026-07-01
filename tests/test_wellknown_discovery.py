@@ -58,9 +58,42 @@ def test_discovery_routes_include_prm_paths():
     assert "/.well-known/oauth-authorization-server" in paths
 
 
-def test_authz_server_metadata_redirects_to_authkit_in_workos(monkeypatch):
+def test_authz_server_metadata_proxies_authkit_json_in_workos(monkeypatch):
+    # WorkOS mode: our AS-metadata endpoint returns AuthKit's metadata as 200
+    # JSON (proxy), not a redirect. Fetch is stubbed to avoid network.
+    import tinyassets.auth.wellknown as wk
+
     monkeypatch.setenv("UNIVERSE_SERVER_AUTH", "workos")
     monkeypatch.setenv("WORKOS_AUTHKIT_DOMAIN", AUTHKIT_DOMAIN)
+
+    async def _fake(issuer):  # noqa: ANN001, ANN202
+        return {
+            "issuer": issuer,
+            "authorization_endpoint": f"{issuer}/oauth2/authorize",
+            "token_endpoint": f"{issuer}/oauth2/token",
+        }
+
+    monkeypatch.setattr(wk, "_fetch_authkit_as_metadata", _fake)
+    app = Starlette(routes=starlette_discovery_routes())
+    client = TestClient(app)
+    r = client.get(
+        "/.well-known/oauth-authorization-server",
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert r.json()["issuer"] == AUTHKIT_ISSUER
+
+
+def test_authz_server_metadata_falls_back_to_redirect_when_proxy_fails(monkeypatch):
+    import tinyassets.auth.wellknown as wk
+
+    monkeypatch.setenv("UNIVERSE_SERVER_AUTH", "workos")
+    monkeypatch.setenv("WORKOS_AUTHKIT_DOMAIN", AUTHKIT_DOMAIN)
+
+    async def _fail(issuer):  # noqa: ANN001, ANN202
+        return None
+
+    monkeypatch.setattr(wk, "_fetch_authkit_as_metadata", _fail)
     app = Starlette(routes=starlette_discovery_routes())
     client = TestClient(app)
     r = client.get(
