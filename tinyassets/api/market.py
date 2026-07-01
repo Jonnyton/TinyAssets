@@ -2585,6 +2585,22 @@ def goals(
             "error": f"Unknown action '{action}'.",
             "available_actions": _available_goal_actions(),
         })
+
+    # Auth scope gate — goals is a write-capable commons surface, so enforce the
+    # named action scope (resolve-always/WorkOS): anonymous callers may read but
+    # not propose/update/bind/set_canonical/define_protocol/set_selector. Covers
+    # write_graph(target="goal"), which routes here.
+    from tinyassets.auth.middleware import require_action_scope
+    try:
+        require_action_scope("goals", canonical_action)
+    except PermissionError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "auth_scope_required": True,
+            "tool": "goals",
+            "action": canonical_action,
+        })
+
     return _dispatch_goal_action(canonical_action, handler, goal_kwargs)
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•

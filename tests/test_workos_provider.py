@@ -387,6 +387,59 @@ def test_workos_founder_with_read_scope_can_read(workos_active) -> None:
     assert ident.user_id == "user_workos_123"
 
 
+def test_goals_actions_are_in_scope_registry() -> None:
+    from tinyassets.auth.provider import action_scope_for
+
+    assert action_scope_for("goals", "propose").effect == "write"
+    assert action_scope_for("goals", "set_canonical").effect == "write"
+    assert action_scope_for("goals", "list").effect == "read"
+    assert action_scope_for("goals", "run_canonical").effect == "costly"
+
+
+def test_workos_anonymous_cannot_write_goals(workos_active) -> None:
+    from tinyassets.auth.middleware import auth_middleware, require_action_scope
+
+    auth_middleware(None)  # anonymous
+    for action in (
+        "propose", "update", "bind", "set_canonical",
+        "define_protocol", "set_selector",
+    ):
+        with pytest.raises(PermissionError):
+            require_action_scope("goals", action)
+
+
+def test_workos_anonymous_can_read_goals(workos_active) -> None:
+    from tinyassets.auth.middleware import auth_middleware, require_action_scope
+
+    auth_middleware(None)
+    ident = require_action_scope("goals", "list")
+    assert ident.user_id == "anonymous"
+
+
+def test_workos_founder_with_write_can_propose_goal(workos_active) -> None:
+    from tinyassets.auth.middleware import auth_middleware, require_action_scope
+
+    keypair = workos_active
+    auth_middleware(_sign(keypair, permissions=["read", "write", "costly"]))
+    ident = require_action_scope("goals", "propose")
+    assert ident.user_id == "user_workos_123"
+
+
+def test_goals_impl_denies_anonymous_propose(
+    workos_active, tmp_path, monkeypatch,
+) -> None:
+    import json
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.api.market import goals as _goals_impl
+    from tinyassets.auth.middleware import auth_middleware
+
+    auth_middleware(None)  # anonymous WorkOS-mode caller
+    out = json.loads(_goals_impl(action="propose", name="anon bypass goal"))
+    assert out.get("auth_scope_required") is True
+    assert out.get("tool") == "goals"
+
+
 def test_invalid_bearer_token_is_rejected_not_anonymous(workos_active) -> None:
     # A present-but-invalid token must set the None (401) signal, not anon.
     from tinyassets.auth import middleware as mw

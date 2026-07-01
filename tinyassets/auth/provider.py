@@ -496,6 +496,8 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _ESCROW_ACTIONS,
         _GATE_EVENT_ACTIONS,
         _GATES_ACTIONS,
+        _GOAL_ACTIONS,
+        _GOAL_WRITE_ACTIONS,
         _OUTCOME_ACTIONS,
     )
     from tinyassets.api.runs import _RUN_ACTIONS, _RUN_WRITE_ACTIONS
@@ -600,6 +602,16 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         write_actions=gates_writes,
         costly_actions=_GATES_COSTLY_ACTIONS,
         admin_actions=_GATES_ADMIN_ACTIONS,
+    )
+
+    _extend_scope_rows(
+        rows,
+        tool="goals",
+        actions=set(_GOAL_ACTIONS),
+        source="tinyassets.api.market._GOAL_ACTIONS",
+        write_actions=set(_GOAL_WRITE_ACTIONS),
+        # run_canonical triggers a branch run; scope it as costly like run_branch.
+        costly_actions=frozenset({"run_canonical"}),
     )
 
     return {row.action_name: row for row in rows}
