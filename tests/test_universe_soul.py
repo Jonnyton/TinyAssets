@@ -134,6 +134,20 @@ def test_create_universe_without_premise_still_has_thin_soul(us):
     assert not (udir / "PROGRAM.md").exists()
 
 
+def test_create_universe_ledger_uses_generated_id():
+    # Regression: a server-generated universe_id must reach the ledger row.
+    # The extractor reads kwargs (no universe_id for a generated create), so it
+    # must fall back to the id in the handler result.
+    from tinyassets.api.universe import _extract_create_universe
+
+    target, summary, payload = _extract_create_universe(
+        {"text": ""},
+        {"universe_id": "u-01generatedserial00000000", "status": "created"},
+    )
+    assert target == "u-01generatedserial00000000"
+    assert "u-01generatedserial00000000" in summary
+
+
 def test_create_universe_records_declared_loop_branch(us):
     base = Path(us._base_path())
 

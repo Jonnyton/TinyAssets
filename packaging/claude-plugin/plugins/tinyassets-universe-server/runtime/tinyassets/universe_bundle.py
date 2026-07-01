@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from tinyassets.universe_soul import (
     SOUL_FILENAME,
     SOUL_VERSIONS_DIR,
@@ -64,11 +66,12 @@ FORBIDDEN_BASELINE = ("self", "soul", "notes.json", "activity.log")
 
 
 def _frontmatter(concept_type: str, **fields: str) -> str:
-    lines = ["---", f"type: {concept_type}"]
-    for key, value in fields.items():
-        lines.append(f"{key}: {value}")
-    lines.append("---")
-    return "\n".join(lines)
+    # Use a real YAML dumper so values containing ``:`` (e.g. descriptions,
+    # URLs) are quoted/escaped and the frontmatter always parses with
+    # yaml.safe_load — the OKF conformance requirement.
+    data: dict[str, str] = {"type": concept_type, **fields}
+    dumped = yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()
+    return f"---\n{dumped}\n---"
 
 
 def _doc(concept_type: str, body: str, **fields: str) -> str:

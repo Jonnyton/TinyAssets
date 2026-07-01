@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tinyassets.universe_bundle import (
     BASELINE_FILES,
@@ -20,19 +21,29 @@ from tinyassets.universe_bundle import (
 )
 
 
-def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Parse a flat ``---`` YAML frontmatter block into a dict + body."""
+def _split_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse the ``---`` YAML frontmatter block with a REAL YAML parser.
+
+    Using yaml.safe_load (not naive colon-splitting) is the OKF conformance
+    check: a description/URL value containing ``: `` must still parse.
+    """
     assert text.startswith("---\n"), "file must start with frontmatter"
     end = text.index("\n---", 4)
     block = text[4:end]
     body = text[end + 4:]
-    meta: dict[str, str] = {}
-    for line in block.splitlines():
-        if not line.strip():
-            continue
-        key, _, value = line.partition(":")
-        meta[key.strip()] = value.strip()
+    meta = yaml.safe_load(block)
+    assert isinstance(meta, dict), "frontmatter must be a YAML mapping"
     return meta, body
+
+
+def test_all_frontmatter_parses_as_yaml(tmp_path: Path):
+    udir = tmp_path / "u-yaml"
+    udir.mkdir()
+    seed_okf_bundle(udir, purpose="track my recipes: fast", loop_branch_def_id="b-1")
+    for rel in BASELINE_FILES:
+        text = (udir / rel).read_text(encoding="utf-8")
+        meta, _ = _split_frontmatter(text)  # raises if YAML is invalid
+        assert isinstance(meta.get("type"), str) and meta["type"], rel
 
 
 @pytest.fixture

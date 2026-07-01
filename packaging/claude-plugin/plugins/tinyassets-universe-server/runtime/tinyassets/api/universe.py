@@ -259,7 +259,10 @@ def _extract_create_universe(
     kwargs: dict[str, Any], _result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
     from tinyassets.api.engine_helpers import _truncate
-    uid = kwargs.get("universe_id", "")
+    # universe_id may be server-generated (optional on create), so prefer the
+    # id in the handler result over the caller kwargs — otherwise the ledger
+    # row loses the generated id (target: "").
+    uid = _result.get("universe_id") or kwargs.get("universe_id", "")
     text = kwargs.get("text", "")
     summary = _truncate(text) if text.strip() else f"created {uid}"
     return (uid, summary, {
