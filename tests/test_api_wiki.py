@@ -63,11 +63,15 @@ def test_module_exposes_expected_public_names():
 
 
 def test_wiki_categories_canonical_order():
-    """Category enum stays in a stable order — wiki-mcp/server.js mirrors it."""
+    """Category enum stays in a stable, explicit order — this tuple is the
+    single source of truth (the former wiki-mcp/server.js mirror is retired)."""
+    assert _WIKI_CATEGORIES == (
+        "projects", "concepts", "people", "research", "recipes", "workflows",
+        "notes", "references", "plans", "bugs", "feature-requests",
+        "design-proposals", "patch-requests",
+    )
     assert _WIKI_CATEGORIES[0] == "projects"
-    assert _WIKI_CATEGORIES[-1] == "bugs"
     assert _BUGS_CATEGORY in _WIKI_CATEGORIES
-    assert len(_WIKI_CATEGORIES) == 10
 
 
 def test_kind_routing_covers_all_valid_kinds():
@@ -244,7 +248,7 @@ def test_wiki_search_returns_completeness_warning_with_matches(wiki_env):
 
 def test_wiki_since_returns_pages_updated_after_timestamp(wiki_env):
     fresh_dir = wiki_env / "pages" / "patch-requests"
-    fresh_dir.mkdir(parents=True)
+    fresh_dir.mkdir(parents=True, exist_ok=True)  # scaffold already creates this category dir
     fresh = fresh_dir / "fresh-patch.md"
     fresh.write_text(
         "---\n"

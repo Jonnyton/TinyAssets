@@ -41,9 +41,10 @@ from tinyassets.api.helpers import (
 
 # Wiki category taxonomy. Expanded 2026-04-13 to stop user-intent content
 # (recipes, workflows, personal notes) getting dumped into `research/`
-# because the enum didn't offer anything more appropriate. Mirrors the
-# canonical list in `wiki-mcp/server.js` — keep the two in lockstep. The
-# original four come first for back-compat with existing index headers.
+# because the enum didn't offer anything more appropriate. This tuple is the
+# single source of truth for wiki categories (the former wiki-mcp/server.js
+# mirror has been retired). The original four come first for back-compat with
+# existing index headers.
 _WIKI_CATEGORIES = (
     "projects",    # Tracked project pages (auto-discovered or hand-written)
     "concepts",    # Ideas, mental models, definitions
@@ -810,7 +811,8 @@ def _wiki_write(
         try:
             promoted_path.write_text(content, encoding="utf-8")
             _append_wiki_log(
-                f"update | {promoted_rel_path.removesuffix('.md')} | {log_entry or 'in-place update'}"
+                f"update | {promoted_rel_path.removesuffix('.md')} | "
+                f"{log_entry or 'in-place update'}"
             )
             return json.dumps({
                 "path": promoted_rel_path,
