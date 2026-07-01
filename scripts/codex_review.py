@@ -24,6 +24,9 @@ The verdict file ends with a line: `VERDICT: approve|adapt|reject` plus findings
 from __future__ import annotations
 
 import argparse
+import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -46,11 +49,42 @@ def build_prompt(ask: str, diff_base: str | None) -> str:
     return f"{ADVERSARIAL_PREAMBLE}\n\n{ask}"
 
 
+def resolve_codex() -> str:
+    """Locate a runnable codex executable.
+
+    Background Bash jobs run with a stripped PATH that often lacks ~/.local/bin,
+    and on Windows the runnable entrypoint is `codex.cmd` — the bare `codex` there
+    is a bash shim that CreateProcess rejects (WinError 193). So: honor an explicit
+    CODEX_BIN, then PATH, then the known install dir preferring the .cmd/.exe.
+    """
+    override = os.environ.get("CODEX_BIN")
+    if override and Path(override).exists():
+        return override
+    found = shutil.which("codex")
+    if found:
+        return found
+    for name in ("codex.cmd", "codex.exe", "codex"):
+        candidate = Path.home() / ".local" / "bin" / name
+        if candidate.exists():
+            return str(candidate)
+    return "codex"  # last resort; surfaces a clear FileNotFoundError below
+
+
+def to_native_path(path: str) -> str:
+    """Convert an MSYS / Git-Bash path (/c/foo) to a native Windows path (C:/foo).
+
+    The wrapper is usually launched from Git Bash but hands paths to the Windows
+    `codex.cmd`, which cannot parse /c/... style paths (fails with os error 3).
+    """
+    match = re.match(r"^/([A-Za-z])/(.*)$", path)
+    return f"{match.group(1).upper()}:/{match.group(2)}" if match else path
+
+
 def build_cmd(args: argparse.Namespace) -> list[str]:
     # Only verified `codex exec` flags. read-only is hard-coded: this path never
     # grants Codex write access. Codex can still run git/read in its sandbox.
     return [
-        "codex",
+        resolve_codex(),
         "exec",
         "-s",
         "read-only",
@@ -75,6 +109,8 @@ def main() -> int:
         help="If set, ask Codex to review this branch's diff vs the given base branch.",
     )
     args = p.parse_args()
+    args.cwd = to_native_path(args.cwd)
+    args.out = to_native_path(args.out)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -84,7 +120,11 @@ def main() -> int:
     try:
         proc = subprocess.run(cmd)
     except FileNotFoundError:
-        print("[codex_review] 'codex' CLI not found on PATH.", file=sys.stderr)
+        print(
+            f"[codex_review] codex executable not runnable: {cmd[0]!r}. "
+            "Set CODEX_BIN to the full path of codex.cmd (Windows) / codex.",
+            file=sys.stderr,
+        )
         return 127
     if proc.returncode != 0:
         print(f"[codex_review] codex exec exited {proc.returncode}", file=sys.stderr)
