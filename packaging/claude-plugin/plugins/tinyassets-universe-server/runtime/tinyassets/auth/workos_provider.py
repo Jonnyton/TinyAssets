@@ -25,15 +25,16 @@ from tinyassets.auth.provider import AuthProvider, Identity
 
 logger = logging.getLogger("universe_server.auth.workos")
 
-# Coarse capabilities granted to ANY authenticated WorkOS founder. The
-# resolve-always scope gate accepts an action's coarse effect grant
-# (read/write/costly), so a founder can create (costly), run (costly), and
-# write their own universe. ``admin`` is deliberately NOT granted here: per-
-# universe admin authority is a follow-up once admin-action ACL coverage is
-# confirmed. The per-universe ACL layer (permissions.universe_access_allows)
-# is what confines a founder to their OWN universe — this gate only asks
-# "may this principal perform this CLASS of action at all".
-_AUTHENTICATED_CAPABILITIES = ("read", "write", "costly", "submit_request", "list")
+# Base capabilities EVERY authenticated WorkOS founder holds regardless of RBAC:
+# read-only + request/list. Write/costly/admin authority is NOT implicit — per
+# the ratified "requires ... the required action scope" rule (D0b), it must be
+# granted by the token's WorkOS `permissions` (RBAC) claim. A read-only token
+# therefore cannot write/create/run. The per-universe ACL layer
+# (permissions.universe_access_allows) then confines a founder to their OWN
+# universe. Deployments configure the founder role with the app's write/costly
+# scopes — coarse `write`/`costly`/`admin` or fine `tinyassets.<tool>.<effect>`,
+# either of which the resolve-always scope gate accepts.
+_AUTHENTICATED_BASE_CAPABILITIES = ("read", "submit_request", "list")
 
 _ALGORITHMS = ("RS256",)
 
@@ -153,18 +154,27 @@ class WorkOSAuthProvider(AuthProvider):
         username = email or sub
         display_name = str(claims.get("name", "")).strip() or username
         permissions = claims.get("permissions")
+        granted = (
+            [p for p in permissions if isinstance(p, str) and p.strip()]
+            if isinstance(permissions, list) else []
+        )
+        # Capabilities = read-only base + the token's granted RBAC scopes.
+        # dict.fromkeys de-dupes while preserving order.
+        capabilities = list(
+            dict.fromkeys([*_AUTHENTICATED_BASE_CAPABILITIES, *granted])
+        )
 
         return Identity(
             user_id=sub,
             username=username,
             display_name=display_name,
-            capabilities=list(_AUTHENTICATED_CAPABILITIES),
+            capabilities=capabilities,
             metadata={
                 "auth_provider": "workos",
                 "email": email,
                 "org_id": claims.get("org_id"),
                 "role": claims.get("role"),
-                "permissions": permissions if isinstance(permissions, list) else [],
+                "permissions": granted,
                 "iss": claims.get("iss"),
             },
         )

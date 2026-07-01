@@ -105,7 +105,22 @@ def test_valid_token_resolves_to_founder_identity(keypair) -> None:
     assert ident.username == "founder@example.com"
     assert ident.metadata["auth_provider"] == "workos"
     assert ident.metadata["email"] == "founder@example.com"
+    # A generic token (no RBAC permissions) grants only the read-only base;
+    # write/costly authority must come from the token's `permissions` claim.
+    assert "read" in ident.capabilities
+    assert "write" not in ident.capabilities
+    assert "costly" not in ident.capabilities
+
+
+def test_token_permissions_become_capabilities(keypair) -> None:
+    ident = _provider(keypair).resolve_token(
+        _sign(keypair, permissions=["write", "costly"])
+    )
+    assert ident is not None
     assert "write" in ident.capabilities
+    assert "costly" in ident.capabilities
+    assert "read" in ident.capabilities  # base still present
+    assert ident.metadata["permissions"] == ["write", "costly"]
 
 
 def test_username_falls_back_to_sub_without_email(keypair) -> None:
@@ -335,7 +350,8 @@ def test_workos_authenticated_founder_can_create(workos_active) -> None:
     from tinyassets.auth.middleware import auth_middleware, require_action_scope
 
     keypair = workos_active
-    auth_middleware(_sign(keypair))  # valid founder token
+    # Founder token granting write/costly RBAC scopes.
+    auth_middleware(_sign(keypair, permissions=["read", "write", "costly"]))
     ident = require_action_scope("universe", "create_universe")
     assert ident.user_id == "user_workos_123"
 
@@ -344,8 +360,30 @@ def test_workos_authenticated_founder_can_write_wiki(workos_active) -> None:
     from tinyassets.auth.middleware import auth_middleware, require_action_scope
 
     keypair = workos_active
-    auth_middleware(_sign(keypair))
+    auth_middleware(_sign(keypair, permissions=["read", "write", "costly"]))
     ident = require_action_scope("wiki", "write")
+    assert ident.user_id == "user_workos_123"
+
+
+def test_workos_founder_without_write_scope_is_denied(workos_active) -> None:
+    # D0b: a valid, authenticated token that does NOT carry a write/costly RBAC
+    # scope cannot write or create — authority is not implicit in being a founder.
+    from tinyassets.auth.middleware import auth_middleware, require_action_scope
+
+    keypair = workos_active
+    auth_middleware(_sign(keypair, permissions=["tinyassets.wiki.read"]))
+    with pytest.raises(PermissionError):
+        require_action_scope("wiki", "write")
+    with pytest.raises(PermissionError):
+        require_action_scope("universe", "create_universe")
+
+
+def test_workos_founder_with_read_scope_can_read(workos_active) -> None:
+    from tinyassets.auth.middleware import auth_middleware, require_action_scope
+
+    keypair = workos_active
+    auth_middleware(_sign(keypair, permissions=["tinyassets.wiki.read"]))
+    ident = require_action_scope("wiki", "read")
     assert ident.user_id == "user_workos_123"
 
 
