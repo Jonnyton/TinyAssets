@@ -62,6 +62,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from tinyassets.api import permissions
 from tinyassets.api.helpers import (
     _base_path,
     _default_universe,
@@ -90,8 +91,6 @@ ACTION_SUBMIT_PRIORITY_REQUEST = "submit_priority_request"
 ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
 ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
 LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
-_ACL_READ_PERMISSIONS = frozenset({"read", "write", "admin"})
-_ACL_WRITE_PERMISSIONS = frozenset({"write", "admin"})
 
 
 def _env_actor_grants() -> tuple[str, ...]:
@@ -112,48 +111,31 @@ def _env_actor_can(action: str, *, universe_id: str = "") -> bool:
     ).allowed
 
 
-def _current_actor_id() -> str:
-    from tinyassets.auth.middleware import current_identity
-
-    identity = current_identity()
-    return identity.user_id or "anonymous"
-
-
-def _universe_acl_allows(uid: str, *, write: bool = False) -> bool:
-    from tinyassets.daemon_server import (
-        universe_access_permission,
-        universe_is_private,
-    )
-
-    if not uid:
-        return True
-    base = _base_path()
-    if not universe_is_private(base, universe_id=uid):
-        return True
-    permission = universe_access_permission(
-        base,
-        universe_id=uid,
-        actor_id=_current_actor_id(),
-    )
-    allowed = _ACL_WRITE_PERMISSIONS if write else _ACL_READ_PERMISSIONS
-    return permission in allowed
-
-
 def _universe_acl_error(action: str, *, universe_id: str = "") -> str | None:
+    """Gate a universe action against the single ACL path in
+    ``tinyassets.api.permissions``.
+
+    ``list`` and ``create_universe`` are exempt: ``list`` filters visibility
+    per-universe inside ``_action_list_universes``; ``create_universe`` has no
+    pre-existing universe to authorize against (it is scope-gated + founder-
+    granted on create instead).
+    """
     if action in {"list", "create_universe"}:
         return None
 
     uid = universe_id or _default_universe()
     write = action in WRITE_ACTIONS
-    if _universe_acl_allows(uid, write=write):
+    if permissions.universe_access_allows(uid, write=write):
         return None
 
-    return json.dumps({
-        "error": "universe_access_denied",
-        "universe_id": uid,
-        "actor_id": _current_actor_id(),
-        "required_permission": "write" if write else "read",
-    })
+    return json.dumps(
+        permissions.universe_access_error(
+            universe_id=uid,
+            write=write,
+            action=action,
+            surface="universe",
+        )
+    )
 
 # WRITE_ACTIONS is the single source of truth for which `universe` tool
 # actions are writes. The dispatcher consults this table; any action
@@ -1148,7 +1130,7 @@ def _action_list_universes(**_kwargs: Any) -> str:
     for child in sorted(all_entries):
         if not _is_listable_universe_dir(child):
             continue
-        if not _universe_acl_allows(child.name):
+        if not permissions.universe_access_allows(child.name):
             continue
         status = _read_json(child / "status.json")
         liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
@@ -4669,6 +4651,27 @@ def _action_create_universe(
             f"Universe '{uid}' created. "
             "Daemon will switch to it within ~10 seconds."
         )
+
+        # D0a founder-grant-on-create: the authenticated founder OWNS the
+        # universe they create (admin grant) — the mechanism that makes the
+        # per-universe write boundary real. Ownership is orthogonal to
+        # visibility: we do NOT touch public_read, so the universe stays
+        # publicly readable by default. A dev/no-auth (anonymous) create
+        # seeds no grant, so local dev-mode creates keep working.
+        founder = permissions.current_actor_id()
+        if permissions.is_authenticated_request():
+            from tinyassets.daemon_server import grant_universe_access
+
+            grant_universe_access(
+                base,
+                universe_id=uid,
+                actor_id=founder,
+                permission="admin",
+                granted_by=founder,
+            )
+            result["founder_id"] = founder
+        else:
+            result["founder_id"] = ""
 
         return json.dumps(result)
     except OSError as exc:
