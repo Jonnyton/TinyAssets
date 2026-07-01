@@ -347,3 +347,45 @@ def test_workos_authenticated_founder_can_write_wiki(workos_active) -> None:
     auth_middleware(_sign(keypair))
     ident = require_action_scope("wiki", "write")
     assert ident.user_id == "user_workos_123"
+
+
+def test_invalid_bearer_token_is_rejected_not_anonymous(workos_active) -> None:
+    # A present-but-invalid token must set the None (401) signal, not anon.
+    from tinyassets.auth import middleware as mw
+
+    mw.auth_middleware("not-a-real-token")
+    assert mw._current_identity.get() is None
+
+
+def test_missing_token_stays_anonymous(workos_active) -> None:
+    from tinyassets.auth import middleware as mw
+
+    mw.auth_middleware(None)
+    assert mw.current_identity().user_id == "anonymous"
+
+
+def test_invalid_bearer_token_gets_401_challenge(workos_active) -> None:
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from tinyassets.auth.middleware import AuthContextMiddleware
+
+    async def ok(request):  # noqa: ANN001, ANN202
+        return PlainTextResponse("ok")
+
+    app = AuthContextMiddleware(Starlette(routes=[Route("/x", ok)]))
+    client = TestClient(app)
+
+    # invalid token -> 401 with a resource_metadata challenge
+    r = client.get("/x", headers={"Authorization": "Bearer bad-token"})
+    assert r.status_code == 401
+    assert "resource_metadata" in r.headers.get("www-authenticate", "")
+
+    # no token -> anonymous public read still works
+    assert client.get("/x").status_code == 200
+
+    # valid founder token -> forwarded
+    r3 = client.get("/x", headers={"Authorization": f"Bearer {_sign(workos_active)}"})
+    assert r3.status_code == 200

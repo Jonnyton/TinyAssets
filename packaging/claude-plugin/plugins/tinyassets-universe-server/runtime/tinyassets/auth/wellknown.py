@@ -178,8 +178,24 @@ def create_wellknown_routes() -> list[dict[str, Any]]:
 
 
 async def _handle_authz_server_metadata(request: Any) -> Any:
-    """Serve authorization server metadata."""
-    from starlette.responses import JSONResponse
+    """Serve authorization server metadata.
+
+    In WorkOS mode we are NOT the authorization server — AuthKit is. Redirect
+    discovery to AuthKit's own AS metadata rather than advertising self-hosted
+    ``/oauth/*`` endpoints (which this Resource Server does not implement).
+    """
+    from starlette.responses import JSONResponse, RedirectResponse
+
+    if os.environ.get("UNIVERSE_SERVER_AUTH", "").strip().lower() == "workos":
+        domain = os.environ.get("WORKOS_AUTHKIT_DOMAIN", "").strip()
+        if domain:
+            from tinyassets.auth.workos_provider import derive_endpoints
+
+            issuer, _ = derive_endpoints(domain)
+            return RedirectResponse(
+                f"{issuer}/.well-known/oauth-authorization-server",
+                status_code=302,
+            )
     return JSONResponse(authorization_server_metadata())
 
 

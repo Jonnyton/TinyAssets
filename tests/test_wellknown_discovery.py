@@ -58,6 +58,34 @@ def test_discovery_routes_include_prm_paths():
     assert "/.well-known/oauth-authorization-server" in paths
 
 
+def test_authz_server_metadata_redirects_to_authkit_in_workos(monkeypatch):
+    monkeypatch.setenv("UNIVERSE_SERVER_AUTH", "workos")
+    monkeypatch.setenv("WORKOS_AUTHKIT_DOMAIN", AUTHKIT_DOMAIN)
+    app = Starlette(routes=starlette_discovery_routes())
+    client = TestClient(app)
+    r = client.get(
+        "/.well-known/oauth-authorization-server",
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == (
+        f"{AUTHKIT_ISSUER}/.well-known/oauth-authorization-server"
+    )
+
+
+def test_authz_server_metadata_self_hosted_when_not_workos(monkeypatch):
+    monkeypatch.delenv("UNIVERSE_SERVER_AUTH", raising=False)
+    monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
+    app = Starlette(routes=starlette_discovery_routes())
+    client = TestClient(app)
+    r = client.get(
+        "/.well-known/oauth-authorization-server",
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert r.json()["issuer"] == "https://tinyassets.io"
+
+
 def test_prm_routes_served_200(monkeypatch):
     # The mounting fix: the well-known paths must resolve (not 404).
     monkeypatch.setenv("UNIVERSE_SERVER_AUTH", "workos")

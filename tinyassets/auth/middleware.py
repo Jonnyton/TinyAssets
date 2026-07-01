@@ -51,6 +51,14 @@ def set_provider(provider: AuthProvider) -> None:
     _provider = provider
 
 
+def _rejects_invalid_tokens(provider: AuthProvider) -> bool:
+    """A present-but-invalid bearer token is a hard 401, not a silent downgrade
+    to anonymous, whenever the provider enforces auth for writes (full-auth OR
+    resolve-always). A *missing* token still resolves to anonymous public read.
+    """
+    return provider.is_auth_required() or provider.resolve_always_writes()
+
+
 def auth_middleware(token: str | None) -> Identity:
     """Resolve a Bearer token to an Identity.
 
@@ -64,14 +72,36 @@ def auth_middleware(token: str | None) -> Identity:
     if token:
         identity = provider.resolve_token(token)
         if identity is None:
-            if provider.is_auth_required():
-                # Invalid token in gated mode — return None to signal 401
+            if _rejects_invalid_tokens(provider):
+                # Present-but-invalid token — set None to signal a 401 to the
+                # transport layer (do NOT downgrade an invalid token to anon).
                 _current_identity.set(None)
-                return ANONYMOUS  # Caller should check
+                return ANONYMOUS  # Caller must check current_identity() is None
             identity = ANONYMOUS
 
     _current_identity.set(identity)
     return identity
+
+
+async def _send_invalid_token_401(send: Any) -> None:
+    """Emit an RFC 9728 ``401`` with a ``WWW-Authenticate`` challenge pointing
+    at our Protected Resource Metadata, so clients start/refresh OAuth."""
+    from tinyassets.auth.wellknown import _server_url
+
+    prm = f"{_server_url()}/.well-known/oauth-protected-resource"
+    challenge = f'Bearer error="invalid_token", resource_metadata="{prm}"'
+    await send({
+        "type": "http.response.start",
+        "status": 401,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"www-authenticate", challenge.encode("latin1")),
+        ],
+    })
+    await send({
+        "type": "http.response.body",
+        "body": b'{"error":"invalid_token"}',
+    })
 
 
 def current_identity() -> Identity:
@@ -108,6 +138,11 @@ class AuthContextMiddleware:
             if auth_header.lower().startswith("bearer "):
                 token = auth_header[7:].strip()
             auth_middleware(token)
+            if token and _current_identity.get() is None:
+                # Present-but-invalid bearer token → 401 challenge (RFC 9728).
+                # A missing token stays anonymous (public reads still work).
+                await _send_invalid_token_401(send)
+                return
             await self.app(scope, receive, send)
         finally:
             _current_identity.reset(previous)

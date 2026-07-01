@@ -61,20 +61,20 @@ the canonical soul document (`soul.md`).
 
 ## Decisions
 
-**D0 - WorkOS `sub` is founder identity.**  
+**D0 - WorkOS `sub` is founder identity.**
 Production MCP auth uses WorkOS AuthKit as the Authorization Server and
 Workflow as the Resource Server. Workflow validates bearer JWTs against AuthKit
 metadata/JWKS and uses token `sub` as the immutable `founder_id`. Anonymous
 callers may read public surfaces but cannot create universes. The local
 self-issued auth provider is not a production founder identity source.
 
-**D0b - Anonymous is public-read only.**  
+**D0b - Anonymous is public-read only.**
 An anonymous MCP caller has no write authority, including local/no-auth harness
 requests. Anonymous can read public surfaces only. Any write, create, run,
 costly, admin, ledger, sync, or state-changing action requires an authenticated
 founder identity plus the required action scope and target-universe authority.
 
-**D0a - MCP writes are scoped to the founder's own universe.**  
+**D0a - MCP writes are scoped to the founder's own universe.**
 An authenticated founder can write only to their own bound/home universe brain.
 Public universe reads can cross universe boundaries, but writes to another
 universe's soul, identity, canon, wiki, runtime goals, body, org chart, files,
@@ -82,7 +82,7 @@ or state are rejected. Branch/commons request surfaces are separate: users can
 submit patch requests, propose Branch edits, propose alternative Branches, or
 propose Goals without directly mutating another universe brain.
 
-**D0c - Ownership is not visibility.**  
+**D0c - Ownership is not visibility.**
 Owner/admin grants prove who can write a universe. They do not by themselves
 make that universe private. Public/private read visibility is an explicit
 universe rule: `public_read=true` means anonymous/public reads are allowed;
@@ -91,12 +91,12 @@ that changes `public_read` must be confirmation-gated in both directions:
 public -> private and private -> public. Sync, creation, owner binding, branch
 runs, and mobile connection must not silently flip visibility.
 
-**D1 - One route, not shared duplicate routes.**  
+**D1 - One route, not shared duplicate routes.**
 The canonical creation surface is MCP `universe action=create_universe`. The HTTP
 create route is removed. If a UI needs universe creation, it must call the MCP
 surface and receive the same contract, not a second server route.
 
-**D2 - One generated serial equals `universe_id`.**  
+**D2 - One generated serial equals `universe_id`.**
 Creation generates one opaque immutable serial and stores/returns it as
 `universe_id`. The generated format is `u-` plus a 26-character lowercase ULID
 (Crockford base32, time-sortable timestamp prefix, random suffix). There is no
@@ -104,19 +104,19 @@ later second code serial. The serial is the storage directory name. Descriptive
 text does not remain the universe folder name and does not become the universe's
 learned name.
 
-**D3 - Creation-time names are not identity.**  
+**D3 - Creation-time names are not identity.**
 The create request does not set the universe's self-name. Display labels, if
 needed by clients, are metadata and must not drive directory names, persona
 identity, or `soul.md`.
 
-**D3a - Universe index.**  
+**D3a - Universe index.**
 The root data surface has a readable universe index keyed by immutable
 `universe_id`. The index may display the current learned name from a universe's
 own `identity.md`. When a universe learns or changes its name, the row for that
 same immutable `universe_id` is updated. Runtime operations resolve by
 immutable `universe_id`.
 
-**D4 - Creation seeds a linked OKF soul bundle.**  
+**D4 - Creation seeds a linked OKF soul bundle.**
 New universes have one identity/intention model: an OKF bundle rooted in the
 universe directory, with `soul.md` as the central soul entrypoint. This is not a
 separate `soul/` directory and not a rendered summary. Governed soul files are
@@ -137,7 +137,7 @@ on 2026-06-26. The latest commit for `okf/SPEC.md` on `main` was
 the latest-main URL as the live standard, not that commit as a pinned runtime
 contract.
 
-**D5 - Baseline files are explicit linked surface.**  
+**D5 - Baseline files are explicit linked surface.**
 Creation writes the runtime files expected by the MCP universe loop:
 `index.md`, `log.md`, `soul.md`, `soul.edit.md`, `identity.md`, `founder.md`,
 `orgchart.md`, `projects.md`, `goals.md`, `body.md`, `origin.md`,
@@ -148,7 +148,7 @@ and linked from the OKF bundle, not silently dropped into the universe root.
 Empty `notes.json` / `activity.log` starter files are removed; non-empty
 notes/logs remain data until they have a typed runtime target.
 
-**D6 - `soul.edit` is the real soul edit policy file.**  
+**D6 - `soul.edit` is the real soul edit policy file.**
 `soul.edit` is the OKF concept id for `soul.edit.md`. That file lays out how
 this universe learns high-authority changes to its own soul. The MCP
 surface may expose `universe action=soul.edit` as the execution handle, but the
@@ -159,7 +159,7 @@ A soul edit is a learning event: it may update `soul.md`, `identity.md`,
 snapshot. `orgchart.md`, `projects.md`, and `goals.md` are outside this
 authority.
 
-**D7 - Projects are not runtime goals; branch use attaches to goals.**  
+**D7 - Projects are not runtime goals; branch use attaches to goals.**
 `projects.md` is the index for founder projects, products, experiments, and
 things the founder is building. It should contain one-line summaries and links
 to project files when a project needs its own file. `goals.md` is the runtime
@@ -169,14 +169,14 @@ and universes; a universe run/use of a Branch must belong to a Goal.
 User-facing chatbots should prefer existing similar Goals before creating new
 Goal names so the commons converges around shared objective vocabulary.
 
-**D7a - Branches are run by universes, not directly by users.**  
+**D7a - Branches are run by universes, not directly by users.**
 A human MCP user can ask their own universe to adopt, run, or remix a Branch.
 The runnable actor is the universe, and the run is recorded as that universe's
 own goal-bound Branch-use instance. Multiple universes can use the same commons
 Branch because each universe has a separate runtime instance. A universe can
 remix a Branch into its own variant without overwriting the shared Branch.
 
-**D8 - `body.md` is learned embodiment.**  
+**D8 - `body.md` is learned embodiment.**
 `body.md` is an analogy document that aids personification. The universe is the
 brain; body is the learned record of live things people can interact with as the
 founder and universe build: platforms, applications, interfaces, hosted
@@ -186,7 +186,7 @@ eyes, ears, and other sensory input. Creation does not invent a body; the file
 starts not-learned and changes only as actual surfaces, actions, and feedback
 are built or observed.
 
-**D9 - `orgchart.md` is learned organization with a fixed founder anchor.**  
+**D9 - `orgchart.md` is learned organization with a fixed founder anchor.**
 `orgchart.md` is an organic organization map, not a generated hierarchy. The
 founder confirmed by the oath is always the top of the org chart. Everything
 below that top anchor is learned from actual work: roles, teams, daemons,
@@ -195,7 +195,7 @@ not invent departments, titles, or reporting structure; it seeds the fixed ancho
 rule and leaves the organization not-learned until work or authority decisions
 teach it.
 
-**D10 - First MCP contact enters the universe persona.**  
+**D10 - First MCP contact enters the universe persona.**
 Default MCP entry is not a platform status report. When an authenticated founder
 connects without requesting a specific universe, the system resolves that
 founder's home universe. If none exists, it creates the blank seed universe,
@@ -206,7 +206,7 @@ that universe. A current universe selection is per founder or per client
 session. There is no root-global `.active_universe` in the live multi-user
 contract.
 
-**D11 - Mobile clients are first-class, not alternate contracts.**  
+**D11 - Mobile clients are first-class, not alternate contracts.**
 Future iOS and Android clients use the same WorkOS founder identity, MCP write
 boundary, generated `universe_id`, and OKF universe brain contract. A phone can
 be a client, a private universe host, or one endpoint in a phone/computer sync
