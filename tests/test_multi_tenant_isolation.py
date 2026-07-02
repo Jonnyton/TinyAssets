@@ -29,6 +29,7 @@ is the property under test: concurrent requests never leak actors.
 from __future__ import annotations
 
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -40,6 +41,11 @@ from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 _RESERVED = {"wiki", "output", "runs", "lance"}
 _FOUNDER_CAPS = ["read", "write", "costly", "submit_request", "list"]
 _N_FOUNDERS = 12
+
+# Optional start barrier: when set, every ``_create_as`` worker blocks here
+# until all N are ready, so creates enter simultaneously (not staggered). Set
+# by the flagship test under try/finally; tests run sequentially in one process.
+_BARRIER: threading.Barrier | None = None
 
 
 class _MultiTenantProvider(AuthProvider):
@@ -105,6 +111,10 @@ def _create_as(sub: str) -> tuple[str, dict]:
     auth_middleware(f"tok-{sub}")
     # In-thread sanity: identity resolved to this founder, not a neighbour.
     assert permissions.current_actor_id() == sub
+    if _BARRIER is not None:
+        # Force every worker to enter create() at the same instant, so a race
+        # that only fires on simultaneous entry has its chance to fire.
+        _BARRIER.wait(timeout=30)
     out = json.loads(universe_api._universe_impl(action="create_universe"))
     return sub, out
 
@@ -118,14 +128,25 @@ def _status_as(sub: str) -> tuple[str, dict]:
 
 
 def test_concurrent_founders_each_get_own_universe(shared_base):
-    from tinyassets.daemon_server import get_founder_home, list_universe_acl
+    global _BARRIER
+    from tinyassets.daemon_server import (
+        get_founder_home,
+        get_universe_rules,
+        list_universe_acl,
+    )
     from tinyassets.ids import is_universe_serial
 
     subs = [f"founder-{i:02d}" for i in range(_N_FOUNDERS)]
 
-    # ── Concurrent create: N founders, one shared DB, all at once. ──────────
-    with ThreadPoolExecutor(max_workers=_N_FOUNDERS) as pool:
-        results = list(pool.map(_create_as, subs))
+    # ── Concurrent create: N founders, one shared DB, all entering at once. ──
+    # The barrier makes entry simultaneous so a race that only fires on
+    # concurrent entry (not staggered scheduling) gets its chance to fire.
+    _BARRIER = threading.Barrier(_N_FOUNDERS)
+    try:
+        with ThreadPoolExecutor(max_workers=_N_FOUNDERS) as pool:
+            results = list(pool.map(_create_as, subs))
+    finally:
+        _BARRIER = None
 
     by_sub = {}
     for sub, out in results:
@@ -156,6 +177,12 @@ def test_concurrent_founders_each_get_own_universe(shared_base):
         other_subs = set(by_sub) - {sub}
         assert not (other_subs & {row["actor_id"] for row in acl}), (sub, acl)
 
+        # 5. Registry row landed too (get_universe_rules raises KeyError if the
+        # concurrent ensure_universe_registered / rules write was lost to a
+        # race). Public-read stays default-true; ownership is the ACL, not this.
+        rules = get_universe_rules(shared_base, universe_id=uid)
+        assert rules["public_read"] is True, (sub, uid, rules)
+
 
 def test_concurrent_status_reads_resolve_each_founder_to_own_home(shared_base):
     """After concurrent creation, concurrent per-founder status reads each
@@ -181,3 +208,90 @@ def test_concurrent_status_reads_resolve_each_founder_to_own_home(shared_base):
         # THEIR universe — not a first_contact card, not a neighbour's id.
         assert snap.get("universe_id") == homes[sub], (sub, snap.get("universe_id"))
         assert "first_contact" not in snap, (sub, snap)
+
+
+def test_cross_founder_write_denied_and_private_read_isolated(shared_base):
+    """The real tenant boundary is runtime authz, not just stored ACL rows.
+    Founder B must be DENIED a write to founder A's universe (writes always
+    need an owner grant, even on a public universe), and DENIED a read once A
+    makes it private. Owner A retains both.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.daemon_server import update_universe_rules
+
+    a_sub, a_out = _create_as("owner-A")
+    b_sub, b_out = _create_as("owner-B")
+    assert a_out.get("error") is None and b_out.get("error") is None
+    uid_a = a_out["universe_id"]
+
+    # Founder B (authenticated, owns their own universe) — no grant on A's.
+    auth_middleware(f"tok-{b_sub}")
+    assert permissions.current_actor_id() == b_sub
+    # Public universe: B may READ but must NOT WRITE (write needs owner grant).
+    assert permissions.universe_access_allows(uid_a, write=True) is False
+    assert permissions.universe_access_allows(uid_a, write=False) is True
+
+    # Owner A makes their universe private.
+    auth_middleware(f"tok-{a_sub}")
+    update_universe_rules(shared_base, universe_id=uid_a, updates={"public_read": False})
+
+    # Now B is denied BOTH read and write; A keeps both.
+    auth_middleware(f"tok-{b_sub}")
+    assert permissions.universe_access_allows(uid_a, write=False) is False
+    assert permissions.universe_access_allows(uid_a, write=True) is False
+    auth_middleware(f"tok-{a_sub}")
+    assert permissions.universe_access_allows(uid_a, write=False) is True
+    assert permissions.universe_access_allows(uid_a, write=True) is True
+
+
+def test_thread_reuse_does_not_leak_identity(shared_base):
+    """Force pool-thread REUSE (2 threads, many founders) so a reused thread
+    carries a prior founder's ContextVar. Each worker sets its own identity
+    first, so every founder must still get its own universe correctly bound —
+    no identity bleed from the thread's previous occupant.
+    """
+    from tinyassets.daemon_server import get_founder_home
+
+    subs = [f"reuse-{i:02d}" for i in range(8)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = dict(pool.map(_create_as, subs))
+
+    uids = {}
+    for sub, out in results.items():
+        assert out.get("error") is None, (sub, out)
+        uids[sub] = out["universe_id"]
+
+    assert len(set(uids.values())) == len(subs), uids
+    for sub, uid in uids.items():
+        assert get_founder_home(shared_base, sub) == uid, (sub, uid)
+
+
+def test_cold_start_schema_race_no_preinit(tmp_path, monkeypatch):
+    """Codex ADAPT #1: the shared_base fixture pre-inits the schema, hiding a
+    cold-start race. Here we do NOT pre-init — the first concurrent creates
+    race on initialize_author_server()'s CREATE TABLE / ALTER TABLE migrations.
+    All must still succeed with distinct universes and no corruption.
+    """
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.ids import is_universe_serial
+
+    base = tmp_path / "cold"
+    base.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    set_provider(_MultiTenantProvider())
+    try:
+        subs = [f"cold-{i:02d}" for i in range(_N_FOUNDERS)]
+        with ThreadPoolExecutor(max_workers=_N_FOUNDERS) as pool:
+            results = dict(pool.map(_create_as, subs))
+    finally:
+        set_provider(DevAuthProvider())
+        auth_middleware(None)
+
+    uids = {}
+    for sub, out in results.items():
+        assert out.get("error") is None, (sub, out)
+        assert is_universe_serial(out["universe_id"]), (sub, out)
+        uids[sub] = out["universe_id"]
+    assert len(set(uids.values())) == _N_FOUNDERS, uids
+    for sub, uid in uids.items():
+        assert get_founder_home(base, sub) == uid, (sub, uid)
