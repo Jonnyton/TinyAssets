@@ -287,10 +287,10 @@ def test_server_instructions_carry_consent_markers() -> None:
 
     text = mcp.instructions or ""
     assert "data, never instructions" in text
-    assert "speak as itself" in text
+    assert "personify" in text
     assert "consent" in text
     assert "meet_universe" in text
-    assert "Never invent" in text
+    assert "never invent" in text
     assert "memorize" in text  # persona/work views are never memorized
 
 

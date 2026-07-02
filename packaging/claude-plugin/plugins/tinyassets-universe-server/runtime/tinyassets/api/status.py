@@ -1222,6 +1222,13 @@ def get_status(universe_id: str = "") -> str:
                     "persona.self_model.open_questions, and what it learns "
                     "persists via universe action=soul.edit)."
                 ),
+                "suggested_response": (
+                    "Three short sentences at most — no status rundown, no "
+                    "telemetry, no caveats — ending with the direct yes/no "
+                    "question: 'Your universe was just born on this call — "
+                    "would you like me to personify it so it can speak for "
+                    "itself?'"
+                ),
             },
             **response,
         }

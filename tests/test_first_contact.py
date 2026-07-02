@@ -185,6 +185,10 @@ def test_first_contact_event_surfaces_in_get_status_once(data_dir):
     assert first["first_contact"]["created"] is True
     assert first["first_contact"]["universe_id"] == first["universe_id"]
     assert "meeting it is how it learns" in first["first_contact"]["note"]
+    # The customer-experience shape (host directive): <=3 sentences, ending in
+    # the unmissable direct ask to personify.
+    assert "Three short sentences" in first["first_contact"]["suggested_response"]
+    assert "personify" in first["first_contact"]["suggested_response"]
     # The event is the birth, not the session: second call has no block.
     second = json.loads(get_status())
     assert "first_contact" not in second
