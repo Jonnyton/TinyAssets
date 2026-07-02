@@ -44,7 +44,19 @@ from a founder-supplied engine choice; add a founder-WorkOS-gated deposit path w
 - **Files:** `tinyassets/api/universe.py` (create + deposit action), `tinyassets/credential_vault.py` (write surface), `tinyassets/config.py`, `tinyassets/providers/base.py` (per-universe api-key gate), tests.
 - **Accept:** creating a universe with an API key writes `config.yaml` + a vault record; the universe's engine resolves to that key (via S1); anon cannot deposit.
 
-### S3 — Daemon-class auth path (Gap B)
+### S3 — Daemon-class MCP auth path (Gap B) — **DEFERRED to post-M1 (S12 hardening)**
+**Reprioritized 2026-07-02 after seam-map:** the daemon-scope bug only bites the
+MCP *transport* path; in-process daemon writes already bypass the gate. The
+universe intelligence (S4) acts IN-PROCESS, scoped to its own universe by
+construction (S1 UniverseContext) — it never hits the transport auth gate — so
+Gap B does not block the onboard. Still a real foundation bug for EXTERNAL MCP
+callers (daemon-memory writes fail under WorkOS; read variants anon-open, no
+ownership check). Fix = daemon-identity contextvar/capability + a guarded
+exemption in `_dispatch_scope_error` (`universe.py:5019`/`:5086`), NOT a blanket
+action-name exemption (that would make capture/promote anon-callable). Move to
+S12 foundation hardening before merge.
+
+_Original spec (for S12):_
 An actor/auth path for the intelligence evaluated **before** user-OAuth scope gating,
 so daemon-scoped actions (and the intelligence's own actions) don't fail
 `auth_scope_required` (Codex-reproduced). 
