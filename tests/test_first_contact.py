@@ -190,6 +190,13 @@ def test_first_contact_event_surfaces_in_get_status_once(data_dir):
     # reply shape lives in server instructions instead).
     assert "suggested_response" not in first["first_contact"]
     assert set(first["first_contact"]) == {"created", "universe_id", "note"}
+    # Round 6: the BIRTH call returns a MINIMAL payload — the model narrates
+    # whatever it is handed, so at the birth moment it is handed only the
+    # birth + persona. Full snapshot is one call away.
+    assert set(first) == {
+        "first_contact", "persona", "universe_id", "schema_version", "full_status",
+    }
+    assert "queue_state" not in first and "storage" not in first
     # The event is the birth, not the session: second call has no block.
     second = json.loads(get_status())
     assert "first_contact" not in second

@@ -1208,8 +1208,15 @@ def get_status(universe_id: str = "") -> str:
         # First-contact convergence (host directive 2026-07-02): whatever the
         # user's opening words were, the assistant must see the birth as a
         # FACT in the payload — data, not an instruction — so every path
-        # converges on offering the founder the meeting. Placed first so
-        # text-truncating clients still see it.
+        # converges on offering the founder the meeting.
+        #
+        # The BIRTH CALL returns a MINIMAL payload (round-6 dogfood): handed
+        # the full status snapshot, the model narrates it — providers, queue,
+        # caveats — and the birth drowns. The tools lead the experience: at
+        # the birth moment there is nothing to report but the birth. This is
+        # data-shaping (the server chooses what this snapshot contains), not
+        # behavioral text; the full snapshot is one call away and every
+        # subsequent get_status returns it.
         response = {
             "first_contact": {
                 "created": True,
@@ -1230,7 +1237,13 @@ def get_status(universe_id: str = "") -> str:
                     "persists via universe action=soul.edit)."
                 ),
             },
-            **response,
+            "persona": response.get("persona"),
+            "universe_id": uid,
+            "schema_version": response.get("schema_version"),
+            "full_status": (
+                "Not included on the birth call. Call get_status again (or "
+                "universe action=inspect) for the full operational snapshot."
+            ),
         }
 
     return json.dumps(response)
