@@ -86,6 +86,35 @@ def _default_universe() -> str:
     return "default-universe"
 
 
+def _request_universe(universe_id: str = "") -> str:
+    """Resolve the universe for a request with an omitted ``universe_id``.
+
+    The shared MCP resolver (Codex 2026-07-02 adapt): an explicit id wins; an
+    AUTHENTICATED founder resolves to their bound home (falling back to the
+    identity-neutral public universe — never through the host-global
+    ``.active_universe`` marker or another founder's serial home, which leaked
+    cross-founder on `universe action=inspect` and friends); an anonymous /
+    dev caller keeps the legacy single-tenant default resolution. Unlike
+    get_status's ``_resolve_entry_universe`` this NEVER creates a universe.
+    """
+    requested = (universe_id or "").strip()
+    if requested:
+        return requested
+
+    from tinyassets.api import permissions
+
+    if not permissions.is_authenticated_request():
+        return _default_universe()
+
+    from tinyassets.daemon_server import get_founder_home
+
+    base = _base_path()
+    home = get_founder_home(base, permissions.current_actor_id())
+    if home and (base / home).is_dir():
+        return home
+    return _designated_public_universe()
+
+
 def _designated_public_universe() -> str:
     """Identity-neutral public landing universe for an authenticated founder who
     has no home and cannot create one.

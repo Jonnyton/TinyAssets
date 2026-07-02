@@ -41,8 +41,8 @@ from typing import Any
 
 from tinyassets.api.helpers import (
     _base_path,
-    _default_universe,
     _read_text,
+    _request_universe,
     _universe_dir,
 )
 
@@ -1593,7 +1593,7 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
     all_tiers = ["universe_id", "goal_id", "branch_id", "user_id"]
     active_tiers = all_tiers if flag_on else ["universe_id"]
 
-    universe_id = (kwargs.get("universe_id") or "").strip() or _default_universe()
+    universe_id = _request_universe(kwargs.get("universe_id") or "")
     # Don't expose a private universe's activity.log / scope-mismatch warnings.
     from tinyassets.api.permissions import (
         universe_access_allows,

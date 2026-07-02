@@ -173,6 +173,72 @@ def test_founder_create_does_not_write_active_universe_marker(data_dir):
     assert not (data_dir / ".active_universe").exists()
 
 
+def test_first_contact_event_surfaces_in_get_status_once(data_dir):
+    # Convergence (host directive 2026-07-02): whatever the user's opening
+    # words, the FIRST authenticated get_status carries a `first_contact`
+    # data event (the assistant offers the meeting off this fact — no magic
+    # words). Subsequent calls do NOT re-announce the birth.
+    from tinyassets.api.status import get_status
+
+    _login("founder-1")
+    first = json.loads(get_status())
+    assert first["first_contact"]["created"] is True
+    assert first["first_contact"]["universe_id"] == first["universe_id"]
+    assert "meeting it is how it learns" in first["first_contact"]["note"]
+    # The event is the birth, not the session: second call has no block.
+    second = json.loads(get_status())
+    assert "first_contact" not in second
+
+
+def test_no_first_contact_event_for_anonymous_or_existing(data_dir):
+    from tinyassets.api.status import get_status
+
+    # anonymous: no birth, no event
+    out = json.loads(get_status())
+    assert "first_contact" not in out
+    # explicit universe_id: no event either
+    _login("founder-1")
+    json.loads(get_status())  # birth
+    out = json.loads(get_status(universe_id="default-universe"))
+    assert "first_contact" not in out
+
+
+def test_omitted_universe_never_leaks_another_founders_home(data_dir, monkeypatch):
+    # Codex 2026-07-02 adapt: get_status was fixed but `universe action=inspect`
+    # (and friends) still fell through the first-dir default and returned
+    # founder A's serial home to founder B. The shared resolver closes it.
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.status import get_status
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.ids import is_universe_serial
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-A")
+    json.loads(get_status())  # births A's home
+    home_a = get_founder_home(data_dir, "founder-A")
+    assert is_universe_serial(home_a)
+
+    _login("reader-B", caps=["read", "submit_request", "list"])
+    out = json.loads(universe_api._universe_impl(action="inspect"))
+    assert out.get("universe_id") != home_a  # never another founder's home
+
+
+def test_omitted_universe_routes_founder_to_their_home(data_dir, monkeypatch):
+    # UX win of the shared resolver: a founder with a home omits universe_id
+    # and lands on THEIR universe across actions, not a global default.
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.status import get_status
+    from tinyassets.daemon_server import get_founder_home
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-A")
+    json.loads(get_status())  # births A's home
+    home_a = get_founder_home(data_dir, "founder-A")
+
+    out = json.loads(universe_api._universe_impl(action="inspect"))
+    assert out.get("universe_id") == home_a
+
+
 def test_first_contact_create_is_ledgered(data_dir):
     # First-contact create must go through the ledgered dispatch — the durable
     # creation lands in the new universe's ledger.json (Codex adapt: direct
@@ -205,12 +271,12 @@ def test_stale_founder_home_rebinds_instead_of_looping(data_dir):
     home1 = get_founder_home(data_dir, "founder-1")
     shutil.rmtree(data_dir / home1)  # binding is now stale
 
-    resolved2 = _resolve_entry_universe("")
+    resolved2, _ = _resolve_entry_universe("")
     home2 = get_founder_home(data_dir, "founder-1")
     assert home2 == resolved2 and home2 != home1 and is_universe_serial(home2)
 
     # A third call returns the SAME rebound home — no further serial dirs.
-    assert _resolve_entry_universe("") == home2
+    assert _resolve_entry_universe("")[0] == home2
     serial = [p for p in _universe_dirs(data_dir) if is_universe_serial(p.name)]
     assert len(serial) == 1
 
@@ -248,6 +314,6 @@ def test_readonly_founder_omitted_scope_does_not_leak_other_home(data_dir):
     assert is_universe_serial(home_a)
 
     _login("reader-B", caps=["read", "submit_request", "list"])
-    resolved_b = _resolve_entry_universe("")
+    resolved_b, _ = _resolve_entry_universe("")
     assert resolved_b != home_a               # no cross-founder leak
     assert not is_universe_serial(resolved_b)  # never another founder's serial home

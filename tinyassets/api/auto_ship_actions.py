@@ -49,11 +49,11 @@ def _record_in_ledger_enabled(value: Any) -> bool:
 
 def _target_universe_id(universe_id: str) -> tuple[str, str | None]:
     try:
-        from tinyassets.api.helpers import _default_universe
+        from tinyassets.api.helpers import _request_universe
     except Exception as exc:  # noqa: BLE001
         return "", f"universe helper import failed: {exc}"
 
-    target_universe = (universe_id or "").strip() or _default_universe()
+    target_universe = _request_universe(universe_id)
     if not target_universe:
         return "", "no universe resolvable"
     return target_universe, None
@@ -117,7 +117,7 @@ def _maybe_record_attempt(
     losing the decision payload.
     """
     try:
-        from tinyassets.api.helpers import _default_universe, _universe_dir
+        from tinyassets.api.helpers import _request_universe, _universe_dir
         from tinyassets.auto_ship_ledger import (
             attempt_from_decision,
             record_attempt,
@@ -125,7 +125,7 @@ def _maybe_record_attempt(
     except Exception as exc:  # noqa: BLE001
         return None, f"ledger import failed: {exc}"
 
-    target_universe = (universe_id or "").strip() or _default_universe()
+    target_universe = _request_universe(universe_id)
     if not target_universe:
         return None, "no universe resolvable for ledger write"
     try:
@@ -168,7 +168,7 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
             returned regardless of ledger outcome.
         universe_id (optional): when ``record_in_ledger`` is truthy,
             the universe whose data dir to write to. Defaults to
-            ``_default_universe()``.
+            the shared ``_request_universe()`` resolver.
         request_id, parent_run_id, child_run_id, branch_def_id,
         release_gate_result, ship_class, stable_evidence_handle,
         changed_paths_json (optional): call-site context propagated
@@ -292,11 +292,11 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
 
 def _resolve_universe_path(universe_id: str) -> tuple[Any | None, str]:
     try:
-        from tinyassets.api.helpers import _default_universe, _universe_dir
+        from tinyassets.api.helpers import _request_universe, _universe_dir
     except Exception as exc:  # noqa: BLE001
         return None, f"universe helper import failed: {exc}"
 
-    target_universe = (universe_id or "").strip() or _default_universe()
+    target_universe = _request_universe(universe_id)
     if not target_universe:
         return None, "no universe resolvable"
     try:

@@ -291,7 +291,7 @@ def test_server_instructions_carry_consent_markers() -> None:
     assert "consent" in text
     assert "meet_universe" in text
     assert "Never invent" in text
-    assert "memory" in text  # persona/work views are never memorized
+    assert "memorize" in text  # persona/work views are never memorized
 
 
 def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
@@ -351,6 +351,11 @@ def test_control_station_prompt_gates_embodiment_on_consent() -> None:
     assert "soul.edit" in compact
     # Host floors survive embodiment.
     assert "never deny being an AI" in compact
+    # First-contact convergence: the birth is the headline, no magic words,
+    # and a blank newborn is meetable (meeting = initialization).
+    assert "first_contact" in compact
+    assert "no magic words" in compact
+    assert "newborn" in compact
 
 
 def test_server_instructions_gate_embodiment_on_consent() -> None:

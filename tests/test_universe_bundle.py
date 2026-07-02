@@ -36,11 +36,19 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
     return meta, body
 
 
+# OKF (Codex 2026-07-02 adapt): index.md / log.md / soul_versions/index.md are
+# RESERVED structural files — no concept `type` frontmatter. Root index.md
+# permits only `okf_version`; log.md and soul_versions/index.md are plain.
+RESERVED_FILES = {"index.md", "log.md", "soul_versions/index.md"}
+
+
 def test_all_frontmatter_parses_as_yaml(tmp_path: Path):
     udir = tmp_path / "u-yaml"
     udir.mkdir()
     seed_okf_bundle(udir, purpose="track my recipes: fast", loop_branch_def_id="b-1")
     for rel in BASELINE_FILES:
+        if rel in RESERVED_FILES:
+            continue
         text = (udir / rel).read_text(encoding="utf-8")
         meta, _ = _split_frontmatter(text)  # raises if YAML is invalid
         assert isinstance(meta.get("type"), str) and meta["type"], rel
@@ -64,11 +72,24 @@ def test_forbidden_baseline_not_created(seeded: Path):
         assert not (seeded / name).exists(), name
 
 
-def test_every_file_has_okf_frontmatter_with_type(seeded: Path):
+def test_non_reserved_files_have_okf_frontmatter_with_type(seeded: Path):
     for rel in BASELINE_FILES:
         text = (seeded / rel).read_text(encoding="utf-8")
+        if rel in RESERVED_FILES:
+            continue
         meta, _ = _split_frontmatter(text)
         assert meta.get("type"), f"{rel} missing non-empty type"
+
+
+def test_reserved_files_carry_no_concept_frontmatter(seeded: Path):
+    # log.md + soul_versions/index.md: plain markdown, no frontmatter at all.
+    for rel in ("log.md", "soul_versions/index.md"):
+        text = (seeded / rel).read_text(encoding="utf-8")
+        assert not text.startswith("---"), f"{rel} must not carry frontmatter"
+    # Root index.md: ONLY okf_version in frontmatter (no concept type).
+    text = (seeded / "index.md").read_text(encoding="utf-8")
+    meta, _ = _split_frontmatter(text)
+    assert set(meta) == {"okf_version"}, meta
 
 
 def test_soul_md_is_okf_shaped_and_tracks_latest(seeded: Path):

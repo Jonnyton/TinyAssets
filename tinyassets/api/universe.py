@@ -65,9 +65,9 @@ from typing import Any
 from tinyassets.api import permissions
 from tinyassets.api.helpers import (
     _base_path,
-    _default_universe,
     _read_json,
     _read_text,
+    _request_universe,
     _universe_dir,
 )
 from tinyassets.catalog import list_unreconciled_writes
@@ -142,7 +142,7 @@ def _universe_acl_error(action: str, *, universe_id: str = "") -> str | None:
     if action in {"list", "create_universe"} or action in _DAEMON_SCOPED_ACTIONS:
         return None
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     write = action in WRITE_ACTIONS
     if permissions.universe_access_allows(uid, write=write):
         return None
@@ -667,8 +667,8 @@ def _ledger_target_dir(
     """
     if action == "create_universe":
         created = str((result or {}).get("universe_id") or "") or kwargs.get("universe_id", "")
-        return _base_path() / (created or _default_universe())
-    uid = kwargs.get("universe_id", "") or _default_universe()
+        return _base_path() / (created or _request_universe(""))
+    uid = _request_universe(kwargs.get("universe_id", ""))
     return _universe_dir(uid)
 
 
@@ -1204,7 +1204,7 @@ def _action_list_universes(**_kwargs: Any) -> str:
 
 
 def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
     if not udir.is_dir():
@@ -1352,7 +1352,7 @@ def _list_output_tree(output_dir: Path, max_depth: int = 3) -> list[str]:
 
 
 def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     target = (udir / "output" / path).resolve()
 
@@ -1401,7 +1401,7 @@ def _action_submit_request(
     from tinyassets.branch_tasks import BranchTask, append_task, new_task_id
     from tinyassets.work_targets import REQUESTS_FILENAME
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -1600,7 +1600,7 @@ def _action_queue_list(
         score_task,
     )
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -1664,7 +1664,7 @@ def _action_daemon_list(
 ) -> str:
     from tinyassets.daemon_registry import list_daemons, list_runtime_instances
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     try:
         n = int(limit)
     except (TypeError, ValueError):
@@ -1775,7 +1775,7 @@ def _action_daemon_create(
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
     return json.dumps({
-        "universe_id": universe_id or _default_universe(),
+        "universe_id": _request_universe(universe_id),
         "daemon": daemon,
     }, default=str)
 
@@ -1799,7 +1799,7 @@ def _action_daemon_summon(
     )
     provider_name = str(data.get("provider_name") or "").strip()
     model_name = str(data.get("model_name") or provider_name).strip()
-    uid = universe_id or str(data.get("universe_id") or "").strip() or _default_universe()
+    uid = _request_universe(universe_id or str(data.get("universe_id") or "").strip())
     if not resolved_daemon_id:
         return json.dumps({"error": "daemon_id is required."})
     if not provider_name:
@@ -1846,7 +1846,7 @@ def _action_daemon_banish(
         )
     except KeyError:
         return json.dumps({"error": f"Runtime '{runtime_id}' not found."})
-    result["universe_id"] = universe_id or _default_universe()
+    result["universe_id"] = _request_universe(universe_id)
     return json.dumps(result, default=str)
 
 
@@ -1893,7 +1893,7 @@ def _action_daemon_runtime_control(
         )
     except KeyError:
         return json.dumps({"error": f"Runtime '{runtime_id}' not found."})
-    result["universe_id"] = universe_id or _default_universe()
+    result["universe_id"] = _request_universe(universe_id)
     return json.dumps(result, default=str)
 
 
@@ -1982,7 +1982,7 @@ def _action_daemon_update_behavior(
         )
     except KeyError:
         return json.dumps({"error": f"Daemon '{daemon_id}' not found."})
-    result["universe_id"] = universe_id or _default_universe()
+    result["universe_id"] = _request_universe(universe_id)
     return json.dumps(result, default=str)
 
 
@@ -2013,7 +2013,7 @@ def _action_daemon_control_status(
         ),
         universe_id=universe_id or str(data.get("universe_id") or "").strip() or None,
     )
-    result["universe_id"] = universe_id or _default_universe()
+    result["universe_id"] = _request_universe(universe_id)
     return json.dumps(result, default=str)
 
 
@@ -2063,7 +2063,7 @@ def _action_daemon_memory_capture(
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_brain import capture_daemon_memory
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2116,7 +2116,7 @@ def _action_daemon_memory_search(
 ) -> str:
     from tinyassets.daemon_brain import search_daemon_memory
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2153,7 +2153,7 @@ def _action_daemon_memory_list(
 ) -> str:
     from tinyassets.daemon_brain import list_daemon_memory
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2185,7 +2185,7 @@ def _action_daemon_memory_review(
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_brain import review_daemon_memory
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2226,7 +2226,7 @@ def _action_daemon_memory_promote(
 ) -> str:
     from tinyassets.daemon_brain import promote_daemon_memory_to_wiki
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2260,7 +2260,7 @@ def _action_daemon_memory_status(
 ) -> str:
     from tinyassets.daemon_brain import memory_observability_status
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2281,7 +2281,7 @@ def _action_treasury_status(
 ) -> str:
     from tinyassets.treasury import treasury_status
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     try:
         result = treasury_status(_base_path(), limit=int(limit))
     except (ValueError, TypeError) as exc:
@@ -2725,7 +2725,7 @@ def _action_daemon_overview(
     """
     import time as _time
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -2973,7 +2973,7 @@ def _action_set_tier_config(
     """
     import yaml as _yaml
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3051,7 +3051,7 @@ def _action_queue_cancel(
         request_task_cancel,
     )
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3150,7 +3150,7 @@ def _action_subscribe_goal(
 
     if not goal_pool_enabled():
         return _goal_pool_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3178,7 +3178,7 @@ def _action_unsubscribe_goal(
 
     if not goal_pool_enabled():
         return _goal_pool_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3217,7 +3217,7 @@ def _action_list_subscriptions(
 
     if not goal_pool_enabled():
         return _goal_pool_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3278,7 +3278,7 @@ def _action_post_to_goal_pool(
 
     if not goal_pool_enabled():
         return _goal_pool_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3388,7 +3388,7 @@ def _action_submit_node_bid(
 
     if not paid_market_enabled():
         return _paid_market_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3480,7 +3480,7 @@ def _action_give_direction(
     anchor_json: str = "",
     **_kwargs: Any,
 ) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3530,7 +3530,7 @@ def _action_query_world(
     limit: int = 20,
     **_kwargs: Any,
 ) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3712,7 +3712,7 @@ def _query_world_db(
 
 
 def _action_read_premise(universe_id: str = "", **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     content = _normalize_escaped_text(read_legacy_premise(udir))
     source = "PROGRAM.md"
@@ -3767,7 +3767,7 @@ def _normalize_escaped_text(text: str) -> str:
 
 
 def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
     if not text.strip():
@@ -3842,7 +3842,7 @@ def _action_add_canon(
     synthesizes canon from the source.
     """
     from tinyassets.api.engine_helpers import _current_actor
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
 
@@ -4002,7 +4002,7 @@ def _action_add_canon_from_path(
             ),
         })
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
     safe_name = Path(filename).name if filename else src.name
@@ -4067,7 +4067,7 @@ def _action_list_canon(
     **_kwargs: Any,
 ) -> str:
     """List all canon documents in a universe with metadata."""
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
 
@@ -4189,7 +4189,7 @@ def _action_list_sources(
     **_kwargs: Any,
 ) -> str:
     """List uploaded source documents with attestation metadata."""
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
     sources_dir = canon_dir / "sources"
@@ -4232,7 +4232,7 @@ def _action_read_source(
     **_kwargs: Any,
 ) -> str:
     """Read one uploaded source document verbatim with checksum metadata."""
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
 
@@ -4307,7 +4307,7 @@ def _action_read_canon(
     **_kwargs: Any,
 ) -> str:
     """Read the contents of a specific canon document."""
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
 
@@ -4360,7 +4360,7 @@ def _action_control_daemon(
     **_kwargs: Any,
 ) -> str:
     action = text.strip().lower()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -4441,7 +4441,7 @@ def _action_get_activity(
     limit: int = 30,
     **_kwargs: Any,
 ) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     log_path = udir / "activity.log"
 
@@ -4531,7 +4531,7 @@ def _action_get_recent_events(
         tag: Optional tag prefix filter (empty = all entries).
         limit: Max entries to return (1..500, clamped).
     """
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     log_path = udir / "activity.log"
 
@@ -4594,7 +4594,7 @@ def _action_get_recent_events(
 
 
 def _action_get_ledger(universe_id: str = "", limit: int = 50, **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
     ledger_path = udir / "ledger.json"
@@ -4787,7 +4787,7 @@ def _action_soul_edit(
     from tinyassets.soul_edit import SoulEditError, apply_soul_edit
     from tinyassets.universe_self_model import read_self_model
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})

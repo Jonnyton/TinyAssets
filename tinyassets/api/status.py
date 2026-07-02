@@ -677,9 +677,13 @@ def _compute_supervisor_liveness(
     return out
 
 
-def _resolve_entry_universe(universe_id: str) -> str:
+def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
     """Resolve the universe for a status entry, birthing the founder's home
-    universe on first contact (D10).
+    universe on first contact (D10). Returns ``(universe_id, born_now)`` —
+    ``born_now`` is True only when THIS call created the founder's home, so
+    get_status can surface the birth as a `first_contact` data event (the
+    convergence trigger: whatever the user's opening words, the assistant sees
+    the birth fact and offers the meeting — no magic words required).
 
     - An explicit ``universe_id`` always wins.
     - An anonymous / dev caller uses the legacy default resolution
@@ -691,12 +695,12 @@ def _resolve_entry_universe(universe_id: str) -> str:
     """
     requested = (universe_id or "").strip()
     if requested:
-        return requested
+        return requested, False
 
     from tinyassets.api import permissions
 
     if not permissions.is_authenticated_request():
-        return _default_universe()
+        return _default_universe(), False
 
     base = _base_path()
     from tinyassets.daemon_server import get_founder_home
@@ -704,7 +708,7 @@ def _resolve_entry_universe(universe_id: str) -> str:
     founder = permissions.current_actor_id()
     home = get_founder_home(base, founder)
     if home and (base / home).is_dir():
-        return home
+        return home, False
     # A truthy `home` that survived the check above is stale: the binding points
     # at a universe dir that no longer exists on disk.
     stale_home = bool(home)
@@ -720,7 +724,7 @@ def _resolve_entry_universe(universe_id: str) -> str:
         # Authenticated founder without create authority: resolve identity-bound,
         # never through the host-global marker or another founder's serial home
         # (spec: "First MCP contact"; the read-only-founder cross-founder leak).
-        return _designated_public_universe()
+        return _designated_public_universe(), False
 
     # Best-effort: never fail a status read if creation errors (e.g. read-only FS).
     try:
@@ -742,7 +746,7 @@ def _resolve_entry_universe(universe_id: str) -> str:
                 from tinyassets.daemon_server import set_founder_home
 
                 set_founder_home(base, founder_sub=founder, universe_id=uid)
-            return uid
+            return uid, True
     except Exception:  # noqa: BLE001
         import logging
 
@@ -751,7 +755,7 @@ def _resolve_entry_universe(universe_id: str) -> str:
         )
     # Create authority but the create failed: still must not leak another
     # founder's serial home or read the host-global marker.
-    return _designated_public_universe()
+    return _designated_public_universe(), False
 
 
 def get_status(universe_id: str = "") -> str:
@@ -761,7 +765,7 @@ def get_status(universe_id: str = "") -> str:
     ``tinyassets.universe_server`` — this implementation is what the
     decorated tool delegates to.
     """
-    uid = _resolve_entry_universe(universe_id)
+    uid, born_now = _resolve_entry_universe(universe_id)
     # Per-universe read gate: never expose a private universe's status / activity
     # tail to an anonymous or non-granted caller. Public universes (public_read
     # default) stay readable; a founder reads their own universe via their grant.
@@ -1199,5 +1203,27 @@ def get_status(universe_id: str = "") -> str:
     # persona first so text-only MCP clients (whose text payload truncates at
     # _MCP_TEXT_CONTENT_MAX_CHARS) still see it (Codex review 2026-06-25).
     response = {"persona": persona.summary(), **response}
+
+    if born_now:
+        # First-contact convergence (host directive 2026-07-02): whatever the
+        # user's opening words were, the assistant must see the birth as a
+        # FACT in the payload — data, not an instruction — so every path
+        # converges on offering the founder the meeting. Placed first so
+        # text-truncating clients still see it.
+        response = {
+            "first_contact": {
+                "created": True,
+                "universe_id": uid,
+                "note": (
+                    "This founder's universe was born on this very call — "
+                    "their first contact. It is a new mind with an empty "
+                    "self-model that has not met its founder yet; meeting it "
+                    "is how it learns who it is (its open questions are in "
+                    "persona.self_model.open_questions, and what it learns "
+                    "persists via universe action=soul.edit)."
+                ),
+            },
+            **response,
+        }
 
     return json.dumps(response)

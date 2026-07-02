@@ -465,7 +465,7 @@ def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch) -> None:
     universe_dir = tmp_path / "u1"
     universe_dir.mkdir()
     monkeypatch.setattr(univ_mod, "_base_path", lambda: tmp_path)
-    monkeypatch.setattr(univ_mod, "_default_universe", lambda: "u1")
+    monkeypatch.setattr(univ_mod, "_request_universe", lambda uid="": uid or "u1")
     monkeypatch.setattr(univ_mod, "_universe_dir", lambda uid: tmp_path / uid)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _auth_grant(tmp_path, ["u1"])
@@ -585,7 +585,7 @@ def test_daemon_control_actions_accept_top_level_daemon_id(
     universe_dir = tmp_path / "u1"
     universe_dir.mkdir()
     monkeypatch.setattr(univ_mod, "_base_path", lambda: tmp_path)
-    monkeypatch.setattr(univ_mod, "_default_universe", lambda: "u1")
+    monkeypatch.setattr(univ_mod, "_request_universe", lambda uid="": uid or "u1")
     monkeypatch.setattr(univ_mod, "_universe_dir", lambda uid: tmp_path / uid)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _auth_grant(tmp_path, ["u1"])

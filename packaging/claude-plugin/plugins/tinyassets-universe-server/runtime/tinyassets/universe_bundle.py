@@ -1,8 +1,11 @@
 """Blank OKF soul-bundle seeder for new universes.
 
 Implements the ``universe-creation`` creation contract (D4/D5): creation seeds
-one linked OKF concept-document bundle rooted at ``soul.md``. Every file is an
-OKF concept document (YAML frontmatter with a non-empty ``type``); the bundle
+one linked OKF concept-document bundle rooted at ``soul.md``. Non-reserved
+files are OKF concept documents (YAML frontmatter with a non-empty ``type``);
+RESERVED structural files (``index.md``, ``log.md``, ``soul_versions/index.md``)
+carry no concept frontmatter — root ``index.md`` permits only ``okf_version``
+(upstream OKF SPEC.md, Codex 2026-07-02 adapt). The bundle
 tracks the *latest-main* OKF spec on GitHub rather than a pinned copy, so it
 never goes stale.
 
@@ -330,13 +333,10 @@ here.
 
 {links}
 """
-    return _doc(
-        "Bundle Index",
-        body,
-        title="Bundle Index",
-        description="OKF bundle map for this universe.",
-        okf_version=OKF_VERSION,
-    )
+    # OKF: index.md is a RESERVED structural file — root index.md permits only
+    # `okf_version` frontmatter, no concept `type` (Codex 2026-07-02 adapt vs
+    # upstream SPEC.md; universe_self_model._read_okf_version reads this key).
+    return f"---\nokf_version: {OKF_VERSION}\n---\n\n{body}"
 
 
 def _log_md() -> str:
@@ -346,12 +346,8 @@ Human-readable history of soul and baseline updates for this universe.
 
 - created: blank universe seeded with the OKF soul bundle.
 """
-    return _doc(
-        "Update Log",
-        body,
-        title="Update Log",
-        description="Human-readable update history for this universe.",
-    )
+    # OKF: log.md is a RESERVED structural file — no concept frontmatter.
+    return body
 
 
 def _soul_versions_index_md() -> str:
@@ -361,12 +357,8 @@ Snapshots of this universe's soul over time.
 
 - [0001](0001.md) — initial blank soul snapshot at creation.
 """
-    return _doc(
-        "Soul Version Index",
-        body,
-        title="Soul Version Index",
-        description="Index of soul snapshots.",
-    )
+    # OKF: index.md files are RESERVED — no concept frontmatter.
+    return body
 
 
 def seed_okf_bundle(
