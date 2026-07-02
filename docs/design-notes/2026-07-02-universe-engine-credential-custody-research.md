@@ -62,8 +62,11 @@ subscription-CLI path survives **only** as the *platform's own* first-party engi
 current droplet model), never resold/shared per founder.
 
 This does not kill the reshape; it renames the sources the founder may "bring":
-**bring an API key, or bring an endpoint.** The platform's own subscription remains
-the zero-config default engine for founders who bring nothing.
+**bring an API key, bring an endpoint, or rent a daemon from the market.** There is
+**NO platform-provided default engine for founders** (host correction 2026-07-02):
+the platform's own droplet subscription runs the platform's *own* universe (Tiny),
+never a per-founder default. The **zero-engine path is the chatbot's own LLM
+in-session** (interactive-only via subagents), not a platform engine.
 
 ---
 
@@ -98,7 +101,8 @@ home is required."* **What breaks at N founders:** the whole model assumes one a
 home per provider. N founders' separate subscriptions on one droplet would need N
 isolated `CODEX_HOME`/`CLAUDE_CONFIG_DIR` dirs, N flock domains, and per-request
 selection of which one to use — and per §0 it is ToS-blocked anyway. So the droplet
-subscription home stays the *platform default engine*, not a per-founder container.
+subscription home stays the engine for the platform's *own* universe (Tiny), not a
+per-founder container and not a founder default.
 
 ### 1.3 The per-universe credential vault (already exists, READ-wired)
 `tinyassets/credential_vault.py` is a **per-universe** secret store — this is the real
@@ -211,14 +215,24 @@ what a droplet compromise exposes.
 
 ## 4. Recommendation
 
-**Adopt a two-lane custody model; make API-key + self-hosted-endpoint the only two
-"founder brings an engine" lanes; keep the platform subscription as the zero-config
-default.**
+**Adopt a BYO-engine custody model; the "founder brings an engine" lanes are
+API-key, self-hosted-endpoint, and market-rented daemon. There is NO platform-
+provided default engine for founders (host correction 2026-07-02).**
 
-1. **Default lane (bring nothing) — Option E, unchanged.** A founder who assigns no
-   engine runs on the **platform's own** droplet subscription (`/data/.codex`,
-   `/data/.claude`). First-party, ToS-clean, zero-config, already 24/7. This is what
-   makes "assign an LLM at creation" have a safe default (relay note §7 MVP #1).
+1. **Zero-engine path (bring nothing) = the chatbot's own LLM in-session, NOT a
+   platform engine.** A founder who assigns no engine has no persistent universe
+   intelligence; they interact via the **chatbot**, whose own LLM (host client's)
+   runs the work via subagents — interactive only, no 24/7, no app-route. The
+   platform's droplet subscription runs the platform's *own* universe (Tiny), never
+   a founder's. (Corrects the earlier "platform subscription is the default engine"
+   framing; "assign an LLM at creation" has no free default — it upgrades you from
+   chatbot-in-session to always-on.)
+
+1b. **Market-rented lane (host enrichment, relay note §12).** A founder who wants
+   24/7 without BYO-engine or self-hosting sets their universe to run at the current
+   market rate (e.g. "GLM 5.2") with a spending cap; a market host runs *their own*
+   engine legally and gets paid. The platform never custodies the founder's creds —
+   the clean sidestep to the whole ToS problem.
 
 2. **BYO-hosted lane — Option B (API key), the primary sanctioned 24/7 path.** Founder
    deposits an **API key** (Anthropic/OpenAI/Gemini/Groq/xAI). Store it in the
@@ -305,7 +319,7 @@ every universe's creds in base64. The isolation design:
   keeps CLIs where the platform's own engine writes, and uses **API keys as the
   engine-auth for a founder's BYO engine** (many CLIs, incl. Codex, accept an API key;
   `ANTHROPIC_BASE_URL` + key drives the OpenAI-compatible path). **Recommendation: keep
-  Hard Rule #3 as-is for the *platform default writer*; explicitly document that a
+  Hard Rule #3 as-is for the *platform's own-universe writer*; explicitly document that a
   *founder's BYO engine* may be API-key-authenticated.** If a founder's API-key engine
   must be reached via SDK rather than CLI, that is a genuine amendment to Rule #3 and
   needs host sign-off — flag, don't assume.
@@ -313,7 +327,7 @@ every universe's creds in base64. The isolation design:
 - **Subscription-only-by-default (`TINYASSETS_ALLOW_API_KEY_PROVIDERS`).** Today this is
   a **process-global** gate (`providers/base.py:72-74`; stripped in
   `docker-entrypoint.sh:72-81`; `compose.yml:54` sets it `"0"`). The B lane needs it
-  **per-universe**: the platform default stays subscription-only, but a founder who
+  **per-universe**: the platform's own-universe engine stays subscription-only, but a founder who
   deposits an API key opts *their* universe into API-key providers. **This is a real
   policy change** — the global boolean becomes a per-universe capability, gated by the
   founder having deposited a key. Recommend: keep the global default `0`; add a
@@ -326,9 +340,10 @@ every universe's creds in base64. The isolation design:
 
 1. **[Host decision] Confirm the ToS reading (§0) and the "no founder-subscription
    custody" stance.** If accepted, the engine-assignment UX must offer "API key /
-   endpoint / platform-default," **not** "connect your Claude/ChatGPT subscription."
-   The biggest risk is shipping a subscription-connect affordance that gets founders
-   (or the platform) account-banned.
+   self-hosted endpoint / rent a market daemon," **not** "connect your Claude/ChatGPT
+   subscription" (and "no engine" = interactive-via-chatbot, not a platform-run
+   default). The biggest risk is shipping a subscription-connect affordance that gets
+   founders (or the platform) account-banned.
 2. **[Host decision] Per-universe `TINYASSETS_ALLOW_API_KEY_PROVIDERS` relaxation
    (§6).** Approve turning the global subscription-only gate into a per-universe
    capability gated on a deposited key.
@@ -351,7 +366,8 @@ is a first-class engine source. It is not — custodying and driving a founder's
 Pro/Max or ChatGPT Plus subscription server-side violates both providers' terms three
 ways over and risks account bans for the founder *and* platform. Every downstream
 decision (UX copy, vault schema, engine-assignment flow) must encode: **subscription =
-platform-default-only or on-device-only; the founder's 24/7 BYO engine is an API key
+platform's-own-universe-only or on-device-only (never a per-founder default); the
+founder's 24/7 BYO engine is an API key
 or an endpoint.**
 
 ---

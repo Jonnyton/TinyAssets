@@ -211,12 +211,15 @@ Everything else is wiring.
    OpenAI: ChatGPT subs individual-use, automation → API key). So the lawful,
    device-independent, per-founder 24/7 engines are only **API key** and
    **self-hosted endpoint**; personal-subscription survives *only* as the
-   **platform's own default** engine (current droplet model), never per-founder.
-   **Recommended model — two-lane BYO + zero-config default:** (i) bring nothing →
-   platform droplet subscription (ToS-clean, already 24/7); (ii) BYO API key
-   (primary sanctioned path) → per-universe vault under **envelope encryption**;
-   (iii) BYO endpoint (`OLLAMA_HOST`/`ANTHROPIC_BASE_URL` + token). **Do not build
-   founder-subscription custody.**
+   platform's own first-party engine for **the platform's own universe** (Tiny, the
+   current droplet model) — **there is NO platform-provided free engine for
+   founders** (host correction 2026-07-02, §12).
+   **Recommended engine model for the universe intelligence (24/7 + app):** (i) BYO
+   API key (primary sanctioned path) → per-universe vault under **envelope
+   encryption**; (ii) BYO self-hosted endpoint (`OLLAMA_HOST`/`ANTHROPIC_BASE_URL`
+   + token); (iii) rent a daemon from the market. **The zero-engine path is not a
+   platform default — it is chatbot-in-session** (the chatbot's own LLM, interactive
+   only, §12). **Do not build founder-subscription custody.**
    **Substrate is ~70% built:** `tinyassets/credential_vault.py` is per-universe +
    READ-wired into providers, but has 3 gaps — (a) base64-not-encrypted at rest,
    (b) no write surface (`write_credential_vault` uncalled), (c) **Gap A** (engine
@@ -225,8 +228,9 @@ Everything else is wiring.
    **Needs host decision:** confirm the ToS stance; approve **per-universe
    relaxation of `TINYASSETS_ALLOW_API_KEY_PROVIDERS`** (a real subscription-only
    policy change); pick secret backend. Hard Rule #3 (CLI-only for the *primary
-   writer*) stays for the platform default; a founder's BYO API-key engine is a
-   documented exception (flag if it needs an SDK path → Rule #3 amendment).
+   writer*) stays for the platform's own first-party engine; a founder's BYO
+   API-key engine is a documented exception (flag if it needs an SDK path → Rule #3
+   amendment).
 3. **Write-authorization rule (host-stated, crisp):** write access to a universe
    is restricted to **(a) the universe's own intelligence** and/or **(b) the
    chatbot/app authenticated with the founder's WorkOS.** Two write principals;
@@ -252,21 +256,31 @@ each other:
   **attaches** the branch to the universe + goals and the daemon **adopts** it
   like any branch it already runs. Requires: the brain is the single shared
   read/write substrate; the daemon observes founder-side work, not just its own.
-- **Executor spectrum — the founder chooses their infrastructure/autonomy level:**
+- **Brain vs compute (host correction 2026-07-02).** The platform provides the
+  **brain**; **compute is always brought, never zero** — because the only two ways
+  to be a user each carry an LLM: the **chatbot** *is* an LLM (host client's own,
+  in-session), and the **app** is a thin client onto the founder's **assigned
+  engine**. There is NO platform-provided free/default engine for founders. (The
+  platform's droplet subscription runs the platform's *own* universe, Tiny — not a
+  per-founder default.) "Bring nothing → platform runs it for free" does not exist.
+- **Compute for the *universe intelligence* (needed for the app + 24/7):** brought
+  by the founder —
   1. **Host your own daemon** (their machine/cloud, their engine).
-  2. **BYO engine** (API key / self-hosted endpoint) on a platform daemon (§11#2).
-  3. **Bring nothing** → platform default engine.
-  4. **Rent from the live market** — other users host daemons; the founder sets
+  2. **BYO engine** — API key / self-hosted endpoint (§11#2).
+  3. **Rent from the live market** — other users host daemons; the founder sets
      their universe to run at the current market rate (e.g. "GLM 5.2") with a
      **spending cap**. No self-hosting, no BYO-engine. **This is the clean answer
      to the §11#2 ToS custody problem:** the market host runs *their own* engine
      legally + gets paid; the platform never custodies a founder's subscription.
-  5. **Chatbot-exclusive** — the chatbot runs branches itself via **subagents**
-     (interactive only; uses the host client's own LLM in-session → ToS-fine),
-     possibly even running the universe's main daemon that way. Zero infra.
-- **The autonomy line:** only **24/7 background** automation needs *some*
-  persistent executor (owned / BYO / default / market-rented). Everything else is
-  reachable interactively via the chatbot. "Zero daemons for authoring" = this.
+- **Compute with NO assigned engine = the chatbot's own LLM (in-session only):**
+  the chatbot runs branches itself via **subagents** (uses the host client's LLM
+  → ToS-fine), possibly even running the universe's main daemon that way. The
+  seeded subagent *is* the in-session intelligence, and the chatbot **relays** its
+  first-person output — so even this case obeys the one rule (render, never
+  embody). Interactive only; no 24/7.
+- **The autonomy line:** only **24/7 background** / app-reachability needs a
+  brought engine (owned / BYO / market-rented). Everything else is reachable
+  interactively via the chatbot's own LLM. "Zero daemons for authoring" = this.
 - **Mostly existing substrate.** This is the PLAN **Daemon Platform** (runtime
   instances bound to provider/model/executor; file-locked claim across cloud+host
   executors; capacity-bounded fleets) + the **paid market** (inbox + bid
