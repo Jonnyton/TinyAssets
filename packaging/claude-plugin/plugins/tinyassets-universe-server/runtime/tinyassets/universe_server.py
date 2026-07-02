@@ -857,7 +857,11 @@ def universe(
             get_activity, get_recent_events, get_ledger, read_premise,
             list_canon, read_canon, list_sources, read_source; writes: submit_request,
             give_direction, set_premise, add_canon, add_canon_from_path,
-            create_universe, switch_universe; queue: queue_list,
+            create_universe, switch_universe; learning: soul.edit (teach the
+            universe about itself — inputs_json {changes: {governed file:
+            new markdown body}, source, context, summary?, name?}; governed
+            by the universe's own soul.edit.md; what it learns persists in
+            its brain and its persona speaks it from then on); queue: queue_list,
             queue_cancel; subscriptions: subscribe_goal, unsubscribe_goal,
             list_subscriptions; goal-pool: post_to_goal_pool,
             submit_node_bid; community review: community_change_context;

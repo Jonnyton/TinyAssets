@@ -611,10 +611,26 @@ def _extract_daemon_memory_promote(
     )
 
 
+def _extract_soul_edit(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    from tinyassets.api.engine_helpers import _truncate
+    return (
+        str(result.get("universe_id", "")),
+        _truncate("learned: " + ", ".join(result.get("updated_files") or [])),
+        {
+            "files": result.get("updated_files"),
+            "snapshot": result.get("snapshot"),
+            "source": result.get("source"),
+        },
+    )
+
+
 WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
+    "soul.edit": (_extract_soul_edit, None),
     "add_canon": (_extract_add_canon, None),
     "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
@@ -4756,6 +4772,81 @@ def _action_create_universe(
 # ───────────────────────────────────────────────────────────────────────────
 
 
+def _action_soul_edit(
+    universe_id: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """The universe's learn/write path (`universe action=soul.edit`).
+
+    Applies a governed learning event per the universe's own soul.edit.md
+    policy — see ``tinyassets.soul_edit.apply_soul_edit``. This is how a
+    founder's universe REMEMBERS what it is taught: learned files feed the
+    self-model, and the persona voices them from the next turn on.
+    """
+    from tinyassets.soul_edit import SoulEditError, apply_soul_edit
+    from tinyassets.universe_self_model import read_self_model
+
+    uid = universe_id or _default_universe()
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    raw = (inputs_json or "").strip()
+    if not raw:
+        return json.dumps({
+            "error": "inputs_json is required.",
+            "expected": {
+                "changes": {"<governed file>": "<new markdown body>"},
+                "source": "who/what taught this (required)",
+                "context": "why this is being learned (required)",
+                "summary": "optional log line",
+                "name": "optional learned self-name (identity.md)",
+            },
+        })
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
+    if not isinstance(data, dict):
+        return json.dumps({"error": "inputs_json must decode to a JSON object."})
+
+    changes = data.get("changes") or {}
+    if not isinstance(changes, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in changes.items()
+    ):
+        return json.dumps({
+            "error": "changes must map governed filename -> new markdown body.",
+        })
+
+    try:
+        result = apply_soul_edit(
+            udir,
+            changes=changes,
+            source=str(data.get("source", "")),
+            context=str(data.get("context", "")),
+            summary=str(data.get("summary", "")),
+            name=str(data.get("name", "")),
+        )
+    except SoulEditError as exc:
+        return json.dumps({"error": str(exc), "policy": "soul.edit.md"})
+
+    model = read_self_model(udir)
+    return json.dumps({
+        "universe_id": uid,
+        "status": "learned",
+        "updated_files": result["updated_files"],
+        "snapshot": result["snapshot"],
+        "source": result["source"],
+        "persona_name": model.get("name", ""),
+        "still_curious": [q["slug"] for q in model.get("open_questions", [])],
+        "note": (
+            "Learned and remembered — these files persist in my brain and my "
+            "persona speaks them from now on."
+        ),
+    })
+
+
 UNIVERSE_ACTIONS: dict[str, Any] = {
     "list": _action_list_universes,
     "inspect": _action_inspect_universe,
@@ -4768,6 +4859,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "give_direction": _action_give_direction,
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,
+    "soul.edit": _action_soul_edit,
     "add_canon": _action_add_canon,
     "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,
