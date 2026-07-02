@@ -193,3 +193,34 @@ Everything else is wiring.
 - [ ] `universe-personification` OpenSpec amended/superseded to the relay model.
 - [ ] Foundation blockers cleared (fail-open optional-mode fallback; rename-orphan
       test debt; rebase on origin/main) — same merge path per "merge together".
+
+## 11. Host decisions (2026-07-02) — resolving §9
+
+1. **Availability = 24/7, proactive.** The universe intelligence runs
+   continuously on the founder's assigned engine, *always proactively acting on
+   the founder's / company's behalf, carrying out its vision* — not on-demand
+   per turn. Confirms the persistent-loop model (generalize `DaemonController`).
+2. **Credential custody = RESEARCH lane (host: "research and think about it").**
+   Hard requirement: the universe runs 24/7 **without the founder's computer or
+   phone on**. Engine sources, none privileged — "we don't care how they bring an
+   LLM; we do our best to keep it up as much as it can be":
+   - **Subscription** (claude/codex CLI) or **API key** → device-independent; the
+     platform hosts it 24/7. Custody question: how the server holds + uses the
+     founder's creds securely, multi-tenant.
+   - **Self-hosted OSS** (their machine or their cloud) → availability bounded by
+     *their* host being up; platform reaches it via endpoint (e.g. `OLLAMA_HOST` /
+     `ANTHROPIC_BASE_URL`). Custody = an endpoint + token, not our secret.
+   → Open research: where per-founder engine creds live (vault? per-universe
+   encrypted? BYO-endpoint?), how it stays up 24/7, multi-tenant isolation of
+   creds. See research note (dispatched). This is the load-bearing unknown.
+3. **Write-authorization rule (host-stated, crisp):** write access to a universe
+   is restricted to **(a) the universe's own intelligence** and/or **(b) the
+   chatbot/app authenticated with the founder's WorkOS.** Two write principals;
+   everything else is read-or-denied. (Relay-handle *shape* still deferred — "a
+   clean elegant way may reveal itself as we build" — but this rule constrains it.)
+4. **Zero-daemons-for-authoring — RESOLVED by rule #3.** The principle: basic
+   create/edit works with *no* AI/daemon running (a browser user or an OSS cloner
+   can make/edit universes without hosting a model). Rule #3 preserves it: the
+   founder writes directly via **WorkOS** (principal b) — they do **not** need the
+   always-on intelligence to be the one writing. The intelligence is *a* write
+   principal, not the *only* one. Nothing breaks; confirmed consistent.
