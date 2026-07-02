@@ -16,6 +16,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-07-01 verified:2026-07-01] `claude/founder-identity-allslices`: query_runs/routing_evidence private-run leaks fixed; broader all-surfaces claim contradicted by Codex review.
 - [filed:2026-07-01 verified:2026-07-01] founder-identity all-slices: get_status/receipts/memory-scope leaks + cross-founder `.active_universe` (create AND switch_universe) fixed; test_api_runs count + workos JWKS doc corrected (Codex-confirmed). Residual (pre-live): under-scoped/missing-token WRITES return tool JSON, not an HTTP 401/403 WWW-Authenticate challenge — required before WorkOS live rollout.
 - [filed:2026-07-01 verified:2026-07-01] founder-identity: first-contact create ledger-bypass + stale founder_home serial-dir loop FIXED (route create via `_dispatch_with_ledger` + result-based ledger target dir; rebind stale home). Daemon-scoped ACL exemption + cross-actor resume test also Codex-reviewed (`docs/audits/2026-07-01-daemon-scoped-acl-exemption-codex-review.md`).
+- [filed:2026-07-02] Live first-contact proven e2e (u-01kwgcxpwa0mht10yndx33qm8z); learn path `soul.edit` landed (6cf1d957). Dogfood follow-ups: seed founder identity at create; persona payload rework (no telemetry/ULIDs in embodied voice, interviewer stance, consent-scoped embodiment, projects-as-body per host steer); OKF reserved-file frontmatter (Codex adapt).
 
 ## Approved Specs
 
