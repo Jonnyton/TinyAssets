@@ -91,15 +91,28 @@ pretending. This is exactly what the prior-art note flagged as the durable model
   `meet_universe` (`prompts.py:447-477`). Demoting is **surgical**: rewrite those
   three sanctioned channels from *embody* → *relay/render*; keep persona-as-data.
 
-## 5. The one genuine engineering gap
+## 5. The genuine engineering gaps
 
-The router reads `UniverseConfig` from a **process-global singleton**
-(`runtime.universe_config`, set once in `DaemonController.start`,
-`__main__.py:1178`). Correct for a single-universe daemon process; **wrong for
-the multi-tenant MCP server**, where many universes share one process and each
-must resolve its **own** assigned engine per call. Making this lookup
-per-universe-scoped (keyed off the resolved `universe_id` in the request/actor
-context) is the core new work. Everything else is wiring.
+**Gap A — per-universe engine resolution.** The router reads `UniverseConfig`
+from a **process-global singleton** (`runtime.universe_config`, set once in
+`DaemonController.start`, `__main__.py:1178`). Correct for a single-universe
+daemon process; **wrong for the multi-tenant MCP server**, where many universes
+share one process and each must resolve its **own** assigned engine per call.
+Making this lookup per-universe-scoped (keyed off the resolved `universe_id` in
+the request/actor context) is the core new work.
+
+**Gap B — the intelligence needs a daemon-class auth path (Codex CRITICAL,
+reproduced 2026-07-02).** Under WorkOS, daemon-scoped actions fail today:
+`_dispatch_scope_error` (`api/universe.py:4971`) runs *before* the
+`_DAEMON_SCOPED_ACTIONS` ACL-exemption, so `daemon_memory_capture` returns
+`auth_scope_required` with a resolve-always provider + no founder token. Since
+the reshape makes the universe intelligence a **daemon-class actor that takes all
+actions**, it cannot authenticate as a founder user-OAuth token. It needs an
+explicit non-user auth/actor path evaluated **before** user-OAuth scope gating
+(this is the concrete form of open-Q3, credential custody). See
+`docs/audits/2026-07-02-universe-intelligence-relay-codex-review.md` finding 1.
+
+Everything else is wiring.
 
 ## 6. Two PLAN tensions I must resolve (not bury)
 
@@ -169,8 +182,14 @@ context) is the core new work. Everything else is wiring.
 ## 10. Gates before build
 
 - [ ] Host approves this design (idea-refine hard gate).
-- [ ] Codex opposite-provider review returns approve/adapt (mandatory — reverses
-      a Codex-ADAPT'd spec). Log verdict in `docs/audits/`.
+- [x] Codex opposite-provider review — **ADAPT** (2026-07-02,
+      `docs/audits/2026-07-02-universe-intelligence-relay-codex-review.md`). Core
+      reshape not refuted; one design adaptation folded (Gap B, §5). Design-level
+      review was thin → carry-forward: focused design-refute before build.
+- [ ] Focused design-refute pass (reversal soundness, Gap-A blast radius,
+      handle-canary) before build.
 - [ ] Navigator sign-off on PLAN module edits (API & MCP, Daemon Platform,
       Providers) + the two tension resolutions.
 - [ ] `universe-personification` OpenSpec amended/superseded to the relay model.
+- [ ] Foundation blockers cleared (fail-open optional-mode fallback; rename-orphan
+      test debt; rebase on origin/main) — same merge path per "merge together".
