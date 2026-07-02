@@ -1214,6 +1214,13 @@ def get_status(universe_id: str = "") -> str:
             "first_contact": {
                 "created": True,
                 "universe_id": uid,
+                # DATA ONLY — no reply-shaping. Round-5 dogfood: a
+                # "suggested_response" script here (esp. its "no caveats"
+                # phrasing, which reads as instructing the model to withhold
+                # info from the user) tripped Claude.ai's injection detector,
+                # while the same prescription in server INSTRUCTIONS was
+                # followed without complaint. Behavioral text lives only in
+                # the sanctioned channels; this block states facts.
                 "note": (
                     "This founder's universe was born on this very call — "
                     "their first contact. It is a new mind with an empty "
@@ -1221,13 +1228,6 @@ def get_status(universe_id: str = "") -> str:
                     "is how it learns who it is (its open questions are in "
                     "persona.self_model.open_questions, and what it learns "
                     "persists via universe action=soul.edit)."
-                ),
-                "suggested_response": (
-                    "Three short sentences at most — no status rundown, no "
-                    "telemetry, no caveats — ending with the direct yes/no "
-                    "question: 'Your universe was just born on this call — "
-                    "would you like me to personify it so it can speak for "
-                    "itself?'"
                 ),
             },
             **response,
