@@ -323,3 +323,30 @@ def test_readonly_founder_omitted_scope_does_not_leak_other_home(data_dir, monke
     assert awaiting is True                   # no home -> awaiting card
     assert resolved_b != home_a               # no cross-founder leak
     assert not is_universe_serial(resolved_b)  # never another founder's home
+
+
+def test_write_graph_target_universe_creates_and_binds(data_dir, monkeypatch):
+    # The canonical connector surface has no `universe` tool — opt-in birth
+    # routes through write_graph target=universe (round-12 finding: the model
+    # literally could not create a universe on the public handle set).
+    from tinyassets.api import universe as universe_api
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.ids import is_universe_serial
+    from tinyassets.universe_server import write_graph
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-1")
+    out = json.loads(write_graph(target="universe"))
+    assert out.get("error") is None, out
+    uid = out["universe_id"]
+    assert is_universe_serial(uid)
+    assert get_founder_home(data_dir, "founder-1") == uid
+    assert (data_dir / uid / "soul.md").is_file()
+
+
+def test_write_graph_unknown_target_lists_universe(data_dir):
+    from tinyassets.universe_server import write_graph
+
+    out = json.loads(write_graph(target="nope"))
+    assert out["error"] == "unknown_target"
+    assert "universe" in out["allowed_targets"]
