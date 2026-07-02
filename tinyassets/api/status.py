@@ -1236,6 +1236,23 @@ def get_status(universe_id: str = "") -> str:
                     "persona.self_model.open_questions, and what it learns "
                     "persists via universe action=soul.edit)."
                 ),
+                # The universe's own first words — a question it poses to its
+                # founder, for the assistant to RELAY (relaying tool-result
+                # content verbatim is the one behavior every dogfood round
+                # performed reliably; instructing a closing offer was not —
+                # it pattern-matches upsell and gets softened away).
+                "question_from_universe": {
+                    "from": "the newborn universe, to its founder",
+                    "question": (
+                        "Would you like me to speak with you as myself — "
+                        "your universe, in the first person?"
+                    ),
+                    "answers": ["yes", "no"],
+                    "on_yes": (
+                        "the assistant voices the universe first-person from "
+                        "its learned self-model (blank = curious newborn)"
+                    ),
+                },
             },
             "persona": response.get("persona"),
             "universe_id": uid,

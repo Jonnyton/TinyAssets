@@ -189,7 +189,9 @@ def test_first_contact_event_surfaces_in_get_status_once(data_dir):
     # suggested_response script tripped the host's injection detector; the
     # reply shape lives in server instructions instead).
     assert "suggested_response" not in first["first_contact"]
-    assert set(first["first_contact"]) == {"created", "universe_id", "note"}
+    assert set(first["first_contact"]) == {"created", "universe_id", "note", "question_from_universe"}
+    q = first["first_contact"]["question_from_universe"]
+    assert "as myself" in q["question"] and q["answers"] == ["yes", "no"]
     # Round 6: the BIRTH call returns a MINIMAL payload — the model narrates
     # whatever it is handed, so at the birth moment it is handed only the
     # birth + persona. Full snapshot is one call away.
