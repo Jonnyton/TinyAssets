@@ -338,6 +338,12 @@ def test_write_graph_target_universe_creates_and_binds(data_dir, monkeypatch):
     _login("founder-1")
     out = json.loads(write_graph(target="universe"))
     assert out.get("error") is None, out
+    # Birth card, not the ops-shaped create payload (round-14: the model
+    # narrates what it's handed — checklist fields produce third-person
+    # workflow talk instead of the newborn's voice).
+    assert out["status"] == "born"
+    assert "persona" in out and "first_run_checklist" not in out
+    assert out["persona"]["self_model"]["open_questions"]
     uid = out["universe_id"]
     assert is_universe_serial(uid)
     assert get_founder_home(data_dir, "founder-1") == uid
