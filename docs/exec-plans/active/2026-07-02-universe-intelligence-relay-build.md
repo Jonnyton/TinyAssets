@@ -4,11 +4,29 @@
 - **Goal of this plan:** build the reshape to a **first testable milestone (M1)** the host can drive locally (clean-slate onboard → create universe → assign engine → talk to the engine-backed personified intelligence via chatbot relay).
 - **Method:** vertical slices, dependency-ordered; a developer subagent per slice + Codex/verifier review between slices; worktree `permissions-fail-closed` (branch `claude/founder-identity-allslices`); local `ui-test` after M1. NOT live — local host only until the host says otherwise.
 
-## M1 — first testable milestone
+## M1 — first testable milestone (host chose FULL onboard, 2026-07-02)
 
-> **A founder, from a clean slate, creates a universe, gives it a BYO API-key engine, and converses with its engine-backed personified universe intelligence through the chatbot — which relays (renders its first-person output), never embodies. The intelligence gets to know its founder and can take an action.**
+> **A founder, from a clean slate, creates a universe and goes through the full
+> onboard: choose how the universe runs — assign an engine (BYO API key / BYO
+> self-hosted endpoint / rent a daemon from the market at rate + cap) and/or host
+> their own daemon — and choose which of their subscriptions to offer the market
+> when idle. Then they converse with the engine-backed personified universe
+> intelligence through the chatbot, which relays (renders first-person), never
+> embodies. The intelligence gets to know its founder and can take an action.**
 
-Out of M1 (later slices): market-rented daemon, host-your-own-daemon onboard, market-subscription-contribution, 24/7 persistent loop, app channel, concurrent-awareness/attach-handoff, foundation-merge-prep.
+The host explicitly wants the *whole* onboard felt in the first test, not a minimal
+core (they rejected testing a half-build). This makes M1 large — see the honest
+scale note below.
+
+**Still out of M1 (genuinely separable):** the 24/7 always-on autonomous loop (M1
+uses turn-scoped intelligence — enough to converse + act), the native app channel,
+concurrent-awareness + branch attach-handoff, and foundation-merge-prep. These do
+not gate the onboard-feel test.
+
+**Scale honesty:** M1 spans ~8 slices incl. a paid-market path (rent a daemon) and
+host-your-own-daemon — a multi-session build. For the local test the "market" can
+start as a single local/mock host so the rent-a-daemon flow is exercisable without
+a second real operator; real multi-operator market matching is a hardening follow-up.
 
 ## Slices to M1 (dependency-ordered)
 
@@ -49,10 +67,30 @@ the `--assert-handles` canary in lockstep (Hard Rule 11).
 - **Files:** `tinyassets/universe_server.py` (instructions + handle), `tinyassets/api/prompts.py` (control_station, meet_universe), relay dispatch, `scripts/mcp_public_canary.py` (handle set), tests.
 - **Accept:** a chatbot turn through the connector reaches the intelligence and renders its first-person reply; embodiment instructions gone; canary green with the new handle set.
 
-**→ M1 testable.** Then local `ui-test`: clean slate → create → assign key → converse → it gets to know the founder.
+### S6 — Market-rented daemon (engine source) — *in M1*
+Founder sets the universe to run at a market rate (e.g. GLM 5.2) with a spending cap;
+the paid-market matches a host daemon to run it. Local test: a single local/mock market
+host makes the flow exercisable without a second real operator.
+- **Files:** `tinyassets/api/market.py`, `tinyassets/branch_tasks.py` (claim), `tinyassets/daemon_registry.py` (`daemon_summon`/runtime_instance), `tinyassets/api/universe.py` (engine-source = market), tests.
+- **Accept:** a universe set to market-rented gets a daemon assigned + capped; a turn runs on the rented engine; cap enforced.
 
-## Later slices (post-M1, host-prioritized)
-S6 market-rented daemon · S7 host-your-own-daemon onboard · S8 market-subscription-contribution (which subs to offer when idle) · S9 24/7 persistent loop · S10 app channel · S11 concurrent-awareness + branch attach-handoff · S12 foundation-merge-prep (fail-open fallback, rename-orphans, rebase) — gated on a *later, explicit* host merge approval.
+### S7 — Host-your-own-daemon onboard — *in M1*
+The founder hosts their own daemon as an onboard step (the current pre-hosted daemons
+must NOT pre-exist on clean slate; hosting is founder-initiated). Reset clears all
+daemons; onboard offers "host a daemon for your universe."
+- **Files:** `tinyassets/reset.py` (verify clears daemons), `tinyassets/api/universe.py` (host-daemon onboard action), `fantasy_daemon`/runtime hosting seam, tests.
+- **Accept:** clean slate = zero daemons; onboard lets the founder host a daemon bound to their universe; it runs a turn.
+
+### S8 — Market-subscription-contribution — *in M1*
+The founder chooses which of their subscriptions/engines to offer the market (and how
+much) when not running one of their own universes.
+- **Files:** `tinyassets/api/market.py` (offer/contribute), `tinyassets/config.py` (per-founder offer config), `tinyassets/credential_vault.py` (engine ref), tests.
+- **Accept:** a founder can list an engine to the market with a cap/rate; it becomes claimable by other universes; togglable.
+
+**→ M1 testable.** Then local `ui-test`: clean slate → create → full onboard (engine choice: key/endpoint/market + host-daemon + market-contribution) → converse → it gets to know the founder.
+
+## Later slices (post-M1)
+S9 24/7 persistent loop · S10 app channel · S11 concurrent-awareness + branch attach-handoff · S12 foundation-merge-prep (fail-open fallback, rename-orphans, rebase) — gated on a *later, explicit* host merge approval.
 
 ## Notes
 - Foundation blockers (fail-open optional-mode fallback; rename-orphans; rebase) are **merge-prep, not local-test blockers** — local test runs WorkOS mode. Deferred to S12.
