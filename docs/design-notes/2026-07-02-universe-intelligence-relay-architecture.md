@@ -39,9 +39,11 @@ The **universe intelligence** becomes the single agent per universe:
     intelligence. Primary control surface.
   - **Relay** (chatbot + MCP connector) → the chatbot forwards your turn to the
     same intelligence and renders its first-person response. A transport pipe.
-- The chatbot MCP **loses control** — it demotes to **onboarding** (sign in,
-  create a universe, assign its LLM) + **relay** (talk to your universe
-  indirectly). It no longer *is* the universe; it relays the universe.
+- The chatbot MCP **relay is the *main* path** — but the **direct-control route
+  stays open** (host clarification 2026-07-02, §12): a founder who wants to take
+  actions themselves through the chatbot, or who does not host a daemon, keeps
+  the action tools. Relay is the default, not the only mode. What the chatbot
+  stops doing is *embodying* (pretending to BE the universe) — not *acting*.
 
 ## 3. Why this reverses "chatbot embodies, never relays" (the load-bearing call)
 
@@ -236,3 +238,44 @@ Everything else is wiring.
    founder writes directly via **WorkOS** (principal b) — they do **not** need the
    always-on intelligence to be the one writing. The intelligence is *a* write
    principal, not the *only* one. Nothing breaks; confirmed consistent.
+
+## 12. Executor spectrum + market (host clarification 2026-07-02)
+
+The relay is the *main* path, but the chatbot's **direct-control route stays
+open**. The mental model is **one shared universe brain** (soul/persona/memory/
+goals/state) with many **surfaces** and **executors** around it, all aware of
+each other:
+
+- **Concurrent shared awareness.** A founder can build a branch directly via the
+  chatbot *while* the daemon runs autonomously; the daemon is aware of that
+  in-progress work the whole time (shared brain/state). On completion the chatbot
+  **attaches** the branch to the universe + goals and the daemon **adopts** it
+  like any branch it already runs. Requires: the brain is the single shared
+  read/write substrate; the daemon observes founder-side work, not just its own.
+- **Executor spectrum — the founder chooses their infrastructure/autonomy level:**
+  1. **Host your own daemon** (their machine/cloud, their engine).
+  2. **BYO engine** (API key / self-hosted endpoint) on a platform daemon (§11#2).
+  3. **Bring nothing** → platform default engine.
+  4. **Rent from the live market** — other users host daemons; the founder sets
+     their universe to run at the current market rate (e.g. "GLM 5.2") with a
+     **spending cap**. No self-hosting, no BYO-engine. **This is the clean answer
+     to the §11#2 ToS custody problem:** the market host runs *their own* engine
+     legally + gets paid; the platform never custodies a founder's subscription.
+  5. **Chatbot-exclusive** — the chatbot runs branches itself via **subagents**
+     (interactive only; uses the host client's own LLM in-session → ToS-fine),
+     possibly even running the universe's main daemon that way. Zero infra.
+- **The autonomy line:** only **24/7 background** automation needs *some*
+  persistent executor (owned / BYO / default / market-rented). Everything else is
+  reachable interactively via the chatbot. "Zero daemons for authoring" = this.
+- **Mostly existing substrate.** This is the PLAN **Daemon Platform** (runtime
+  instances bound to provider/model/executor; file-locked claim across cloud+host
+  executors; capacity-bounded fleets) + the **paid market** (inbox + bid
+  matching; `branch_tasks.claim_task`; `market` goals/bid actions;
+  `daemon_summon` universe-scoped w/ provider+model), **unified** with the
+  universe intelligence. The reshape does not invent a market; it routes the
+  universe's own daemon through the one that exists. Market-rate rental with a
+  founder spending cap + market-run of the *universe daemon itself* are the main
+  new capabilities to design against that substrate.
+- **Correction to §7/§8:** the chatbot is NOT demoted to onboard+relay-only. It
+  keeps its action tools (direct control) as a secondary path; only *embodiment*
+  is removed. The MVP relay is additive, not a removal of control.

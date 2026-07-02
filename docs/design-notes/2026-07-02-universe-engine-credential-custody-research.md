@@ -42,6 +42,15 @@ workflow for … trusted **private** automation," "personal account automation o
 "single machine or serialized job streams per token,"* explicitly **not for public
 repos or platforms running automation on behalf of other users.**
 
+> **Narrowing (Codex review 2026-07-02):** the blanket "no ChatGPT automation" is
+> too broad — OpenAI *does* document **Business/Enterprise Codex access tokens for
+> trusted non-interactive workflows**. That is an **org-level** path, distinct from
+> a *personal* ChatGPT Plus/Pro subscription, and does not change the reshape
+> conclusion (the platform still must not custody a founder's *personal consumer*
+> subscription). It is, however, relevant to enterprise founders + market hosts,
+> who may legitimately bring an org access token as their engine. Add durable links
+> (OpenAI Codex access tokens / CI auth / terms; Anthropic legal + consumer terms).
+
 **What this means for the reshape.** A founder's **subscription** cannot lawfully be
 custodied by the platform and driven 24/7 server-side on their behalf — it is
 simultaneously (a) account-credential sharing, (b) OAuth-token-in-a-third-party-
@@ -344,3 +353,29 @@ ways over and risks account bans for the founder *and* platform. Every downstrea
 decision (UX copy, vault schema, engine-assignment flow) must encode: **subscription =
 platform-default-only or on-device-only; the founder's 24/7 BYO engine is an API key
 or an endpoint.**
+
+---
+
+## Codex opposite-provider review (2026-07-02) — ADAPT
+
+Dispatched per the AGENTS.md research-finding gate (Claude-made finding →
+Codex review before it gates build). Verdict **ADAPT** — the load-bearing ToS
+conclusion is **confirmed**, with one narrowing.
+
+- **CONFIRMED (Anthropic):** don't route third-party requests through Free/Pro/Max
+  credentials; Consumer Terms bar credential sharing + most non-API automation.
+- **ADAPT (OpenAI):** the note overstated the OpenAI side. OpenAI recommends API
+  keys for programmatic Codex and forbids account sharing / programmatic
+  extraction, **but also documents Business/Enterprise Codex access tokens for
+  trusted non-interactive workflows** — an org-level path distinct from a personal
+  ChatGPT subscription. Narrowed inline above. Does not change the conclusion for
+  *personal* subscriptions.
+- **Net:** "do not custody a founder's personal consumer subscription server-side"
+  stands and is now opposite-provider-confirmed → may gate build. The host's
+  **market-rented-daemon lane** (relay-architecture note §12) is the clean
+  sidestep: market hosts run their own engines legally + get paid.
+- Codex also re-confirmed the foundation merge-blockers (fail-open optional-mode
+  fallback; daemon-scope-gate = Gap B; rename-orphan test debt; branch behind
+  origin/main). Logged in `2026-07-02-universe-intelligence-relay-codex-review.md`.
+
+Raw: `$CLAUDE_JOB_DIR/tmp/codex_custody_review.md`.
