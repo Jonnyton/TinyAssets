@@ -710,6 +710,19 @@ class AuthProvider(ABC):
         """
         return False
 
+    def challenge_unauthenticated(self) -> bool:
+        """Whether a *missing* bearer token on the MCP endpoint should return a
+        401 ``WWW-Authenticate`` challenge (default off).
+
+        Resolve-always keeps anonymous reads working by NOT challenging a missing
+        token — but MCP clients (Claude.ai/ChatGPT) only start OAuth on a 401, so
+        an optional-auth connector never prompts the founder to sign in and
+        first-contact never fires. Providers that want to force the OAuth flow on
+        the founder connector return True here; discovery routes stay public so
+        the client can still find the authorization server.
+        """
+        return False
+
     @abstractmethod
     def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Dynamic Client Registration (RFC 7591).

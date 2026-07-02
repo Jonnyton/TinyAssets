@@ -83,13 +83,34 @@ def auth_middleware(token: str | None) -> Identity:
     return identity
 
 
-async def _send_invalid_token_401(send: Any) -> None:
+def _auth_challenge_path(path: str) -> bool:
+    """The MCP endpoint (``/mcp`` + sub-paths) requires auth in challenge mode.
+    Discovery routes stay public so the client can still find the authorization
+    server, and sibling surfaces like ``/mcp-directory`` are not swept in.
+    """
+    if ".well-known" in path:
+        return False
+    return path == "/mcp" or path.startswith("/mcp/")
+
+
+async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
     """Emit an RFC 9728 ``401`` with a ``WWW-Authenticate`` challenge pointing
-    at our Protected Resource Metadata, so clients start/refresh OAuth."""
+    at our Protected Resource Metadata, so clients start/refresh OAuth.
+
+    ``invalid_token=True`` is the present-but-bad-token case (RFC 6750
+    ``error="invalid_token"``). ``False`` is a missing-credentials challenge —
+    no error code, per RFC 6750 — used in require-auth mode so an unauthenticated
+    client launches the OAuth flow instead of proceeding anonymously.
+    """
     from tinyassets.auth.wellknown import _server_url
 
     prm = f"{_server_url()}/.well-known/oauth-protected-resource"
-    challenge = f'Bearer error="invalid_token", resource_metadata="{prm}"'
+    if invalid_token:
+        challenge = f'Bearer error="invalid_token", resource_metadata="{prm}"'
+        body = b'{"error":"invalid_token"}'
+    else:
+        challenge = f'Bearer resource_metadata="{prm}"'
+        body = b'{"error":"authentication_required"}'
     await send({
         "type": "http.response.start",
         "status": 401,
@@ -100,7 +121,7 @@ async def _send_invalid_token_401(send: Any) -> None:
     })
     await send({
         "type": "http.response.body",
-        "body": b'{"error":"invalid_token"}',
+        "body": body,
     })
 
 
@@ -138,10 +159,22 @@ class AuthContextMiddleware:
             if auth_header.lower().startswith("bearer "):
                 token = auth_header[7:].strip()
             auth_middleware(token)
-            if token and _current_identity.get() is None:
+            identity = _current_identity.get()
+            if token and identity is None:
                 # Present-but-invalid bearer token → 401 challenge (RFC 9728).
-                # A missing token stays anonymous (public reads still work).
-                await _send_invalid_token_401(send)
+                await _send_auth_challenge_401(send, invalid_token=True)
+                return
+            if (
+                identity is ANONYMOUS
+                and _auth_challenge_path(scope.get("path", ""))
+                and _get_provider().challenge_unauthenticated()
+            ):
+                # Require-auth (founder connector): a missing token on the MCP
+                # endpoint returns a 401 so the client launches OAuth. Without
+                # this the connector connects anonymously and first-contact
+                # (which needs an authenticated founder) never fires. Discovery
+                # routes are exempt so the client can still find the AS.
+                await _send_auth_challenge_401(send, invalid_token=False)
                 return
             await self.app(scope, receive, send)
         finally:

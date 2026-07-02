@@ -191,6 +191,17 @@ class WorkOSAuthProvider(AuthProvider):
         # founder holding the action's grant (require_action_scope enforces).
         return True
 
+    def challenge_unauthenticated(self) -> bool:
+        # Founder connector: when WORKOS_REQUIRE_AUTH is truthy, a missing token
+        # on the MCP endpoint returns a 401 challenge so the client launches the
+        # AuthKit OAuth flow — otherwise the connector connects anonymously and
+        # first-contact (which needs an authenticated founder) never fires.
+        # Discovery routes stay public (the transport exempts them).
+        return (
+            os.environ.get("WORKOS_REQUIRE_AUTH", "").strip().lower()
+            in _ALLOW_NO_AUDIENCE_TRUTHY
+        )
+
     # --- OAuth flow: AuthKit's job, not the Resource Server's --------------
 
     def _flow_not_ours(self, what: str) -> Any:
