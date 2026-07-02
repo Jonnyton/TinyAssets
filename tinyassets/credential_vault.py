@@ -15,7 +15,26 @@ from typing import Any
 
 VAULT_FILENAME = ".credential-vault.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
-VALID_CREDENTIAL_TYPES = frozenset({"social", "llm_subscription", "vcs"})
+VALID_CREDENTIAL_TYPES = frozenset(
+    {"social", "llm_subscription", "llm_api_key", "vcs"}
+)
+
+# Map a deposited llm_api_key record's ``service`` to the provider-subprocess
+# env var that CLI providers read. Only CLI-subprocess providers are reachable
+# via the vault env overlay (claude-code / codex); the in-process HTTP free-tier
+# providers build their client from process env at import and are out of scope.
+_LLM_API_KEY_ENV_BY_SERVICE: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "claude": "ANTHROPIC_API_KEY",
+    "claude-code": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "codex": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "google": "GEMINI_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "xai": "XAI_API_KEY",
+    "grok": "XAI_API_KEY",
+}
 
 
 def credential_vault_path(universe_dir: str | Path) -> Path:
@@ -336,23 +355,71 @@ def claude_subscription_auth_available(universe_dir: str | Path | None) -> bool:
     return bool(config_dir and config_dir.is_dir())
 
 
+def supported_llm_api_key_services() -> frozenset[str]:
+    """Services a BYO ``llm_api_key`` deposit may target.
+
+    Only these reach a CLI-subprocess provider via the vault env overlay; a
+    deposit for any other service would never inject and the founder's engine
+    would silently not run (validate at deposit time — Hard Rule #8)."""
+    return frozenset(_LLM_API_KEY_ENV_BY_SERVICE)
+
+
+def resolve_llm_api_key(
+    universe_dir: str | Path | None, env_var: str
+) -> str:
+    """Return a deposited BYO API key whose ``service`` maps to *env_var*, or ''.
+
+    Scans ``llm_api_key`` vault records; a record matches when its ``service``
+    resolves (via ``_LLM_API_KEY_ENV_BY_SERVICE``) to the requested provider env
+    var. This is the founder's BYO-engine path — the deposited key is injected
+    into the CLI subprocess env so ``claude -p`` / ``codex exec`` authenticate
+    with the founder's own key instead of the platform's subscription.
+    """
+    if universe_dir is None:
+        return ""
+    for record in load_credential_vault(universe_dir):
+        if record.get("credential_type") != "llm_api_key":
+            continue
+        service = _service(record)
+        if _LLM_API_KEY_ENV_BY_SERVICE.get(service) != env_var:
+            continue
+        return _secret_value(record, "api_key", "key", "token")
+    return ""
+
+
 def provider_auth_env_overrides(
     universe_dir: str | Path | None,
     provider_name: str,
 ) -> dict[str, str]:
-    """Return subprocess env overrides for a subscription-backed provider."""
+    """Return subprocess env overrides for a CLI-subprocess provider.
+
+    Composes subscription auth (CODEX_HOME / CLAUDE_CONFIG_DIR) with an optional
+    founder-deposited BYO API key (OPENAI_API_KEY / ANTHROPIC_API_KEY). The key
+    is overlaid here, AFTER ``subprocess_env_without_api_keys`` has stripped the
+    process-global keys, so a per-universe key never leaks across universes and
+    the platform default is not exposed to a BYO-key universe.
+    """
     provider = provider_name.strip()
     if provider == "codex":
-        codex_home = ensure_codex_home_from_vault(universe_dir)
-        return {"CODEX_HOME": str(codex_home)} if codex_home else {}
-    if provider == "claude-code":
         overrides: dict[str, str] = {}
+        codex_home = ensure_codex_home_from_vault(universe_dir)
+        if codex_home:
+            overrides["CODEX_HOME"] = str(codex_home)
+        api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
+        if api_key:
+            overrides["OPENAI_API_KEY"] = api_key
+        return overrides
+    if provider == "claude-code":
+        overrides = {}
         claude_config_dir = ensure_claude_config_dir_from_vault(universe_dir)
         if claude_config_dir:
             overrides["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
         oauth_token = resolve_claude_oauth_token(universe_dir)
         if oauth_token:
             overrides["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+        api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
+        if api_key:
+            overrides["ANTHROPIC_API_KEY"] = api_key
         return overrides
     return {}
 
@@ -371,7 +438,11 @@ def apply_provider_auth_env(
     universe_dir: str | Path | None = None,
 ) -> dict[str, str]:
     """Overlay per-universe subscription auth settings onto *env*."""
-    resolved_universe = Path(universe_dir) if universe_dir is not None else resolve_universe_from_env(env)
+    resolved_universe = (
+        Path(universe_dir)
+        if universe_dir is not None
+        else resolve_universe_from_env(env)
+    )
     if resolved_universe is None:
         return env
     try:

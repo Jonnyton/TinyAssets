@@ -147,12 +147,14 @@ def test_module_exposes_expected_public_names() -> None:
     )
 
 
-def test_write_actions_table_has_25_entries() -> None:
-    """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes
-    and the soul.edit learn path. (set_persona_name retired — identity is
-    learned in the self-model via soul.edit.)"""
-    assert len(univ_mod.WRITE_ACTIONS) == 25
+def test_write_actions_table_has_26_entries() -> None:
+    """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes,
+    the soul.edit learn path, and the set_engine founder engine-assignment path.
+    (set_persona_name retired — identity is learned in the self-model via
+    soul.edit.)"""
+    assert len(univ_mod.WRITE_ACTIONS) == 26
     assert "soul.edit" in univ_mod.WRITE_ACTIONS
+    assert "set_engine" in univ_mod.WRITE_ACTIONS
 
 
 def test_write_actions_entries_are_extractor_gate_tuples() -> None:
