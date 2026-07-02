@@ -302,7 +302,7 @@ class _RecordingProvider:
         self._fail = fail
         self.calls = 0
 
-    async def complete(self, prompt, system, cfg):
+    async def complete(self, prompt, system, cfg, *, universe_dir=None):
         from tinyassets.exceptions import ProviderUnavailableError
         from tinyassets.providers.base import ProviderResponse
 

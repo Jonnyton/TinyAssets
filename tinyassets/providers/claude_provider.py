@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from tinyassets.exceptions import (
     ProviderError,
@@ -63,12 +64,14 @@ class ClaudeProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
         base_cmd, use_shell = _resolve_claude_cmd()
         cmd = [*base_cmd, "-p"]
         if system:
             cmd.extend(["--system-prompt", system])
-        proc_env = subprocess_env_for_provider(self.name)
+        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
 
         win_kw = _no_window_kwargs()
         if use_shell:
@@ -147,13 +150,15 @@ class ClaudeProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
         """Call with ``--output-format json`` for structured output."""
         base_cmd, use_shell = _resolve_claude_cmd()
         cmd = [*base_cmd, "-p", "--output-format", "json"]
         if system:
             cmd.extend(["--system-prompt", system])
-        proc_env = subprocess_env_for_provider(self.name)
+        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
 
         win_kw = _no_window_kwargs()
         if use_shell:

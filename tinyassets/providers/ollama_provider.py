@@ -13,6 +13,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from tinyassets.exceptions import ProviderError, ProviderUnavailableError
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
@@ -43,6 +44,8 @@ class OllamaProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
         payload = {
             "model": self._text_model,

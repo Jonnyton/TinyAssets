@@ -172,7 +172,11 @@ _real_router = _build_fallback_router()
 
 
 def _call_router_with_retry(
-    role: str, prompt: str, system: str, config: Any = None,
+    role: str,
+    prompt: str,
+    system: str,
+    config: Any = None,
+    universe_context: Any = None,
 ) -> str:
     """Call the installed router with tenacity retry on transient exhaustion.
 
@@ -190,12 +194,16 @@ def _call_router_with_retry(
     )
     def _attempt() -> str:
         global _last_provider
-        # Only forward config when set, so existing routers/stubs with the
-        # 3-arg call_sync signature keep working (backward-compat).
+        # Only forward config / universe_context when set, so existing
+        # routers/stubs with the 3-arg call_sync signature keep working
+        # (backward-compat).
+        kwargs: dict[str, Any] = {}
+        if universe_context is not None:
+            kwargs["universe_context"] = universe_context
         if config is not None:
-            result = _real_router.call_sync(role, prompt, system, config)
+            result = _real_router.call_sync(role, prompt, system, config, **kwargs)
         else:
-            result = _real_router.call_sync(role, prompt, system)
+            result = _real_router.call_sync(role, prompt, system, **kwargs)
         _last_provider = result.provider
         return result.text
 
@@ -209,6 +217,7 @@ def call_provider(
     role: str = "writer",
     fallback_response: str | None = None,
     config: Any = None,
+    universe_context: Any = None,
 ) -> str:
     """Call an LLM provider with automatic fallback.
 
@@ -229,6 +238,11 @@ def call_provider(
         Returned if all providers fail. If ``None`` in production, provider
         exhaustion surfaces as the real error rather than masquerading as an
         empty LLM response downstream.
+    universe_context:
+        Optional per-universe routing context (:class:`~tinyassets.providers.
+        base.UniverseContext`) threaded through to ``call_sync`` so engine
+        preference + vault auth resolve for the given universe instead of the
+        process globals.
     """
     if _force_mock:
         if fallback_response is not None:
@@ -240,7 +254,9 @@ def call_provider(
 
     if _real_router is not None:
         try:
-            return _call_router_with_retry(role, prompt, system, config)
+            return _call_router_with_retry(
+                role, prompt, system, config, universe_context,
+            )
         except Exception as e:
             provider_error = e
             logger.error(

@@ -417,7 +417,7 @@ async def test_call_with_policy_returns_meta_triple():
     class _Prov:
         name = "fake"
 
-        async def complete(self, prompt, system, cfg):
+        async def complete(self, prompt, system, cfg, *, universe_dir=None):
             return ProviderResponse(
                 text="out", provider="fake", model="fake-1",
                 family="test", latency_ms=5,

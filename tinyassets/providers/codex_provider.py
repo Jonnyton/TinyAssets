@@ -93,6 +93,8 @@ class CodexProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
         full_input = f"{system}\n\n{prompt}" if system else prompt
 
@@ -126,7 +128,7 @@ class CodexProvider(BaseProvider):
             "--skip-git-repo-check",
             "--ephemeral",
         ]
-        proc_env = subprocess_env_for_provider(self.name)
+        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
 
         win_kw = _no_window_kwargs()
         cmd_with_cwd = [*cmd, "-C", _codex_workdir()]
