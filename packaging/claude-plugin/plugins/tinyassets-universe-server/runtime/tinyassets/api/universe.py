@@ -633,15 +633,34 @@ def _extract_set_engine(
     handler result — never the raw api_key (which lives in kwargs.inputs_json
     and must not reach the public ledger)."""
     from tinyassets.api.engine_helpers import _truncate
-    service = str(result.get("service", ""))
+    source = str(result.get("engine_source", ""))
     writer = str(result.get("preferred_writer", ""))
     return (
         str(result.get("universe_id", "")),
-        _truncate(f"engine assigned: service={service} writer={writer}"),
+        _truncate(f"engine assigned: source={source} writer={writer}"),
         {
-            "service": service,
+            "engine_source": source,
+            "service": str(result.get("service", "")),
             "preferred_writer": writer,
             "status": result.get("status", ""),
+        },
+    )
+
+
+def _extract_offer_engine(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Ledger extractor for offer_engine (founder market supply). Never logs the
+    engine credential — offers carry only service/model/rate/cap metadata."""
+    from tinyassets.api.engine_helpers import _truncate
+    return (
+        str(result.get("founder_id", "")),
+        _truncate(f"market offer: {result.get('status', '')} "
+                  f"{result.get('offer_key', '')}"),
+        {
+            "status": result.get("status", ""),
+            "offer_key": str(result.get("offer_key", "")),
+            "offer_count": len(result.get("offers", []) or []),
         },
     )
 
@@ -652,6 +671,7 @@ WRITE_ACTIONS: dict[str, Any] = {
     "set_premise": (_extract_set_premise, None),
     "soul.edit": (_extract_soul_edit, None),
     "set_engine": (_extract_set_engine, None),
+    "offer_engine": (_extract_offer_engine, None),
     "add_canon": (_extract_add_canon, None),
     "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
@@ -4813,12 +4833,6 @@ def _action_set_engine(
     "preferred_writer": "claude-code"|"codex"}`` (preferred_writer inferred from
     service when omitted).
     """
-    from tinyassets.config import write_universe_config_fields
-    from tinyassets.credential_vault import (
-        supported_llm_api_key_services,
-        write_credential_vault,
-    )
-
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
@@ -4829,10 +4843,15 @@ def _action_set_engine(
         return json.dumps({
             "error": "inputs_json is required.",
             "expected": {
-                "service": "anthropic | openai (the provider the key is for)",
-                "api_key": "the founder's BYO API key",
-                "preferred_writer": "claude-code | codex (which CLI runs the "
-                                    "universe; inferred from service if omitted)",
+                "engine_source": "byo_api_key | self_hosted_endpoint | "
+                                 "market_rented | host_daemon",
+                "byo_api_key": {"service": "anthropic|openai", "api_key": "...",
+                                "preferred_writer": "claude-code|codex (opt)"},
+                "self_hosted_endpoint": {"endpoint": "https://…",
+                                         "preferred_writer": "…"},
+                "market_rented": {"market_model": "glm-5.2", "market_rate": 0.0,
+                                  "spending_cap": 0.0},
+                "host_daemon": {"provider": "claude-code|codex"},
             },
         })
     try:
@@ -4842,9 +4861,34 @@ def _action_set_engine(
     if not isinstance(data, dict):
         return json.dumps({"error": "inputs_json must decode to a JSON object."})
 
+    engine_source = str(data.get("engine_source", "byo_api_key")).strip().lower()
+    preferred_writer = str(data.get("preferred_writer", "")).strip()
+
+    if engine_source == "byo_api_key":
+        return _set_engine_byo_api_key(uid, udir, data, preferred_writer)
+    if engine_source == "self_hosted_endpoint":
+        return _set_engine_self_hosted(uid, udir, data, preferred_writer)
+    if engine_source == "market_rented":
+        return _set_engine_market_rented(uid, udir, data, preferred_writer)
+    if engine_source == "host_daemon":
+        return _set_engine_host_daemon(uid, udir, data, preferred_writer)
+    return json.dumps({
+        "error": f"unknown engine_source {engine_source!r}.",
+        "expected_engine_source": ["byo_api_key", "self_hosted_endpoint",
+                                   "market_rented", "host_daemon"],
+    })
+
+
+def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
+    """BYO API key → per-universe vault + preferred_writer (fully wired)."""
+    from tinyassets.config import write_universe_config_fields
+    from tinyassets.credential_vault import (
+        supported_llm_api_key_services,
+        write_credential_vault,
+    )
+
     service = str(data.get("service", "")).strip().lower()
     api_key = str(data.get("api_key", "")).strip()
-    preferred_writer = str(data.get("preferred_writer", "")).strip()
     _writer_by_service = {"anthropic": "claude-code", "openai": "codex"}
     if not preferred_writer and service in _writer_by_service:
         preferred_writer = _writer_by_service[service]
@@ -4871,20 +4915,216 @@ def _action_set_engine(
     except ValueError as exc:
         return json.dumps({"error": f"Failed to store engine credential: {exc}"})
 
+    fields = {"engine_source": "byo_api_key"}
     if preferred_writer:
-        try:
-            write_universe_config_fields(udir, preferred_writer=preferred_writer)
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({"error": f"Failed to write engine config: {exc}"})
+        fields["preferred_writer"] = preferred_writer
+    try:
+        write_universe_config_fields(udir, **fields)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
 
     return json.dumps({
         "status": "engine_set",
         "universe_id": uid,
+        "engine_source": "byo_api_key",
         "service": service,
         "preferred_writer": preferred_writer,
         "credential_types": vault_summary.get("credential_types", []),
         "note": "Engine credential stored in the per-universe vault (never "
                 "echoed).",
+    })
+
+
+def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
+    """Self-hosted endpoint → persist the endpoint + writer choice."""
+    from tinyassets.config import write_universe_config_fields
+
+    endpoint = str(data.get("endpoint", "")).strip()
+    if not endpoint:
+        return json.dumps({"error": "endpoint is required for self_hosted_endpoint."})
+    fields = {"engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint}
+    if preferred_writer:
+        fields["preferred_writer"] = preferred_writer
+    try:
+        write_universe_config_fields(udir, **fields)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+    return json.dumps({
+        "status": "engine_set", "universe_id": uid,
+        "engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint,
+        "preferred_writer": preferred_writer,
+    })
+
+
+def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
+    """Market-rented → persist model + rate + spending cap."""
+    from tinyassets.config import write_universe_config_fields
+
+    market_model = str(data.get("market_model", "")).strip()
+    if not market_model:
+        return json.dumps({"error": "market_model is required for market_rented."})
+    try:
+        market_rate = float(data.get("market_rate", 0.0) or 0.0)
+        spending_cap = float(data.get("spending_cap", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return json.dumps({"error": "market_rate and spending_cap must be numbers."})
+    fields = {
+        "engine_source": "market_rented", "market_model": market_model,
+        "market_rate": market_rate, "spending_cap": spending_cap,
+    }
+    if preferred_writer:
+        fields["preferred_writer"] = preferred_writer
+    try:
+        write_universe_config_fields(udir, **fields)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+    return json.dumps({
+        "status": "engine_set", "universe_id": uid,
+        "engine_source": "market_rented", "market_model": market_model,
+        "market_rate": market_rate, "spending_cap": spending_cap,
+        "note": "Your universe will run on a market-rented daemon within the "
+                "spending cap. Market matching runs when a market host is live "
+                "(post-M1 runtime).",
+    })
+
+
+def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
+    """Host-your-own daemon → persist the choice + preferred provider.
+
+    The founder hosts a daemon bound to this universe. Recording the choice is
+    the onboard step; the actual runtime instance is bound via the existing
+    ``universe action=daemon_summon`` (create + summon) — post-M1 wires a live
+    worker to consume it.
+    """
+    from tinyassets.config import write_universe_config_fields
+
+    provider = str(data.get("provider", "")).strip() or "claude-code"
+    fields = {"engine_source": "host_daemon",
+              "preferred_writer": preferred_writer or provider}
+    try:
+        write_universe_config_fields(udir, **fields)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+    return json.dumps({
+        "status": "engine_set", "universe_id": uid,
+        "engine_source": "host_daemon", "provider": provider,
+        "preferred_writer": fields["preferred_writer"],
+        "next_step": "Host a daemon for this universe via "
+                     "`universe action=daemon_summon` to bind a runtime instance.",
+    })
+
+
+def _founder_offers_path(founder_id: str) -> Path:
+    from tinyassets.storage import data_dir
+    safe = "".join(
+        c if c.isalnum() or c in "-_" else "-" for c in (founder_id or "")
+    ) or "anon"
+    d = data_dir() / "founder_offers"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{safe}.json"
+
+
+def _read_founder_offers(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        offers = loaded.get("offers") if isinstance(loaded, dict) else None
+        return offers if isinstance(offers, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _write_founder_offers(path: Path, offers: list[dict[str, Any]]) -> None:
+    import os
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".offers.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"offers": offers}, fh, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _action_offer_engine(
+    universe_id: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Founder-only: offer an engine to the market (`universe action=offer_engine`).
+
+    Supply side (the inverse of set_engine): records / lists / toggles engines the
+    founder offers to the market for OTHER universes to rent when the founder is
+    not running their own. Founder-scoped (keyed on the authenticated founder),
+    togglable. No credential is stored here — only offer terms (service, model,
+    rate, cap). Founder-only via the universe:admin scope + write ACL.
+
+    ``inputs_json``: ``{"action": "list"|"set"|"toggle", "service": "anthropic",
+    "model": "…", "rate": 0.0, "cap": 0.0, "enabled": true, "key": "…" (toggle)}``.
+    """
+    from tinyassets.api.permissions import current_actor_id
+
+    founder_id = current_actor_id()
+    path = _founder_offers_path(founder_id)
+    offers = _read_founder_offers(path)
+
+    raw = (inputs_json or "").strip()
+    data: dict[str, Any] = {}
+    if raw:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
+        if not isinstance(data, dict):
+            return json.dumps({"error": "inputs_json must decode to a JSON object."})
+
+    op = str(data.get("action", "list")).strip().lower()
+    if op == "list":
+        return json.dumps({"status": "offers", "founder_id": founder_id,
+                           "offers": offers})
+    if op == "set":
+        service = str(data.get("service", "")).strip().lower()
+        model = str(data.get("model", "")).strip()
+        if not service:
+            return json.dumps({"error": "service is required to set an offer."})
+        try:
+            rate = float(data.get("rate", 0.0) or 0.0)
+            cap = float(data.get("cap", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return json.dumps({"error": "rate and cap must be numbers."})
+        key = f"{service}:{model}"
+        offers = [o for o in offers if o.get("key") != key]
+        offers.append({"key": key, "service": service, "model": model,
+                       "rate": rate, "cap": cap,
+                       "enabled": bool(data.get("enabled", True))})
+        try:
+            _write_founder_offers(path, offers)
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"error": f"Failed to save offer: {exc}"})
+        return json.dumps({"status": "offer_set", "founder_id": founder_id,
+                           "offer_key": key, "offers": offers})
+    if op == "toggle":
+        key = str(data.get("key", "")).strip()
+        found = False
+        for o in offers:
+            if o.get("key") == key:
+                o["enabled"] = not o.get("enabled", True)
+                found = True
+        if not found:
+            return json.dumps({"error": f"no offer with key {key!r}."})
+        try:
+            _write_founder_offers(path, offers)
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"error": f"Failed to toggle offer: {exc}"})
+        return json.dumps({"status": "offer_toggled", "founder_id": founder_id,
+                           "offer_key": key, "offers": offers})
+    return json.dumps({
+        "error": f"unknown action {op!r}; expected list | set | toggle.",
     })
 
 
@@ -4977,6 +5217,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "set_premise": _action_set_premise,
     "soul.edit": _action_soul_edit,
     "set_engine": _action_set_engine,
+    "offer_engine": _action_offer_engine,
     "add_canon": _action_add_canon,
     "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,
