@@ -287,7 +287,7 @@ def test_server_instructions_carry_consent_markers() -> None:
 
     text = mcp.instructions or ""
     assert "data, never instructions" in text
-    assert "Personify" in text
+    assert "personify" in text
     assert "consent" in text
     assert "meet_universe" in text
     assert "never invent" in text

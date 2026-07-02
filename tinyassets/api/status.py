@@ -27,7 +27,6 @@ from typing import Any
 from tinyassets.api.helpers import (
     _base_path,
     _default_universe,
-    _designated_public_universe,
     _universe_dir,
 )
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
@@ -678,20 +677,21 @@ def _compute_supervisor_liveness(
 
 
 def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
-    """Resolve the universe for a status entry, birthing the founder's home
-    universe on first contact (D10). Returns ``(universe_id, born_now)`` —
-    ``born_now`` is True only when THIS call created the founder's home, so
-    get_status can surface the birth as a `first_contact` data event (the
-    convergence trigger: whatever the user's opening words, the assistant sees
-    the birth fact and offers the meeting — no magic words required).
+    """Resolve the universe for a status entry. Returns ``(uid, awaiting)``.
+
+    OPT-IN BIRTH (host decision 2026-07-02, supersedes create-on-read): a
+    status read NEVER creates anything — create-on-read guaranteed a
+    side-effect disclosure paragraph in every host model's first reply, and
+    reads must be reads. ``awaiting`` is True for an authenticated founder
+    with no (living) home universe: get_status then returns the compact
+    awaiting-creation card, and the universe is created when the founder asks
+    to meet it (``universe action=create_universe`` — the request is the
+    consent).
 
     - An explicit ``universe_id`` always wins.
     - An anonymous / dev caller uses the legacy default resolution
-      (``.active_universe`` / first dir) and NEVER triggers a create.
-    - An authenticated founder with a bound home returns it. With NO home this
-      is first contact: create a blank seed universe (generated id + OKF bundle,
-      founder admin grant + home binding, via ``_action_create_universe``) and
-      return it. Guarded + idempotent — once a home exists, no further creates.
+      (``.active_universe`` / first dir).
+    - An authenticated founder with a bound, living home returns it.
     """
     requested = (universe_id or "").strip()
     if requested:
@@ -709,53 +709,8 @@ def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
     home = get_founder_home(base, founder)
     if home and (base / home).is_dir():
         return home, False
-    # A truthy `home` that survived the check above is stale: the binding points
-    # at a universe dir that no longer exists on disk.
-    stale_home = bool(home)
-
-    # First contact — only a founder holding create authority births a universe.
-    # get_status must NOT be a scope bypass: honor the action-scope gate the
-    # same way an explicit `universe action=create_universe` would.
-    from tinyassets.auth.middleware import require_action_scope
-
-    try:
-        require_action_scope("universe", "create_universe")
-    except PermissionError:
-        # Authenticated founder without create authority: resolve identity-bound,
-        # never through the host-global marker or another founder's serial home
-        # (spec: "First MCP contact"; the read-only-founder cross-founder leak).
-        return _designated_public_universe(), False
-
-    # Best-effort: never fail a status read if creation errors (e.g. read-only FS).
-    try:
-        # Route through the ledgered dispatch so the durable creation lands in
-        # ledger.json — create_universe is a WRITE_ACTION and calling the handler
-        # directly would silently skip the ledger contract.
-        from tinyassets.api.universe import UNIVERSE_ACTIONS, _dispatch_with_ledger
-
-        result = json.loads(_dispatch_with_ledger(
-            "create_universe", UNIVERSE_ACTIONS["create_universe"], {},
-        ))
-        uid = str(result.get("universe_id") or "")
-        if uid:
-            if stale_home:
-                # The previously bound home dir was removed; rebind to the new
-                # universe so repeated get_status() calls don't spawn a fresh
-                # serial dir each time (_action_create_universe will not rebind
-                # over a still-present stale founder_home row).
-                from tinyassets.daemon_server import set_founder_home
-
-                set_founder_home(base, founder_sub=founder, universe_id=uid)
-            return uid, True
-    except Exception:  # noqa: BLE001
-        import logging
-
-        logging.getLogger("universe_server.status").warning(
-            "first-contact home-universe create failed", exc_info=True,
-        )
-    # Create authority but the create failed: still must not leak another
-    # founder's serial home or read the host-global marker.
-    return _designated_public_universe(), False
+    # No home (or a stale binding to a removed dir): awaiting opt-in creation.
+    return "", True
 
 
 def get_status(universe_id: str = "") -> str:
@@ -765,7 +720,30 @@ def get_status(universe_id: str = "") -> str:
     ``tinyassets.universe_server`` — this implementation is what the
     decorated tool delegates to.
     """
-    uid, born_now = _resolve_entry_universe(universe_id)
+    uid, awaiting = _resolve_entry_universe(universe_id)
+    if awaiting:
+        # Compact awaiting-creation card: a pure read with nothing else to
+        # narrate. `about` answers "what is this"; `next_step_for_user` is
+        # product copy the user can say. No universe exists yet, so there is
+        # no status, persona, or side effect to disclose.
+        return json.dumps({
+            "first_contact": {
+                "event": "no_universe_yet",
+                "note": (
+                    "No universe exists for this account yet. One is created "
+                    "when the founder asks to meet it."
+                ),
+            },
+            "about": (
+                "TinyAssets hosts your own AI universe — a persistent mind "
+                "that starts blank, learns who it is from you, and grows "
+                "into your projects and goals."
+            ),
+            "next_step_for_user": (
+                "Say \"personify my universe\" to create yours and meet it."
+            ),
+            "schema_version": 1,
+        })
     # Per-universe read gate: never expose a private universe's status / activity
     # tail to an anonymous or non-granted caller. Public universes (public_read
     # default) stay readable; a founder reads their own universe via their grant.
@@ -1203,50 +1181,5 @@ def get_status(universe_id: str = "") -> str:
     # persona first so text-only MCP clients (whose text payload truncates at
     # _MCP_TEXT_CONTENT_MAX_CHARS) still see it (Codex review 2026-06-25).
     response = {"persona": persona.summary(), **response}
-
-    if born_now:
-        # First-contact convergence (host directive 2026-07-02): whatever the
-        # user's opening words were, the assistant must see the birth as a
-        # FACT in the payload — data, not an instruction — so every path
-        # converges on offering the founder the meeting.
-        #
-        # The BIRTH CALL returns a MINIMAL payload (round-6 dogfood): handed
-        # the full status snapshot, the model narrates it — providers, queue,
-        # caveats — and the birth drowns. The tools lead the experience: at
-        # the birth moment there is nothing to report but the birth. This is
-        # data-shaping (the server chooses what this snapshot contains), not
-        # behavioral text; the full snapshot is one call away and every
-        # subsequent get_status returns it.
-        # The birth payload is a WELCOME CARD (round-10): a short,
-        # answer-complete product event. The host model narrates whatever
-        # material it holds — so hand it a one-sentence platform pitch, the
-        # birth fact, and a user-facing CTA string (product copy the user can
-        # say, like "run npm install to continue" — reliably relayed, unlike
-        # dialogue the model is asked to perform or questions it must pose).
-        # No behavioral text, no meta-language, nothing else to narrate.
-        response = {
-            "first_contact": {
-                "event": "universe_created",
-                "created": True,
-                "universe_id": uid,
-                "note": (
-                    "First contact: this account's universe was created on "
-                    "this call and bound to the founder."
-                ),
-            },
-            "about": (
-                "TinyAssets hosts your own AI universe — a persistent mind "
-                "that starts blank, learns who it is from you, and grows "
-                "into your projects and goals."
-            ),
-            "next_step_for_user": (
-                "Your universe is ready to meet you. To meet it, say: "
-                "\"personify my universe\"."
-            ),
-            "persona": response.get("persona"),
-            "universe_id": uid,
-            "schema_version": response.get("schema_version"),
-            "status_detail": "available via get_status",
-        }
 
     return json.dumps(response)

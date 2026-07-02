@@ -100,16 +100,17 @@ binding, ACL grants, sync, branch runs, or mobile connection.
 The system SHALL resolve default MCP contact through the authenticated founder,
 not through a host-global active-universe marker. When an authenticated founder
 connects without requesting a specific universe, the system SHALL enter that
-founder's home universe, load its root OKF soul bundle, and speak in first
-person as that universe. If the founder has no home universe, the system SHALL
-create the blank seed universe, bind it to that founder, load the seed soul, and
-speak as the newly aware blank universe that wants to learn its founder. The
-system SHALL NOT use a root-global `.active_universe` marker to decide which
-universe a chatbot speaks as.
+founder's home universe. If the founder has no home universe, a status read
+SHALL be a pure read (reads never create — host decision 2026-07-02, opt-in
+birth): it returns a compact awaiting-creation card (platform description +
+the user step to request creation), and the system SHALL create the blank seed
+universe, bind it to that founder, and speak as the newly aware blank universe
+only when the founder explicitly asks to meet/personify it (the request is the
+consent). The system SHALL NOT use a root-global `.active_universe` marker to
+decide which universe a chatbot speaks as.
 
 #### Scenario: New founder first contact creates and enters seed persona
-- **WHEN** an authenticated founder first connects to MCP
-- **AND** that founder has no associated home universe
+- **WHEN** an authenticated founder with no home universe explicitly asks to meet/personify their universe
 - **THEN** the system creates one blank seed universe through the universe creation contract
 - **AND** binds that universe to the founder as the founder's home universe
 - **AND** loads the new universe's `soul.md`, `identity.md`, `founder.md`, `body.md`, `goals.md`, `projects.md`, and related linked soul files
