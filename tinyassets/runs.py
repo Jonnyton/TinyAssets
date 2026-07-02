@@ -3602,6 +3602,7 @@ def query_runs(
     select: list[str] | None = None,
     aggregate: dict[str, Any] | None = None,
     limit: int = _DEFAULT_QUERY_LIMIT,
+    row_filter: Callable[[Any], bool] | None = None,
 ) -> dict[str, Any]:
     """Query runs table with optional field projection + simple aggregation.
 
@@ -3663,6 +3664,12 @@ def query_runs(
             f"ORDER BY started_at DESC LIMIT ?",
             [*params, limit],
         ).fetchall()
+
+    # Apply the caller's row-level access filter BEFORE any projection or
+    # aggregation, so a denied universe's runs never contribute to selected
+    # fields or aggregate values (security: no leak via select/aggregate).
+    if row_filter is not None:
+        rows = [r for r in rows if row_filter(r)]
 
     def _extract_fields(output_str: str, fields: list[str]) -> dict[str, Any]:
         try:

@@ -43,9 +43,13 @@ registration. We host **no** authorization-server endpoints.
   **web-app client** pattern (cookies/sealed sessions) — wrong for an RS validating an
   incoming `Authorization: Bearer`. Misusing them throws `InvalidToken`. **Don't.**
 - For the RS: **PyJWT + `PyJWKClient`** (handles `kid` matching + key rotation + caching).
-  Use the SDK for exactly one thing so the URL isn't hardcoded:
-  `WorkOSClient(...).user_management.get_jwks_url(client_id)`.
-- **JWKS URL (confirmed):** `https://api.workos.com/sso/jwks/<WORKOS_CLIENT_ID>` (per client_id).
+  Read the JWKS URL from AS metadata (`.well-known/oauth-authorization-server`)
+  so it isn't hardcoded; it is the AuthKit-domain endpoint below.
+- **JWKS URL (RESOLVED, see VERIFY-flag 3):** `https://<AUTHKIT_DOMAIN>/oauth2/jwks`
+  (e.g. `https://inventive-van-62-staging.authkit.app/oauth2/jwks`). Do **NOT**
+  use the legacy SSO endpoint `https://api.workos.com/sso/jwks/<WORKOS_CLIENT_ID>`
+  or `user_management.get_jwks_url(...)` — that 200s but is the SSO JWKS, the
+  wrong key set for AuthKit access tokens.
 - Pin `algorithms=["RS256"]` (algorithm-substitution defense). Validate `iss` **and** `aud`.
 
 ## Token claims (AuthKit Sessions doc)
@@ -88,13 +92,11 @@ reads allowed, writes 401.
 ```python
 import os, jwt
 from jwt import PyJWKClient
-from workos import WorkOSClient
 
-_workos = WorkOSClient(api_key=os.environ.get("WORKOS_API_KEY", ""),
-                       client_id=os.environ["WORKOS_CLIENT_ID"])
-_jwks = PyJWKClient(_workos.user_management.get_jwks_url(os.environ["WORKOS_CLIENT_ID"]))
+_AUTHKIT  = os.environ["WORKOS_AUTHKIT_DOMAIN"]         # e.g. inventive-van-62-staging.authkit.app
+_jwks = PyJWKClient(f"https://{_AUTHKIT}/oauth2/jwks")  # AuthKit AS JWKS — NOT api.workos.com/sso/jwks
 _RESOURCE = os.environ["WORKOS_MCP_RESOURCE"]           # https://tinyassets.io/mcp
-_ISSUER   = f'https://{os.environ["WORKOS_AUTHKIT_DOMAIN"]}'   # VERIFY (flag 1) vs AS metadata
+_ISSUER   = f"https://{_AUTHKIT}"                       # VERIFY (flag 1) vs AS metadata
 
 def validate_bearer(token: str) -> dict:
     key = _jwks.get_signing_key_from_jwt(token)

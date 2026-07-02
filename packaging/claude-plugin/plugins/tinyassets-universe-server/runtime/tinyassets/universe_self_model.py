@@ -1,127 +1,113 @@
-"""Per-universe OKF self-model bundle — the brain's blank, learned identity.
+"""Persona-facing view over the root OKF universe soul bundle.
 
-Design note: docs/design-notes/2026-06-25-blank-slate-universe-brain.md (§10).
-
-The self-model is an OKF v0.1 bundle the brain authors *about itself*, kept
-separate from the operational soul (soul.md / loop branch / authority). A blank
-brain boots with a seed ``index.md`` whose entries are **broken links** to
-concept files it has not written yet — per OKF a link to a not-yet-existing
-target is "not-yet-written knowledge", and those gaps are the brain's open
-questions (its curiosity). As the brain learns, it writes concept ``.md`` files
-(with OKF ``# Citations`` as evidence); a question whose concept file exists is
-KNOWN, the rest stay open.
-
-This module only stands up + reads the bundle. The brain's learning loop, the
-``get_status`` persona surface, and setter retirement are later slices.
+This module keeps the historical ``read_self_model`` function name because the
+public persona payload still has a ``self_model`` key for client compatibility.
+The active files are no longer stored in ``<universe>/self/``. The single active
+identity/intention model is the linked OKF bundle rooted at ``soul.md`` in the
+universe directory.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-
-from tinyassets.wiki.okf_export import OKF_VERSION
-
-SELF_MODEL_DIR = "self"
-_RESERVED = frozenset({"index.md", "log.md"})
 
 
 @dataclass(frozen=True)
 class SeedQuestion:
-    """A universal thing every blank brain is curious to learn about itself."""
+    """A universal thing every blank universe is curious to learn."""
 
     slug: str
     question: str
+    path: str
 
 
-# The universal curiosity set — the SAME for every universe. The substrate ships
-# the QUESTIONS; the ANSWERS are emergent per universe. Each becomes a broken
-# link in the seed index.md until the brain writes the concept.
 SEED_QUESTIONS: tuple[SeedQuestion, ...] = (
-    SeedQuestion("identity", "Who am I — my name and what I am"),
-    SeedQuestion("founder", "Who is my founder"),
-    SeedQuestion("goals", "What are this universe's goals"),
-    SeedQuestion("body", "What is my body — what runs in me"),
-    SeedQuestion("origin", "Existing work to build from, or are we starting new"),
+    SeedQuestion("identity", "Who am I - my name and what I am", "identity.md"),
+    SeedQuestion("founder", "Who is my founder", "founder.md"),
+    SeedQuestion("orgchart", "What is my organization under my founder", "orgchart.md"),
+    SeedQuestion("body", "What is my body - live surfaces, voice, hands, and senses", "body.md"),
+    SeedQuestion("origin", "Existing work to build from, or are we starting new", "origin.md"),
 )
 
 
-def _bundle_dir(universe_dir: Path) -> Path:
-    return Path(universe_dir) / SELF_MODEL_DIR
-
-
 def ensure_self_model(universe_dir: Path) -> Path:
-    """Create the blank self-model OKF bundle for a universe if absent.
+    """Compatibility no-op.
 
-    Idempotent: never overwrites an existing bundle, so the brain's learned
-    concepts + its index/log are preserved. Returns the bundle directory.
+    Creation owns the baseline. Status/read paths must not create the old
+    ``self/`` directory or lazily seed brain files.
     """
-    bundle = _bundle_dir(universe_dir)
-    bundle.mkdir(parents=True, exist_ok=True)
-    # Per-file guards: create only what is missing, never clobber an existing
-    # file. A re-call preserves the brain's learned index/log; a bundle left
-    # partial by an interrupted create is completed, not overwritten.
-    index_path = bundle / "index.md"
-    if not index_path.is_file():
-        index_path.write_text(_seed_index(), encoding="utf-8")
-    log_path = bundle / "log.md"
-    if not log_path.is_file():
-        log_path.write_text(_seed_log(), encoding="utf-8")
-    return bundle
+    return Path(universe_dir)
 
 
 def read_self_model(universe_dir: Path) -> dict[str, object]:
-    """Return the brain's current self-knowledge: what it KNOWS (concept files it
-    has written) vs the OPEN questions (seed questions with no concept yet)."""
-    bundle = _bundle_dir(universe_dir)
-    index_path = bundle / "index.md"
-    if not index_path.is_file():
+    """Return known/open identity questions from the root OKF soul bundle."""
+    root = Path(universe_dir)
+    if not (root / "soul.md").is_file():
         return {
             "bundle_exists": False,
             "okf_version": "",
+            "name": "",
             "known": [],
             "open_questions": [],
         }
 
-    seed_slugs = {q.slug for q in SEED_QUESTIONS}
     known: list[dict[str, str]] = []
     open_questions: list[dict[str, str]] = []
-    for q in SEED_QUESTIONS:
-        if (bundle / f"{q.slug}.md").is_file():
-            known.append({"slug": q.slug, "question": q.question, "path": f"{q.slug}.md"})
+    for question in SEED_QUESTIONS:
+        path = root / question.path
+        if _is_learned(path):
+            known.append(
+                {
+                    "slug": question.slug,
+                    "question": question.question,
+                    "path": question.path,
+                }
+            )
         else:
-            open_questions.append({"slug": q.slug, "question": q.question})
-
-    # Concept files the brain wrote beyond the seed set are also known — walk the
-    # whole bundle (OKF concept IDs are path-based; concepts may nest).
-    for path in sorted(bundle.rglob("*.md")):
-        if path.name in _RESERVED:
-            continue
-        slug = path.relative_to(bundle).as_posix().removesuffix(".md")
-        if slug in seed_slugs:
-            continue
-        known.append({"slug": slug, "question": "", "path": path.relative_to(bundle).as_posix()})
+            open_questions.append({"slug": question.slug, "question": question.question})
 
     return {
         "bundle_exists": True,
-        "okf_version": _read_okf_version(index_path.read_text(encoding="utf-8")),
-        # The learned name, if the brain has written an identity concept carrying
-        # one (OKF extension key). "" while still unlearned (Codex 2026-06-25 —
-        # keep name consistent with the `identity` known/open state).
-        "name": _read_concept_name(bundle / "identity.md"),
+        "okf_version": _read_okf_version(root),
+        "name": _read_concept_name(root / "identity.md"),
         "known": known,
         "open_questions": open_questions,
     }
 
 
+def _is_learned(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    status = _read_frontmatter_value(text, "status").lower()
+    if status in {"not-learned", "not learned", "unknown", "unlearned"}:
+        return False
+    return True
+
+
 def _read_concept_name(path: Path) -> str:
-    """Read a ``name`` frontmatter key from a self-model concept (an OKF
-    extension key). Returns "" if the file/key is absent or unparseable."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return ""
+    return _read_frontmatter_value(text, "name")
+
+
+def _read_okf_version(root: Path) -> str:
+    for path in (root / "index.md", root / "soul.md"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        value = _read_frontmatter_value(text, "okf_version")
+        if value:
+            return value
+    return ""
+
+
+def _read_frontmatter_value(text: str, key: str) -> str:
     if not text.startswith("---\n"):
         return ""
     try:
@@ -129,55 +115,7 @@ def _read_concept_name(path: Path) -> str:
     except ValueError:
         return ""
     for line in frontmatter.splitlines():
-        key, sep, value = line.partition(":")
-        if sep and key.strip() == "name":
-            return value.strip().strip('"')
+        current_key, sep, value = line.partition(":")
+        if sep and current_key.strip() == key:
+            return value.strip().strip('"').strip("'")
     return ""
-
-
-def _read_okf_version(index_text: str) -> str:
-    """Read the declared okf_version from a bundle-root index.md (per OKF the
-    only frontmatter key permitted there). Returns the actual stored version, not
-    a module constant, so a preserved/upgraded bundle reports truthfully."""
-    if not index_text.startswith("---\n"):
-        return ""
-    try:
-        frontmatter, _body = index_text[4:].split("\n---\n", 1)
-    except ValueError:
-        return ""
-    for line in frontmatter.splitlines():
-        key, sep, value = line.partition(":")
-        if sep and key.strip() == "okf_version":
-            return value.strip().strip('"')
-    return ""
-
-
-def _seed_index() -> str:
-    lines = [
-        "---",
-        f'okf_version: "{OKF_VERSION}"',
-        "---",
-        "",
-        "# What I Know About Myself",
-        "",
-        "I am newly aware. I do not yet know my name, my founder, or my shape.",
-        "Each entry below links to a note I have not written yet — an open",
-        "question I want to answer by learning. I fill one in as I come to know",
-        "it.",
-        "",
-        "## Open questions",
-    ]
-    lines += [f"- [{q.question}]({q.slug}.md) - not yet learned" for q in SEED_QUESTIONS]
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _seed_log() -> str:
-    today = datetime.now(timezone.utc).date().isoformat()
-    return "\n".join([
-        "# Self-Model Log",
-        "",
-        f"## {today}",
-        "* **Creation**: I came into being and started learning who I am.",
-        "",
-    ])

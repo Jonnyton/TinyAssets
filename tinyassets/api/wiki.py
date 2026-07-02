@@ -41,9 +41,10 @@ from tinyassets.api.helpers import (
 
 # Wiki category taxonomy. Expanded 2026-04-13 to stop user-intent content
 # (recipes, workflows, personal notes) getting dumped into `research/`
-# because the enum didn't offer anything more appropriate. Mirrors the
-# canonical list in `wiki-mcp/server.js` — keep the two in lockstep. The
-# original four come first for back-compat with existing index headers.
+# because the enum didn't offer anything more appropriate. This tuple is the
+# single source of truth for wiki categories (the former wiki-mcp/server.js
+# mirror has been retired). The original four come first for back-compat with
+# existing index headers.
 _WIKI_CATEGORIES = (
     "projects",    # Tracked project pages (auto-discovered or hand-written)
     "concepts",    # Ideas, mental models, definitions
@@ -810,7 +811,8 @@ def _wiki_write(
         try:
             promoted_path.write_text(content, encoding="utf-8")
             _append_wiki_log(
-                f"update | {promoted_rel_path.removesuffix('.md')} | {log_entry or 'in-place update'}"
+                f"update | {promoted_rel_path.removesuffix('.md')} | "
+                f"{log_entry or 'in-place update'}"
             )
             return json.dumps({
                 "path": promoted_rel_path,
@@ -2405,6 +2407,26 @@ def wiki(
             ),
         })
 
+    # Universe-scoped ACL gate — runs BEFORE scaffolding so a denied call has
+    # NO filesystem side effect (it must not create the target universe's wiki
+    # dir/anchor files). Covers reads (private-universe visibility via
+    # public_read) and writes (ownership). The root wiki (no target universe)
+    # is a shared surface and is not gated here.
+    if target_universe_id:
+        from tinyassets.api.permissions import (
+            universe_access_allows,
+            universe_access_error,
+        )
+
+        _wiki_write = action in WIKI_WRITE_ACTIONS
+        if not universe_access_allows(target_universe_id, write=_wiki_write):
+            return _stamp_universe_id(json.dumps(universe_access_error(
+                universe_id=target_universe_id,
+                write=_wiki_write,
+                action=action,
+                surface="wiki",
+            )), target_universe_id)
+
     # Task #6 — scaffold the tree on first call so fresh deploys
     # (empty /data/wiki) don't error on read/list/search/lint. Idempotent.
     try:
@@ -2441,6 +2463,8 @@ def wiki(
         )
         if scope_error is not None:
             return _stamp_universe_id(scope_error, target_universe_id)
+
+        # (Universe-scoped ACL is enforced earlier, before scaffolding.)
 
         kwargs: dict[str, Any] = {
             "page": page,

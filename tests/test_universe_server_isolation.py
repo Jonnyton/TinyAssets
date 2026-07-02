@@ -21,7 +21,12 @@ import pytest
 import tinyassets.api.universe as us
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
-from tinyassets.daemon_server import grant_universe_access
+from tinyassets.daemon_server import (
+    ensure_universe_registered,
+    ensure_universe_rules,
+    grant_universe_access,
+    update_universe_rules,
+)
 
 
 class _StaticAuthProvider(AuthProvider):
@@ -92,6 +97,19 @@ def _authenticate(user_id: str, scopes: list[str] | None = None) -> None:
 def _make_universe(base: Path, uid: str) -> Path:
     udir = base / uid
     udir.mkdir(parents=True)
+    return udir
+
+
+def _make_private_universe(base: Path, uid: str) -> Path:
+    """Create a universe made *private* the ratified way — via the
+    ``public_read`` visibility rule, NOT by seeding an ACL row. In the D0c
+    model ownership (ACL grants) and visibility (public_read) are orthogonal:
+    an admin grant alone does not hide a universe.
+    """
+    udir = _make_universe(base, uid)
+    ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    ensure_universe_rules(base, universe_id=uid)
+    update_universe_rules(base, universe_id=uid, updates={"public_read": False})
     return udir
 
 
@@ -189,8 +207,140 @@ class TestUniverseIdInResponses:
 
 
 class TestUniverseAclEnforcement:
+    """The D0c model: VISIBILITY is ``public_read`` (a missing rule = public);
+    OWNERSHIP is the ACL grant set. Writes always require an explicit ``write``
+    or ``admin`` grant. An admin grant does NOT make a universe private.
+    """
+
+    def test_anonymous_cannot_write_public_universe(self, universe_base):
+        # Dev/no-auth caller (anonymous). Reads are open on a public universe,
+        # but a write must be denied — an authenticated grant is required.
+        _make_universe(universe_base, "public")
+
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="public",
+            text="Anonymous write attempt.",
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["actor_id"] == "anonymous"
+        assert out["required_permission"] == "write"
+        assert not (universe_base / "public" / "PROGRAM.md").exists()
+
+    def test_anonymous_can_read_public_universe(self, universe_base):
+        _make_universe(universe_base, "public")
+
+        out = json.loads(us._universe_impl(action="inspect", universe_id="public"))
+
+        assert out["universe_id"] == "public"
+        assert "error" not in out
+
+    def test_authenticated_founder_cannot_write_public_universe_without_grant(
+        self, universe_base,
+    ):
+        # A universe with no ACL rows returns the public "read" convention for
+        # every actor; a write still requires an explicit write/admin grant.
+        _make_universe(universe_base, "other")
+        _authenticate(
+            "alice", ["tinyassets.universe.read", "tinyassets.universe.write"],
+        )
+
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="other",
+            text="Cross-universe write attempt.",
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["required_permission"] == "write"
+        assert out["actor_id"] == "alice"
+        assert not (universe_base / "other" / "PROGRAM.md").exists()
+
+    def test_public_universe_read_stays_open_for_authenticated_reader(
+        self, universe_base,
+    ):
+        _make_universe(universe_base, "public")
+        _authenticate("alice", ["tinyassets.universe.read"])
+
+        out = json.loads(us._universe_impl(action="inspect", universe_id="public"))
+
+        assert out["universe_id"] == "public"
+        assert "error" not in out
+
+    def test_create_universe_grants_creator_admin_write(self, universe_base):
+        # D0a: an authenticated founder OWNS the universe they create.
+        _authenticate(
+            "alice",
+            ["tinyassets.universe.costly", "tinyassets.universe.write"],
+        )
+
+        created = json.loads(us._universe_impl(
+            action="create_universe",
+            universe_id="mine",
+            text="A seed.",
+        ))
+        updated = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="mine",
+            text="Founder-owned update.",
+        ))
+
+        assert created["status"] == "created"
+        assert created["founder_id"] == "alice"
+        assert updated["status"] == "updated"
+        assert (universe_base / "mine" / "PROGRAM.md").read_text(
+            encoding="utf-8",
+        ) == "Founder-owned update."
+
+    def test_create_universe_denies_other_founder_write(self, universe_base):
+        # D0a: a *different* authenticated founder, even holding the write
+        # scope, cannot write a universe founded by someone else.
+        _authenticate(
+            "alice",
+            ["tinyassets.universe.costly", "tinyassets.universe.write"],
+        )
+        created = json.loads(us._universe_impl(
+            action="create_universe",
+            universe_id="alice-world",
+            text="Alice's seed.",
+        ))
+        assert created["founder_id"] == "alice"
+
+        _authenticate("bob", ["tinyassets.universe.write"])
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="alice-world",
+            text="Hostile cross-founder overwrite.",
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["required_permission"] == "write"
+        assert out["actor_id"] == "bob"
+
+    def test_owner_admin_grant_does_not_make_universe_private(self, universe_base):
+        # Ownership != visibility. An admin grant with no public_read=False rule
+        # leaves the universe publicly readable.
+        _make_universe(universe_base, "owned-public")
+        grant_universe_access(
+            universe_base,
+            universe_id="owned-public",
+            actor_id="owner",
+            permission="admin",
+            granted_by="owner",
+        )
+        _authenticate("reader", ["tinyassets.universe.read"])
+
+        out = json.loads(us._universe_impl(
+            action="inspect",
+            universe_id="owned-public",
+        ))
+
+        assert out["universe_id"] == "owned-public"
+        assert "error" not in out
+
     def test_private_universe_rejects_unlisted_reader(self, universe_base):
-        udir = _make_universe(universe_base, "private")
+        udir = _make_private_universe(universe_base, "private")
         (udir / "output").mkdir()
         (udir / "output" / "secret.md").write_text("secret", encoding="utf-8")
         grant_universe_access(
@@ -219,7 +369,7 @@ class TestUniverseAclEnforcement:
         assert read_out["error"] == "universe_access_denied"
 
     def test_private_universe_rejects_reader_write(self, universe_base):
-        _make_universe(universe_base, "private")
+        _make_private_universe(universe_base, "private")
         grant_universe_access(
             universe_base,
             universe_id="private",
@@ -241,7 +391,9 @@ class TestUniverseAclEnforcement:
         assert not (universe_base / "private" / "PROGRAM.md").exists()
 
     def test_private_universe_allows_granted_writer(self, universe_base):
-        _make_universe(universe_base, "private")
+        # {write, admin} write-set: a "write" grant CAN write (matches current
+        # main). Only no-grant / read-only actors are denied writes.
+        _make_private_universe(universe_base, "private")
         grant_universe_access(
             universe_base,
             universe_id="private",
@@ -263,9 +415,32 @@ class TestUniverseAclEnforcement:
             encoding="utf-8",
         ) == "Allowed update."
 
+    def test_private_universe_allows_owner_admin_write(self, universe_base):
+        _make_private_universe(universe_base, "private")
+        grant_universe_access(
+            universe_base,
+            universe_id="private",
+            actor_id="owner",
+            permission="admin",
+            granted_by="owner",
+        )
+
+        _authenticate("owner", ["tinyassets.universe.write"])
+
+        out = json.loads(us._universe_impl(
+            action="set_premise",
+            universe_id="private",
+            text="Owner update.",
+        ))
+
+        assert out["status"] == "updated"
+        assert (universe_base / "private" / "PROGRAM.md").read_text(
+            encoding="utf-8",
+        ) == "Owner update."
+
     def test_list_filters_private_universes_without_grant(self, universe_base):
         _make_universe(universe_base, "public")
-        _make_universe(universe_base, "private")
+        _make_private_universe(universe_base, "private")
         grant_universe_access(
             universe_base,
             universe_id="private",
@@ -279,6 +454,461 @@ class TestUniverseAclEnforcement:
         out = json.loads(us._universe_impl(action="list"))
 
         assert [row["id"] for row in out["universes"]] == ["public"]
+
+
+class TestUniverseWriteBoundaryBeyondUniverseTool:
+    """Slice 3: the ACL write boundary is enforced on every universe-scoped
+    write surface, not just the `universe` tool. `wiki`, branch runs, and
+    auto-ship ledger/PR writes all delegate to `tinyassets.api.permissions`.
+    """
+
+    def test_wiki_write_to_unowned_universe_is_denied(self, universe_base):
+        import tinyassets.api.wiki as wiki_mod
+
+        _make_universe(universe_base, "other")
+        _authenticate("alice", ["tinyassets.wiki.write"])
+
+        out = json.loads(wiki_mod.wiki(
+            action="write",
+            universe_id="other",
+            category="notes",
+            filename="entry.md",
+            content="should not land",
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["surface"] == "wiki"
+        assert out["required_permission"] == "write"
+        assert not (
+            universe_base / "other" / "wiki" / "drafts" / "notes" / "entry.md"
+        ).exists()
+        # A denied write must have NO filesystem side effect — it must not have
+        # scaffolded the target universe's wiki tree.
+        assert not (universe_base / "other" / "wiki").exists()
+
+    def test_wiki_read_of_private_universe_denied_without_scaffold(
+        self, universe_base,
+    ):
+        import tinyassets.api.wiki as wiki_mod
+
+        _make_private_universe(universe_base, "priv")
+        # anonymous read of a private universe's wiki is denied (public_read=False)
+        out = json.loads(wiki_mod.wiki(
+            action="read", universe_id="priv", page="index",
+        ))
+        assert out["error"] == "universe_access_denied"
+        assert out["surface"] == "wiki"
+        assert out["required_permission"] == "read"
+        # denied read must not scaffold the private universe's wiki tree
+        assert not (universe_base / "priv" / "wiki").exists()
+
+    def test_authenticated_human_cannot_run_branch_without_universe_context(
+        self,
+        universe_base,
+    ):
+        from tinyassets.api import runs
+
+        _authenticate("alice", ["tinyassets.extensions.costly"])
+
+        out = json.loads(runs._dispatch_run_action(
+            "run_branch",
+            lambda kwargs: json.dumps({
+                "run_id": "should-not-run",
+                "status": "queued",
+                "error": "",
+            }),
+            {"branch_def_id": "branch-1"},
+        ))
+
+        assert out["error"] == "branch_run_requires_universe"
+
+    def test_branch_run_to_unowned_universe_is_denied(self, universe_base):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "other")
+        _authenticate("alice", ["tinyassets.extensions.costly"])
+
+        out = json.loads(runs._dispatch_run_action(
+            "run_branch",
+            lambda kwargs: json.dumps({
+                "run_id": "should-not-run",
+                "status": "queued",
+                "error": "",
+            }),
+            {"branch_def_id": "branch-1", "universe_id": "other"},
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["surface"] == "extensions"
+        assert out["required_permission"] == "write"
+
+    def test_run_branch_via_extensions_forwards_universe_id_to_gate(
+        self,
+        universe_base,
+    ):
+        # Regression: the real MCP route (_extensions_impl) must forward
+        # universe_id into run_kwargs so _branch_run_scope_error can gate it.
+        # If universe_id were dropped, an authenticated caller would get
+        # `branch_run_requires_universe`; asserting universe_access_denied
+        # proves the id reached the gate.
+        from tinyassets.api.extensions import _extensions_impl
+
+        _make_universe(universe_base, "other")
+        _authenticate("alice", ["tinyassets.extensions.costly"])
+
+        out = json.loads(_extensions_impl(
+            action="run_branch",
+            universe_id="other",
+            branch_def_id="branch-1",
+        ))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["surface"] == "extensions"
+        assert out["required_permission"] == "write"
+
+    def test_branch_run_with_owned_universe_uses_universe_actor(
+        self,
+        universe_base,
+    ):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "mine")
+        grant_universe_access(
+            universe_base,
+            universe_id="mine",
+            actor_id="alice",
+            permission="admin",
+            granted_by="alice",
+        )
+        _authenticate("alice", ["tinyassets.extensions.costly"])
+        seen: dict[str, str] = {}
+
+        def handler(kwargs):
+            seen["actor"] = runs._run_actor_for_kwargs(kwargs)
+            return json.dumps({
+                "run_id": "run-1",
+                "status": "queued",
+                "error": "",
+            })
+
+        out = json.loads(runs._dispatch_run_action(
+            "run_branch",
+            handler,
+            {"branch_def_id": "branch-1", "universe_id": "mine"},
+        ))
+
+        assert out["run_id"] == "run-1"
+        assert seen["actor"] == "universe:mine"
+
+    def test_auto_ship_ledger_write_to_unowned_universe_is_denied(
+        self,
+        universe_base,
+        monkeypatch,
+    ):
+        from tinyassets.api import auto_ship_actions
+
+        _make_universe(universe_base, "other")
+        _authenticate("alice", ["tinyassets.extensions.write"])
+        monkeypatch.setattr(
+            "tinyassets.auto_ship.validate_ship_request",
+            lambda _packet: {
+                "ship_status": "skipped",
+                "would_open_pr": True,
+                "validation_result": "passed",
+                "violations": [],
+                "rollback_handle": "",
+                "dry_run": True,
+            },
+        )
+
+        out = json.loads(auto_ship_actions._action_validate_ship_packet({
+            "body_json": "{}",
+            "record_in_ledger": True,
+            "universe_id": "other",
+        }))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["surface"] == "extensions"
+        assert out["required_permission"] == "write"
+        assert not (universe_base / "other" / "auto_ship_attempts.jsonl").exists()
+
+    def test_auto_ship_pr_open_to_unowned_universe_is_denied(
+        self,
+        universe_base,
+    ):
+        from tinyassets.api import auto_ship_actions
+
+        _make_universe(universe_base, "other")
+        _authenticate("alice", ["tinyassets.extensions.write"])
+
+        out = json.loads(auto_ship_actions._action_open_auto_ship_pr({
+            "ship_attempt_id": "ship_1",
+            "head_branch": "auto-change/test",
+            "universe_id": "other",
+        }))
+
+        assert out["error"] == "universe_access_denied"
+        assert out["surface"] == "extensions"
+        assert out["required_permission"] == "write"
+
+
+class TestRunReadVisibility:
+    """Slice-4 review (Codex): run read surfaces must not expose a private
+    universe's runs. get_run / get_run_output / list_runs gate by the run's
+    universe (derived from actor `universe:<uid>`) via universe_access_allows.
+    """
+
+    def test_run_read_allowed_helper(self, universe_base):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")           # public by default
+        _make_private_universe(universe_base, "priv")  # public_read=False
+        assert runs._run_read_allowed({"actor": "universe:pub"}) is True
+        assert runs._run_read_allowed({"actor": "universe:priv"}) is False
+        # A run not bound to a universe is not private-universe data.
+        assert runs._run_read_allowed({"actor": "host"}) is True
+
+    def test_get_run_output_denied_for_private_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {
+                "run_id": rid, "actor": "universe:priv",
+                "branch_def_id": "b", "status": "completed",
+                "output": {"secret": "leak"},
+            },
+        )
+        out = json.loads(runs._action_get_run_output({"run_id": "r1"}))
+        assert out["error"] == "universe_access_denied"
+        assert "leak" not in json.dumps(out)
+
+    def test_get_run_output_allowed_for_public_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {
+                "run_id": rid, "actor": "universe:pub",
+                "branch_def_id": "b", "status": "completed",
+                "output": {"ok": "1"},
+            },
+        )
+        out = json.loads(runs._action_get_run_output({"run_id": "r1"}))
+        assert out.get("error") != "universe_access_denied"
+        assert out.get("output", {}).get("ok") == "1"
+
+    def test_list_runs_filters_private_universe(self, universe_base, monkeypatch):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.list_runs",
+            lambda base, **kw: [
+                {"run_id": "r-pub", "actor": "universe:pub", "branch_def_id": "b",
+                 "run_name": "", "status": "completed"},
+                {"run_id": "r-priv", "actor": "universe:priv", "branch_def_id": "b",
+                 "run_name": "", "status": "completed"},
+            ],
+        )
+        out = json.loads(runs._action_list_runs({}))
+        ids = {r["run_id"] for r in out["runs"]}
+        assert "r-pub" in ids
+        assert "r-priv" not in ids
+
+    def test_stream_and_wait_read_denied_for_private_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {
+                "run_id": rid, "actor": "universe:priv", "status": "running",
+            },
+        )
+        for action in (runs._action_stream_run, runs._action_wait_for_run):
+            out = json.loads(action({"run_id": "r1"}))
+            assert out["error"] == "universe_access_denied"
+
+    def test_cancel_run_denied_for_private_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {
+                "run_id": rid, "actor": "universe:priv", "status": "running",
+            },
+        )
+        canceled = {"v": False}
+        monkeypatch.setattr(
+            "tinyassets.runs.request_cancel",
+            lambda base, rid: canceled.__setitem__("v", True),
+        )
+        out = json.loads(runs._action_cancel_run({"run_id": "r1"}))
+        assert out["error"] == "universe_access_denied"
+        assert canceled["v"] is False  # mutation blocked
+
+    def test_resume_run_denied_for_private_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {
+                "run_id": rid, "actor": "universe:priv", "status": "interrupted",
+            },
+        )
+        out = json.loads(runs._action_resume_run({"run_id": "r1"}))
+        assert out["error"] == "universe_access_denied"
+
+    def test_attach_child_denied_for_private_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {"run_id": rid, "actor": "universe:priv"},
+        )
+        attached = {"v": False}
+
+        def _attach(*a, **k):
+            attached["v"] = True
+            return {}
+
+        monkeypatch.setattr("tinyassets.runs.attach_existing_child_run", _attach)
+        out = json.loads(runs._action_attach_existing_child_run(
+            {"run_id": "r1", "child_run_id": "c1"},
+        ))
+        assert out["error"] == "universe_access_denied"
+        assert attached["v"] is False
+
+    def test_record_receipt_denied_for_private_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {"run_id": rid, "actor": "universe:priv"},
+        )
+        recorded = {"v": False}
+
+        def _rec(*a, **k):
+            recorded["v"] = True
+            return {}
+
+        monkeypatch.setattr("tinyassets.runs.record_run_receipt", _rec)
+        out = json.loads(runs._action_record_run_receipt({
+            "run_id": "r1", "receipt_type": "t", "payload_json": "{}",
+        }))
+        assert out["error"] == "universe_access_denied"
+        assert recorded["v"] is False
+
+    def test_routing_evidence_filters_private_universe(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.list_recent_runs",
+            lambda base, **kw: [
+                {"run_id": "r-pub", "actor": "universe:pub",
+                 "status": "completed", "caveat": "c"},
+                {"run_id": "r-priv", "actor": "universe:priv",
+                 "status": "completed", "caveat": "c"},
+            ],
+        )
+        out = json.loads(runs._action_run_routing_evidence({}))
+        ids = {r["run_id"] for r in out["runs"]}
+        assert "r-pub" in ids
+        assert "r-priv" not in ids
+
+    def test_query_runs_wires_read_filter(self, universe_base, monkeypatch):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")
+        _make_private_universe(universe_base, "priv")
+        captured = {}
+
+        def _fake(base, *, row_filter=None, **kw):
+            captured["f"] = row_filter
+            return {"rows": [], "count": 0}
+
+        monkeypatch.setattr("tinyassets.runs.query_runs", _fake)
+        runs._action_query_runs({})
+        f = captured["f"]
+        assert f is not None
+        assert f({"actor": "universe:pub"}) is True
+        assert f({"actor": "universe:priv"}) is False
+        assert f({"actor": "host"}) is True
+
+    def test_get_status_of_private_universe_denied(self, universe_base):
+        from tinyassets.api.status import get_status
+
+        _make_private_universe(universe_base, "priv")
+        out = json.loads(get_status(universe_id="priv"))
+        assert out["error"] == "universe_access_denied"
+        assert out["required_permission"] == "read"
+
+    def test_get_status_of_public_universe_allowed(self, universe_base):
+        from tinyassets.api.status import get_status
+
+        _make_universe(universe_base, "pub")
+        out = json.loads(get_status(universe_id="pub"))
+        assert out.get("error") != "universe_access_denied"
+
+    def test_list_run_receipts_filters_private_in_all_modes(
+        self, universe_base, monkeypatch,
+    ):
+        from tinyassets.api import runs
+
+        _make_universe(universe_base, "pub")
+        _make_private_universe(universe_base, "priv")
+        monkeypatch.setattr(
+            "tinyassets.runs.list_run_receipts",
+            lambda base, **kw: [
+                {"run_id": "r-pub", "receipt_type": "t"},
+                {"run_id": "r-priv", "receipt_type": "t"},
+            ],
+        )
+        monkeypatch.setattr(
+            "tinyassets.runs.get_run",
+            lambda base, rid: {
+                "r-pub": {"run_id": "r-pub", "actor": "universe:pub"},
+                "r-priv": {"run_id": "r-priv", "actor": "universe:priv"},
+            }.get(rid),
+        )
+        # no run_id (enumeration mode) — private receipt must be filtered out
+        out = json.loads(runs._action_list_run_receipts({}))
+        rids = {r["run_id"] for r in out["receipts"]}
+        assert "r-pub" in rids
+        assert "r-priv" not in rids
+
+    def test_get_memory_scope_status_private_denied(self, universe_base):
+        from tinyassets.api import runs
+
+        _make_private_universe(universe_base, "priv")
+        out = json.loads(runs._action_get_memory_scope_status({"universe_id": "priv"}))
+        assert out["error"] == "universe_access_denied"
 
 
 class TestScopeHeader:

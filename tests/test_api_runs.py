@@ -55,8 +55,8 @@ def test_module_exposes_expected_public_names():
 # ── _RUN_ACTIONS dispatch table ─────────────────────────────────────────────
 
 
-def test_run_actions_table_has_16_handlers():
-    assert len(_RUN_ACTIONS) == 16
+def test_run_actions_table_has_18_handlers():
+    assert len(_RUN_ACTIONS) == 18
 
 
 def test_run_actions_table_keys_are_expected_set():
@@ -64,6 +64,7 @@ def test_run_actions_table_keys_are_expected_set():
         "run_branch", "run_branch_version", "get_run", "list_runs",
         "stream_run", "wait_for_run", "cancel_run", "get_run_output",
         "attach_existing_child_run", "resume_run", "estimate_run_cost", "query_runs",
+        "record_run_receipt", "list_run_receipts",
         "get_routing_evidence", "get_memory_scope_status",
         "rollback_merge", "get_rollback_history",
     }

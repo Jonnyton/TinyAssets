@@ -483,6 +483,7 @@ def _extensions_impl(
         "receipt_type": receipt_type,
         "payload_json": payload_json,
         "subject_id": subject_id,
+        "universe_id": universe_id,
         # Surgical-rollback args (Task #22 Phase B).
         "reason": reason,
         "severity": severity,

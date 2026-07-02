@@ -95,6 +95,7 @@ def test_write_actions_table_is_exhaustive() -> None:
         "subscribe_goal", "unsubscribe_goal", "post_to_goal_pool",
         "submit_node_bid",  # Phase G
         "set_tier_config",  # Phase H
+        "soul.edit",  # the learn/write path (OpenSpec universe-creation 1.8)
         "daemon_create", "daemon_summon", "daemon_banish",
         "daemon_pause", "daemon_resume", "daemon_restart",
         "daemon_update_behavior",
@@ -267,9 +268,11 @@ def test_get_ledger_returns_appended_entries(universe: str) -> None:
 
 
 def test_ledger_survives_across_mixed_writes(universe: str) -> None:
+    from tinyassets.universe_soul import ensure_universe_soul
+
     _call("set_premise", text="Premise.")
     _call("give_direction", text="Direction.")
-    us.ensure_universe_soul(
+    ensure_universe_soul(
         us._base_path() / universe,
         loop_branch_def_id="fantasy_author:universe_cycle_wrapper",
     )

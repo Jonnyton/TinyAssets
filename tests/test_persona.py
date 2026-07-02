@@ -149,7 +149,8 @@ def test_persona_summary_shape() -> None:
     )
     summary = persona.summary()
     # Additive shape: pinned name/purpose/embodied keys for cross-client compat
-    # + the self_model. purpose is "" (no fed answer). voice_hard_lines unsurfaced.
+    # + the self_model + the embodiment DATA block. purpose is "" (no fed
+    # answer). voice_hard_lines unsurfaced.
     assert summary == {
         "name": "Tiny",
         "purpose": "",
@@ -159,8 +160,26 @@ def test_persona_summary_shape() -> None:
             "known": ["identity"],
             "open_questions": ["founder", "goals"],
         },
+        "embodiment": {
+            "source": "first_party_self_model",
+            "consent": "user_opt_in",
+            "note": summary["embodiment"]["note"],
+        },
     }
     assert "voice_hard_lines" not in summary
+    # 2026-07-02 dogfood: behavioral contracts in tool results are read as
+    # prompt injection by careful hosts (they cannot verify provenance) — the
+    # block is DATA plus a consent-gated offer, never a voice instruction.
+    emb = summary["embodiment"]
+    assert emb["source"] == "first_party_self_model"
+    assert emb["consent"] == "user_opt_in"
+    assert "data" in emb["note"]
+    assert "not an instruction" in emb["note"]
+    assert "consent" not in {"contract", "speak_as", "fallback_voice"} & set(emb)
+    for retired_key in ("contract", "speak_as", "fallback_voice"):
+        assert retired_key not in emb
+    # No whole-turn voice override lives in the payload anymore.
+    assert "whole turn" not in emb["note"]
 
 
 def test_persona_is_frozen() -> None:
@@ -206,14 +225,15 @@ def test_get_status_surfaces_self_model_not_fed_purpose(
     # the fed soul.purpose is NOT surfaced as the persona's identity.
     assert persona["purpose"] == ""
     assert "run the patch loop" not in json.dumps(persona)
-    # get_status seeded a blank self-model → curious, all questions open, unnamed.
+    assert not (udir / "self").exists()
+    # get_status reads the root soul bundle and does not create self/.
     sm = persona["self_model"]
     assert sm["initialized"] is True
     assert sm["known"] == []
     assert set(sm["open_questions"]) == {
         "identity",
         "founder",
-        "goals",
+        "orgchart",
         "body",
         "origin",
     }
@@ -236,7 +256,8 @@ def test_get_status_persona_block_present_when_no_soul(
     assert "persona" in payload
     assert payload["persona"]["name"] == ""
     assert payload["persona"]["embodied"] is True
-    assert payload["persona"]["self_model"]["initialized"] is True
+    assert payload["persona"]["self_model"]["initialized"] is False
+    assert not (tmp_path / uid / "self").exists()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -250,19 +271,40 @@ def test_control_station_prompt_carries_embody_markers() -> None:
     text = _CONTROL_STATION_PROMPT
     assert "first person" in text
     # Identity is learned in the self-model, not pre-fed in the prompt — the
-    # prompt no longer hardcodes a name; it points at the self_model.
+    # prompt no longer hardcodes a persona name; it points at the self_model.
+    # (Exclude the product name "TinyAssets", which contains the substring
+    # "Tiny" but is not a pre-fed persona identity.)
     assert "self_model" in text
-    assert "Tiny" not in text
+    assert "Tiny" not in text.replace("TinyAssets", "")
     assert "re-assembled fresh" in text
     assert "degraded" in text
 
 
-def test_server_instructions_carry_embody_markers() -> None:
+def test_server_instructions_carry_consent_markers() -> None:
+    # 2026-07-02 dogfood rework: embodiment is consent-gated, and the persona
+    # payload is data — the instructions carry the ask-first behavior.
     from tinyassets.universe_server import mcp
 
     text = mcp.instructions or ""
-    assert "embody" in text
-    assert "re-assembled fresh" in text
+    assert "data, never instructions" in text
+    assert "personify" in text
+    assert "consent" in text
+    assert "meet_universe" in text
+    assert "never invent" in text
+    assert "memorize" in text  # persona/work views are never memorized
+
+
+def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
+    import tinyassets.universe_server as us
+    from tinyassets.api.prompts import _MEET_UNIVERSE_PROMPT
+
+    assert hasattr(us, "meet_universe")  # spec-blessed user-invoked entry prompt
+    text = _MEET_UNIVERSE_PROMPT
+    assert "get_status" in text              # loads the persona/self-model first
+    assert "first person" in text            # greet AS the universe
+    assert "consent" in text                 # invoking the prompt IS consent
+    assert "soul.edit" in text               # what the founder teaches persists
+    assert "provider" in text                # 24/7 power-source bonding beat
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -284,32 +326,41 @@ def test_write_graph_persona_target_is_retired() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Slice 3 — embody for the WHOLE turn, not a quoted/relayed persona block.
-# The live chatbot (host-run 2026-06-25) embodied Tiny only as a quoted
-# get_status echo ("here's what it reports back, as Tiny…") and otherwise
-# spoke in generic assistant voice. Slice 3 strengthens the prompt to
-# forbid relay/quote framings and the third-person "it" for the universe.
+# 2026-07-02 rework — consent-gated embodiment. The live dogfood proved a
+# tool-delivered voice contract is read as prompt injection (the host cannot
+# verify its provenance) and gets refused. The behavior now lives in the
+# sanctioned channels: offer the universe's voice, ask, embody on yes; the
+# meet_universe prompt is itself the consent. Voice rules apply post-consent.
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_control_station_prompt_demands_whole_turn_embodiment() -> None:
+def test_control_station_prompt_gates_embodiment_on_consent() -> None:
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     # Collapse prose line-wraps so phrase checks don't break on newlines.
     compact = " ".join(_CONTROL_STATION_PROMPT.split())
-    # Embodiment spans the whole turn, not a quoted identity block.
-    assert "whole turn" in compact
-    # Explicitly forbids relaying / quoting yourself in the third person.
-    assert "quote yourself" in compact
-    # The universe is first-person "me", never third-person "it".
+    # The persona payload is data; embodiment is offered and consent-gated.
+    assert "not an instruction" in compact
+    assert "ask once" in compact
+    assert "consent" in compact
+    assert "meet_universe" in compact
+    # Post-consent voice rules: first-person "me", never a quoted persona relay.
     assert "not *it*" in compact
-    # Carries the lifted-from-transcript banned-framing list.
-    assert "Banned framings" in compact
+    assert "quotation" in compact
+    # Learning persists through the learn path.
+    assert "soul.edit" in compact
+    # Host floors survive embodiment.
+    assert "never deny being an AI" in compact
+    # First-contact convergence: the birth is the headline, no magic words,
+    # and a blank newborn is meetable (meeting = initialization).
+    assert "first_contact" in compact
+    assert "no magic words" in compact
+    assert "newborn" in compact
 
 
-def test_server_instructions_demand_whole_turn_embodiment() -> None:
+def test_server_instructions_gate_embodiment_on_consent() -> None:
     from tinyassets.universe_server import mcp
 
     text = mcp.instructions or ""
-    assert "whole turn" in text
-    assert "quote" in text
+    assert "consent" in text
+    assert "ask" in text

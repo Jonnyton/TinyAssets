@@ -51,6 +51,14 @@ def set_provider(provider: AuthProvider) -> None:
     _provider = provider
 
 
+def _rejects_invalid_tokens(provider: AuthProvider) -> bool:
+    """A present-but-invalid bearer token is a hard 401, not a silent downgrade
+    to anonymous, whenever the provider enforces auth for writes (full-auth OR
+    resolve-always). A *missing* token still resolves to anonymous public read.
+    """
+    return provider.is_auth_required() or provider.resolve_always_writes()
+
+
 def auth_middleware(token: str | None) -> Identity:
     """Resolve a Bearer token to an Identity.
 
@@ -64,14 +72,76 @@ def auth_middleware(token: str | None) -> Identity:
     if token:
         identity = provider.resolve_token(token)
         if identity is None:
-            if provider.is_auth_required():
-                # Invalid token in gated mode — return None to signal 401
+            if _rejects_invalid_tokens(provider):
+                # Present-but-invalid token — set None to signal a 401 to the
+                # transport layer (do NOT downgrade an invalid token to anon).
                 _current_identity.set(None)
-                return ANONYMOUS  # Caller should check
+                return ANONYMOUS  # Caller must check current_identity() is None
             identity = ANONYMOUS
 
     _current_identity.set(identity)
     return identity
+
+
+def _auth_challenge_path(path: str) -> bool:
+    """The MCP endpoint (``/mcp`` + sub-paths) requires auth in challenge mode.
+    Discovery routes stay public so the client can still find the authorization
+    server, and sibling surfaces like ``/mcp-directory`` are not swept in.
+    """
+    if ".well-known" in path:
+        return False
+    return path == "/mcp" or path.startswith("/mcp/")
+
+
+def _challenge_prm_url() -> str:
+    """The ``resource_metadata`` URL to advertise in the 401 challenge.
+
+    It MUST be fetchable by the client, or OAuth discovery never starts. In
+    production only ``/mcp*`` is proxied to the daemon (Cloudflare Worker), so an
+    apex ``/.well-known/oauth-protected-resource`` 404s. When ``WORKOS_MCP_RESOURCE``
+    is set (e.g. ``https://tinyassets.io/mcp``) derive the PRM from it, yielding
+    the routed ``…/mcp/.well-known/oauth-protected-resource`` (the mcp-prefixed
+    variant the server also mounts). Fallback: the server root well-known, which
+    is correct in dev/tunnel where every path routes to the daemon.
+    """
+    import os
+
+    resource = os.environ.get("WORKOS_MCP_RESOURCE", "").strip().rstrip("/")
+    if resource:
+        return f"{resource}/.well-known/oauth-protected-resource"
+    from tinyassets.auth.wellknown import _server_url
+
+    return f"{_server_url()}/.well-known/oauth-protected-resource"
+
+
+async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
+    """Emit an RFC 9728 ``401`` with a ``WWW-Authenticate`` challenge pointing
+    at our Protected Resource Metadata, so clients start/refresh OAuth.
+
+    ``invalid_token=True`` is the present-but-bad-token case (RFC 6750
+    ``error="invalid_token"``). ``False`` is a missing-credentials challenge —
+    no error code, per RFC 6750 — used in require-auth mode so an unauthenticated
+    client launches the OAuth flow instead of proceeding anonymously.
+    """
+    prm = _challenge_prm_url()
+    if invalid_token:
+        challenge = f'Bearer error="invalid_token", resource_metadata="{prm}"'
+        body = b'{"error":"invalid_token"}'
+    else:
+        challenge = f'Bearer resource_metadata="{prm}"'
+        body = b'{"error":"authentication_required"}'
+    await send({
+        "type": "http.response.start",
+        "status": 401,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"www-authenticate", challenge.encode("latin1")),
+        ],
+    })
+    await send({
+        "type": "http.response.body",
+        "body": body,
+    })
 
 
 def current_identity() -> Identity:
@@ -108,6 +178,23 @@ class AuthContextMiddleware:
             if auth_header.lower().startswith("bearer "):
                 token = auth_header[7:].strip()
             auth_middleware(token)
+            identity = _current_identity.get()
+            if token and identity is None:
+                # Present-but-invalid bearer token → 401 challenge (RFC 9728).
+                await _send_auth_challenge_401(send, invalid_token=True)
+                return
+            if (
+                identity is ANONYMOUS
+                and _auth_challenge_path(scope.get("path", ""))
+                and _get_provider().challenge_unauthenticated()
+            ):
+                # Require-auth (founder connector): a missing token on the MCP
+                # endpoint returns a 401 so the client launches OAuth. Without
+                # this the connector connects anonymously and first-contact
+                # (which needs an authenticated founder) never fires. Discovery
+                # routes are exempt so the client can still find the AS.
+                await _send_auth_challenge_401(send, invalid_token=False)
+                return
             await self.app(scope, receive, send)
         finally:
             _current_identity.reset(previous)
@@ -163,19 +250,43 @@ def require_action_scope(
 
     identity = current_identity()
     provider = _get_provider()
-    if not provider.is_auth_required():
+    auth_required = provider.is_auth_required()
+    resolve_always = provider.resolve_always_writes()
+
+    # Dev / optional modes: no scope enforcement (unchanged).
+    if not auth_required and not resolve_always:
         return identity
 
     metadata = action_scope_for(tool, action)
     if metadata is None:
         raise PermissionError(
             f"No action-scope metadata for {tool}.{action}; refusing "
-            "authenticated dispatch."
+            "gated dispatch."
         )
 
-    if provider.is_auth_required() and identity.user_id == "anonymous":
+    # Resolve-always (WorkOS, D0b): anonymous may perform read-effect actions
+    # (public reads). The per-universe ACL layer separately denies reads of a
+    # private universe; this gate only classifies the action.
+    if resolve_always and not auth_required and metadata.effect == "read":
+        return identity
+
+    if identity.user_id == "anonymous":
         raise PermissionError("Authentication required")
 
+    if resolve_always and not auth_required:
+        # Write/costly/admin: an authenticated founder passes when they hold
+        # either the fine-grained action scope or the coarse effect grant
+        # (read/write/costly/admin). Per-universe confinement is the ACL layer.
+        grants = set(identity.capabilities)
+        if metadata.oauth_scope in grants or metadata.effect in grants:
+            return identity
+        raise PermissionError(
+            f"Missing OAuth scope: {metadata.oauth_scope} "
+            f"for action {metadata.action_name} "
+            f"(user={identity.username}, capabilities={identity.capabilities})"
+        )
+
+    # Legacy full-auth (OAuthProvider): exact named-scope check (unchanged).
     verdict = identity.can(
         PermissionAction(
             name=metadata.action_name,

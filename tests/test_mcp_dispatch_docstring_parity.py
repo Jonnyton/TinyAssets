@@ -107,7 +107,7 @@ def _universe_dispatch_keys() -> set[str]:
         "list", "inspect", "read_output", "query_world",
         "get_activity", "get_recent_events", "get_ledger",
         "submit_request", "give_direction",
-        "read_premise", "set_premise",
+        "read_premise", "set_premise", "soul.edit",
         "add_canon", "add_canon_from_path",
         "list_canon", "read_canon", "list_sources", "read_source",
         "control_daemon", "switch_universe", "create_universe",
@@ -122,7 +122,7 @@ def _universe_dispatch_keys() -> set[str]:
         "daemon_memory_capture", "daemon_memory_search",
         "daemon_memory_list", "daemon_memory_review",
         "daemon_memory_promote", "daemon_memory_status",
-        "set_tier_config",
+        "set_tier_config", "treasury_status",
     }
 
 
@@ -198,7 +198,7 @@ def _flat_group_actions(slab: str) -> set[str]:
             chunk = chunk.split(":", 1)[1]
         for item in chunk.split(","):
             item = item.strip().rstrip(".").strip()
-            if re.fullmatch(r"[a-z_][a-z0-9_]*", item):
+            if re.fullmatch(r"[a-z_][a-z0-9_.]*[a-z0-9_]", item) or re.fullmatch(r"[a-z_]", item):
                 out.add(item)
     return out
 
@@ -233,7 +233,7 @@ def _bullet_group_actions(slab: str) -> set[str]:
             b = b.split(":", 1)[1]
         for item in re.split(r"[,;]", b):
             item = item.strip().rstrip(".").strip()
-            if re.fullmatch(r"[a-z_][a-z0-9_]*", item):
+            if re.fullmatch(r"[a-z_][a-z0-9_.]*[a-z0-9_]", item) or re.fullmatch(r"[a-z_]", item):
                 out.add(item)
     return out
 

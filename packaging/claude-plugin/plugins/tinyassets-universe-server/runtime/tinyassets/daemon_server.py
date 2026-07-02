@@ -397,6 +397,17 @@ def initialize_author_server(base_path: str | Path) -> Path:
     );
     CREATE INDEX IF NOT EXISTS idx_universe_acl_actor
         ON universe_acl(actor_id);
+
+    -- First-contact home binding (D10): the one universe an authenticated
+    -- founder (WorkOS `sub`) is bound to as their home. A founder may hold
+    -- admin ACL on many universes, so "home" is an explicit binding, not the
+    -- ACL. Resolves default MCP entry per-founder instead of the host-global
+    -- `.active_universe` marker.
+    CREATE TABLE IF NOT EXISTS founder_home (
+        founder_sub  TEXT PRIMARY KEY,
+        universe_id  TEXT NOT NULL,
+        created_at   REAL NOT NULL
+    );
     """
     with _connect(base_path) as conn:
         conn.executescript(schema)
@@ -4089,6 +4100,49 @@ def grant_universe_access(
         "granted_at": now,
         "granted_by": granted_by or "",
     }
+
+
+def set_founder_home(
+    base_path: str | Path,
+    *,
+    founder_sub: str,
+    universe_id: str,
+) -> None:
+    """Bind a founder (WorkOS ``sub``) to their home universe (D10).
+
+    Idempotent — re-binding updates the universe_id. No-op for an empty or
+    anonymous founder (anonymous callers have no home) or empty universe.
+    """
+    founder = (founder_sub or "").strip()
+    uid = (universe_id or "").strip()
+    if not founder or founder == "anonymous" or not uid:
+        return
+    now = _now()
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO founder_home (founder_sub, universe_id, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(founder_sub) DO UPDATE SET
+                universe_id = excluded.universe_id
+            """,
+            (founder, uid, now),
+        )
+
+
+def get_founder_home(base_path: str | Path, founder_sub: str) -> str:
+    """Return the founder's bound home universe id, or "" if none/anonymous."""
+    founder = (founder_sub or "").strip()
+    if not founder or founder == "anonymous":
+        return ""
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT universe_id FROM founder_home WHERE founder_sub = ?",
+            (founder,),
+        ).fetchone()
+    return str(row[0]) if row and row[0] else ""
 
 
 def revoke_universe_access(
