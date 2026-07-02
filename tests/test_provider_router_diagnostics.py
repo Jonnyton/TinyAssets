@@ -44,6 +44,8 @@ class FailingProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir=None,
     ) -> ProviderResponse:
         raise self._error
 

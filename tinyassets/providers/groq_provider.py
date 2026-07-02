@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 from tinyassets.exceptions import ProviderError, ProviderUnavailableError
 from tinyassets.providers.base import (
@@ -49,6 +50,8 @@ class GroqProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
         start = time.monotonic()
 

@@ -28,7 +28,7 @@ class _FakeProvider(BaseProvider):
         self.call_count = 0
 
     async def complete(
-        self, prompt: str, system: str, config: ModelConfig
+        self, prompt: str, system: str, config: ModelConfig, *, universe_dir=None,
     ) -> ProviderResponse:
         self.call_count += 1
         return ProviderResponse(
@@ -160,7 +160,7 @@ class TestChainDrainBackoff:
             name = "ollama-local"
             family = "fake"
 
-            async def complete(self, prompt, system, config):
+            async def complete(self, prompt, system, config, *, universe_dir=None):
                 nonlocal call_num
                 call_num += 1
                 text = "" if call_num % 2 == 1 else "content"

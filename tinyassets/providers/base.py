@@ -10,6 +10,28 @@ import abc
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tinyassets.config import UniverseConfig
+
+
+@dataclass(frozen=True, slots=True)
+class UniverseContext:
+    """Explicit per-universe routing context threaded through provider calls.
+
+    Carries the universe directory (for credential-vault auth resolution) and
+    the resolved :class:`~tinyassets.config.UniverseConfig` (for provider
+    preference / allowlist), so the router and vault resolve per-universe config
+    from an EXPLICIT argument instead of the process-global
+    ``runtime.universe_config`` / ``TINYASSETS_UNIVERSE``. This is the
+    multi-universe seam: a single daemon process can serve interleaved calls for
+    different universes without a global bleeding across them. ``None`` fields
+    preserve today's single-universe-daemon behavior (fall back to the globals).
+    """
+
+    universe_dir: Path | None = None
+    config: "UniverseConfig | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,13 +119,20 @@ def subprocess_env_without_api_keys() -> dict[str, str] | None:
     return env
 
 
-def subprocess_env_for_provider(provider_name: str) -> dict[str, str]:
-    """Return subprocess env with API-key policy and vault auth applied."""
+def subprocess_env_for_provider(
+    provider_name: str, *, universe_dir: Path | None = None,
+) -> dict[str, str]:
+    """Return subprocess env with API-key policy and vault auth applied.
+
+    When *universe_dir* is given it takes precedence over the process-global
+    ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
+    resolve per-universe credentials for an explicitly threaded universe.
+    """
     env = subprocess_env_without_api_keys() or os.environ.copy()
     try:
         from tinyassets.credential_vault import apply_provider_auth_env
 
-        apply_provider_auth_env(env, provider_name)
+        apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
     except ValueError:
         raise
     except Exception:
@@ -302,5 +331,13 @@ class BaseProvider(abc.ABC):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
-        """Send *prompt* with *system* instructions and return a response."""
+        """Send *prompt* with *system* instructions and return a response.
+
+        *universe_dir*, when supplied, scopes vault-backed subscription auth to
+        that universe (subscription-backed providers pass it into
+        :func:`subprocess_env_for_provider`); providers that never touch the
+        vault ignore it.
+        """

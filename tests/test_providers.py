@@ -59,6 +59,8 @@ class FakeProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir=None,
     ) -> ProviderResponse:
         self.call_count += 1
         if self._fail_with is not None:
@@ -88,6 +90,8 @@ class SlowCountingProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir=None,
     ) -> ProviderResponse:
         with self.lock:
             self.active += 1

@@ -66,7 +66,7 @@ class TestIsAvailableClassmethod:
             name = "dummy"
             family = "test"
 
-            async def complete(self, prompt, system, config):
+            async def complete(self, prompt, system, config, *, universe_dir=None):
                 raise NotImplementedError
 
         assert _Dummy.is_available() is True
