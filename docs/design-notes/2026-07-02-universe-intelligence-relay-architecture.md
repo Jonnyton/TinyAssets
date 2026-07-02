@@ -200,19 +200,31 @@ Everything else is wiring.
    continuously on the founder's assigned engine, *always proactively acting on
    the founder's / company's behalf, carrying out its vision* — not on-demand
    per turn. Confirms the persistent-loop model (generalize `DaemonController`).
-2. **Credential custody = RESEARCH lane (host: "research and think about it").**
-   Hard requirement: the universe runs 24/7 **without the founder's computer or
-   phone on**. Engine sources, none privileged — "we don't care how they bring an
-   LLM; we do our best to keep it up as much as it can be":
-   - **Subscription** (claude/codex CLI) or **API key** → device-independent; the
-     platform hosts it 24/7. Custody question: how the server holds + uses the
-     founder's creds securely, multi-tenant.
-   - **Self-hosted OSS** (their machine or their cloud) → availability bounded by
-     *their* host being up; platform reaches it via endpoint (e.g. `OLLAMA_HOST` /
-     `ANTHROPIC_BASE_URL`). Custody = an endpoint + token, not our secret.
-   → Open research: where per-founder engine creds live (vault? per-universe
-   encrypted? BYO-endpoint?), how it stays up 24/7, multi-tenant isolation of
-   creds. See research note (dispatched). This is the load-bearing unknown.
+2. **Credential custody — RESEARCHED (2026-07-02, pending Codex confirmation).**
+   Full note: `docs/design-notes/2026-07-02-universe-engine-credential-custody-research.md`.
+   **Load-bearing finding (contradicts the "subscription is fine" assumption):**
+   custodying a *founder's* personal Claude Pro/Max or ChatGPT Plus **subscription**
+   and driving it 24/7 server-side is **ToS-blocked on both providers** (Anthropic:
+   automation only via API key, OAuth tokens exclusively for Claude Code/Claude.ai;
+   OpenAI: ChatGPT subs individual-use, automation → API key). So the lawful,
+   device-independent, per-founder 24/7 engines are only **API key** and
+   **self-hosted endpoint**; personal-subscription survives *only* as the
+   **platform's own default** engine (current droplet model), never per-founder.
+   **Recommended model — two-lane BYO + zero-config default:** (i) bring nothing →
+   platform droplet subscription (ToS-clean, already 24/7); (ii) BYO API key
+   (primary sanctioned path) → per-universe vault under **envelope encryption**;
+   (iii) BYO endpoint (`OLLAMA_HOST`/`ANTHROPIC_BASE_URL` + token). **Do not build
+   founder-subscription custody.**
+   **Substrate is ~70% built:** `tinyassets/credential_vault.py` is per-universe +
+   READ-wired into providers, but has 3 gaps — (a) base64-not-encrypted at rest,
+   (b) no write surface (`write_credential_vault` uncalled), (c) **Gap A** (engine
+   selection + cred resolution both process-global → shared MCP server can't pick
+   the right founder's engine/creds per request). Gap A is the hard prerequisite.
+   **Needs host decision:** confirm the ToS stance; approve **per-universe
+   relaxation of `TINYASSETS_ALLOW_API_KEY_PROVIDERS`** (a real subscription-only
+   policy change); pick secret backend. Hard Rule #3 (CLI-only for the *primary
+   writer*) stays for the platform default; a founder's BYO API-key engine is a
+   documented exception (flag if it needs an SDK path → Rule #3 amendment).
 3. **Write-authorization rule (host-stated, crisp):** write access to a universe
    is restricted to **(a) the universe's own intelligence** and/or **(b) the
    chatbot/app authenticated with the founder's WorkOS.** Two write principals;
