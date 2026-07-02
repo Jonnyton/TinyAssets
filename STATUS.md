@@ -6,6 +6,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 
 ## Concerns
 
+- **[filed:2026-07-02] RESHAPE (host directive)** — universe intelligence = single first-party personified agent + sole action-taker (LLM assigned at create); chatbot MCP demotes to onboard+relay; app already relay-shaped. REVERSES `universe-personification` "chatbot embodies, never relays" (live-falsified). Design note `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md`; awaiting host approval + Codex review (dispatched). Foundation (auth/isolation/founder/WorkOS in PR #1437) survives + merges together with new shape (host chose design-first). Do NOT build more chatbot-embodiment.
 - [filed:2026-04-17 verified:2026-04-28] Privacy mode: 2 of 3 host-Qs OBVIATED by community-build (per-conversation chatbot composes); Q6.3 STILL-PLATFORM (third-party providers in fallback chain — `tinyassets/providers/router.py`).
 - [filed:2026-04-18 verified:2026-04-28] `add_canon_from_path` sensitivity: 3 host-Qs REFRAMED by commons-first audit F3 (self-auditing-tools structured caveats).
 - [filed:2026-04-24] Task #9 host Qs: GROQ/GEMINI/XAI GH Actions secrets present + rotation e2e validated after deploy step ships.
