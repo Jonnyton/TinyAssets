@@ -64,8 +64,8 @@ The reshape resolves it by **moving embodiment to a first-party model**:
 | App's job | render first-person (already correct) | render first-person (unchanged) |
 | First-person voice the user sees | chatbot-generated (fragile) | intelligence-generated (native, reliable) |
 
-"Relay" here is **not** the spec's forbidden third-person "Tiny says…". The user
-still sees first-person "I'm Tiny…"; the difference is the *source* is the
+"Relay" here is **not** the spec's forbidden third-person "the universe says…". The
+user still sees first-person "I'm <name>…"; the difference is the *source* is the
 first-party intelligence, transported through the chatbot, not the chatbot
 pretending. This is exactly what the prior-art note flagged as the durable model.
 
@@ -210,10 +210,13 @@ Everything else is wiring.
    automation only via API key, OAuth tokens exclusively for Claude Code/Claude.ai;
    OpenAI: ChatGPT subs individual-use, automation → API key). So the lawful,
    device-independent, per-founder 24/7 engines are only **API key** and
-   **self-hosted endpoint**; personal-subscription survives *only* as the
-   platform's own first-party engine for **the platform's own universe** (Tiny, the
-   current droplet model) — **there is NO platform-provided free engine for
-   founders** (host correction 2026-07-02, §12).
+   **self-hosted endpoint**; personal-subscription survives *only* **self-hosted** —
+   your own account on your own infra (e.g. the host runs *his own* subscription on
+   the droplet, ToS-clean because it is his own). **There is NO platform-provided
+   free engine for founders, and NO privileged "platform universe"** (host
+   correction 2026-07-02: clean slate — zero universes until users create them; the
+   platform founder's universe, if he creates one and hands it the repo, is *just
+   another user's universe*. §12).
    **Recommended engine model for the universe intelligence (24/7 + app):** (i) BYO
    API key (primary sanctioned path) → per-universe vault under **envelope
    encryption**; (ii) BYO self-hosted endpoint (`OLLAMA_HOST`/`ANTHROPIC_BASE_URL`
@@ -260,9 +263,11 @@ each other:
   **brain**; **compute is always brought, never zero** — because the only two ways
   to be a user each carry an LLM: the **chatbot** *is* an LLM (host client's own,
   in-session), and the **app** is a thin client onto the founder's **assigned
-  engine**. There is NO platform-provided free/default engine for founders. (The
-  platform's droplet subscription runs the platform's *own* universe, Tiny — not a
-  per-founder default.) "Bring nothing → platform runs it for free" does not exist.
+  engine**. There is NO platform-provided free/default engine for founders, and NO
+  privileged "platform universe" (host correction 2026-07-02: **clean slate — zero
+  universes until users create them**; the host's droplet subscription is the host's
+  *own* self-hosted account, serving whatever universe(s) *he* creates — not a
+  per-founder default). "Bring nothing → platform runs it for free" does not exist.
 - **Compute for the *universe intelligence* (needed for the app + 24/7):** brought
   by the founder —
   1. **Host your own daemon** (their machine/cloud, their engine).
