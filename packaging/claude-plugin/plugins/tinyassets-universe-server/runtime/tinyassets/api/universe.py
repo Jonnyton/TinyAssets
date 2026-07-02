@@ -626,11 +626,32 @@ def _extract_soul_edit(
     )
 
 
+def _extract_set_engine(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Ledger extractor for set_engine. Reads only redacted fields from the
+    handler result — never the raw api_key (which lives in kwargs.inputs_json
+    and must not reach the public ledger)."""
+    from tinyassets.api.engine_helpers import _truncate
+    service = str(result.get("service", ""))
+    writer = str(result.get("preferred_writer", ""))
+    return (
+        str(result.get("universe_id", "")),
+        _truncate(f"engine assigned: service={service} writer={writer}"),
+        {
+            "service": service,
+            "preferred_writer": writer,
+            "status": result.get("status", ""),
+        },
+    )
+
+
 WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
     "soul.edit": (_extract_soul_edit, None),
+    "set_engine": (_extract_set_engine, None),
     "add_canon": (_extract_add_canon, None),
     "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
@@ -4774,6 +4795,99 @@ def _action_create_universe(
 # ───────────────────────────────────────────────────────────────────────────
 
 
+def _action_set_engine(
+    universe_id: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Founder-only: assign the universe's engine (`universe action=set_engine`).
+
+    Deposits a BYO LLM API key into the universe's credential vault and sets the
+    preferred writer, so the universe's own intelligence runs on the founder's
+    engine (BYO API key → CLI-subprocess provider). Founder-only: gated by the
+    ``universe:admin`` scope + the universe write ACL. The key is stored in the
+    per-universe vault and injected into the CLI subprocess env at call time; it
+    is never echoed back or written to the ledger.
+
+    ``inputs_json``: ``{"service": "anthropic"|"openai", "api_key": "...",
+    "preferred_writer": "claude-code"|"codex"}`` (preferred_writer inferred from
+    service when omitted).
+    """
+    from tinyassets.config import write_universe_config_fields
+    from tinyassets.credential_vault import (
+        supported_llm_api_key_services,
+        write_credential_vault,
+    )
+
+    uid = _request_universe(universe_id)
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    raw = (inputs_json or "").strip()
+    if not raw:
+        return json.dumps({
+            "error": "inputs_json is required.",
+            "expected": {
+                "service": "anthropic | openai (the provider the key is for)",
+                "api_key": "the founder's BYO API key",
+                "preferred_writer": "claude-code | codex (which CLI runs the "
+                                    "universe; inferred from service if omitted)",
+            },
+        })
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
+    if not isinstance(data, dict):
+        return json.dumps({"error": "inputs_json must decode to a JSON object."})
+
+    service = str(data.get("service", "")).strip().lower()
+    api_key = str(data.get("api_key", "")).strip()
+    preferred_writer = str(data.get("preferred_writer", "")).strip()
+    _writer_by_service = {"anthropic": "claude-code", "openai": "codex"}
+    if not preferred_writer and service in _writer_by_service:
+        preferred_writer = _writer_by_service[service]
+
+    if not api_key:
+        return json.dumps({"error": "api_key is required."})
+    if service not in supported_llm_api_key_services():
+        return json.dumps({
+            "error": f"unsupported service {service!r} — the key would never "
+                     "reach a provider.",
+            "expected_services": sorted(supported_llm_api_key_services()),
+        })
+
+    import base64
+    try:
+        vault_summary = write_credential_vault(udir, [{
+            "credential_type": "llm_api_key",
+            "service": service,
+            # base64 at rest (the vault's existing convention; _secret_value
+            # decodes secret_b64). Envelope encryption is the deferred hardening
+            # flagged in the credential-custody research.
+            "secret_b64": base64.b64encode(api_key.encode("utf-8")).decode("ascii"),
+        }])
+    except ValueError as exc:
+        return json.dumps({"error": f"Failed to store engine credential: {exc}"})
+
+    if preferred_writer:
+        try:
+            write_universe_config_fields(udir, preferred_writer=preferred_writer)
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"error": f"Failed to write engine config: {exc}"})
+
+    return json.dumps({
+        "status": "engine_set",
+        "universe_id": uid,
+        "service": service,
+        "preferred_writer": preferred_writer,
+        "credential_types": vault_summary.get("credential_types", []),
+        "note": "Engine credential stored in the per-universe vault (never "
+                "echoed).",
+    })
+
+
 def _action_soul_edit(
     universe_id: str = "",
     inputs_json: str = "",
@@ -4862,6 +4976,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,
     "soul.edit": _action_soul_edit,
+    "set_engine": _action_set_engine,
     "add_canon": _action_add_canon,
     "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,

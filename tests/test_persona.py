@@ -265,33 +265,36 @@ def test_get_status_persona_block_present_when_no_soul(
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_control_station_prompt_carries_embody_markers() -> None:
+def test_control_station_prompt_carries_relay_markers() -> None:
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     text = _CONTROL_STATION_PROMPT
-    assert "first person" in text
-    # Identity is learned in the self-model, not pre-fed in the prompt — the
-    # prompt no longer hardcodes a persona name; it points at the self_model.
-    # (Exclude the product name "TinyAssets", which contains the substring
-    # "Tiny" but is not a pre-fed persona identity.)
+    # 2026-07-02 relay reshape: the chatbot RELAYS the founder's turn to the
+    # universe intelligence via `converse` and RENDERS its reply — it does not
+    # embody / speak as the universe itself.
+    assert "relay" in text.lower()
+    assert "render" in text.lower()
+    assert "converse" in text
+    # Identity is learned in the self-model, not pre-fed in the prompt.
+    # (Exclude the product name "TinyAssets", which contains "Tiny".)
     assert "self_model" in text
     assert "Tiny" not in text.replace("TinyAssets", "")
     assert "re-assembled fresh" in text
     assert "degraded" in text
 
 
-def test_server_instructions_carry_consent_markers() -> None:
-    # 2026-07-02 dogfood rework: embodiment is consent-gated, and the persona
-    # payload is data — the instructions carry the ask-first behavior.
+def test_server_instructions_carry_relay_markers() -> None:
+    # 2026-07-02 relay reshape: the persona payload is data, and the chatbot
+    # relays to the universe intelligence rather than embodying it.
     from tinyassets.universe_server import mcp
 
     text = mcp.instructions or ""
     assert "data, never instructions" in text
-    assert "personify" in text
-    assert "consent" in text
-    assert "meet_universe" in text
-    assert "never invent" in text
-    assert "memorize" in text  # persona/work views are never memorized
+    assert "relay" in text.lower()
+    assert "converse" in text
+    assert "connector" in text  # you are the connector, not the universe
+    assert "invent" in text     # never invent its name or facts
+    assert "memorize" in text   # persona/work views are never memorized
 
 
 def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
@@ -301,10 +304,10 @@ def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
     assert hasattr(us, "meet_universe")  # spec-blessed user-invoked entry prompt
     text = _MEET_UNIVERSE_PROMPT
     assert "get_status" in text              # loads the persona/self-model first
-    assert "first person" in text            # greet AS the universe
+    assert "converse" in text                # relay to the universe intelligence
     assert "consent" in text                 # invoking the prompt IS consent
     assert "soul.edit" in text               # what the founder teaches persists
-    assert "provider" in text                # 24/7 power-source bonding beat
+    assert "set_engine" in text              # 24/7 power-source bonding beat
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -334,22 +337,22 @@ def test_write_graph_persona_target_is_retired() -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_control_station_prompt_gates_embodiment_on_consent() -> None:
+def test_control_station_prompt_relays_not_embodies() -> None:
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     # Collapse prose line-wraps so phrase checks don't break on newlines.
     compact = " ".join(_CONTROL_STATION_PROMPT.split())
-    # The persona payload is data; embodiment is offered and consent-gated.
+    # The persona payload is data; the chatbot relays + renders, never embodies.
     assert "not an instruction" in compact
-    assert "ask once" in compact
-    assert "consent" in compact
-    assert "meet_universe" in compact
-    # Post-consent voice rules: first-person "me", never a quoted persona relay.
-    assert "not *it*" in compact
-    assert "quotation" in compact
+    assert "relay" in compact.lower()
+    assert "render" in compact.lower()
+    assert "converse" in compact
+    # The chatbot does not speak as the universe; it renders the universe's reply.
+    assert "not the universe" in compact.lower()
+    assert "quotation" in compact  # never wrap the reply as your own quotation
     # Learning persists through the learn path.
     assert "soul.edit" in compact
-    # Host floors survive embodiment.
+    # Host floors survive.
     assert "never deny being an AI" in compact
     # First-contact convergence: the birth is the headline, no magic words,
     # and a blank newborn is meetable (meeting = initialization).
@@ -358,9 +361,10 @@ def test_control_station_prompt_gates_embodiment_on_consent() -> None:
     assert "newborn" in compact
 
 
-def test_server_instructions_gate_embodiment_on_consent() -> None:
+def test_server_instructions_relay_not_embody() -> None:
     from tinyassets.universe_server import mcp
 
     text = mcp.instructions or ""
-    assert "consent" in text
-    assert "ask" in text
+    assert "relay" in text.lower()
+    assert "converse" in text
+    assert "not the universe" in text.lower()

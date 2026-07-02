@@ -160,3 +160,53 @@ def _build_config(data: dict[str, Any]) -> UniverseConfig:
     except (TypeError, ValueError) as e:
         logger.warning("Invalid config.yaml values: %s; using defaults", e)
         return UniverseConfig()
+
+
+def write_universe_config_fields(
+    universe_path: str | Path, **fields: Any
+) -> None:
+    """Merge *fields* into ``{universe_path}/config.yaml`` (atomic).
+
+    Loads the existing config.yaml (if any), updates the given top-level keys,
+    and writes the merged mapping back atomically (temp file + rename). Existing
+    keys not named in *fields* are preserved. This is the write path for
+    per-universe engine assignment (``preferred_writer`` /
+    ``allow_api_key_providers`` set by ``universe action=set_engine``).
+
+    Fails loudly (raises) if PyYAML is unavailable or the write fails — a
+    silently-dropped engine assignment would leave the universe on the wrong
+    engine (Hard Rule #8).
+    """
+    import os
+    import tempfile
+
+    import yaml
+
+    config_file = Path(universe_path) / "config.yaml"
+    data: dict[str, Any] = {}
+    if config_file.exists():
+        try:
+            loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception as e:  # noqa: BLE001 - fall back to empty, log below
+            logger.warning(
+                "Existing config.yaml at %s unreadable (%s); rewriting fresh",
+                config_file, e,
+            )
+    data.update(fields)
+
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(config_file.parent), prefix=".config.", suffix=".yaml.tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)
+        os.replace(tmp_path, config_file)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
