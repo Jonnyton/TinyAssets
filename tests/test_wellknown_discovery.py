@@ -39,6 +39,10 @@ def test_prm_workos_points_at_authkit(monkeypatch):
     # Resource is the registered MCP resource indicator (token audience).
     assert prm["resource"] == MCP_RESOURCE
     assert prm["bearer_methods_supported"] == ["header"]
+    # Advertise ONLY scopes AuthKit can grant — internal tinyassets.* action
+    # scopes here cause the client's authorize to fail invalid_scope (dogfood).
+    assert prm["scopes_supported"] == ["openid", "profile", "email", "offline_access"]
+    assert not any(s.startswith("tinyassets.") for s in prm["scopes_supported"])
 
 
 def test_prm_workos_without_resource_falls_back_to_base(monkeypatch):

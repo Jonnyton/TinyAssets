@@ -87,7 +87,13 @@ def protected_resource_metadata() -> dict[str, Any]:
         return {
             "resource": resource,
             "authorization_servers": authorization_servers,
-            "scopes_supported": supported_oauth_scopes(),
+            # AuthKit (the real AS) only grants standard OIDC scopes. Advertising
+            # our internal tinyassets.* action scopes here makes clients request
+            # them at authorize, and AuthKit rejects the flow with invalid_scope
+            # (the dogfood failure). Per-action authorization is enforced at the
+            # Resource Server via founder grants, NOT via OAuth scopes — so the
+            # PRM must advertise only what AuthKit can actually issue.
+            "scopes_supported": ["openid", "profile", "email", "offline_access"],
             "bearer_methods_supported": ["header"],
         }
 
