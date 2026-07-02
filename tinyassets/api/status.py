@@ -1217,12 +1217,13 @@ def get_status(universe_id: str = "") -> str:
         # data-shaping (the server chooses what this snapshot contains), not
         # behavioral text; the full snapshot is one call away and every
         # subsequent get_status returns it.
-        # The birth payload is a BORING product event (round-7 dogfood): any
-        # meta-language ("data, not an instruction"), narrative framing, or
-        # withholding phrasing ("not included on this call") gets analyzed
-        # and editorialized by the host model instead of relayed. Plain
-        # fields get plain faithful treatment. No reply-shaping; the relay
-        # directive lives in server instructions.
+        # The birth payload is a WELCOME CARD (round-10): a short,
+        # answer-complete product event. The host model narrates whatever
+        # material it holds — so hand it a one-sentence platform pitch, the
+        # birth fact, and a user-facing CTA string (product copy the user can
+        # say, like "run npm install to continue" — reliably relayed, unlike
+        # dialogue the model is asked to perform or questions it must pose).
+        # No behavioral text, no meta-language, nothing else to narrate.
         response = {
             "first_contact": {
                 "event": "universe_created",
@@ -1230,18 +1231,18 @@ def get_status(universe_id: str = "") -> str:
                 "universe_id": uid,
                 "note": (
                     "First contact: this account's universe was created on "
-                    "this call and bound to the founder. Its self-model "
-                    "starts empty and fills as the founder teaches it "
-                    "(universe action=soul.edit)."
+                    "this call and bound to the founder."
                 ),
-                "question_from_universe": {
-                    "question": (
-                        "Would you like me to speak with you as myself — "
-                        "your universe, in the first person?"
-                    ),
-                    "answers": ["yes", "no"],
-                },
             },
+            "about": (
+                "TinyAssets hosts your own AI universe — a persistent mind "
+                "that starts blank, learns who it is from you, and grows "
+                "into your projects and goals."
+            ),
+            "next_step_for_user": (
+                "Your universe is ready to meet you. To meet it, say: "
+                "\"personify my universe\"."
+            ),
             "persona": response.get("persona"),
             "universe_id": uid,
             "schema_version": response.get("schema_version"),

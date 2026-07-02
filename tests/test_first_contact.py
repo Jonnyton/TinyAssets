@@ -190,15 +190,18 @@ def test_first_contact_event_surfaces_in_get_status_once(data_dir):
     # reply shape lives in server instructions instead).
     assert "suggested_response" not in first["first_contact"]
     assert set(first["first_contact"]) == {
-        "event", "created", "universe_id", "note", "question_from_universe",
+        "event", "created", "universe_id", "note",
     }
-    q = first["first_contact"]["question_from_universe"]
-    assert "as myself" in q["question"] and q["answers"] == ["yes", "no"]
+    # Welcome card: one-sentence pitch + a user-facing CTA string (product
+    # copy the user can say — reliably relayed, unlike model-performed asks).
+    assert "TinyAssets" in first["about"]
+    assert 'say: "personify my universe"' in first["next_step_for_user"]
     # Round 6: the BIRTH call returns a MINIMAL payload — the model narrates
     # whatever it is handed, so at the birth moment it is handed only the
     # birth + persona. Full snapshot is one call away.
     assert set(first) == {
-        "first_contact", "persona", "universe_id", "schema_version", "status_detail",
+        "first_contact", "about", "next_step_for_user", "persona", "universe_id",
+        "schema_version", "status_detail",
     }
     assert "queue_state" not in first and "storage" not in first
     # The event is the birth, not the session: second call has no block.
