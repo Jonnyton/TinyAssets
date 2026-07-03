@@ -784,6 +784,8 @@ def write_page(
     """
     normalized_kind = kind.strip().lower()
     if normalized_kind:
+        # Issue filings (bug/patch_request/feature/design) are shared-commons
+        # coordination, not private canon — they stay on the global commons.
         return _wiki_impl(
             action="file_bug",
             kind=normalized_kind,
@@ -799,6 +801,19 @@ def write_page(
             reporter_context=reporter_context,
             universe_id=universe_id,
         )
+    # Finding C (2026-07-02 live test): a founder's page write/patch is PRIVATE
+    # canon and must land in THEIR universe, not the shared global commons. When
+    # the id is omitted, resolve it to the AUTHENTICATED founder's home (the same
+    # resolver converse/soul.edit use — never a host-global or cross-founder
+    # default). Anonymous/dev callers keep legacy commons routing; issue filings
+    # above always stay on the commons.
+    page_universe_id = universe_id
+    if not universe_id.strip():
+        from tinyassets.api.helpers import _request_universe
+        from tinyassets.api.permissions import is_authenticated_request
+
+        if is_authenticated_request():
+            page_universe_id = _request_universe("")
     if old_text or new_text:
         return _wiki_impl(
             action="patch",
@@ -808,7 +823,7 @@ def write_page(
             expected_sha256=expected_sha256,
             log_entry=log_entry,
             dry_run=dry_run,
-            universe_id=universe_id,
+            universe_id=page_universe_id,
         )
     write_filename = filename or page
     return _wiki_impl(
@@ -818,7 +833,7 @@ def write_page(
         content=content,
         log_entry=log_entry,
         dry_run=dry_run,
-        universe_id=universe_id,
+        universe_id=page_universe_id,
     )
 
 

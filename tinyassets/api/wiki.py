@@ -410,9 +410,10 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
         "references": "## References",
         "plans": "## Plans",
     }
-    hdr = header_map.get(category)
-    if not hdr:
-        return
+    # Custom (organically grown) categories have no fixed header — synthesize
+    # a title-cased section header (e.g. `magic-systems` -> `## Magic Systems`)
+    # so the page is indexed rather than silently dropped.
+    hdr = header_map.get(category) or ("## " + category.replace("-", " ").title())
     entry = f"- [[{slug}]] -- {title or slug}"
     lines = idx.split("\n")
     insert_at = -1
@@ -427,7 +428,12 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
             insert_at = i + 1
     if insert_at > 0:
         lines.insert(insert_at, entry)
-        idx_path.write_text("\n".join(lines), encoding="utf-8")
+    else:
+        # Section not present yet (custom category) — append a new section.
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend([hdr, entry])
+    idx_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def _append_wiki_log(msg: str) -> None:
@@ -445,6 +451,28 @@ def _sanitize_slug(name: str) -> str:
     """Convert a filename into a safe wiki slug."""
     clean = name.removesuffix(".md")
     return re.sub(r"[^a-z0-9-]", "-", clean.lower()).strip("-")
+
+
+def _existing_category_dirs(base: Path) -> tuple[str, ...]:
+    """Category subdir names under a wiki base (drafts/ or pages/).
+
+    Returns the seed defaults in ``_WIKI_CATEGORIES`` unioned with any custom
+    categories a universe has grown organically on disk. Used wherever a caller
+    omits the category so custom-category pages stay discoverable — the OKF
+    organic-growth model: the taxonomy seeds sane defaults but is not a closed
+    whitelist.
+    """
+    # Seed categories FIRST in canonical order so omitted-category
+    # promote/supersede precedence is unchanged; custom categories append
+    # (sorted) after them.
+    ordered = list(_WIKI_CATEGORIES)
+    seen = set(ordered)
+    if base.is_dir():
+        for d in sorted(base.iterdir()):
+            if d.is_dir() and d.name not in seen:
+                ordered.append(d.name)
+                seen.add(d.name)
+    return tuple(ordered)
 
 
 def _wiki_write_slug(category: str, filename: str) -> tuple[str, str | None]:
@@ -774,11 +802,26 @@ def _wiki_write(
 ) -> str:
     if not filename or not content:
         return json.dumps({"error": "filename and content are required."})
-    if category not in _WIKI_CATEGORIES:
+    if not category:
         return json.dumps({
-            "error": f"Invalid category '{category}'.",
-            "valid": list(_WIKI_CATEGORIES),
+            "error": "category is required.",
+            "seed_categories": list(_WIKI_CATEGORIES),
         })
+    if category not in _WIKI_CATEGORIES:
+        # Custom category (OKF organic growth): the seed taxonomy is a set of
+        # sensible defaults, not a closed whitelist. Sanitize to a safe slug so
+        # it can never be a path-traversal vector (it is used directly as a
+        # path component below) and so `Magic Systems` becomes `magic-systems`.
+        safe = _sanitize_slug(category)
+        if not safe:
+            return json.dumps({
+                "error": (
+                    f"Invalid category '{category}': a custom category must "
+                    "contain letters or digits (it becomes a lowercase slug)."
+                ),
+                "seed_categories": list(_WIKI_CATEGORIES),
+            })
+        category = safe
 
     slug, slug_error = _wiki_write_slug(category, filename)
     if slug_error:
@@ -1100,6 +1143,10 @@ def _wiki_promote(
         return json.dumps({"error": "filename is required."})
 
     slug = _sanitize_slug(filename)
+    # Sanitize the category too: it is used directly as a path component below
+    # (dest write + draft unlink), so a raw value like "../pages/notes" would be
+    # a traversal vector. Slugify it exactly as writes do.
+    category = _sanitize_slug(category) if category else ""
     draft_path: Path | None = None
     found_category = category
 
@@ -1108,7 +1155,7 @@ def _wiki_promote(
         if p.exists():
             draft_path = p
     else:
-        for cat in _WIKI_CATEGORIES:
+        for cat in _existing_category_dirs(_wiki_drafts_dir()):
             p = _wiki_drafts_dir() / cat / (slug + ".md")
             if p.exists():
                 draft_path = p
@@ -1192,7 +1239,7 @@ def _wiki_supersede(
 
     old_path: Path | None = None
     old_category = ""
-    for cat in _WIKI_CATEGORIES:
+    for cat in _existing_category_dirs(_wiki_pages_dir()):
         p = _wiki_pages_dir() / cat / (old_slug + ".md")
         if p.exists():
             old_path = p
@@ -1202,7 +1249,7 @@ def _wiki_supersede(
         return json.dumps({"error": f"Old page not found in pages/: {old_slug}"})
 
     new_exists = False
-    for cat in _WIKI_CATEGORIES:
+    for cat in _existing_category_dirs(_wiki_drafts_dir()):
         p = _wiki_drafts_dir() / cat / (new_slug + ".md")
         if p.exists():
             new_exists = True

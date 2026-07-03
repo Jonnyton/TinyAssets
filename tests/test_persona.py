@@ -361,6 +361,27 @@ def test_control_station_prompt_relays_not_embodies() -> None:
     assert "newborn" in compact
 
 
+def test_control_station_routes_identity_to_soul_not_wiki() -> None:
+    # Finding A (2026-07-02 live test): founder-identity/origin/name learning was
+    # persisted to the wiki instead of the governed soul. The routing must carve
+    # identity/self out of the "reference -> wiki" rule and send it to soul.edit.
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT, _MEET_UNIVERSE_PROMPT
+
+    cs = " ".join(_CONTROL_STATION_PROMPT.split())
+    # The carve-out ties identity/origin/founder learning to soul.edit and warns
+    # it is NOT wiki content.
+    assert "soul.edit" in cs
+    assert "governed" in cs.lower()
+    assert "never `wiki`" in cs or "not `wiki`" in cs or "NEVER `wiki`" in cs
+    assert "origin.md" in cs and "founder.md" in cs
+
+    mu = " ".join(_MEET_UNIVERSE_PROMPT.split())
+    assert "soul.edit" in mu
+    # meet_universe distinguishes governed-soul identity facts from wiki canon.
+    assert "founder.md" in mu and "origin.md" in mu
+    assert "NOT the wiki" in mu or "not `wiki`" in mu or "not the wiki" in mu.lower()
+
+
 def test_server_instructions_relay_not_embody() -> None:
     from tinyassets.universe_server import mcp
 

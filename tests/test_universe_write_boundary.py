@@ -180,3 +180,111 @@ class TestFounderWriteBoundary:
         assert "error" in out, out
         # Denied — never an accepted write.
         assert out.get("status") != "updated", out
+
+
+class TestPrivateCanonScoping:
+    """Finding C (2026-07-02 live test): a founder's ``write_page`` content is
+    private canon and must land in THEIR universe wiki, not the shared global
+    commons; issue filings (``kind=``) stay on the commons."""
+
+    def test_page_write_omitted_id_lands_in_founder_home_not_commons(
+        self, universe_base
+    ):
+        from tinyassets.universe_server import write_page
+
+        created = _create_universe_as("carol", "u-canon-carol")
+        assert created.get("status") == "created", created
+        uid = created["universe_id"]
+        # carol stays the founder (home = her universe) + gains wiki write scope.
+        _authenticate(
+            "carol",
+            _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
+        )
+        out = json.loads(write_page(
+            category="lore",
+            filename="the-resonance",
+            content="The Resonance links cells and bonds across Aurelith.",
+            dry_run=False,
+        ))
+        assert "error" not in out, out
+        universe_hits = list(
+            (universe_base / uid / "wiki").rglob("the-resonance.md")
+        )
+        assert universe_hits, f"page not in founder's universe wiki; out={out}"
+        commons = universe_base / "wiki"
+        commons_hits = (
+            list(commons.rglob("the-resonance.md")) if commons.is_dir() else []
+        )
+        assert not commons_hits, (
+            f"private canon leaked to global commons: {commons_hits}"
+        )
+
+    def test_issue_filing_stays_on_commons_not_founder_home(self, universe_base):
+        from tinyassets.universe_server import write_page
+
+        created = _create_universe_as("dave", "u-commons-dave")
+        assert created.get("status") == "created", created
+        uid = created["universe_id"]
+        _authenticate(
+            "dave",
+            _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
+        )
+        out = json.loads(write_page(
+            kind="bug",
+            title="Widget crashes on save",
+            component="widget",
+            severity="major",
+            repro="open widget, click save",
+            observed="crash",
+            expected="saves cleanly",
+        ))
+        assert "error" not in out, out
+        # The bug filing did NOT land in dave's private universe wiki.
+        home_bugs_dir = universe_base / uid / "wiki" / "pages" / "bugs"
+        home_bugs = (
+            list(home_bugs_dir.rglob("*.md")) if home_bugs_dir.is_dir() else []
+        )
+        assert not home_bugs, (
+            f"issue filing leaked into founder's universe: {home_bugs}"
+        )
+
+    def test_anonymous_page_write_does_not_resolve_to_a_universe(
+        self, universe_base
+    ):
+        # Anonymous/dev callers keep legacy commons routing — an omitted id is
+        # NOT silently resolved to a founder home (there is no authenticated
+        # founder to resolve to).
+        from tinyassets.universe_server import write_page
+
+        _create_universe_as("erin", "u-anon-guard-erin")
+        _authenticate_anonymous()
+        write_page(
+            category="lore",
+            filename="stray-note",
+            content="An anonymous stray note.",
+            dry_run=False,
+        )
+        # Either denied by the write gate, or written to the commons — but never
+        # into erin's private universe.
+        erin_hits = list(
+            (universe_base / "u-anon-guard-erin" / "wiki").rglob("stray-note.md")
+        )
+        assert not erin_hits, f"anonymous write leaked into a founder universe: {erin_hits}"
+
+    def test_authed_founder_without_home_write_denied_by_acl(self, universe_base):
+        # Resolution is NOT authorization (Codex gap): a founder with no home and
+        # no ACL grant, whose omitted write resolves to the designated public
+        # universe, must still be denied by the write gate.
+        from tinyassets.universe_server import write_page
+
+        _authenticate(
+            "frank",
+            _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
+        )
+        out = json.loads(write_page(
+            category="lore",
+            filename="sneaky",
+            content="should be denied — frank owns nothing.",
+            dry_run=False,
+        ))
+        assert out.get("status") not in {"drafted", "updated"}, out
