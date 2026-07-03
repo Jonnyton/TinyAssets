@@ -1,0 +1,11 @@
+# Local machine config — never commit (contains the local Android SDK path).
+local.properties
+
+# Gradle build cache / outputs.
+.gradle/
+build/
+app/build/
+
+# IDE.
+*.iml
+.idea/
