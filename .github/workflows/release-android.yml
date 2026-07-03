@@ -1,0 +1,79 @@
+name: Release Android app (rolling latest)
+
+# Builds a debug-signed APK from clients/android and publishes it to a
+# rolling `android-latest` GitHub Release under a fixed asset name, so the
+# website's download button (WebSite/site/src/lib/mcp/appRelease.ts) can
+# always resolve the newest build without knowing a version number. Full
+# contract: docs/reference/mobile-app-release-convention.md.
+#
+# Dormant by design: clients/android does not exist on `main` as of
+# 2026-07-03 (still on a separate branch/worktree), so the path filter
+# below simply never matches until that work merges. workflow_dispatch is
+# provided so it can also be run manually once it does.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "clients/android/**"
+      - ".github/workflows/release-android.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-android
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    name: Build debug APK + publish rolling release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Verify Gradle wrapper is committed
+        working-directory: clients/android
+        run: |
+          if [ ! -f gradlew ]; then
+            echo "::error::clients/android/gradlew is missing. Commit the Gradle wrapper (gradle wrapper --gradle-version 9.4.1) before this workflow can build the app. See docs/reference/mobile-app-release-convention.md."
+            exit 1
+          fi
+          chmod +x gradlew
+
+      - name: Build debug APK
+        working-directory: clients/android
+        run: ./gradlew :app:assembleDebug --console=plain
+
+      - name: Locate and rename APK
+        id: apk
+        working-directory: clients/android
+        run: |
+          apk_path=$(find app/build/outputs/apk/debug -name '*.apk' | head -n1)
+          if [ -z "$apk_path" ]; then
+            echo "::error::No APK produced under app/build/outputs/apk/debug"
+            exit 1
+          fi
+          cp "$apk_path" tinyassets-android-latest.apk
+          echo "path=clients/android/tinyassets-android-latest.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete android-latest --yes --cleanup-tag || true
+          gh release create android-latest "${{ steps.apk.outputs.path }}" \
+            --title "TinyAssets Android (rolling debug build)" \
+            --notes "Automatically rebuilt from $(git rev-parse --short HEAD) on every push touching clients/android. Debug-signed APK — not on the Play Store yet." \
+            --target "$GITHUB_SHA"

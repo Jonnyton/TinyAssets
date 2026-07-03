@@ -775,7 +775,7 @@ async function fetchGitHubLoopMonitorFeed(warnings: string[]): Promise<PatchLoop
   };
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 6500): Promise<Response> {
+export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 6500): Promise<Response> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {

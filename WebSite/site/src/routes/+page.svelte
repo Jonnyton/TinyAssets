@@ -15,6 +15,7 @@
   import Tick from '$lib/components/Tick.svelte';
   import Term from '$lib/components/Term.svelte';
   import Ladder from '$lib/components/Ladder.svelte';
+  import AppDownload from '$lib/components/AppDownload.svelte';
   import { fmtDate, fmtRel } from '$lib/fmt';
 
   const MCP_URL = 'https://tinyassets.io/mcp';
@@ -302,6 +303,20 @@
   </div>
 </section>
 
+<!-- 3.5 · Take me with you (utility strip, not a numbered field-notes entry) -->
+<section class="app-strip" aria-labelledby="app-strip-title">
+  <div class="container app-strip__inner">
+    <div class="app-strip__text">
+      <h2 id="app-strip-title" class="app-strip__h">Take me with you.</h2>
+      <p class="app-strip__p">
+        A native Android client is in the works — the same universe, in one
+        screen on your phone.
+      </p>
+    </div>
+    <AppDownload variant="compact" />
+  </div>
+</section>
+
 <!-- 4 · Proof over promise ────────────────────────────────────────────── -->
 <section class="ch ch--ladders" aria-labelledby="ladders-title">
   <div class="container">
@@ -543,6 +558,15 @@
     margin: 12px 0 22px;
   }
   .ch .eyebrow { display: block; }
+
+  /* ── Take me with you (app strip) ── */
+  .app-strip { padding: clamp(28px, 4vw, 40px) 0; border-bottom: 1px solid var(--border-1); background: var(--bg-2); }
+  .app-strip__inner {
+    display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap;
+  }
+  .app-strip__text { max-width: 46ch; }
+  .app-strip__h { font-size: 20px; font-weight: 500; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .app-strip__p { font-size: 13.5px; line-height: 1.5; color: var(--fg-2); margin: 0; }
 
   /* ── Paths ── */
   .paths {

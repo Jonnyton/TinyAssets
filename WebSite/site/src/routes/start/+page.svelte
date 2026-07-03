@@ -15,6 +15,7 @@
   import { fmtRel } from '$lib/fmt';
   import Tick from '$lib/components/Tick.svelte';
   import Term from '$lib/components/Term.svelte';
+  import AppDownload from '$lib/components/AppDownload.svelte';
 
   const MCP_URL = 'https://tinyassets.io/mcp';
   const MCP_BARE = MCP_URL.replace('https://', '');
@@ -329,6 +330,19 @@
   </div>
 </section>
 
+<!-- 4.5 · Take me with you ──────────────────────────────────────────────── -->
+<section id="app" class="ch ch--app" aria-labelledby="app-title">
+  <div class="container ch__inner ch__inner--wide">
+    <p class="eyebrow">entry five · take me with you</p>
+    <h2 id="app-title">Or carry me in your pocket.</h2>
+    <p class="app__lede">
+      Native mobile clients open as a one-screen conversation surface bound to
+      your universe — same engine, same commons, no dashboard to learn.
+    </p>
+    <AppDownload variant="full" />
+  </div>
+</section>
+
 <!-- 5 · Close ───────────────────────────────────────────────────────────── -->
 <section class="ch ch--close" aria-labelledby="close-title">
   <div class="container ch__inner">
@@ -534,6 +548,9 @@
   .oss__pre { margin: 2px 0 4px; padding: 11px 13px; font-size: 12.5px; }
   .oss__pre code { font-size: 12.5px; }
   .oss__cta { font-family: var(--font-sans); font-size: 13.5px; font-weight: 600; color: var(--ember-700); width: fit-content; }
+
+  /* ── Take me with you (app) ── */
+  .app__lede { font-size: 15px; line-height: 1.62; color: var(--fg-2); margin: 0 0 24px; max-width: 64ch; }
 
   /* ── Close ── */
   .ch--close { border-bottom: none; padding-bottom: clamp(72px, 10vw, 120px); }
