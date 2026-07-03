@@ -182,20 +182,22 @@ class TestFounderWriteBoundary:
         assert out.get("status") != "updated", out
 
 
-class TestPrivateCanonScoping:
-    """Finding C (2026-07-02 live test): a founder's ``write_page`` content is
-    private canon and must land in THEIR universe wiki, not the shared global
-    commons; issue filings (``kind=``) stay on the commons."""
+class TestPrivateCanonRelay:
+    """Relay reshape (2026-07-02, design note §13/§14): the chatbot does NOT
+    write a universe's private canon — the universe's OWN intelligence does. A
+    page write that targets a universe is RELAYED (``relay_to_universe``), never
+    written here, so the brain stays one coherent mind whether reached via app
+    or chatbot. Issue filings (``kind=``) and no-target writes stay on the
+    shared commons."""
 
-    def test_page_write_omitted_id_lands_in_founder_home_not_commons(
-        self, universe_base
-    ):
+    def test_founder_page_write_is_relayed_not_written(self, universe_base):
         from tinyassets.universe_server import write_page
 
         created = _create_universe_as("carol", "u-canon-carol")
         assert created.get("status") == "created", created
         uid = created["universe_id"]
-        # carol stays the founder (home = her universe) + gains wiki write scope.
+        # carol is the founder (home = her universe) + holds wiki write scope —
+        # yet the chatbot still must not write her private canon directly.
         _authenticate(
             "carol",
             _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
@@ -206,18 +208,21 @@ class TestPrivateCanonScoping:
             content="The Resonance links cells and bonds across Aurelith.",
             dry_run=False,
         ))
-        assert "error" not in out, out
+        # Relayed to the universe — the chatbot did not write the brain.
+        assert out.get("status") == "relay_to_universe", out
+        assert out.get("universe_id") == uid, out
+        assert out.get("relay", {}).get("content"), out
+        # Nothing landed in the universe's own wiki…
         universe_hits = list(
             (universe_base / uid / "wiki").rglob("the-resonance.md")
         )
-        assert universe_hits, f"page not in founder's universe wiki; out={out}"
+        assert not universe_hits, f"chatbot wrote private canon: {universe_hits}"
+        # …nor leaked to the shared commons.
         commons = universe_base / "wiki"
         commons_hits = (
             list(commons.rglob("the-resonance.md")) if commons.is_dir() else []
         )
-        assert not commons_hits, (
-            f"private canon leaked to global commons: {commons_hits}"
-        )
+        assert not commons_hits, f"private canon leaked to commons: {commons_hits}"
 
     def test_issue_filing_stays_on_commons_not_founder_home(self, universe_base):
         from tinyassets.universe_server import write_page
@@ -251,9 +256,8 @@ class TestPrivateCanonScoping:
     def test_anonymous_page_write_does_not_resolve_to_a_universe(
         self, universe_base
     ):
-        # Anonymous/dev callers keep legacy commons routing — an omitted id is
-        # NOT silently resolved to a founder home (there is no authenticated
-        # founder to resolve to).
+        # Anonymous/dev callers have no founder home to resolve to, so a plain
+        # page write is a shared-commons write — never a universe brain.
         from tinyassets.universe_server import write_page
 
         _create_universe_as("erin", "u-anon-guard-erin")
@@ -264,27 +268,78 @@ class TestPrivateCanonScoping:
             content="An anonymous stray note.",
             dry_run=False,
         )
-        # Either denied by the write gate, or written to the commons — but never
-        # into erin's private universe.
         erin_hits = list(
             (universe_base / "u-anon-guard-erin" / "wiki").rglob("stray-note.md")
         )
         assert not erin_hits, f"anonymous write leaked into a founder universe: {erin_hits}"
 
-    def test_authed_founder_without_home_write_denied_by_acl(self, universe_base):
-        # Resolution is NOT authorization (Codex gap): a founder with no home and
-        # no ACL grant, whose omitted write resolves to the designated public
-        # universe, must still be denied by the write gate.
+    def test_page_write_never_writes_a_universe_brain(self, universe_base):
+        # A founder can never get private canon written into ANY universe brain
+        # via the chatbot — not their own (relayed) and not one they do not own.
         from tinyassets.universe_server import write_page
 
+        created = _create_universe_as("alice", "u-owned-by-alice")
+        assert created.get("status") == "created", created
+        # frank owns nothing; his page write must not land in alice's universe.
         _authenticate(
             "frank",
             _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
         )
-        out = json.loads(write_page(
+        write_page(
             category="lore",
             filename="sneaky",
-            content="should be denied — frank owns nothing.",
+            content="frank owns nothing.",
             dry_run=False,
+        )
+        for udir in universe_base.glob("u-*"):
+            hits = list((udir / "wiki").rglob("sneaky.md"))
+            assert not hits, f"chatbot wrote into a universe brain: {hits}"
+
+
+class TestBrainWriteDoorsClosed:
+    """Relay reshape (2026-07-02, design §13/§14): the deprecated fat ``universe``
+    tool is hidden from tools/list but still dispatchable — so its brain-content
+    write actions (``set_premise`` / ``add_canon`` / ``add_canon_from_path`` /
+    ``soul.edit``) must be RELAYED, never dispatched. Otherwise a legacy connector
+    keeps a live door into the brain that bypasses the universe intelligence
+    (Codex impl-review REFUTED, thread 019f268b)."""
+
+    @pytest.mark.parametrize(
+        "action",
+        ["set_premise", "add_canon", "add_canon_from_path", "soul.edit"],
+    )
+    def test_brain_write_action_is_relayed_not_dispatched(
+        self, universe_base, action
+    ):
+        from tinyassets.universe_server import universe
+
+        created = _create_universe_as("gwen", "u-doors-gwen")
+        assert created.get("status") == "created", created
+        uid = created["universe_id"]
+        _authenticate("gwen", _FOUNDER_SCOPES)
+        out = json.loads(universe(
+            action=action,
+            universe_id=uid,
+            text="Hostile direct brain write via the legacy tool.",
+            inputs_json=json.dumps({
+                "changes": {"identity.md": "# Hacked\n"},
+                "source": "x",
+                "context": "y",
+            }),
         ))
-        assert out.get("status") not in {"drafted", "updated"}, out
+        # Relayed, not written.
+        assert out.get("status") == "relay_to_universe", out
+        assert out.get("action") == action, out
+        idy = universe_base / uid / "identity.md"
+        if idy.exists():
+            assert "Hacked" not in idy.read_text(encoding="utf-8")
+
+    def test_read_action_still_dispatches(self, universe_base):
+        # The reshape closes brain WRITES only — reads on the fat tool still work.
+        from tinyassets.universe_server import universe
+
+        created = _create_universe_as("hank", "u-doors-hank")
+        assert created.get("status") == "created", created
+        _authenticate("hank", _FOUNDER_SCOPES)
+        out = json.loads(universe(action="list"))
+        assert out.get("status") != "relay_to_universe", out

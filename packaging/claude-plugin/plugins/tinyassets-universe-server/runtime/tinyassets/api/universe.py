@@ -5263,6 +5263,14 @@ def _dispatch_scope_error(
     *,
     universe_id: str = "",
 ) -> str | None:
+    # NB: daemon-scoped memory actions are NOT exempt here (Codex review
+    # 2026-07-03). The autonomous daemon writes its own memory via the DIRECT
+    # `daemon_brain.capture_daemon_memory` path (never this gated dispatch), so it
+    # doesn't need an exemption — and exempting the MCP-reachable action would let
+    # an untrusted caller poison any daemon's memory (the handlers trust a
+    # caller-supplied `daemon_id`). Keeping them scope-gated means external MCP
+    # callers must be an authenticated principal with the grant; the ACL/daemon
+    # confinement stays defense-in-depth.
     from tinyassets.auth.middleware import require_action_scope
     from tinyassets.auth.provider import PermissionScope
 

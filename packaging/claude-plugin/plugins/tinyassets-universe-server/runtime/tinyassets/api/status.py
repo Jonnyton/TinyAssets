@@ -740,7 +740,8 @@ def get_status(universe_id: str = "") -> str:
                 "into your projects and goals."
             ),
             "next_step_for_user": (
-                "Say \"personify my universe\" to create yours and meet it."
+                "Just tell me you'd like to meet your universe and I'll set it "
+                "up and introduce you."
             ),
             "schema_version": 1,
         })

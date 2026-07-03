@@ -298,3 +298,221 @@ each other:
 - **Correction to §7/§8:** the chatbot is NOT demoted to onboard+relay-only. It
   keeps its action tools (direct control) as a secondary path; only *embodiment*
   is removed. The MVP relay is additive, not a removal of control.
+  **(Superseded for brain-writes by §13 — see below: the chatbot keeps branch +
+  commons direct writes, but brain-writes relay.)**
+
+## 13. Write-model refinement (host directive, 2026-07-02) — the chatbot does not write the brain
+
+Refines §11 #3 and **narrows §12's "chatbot keeps direct-control action tools"**:
+for writes **to the universe brain** (soul + private canon), the chatbot does
+**not** write directly — it **relays** to the universe intelligence, which is the
+**sole writer** of its own brain.
+
+**Rule (host, verbatim intent):** *"for the most part the user chatbot can't
+write to the universe/brain. They are there to help you talk to your universe…
+this way when things do get written to the universe brain it is always by the
+same intelligence whether you use the app or the user chatbot — you're really
+talking to the same brain and that same brain is getting to know its founder. The
+user chatbot is really just a relay to your universe, and can also design branches
+or write to the commons."*
+
+**Why (coherence guarantee, not just compliance):** if BOTH the host chatbot's
+own LLM *and* the universe intelligence could write the brain, the self-model is
+authored by two different minds → incoherent. Restricting brain-writes to the
+universe's own intelligence means the founder's picture is always assembled by one
+consistent mind, identically whether reached via app (direct) or chatbot (relay).
+This is also the clean resolution of the **Finding A regression** (2026-07-02
+live test): the chatbot was told to "save identity to soul," found no reachable
+save path, and persisted nothing — worse than before. The fix is not a reachable
+chatbot save button; it is that **the chatbot was never supposed to save at all.**
+It relays; the universe persists its own learning.
+
+**Write principals, refined:**
+
+| Writer | Brain (soul + private canon) | Branches | Commons (bugs/features/goals) |
+|---|---|---|---|
+| Universe intelligence (`converse`, assigned engine, in-process) | **YES — sole brain writer** | yes | yes |
+| Chatbot / app, founder's WorkOS | **NO — relays via `converse`** | **yes (design branches)** | **yes** |
+| Anyone else | no | no | read / file-only |
+
+§11 #3 principal (b) ["chatbot/app with founder's WorkOS"] therefore narrows: its
+direct writes are **branches + commons**, not the brain. The brain path for (b) is
+**relay**. Principal (a) [the universe's own intelligence] is unchanged and is now
+the *only* brain writer.
+
+**Zero-daemons-for-authoring stays intact.** The brain writer is always "the
+universe's own intelligence," but that has two instantiations: (i) a brought 24/7
+engine (owned / BYO / market-rented) for app + always-on; (ii) for the no-engine
+founder, the **in-session** intelligence (the chatbot seeds a subagent on its own
+LLM that IS the universe intelligence for that session; the chatbot relays its
+output). Either way the *writer* is the universe intelligence, never the chatbot
+acting as itself. A browser-only founder still authors — through the relay, not by
+the chatbot writing the brain directly.
+
+**Implementation consequences:**
+1. **`converse` becomes the brain-writer** (today it returns text only, persists
+   nothing — the real gap). Each turn, after replying, the intelligence persists
+   what it learned: identity/self facts → governed soul via `apply_soul_edit`
+   (`soul_edit.py`); worldbuilding/canon → its own universe wiki. In-process,
+   scoped to its own `universe_dir` by construction.
+2. **Chatbot brain-write paths close.** `write_page` non-`kind` (private canon)
+   stops writing the universe wiki; it relays to `converse`. Brain-targeting
+   `write_graph` likewise. **Kept on the chatbot:** `write_graph target=branch`
+   (design a branch), `run_graph`, `write_page kind=…` (commons filings),
+   `write_graph target=goal` (commons goal), `write_graph target=universe`
+   (one-time birth), and `converse` (the relay).
+3. **Handle canary (Hard Rule 11).** If the tool catalog's write-surface changes,
+   the `--assert-handles` PR-178 drift guard updates in lockstep.
+
+**Open design points for the focused refute pass (Codex):**
+- Does the intelligence persist **every** turn, or only on explicit
+  confirmation? (Quality + `apply_soul_edit` has no version/lock guard —
+  concurrency risk already flagged.)
+- Canon-write primitive the in-process intelligence uses (direct wiki write vs a
+  shared internal path) + how private-canon `write_page` "relays" (forward content
+  to `converse` vs return a relay directive).
+- Does `write_graph target=request` (submit a request into the universe) count as
+  a brain write that must relay, or is it an action-request that stays?
+
+## 14. Codex focused design-refute (2026-07-02) — ADAPT, build-blocking; folded
+
+Verdict **ADAPT (build-blocking)** (Codex threadId `019f266a`, read-only, real
+code re-checked). The core model — chatbot relays; only the universe intelligence
+commits soul/private canon — is **sound in intent and not refuted**, but the naive
+per-turn auto-persist implementation is unsafe. Adaptations, now build constraints:
+
+1. **Split reply from commit (no blind per-turn persist).** `converse` must not
+   auto-write every turn — it is a free-text reply, not a write transaction.
+   Produce `{reply, proposed_learning}`; commit only through a structured internal
+   `commit_learning` path, grounded in what the founder **explicitly stated** this
+   turn (never invented/premature). This is the fix for "hallucinated content →
+   brain."
+2. **Guard `apply_soul_edit`.** Today it does blind read→write with no
+   lock/CAS/version guard and derives the next snapshot number from a directory
+   listing (race, `soul_edit.py:197`). Add a per-universe write lock +
+   expected-version/hash check + atomic snapshot allocation before it becomes a
+   per-turn path. (Pre-existing correctness debt; the reshape makes it load-bearing.)
+3. **Typed relay for private canon — do NOT flatten to free-text `converse`.** A
+   structured `write_page` carries page/category/filename/content/old_text/
+   new_text/expected_sha256/dry_run; forwarding it as a chat string loses the
+   intent. Chatbot private-canon `write_page` routes to a typed internal
+   `handle_private_canon_write(intent)` on the intelligence returning
+   `committed | proposed | rejected`.
+4. **Zero-engine authoring = seed notes, not brain commits.** `converse` runs
+   server-side via `call_provider`, not the chatbot's in-session LLM; a universe
+   with empty `preferred_writer` cannot commit. A no-engine founder (direct WorkOS)
+   may write **pending founder seed notes/drafts**, branches, commons, requests —
+   but **promotion into governed soul / private canon requires an assigned/running
+   intelligence** (`set_engine` first). Preserves zero-daemons-for-authoring
+   without letting the chatbot commit the brain. (Amends §13's hand-wavy in-session
+   subagent claim for M1.)
+5. **Freeze the advertised handle set before build.** Repo is inconsistent —
+   comment/canary say "five," but the canary + `test_universe_server_five_handles.py`
+   already include `converse` as a sixth. Freeze to **canonical six + `get_status`**;
+   update the Hard Rule 11 `--assert-handles` canary/docs in lockstep. Closing
+   brain-write *internals* needs no catalog change (handles unchanged); only
+   behavior changes.
+6. **Crisp write-authorization law (reconciles §11#4 ↔ §13; supersedes on
+   conflict):** direct WorkOS (chatbot/app) may write **branches, commons,
+   requests, and pending founder seed notes**; only the **assigned/running universe
+   intelligence** may promote into **governed soul + private canon**. This answers
+   the §13 open question: `write_graph target=request` is an action-request that
+   **stays** on the chatbot (not a brain commit).
+
+## 15. Implementation + Codex impl-review (2026-07-02) — APPROVED for live test
+
+Built on `claude/founder-identity-allslices` (5 slices, TDD, 210 affected tests
+green, ruff-clean on changed lines, plugin mirror rebuilt):
+
+- **Slice 0** — `soul_edit.apply_soul_edit` guarded: per-universe `_soul_lock`
+  (msvcrt/fcntl sidecar) across the read→write→snapshot section (closes the
+  snapshot-number race) + optional `expected_versions` compare-and-swap +
+  `current_soul_versions` helper.
+- **Slice 1** — `universe_intelligence.converse` is now the brain-writer:
+  after the reply it runs `extract_learning` (a second, narrow strict-JSON engine
+  turn grounded in the founder's explicit words) → `commit_learning` persists
+  governed soul via guarded `apply_soul_edit`; wrapped so persistence never
+  breaks the reply.
+- **Slice 2a** — worldbuilding → the universe's own canon:
+  `wiki.write_universe_canon` (first-party, scoped to the universe's wiki root,
+  bypasses the external-caller ACL gate like `converse`/`apply_soul_edit`) driven
+  by `commit_learning._commit_canon`.
+- **Slice 2b** — chatbot brain-writes closed: `universe_server.write_page`
+  relays (`relay_to_universe`) any universe-targeted page write/patch;
+  commons/`kind=` unchanged. Plus (Codex impl-review #0) the deprecated fat
+  `universe` tool's `_BRAIN_WRITE_RELAY_ACTIONS` (`set_premise`/`add_canon`/
+  `add_canon_from_path`/`soul.edit`) relay at the MCP wrapper (not `_universe_impl`,
+  so app/runtime/`create_universe` are unaffected).
+- **Slice 2c** — `prompts.py` control_station + meet_universe reshaped: the
+  chatbot RELAYS identity + world to the universe via `converse`; it does not
+  route identity to `soul.edit` or canon to `wiki` itself.
+
+**Codex design-refute (§14) = ADAPT (folded). Codex impl-review (thread
+019f268b) = REFUTED → fixed → re-review APPROVE for the live browser test:**
+- Fixed #0 (legacy `universe`-tool brain-write doors → relay), #2 (patch relay
+  no longer flattens partial patches — asks the founder to describe via
+  `converse`), #3 (CAS includes implicit `identity.md` when a name is learned).
+- **Deferred (Codex-accepted for M1, must-follow-up):**
+  (a) authenticated founders cannot free-form commons-write via `write_page`
+  (omitted id resolves to home → relays; kept fail-closed to prevent a
+  private-canon→public-commons leak) — planned fix: a `scope="commons"` param;
+  (b) grounding is prompt-only (no deterministic evidence-quote check) — fine for
+  M1 tested with explicit founder facts;
+  (c) **legacy `tinyassets/mcp_server.py`** (single-universe daemon server that
+  `.mcp.example.json` points at) still exposes direct `set_premise`/`add_canon`
+  brain writes — NOT the live surface (`tinyassets.io/mcp` = `universe_server`;
+  Docker/tray use it), so non-blocking, but the same directive applies there and
+  it needs closing (or the universe-intelligence relay wired into that server).
+
+**Remaining gate:** live rendered-chatbot `ui-test` through the real connector
+proving the regression is fixed (identity → soul, world → canon persist; chatbot
+relays, never writes the brain) + post-fix clean-use evidence.
+
+## 16. Live chatbot test + fixes (2026-07-03) — sandbox P0 + onboarding UX
+
+First live rendered-chatbot run (fresh founder, local branch server via tunnel).
+Regression fix held (identity → soul, world → canon persisted; chatbot relayed).
+It surfaced a set of defects, now fixed on the branch:
+
+**Onboarding / relay UX** (`api/prompts.py` control_station, `universe_server.py`
+`instructions`, `api/status.py` next_step): the connector dumped a tool inventory
+instead of calling `get_status` first; treated first-person as an opt-in menu
+("do you want it to speak as itself?"); over-narrated every relayed reply; did the
+universe's work (WebFetch'd a founder's link itself instead of relaying); used the
+jargon "personify". Now: get_status-first + no tool inventory; first-person is the
+DEFAULT the moment the universe exists (no consent menu); thin relay (render + stop);
+relay links/files, never fetch/answer them; natural next-step copy.
+
+**P0 — engine isolation.** `converse` runs `claude -p`, which was spawned with the
+FULL default toolset and NO cwd isolation → the universe read the platform source +
+uncommitted diff, ran Bash/gh, cloned repos, and reached the logged-in claude.ai MCP
+account connectors (Google Drive, the TinyAssets MCP itself, `mcp__codex` → code
+exec). Fixed (`universe_intelligence._sandboxed_config` + `providers/claude_provider
+._sandbox_cli_args`): every universe-intelligence turn runs `cwd=universe_dir`,
+`--setting-sources project` (strips user MCP + `bypassPermissions`), `--allowedTools
+WebFetch`, and a comprehensive `--disallowedTools` denylist (Bash/**Monitor**/Read/
+Write/Edit/Glob/Grep/Task/Workflow/Skill/Cron*/RemoteTrigger/SendMessage/DesignSync/…
++ `mcp__*`). Codex fails closed when asked to sandbox (can't confine); claude fails
+closed if `universe_dir` is None. Empirically exploit-proofed: a create-file / run-
+Monitor attempt returns CANT with no file created; a repo-read + bash attempt is
+denied; WebFetch (the one allowed capability) still works.
+
+**Grounding:** `_LEARNING_SYSTEM` was stamping generic "I am a personified universe
+that starts blank" boilerplate as learned identity; added a deterministic
+`_is_generic_identity_boilerplate` guard in `commit_learning`.
+
+**Verification:** Codex adversarial review ADAPT (4 findings: codex-provider bypass,
+missing-universe_dir fail-open, incomplete denylist, prompt-only grounding) → all
+fixed → **APPROVE**; the MCP/Monitor exec vectors were then found + closed
+empirically (beyond static review). 96 affected tests green, ruff clean, plugin
+mirror rebuilt.
+
+**Residual (production hardening, NOT this pass):**
+- **OS sandbox (bwrap/container)** is the durable fix — the CLI has no allow-only
+  mode, so isolation rides a denylist that WILL rot as new builtins ship, and a raw
+  `Read` tool can't be subtree-confined (so tool-level "own-files" is deferred; the
+  universe knows itself via injected context, not a Read tool).
+- **WebFetch SSRF guard** — block internal / cloud-metadata IPs (a founder's
+  universe can currently fetch arbitrary URLs, incl. `169.254.169.254`).
+- Still open from §15: `write_page scope=commons`; legacy `mcp_server.py` doors.
+- Not committed; branch remains WIP.

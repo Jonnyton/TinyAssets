@@ -107,7 +107,7 @@ def test_first_contact_read_is_pure_and_awaits_optin(data_dir, monkeypatch):
     # PURE READ: no universe created, no home bound, nothing on disk.
     assert out["first_contact"]["event"] == "no_universe_yet"
     assert "TinyAssets" in out["about"]
-    assert "personify my universe" in out["next_step_for_user"]
+    assert "meet your universe" in out["next_step_for_user"]
     assert get_founder_home(data_dir, "founder-1") == ""
     assert _universe_dirs(data_dir) == []
 
@@ -202,7 +202,7 @@ def test_awaiting_card_until_optin_create(data_dir, monkeypatch):
     card = json.loads(get_status())
     assert card["first_contact"]["event"] == "no_universe_yet"
     assert set(card) == {"first_contact", "about", "next_step_for_user", "schema_version"}
-    assert "personify my universe" in card["next_step_for_user"]
+    assert "meet your universe" in card["next_step_for_user"]
     # Still awaiting on a second read (reads never create).
     again = json.loads(get_status())
     assert again["first_contact"]["event"] == "no_universe_yet"

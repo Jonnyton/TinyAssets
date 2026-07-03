@@ -2359,6 +2359,35 @@ def _wiki_root_for_universe(universe_id: str) -> Path:
     return (_universe_dir(uid) / "wiki").resolve()
 
 
+def write_universe_canon(
+    universe_id: str,
+    *,
+    category: str,
+    filename: str,
+    content: str,
+    log_entry: str = "",
+) -> str:
+    """First-party, in-process canon write into a universe's OWN wiki.
+
+    The universe intelligence is the sole writer of its own private canon (relay
+    reshape, ``docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md``
+    §13/§14). Like :func:`tinyassets.universe_intelligence.converse` and
+    :func:`tinyassets.soul_edit.apply_soul_edit`, this is scoped to the universe
+    by construction and does NOT pass through the :func:`_wiki_impl` MCP ACL gate
+    — that gate authorizes untrusted EXTERNAL callers; the intelligence is
+    first-party for its own universe. Returns the :func:`_wiki_write` JSON string.
+    """
+    wiki_root = _wiki_root_for_universe(universe_id)
+    _ensure_wiki_scaffold(wiki_root)
+    with _scoped_wiki_root(wiki_root):
+        return _wiki_write(
+            category=category,
+            filename=filename,
+            content=content,
+            log_entry=log_entry,
+        )
+
+
 def _stamp_universe_id(payload: str, universe_id: str) -> str:
     if not universe_id:
         return payload

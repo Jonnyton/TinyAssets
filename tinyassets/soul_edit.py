@@ -15,7 +15,13 @@ files flip ``status: not-learned`` → ``learned``, and the persona
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import os
 import re
+import sys
+import time
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +31,13 @@ import yaml
 from tinyassets.universe_soul import SOUL_FILENAME, SOUL_VERSIONS_DIR
 
 SOUL_EDIT_POLICY_FILENAME = "soul.edit.md"
+
+# Sidecar lock serializing soul edits for ONE universe. A soul edit is a
+# read→modify→write→snapshot-allocate sequence; the snapshot number is derived
+# from a directory listing, so concurrent edits without a lock can collide on
+# the number and lose an update (Codex ADAPT 2026-07-02). One writer at a time
+# per universe closes that window.
+SOUL_LOCK_FILENAME = ".soul.lock"
 
 # Files whose frontmatter records the learning event. soul.md is the
 # operational entrypoint — its frontmatter (okf_source, edit_authority, …) is
@@ -83,6 +96,75 @@ def read_governed_files(universe_dir: Path) -> tuple[str, ...]:
     return governed
 
 
+@contextlib.contextmanager
+def _soul_lock(universe_dir: Path) -> Iterator[None]:
+    """Cross-platform exclusive lock serializing soul edits for one universe.
+
+    Mirrors the sidecar-lock pattern in ``branch_tasks._file_lock`` (msvcrt on
+    Windows, fcntl on POSIX). Held across the whole read→write→snapshot section
+    of :func:`apply_soul_edit` so the snapshot-number allocation cannot race.
+    """
+    universe_dir = Path(universe_dir)
+    universe_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = universe_dir / SOUL_LOCK_FILENAME
+    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if sys.platform == "win32":
+                import msvcrt
+
+                try:
+                    os.lseek(fd, 0, 0)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            else:
+                import fcntl
+
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+    finally:
+        os.close(fd)
+
+
+def current_soul_versions(
+    universe_dir: Path, filenames: Iterable[str]
+) -> dict[str, str]:
+    """Snapshot the current content hash of each governed file.
+
+    A caller reads these BEFORE composing a learning edit, then passes them as
+    ``expected_versions`` to :func:`apply_soul_edit`; the write is rejected if
+    the file changed in between (optimistic concurrency / compare-and-swap).
+    Missing files are omitted.
+    """
+    universe_dir = Path(universe_dir)
+    out: dict[str, str] = {}
+    for filename in filenames:
+        try:
+            raw = (universe_dir / filename).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        out[filename] = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return out
+
+
 def apply_soul_edit(
     universe_dir: Path,
     *,
@@ -91,6 +173,7 @@ def apply_soul_edit(
     context: str,
     summary: str = "",
     name: str = "",
+    expected_versions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Apply one governed learning event to the universe's soul bundle.
 
@@ -99,7 +182,11 @@ def apply_soul_edit(
     recorded). ``name`` optionally records the universe's learned self-name in
     ``identity.md`` frontmatter — a name-only learning event needs no body.
     ``source`` and ``context`` are required: an edit is proposed learning, not
-    a blind overwrite.
+    a blind overwrite. ``expected_versions`` (filename → sha256 of the content
+    the caller last read, from :func:`current_soul_versions`) makes the write a
+    compare-and-swap: if a governed file changed since it was read the edit is
+    rejected rather than clobbering the newer state. The whole read→write→
+    snapshot section runs under a per-universe lock.
     """
     universe_dir = Path(universe_dir)
     source = (source or "").strip()
@@ -128,36 +215,59 @@ def apply_soul_edit(
             )
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    expected = dict(expected_versions or {})
     updated: list[str] = []
     new_contents: dict[str, str] = {}
-    for filename, new_body in changes.items():
-        path = universe_dir / filename
-        try:
-            meta, old_body = _split_frontmatter(path.read_text(encoding="utf-8"))
-        except OSError as exc:
-            raise SoulEditError(f"governed file missing on disk: {filename}") from exc
-        body = new_body if (new_body or "").strip() else old_body
-        if filename not in _LEARNED_STATUS_EXEMPT:
-            meta["status"] = "learned"
-            meta["learned_from"] = source
-            meta["learned_at"] = now
-        if name and filename == "identity.md":
-            meta["name"] = name
-        rendered = _render(meta, body)
-        new_contents[filename] = rendered
-        path.write_text(rendered, encoding="utf-8")
-        updated.append(filename)
+    # The read→write→snapshot section runs under a per-universe lock: the
+    # snapshot number is allocated from a directory listing, so a concurrent
+    # edit could otherwise pick the same number and lose an update. The
+    # compare-and-swap check is evaluated against the same locked read.
+    with _soul_lock(universe_dir):
+        # Pass 1 — read current state + compare-and-swap check. All checks run
+        # before any write, so a mismatch leaves the bundle untouched.
+        parsed: dict[str, tuple[dict[str, Any], str]] = {}
+        for filename in changes:
+            path = universe_dir / filename
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise SoulEditError(
+                    f"governed file missing on disk: {filename}"
+                ) from exc
+            want = expected.get(filename)
+            if want is not None:
+                actual = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                if actual != want:
+                    raise SoulEditError(
+                        f"stale soul edit: {filename} changed since it was read "
+                        "(expected-version mismatch) — re-read and retry"
+                    )
+            parsed[filename] = _split_frontmatter(raw)
+        # Pass 2 — apply.
+        for filename, new_body in changes.items():
+            meta, old_body = parsed[filename]
+            body = new_body if (new_body or "").strip() else old_body
+            if filename not in _LEARNED_STATUS_EXEMPT:
+                meta["status"] = "learned"
+                meta["learned_from"] = source
+                meta["learned_at"] = now
+            if name and filename == "identity.md":
+                meta["name"] = name
+            rendered = _render(meta, body)
+            new_contents[filename] = rendered
+            (universe_dir / filename).write_text(rendered, encoding="utf-8")
+            updated.append(filename)
 
-    log_entry = summary.strip() or f"learned {', '.join(sorted(updated))}"
-    _append_log(universe_dir, f"- learned: {log_entry} (source: {source})")
-    snapshot_rel = _write_edit_snapshot(
-        universe_dir,
-        files=new_contents,
-        source=source,
-        context=context,
-        summary=log_entry,
-        stamp=now,
-    )
+        log_entry = summary.strip() or f"learned {', '.join(sorted(updated))}"
+        _append_log(universe_dir, f"- learned: {log_entry} (source: {source})")
+        snapshot_rel = _write_edit_snapshot(
+            universe_dir,
+            files=new_contents,
+            source=source,
+            context=context,
+            summary=log_entry,
+            stamp=now,
+        )
 
     return {
         "updated_files": sorted(updated),

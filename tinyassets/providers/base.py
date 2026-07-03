@@ -53,6 +53,28 @@ class ModelConfig:
     branch can run a light node (localize) cheap+fast and a hard node
     (propose_changes) deep. Not a prompt hint; a real subprocess setting."""
 
+    sandbox_workspace: bool = False
+    """Run the CLI subprocess isolated to the universe's OWN dir instead of the
+    host's cwd. When True, subprocess providers set ``cwd=universe_dir`` so the
+    call does NOT inherit the daemon's working directory (which may be a source
+    checkout, exposing repo files / ``CLAUDE.md`` / other universes). Set for the
+    founder-facing universe-intelligence turn; leave False for host-trusted engine
+    roles. The isolation is only as strong as the tool policy below — pair it with
+    ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out)."""
+
+    allowed_tools: tuple[str, ...] | None = None
+    """Allowlist of CLI tool names the subprocess may use (e.g.
+    ``("WebFetch", "Read")``). ``None`` = provider default (no restriction). Maps
+    to ``claude -p --allowedTools``. Default-deny: when set, only these are
+    usable."""
+
+    disallowed_tools: tuple[str, ...] | None = None
+    """Denylist of CLI tool names the subprocess must NOT use (e.g.
+    ``("Bash", "WebSearch")``). ``None`` = no explicit denies. Maps to ``claude -p
+    --disallowedTools`` and takes precedence over ``allowed_tools`` — the hard
+    floor that closes shell-escape / host-access even if a settings file would
+    grant them."""
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderResponse:

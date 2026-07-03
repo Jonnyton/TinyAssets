@@ -306,7 +306,7 @@ def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
     assert "get_status" in text              # loads the persona/self-model first
     assert "converse" in text                # relay to the universe intelligence
     assert "consent" in text                 # invoking the prompt IS consent
-    assert "soul.edit" in text               # what the founder teaches persists
+    assert "persists" in text.lower()        # the universe persists what it learns
     assert "set_engine" in text              # 24/7 power-source bonding beat
 
 
@@ -350,8 +350,8 @@ def test_control_station_prompt_relays_not_embodies() -> None:
     # The chatbot does not speak as the universe; it renders the universe's reply.
     assert "not the universe" in compact.lower()
     assert "quotation" in compact  # never wrap the reply as your own quotation
-    # Learning persists through the learn path.
-    assert "soul.edit" in compact
+    # The universe writes its own brain; the chatbot relays, never writes it.
+    assert "writes its own brain" in compact.lower()
     # Host floors survive.
     assert "never deny being an AI" in compact
     # First-contact convergence: the birth is the headline, no magic words,
@@ -361,25 +361,27 @@ def test_control_station_prompt_relays_not_embodies() -> None:
     assert "newborn" in compact
 
 
-def test_control_station_routes_identity_to_soul_not_wiki() -> None:
-    # Finding A (2026-07-02 live test): founder-identity/origin/name learning was
-    # persisted to the wiki instead of the governed soul. The routing must carve
-    # identity/self out of the "reference -> wiki" rule and send it to soul.edit.
+def test_control_station_relays_brain_not_writes_it() -> None:
+    # 2026-07-02 relay reshape (supersedes the Finding A soul-routing fix, which
+    # regressed live: the chatbot was told to route identity to an unreachable
+    # soul.edit and persisted nothing). New rule: the chatbot does NOT write the
+    # universe's brain (soul OR private canon) — it RELAYS identity/self AND the
+    # founder's world to the universe via `converse`, which records them itself.
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT, _MEET_UNIVERSE_PROMPT
 
     cs = " ".join(_CONTROL_STATION_PROMPT.split())
-    # The carve-out ties identity/origin/founder learning to soul.edit and warns
-    # it is NOT wiki content.
-    assert "soul.edit" in cs
-    assert "governed" in cs.lower()
-    assert "never `wiki`" in cs or "not `wiki`" in cs or "NEVER `wiki`" in cs
-    assert "origin.md" in cs and "founder.md" in cs
+    assert "relay" in cs.lower()
+    assert "converse" in cs
+    # The universe writes its own brain — the chatbot does not.
+    assert "writes its own brain" in cs.lower()
+    # And it explicitly tells the chatbot NOT to route brain writes itself.
+    assert "do not route identity" in cs.lower()
 
     mu = " ".join(_MEET_UNIVERSE_PROMPT.split())
-    assert "soul.edit" in mu
-    # meet_universe distinguishes governed-soul identity facts from wiki canon.
-    assert "founder.md" in mu and "origin.md" in mu
-    assert "NOT the wiki" in mu or "not `wiki`" in mu or "not the wiki" in mu.lower()
+    assert "relay" in mu.lower()
+    assert "converse" in mu
+    # meet_universe: the universe persists what it learns itself (not the chatbot).
+    assert "persists what it learns itself" in mu.lower()
 
 
 def test_server_instructions_relay_not_embody() -> None:

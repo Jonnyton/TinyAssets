@@ -217,6 +217,109 @@ def test_every_edit_writes_a_new_snapshot(universe):
     assert r1["snapshot"] != r2["snapshot"]
 
 
+# ── concurrency + version guard (Codex ADAPT 2026-07-02) ────────────────────
+# The reshape makes apply_soul_edit a per-turn path for the universe
+# intelligence, so it must be safe against concurrent writes and stale reads.
+
+
+def test_soul_edit_expected_version_mismatch_rejected(universe):
+    # Compare-and-swap: a stale expected hash must reject the write and leave
+    # the governed file untouched (no lost-update clobber).
+    before = (universe / "identity.md").read_text(encoding="utf-8")
+    with pytest.raises(SoulEditError):
+        apply_soul_edit(
+            universe,
+            changes={"identity.md": "# Identity\n\nstale write\n"},
+            source="s",
+            context="c",
+            expected_versions={"identity.md": "0" * 64},
+        )
+    assert (universe / "identity.md").read_text(encoding="utf-8") == before
+
+
+def test_soul_edit_expected_version_match_applies(universe):
+    from tinyassets.soul_edit import current_soul_versions
+
+    versions = current_soul_versions(universe, ["identity.md"])
+    assert "identity.md" in versions
+    result = apply_soul_edit(
+        universe,
+        changes={"identity.md": "# Identity\n\nI am Orion.\n"},
+        source="s",
+        context="c",
+        expected_versions=versions,
+    )
+    assert result["updated_files"] == ["identity.md"]
+    assert "I am Orion" in (universe / "identity.md").read_text(encoding="utf-8")
+
+
+def test_soul_edit_runs_under_per_universe_lock(universe, monkeypatch):
+    # The critical section must hold the per-universe soul lock.
+    import contextlib as _contextlib
+
+    import tinyassets.soul_edit as se
+
+    real_lock = se._soul_lock
+    entered = {"n": 0}
+
+    @_contextlib.contextmanager
+    def _tracking(universe_dir):
+        entered["n"] += 1
+        with real_lock(universe_dir):
+            yield
+
+    monkeypatch.setattr(se, "_soul_lock", _tracking)
+    apply_soul_edit(
+        universe, changes={"identity.md": "# I\n"}, source="s", context="c",
+    )
+    assert entered["n"] == 1
+
+
+def test_soul_edit_concurrent_edits_get_distinct_snapshots(universe):
+    # Without the lock, concurrent edits race on the snapshot number (derived
+    # from a directory listing) and collide, losing an update. Under the lock
+    # every concurrent edit allocates a distinct snapshot.
+    import threading
+
+    n = 6
+    snap_glob = "[0-9][0-9][0-9][0-9].md"
+    before = len(list((universe / "soul_versions").glob(snap_glob)))
+    barrier = threading.Barrier(n)
+    guard = threading.Lock()
+    snaps: list[str] = []
+    errs: list[Exception] = []
+
+    def worker(i: int) -> None:
+        barrier.wait()
+        try:
+            r = apply_soul_edit(
+                universe,
+                changes={"identity.md": f"# Identity\n\nedit {i}\n"},
+                source="founder",
+                context=f"concurrent edit {i}",
+            )
+            with guard:
+                snaps.append(r["snapshot"])
+        except Exception as exc:  # noqa: BLE001 — surfaced via errs assertion
+            with guard:
+                errs.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errs, errs
+    # No two concurrent edits returned the same snapshot (no allocation race)…
+    assert len(set(snaps)) == n, f"snapshot collision: {snaps}"
+    # …and each produced a distinct file on disk (none overwritten).
+    after = sorted((universe / "soul_versions").glob("[0-9][0-9][0-9][0-9].md"))
+    assert len(after) == before + n, [f.name for f in after]
+    for rel in snaps:
+        assert (universe / rel).is_file(), rel
+
+
 # ── MCP action wiring (scope + ACL + ledger) ────────────────────────────────
 
 

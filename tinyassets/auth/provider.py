@@ -1102,6 +1102,15 @@ class OptionalOAuthProvider(OAuthProvider):
     def is_auth_required(self) -> bool:
         return False
 
+    def resolve_always_writes(self) -> bool:
+        # Optional mode IS the resolve-always write model (D0b): anonymous callers
+        # get public reads, but every write/costly/admin action requires an
+        # authenticated principal holding the grant. Without this override both
+        # gate flags are False, `require_action_scope` short-circuits, and an
+        # anonymous `write_graph target=universe` (create) slips through — the
+        # pre-deploy security gap (STATUS 2026-07-02). Fail closed for writes.
+        return True
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Factory
