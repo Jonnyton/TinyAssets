@@ -7,34 +7,37 @@ no further website edit needed.
 
 ## Why this exists
 
-The website (`WebSite/site/`) needs a "download the app" button that is
-always current, without a person editing the site every time a new build
-ships. Rather than hardcode a version number or a guessed artifact URL, the
-site does a live read of GitHub's Releases API for one fixed tag/asset name.
-As long as CI publishes to that exact tag/name, the button works — forever,
-automatically — the day the app scaffold merges to `main`.
+The website (`WebSite/site/`) has a "Download SDK" button (home hero, start
+hero, and the /start "take me with you" section) that needs to work the
+instant a real Android build ships, with no follow-up site edit. Rather than
+live-check an API or guess a version number, the button is a plain, static
+link to the exact URL the real release will occupy — a direct GitHub
+release-asset URL, which doesn't need any API call to resolve. Host it at
+that fixed tag/asset name and the button starts working immediately.
 
 ## The contract
 
 - **Release tag:** `android-latest` — a rolling release, replaced (not
-  accumulated) on every build. Tag/release delete-then-recreate is fine;
-  the site only reads the current one.
-- **Asset name:** `tinyassets-android-latest.apk` — must be exact. The site
-  falls back to "first asset ending in `.apk`" if the exact name is absent,
-  but don't rely on that; use the exact name.
+  accumulated) on every build. Delete-then-recreate the tag/release on each
+  publish; the URL below always points at whatever currently occupies it.
+- **Asset name:** `tinyassets-android-latest.apk` — must be exact; this is a
+  static link, not a live API lookup, so there's no fallback pattern-matching.
 - **Repo:** `Jonnyton/TinyAssets` (current name as of 2026-07-03 — see the
   TinyAssets rename migration row in `STATUS.md` if this ever changes again).
-- **Live-check endpoint:** `GET https://api.github.com/repos/Jonnyton/TinyAssets/releases/tags/android-latest`
-  (public, unauthenticated, no rate-limit-sensitive polling — the site reads
-  it once per page load, on demand via "Refresh GitHub").
+- **The link itself:** `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-android-latest.apk`
+  — a direct GitHub release-asset download URL. Publish a release with that
+  exact tag and asset name and this URL starts serving the real APK; until
+  then it 404s (acceptable — the button is wired for the predicted, most-likely
+  outcome, not gated on it).
 
 ## Where each side lives
 
 | Piece | Path |
 |---|---|
-| Website live-read + honest empty state | `WebSite/site/src/lib/mcp/appRelease.ts`, `WebSite/site/src/lib/components/AppDownload.svelte` |
-| Home page button (compact) | `WebSite/site/src/routes/+page.svelte` — "Take me with you" strip |
-| Start page section (full, with iOS build-from-source card) | `WebSite/site/src/routes/start/+page.svelte` — "entry five · take me with you" |
+| The download URL constant | `WebSite/site/src/lib/mcp/appRelease.ts` (`ANDROID_DOWNLOAD_URL`) |
+| Shared button component | `WebSite/site/src/lib/components/AppDownload.svelte` (`compact` = hero button, `full` = /start card) |
+| Home page hero button | `WebSite/site/src/routes/+page.svelte` — third button in `.cover__actions`, next to "Put me to work" |
+| Start page hero button + full section | `WebSite/site/src/routes/start/+page.svelte` — third button in `.cover__actions`, and "entry five · take me with you" |
 | CI that should publish the release | `.github/workflows/release-android.yml` (dormant — path-filtered on `clients/android/**`, which doesn't exist on `main` yet) |
 
 ## What the mobile-app session needs to do

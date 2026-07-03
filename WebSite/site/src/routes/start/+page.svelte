@@ -121,6 +121,7 @@
           <span class="urlchip__copy">{copied ? 'copied ✓' : 'copy'}</span>
         </button>
         <a class="cover__skip" href="#paths">jump to the steps ↓</a>
+        <AppDownload variant="compact" />
       </div>
     </div>
 

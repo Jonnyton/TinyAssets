@@ -1,71 +1,37 @@
 <!--
   AppDownload — the SDK/app download button, shared by / (hero) and /start.
 
-  Affordance contract: this must always download something real the
-  instant you click it — never a "checking…" or "not published yet"
-  dead end. Default target is GitHub's zip of the current `main` branch
-  (real, live, no CI needed — literally "the latest version from the
-  repo"). If a real compiled Android build exists (see appRelease.ts),
-  it upgrades to that automatically; the zip is the floor, not a
-  placeholder.
+  Static link to ANDROID_DOWNLOAD_URL (see appRelease.ts) — the predicted
+  location of the mobile app's build once .github/workflows/release-android.yml
+  publishes it. Today it 404s (clients/android isn't on main yet); the moment
+  that lands, this link starts working with no further site change.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { fetchAndroidRelease, fmtBytes, GITHUB_ZIP_URL, type AppReleaseState } from '$lib/mcp/appRelease';
-  import { fmtRel } from '$lib/fmt';
-  import Tick from '$lib/components/Tick.svelte';
+  import { ANDROID_DOWNLOAD_URL } from '$lib/mcp/appRelease';
 
   let { variant = 'full' }: { variant?: 'compact' | 'full' } = $props();
 
   const GH_REPO = 'https://github.com/Jonnyton/TinyAssets';
   const IOS_SOURCE = `${GH_REPO}/tree/main/clients/ios`;
-
-  let state = $state<AppReleaseState | null>(null);
-  onMount(() => { void fetchAndroidRelease().then((s) => (state = s)); });
-
-  const href = $derived(state?.available && state.asset ? state.asset.url : GITHUB_ZIP_URL);
-  const label = $derived(state?.available && state.asset ? 'Download for Android' : 'Download SDK');
 </script>
 
 {#if variant === 'compact'}
-  <a class="btn btn--ghost" {href}>{label} →</a>
+  <a class="btn btn--ghost" href={ANDROID_DOWNLOAD_URL}>Download SDK →</a>
 {:else}
   <div class="dl dl--full">
     <article class="dl__card">
       <header class="dl__head">
         <h3 class="dl__h">Android / SDK</h3>
-        {#if state?.available}
-          <span class="dl__badge dl__badge--live">APK available</span>
-        {/if}
       </header>
-      {#if state?.available && state.asset}
-        <p class="dl__p">
-          A native one-screen conversation surface for your universe — Kotlin +
-          Jetpack Compose, source at <code>clients/android</code>.
-        </p>
-        <a class="btn btn--primary" href={state.asset.url}>
-          Download {state.asset.name} {fmtBytes(state.asset.sizeBytes) ? `(${fmtBytes(state.asset.sizeBytes)})` : ''} →
-        </a>
-        <p class="dl__state ev">
-          published {fmtRel(state.asset.publishedAt)} · read {fmtRel(state.fetchedAt)}
-          {#if state.releaseUrl}&nbsp;· <Tick href={state.releaseUrl} label="release notes" external /> {/if}
-        </p>
-        <p class="dl__note">
-          It's a debug-signed APK — Android will ask you to allow installs from
-          this source the first time. Not yet on the Play Store.
-        </p>
-      {:else}
-        <p class="dl__p">
-          The native Android app is being built at <code>clients/android</code>
-          on a separate branch — no compiled APK exists yet. This downloads the
-          full SDK/engine source instead, so you can build it yourself today.
-        </p>
-        <a class="btn btn--primary" href={GITHUB_ZIP_URL}>Download SDK (source zip) →</a>
-        <p class="dl__note">
-          Once a real Android build ships, this card switches to a direct APK
-          download automatically — no site change needed.
-        </p>
-      {/if}
+      <p class="dl__p">
+        A native one-screen conversation surface for your universe — Kotlin +
+        Jetpack Compose, source at <code>clients/android</code>.
+      </p>
+      <a class="btn btn--primary" href={ANDROID_DOWNLOAD_URL}>Download SDK →</a>
+      <p class="dl__note">
+        Debug-signed APK; Android will ask you to allow installs from this
+        source the first time. Not yet on the Play Store.
+      </p>
     </article>
 
     <article class="dl__card">
@@ -86,8 +52,6 @@
 {/if}
 
 <style>
-  .ev { font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); }
-
   .btn {
     display: inline-block;
     font-family: var(--font-sans);
@@ -121,11 +85,9 @@
     padding: 3px 9px; border-radius: var(--radius-pill); border: 1px solid var(--border-1);
     color: var(--fg-3); white-space: nowrap;
   }
-  .dl__badge--live { color: var(--live-700); border-color: var(--live-600); background: var(--live-100); }
   .dl__badge--pending { color: var(--signal-warn); border-color: rgba(201, 111, 36, 0.45); }
   .dl__p { font-size: 14px; line-height: 1.55; color: var(--fg-2); margin: 0; }
   .dl__p code { font-size: 12.5px; }
-  .dl__state { margin: 0; }
   .dl__note { font-size: 12.5px; line-height: 1.55; color: var(--fg-3); margin: 0; }
   .dl__pre { margin: 2px 0 0; padding: 11px 13px; font-size: 12.5px; }
   .dl__pre code { font-size: 12.5px; }
