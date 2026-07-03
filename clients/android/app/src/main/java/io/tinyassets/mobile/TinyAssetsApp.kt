@@ -51,10 +51,32 @@ fun TinyAssetsApp(inboundIntent: Intent? = null) {
     val authController = remember { MobileAuthController() }
     val settings = remember { AppSettings(context) }
     val mcpClient = remember { McpClient() }
-    var authState by remember { mutableStateOf<MobileAuthState>(MobileAuthState.SignedOut) }
+    var authState by remember {
+        mutableStateOf<MobileAuthState>(
+            TokenStore.accessToken(context)?.let { MobileAuthState.SignedIn(it) }
+                ?: MobileAuthState.SignedOut,
+        )
+    }
 
     LaunchedEffect(inboundIntent?.dataString) {
-        authController.receiveRedirect(inboundIntent?.data)?.let { authState = it }
+        val received = authController.receiveRedirect(inboundIntent?.data)
+            ?: return@LaunchedEffect
+        if (received is MobileAuthState.CallbackReceived) {
+            // Exchange the code+PKCE verifier for a real access token, store it
+            // in the Keystore, and carry it as the founder bearer for converse.
+            authState = MobileAuthState.ExchangingToken
+            authState = authController.exchangeCode(
+                received.authorizationCode, received.codeVerifier,
+            ).fold(
+                onSuccess = {
+                    TokenStore.saveAccessToken(context, it)
+                    MobileAuthState.SignedIn(it)
+                },
+                onFailure = { MobileAuthState.Failed("Sign-in failed: ${it.message}") },
+            )
+        } else {
+            authState = received
+        }
     }
 
     MaterialTheme {
@@ -119,9 +141,11 @@ private fun UniverseChatScreen(
                     val req = onBeginSignIn()
                     uriHandler.openUri(req.authorizationUrl)
                 }) { Text("Sign in") }
-                MobileAuthState.AwaitingCallback ->
+                MobileAuthState.AwaitingCallback,
+                is MobileAuthState.CallbackReceived,
+                MobileAuthState.ExchangingToken ->
                     Text("Signing in…", style = MaterialTheme.typography.bodySmall)
-                is MobileAuthState.CallbackReceived ->
+                is MobileAuthState.SignedIn ->
                     Text("Signed in", style = MaterialTheme.typography.bodySmall)
                 is MobileAuthState.Failed ->
                     Text("Sign-in failed", style = MaterialTheme.typography.bodySmall)
@@ -200,9 +224,14 @@ private fun UniverseChatScreen(
                     add(Speaker.FOUNDER, text)
                     sending = true
                     scope.launch {
+                        // The manual token field wins (dev override); otherwise use
+                        // the founder token from WorkOS sign-in.
+                        val bearer = token.trim().ifBlank {
+                            (authState as? MobileAuthState.SignedIn)?.accessToken.orEmpty()
+                        }
                         val result = mcpClient.converse(
                             baseUrl = serverUrl.trim(),
-                            token = token.trim().ifBlank { null },
+                            token = bearer.ifBlank { null },
                             message = text,
                         )
                         when (result) {

@@ -2,8 +2,14 @@ package io.tinyassets.mobile
 
 import android.net.Uri
 import android.util.Base64
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 sealed interface MobileAuthState {
     data object SignedOut : MobileAuthState
@@ -15,6 +21,8 @@ sealed interface MobileAuthState {
     ) : MobileAuthState {
         val codePreview: String = "${authorizationCode.take(8)}..."
     }
+    data object ExchangingToken : MobileAuthState
+    data class SignedIn(val accessToken: String) : MobileAuthState
     data class Failed(val message: String) : MobileAuthState
 }
 
@@ -77,6 +85,51 @@ class MobileAuthController {
             state = returnedState,
         )
     }
+
+    /**
+     * Exchange the authorization code + PKCE verifier for a WorkOS access token
+     * at the AuthKit token endpoint. Mobile is a PUBLIC OAuth client, so there is
+     * no client secret — PKCE is the proof. Returns the access token on success.
+     */
+    suspend fun exchangeCode(code: String, codeVerifier: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val form = listOf(
+                    "grant_type" to "authorization_code",
+                    "code" to code,
+                    "client_id" to TinyAssetsConfig.workOsClientId,
+                    "redirect_uri" to TinyAssetsConfig.mobileRedirectUri,
+                    "code_verifier" to codeVerifier,
+                ).joinToString("&") { (key, value) ->
+                    "$key=" + URLEncoder.encode(value, "UTF-8")
+                }
+                val conn = URL("https://${TinyAssetsConfig.workOsAuthKitDomain}/oauth2/token")
+                    .openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 10_000
+                conn.readTimeout = 20_000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                conn.setRequestProperty("Accept", "application/json")
+                conn.outputStream.use { it.write(form.toByteArray(Charsets.UTF_8)) }
+
+                val status = conn.responseCode
+                val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+                val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val json = if (body.trim().startsWith("{")) JSONObject(body) else JSONObject()
+                if (status !in 200..299) {
+                    throw IllegalStateException(
+                        json.optString(
+                            "error_description",
+                            json.optString("error", "token exchange failed (HTTP $status)"),
+                        ),
+                    )
+                }
+                json.optString("access_token").ifBlank {
+                    throw IllegalStateException("token response contained no access_token")
+                }
+            }
+        }
 
     fun reset() {
         pendingRequest = null
