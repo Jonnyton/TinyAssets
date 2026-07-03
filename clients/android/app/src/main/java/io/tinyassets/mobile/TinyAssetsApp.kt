@@ -33,7 +33,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
@@ -270,9 +275,47 @@ private fun ChatBubble(message: ChatMessage) {
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
-                Text(text = message.text, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = renderInlineMarkdown(message.text),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
             }
         }
         if (!isFounder) Spacer(modifier = Modifier.width(44.dp))
+    }
+}
+
+/** Render the universe's light markdown (**bold**, *italic*) as styled text;
+ *  newlines/paragraphs are preserved as-is. */
+private fun renderInlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
+    var i = 0
+    while (i < text.length) {
+        when {
+            text.startsWith("**", i) -> {
+                val end = text.indexOf("**", i + 2)
+                if (end > i) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                        append(text.substring(i + 2, end))
+                    }
+                    i = end + 2
+                } else {
+                    append(text[i]); i++
+                }
+            }
+            text[i] == '*' -> {
+                val end = text.indexOf('*', i + 1)
+                if (end > i) {
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                        append(text.substring(i + 1, end))
+                    }
+                    i = end + 1
+                } else {
+                    append(text[i]); i++
+                }
+            }
+            else -> {
+                append(text[i]); i++
+            }
+        }
     }
 }
