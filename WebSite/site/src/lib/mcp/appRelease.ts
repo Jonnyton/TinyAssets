@@ -1,19 +1,24 @@
 /**
- * appRelease.ts — live read of the TinyAssets mobile app's latest build.
+ * appRelease.ts — the download button's data source.
  *
- * The native Android/iOS clients (clients/android, clients/ios) are built on
- * a separate branch as of 2026-07-03 and are not yet in `main`. Rather than
- * hardcode a download link that would 404 today and need a follow-up website
- * edit once the app ships, this reads GitHub's Releases API directly: a
- * rolling release tagged `android-latest` with a fixed-name asset. The
- * moment CI publishes that release (see .github/workflows/release-android.yml
- * and docs/reference/mobile-app-setup.md § Release convention), this starts
- * resolving `available: true` with no further site change.
+ * The button must always DO something real the moment you click it, so the
+ * default target is `GITHUB_ZIP_URL` — GitHub's own zip of the current
+ * `main` branch. That's always live (no CI needed) and is, literally, "the
+ * latest version from the repo".
+ *
+ * When a real compiled Android build exists, it's a better answer, so this
+ * also live-reads GitHub's Releases API for a rolling release tagged
+ * `android-latest` with a fixed-name asset (published by
+ * .github/workflows/release-android.yml once clients/android lands on
+ * main — see docs/reference/mobile-app-release-convention.md) and the UI
+ * upgrades to that automatically. But the zip fallback means the button
+ * never has a dead/pending state — it always downloads something.
  */
 
 import { fetchWithTimeout } from '$lib/mcp/live';
 
 const REPO = 'Jonnyton/TinyAssets';
+export const GITHUB_ZIP_URL = `https://github.com/${REPO}/archive/refs/heads/main.zip`;
 const ANDROID_RELEASE_TAG = 'android-latest';
 const ANDROID_ASSET_NAME = 'tinyassets-android-latest.apk';
 
