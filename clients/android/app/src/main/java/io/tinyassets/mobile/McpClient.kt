@@ -13,7 +13,11 @@ data class EndpointCheck(
 )
 
 object TinyAssetsConfig {
-    const val workOsClientId = "client_01KW15P07QYSMF9CY4XXXJN520"
+    // Registered via WorkOS AuthKit Dynamic Client Registration (this AuthKit AS
+    // uses DCR — /oauth2/authorize rejects the dashboard "Applications" client
+    // ids with application_not_found; a DCR-registered public client is what the
+    // hosted sign-in flow accepts). Public client (PKCE, no secret).
+    const val workOsClientId = "client_01KWN1CTMEGTD92CNFXRPEAG47"
 
     /** Default production MCP endpoint. Overridable at runtime via [AppSettings]
      *  so a build can be pointed at a local branch server for testing. */
