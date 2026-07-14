@@ -34,6 +34,7 @@ from typing import Annotated
 
 import uvicorn
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -721,8 +722,13 @@ def write_page(
         dry_run: Preview consolidation-style wiki writes when supported.
     """
     normalized_kind = kind.strip().lower()
-    # Filings always mutate; page writes/patches mutate unless previewing.
-    if normalized_kind or not dry_run:
+    # Gate every path except a dry-run PATCH preview: the patch handler is
+    # the only wiki path that honors dry_run (full writes ignore it and
+    # mutate; filings always mutate).
+    is_patch_preview = (
+        not normalized_kind and bool(old_text or new_text) and dry_run
+    )
+    if not is_patch_preview:
         rejection = write_gate_rejection("write_page")
         if rejection:
             return rejection
@@ -1672,6 +1678,20 @@ class _DeprecatedToolVisibility(Middleware):
                 "handles (read_graph/write_graph/run_graph/read_page/write_page)",
                 name,
             )
+            # Anonymous-write-gate coverage (2026-07-13 founder decision):
+            # the fat tools mix read and write actions behind one `action`
+            # argument, so classifying per action would drift. They are
+            # already hidden from tools/list; in gating auth modes they are
+            # unavailable to anonymous callers outright. Signed-in callers
+            # and dev mode keep them for the migration release.
+            if write_gate_rejection(name) is not None:
+                raise ToolError(
+                    f"{name} is a deprecated tool and is not available "
+                    "without a signed-in connection. Use the five canonical "
+                    "handles instead (read_graph/write_graph/run_graph/"
+                    "read_page/write_page): reads stay open there; writes "
+                    "require connecting this MCP server with OAuth."
+                )
         return await call_next(context)
 
 

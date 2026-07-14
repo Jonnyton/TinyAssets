@@ -195,7 +195,7 @@ def test_universe_write_page_mutating_write_rejects_anonymous(monkeypatch):
     assert payload.get("auth_required") is True
 
 
-def test_universe_write_page_dry_run_preview_stays_open(monkeypatch):
+def test_universe_write_page_patch_preview_stays_open(monkeypatch):
     from tinyassets import universe_server
 
     set_provider(_FakeProvider(gates_writes=True, identity=_SUBJECT))
@@ -211,7 +211,118 @@ def test_universe_write_page_dry_run_preview_stays_open(monkeypatch):
         universe_server.write_page(page="p", old_text="a", new_text="b")
     )
     assert payload == {"status": "ok", "dry_run": True}
-    assert seen.get("dry_run") is True  # preview reached the wiki layer
+    assert seen.get("dry_run") is True  # patch preview reached the wiki layer
+
+
+def test_universe_write_page_full_write_gated_even_with_dry_run():
+    # Codex adversarial finding (PR #1441 review): wiki action=write
+    # swallows dry_run into **kwargs and mutates anyway, so a "preview"
+    # full write must be gated for anonymous callers.
+    from tinyassets import universe_server
+
+    set_provider(_FakeProvider(gates_writes=True, identity=_SUBJECT))
+    auth_middleware(None)
+    payload = _payload(
+        universe_server.write_page(
+            category="plans", filename="p", content="c", dry_run=True,
+        )
+    )
+    assert payload.get("auth_required") is True
+
+
+def _run(coro: Any) -> Any:
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def test_deprecated_fat_tools_blocked_for_anonymous_when_gated():
+    # Codex adversarial finding (PR #1441 review): the PR-178 middleware
+    # hides universe/goals/extensions/gates/wiki from tools/list but keeps
+    # them CALLABLE — an ungated route to the same mutating impls. In
+    # gating modes anonymous callers are refused outright.
+    from fastmcp.exceptions import ToolError
+
+    from tinyassets import universe_server
+
+    set_provider(_FakeProvider(gates_writes=True, identity=_SUBJECT))
+    auth_middleware(None)
+
+    middleware = universe_server._DeprecatedToolVisibility()
+
+    class _Msg:
+        name = "goals"
+
+    class _Ctx:
+        message = _Msg()
+
+    async def _call_next(_ctx: Any) -> str:
+        return "reached-tool"
+
+    with pytest.raises(ToolError):
+        _run(middleware.on_call_tool(_Ctx(), _call_next))
+
+
+def test_deprecated_fat_tools_open_for_resolved_identity():
+    from tinyassets import universe_server
+
+    set_provider(_FakeProvider(gates_writes=True, identity=_SUBJECT))
+    auth_middleware("valid")
+
+    middleware = universe_server._DeprecatedToolVisibility()
+
+    class _Msg:
+        name = "wiki"
+
+    class _Ctx:
+        message = _Msg()
+
+    async def _call_next(_ctx: Any) -> str:
+        return "reached-tool"
+
+    assert _run(middleware.on_call_tool(_Ctx(), _call_next)) == "reached-tool"
+
+
+def test_deprecated_fat_tools_open_in_dev_mode():
+    from tinyassets import universe_server
+
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+    middleware = universe_server._DeprecatedToolVisibility()
+
+    class _Msg:
+        name = "universe"
+
+    class _Ctx:
+        message = _Msg()
+
+    async def _call_next(_ctx: Any) -> str:
+        return "reached-tool"
+
+    assert _run(middleware.on_call_tool(_Ctx(), _call_next)) == "reached-tool"
+
+
+def test_canonical_handles_unaffected_by_deprecated_middleware():
+    from tinyassets import universe_server
+
+    set_provider(_FakeProvider(gates_writes=True, identity=_SUBJECT))
+    auth_middleware(None)
+
+    middleware = universe_server._DeprecatedToolVisibility()
+
+    class _Msg:
+        name = "read_graph"
+
+    class _Ctx:
+        message = _Msg()
+
+    async def _call_next(_ctx: Any) -> str:
+        return "reached-tool"
+
+    # Reads (and the canonical handles generally) pass the middleware;
+    # write_graph/write_page enforce their own gate inside the handler.
+    assert _run(middleware.on_call_tool(_Ctx(), _call_next)) == "reached-tool"
 
 
 # ── directory_server handle wiring ──────────────────────────────────────────

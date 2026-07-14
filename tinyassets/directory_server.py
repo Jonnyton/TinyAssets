@@ -467,8 +467,13 @@ def write_page(
         dry_run: Preview consolidation-style wiki writes when supported.
     """
     normalized_kind = kind.strip().lower()
-    # Filings always mutate; page writes/patches mutate unless previewing.
-    if normalized_kind or not dry_run:
+    # Gate every path except a dry-run PATCH preview: the patch handler is
+    # the only wiki path that honors dry_run (full writes ignore it and
+    # mutate; filings always mutate).
+    is_patch_preview = (
+        not normalized_kind and bool(old_text or new_text) and dry_run
+    )
+    if not is_patch_preview:
         rejection = write_gate_rejection("write_page")
         if rejection:
             return rejection
