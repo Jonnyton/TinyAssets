@@ -862,11 +862,19 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               /tmp/tinyassets-release-state.json \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-release-state.json"
+          # Ownership MUST be the container uid/gid 1001 NUMERICALLY. The host
+          # user named "tinyassets" is uid 994 — `install -d -o tinyassets` on
+          # the (already-existing) volume root re-chowned /data to 994 on every
+          # deploy, reverting the "Prepare codex auth" step's chown and leaving
+          # uid-1001 daemon processes unable to create SQLite journal/WAL files
+          # next to /data/.auth.db ("attempt to write a readonly database",
+          # 500 on every POST /mcp after the next restart — the 2026-07-12
+          # outage class, root-caused 2026-07-14).
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "set -e; \
-               sudo install -d -m 0755 -o tinyassets -g tinyassets '${release_state_host_dir}'; \
-               sudo install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-release-state.json '${release_state_host_dir}/release-state.json'"
+               sudo install -d -m 0755 -o 1001 -g 1001 '${release_state_host_dir}'; \
+               sudo install -m 0644 -o 1001 -g 1001 /tmp/tinyassets-release-state.json '${release_state_host_dir}/release-state.json'"
           {
             echo "### Release-state receipt"
             echo ""
