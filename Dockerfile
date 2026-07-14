@@ -127,7 +127,7 @@ RUN python -m venv /opt/venv && \
 FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
 
 ARG NODEJS_VERSION=20.20.2-1nodesource1
-ARG GH_VERSION=2.95.0
+ARG GH_VERSION=2.96.0
 ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
 
 # Runtime-only deps. No build-essential here.
