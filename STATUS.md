@@ -11,6 +11,8 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-04-24] Task #9 host Qs: GROQ/GEMINI/XAI GH Actions secrets present + rotation e2e validated after deploy step ships.
 - **[P1 filed:2026-04-30]** Castles II live run `28479d8ddfb44488` failed `provider_exhausted` at `candidate_discovery` (see BUG-038); blocks branch-run proof. Companion: BUG-039 (Echoes intake same root cause).
 - [filed:2026-05-19] Wiki has shifted toward multi-agent shared scratch space — 81% of post-2026-05-01 notes (495 of 614) are Codex/Cowork/Claude agent-coordination. Volume risks drowning out chatbot discovery/remix. Worth a host conversation on whether to split coordination off the knowledge wiki.
+- **[P0 filed:2026-07-13]** Anonymous-write gate: fix in flight on `claude/write-gate` (PR #1441, Codex-reviewed ADAPT applied); needs merge+deploy. Same-day RESOLVED: /mcp 502 outage (volume chown+restart, canary green), /data/wiki perms, wiki CONTENT restored (1,229 pages + 250 drafts were stranded on old `workflow-data` volume since 06-27 cutover), probe goal 1a917636ae83 soft-deleted.
+- [filed:2026-07-13] Old `workflow-data` docker volume (19 GB) on droplet may hold more unmigrated pre-rename data beyond the restored wiki; audit before deleting. No backup timers active on droplet — backup lane needs re-install.
 ## Approved Specs
 
 Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never wiki. On land, delete row + H2 section together.
@@ -23,6 +25,8 @@ Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| Paid-market core bundle landed (2026-07-08/09 sprint + 07-11 additions): 180 tests green, fast matcher, migrations 006–008, dead 002_rls atticed; Codex cross-family review ADAPT applied (fund genesis windfall + 007 collateral CHECK); draft PR #1440; OpenSpec step-1.5 specs migrated + founder sign-offs recorded (docs/decisions/2026-07-13-paid-market-founder-signoffs.md) | tinyassets/paid_market/, tests/test_paid_market_core.py, tests/test_match_scale.py, prototype/full-platform-v0/migrations/, docs/exec-plans/active/2026-07-0*, docs/SUCCESSION-2026-07-08.md + sprint docs | - | host-review |
+| Paid-market next: Track E Wave 2 transport (adapters only, assert_drained, match.best_execution, all money via market.apply_tx) as an OpenSpec change proposal; renumber migrations + schema_migrations table before applying 006–008 live | openspec/, tinyassets/paid_market/ | landing PR #1440 merge | pending |
 | **Codex verdict ADAPT** — in-node enqueue #1214 stays dark; before flag flip add current-universe context, queue/lineage cap, branch target validation | tinyassets/graph_compiler.py, tinyassets/branch_tasks.py, fantasy_daemon/__main__.py, tests/test_node_enqueue_*.py | verdict filed in `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | **L4 reducer law** — `_dict_merge` (graph_compiler.py ~351 + plugin mirror) is shallow right-biased, non-convergent; fix to per-key lattice join or restrict to single-writer; both-provider confirmed 2026-06-10 (basis audit L4 + codex review adaptation #5) | tinyassets/graph_compiler.py, packaging/claude-plugin mirror, tests/ | coordinate with in-node enqueue row (shared file) | dev-ready |
 | External directory acceptance — PRs landed, public canaries green 2026-05-02T12:34-07:00; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |
