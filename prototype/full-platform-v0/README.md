@@ -45,8 +45,9 @@ prototype/full-platform-v0/
 ├── requirements.txt
 ├── migrations/
 │   ├── 001_core_tables.sql      # users, nodes, artifact_field_visibility (subset of #25 §1)
-│   ├── 002_rls.sql              # simplified RLS: session-level user_id via SET LOCAL
-│   └── 003_discover_nodes.sql   # the RPC from #25 §3
+│   ├── 002_flags.sql … 008_market_ledger.sql   # applied lexicographically (see attic/README.md)
+│   ├── 003_discover_nodes.sql   # the RPC from #25 §3 (requires pgvector)
+│   └── attic/                   # retired migrations that must not auto-apply (002_rls.sql)
 ├── gateway.py                    # FastMCP skeleton per #27
 ├── tests/
 │   ├── conftest.py               # fixtures: fresh DB state per test
