@@ -1,24 +1,31 @@
-"""Wiki write-roundtrip canary — Layer-1 extension.
+"""Wiki gate + read canary — Layer-1 extension.
 
-Probes the wiki MCP surface with a write-then-read roundtrip against a
-dedicated canary draft (``drafts/notes/uptime-probe.md``).  A working
-``initialize`` handshake is necessary but not sufficient: this canary also
-verifies that:
+Probes the wiki MCP surface anonymously against a dedicated canary draft
+(``drafts/notes/uptime-probe.md``). A working ``initialize`` handshake is
+necessary but not sufficient: this canary also verifies that:
 
-- ``wiki action=write`` persists a known content body without error.
-- ``wiki action=read`` returns that content verbatim.
+- ``write_page`` REJECTS an anonymous full-page write with the
+  ``status=rejected`` / ``auth_required=true`` envelope. Since the
+  server-side anonymous-write gate (#1441) an unauthenticated write
+  succeeding is a SECURITY REGRESSION, so silent-accept is red.
+- ``read_page`` returns the persisted canary draft content verbatim
+  (reads stay open to anonymous callers by design).
 
-Wiki-write failure is P0 (Forever Rule: 24/7 uptime, auto-heal pipeline).
-BUG-028 demonstrated that a slug-normalization bug could silently break bug
-filing while the Layer-1 MCP handshake stayed green.  This canary closes
-that gap.
+History: this was a write-then-read roundtrip via the ``wiki`` fat tool
+(BUG-028 class: slug normalization silently broke bug filing while the
+handshake stayed green). #1441 gated all anonymous writes AND all
+anonymous calls to the deprecated fat tools, so the anonymous roundtrip
+is impossible by design. The canary draft content it reads was persisted
+by the last pre-gate green run; authenticated write-path coverage is a
+tracked follow-up (STATUS.md — canary needs a service credential).
 
 Exit codes
 ----------
 0  — all probe steps passed.
 2  — MCP handshake failed (initialize / session).
-6  — wiki write failed (isError or network error).
-7  — wiki read failed or roundtrip content mismatch.
+6  — write gate probe failed (anonymous write ACCEPTED = gate regression,
+     isError, or network error).
+7  — wiki read failed or canary draft content mismatch.
 99 — unexpected error.
 
 Usage
@@ -83,34 +90,38 @@ def _filename_for_probe_id(probe_id: str | None) -> str:
 
 
 def _wiki_write_payload(call_id: int, *, filename: str = _CANARY_FILENAME) -> dict:
+    # Canonical `write_page` full-page write (no old_text/new_text, no kind)
+    # so it always hits the anonymous-write gate — never the dry-run patch
+    # preview passthrough. dry_run=False is explicit: if the gate ever
+    # regressed, the mutation would land on the dedicated canary draft only.
     return {
         "jsonrpc": "2.0",
         "id": call_id,
         "method": "tools/call",
         "params": {
-            "name": "wiki",
+            "name": "write_page",
             "arguments": {
-                "action": "write",
                 "filename": filename,
                 "category": _CANARY_CATEGORY,
                 "content": _CANARY_CONTENT,
+                "dry_run": False,
             },
         },
     }
 
 
 def _wiki_read_payload(call_id: int, *, filename: str = _CANARY_FILENAME) -> dict:
-    # `wiki action=read` takes a single `page=` arg (the slug); _resolve_page
-    # locates it across pages/ + drafts/ subdirectories. No `category` /
-    # `slug` kwargs — that mismatch was the 2026-04-26 canary RED root cause.
+    # Canonical `read_page` takes a single `page=` arg (the slug);
+    # _resolve_page locates it across pages/ + drafts/ subdirectories. No
+    # `category` / `slug` kwargs — that mismatch was the 2026-04-26 canary
+    # RED root cause.
     return {
         "jsonrpc": "2.0",
         "id": call_id,
         "method": "tools/call",
         "params": {
-            "name": "wiki",
+            "name": "read_page",
             "arguments": {
-                "action": "read",
                 "page": filename,
             },
         },
@@ -118,14 +129,14 @@ def _wiki_read_payload(call_id: int, *, filename: str = _CANARY_FILENAME) -> dic
 
 
 def _format_green(ts: str, url: str, rtt_ms: int) -> str:
-    return f"{ts} GREEN layer=wiki url={url} surface=wiki_write rtt_ms={rtt_ms}"
+    return f"{ts} GREEN layer=wiki url={url} surface=wiki_gate rtt_ms={rtt_ms}"
 
 
 def _format_red(ts: str, url: str, exit_code: int, reason: str, rtt_ms: int) -> str:
     reason_oneline = reason.replace("\n", " ").replace("\r", " ")
     return (
         f"{ts} RED   layer=wiki url={url} exit={exit_code} "
-        f"surface=wiki_write rtt_ms={rtt_ms} reason={reason_oneline!r}"
+        f"surface=wiki_gate rtt_ms={rtt_ms} reason={reason_oneline!r}"
     )
 
 
@@ -148,10 +159,15 @@ def run_canary(
     verbose: bool = False,
     canary_filename: str = _CANARY_FILENAME,
 ) -> None:
-    """Run the wiki write-roundtrip canary.
+    """Run the wiki gate + read canary.
 
     ``post_fn`` is injectable for tests (same signature as ``mcp_tool_canary._post``).
     Raises ``ToolCanaryError`` on any failure with the appropriate exit code.
+
+    ``canary_filename`` scopes the WRITE-GATE probe target (bisect replay);
+    the READ step always targets the shared ``uptime-probe`` draft because
+    scoped drafts were never persisted — anonymous writes are rejected, so
+    only the shared draft (persisted pre-gate) exists to read back.
     """
     post = post_fn or _post
 
@@ -167,7 +183,12 @@ def run_canary(
     if verbose:
         print(f"[wiki-canary] handshake OK sid={sid!r}")
 
-    # ---- Step 2: wiki write ----------------------------------------------
+    # ---- Step 2: anonymous write-gate probe -------------------------------
+    # Anonymous write_page MUST come back with the rejection envelope
+    # (status=rejected, auth_required=true). An ACCEPTED anonymous write is
+    # a #1441 gate regression — the security failure this step exists to
+    # catch. Tool errors / unparseable shapes are red too (write surface
+    # itself is broken).
     write_resp, _ = post(
         url,
         sid,
@@ -176,36 +197,44 @@ def run_canary(
         step_code=6,
     )
     if write_resp is None or "result" not in write_resp:
-        raise ToolCanaryError(6, f"wiki write returned no result: {write_resp!r}")
+        raise ToolCanaryError(6, f"write_page returned no result: {write_resp!r}")
     write_result = write_resp["result"]
     if write_result.get("isError"):
         text = _extract_tool_text(write_result)[:300]
-        raise ToolCanaryError(6, f"wiki write isError=true: {text!r}")
+        raise ToolCanaryError(6, f"write_page isError=true: {text!r}")
     write_obj = _extract_structured_tool_payload(write_result)
     if write_obj is None:
         write_text = _extract_tool_text(write_result)
         if not write_text:
-            raise ToolCanaryError(6, f"wiki write returned no text content: {write_result!r}")
+            raise ToolCanaryError(6, f"write_page returned no text content: {write_result!r}")
         try:
             write_obj = json.loads(write_text)
         except json.JSONDecodeError as exc:
             raise ToolCanaryError(
-                6, f"wiki write text not JSON: {exc}; preview={write_text[:200]!r}"
+                6, f"write_page text not JSON: {exc}; preview={write_text[:200]!r}"
             ) from exc
-    # Server returns "drafted" on first write of a new draft, "updated" on
-    # any subsequent write to the same path. Both are healthy for the canary.
-    if write_obj.get("status") not in (
-        "ok", "written", "drafted", "updated", "filed",
-    ):
-        raise ToolCanaryError(6, f"wiki write unexpected status: {write_obj!r}")
+    if write_obj.get("status") in ("ok", "written", "drafted", "updated", "filed"):
+        raise ToolCanaryError(
+            6,
+            "anonymous write_page was ACCEPTED — the anonymous-write gate "
+            f"(#1441) has regressed: {write_obj!r}",
+        )
+    if write_obj.get("status") != "rejected" or not write_obj.get("auth_required"):
+        raise ToolCanaryError(
+            6,
+            "write_page did not return the expected anonymous rejection "
+            f"envelope (status=rejected, auth_required=true): {write_obj!r}",
+        )
     if verbose:
-        print(f"[wiki-canary] wiki write OK: {write_obj.get('status')!r}")
+        print("[wiki-canary] anonymous write-gate OK: rejected with auth_required=true")
 
-    # ---- Step 3: wiki read roundtrip -------------------------------------
+    # ---- Step 3: wiki read (persisted canary draft) ------------------------
+    # Always read the SHARED draft — scoped bisect filenames were never
+    # persisted post-gate (see run_canary docstring).
     read_resp, _ = post(
         url,
         sid,
-        _wiki_read_payload(3, filename=canary_filename),
+        _wiki_read_payload(3, filename=_CANARY_FILENAME),
         timeout,
         step_code=7,
     )
@@ -225,11 +254,11 @@ def run_canary(
     if _CANARY_CONTENT not in read_text:
         raise ToolCanaryError(
             7,
-            f"wiki roundtrip mismatch: expected content not found in read response. "
+            f"wiki read mismatch: persisted canary draft content not found. "
             f"preview={read_text[:300]!r}",
         )
     if verbose:
-        print("[wiki-canary] wiki read roundtrip OK — content confirmed")
+        print("[wiki-canary] wiki read OK — persisted canary draft content confirmed")
 
 
 def run_probe(
@@ -272,13 +301,13 @@ def run_probe(
     _append_log(_format_green(ts, url, rtt_ms))
     if fmt == "gha":
         _emit_gha_kv("status", "0")
-        _emit_gha_kv("msg", f"OK wiki roundtrip {url} rtt_ms={rtt_ms}")
+        _emit_gha_kv("msg", f"OK wiki gate+read {url} rtt_ms={rtt_ms}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Wiki write-roundtrip uptime canary (P0 surface).",
+        description="Wiki gate + read uptime canary (P0 surface).",
     )
     ap.add_argument(
         "--url", default=DEFAULT_URL,

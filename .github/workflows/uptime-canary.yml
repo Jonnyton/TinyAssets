@@ -119,7 +119,9 @@ jobs:
 
       # Layer-1c: last_activity canary (Task #15). Proves node
       # execution is 24/7, not just MCP surface. Reads daemon.
-      # last_activity_at from `universe action=inspect` and pages
+      # last_activity_at from `read_graph target=graph` (same inspect
+      # payload; the deprecated `universe` fat tool refuses anonymous
+      # calls since #1441) and pages
       # if it's older than TINYASSETS_LAST_ACTIVITY_THRESHOLD_MIN
       # (default 30min). Closes the "MCP is green but node execution
       # is stalled" gap — exactly the state seen live 2026-04-22
@@ -183,22 +185,23 @@ jobs:
           echo "=== revert-loop canary (${PROBE_URL}) exit=$code ==="
           echo "$output"
 
-      # Layer-1e — wiki write-roundtrip canary (PROBE-003). Catches the
-      # "wiki-write silently broken" class — distinct from dark daemon
-      # (handshake red), broken tool handler (tool red), stalled worker
-      # (activity red), and busy-broken (revert red). BUG-028 demonstrated
-      # that a slug-normalization bug could silently break bug filing
-      # while every Layer-1 probe above stayed green.
+      # Layer-1e — wiki gate + read canary (PROBE-003, reworked post-#1441).
+      # Anonymous writes are rejected by design since the server-side
+      # write gate, so the old anonymous write-then-read roundtrip is
+      # impossible. The probe now asserts BOTH halves of the policy:
+      # write_page must REJECT anonymously (silent-accept = gate
+      # regression = security red) and read_page must return the
+      # persisted canary draft (reads stay open; catches wiki-read /
+      # storage-mount breakage, e.g. the readonly-volume class).
+      # BUG-028 context: a slug bug once silently broke bug filing while
+      # every probe above stayed green — the read half keeps that cover.
+      # Authenticated write-path coverage is a tracked follow-up
+      # (STATUS.md — canary needs a service credential).
       #
-      # Wiki-write reachability is forever-rule-tier per
-      # `project_wiki_is_uptime_surface`: chatbots filing bugs depend on
-      # wiki writes succeeding; when that breaks the auto-heal pipeline
-      # breaks. Treat wiki-write breakage as P0 uptime, not a normal bug.
-      #
-      # Runs only when handshake + tool are green; wiki round-trip is
+      # Runs only when handshake + tool are green; the wiki probe is
       # meaningless when MCP itself is down. Does NOT require activity
-      # or revert green — wiki writes are independent of node execution.
-      - name: Wiki write-roundtrip canary (auto-heal pipeline 24/7)
+      # or revert green — the wiki surface is independent of node execution.
+      - name: Wiki gate + read canary (auto-heal pipeline 24/7)
         id: wiki_probe
         continue-on-error: true
         if: >

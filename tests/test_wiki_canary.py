@@ -66,14 +66,18 @@ def _notif_resp(sid: str = "sess-wiki") -> tuple[None, str]:
     return (None, sid)
 
 
-def _wiki_write_ok_resp(
+def _wiki_write_rejected_resp(
     sid: str = "sess-wiki",
     raw_text: str | None = None,
     structured_content: dict | None = None,
 ) -> tuple[dict, str]:
+    # Post-#1441 happy path: anonymous write_page returns the rejection
+    # envelope (not a tool error).
     body = json.dumps({
-        "status": "drafted",
-        "path": f"drafts/{wc._CANARY_CATEGORY}/{wc._CANARY_FILENAME}.md",
+        "status": "rejected",
+        "error": "write_page: Anonymous writes are disabled on this server.",
+        "auth_required": True,
+        "tool": "write_page",
     })
     result = {
         "content": [{
@@ -86,6 +90,21 @@ def _wiki_write_ok_resp(
         result["structuredContent"] = structured_content
     return (
         {"jsonrpc": "2.0", "id": 2, "result": result},
+        sid,
+    )
+
+
+def _wiki_write_accepted_resp(sid: str = "sess-wiki") -> tuple[dict, str]:
+    # Pre-#1441 shape: anonymous write persisting. Now a gate REGRESSION.
+    body = json.dumps({
+        "status": "drafted",
+        "path": f"drafts/{wc._CANARY_CATEGORY}/{wc._CANARY_FILENAME}.md",
+    })
+    return (
+        {"jsonrpc": "2.0", "id": 2, "result": {
+            "content": [{"type": "text", "text": body}],
+            "isError": False,
+        }},
         sid,
     )
 
@@ -121,7 +140,7 @@ def _happy_scripted() -> ScriptedPost:
     return ScriptedPost([
         _init_resp(),
         _notif_resp(),
-        _wiki_write_ok_resp(),
+        _wiki_write_rejected_resp(),
         _wiki_read_ok_resp(),
     ])
 
@@ -137,11 +156,13 @@ def test_happy_path_accepts_structured_content_previews():
     scripted = ScriptedPost([
         _init_resp(),
         _notif_resp(),
-        _wiki_write_ok_resp(
+        _wiki_write_rejected_resp(
             raw_text="Tool result available in structuredContent.",
             structured_content={
-                "status": "updated",
-                "path": f"drafts/{wc._CANARY_CATEGORY}/{wc._CANARY_FILENAME}.md",
+                "status": "rejected",
+                "error": "write_page: Anonymous writes are disabled.",
+                "auth_required": True,
+                "tool": "write_page",
             },
         ),
         _wiki_read_ok_resp(
@@ -168,8 +189,22 @@ def test_run_canary_can_scope_filename_for_bisect_replay():
 
     write_args = scripted.calls[2]["payload"]["params"]["arguments"]
     read_args = scripted.calls[3]["payload"]["params"]["arguments"]
+    # Gate probe is scoped; read always targets the shared persisted draft
+    # (scoped drafts are never persisted post-gate).
     assert write_args["filename"] == "uptime-probe-bisect-run1"
-    assert read_args["page"] == "uptime-probe-bisect-run1"
+    assert read_args["page"] == wc._CANARY_FILENAME
+
+
+def test_gate_probe_uses_canonical_write_page_and_read_page():
+    scripted = _happy_scripted()
+    wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert scripted.calls[2]["payload"]["params"]["name"] == "write_page"
+    assert scripted.calls[3]["payload"]["params"]["name"] == "read_page"
+    # Full-page write shape: must hit the gate, never the dry-run patch
+    # preview passthrough (no old_text/new_text, no kind, dry_run False).
+    write_args = scripted.calls[2]["payload"]["params"]["arguments"]
+    assert write_args["dry_run"] is False
+    assert "old_text" not in write_args and "kind" not in write_args
 
 
 def test_probe_id_sanitizes_to_scoped_filename():
@@ -188,7 +223,7 @@ def test_happy_path_log_line_contains_green(tmp_path):
         wc.run_probe("https://fake/mcp", 5.0, post_fn=_happy_scripted())
     assert logged, "Expected at least one log line"
     assert "GREEN" in logged[0]
-    assert "surface=wiki_write" in logged[0]
+    assert "surface=wiki_gate" in logged[0]
 
 
 def test_happy_path_log_line_not_red(tmp_path):
@@ -227,7 +262,34 @@ def test_exit_2_on_no_session_id():
     assert ei.value.code == 2
 
 
-# ---- wiki write failures (exit 6) -----------------------------------------
+# ---- write-gate probe failures (exit 6) ------------------------------------
+
+
+def test_exit_6_when_anonymous_write_is_accepted_gate_regression():
+    """An anonymous write_page that persists is a #1441 gate regression."""
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(),
+        _wiki_write_accepted_resp(),
+    ])
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert ei.value.code == 6
+    assert "regressed" in ei.value.msg
+
+
+def test_exit_6_when_rejection_lacks_auth_required():
+    body = json.dumps({"status": "rejected", "error": "nope"})
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(),
+        ({"jsonrpc": "2.0", "id": 2, "result": {
+            "content": [{"type": "text", "text": body}],
+            "isError": False,
+        }}, "sess-wiki"),
+    ])
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert ei.value.code == 6
+    assert "auth_required" in ei.value.msg
 
 
 def test_exit_6_on_wiki_write_network_error():
@@ -309,7 +371,7 @@ def test_exit_6_on_wiki_write_non_json_text():
 
 def test_exit_7_on_wiki_read_network_error():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_ok_resp(),
+        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
         ToolCanaryError(7, "HTTP 503 on wiki read"),
     ])
     with pytest.raises(ToolCanaryError) as ei:
@@ -319,7 +381,7 @@ def test_exit_7_on_wiki_read_network_error():
 
 def test_exit_7_on_wiki_read_iserror():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_ok_resp(),
+        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [{"type": "text", "text": "not found"}],
             "isError": True,
@@ -333,7 +395,7 @@ def test_exit_7_on_wiki_read_iserror():
 
 def test_exit_7_on_wiki_read_roundtrip_mismatch():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_ok_resp(),
+        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [{"type": "text", "text": "wrong content entirely"}],
             "isError": False,
@@ -347,7 +409,7 @@ def test_exit_7_on_wiki_read_roundtrip_mismatch():
 
 def test_exit_7_on_wiki_read_no_result():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_ok_resp(),
+        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
         ({"jsonrpc": "2.0", "id": 3}, "sess-wiki"),
     ])
     with pytest.raises(ToolCanaryError) as ei:
@@ -357,7 +419,7 @@ def test_exit_7_on_wiki_read_no_result():
 
 def test_exit_7_on_wiki_read_no_text_content():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_ok_resp(),
+        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [], "isError": False,
         }}, "sess-wiki"),
@@ -370,7 +432,7 @@ def test_exit_7_on_wiki_read_no_text_content():
 # ---- run_probe log line surface tag ----------------------------------------
 
 
-def test_red_log_line_contains_surface_wiki_write_on_exit_6():
+def test_red_log_line_contains_surface_wiki_gate_on_exit_6():
     logged: list[str] = []
     scripted = ScriptedPost([
         _init_resp(), _notif_resp(),
@@ -380,21 +442,21 @@ def test_red_log_line_contains_surface_wiki_write_on_exit_6():
         rc = wc.run_probe("https://fake/mcp", 5.0, post_fn=scripted)
     assert rc == 6
     assert logged
-    assert "surface=wiki_write" in logged[0]
+    assert "surface=wiki_gate" in logged[0]
     assert "RED" in logged[0]
 
 
-def test_red_log_line_contains_surface_wiki_write_on_exit_7():
+def test_red_log_line_contains_surface_wiki_gate_on_exit_7():
     logged: list[str] = []
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_ok_resp(),
+        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
         ToolCanaryError(7, "roundtrip mismatch"),
     ])
     with patch("wiki_canary._append_log", side_effect=logged.append):
         rc = wc.run_probe("https://fake/mcp", 5.0, post_fn=scripted)
     assert rc == 7
     assert logged
-    assert "surface=wiki_write" in logged[0]
+    assert "surface=wiki_gate" in logged[0]
 
 
 def test_exit_99_on_unexpected_exception():
@@ -419,14 +481,14 @@ def test_exit_99_on_unexpected_exception():
     ([_init_resp(), _notif_resp(), ToolCanaryError(6, "write fail")], 6),
     # exit 7: wiki read roundtrip mismatch
     ([
-        _init_resp(), _notif_resp(), _wiki_write_ok_resp(),
+        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [{"type": "text", "text": "wrong"}],
             "isError": False,
         }}, "sess-wiki"),
     ], 7),
     # exit 0: all pass
-    ([_init_resp(), _notif_resp(), _wiki_write_ok_resp(), _wiki_read_ok_resp()], 0),
+    ([_init_resp(), _notif_resp(), _wiki_write_rejected_resp(), _wiki_read_ok_resp()], 0),
 ])
 def test_main_propagates_exit_codes(monkeypatch, responses, expected_rc):
     scripted = ScriptedPost(responses)
