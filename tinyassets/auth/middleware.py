@@ -8,6 +8,7 @@ HTTP transport layer before tool execution.
 
 from __future__ import annotations
 
+import json
 import logging
 from contextvars import ContextVar, Token
 from typing import Any
@@ -192,3 +193,36 @@ def require_action_scope(
             f"(user={identity.username}, capabilities={identity.capabilities})"
         )
     return identity
+
+
+_WRITE_GATE_GUIDANCE = (
+    "Anonymous writes are disabled on this server; reads stay open. "
+    "To write, connect this MCP server with an authenticated (OAuth) "
+    "connection — re-add the TinyAssets connector and complete the "
+    "sign-in step — then retry. Without signing in you can still "
+    "browse goals, branches, universes, and wiki pages freely."
+)
+
+
+def write_gate_rejection(handle: str) -> str | None:
+    """Server-side anonymous-write gate for mutating MCP handles.
+
+    Returns a rejection envelope (JSON string) when the provider gates
+    writes and the caller is anonymous; ``None`` when the write may
+    proceed. Founder decision 2026-07-13 (production-mcp-sweep P0):
+    reads stay open in every auth mode; writes require a resolved
+    identity whenever the server runs an OAuth-backed mode. Dev mode
+    keeps writes open for local and test flows.
+    """
+    provider = _get_provider()
+    if not provider.writes_require_identity():
+        return None
+    identity = current_identity()
+    if identity.user_id != "anonymous":
+        return None
+    return json.dumps({
+        "status": "rejected",
+        "error": f"{handle}: {_WRITE_GATE_GUIDANCE}",
+        "auth_required": True,
+        "tool": handle,
+    })
