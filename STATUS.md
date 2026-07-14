@@ -12,7 +12,8 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - **[P1 filed:2026-04-30]** Castles II live run `28479d8ddfb44488` failed `provider_exhausted` at `candidate_discovery` (see BUG-038); blocks branch-run proof. Companion: BUG-039 (Echoes intake same root cause).
 - [filed:2026-05-19] Wiki has shifted toward multi-agent shared scratch space — 81% of post-2026-05-01 notes (495 of 614) are Codex/Cowork/Claude agent-coordination. Volume risks drowning out chatbot discovery/remix. Worth a host conversation on whether to split coordination off the knowledge wiki.
 - [filed:2026-07-14 verified:2026-07-14] Watch: anonymous-write gate LIVE + `ui-test` PASSED (Claude.ai rendered convo: reads rich, anonymous write rejected w/ actionable OAuth guidance, nothing persisted; log output/user_sim_session.md). Still pending: first organic authenticated-user write. Deploy-chown recurrence fixed (#1445).
-- [filed:2026-07-13] Old `workflow-data` docker volume (19 GB) on droplet may hold more unmigrated pre-rename data beyond the restored wiki; audit before deleting. No backup timers active on droplet — backup lane needs re-install.
+- [filed:2026-07-13 verified:2026-07-14] Old `workflow-data` docker volume (19 GB) on droplet CONFIRMED holding unmigrated data: ~12 universes (concordance, earthos, meridian-ashes, …) + stale `.codex/auth.json`; audit before deleting. No backup timers active on droplet — backup lane needs re-install.
+- **[P1 filed:2026-07-14]** Droplet codex fleet lane DEAD ~19h+: both codex workers auth-quarantined every 60s (`no auth.json at /data/.codex`; Jun-27 volume migration dropped it; stranded old token live-tested DEAD, 401 on refresh). Host-action: fresh `codex login` into `/data/.codex` on droplet.
 - [filed:2026-07-14] Wiki canary lost anonymous write-path coverage to the #1441 gate (by design); PROBE-003 now asserts gate-rejection + open read. Restoring authenticated write-roundtrip coverage needs a canary service credential — design + host decision.
 ## Approved Specs
 
@@ -39,6 +40,8 @@ Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never
 | Windows full-suite backup.sh path fix | tests/test_backup_script.py | #18,#23 | dev-ready |
 | Clean-clone MCP config test mismatch | tests/test_mcp_server.py, .mcp.example.json | #18,#23 | dev-ready |
 | Card-matcher cleanup vs legacy-connector fallback contract | scripts/claude_chat.py, tests/test_claude_chat_inline_dismiss.py | - | dev-ready |
+| Idle universe-cycle single-flight — every healthy cloud worker runs the idle cycle per respawn (N× duplicate activity.log lines, 2× live now; root-caused 07-14); add file-locked cycle lease à la claim_task | tinyassets/cloud_worker.py, fantasy_daemon/__main__.py, tests/ | - | dev-ready |
+| Worker auth gate is presence-only — stale `.codex/auth.json` passes `subscription_auth_health` + `codex login status` but 401s at call time (live-proven 07-14) = 2026-06-25 queue-poison class can recur; add refresh-viability probe | tinyassets/providers/base.py, tinyassets/cloud_worker.py, tests/ | - | dev-ready |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | host | host-decision |
 | Host decision: BUG-018 canonical filename trailing-hyphen — rename canonical to drop, or `wiki action=promote` draft to overwrite? | wiki | - | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
