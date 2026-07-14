@@ -23,6 +23,7 @@ from tinyassets.api.market import goals as _goals_impl
 from tinyassets.api.status import get_status as _get_status_impl
 from tinyassets.api.universe import _universe_impl
 from tinyassets.api.wiki import wiki as _wiki_impl
+from tinyassets.auth.middleware import write_gate_rejection
 from tinyassets.mcp_schema_utils import describe_signature
 
 directory_mcp = FastMCP(
@@ -266,6 +267,9 @@ def write_graph(
         request_type: TinyAssets request type.
         branch_id: Optional target branch identifier.
     """
+    rejection = write_gate_rejection("write_graph")
+    if rejection:
+        return rejection
     normalized = target.strip().lower()
     if normalized == "goal":
         return _goals_impl(
@@ -463,6 +467,11 @@ def write_page(
         dry_run: Preview consolidation-style wiki writes when supported.
     """
     normalized_kind = kind.strip().lower()
+    # Filings always mutate; page writes/patches mutate unless previewing.
+    if normalized_kind or not dry_run:
+        rejection = write_gate_rejection("write_page")
+        if rejection:
+            return rejection
     if normalized_kind:
         return _wiki_impl(
             action="file_bug",

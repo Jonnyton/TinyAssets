@@ -15,7 +15,12 @@ Dev mode:
   No auth required. Set UNIVERSE_SERVER_AUTH=false (default).
 """
 
-from tinyassets.auth.middleware import auth_middleware, require_action_scope, require_auth
+from tinyassets.auth.middleware import (
+    auth_middleware,
+    require_action_scope,
+    require_auth,
+    write_gate_rejection,
+)
 from tinyassets.auth.provider import (
     ActionScopeMetadata,
     AuthProvider,
@@ -49,4 +54,5 @@ __all__ = [
     "require_action_scope",
     "supported_oauth_scopes",
     "create_wellknown_routes",
+    "write_gate_rejection",
 ]

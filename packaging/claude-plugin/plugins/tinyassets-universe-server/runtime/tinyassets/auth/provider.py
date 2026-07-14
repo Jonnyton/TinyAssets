@@ -685,6 +685,15 @@ class AuthProvider(ABC):
         """Whether this provider requires authentication."""
         ...
 
+    def writes_require_identity(self) -> bool:
+        """Whether mutating MCP handles require a resolved identity.
+
+        Founder decision 2026-07-13 (production-mcp-sweep P0): reads stay
+        open, but OAuth-backed modes reject anonymous writes. Dev mode
+        keeps writes open for local and test flows.
+        """
+        return self.is_auth_required()
+
     @abstractmethod
     def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Dynamic Client Registration (RFC 7591).
@@ -1061,6 +1070,10 @@ class OptionalOAuthProvider(OAuthProvider):
 
     def is_auth_required(self) -> bool:
         return False
+
+    def writes_require_identity(self) -> bool:
+        # Reads stay anonymous-friendly; writes need a resolved subject.
+        return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
