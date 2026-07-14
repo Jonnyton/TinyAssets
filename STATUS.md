@@ -13,6 +13,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-05-19] Wiki has shifted toward multi-agent shared scratch space — 81% of post-2026-05-01 notes (495 of 614) are Codex/Cowork/Claude agent-coordination. Volume risks drowning out chatbot discovery/remix. Worth a host conversation on whether to split coordination off the knowledge wiki.
 - [filed:2026-07-14 verified:2026-07-14] Watch: anonymous-write gate LIVE + `ui-test` PASSED (Claude.ai rendered convo: reads rich, anonymous write rejected w/ actionable OAuth guidance, nothing persisted; log output/user_sim_session.md). Still pending: first organic authenticated-user write. Deploy-chown recurrence fixed (#1445).
 - [filed:2026-07-13] Old `workflow-data` docker volume (19 GB) on droplet may hold more unmigrated pre-rename data beyond the restored wiki; audit before deleting. No backup timers active on droplet — backup lane needs re-install.
+- [filed:2026-07-14] Wiki canary lost anonymous write-path coverage to the #1441 gate (by design); PROBE-003 now asserts gate-rejection + open read. Restoring authenticated write-roundtrip coverage needs a canary service credential — design + host decision.
 ## Approved Specs
 
 Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never wiki. On land, delete row + H2 section together.
