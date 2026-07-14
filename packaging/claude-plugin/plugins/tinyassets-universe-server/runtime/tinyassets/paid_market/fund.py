@@ -70,7 +70,9 @@ class FundState:
             # except genesis handled by mint_at_nav's bootstrap path.
             if self.supply_base_units == 0 and self.aum_micros > 0:
                 # Assets with zero supply: allowed only as a transient
-                # pre-genesis treasury; minting bootstraps 1:1.
+                # pre-genesis treasury (e.g. fee inflows before genesis).
+                # mint_at_nav REFUSES this state; treasury supply must be
+                # explicitly allocated before any public mint.
                 return
             raise FundError("non-zero supply with zero AUM")
 
@@ -92,10 +94,13 @@ def mint_at_nav(
 
     Returns ``(new_state, base_units_minted)``. Minted units are
     FLOORED: the contributor receives at most exact-NAV value, dust
-    accretes to the fund. Genesis (zero supply): bootstrap at 1 micro
-    per base unit against total AUM including any pre-existing
-    treasury, so early treasury value is captured in the first mint's
-    price rather than gifted.
+    accretes to the fund. Genesis (zero supply, zero AUM): bootstrap
+    at 1 micro per base unit. Genesis with pre-existing treasury AUM
+    REFUSES to mint: a 1:1 bootstrap would hand the first minter a
+    pro-rata claim on the whole treasury for the price of their
+    contribution alone (full-redeem then drains it). Treasury supply
+    must be explicitly allocated first — the genesis-treasury policy
+    is founder-gated (token-architecture doc §6).
     """
     state.validate()
     if (
@@ -106,9 +111,12 @@ def mint_at_nav(
         raise FundError("contribution_micros must be a positive int")
 
     if state.supply_base_units == 0:
-        # Genesis: price the first mint against ALL assets (pre-seeded
-        # treasury included) at 1 micro/base-unit reference.
-        minted = contribution_micros  # 1:1 bootstrap
+        if state.aum_micros > 0:
+            raise FundError(
+                "cannot mint at genesis against pre-existing treasury AUM: "
+                "allocate treasury supply first (founder-gated genesis policy)"
+            )
+        minted = contribution_micros  # 1:1 bootstrap on an empty fund
     else:
         # minted = contribution * supply / AUM, floored.
         minted = (contribution_micros * state.supply_base_units) // (

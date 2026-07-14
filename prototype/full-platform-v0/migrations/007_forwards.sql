@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS public.forwards (
   bucket_hours      int NOT NULL CHECK (bucket_hours IN (8, 24, 168)),
   size_mtok         int NOT NULL CHECK (size_mtok IN (1, 10, 100)),
   price_micros_per_mtok bigint NOT NULL CHECK (price_micros_per_mtok > 0),
-  collateral_pct    int NOT NULL DEFAULT 20 CHECK (collateral_pct BETWEEN 0 AND 100),
+  -- Bounds mirror forwards.py MIN_COLLATERAL_PCT/MAX_COLLATERAL_PCT: a row the
+  -- settlement oracle would refuse must not be persistable.
+  collateral_pct    int NOT NULL DEFAULT 20 CHECK (collateral_pct BETWEEN 5 AND 100),
   collateral_status text NOT NULL DEFAULT 'none'
                       CHECK (collateral_status IN ('none','held','released','slashed')),
   state             text NOT NULL DEFAULT 'open'

@@ -1245,6 +1245,32 @@ class TestFundMechanics:
         with pytest.raises(FundError):
             nav_micros_per_token(FundState(aum_micros=0, supply_base_units=5))
 
+    def test_genesis_mint_against_preseeded_treasury_rejected(self):
+        # Codex adversarial-review finding (PR #1440): a 1:1 bootstrap
+        # against pre-genesis treasury AUM gives the first minter 100%
+        # of supply — full-redeem then drains the entire treasury for
+        # the price of the contribution. Must refuse until treasury
+        # supply is explicitly allocated (founder-gated policy).
+        treasury = FundState(aum_micros=1_000_000_000, supply_base_units=0)
+        with pytest.raises(FundError, match="treasury"):
+            mint_at_nav(treasury, 1)
+        with pytest.raises(FundError, match="treasury"):
+            mint_at_nav(treasury, 10**12)
+
+    def test_genesis_mint_with_fee_against_preseeded_treasury_rejected(self):
+        from tinyassets.paid_market.fund import mint_at_nav_with_fee
+
+        treasury = FundState(aum_micros=1_000_000_000, supply_base_units=0)
+        with pytest.raises(FundError, match="treasury"):
+            mint_at_nav_with_fee(treasury, 1_000_000, entry_fee_ppm=10_000)
+
+    def test_pre_genesis_fee_inflow_then_genesis_mint_rejected(self):
+        # Fees can legally accrete before genesis; that state must also
+        # refuse public minting rather than gift the accrued fees.
+        s = record_fee_inflow(FundState(aum_micros=0, supply_base_units=0), 5)
+        with pytest.raises(FundError, match="treasury"):
+            mint_at_nav(s, 1_000_000)
+
     def test_redemption_capacity_limited_by_stable_reserves(self):
         from tinyassets.paid_market.fund import redemption_capacity_base_units
         # AUM 100 (60 stable, 40 illiquid positions), supply 100
