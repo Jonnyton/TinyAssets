@@ -20,3 +20,7 @@
 2026-05-01T23:40:43-07:00 GREEN layer=1 url=https://tinyassets.io/mcp rtt_ms=382 apex_url=https://tinyassets.io/ apex_status=200
 2026-05-02T00:01:15-07:00 GREEN layer=1 url=https://tinyassets.io/mcp rtt_ms=433 apex_url=https://tinyassets.io/ apex_status=200
 2026-05-02T00:50:13-07:00 GREEN layer=1 url=https://tinyassets.io/mcp rtt_ms=333 apex_url=https://tinyassets.io/ apex_status=200
+2026-07-14T16:33:43-07:00 GREEN layer=wiki url=https://tinyassets.io/mcp surface=wiki_gate rtt_ms=2696
+2026-07-14T16:38:23-07:00 GREEN layer=wiki url=https://tinyassets.io/mcp surface=wiki_gate rtt_ms=1018
+2026-07-14T16:39:14-07:00 RED   layer=wiki url=http://127.0.0.1:8001/mcp exit=2 surface=wiki_gate rtt_ms=1023 reason='network error on initialize: <urlopen error timed out>'
+2026-07-14T16:43:00-07:00 GREEN layer=wiki url=https://tinyassets.io/mcp surface=wiki_gate rtt_ms=1023

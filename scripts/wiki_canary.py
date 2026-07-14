@@ -28,10 +28,17 @@ Exit codes
 7  — wiki read failed or canary draft content mismatch.
 99 — unexpected error.
 
+Scope: auth-gated deployments only. Production runs
+``UNIVERSE_SERVER_AUTH=optional`` (anonymous resolves, writes gated). A
+dev-mode server (``UNIVERSE_SERVER_AUTH=false``) leaves anonymous writes
+OPEN by design (D1 sign-off), so the gate step reds with exit 6 there —
+that red means "server is not auth-gated", not "wiki is down". Don't
+point this canary at a dev server and expect green.
+
 Usage
 -----
     python scripts/wiki_canary.py
-    python scripts/wiki_canary.py --url http://127.0.0.1:8001/mcp --verbose
+    python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
     python scripts/wiki_canary.py --probe-id bisect-run-42
     python scripts/wiki_canary.py --once --format=gha   # GHA output mode
 
@@ -217,7 +224,10 @@ def run_canary(
         raise ToolCanaryError(
             6,
             "anonymous write_page was ACCEPTED — the anonymous-write gate "
-            f"(#1441) has regressed: {write_obj!r}",
+            "(#1441) has regressed. (If this is a dev-mode server with "
+            "UNIVERSE_SERVER_AUTH=false, anonymous writes are open by design "
+            "and this probe does not apply — it targets auth-gated "
+            f"deployments.) Response: {write_obj!r}",
         )
     if write_obj.get("status") != "rejected" or not write_obj.get("auth_required"):
         raise ToolCanaryError(

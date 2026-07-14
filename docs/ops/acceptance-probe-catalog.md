@@ -142,9 +142,11 @@ Layer-2 binds to host availability — the persona's CDP profile + browser run o
 
 ```
 python scripts/wiki_canary.py
-python scripts/wiki_canary.py --url http://127.0.0.1:8001/mcp --verbose
+python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
 python scripts/wiki_canary.py --once --format=gha
 ```
+
+Scope: auth-gated deployments only (production runs `UNIVERSE_SERVER_AUTH=optional`). A dev-mode server (`UNIVERSE_SERVER_AUTH=false`) leaves anonymous writes open by design, so the gate step reds with exit 6 there — that means "server is not auth-gated", not "wiki is down".
 
 ### What it exercises
 

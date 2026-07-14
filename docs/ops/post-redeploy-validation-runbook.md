@@ -124,22 +124,30 @@ python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --verbose
 
 **Green:** exit 0, "GREEN" log entry appended to `.agents/uptime.log`.
 
-### §2.2 Wiki write-roundtrip canary (PROBE-003)
+### §2.2 Wiki gate + read canary (PROBE-003)
 
 ```bash
 python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
 ```
 
-**Green:** exit 0, verbose output shows `handshake OK`, `wiki write OK`
-(status=`drafted` first run, `updated` thereafter), `wiki read roundtrip
-OK`. Side effect: creates/updates `drafts/notes/uptime-probe.md` on the
-live wiki — this is expected.
+Reworked 2026-07-14 after the anonymous-write gate (#1441): anonymous
+writes are rejected by design, so the old write-roundtrip is impossible.
+The probe now asserts the gate itself plus the open read path. It has NO
+side effects — nothing is written to the live wiki.
 
-**Red:** exit 6 (write failed), exit 7 (read mismatch), exit 2 (handshake
-broken). If exit 6 with "Unexpected keyword argument" — the wiki canary
-fix from `scripts/wiki_canary.py` (Task #13) did NOT make it into the
-deployed image. Confirm §1.1's image tag includes commits after the
-canary fix landed.
+**Green:** exit 0, verbose output shows `handshake OK`, `anonymous
+write-gate OK: rejected with auth_required=true`, `wiki read OK —
+persisted canary draft content confirmed`.
+
+**Red:** exit 6 (gate probe failed — including an anonymous write being
+ACCEPTED, which is a #1441 gate regression / security red), exit 7 (read
+failed or draft content mismatch), exit 2 (handshake broken).
+
+**Scope:** this probe targets auth-gated deployments (production runs
+`UNIVERSE_SERVER_AUTH=optional`). Against a dev-mode server
+(`UNIVERSE_SERVER_AUTH=false`) anonymous writes are open by design, so
+the gate step reds with exit 6 — that is the probe telling you the
+server is not auth-gated, not a wiki outage.
 
 ### §2.3 MCP tool-invocation canary (PROBE-004)
 
