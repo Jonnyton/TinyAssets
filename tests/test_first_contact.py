@@ -251,6 +251,10 @@ def test_concurrent_first_contact_births_single_home(data_dir):
     # Every worker that saw a birth card saw the SAME (single) home id.
     born = {r["first_contact"]["universe_id"] for r in results if "first_contact" in r}
     assert born <= {home}
+    # Exactly ONE create_universe ledger row — materialization is serialized, so
+    # racing workers never double-create under the shared reserved id.
+    ledger = json.loads((data_dir / home / "ledger.json").read_text(encoding="utf-8"))
+    assert len([e for e in ledger if e.get("action") == "create_universe"]) == 1
 
 
 def test_anonymous_first_contact_births_no_home(data_dir):
@@ -308,6 +312,26 @@ def test_founder_auto_birth_does_not_write_active_universe_marker(data_dir):
     _login("founder-A")
     json.loads(get_status())
     assert not (data_dir / ".active_universe").exists()
+
+
+def test_read_graph_status_stays_pure_no_birth(data_dir):
+    # read_graph target=status is the canonical read-only handle: an authenticated
+    # founder with no home reading through it gets the awaiting card and NOTHING
+    # is created. Only the dedicated get_status handle provisions on first contact.
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.universe_server import read_graph
+
+    _login("founder-1")
+    out = json.loads(read_graph(target="status"))
+    assert out["first_contact"]["event"] == "no_universe_yet"   # pure: no birth
+    assert get_founder_home(data_dir, "founder-1") == ""
+    assert _serial_dirs(data_dir) == []
+    # The dedicated get_status handle DOES provision — proving the split is real.
+    from tinyassets.api.status import get_status
+
+    born = json.loads(get_status())
+    assert born["first_contact"]["event"] == "universe_created"
+    assert is_universe_serial(get_founder_home(data_dir, "founder-1"))
 
 
 def test_no_card_for_anonymous_or_explicit_id(data_dir):

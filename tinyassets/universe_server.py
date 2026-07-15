@@ -455,7 +455,11 @@ def read_graph(
     """
     normalized = (target or "status").strip().lower()
     if normalized == "status":
-        return _get_status_impl(universe_id=graph_id)
+        # read_graph is the canonical pure-read handle (readOnlyHint=True): it
+        # must never create state, so opt out of the get_status first-contact
+        # auto-birth. A no-home founder gets the awaiting card here; the dedicated
+        # get_status handle (the connector's first call) is what provisions.
+        return _get_status_impl(universe_id=graph_id, allow_first_contact_birth=False)
     if normalized == "graphs":
         return _universe_impl(action="list", limit=limit)
     if normalized == "graph":
@@ -1885,6 +1889,14 @@ def get_status(universe_id: str = "") -> str:
     per-universe sensitivity_tier (that lives in spec #79 §13). The
     chatbot MUST read + narrate caveats so trust claims match reality.
 
+    First-contact provisioning (host decision 2026-07-15): this is the
+    connector's opening call, so an authenticated founder with no home
+    universe has one auto-created + bound here on their first contact — a
+    one-time onboarding side effect that returns a `first_contact:
+    universe_created` welcome. It is therefore NOT a pure read (unlike the
+    `read_graph target=status` alias, which stays read-only), but it IS
+    idempotent: once the home exists, every later call is a pure snapshot.
+
     Args:
         universe_id: Optional universe scope. Defaults to active universe.
     """
@@ -1900,7 +1912,10 @@ _mcp_get_status = _register_structured_tool(
     },
     annotations=ToolAnnotations(
         title="Daemon Status + Routing Evidence",
-        readOnlyHint=True,
+        # Not read-only: first authenticated contact provisions the founder's
+        # home universe (one-time). Still idempotent — repeated calls converge
+        # to the same home — and non-destructive.
+        readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=True,
         openWorldHint=False,

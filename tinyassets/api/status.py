@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,12 @@ from tinyassets.api.helpers import (
     _universe_dir,
 )
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
+
+# Serializes home-universe materialization so two first-contact workers holding
+# the SAME atomically-reserved id can't both run the create dispatch (which would
+# write duplicate create_universe ledger rows — Codex 2026-07-15). Process-local
+# is sufficient: the daemon is a single uvicorn process.
+_HOME_MATERIALIZE_LOCK = threading.Lock()
 
 
 def _policy_hash(payload: dict[str, Any]) -> str:
@@ -761,20 +768,34 @@ def ensure_founder_home(base: Path, founder: str) -> str:
 
     # Materialize the seed universe under the reserved id via the ledgered,
     # scope-gated create dispatch (grants the founder admin + binds the home).
+    # Serialize materialization so two workers holding the SAME reserved id can't
+    # both run create and write duplicate create_universe ledger rows: the second
+    # acquirer sees the finished dir and returns without re-creating.
     from tinyassets.api.universe import _universe_impl
 
-    out = json.loads(_universe_impl(action="create_universe", universe_id=winner))
-    if out.get("error") and not (base / winner).is_dir():
-        return ""
+    with _HOME_MATERIALIZE_LOCK:
+        if (base / winner).is_dir():
+            return winner
+        out = json.loads(_universe_impl(action="create_universe", universe_id=winner))
+        if out.get("error") and not (base / winner).is_dir():
+            return ""
     return winner
 
 
-def get_status(universe_id: str = "") -> str:
+def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True) -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
     See the chatbot-facing docstring on the @mcp.tool wrapper in
     ``tinyassets.universe_server`` — this implementation is what the
     decorated tool delegates to.
+
+    ``allow_first_contact_birth`` gates the first-contact provisioning side
+    effect. The dedicated ``get_status`` handle (the connector's first call)
+    leaves it True: an authenticated founder with no home has one auto-created
+    here (host decision 2026-07-15). Pure-read aliases — notably
+    ``read_graph target=status`` — pass False so the canonical read handle
+    never mutates state (Codex 2026-07-15); a no-home founder then simply gets
+    the awaiting card.
     """
     uid, needs_birth = _resolve_entry_universe(universe_id)
     if needs_birth:
@@ -790,7 +811,11 @@ def get_status(universe_id: str = "") -> str:
             "starts blank, learns who it is from you, and grows into your "
             "projects and goals."
         )
-        born_uid = ensure_founder_home(_base_path(), permissions.current_actor_id())
+        born_uid = (
+            ensure_founder_home(_base_path(), permissions.current_actor_id())
+            if allow_first_contact_birth
+            else ""
+        )
         if born_uid:
             return json.dumps({
                 "first_contact": {
