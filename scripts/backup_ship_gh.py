@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -85,7 +86,13 @@ def _api(
         return post_fn(req)
     try:
         with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode())
+            raw = resp.read().decode()
+            # Some endpoints (DELETE release → 204) return an empty body —
+            # json.loads("") raised here and failed every nightly ship once
+            # the repo crossed BACKUP_GH_RETAIN releases (live-hit
+            # 2026-07-15 on the first post-rename ship: the renamed repo
+            # carried 30+ pre-rename releases).
+            return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(
@@ -119,7 +126,11 @@ def _upload_asset(
         return post_fn(req)
     try:
         with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode())
+            raw = resp.read().decode()
+            # Asset uploads return 201 with a JSON body; the empty-body
+            # tolerance here is defensive only (the load-bearing case is
+            # _api's DELETE-release 204 — see comment there).
+            return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(
@@ -200,6 +211,40 @@ def delete_release(
         pass  # tag deletion is best-effort
 
 
+# Only releases carrying these tag prefixes are subject to retention
+# pruning. Anything else in the repo (e.g. the one-off
+# workflow-data-content-archive-* from the 2026-07-15 volume audit) is a
+# permanent artifact — before this scoping, prune deleted the OLDEST
+# releases regardless of name, so a parked archive would have been
+# silently destroyed within days of landing.
+PRUNABLE_TAG_PREFIXES: tuple[str, ...] = (
+    "tinyassets-brain-", "tinyassets-data-",
+    "workflow-brain-", "workflow-data-2",
+)
+
+
+def _release_age_key(rel: dict[str, Any]) -> str:
+    """Age key for retention ordering. GitHub sets a release's
+    ``created_at`` to the TARGET COMMIT's date, not the release time —
+    the live backup repo has 31 releases sharing one ``created_at``, so
+    it cannot order backups (Codex review 2026-07-15, live-reproduced:
+    the old sort deleted whichever release the list order put first).
+    Order by ``published_at``, falling back to the timestamp embedded in
+    the tag (normalized to ISO so both sources compare), then
+    ``created_at`` as a last resort.
+    """
+    published = str(rel.get("published_at") or "")
+    if published:
+        return published
+    m = re.search(
+        r"(\d{4}-\d{2}-\d{2})T(\d{2})[-:](\d{2})[-:](\d{2})",
+        str(rel.get("tag_name", "")),
+    )
+    if m:
+        return f"{m.group(1)}T{m.group(2)}:{m.group(3)}:{m.group(4)}Z"
+    return str(rel.get("created_at") or "")
+
+
 def prune_releases(
     token: str,
     repo: str,
@@ -207,9 +252,12 @@ def prune_releases(
     *,
     post_fn: Any = None,
 ) -> int:
-    releases = list_releases(token, repo, post_fn=post_fn)
-    # Sort oldest-first by created_at; keep the newest `keep`.
-    releases.sort(key=lambda r: r.get("created_at", ""))
+    releases = [
+        r for r in list_releases(token, repo, post_fn=post_fn)
+        if str(r.get("tag_name", "")).startswith(PRUNABLE_TAG_PREFIXES)
+    ]
+    # Sort oldest-first; keep the newest `keep`.
+    releases.sort(key=_release_age_key)
     victims = releases[:-keep] if len(releases) > keep else []
     for rel in victims:
         delete_release(token, repo, rel["id"], rel.get("tag_name", ""),
