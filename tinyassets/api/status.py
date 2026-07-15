@@ -680,16 +680,15 @@ def _compute_supervisor_liveness(
 
 
 def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
-    """Resolve the universe for a status entry. Returns ``(uid, awaiting)``.
+    """Resolve the universe for a status entry. Returns ``(uid, needs_birth)``.
 
-    OPT-IN BIRTH (host decision 2026-07-02, supersedes create-on-read): a
-    status read NEVER creates anything — create-on-read guaranteed a
-    side-effect disclosure paragraph in every host model's first reply, and
-    reads must be reads. ``awaiting`` is True for an authenticated founder
-    with no (living) home universe: get_status then returns the compact
-    awaiting-creation card, and the universe is created when the founder asks
-    to meet it (``universe action=create_universe`` — the request is the
-    consent).
+    This resolver is pure — it never creates. ``needs_birth`` is True for an
+    authenticated founder with no (living) home universe; ``get_status`` then
+    auto-births and binds one (AUTO-BIRTH, host decision 2026-07-15, supersedes
+    the 2026-07-02 opt-in birth): a connected founder always has a home and does
+    not have to know to ask for their first one. A founder who lacks the create
+    scope still falls back to the compact awaiting card (get_status is not a
+    scope bypass).
 
     - An explicit ``universe_id`` always wins.
     - An anonymous / dev caller uses the legacy default resolution
@@ -712,8 +711,62 @@ def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
     home = get_founder_home(base, founder)
     if home and (base / home).is_dir():
         return home, False
-    # No home (or a stale binding to a removed dir): awaiting opt-in creation.
+    # No home (or a stale binding to a removed dir): get_status auto-births one.
     return "", True
+
+
+def ensure_founder_home(base: Path, founder: str) -> str:
+    """Get-or-create the authenticated founder's home universe.
+
+    Returns the home universe id, or "" when the founder may not create one
+    (insufficient create scope) or the birth could not complete.
+
+    Auto-birth on first authenticated connect (host decision 2026-07-15,
+    supersedes 2026-07-02 opt-in birth): a connected founder always has a home;
+    additional universes stay explicit (``universe action=create_universe``).
+
+    Ordering is load-bearing: the create SCOPE is checked BEFORE the home id is
+    reserved, so a read-only founder leaves no phantom ``founder_home`` binding
+    (get_status must never be a create-scope bypass). The reserve step
+    (``claim_founder_home``) is atomic, so concurrent first-contact calls yield
+    exactly one home — never a double-birth across ASGI worker threads.
+    """
+    from tinyassets.daemon_server import claim_founder_home, get_founder_home
+
+    home = get_founder_home(base, founder)
+    if home and (base / home).is_dir():
+        return home
+
+    # Scope gate FIRST: never mint a universe for a founder who lacks the create
+    # scope, and never bind a home we then fail to materialize.
+    from tinyassets.auth.middleware import require_action_scope
+
+    try:
+        require_action_scope("universe", "create_universe")
+    except PermissionError:
+        return ""
+
+    from tinyassets.ids import new_universe_id
+
+    # `claim_founder_home` returns the founder's EXISTING binding when one is
+    # present (a stale binding whose dir was removed), else reserves our fresh
+    # candidate. Either way `winner` is the single id we (re)materialize — a stale
+    # binding is repaired under its SAME id (stable home identity), never forked.
+    winner = claim_founder_home(base, founder, new_universe_id())
+    if not winner:
+        return ""
+    if (base / winner).is_dir():
+        # A concurrent first-contact already materialized the reserved home.
+        return winner
+
+    # Materialize the seed universe under the reserved id via the ledgered,
+    # scope-gated create dispatch (grants the founder admin + binds the home).
+    from tinyassets.api.universe import _universe_impl
+
+    out = json.loads(_universe_impl(action="create_universe", universe_id=winner))
+    if out.get("error") and not (base / winner).is_dir():
+        return ""
+    return winner
 
 
 def get_status(universe_id: str = "") -> str:
@@ -723,12 +776,41 @@ def get_status(universe_id: str = "") -> str:
     ``tinyassets.universe_server`` — this implementation is what the
     decorated tool delegates to.
     """
-    uid, awaiting = _resolve_entry_universe(universe_id)
-    if awaiting:
-        # Compact awaiting-creation card: a pure read with nothing else to
-        # narrate. `about` answers "what is this"; `next_step_for_user` is
-        # product copy the user can say. No universe exists yet, so there is
-        # no status, persona, or side effect to disclose.
+    uid, needs_birth = _resolve_entry_universe(universe_id)
+    if needs_birth:
+        # AUTO-BIRTH (host decision 2026-07-15): a connected founder always has a
+        # home universe — create + bind it on first contact rather than making
+        # them know to ask. `about` answers "what is this"; `next_step_for_user`
+        # is product copy the user can say. Both cards stay compact: a first
+        # greeting, not the full ops snapshot (the next read returns that).
+        from tinyassets.api import permissions
+
+        _about = (
+            "TinyAssets hosts your own AI universe — a persistent mind that "
+            "starts blank, learns who it is from you, and grows into your "
+            "projects and goals."
+        )
+        born_uid = ensure_founder_home(_base_path(), permissions.current_actor_id())
+        if born_uid:
+            return json.dumps({
+                "first_contact": {
+                    "event": "universe_created",
+                    "universe_id": born_uid,
+                    "note": (
+                        "I've set up your universe and bound it to your account. "
+                        "It starts blank — unnamed and curious — and learns who "
+                        "it is from you."
+                    ),
+                },
+                "about": _about,
+                "next_step_for_user": (
+                    "Tell me a little about yourself and what you're working on, "
+                    "and I'll start becoming your universe."
+                ),
+                "schema_version": 1,
+            })
+        # Founder lacks the create scope (get_status is not a scope bypass) or the
+        # birth could not complete: fall back to the compact awaiting card.
         return json.dumps({
             "first_contact": {
                 "event": "no_universe_yet",
@@ -737,11 +819,7 @@ def get_status(universe_id: str = "") -> str:
                     "when the founder asks to meet it."
                 ),
             },
-            "about": (
-                "TinyAssets hosts your own AI universe — a persistent mind "
-                "that starts blank, learns who it is from you, and grows "
-                "into your projects and goals."
-            ),
+            "about": _about,
             "next_step_for_user": (
                 "Just tell me you'd like to meet your universe and I'll set it "
                 "up and introduce you."

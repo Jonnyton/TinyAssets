@@ -4145,6 +4145,44 @@ def get_founder_home(base_path: str | Path, founder_sub: str) -> str:
     return str(row[0]) if row and row[0] else ""
 
 
+def claim_founder_home(
+    base_path: str | Path,
+    founder_sub: str,
+    candidate_universe_id: str,
+) -> str:
+    """Atomically reserve ``candidate_universe_id`` as the founder's home iff they
+    have none bound yet, and return the WINNING id.
+
+    This serializes concurrent first-contact births (auto-birth on first
+    authenticated connect): the ``INSERT ... ON CONFLICT(founder_sub) DO NOTHING``
+    lets exactly one caller win the binding under SQLite's write lock, even across
+    the ASGI worker threads that run sync MCP tool calls. A caller that loses the
+    race (or finds a pre-existing binding) gets the already-bound id back and must
+    NOT create a second universe. Returns "" for an anonymous/empty founder or an
+    empty candidate (no home to claim).
+    """
+    founder = (founder_sub or "").strip()
+    candidate = (candidate_universe_id or "").strip()
+    if not founder or founder == "anonymous" or not candidate:
+        return ""
+    now = _now()
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO founder_home (founder_sub, universe_id, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(founder_sub) DO NOTHING
+            """,
+            (founder, candidate, now),
+        )
+        row = conn.execute(
+            "SELECT universe_id FROM founder_home WHERE founder_sub = ?",
+            (founder,),
+        ).fetchone()
+    return str(row[0]) if row and row[0] else candidate
+
+
 def revoke_universe_access(
     base_path: str | Path,
     *,

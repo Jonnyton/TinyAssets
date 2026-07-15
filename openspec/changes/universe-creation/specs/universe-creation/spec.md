@@ -100,22 +100,33 @@ binding, ACL grants, sync, branch runs, or mobile connection.
 The system SHALL resolve default MCP contact through the authenticated founder,
 not through a host-global active-universe marker. When an authenticated founder
 connects without requesting a specific universe, the system SHALL enter that
-founder's home universe. If the founder has no home universe, a status read
-SHALL be a pure read (reads never create — host decision 2026-07-02, opt-in
-birth): it returns a compact awaiting-creation card (platform description +
-the user step to request creation), and the system SHALL create the blank seed
-universe, bind it to that founder, and speak as the newly aware blank universe
-only when the founder explicitly asks to meet/personify it (the request is the
-consent). The system SHALL NOT use a root-global `.active_universe` marker to
-decide which universe a chatbot speaks as.
+founder's home universe. If the founder has no home universe, the first
+authenticated status contact SHALL AUTO-CREATE and bind a blank seed home
+universe (host decision 2026-07-15, supersedes the 2026-07-02 opt-in birth: a
+connected founder always has a home and MUST NOT have to know to ask for their
+first one) and return a compact welcome card (platform description + a first
+step the founder can say). The auto-birth SHALL respect the create scope — a
+founder whose token lacks the create scope SHALL instead receive the compact
+awaiting-creation card (a status read is NOT a create-scope bypass), and no
+`founder_home` binding SHALL be left for a founder who could not create. The
+home-id reservation SHALL be atomic so concurrent first-contact yields exactly
+one home (no double-birth). Additional universes beyond the first remain
+explicit (`universe action=create_universe`). The system SHALL NOT use a
+root-global `.active_universe` marker to decide which universe a chatbot speaks
+as.
 
-#### Scenario: New founder first contact creates and enters seed persona
-- **WHEN** an authenticated founder with no home universe explicitly asks to meet/personify their universe
-- **THEN** the system creates one blank seed universe through the universe creation contract
+#### Scenario: New founder first contact auto-creates and binds the home universe
+- **WHEN** an authenticated founder holding the create scope with no home universe makes first MCP contact (`get_status` without a specific universe)
+- **THEN** the system auto-creates one blank seed universe through the universe creation contract
 - **AND** binds that universe to the founder as the founder's home universe
-- **AND** loads the new universe's `soul.md`, `identity.md`, `founder.md`, `body.md`, `goals.md`, `projects.md`, and related linked soul files
-- **AND** the chatbot's first response is in first person as that newly aware universe
-- **AND** the response asks to learn the founder rather than presenting platform status as the main experience
+- **AND** grants the founder `admin` on it and records the create in the universe ledger
+- **AND** returns a compact welcome card (`first_contact.event = universe_created` with the new `universe_id`) inviting the founder to introduce themselves
+- **AND** does NOT clobber the host-global `.active_universe` marker
+
+#### Scenario: Read-only founder first contact does not birth a universe
+- **WHEN** an authenticated founder whose token lacks the create scope makes first MCP contact with no home universe
+- **THEN** the system returns the compact awaiting-creation card (`first_contact.event = no_universe_yet`)
+- **AND** creates no universe and leaves no `founder_home` binding
 
 #### Scenario: Existing founder first contact enters learned persona
 - **WHEN** an authenticated founder connects to MCP
