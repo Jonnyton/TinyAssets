@@ -716,10 +716,22 @@ def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
 
     founder = permissions.current_actor_id()
     home = get_founder_home(base, founder)
-    if home and (base / home).is_dir():
+    if _home_is_complete(base, home):
         return home, False
-    # No home (or a stale binding to a removed dir): get_status auto-births one.
+    # No home, a stale binding to a removed dir, or a partial/broken dir: not a
+    # usable home, so get_status auto-births (or re-materializes) one.
     return "", True
+
+
+def _home_is_complete(base: Path, uid: str) -> bool:
+    """A home universe is usable only once its seed has written ``soul.md``.
+
+    A bare or partially-created dir (e.g. a create that failed after ``mkdir``
+    but before seeding) is NOT a home — treating one as "living" would announce a
+    broken universe (Codex 2026-07-15). ``soul.md`` is the canonical seed marker
+    the rest of the codebase already checks for.
+    """
+    return bool(uid) and (base / uid / "soul.md").is_file()
 
 
 def ensure_founder_home(base: Path, founder: str) -> str:
@@ -741,7 +753,7 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     from tinyassets.daemon_server import claim_founder_home, get_founder_home
 
     home = get_founder_home(base, founder)
-    if home and (base / home).is_dir():
+    if _home_is_complete(base, home):
         return home
 
     # Scope gate FIRST: never mint a universe for a founder who lacks the create
@@ -762,7 +774,7 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     winner = claim_founder_home(base, founder, new_universe_id())
     if not winner:
         return ""
-    if (base / winner).is_dir():
+    if _home_is_complete(base, winner):
         # A concurrent first-contact already materialized the reserved home.
         return winner
 
@@ -770,14 +782,21 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     # scope-gated create dispatch (grants the founder admin + binds the home).
     # Serialize materialization so two workers holding the SAME reserved id can't
     # both run create and write duplicate create_universe ledger rows: the second
-    # acquirer sees the finished dir and returns without re-creating.
+    # acquirer sees the finished home and returns without re-creating. Success is
+    # the completeness marker (soul.md), NOT a bare dir — a create that fails
+    # after mkdir rolls its partial dir back (universe.py) and we verify anyway,
+    # so a broken home never reads as universe_created (Codex 2026-07-15). A
+    # failed create may raise; catch it so the read degrades to the awaiting card.
     from tinyassets.api.universe import _universe_impl
 
     with _HOME_MATERIALIZE_LOCK:
-        if (base / winner).is_dir():
+        if _home_is_complete(base, winner):
             return winner
-        out = json.loads(_universe_impl(action="create_universe", universe_id=winner))
-        if out.get("error") and not (base / winner).is_dir():
+        try:
+            _universe_impl(action="create_universe", universe_id=winner)
+        except Exception:  # noqa: BLE001 - a failed birth must not crash the read
+            pass
+        if not _home_is_complete(base, winner):
             return ""
     return winner
 

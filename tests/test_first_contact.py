@@ -257,6 +257,41 @@ def test_concurrent_first_contact_births_single_home(data_dir):
     assert len([e for e in ledger if e.get("action") == "create_universe"]) == 1
 
 
+def test_first_contact_birth_failure_is_graceful(data_dir, monkeypatch):
+    # If creation fails AFTER mkdir (seed raises mid-bundle), get_status must NOT
+    # announce universe_created or leave a broken/usable home: the partial dir is
+    # rolled back (atomic create) and completeness is verified via soul.md, so the
+    # founder gets the awaiting card instead of a phantom universe (Codex
+    # 2026-07-15).
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.status import get_status
+    from tinyassets.daemon_server import get_founder_home
+
+    real_seed = universe_api.seed_okf_bundle
+
+    def _boom(*a, **k):
+        raise OSError("seed failed mid-bundle")
+
+    monkeypatch.setattr(universe_api, "seed_okf_bundle", _boom)
+
+    _login("founder-1")
+    out = json.loads(get_status())
+    assert out["first_contact"]["event"] == "no_universe_yet"   # NOT universe_created
+    assert _serial_dirs(data_dir) == []                         # partial dir rolled back
+    # No COMPLETE home exists even if a home id was reserved (self-heals on retry).
+    bound = get_founder_home(data_dir, "founder-1")
+    if bound:
+        assert not (data_dir / bound / "soul.md").is_file()
+
+    # Recovery: restore ONLY the seed (not the fixture's data-dir env) and the next
+    # get_status materializes the home under the retained base path.
+    monkeypatch.setattr(universe_api, "seed_okf_bundle", real_seed)
+    healed = json.loads(get_status())
+    assert healed["first_contact"]["event"] == "universe_created"
+    healed_uid = healed["first_contact"]["universe_id"]
+    assert (data_dir / healed_uid / "soul.md").is_file()
+
+
 def test_anonymous_first_contact_births_no_home(data_dir):
     from tinyassets.api.status import get_status
     from tinyassets.daemon_server import get_founder_home

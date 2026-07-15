@@ -4803,8 +4803,24 @@ def _action_create_universe(
             result["founder_id"] = ""
 
         return json.dumps(result)
-    except OSError as exc:
-        return json.dumps({"error": f"Failed to create universe: {exc}"})
+    except Exception as exc:  # noqa: BLE001 - roll back a partial create
+        # Atomic create: a failure AFTER mkdir (e.g. seed_okf_bundle raising
+        # mid-bundle, or a grant/bind error) must NOT leave a bare/partial
+        # universe dir — it would read as a "living" home (.is_dir()) and
+        # get_status would announce a broken universe (Codex 2026-07-15). We only
+        # reach mkdir when the dir did not pre-exist (guarded above), so the dir
+        # is ours to remove. Preserve prior behavior: OSError → error envelope,
+        # anything else re-raises (after the partial dir is cleaned up).
+        import shutil
+
+        try:
+            if udir.is_dir():
+                shutil.rmtree(udir)
+        except OSError:
+            pass
+        if isinstance(exc, OSError):
+            return json.dumps({"error": f"Failed to create universe: {exc}"})
+        raise
 
 
 # ───────────────────────────────────────────────────────────────────────────
