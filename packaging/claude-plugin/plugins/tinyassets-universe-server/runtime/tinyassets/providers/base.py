@@ -114,6 +114,198 @@ def subprocess_env_for_provider(provider_name: str) -> dict[str, str]:
     return env
 
 
+# ---------------------------------------------------------------------------
+# Codex refresh-viability probe (layered on top of the presence check below).
+# ---------------------------------------------------------------------------
+
+# Signatures captured live 2026-07-14 by running `codex exec` against the
+# dead token stranded on the old workflow-data volume (exit code was 0 even
+# on failure, so output text — stdout+stderr — is the only reliable signal).
+_CODEX_AUTH_FAILURE_PATTERNS: tuple[str, ...] = (
+    "Your access token could not be refreshed",
+    "Please log out and sign in again",
+    "401 Unauthorized",
+)
+
+_AUTH_PROBE_PROMPT = "Reply with exactly: OK"
+
+DEFAULT_CODEX_AUTH_FRESH_S = 24 * 3600.0
+DEFAULT_AUTH_PROBE_TTL_S = 1800.0
+DEFAULT_AUTH_PROBE_TIMEOUT_S = 120.0
+
+_PROBE_FALSY = {"0", "false", "off", "no"}
+
+# Cached live-probe verdicts keyed by str(CODEX_HOME): (checked_at, health).
+# The supervisor calls the gate every loop tick; the probe subprocess must
+# not run per tick. In-memory is enough — the supervisor is long-lived, and
+# a fresh process simply probes once more.
+_auth_probe_cache: dict[str, tuple[float, dict[str, str]]] = {}
+
+
+def _reset_auth_probe_cache() -> None:
+    """Test seam."""
+    _auth_probe_cache.clear()
+
+
+def _viability_probe_enabled() -> bool:
+    raw = os.environ.get("TINYASSETS_AUTH_VIABILITY_PROBE", "").strip().lower()
+    return raw not in _PROBE_FALSY
+
+
+def _finite_positive_env_s(var: str, default: float) -> float:
+    """Parse a seconds env var; only finite positive values are accepted
+    (same hardening class as the idle-cycle window — Codex review
+    2026-07-14: ``inf``/``nan`` must not silently disable comparisons)."""
+    import math
+
+    raw = os.environ.get(var, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return value
+
+
+def _codex_last_refresh_age_s(codex_home: Path, now: float | None = None) -> float | None:
+    """Age in seconds of the auth.json ``last_refresh`` field, falling back
+    to the file mtime; ``None`` when neither is readable (treated as stale
+    by the caller — suspicion triggers the probe, never a quarantine)."""
+    import json as _json
+    import math
+    import time as _time
+    from datetime import datetime, timezone
+
+    auth_path = codex_home / "auth.json"
+    current = _time.time() if now is None else now
+    try:
+        data = _json.loads(auth_path.read_text(encoding="utf-8"))
+        raw = data.get("last_refresh") if isinstance(data, dict) else None
+        if isinstance(raw, str) and raw.strip():
+            text = raw.strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age = current - parsed.timestamp()
+            if math.isfinite(age):
+                return age
+    except (OSError, ValueError, TypeError):
+        pass
+    try:
+        return current - auth_path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
+    """One tiny real ``codex exec`` call; the only check that catches a
+    dead refresh token (``codex login status`` reads the file locally and
+    reported "Logged in" for the very token that 401'd — live 2026-07-14).
+
+    Returns ``{"status": "ok"|"not_logged_in"|"inconclusive", "detail"}``.
+    Uses whatever ``codex`` is on PATH so flock-wrapper deployments keep
+    their single-use refresh-token serialization.
+    """
+    import subprocess
+    import tempfile
+
+    from tinyassets.providers.codex_provider import _resolve_codex_cmd
+
+    base_cmd, use_shell = _resolve_codex_cmd()
+    cmd = [
+        *base_cmd, "exec", "--skip-git-repo-check", "-s", "read-only",
+        _AUTH_PROBE_PROMPT,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd if not use_shell else subprocess.list2cmdline(cmd),
+            shell=use_shell,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            cwd=tempfile.gettempdir(),
+        )
+    except FileNotFoundError:
+        return {"status": "inconclusive",
+                "detail": "codex binary not on PATH; probe skipped"}
+    except subprocess.TimeoutExpired:
+        return {"status": "inconclusive",
+                "detail": f"live auth probe timed out after {timeout_s:.0f}s"}
+    except OSError as exc:
+        return {"status": "inconclusive",
+                "detail": f"live auth probe could not run: {exc}"}
+
+    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    for pattern in _CODEX_AUTH_FAILURE_PATTERNS:
+        if pattern in combined:
+            return {
+                "status": "not_logged_in",
+                "detail": (
+                    f"refresh-viability probe FAILED (matched {pattern!r}); "
+                    "token is dead despite auth.json being present — run a "
+                    "fresh `codex login` for this CODEX_HOME"
+                ),
+            }
+    if proc.returncode != 0:
+        return {"status": "inconclusive",
+                "detail": f"live auth probe exit {proc.returncode} without an "
+                          "auth-failure signature"}
+    return {"status": "ok", "detail": "live auth probe passed (real call ok)"}
+
+
+def _codex_refresh_viability(codex_home: Path) -> dict[str, str]:
+    """Layered viability verdict for a PRESENT auth.json (see the
+    subscription_auth_health docs below for the full ladder)."""
+    import time as _time
+
+    presence_ok = {
+        "provider": "codex", "status": "ok",
+        "detail": f"auth.json present at {codex_home}",
+    }
+    if not _viability_probe_enabled():
+        return presence_ok
+
+    fresh_s = _finite_positive_env_s(
+        "TINYASSETS_CODEX_AUTH_FRESH_S", DEFAULT_CODEX_AUTH_FRESH_S,
+    )
+    age = _codex_last_refresh_age_s(codex_home)
+    if age is not None and 0 <= age < fresh_s:
+        presence_ok["detail"] = (
+            f"auth.json present at {codex_home}; last_refresh "
+            f"{age:.0f}s ago (< {fresh_s:.0f}s) — refresh-viable"
+        )
+        return presence_ok
+
+    ttl_s = _finite_positive_env_s(
+        "TINYASSETS_AUTH_PROBE_TTL_S", DEFAULT_AUTH_PROBE_TTL_S,
+    )
+    now = _time.time()
+    cached = _auth_probe_cache.get(str(codex_home))
+    if cached is not None and 0 <= now - cached[0] < ttl_s:
+        return dict(cached[1])
+
+    timeout_s = _finite_positive_env_s(
+        "TINYASSETS_AUTH_PROBE_TIMEOUT_S", DEFAULT_AUTH_PROBE_TIMEOUT_S,
+    )
+    probe = _codex_live_auth_probe(timeout_s)
+    if probe["status"] == "not_logged_in":
+        health = {"provider": "codex", "status": "not_logged_in",
+                  "detail": probe["detail"]}
+    else:
+        # "ok" and "inconclusive" both read ok: only a POSITIVE dead
+        # signature quarantines (false not_logged_in on a healthy worker is
+        # worse; a false ok still fails at call time + trips loop_stalled).
+        health = {"provider": "codex", "status": "ok",
+                  "detail": f"auth.json present at {codex_home}; {probe['detail']}"}
+    _auth_probe_cache[str(codex_home)] = (now, dict(health))
+    return health
+
+
 # Subscription-auth health. The 2026-06-25 loop-wedge root cause was a worker
 # whose claude-code auth was dead (no credentials) that kept claiming tasks
 # and failing every one, poisoning the queue for ~3 weeks undetected.
@@ -123,25 +315,43 @@ def subprocess_env_for_provider(provider_name: str) -> dict[str, str]:
 # instead of leaving it buried in worker logs.
 #
 # Returns ``{"provider", "status", "detail"}`` where status is one of:
-#   "ok"            — subscription credentials are present
-#   "not_logged_in" — credentials are missing (the actionable failure)
+#   "ok"            — subscription credentials are present (and, for codex,
+#                     refresh-viable per the layered probe below)
+#   "not_logged_in" — credentials are missing or proven dead (the actionable
+#                     failure)
 #   "unknown"       — no checkable subscription auth here (API-key providers,
 #                     ollama, or an unrecognized name); callers never gate on it
 #
-# NOTE: this is a credentials-PRESENCE probe, not a token-validity probe. It
-# reliably catches missing creds (the dominant failure, and the exact 2026-06-25
-# case); a present-but-expired token still reads "ok" here and surfaces via
-# call-time provider failures + the loop_stalled liveness warning.
+# Codex gets a layered refresh-viability check on top of presence
+# (live-proven gap 2026-07-14: a stale /data/.codex/auth.json stranded by the
+# Jun-27 volume migration passed BOTH this presence check AND `codex login
+# status`, yet 401'd at call time — the exact 2026-06-25 queue-poison class):
+#   1. presence — auth.json missing => not_logged_in (unchanged fast path).
+#   2. freshness — auth.json `last_refresh` (fallback: file mtime) younger
+#      than TINYASSETS_CODEX_AUTH_FRESH_S => ok without any subprocess. An
+#      actively-used token is refreshed by real calls, so busy workers never
+#      pay for a probe.
+#   3. live probe — stale creds trigger one tiny `codex exec` call (the check
+#      that actually caught the dead token; `codex login status` only reads
+#      the file locally and lies). Output matching the refresh-failure
+#      signatures => not_logged_in (quarantine BEFORE the queue is poisoned).
+#      Verdicts are cached per CODEX_HOME for TINYASSETS_AUTH_PROBE_TTL_S.
+#
+# Failure philosophy per the claude-code note below: inconclusive probe
+# outcomes (binary missing, timeout, transport error) read "ok" — a false
+# "ok" still fails at call time and trips loop_stalled; only a POSITIVE dead
+# signature quarantines. The probe invokes whatever `codex` is on PATH, so
+# deployments that ship the flock wrapper for the single-use refresh-token
+# chain keep their serialization.
 def subscription_auth_health(provider_name: str) -> dict[str, str]:
-    """Return presence-based subscription-auth health for *provider_name*."""
+    """Return subscription-auth health for *provider_name*."""
     name = (provider_name or "").strip()
     if name == "codex":
         codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
-        if (codex_home / "auth.json").is_file():
-            return {"provider": name, "status": "ok",
-                    "detail": f"auth.json present at {codex_home}"}
-        return {"provider": name, "status": "not_logged_in",
-                "detail": f"no auth.json at {codex_home}"}
+        if not (codex_home / "auth.json").is_file():
+            return {"provider": name, "status": "not_logged_in",
+                    "detail": f"no auth.json at {codex_home}"}
+        return _codex_refresh_viability(codex_home)
     if name == "claude-code":
         if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
             return {"provider": name, "status": "ok",

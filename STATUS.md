@@ -40,7 +40,6 @@ Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never
 | Windows full-suite backup.sh path fix | tests/test_backup_script.py | #18,#23 | dev-ready |
 | Clean-clone MCP config test mismatch | tests/test_mcp_server.py, .mcp.example.json | #18,#23 | dev-ready |
 | Card-matcher cleanup vs legacy-connector fallback contract | scripts/claude_chat.py, tests/test_claude_chat_inline_dismiss.py | - | dev-ready |
-| Worker auth gate is presence-only — stale `.codex/auth.json` passes `subscription_auth_health` + `codex login status` but 401s at call time (live-proven 07-14) = 2026-06-25 queue-poison class can recur; add refresh-viability probe | tinyassets/providers/base.py, tinyassets/cloud_worker.py, tests/ | - | dev-ready |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | host | host-decision |
 | Host decision: BUG-018 canonical filename trailing-hyphen — rename canonical to drop, or `wiki action=promote` draft to overwrite? | wiki | - | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
