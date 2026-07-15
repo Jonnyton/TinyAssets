@@ -10,15 +10,30 @@ workers produced N duplicate cycles — observed as exact duplicate
 ``worker-claude-2`` (both settled at the supervisor backoff ceiling with a
 ~1s phase offset from simultaneous compose-up).
 
-Mechanism: a per-universe stamp file records which worker last STARTED an
-idle cycle and when, guarded by a sidecar file lock (same msvcrt/fcntl
-pattern as ``branch_tasks._file_lock``). A worker skips its idle cycle only
-when a DIFFERENT worker's stamp is fresh. Own stamps never block, so a
-single-worker deployment (local tray, solo droplet) keeps exactly its
-current cadence — this module only removes multi-worker overlap. If the
-stamp holder dies, any other worker acquires the slot as soon as the stamp
-ages past the freshness window, so the heartbeat fails over within one
-window.
+Mechanism — two layers, one lock file (Codex adversarial review 2026-07-14
+required the first):
+
+* **Run lock (mutual exclusion for the cycle's lifetime).** Acquisition
+  takes a NONBLOCKING exclusive OS lock on ``.idle_cycle.lock`` and the
+  winner HOLDS it until the cycle finishes (``IdleCycleSlot.release()``,
+  wired into the daemon's ``_cleanup``) or the process dies (the OS
+  releases file locks on process death — crash-safe, no heartbeat
+  machinery needed). A cycle that runs longer than the freshness window —
+  real writing cycles can take 6+ minutes — therefore still excludes other
+  workers for its whole duration.
+* **Stamp (rate limit between cycles).** Under the run lock, a stamp file
+  records which worker last STARTED an idle cycle and when. A worker that
+  wins the run lock still skips when a DIFFERENT worker's stamp is fresh.
+  Own stamps never block, so a single-worker deployment (local tray, solo
+  droplet) keeps exactly its current cadence — this module only removes
+  multi-worker overlap. If the stamp holder dies mid-gap, any other worker
+  acquires as soon as the stamp ages past the window, so the heartbeat
+  fails over within one window.
+
+Coordination failures fail OPEN (run the cycle): the worst case is the
+status quo (duplicate idle cycles), never a stalled heartbeat. Lock
+CONTENTION is not a failure — it is the signal that a cycle is already
+running, and reads as skip.
 
 Env controls
 ------------
@@ -26,40 +41,48 @@ Env controls
     Default on. ``0`` / ``false`` / ``off`` / ``no`` disables the gate
     (escape hatch; N-worker duplicate cycles return).
 ``TINYASSETS_IDLE_CYCLE_FOREIGN_FRESH_S``
-    Freshness window in seconds (default 240). Must sit below the
+    Freshness window in seconds (default 240; must be a finite positive
+    number — anything else falls back to the default). Keep it below the
     supervisor's idle respawn period (~322s at the backoff ceiling) so a
-    healthy solo worker is never blocked by its own predecessor's foreign
-    takeover, and above the worker phase offset (~1s) so duplicates are
-    caught. Also the maximum heartbeat gap after a stamp-holder death.
+    healthy fleet never starves its own heartbeat, and above the worker
+    phase offset (~1s) so duplicates are caught. Also the maximum
+    heartbeat gap after a stamp-holder death.
 
 Worker identity resolves ``TINYASSETS_WORKER_ID`` (compose fleet) >
 ``UNIVERSE_SERVER_HOST_USER`` (tray/cloud identity) > ``"host"``. Two
-unnamed daemons on the same machine therefore share an identity and do not
-dedupe each other — acceptable: the shipped fleets set distinct worker ids,
-and the failure mode is the status quo (duplicate idle cycles), never a
-stalled heartbeat.
+unnamed daemons on the same machine therefore share an identity for the
+stamp layer and do not rate-limit each other — acceptable: the run lock
+still prevents them overlapping, the shipped fleets set distinct worker
+ids, and the failure mode is the status quo, never a stalled heartbeat.
 
 Stdlib only.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import math
 import os
 import sys
 import time
-from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 logger = logging.getLogger(__name__)
 
 STAMP_FILENAME = ".idle_cycle_stamp.json"
-LOCK_FILENAME = ".idle_cycle_stamp.lock"
+LOCK_FILENAME = ".idle_cycle.lock"
 DEFAULT_FOREIGN_FRESH_S = 240.0
 
 _FALSY = {"0", "false", "off", "no"}
+
+# errno values that mean "another holder has the lock" (a legitimate skip),
+# as opposed to an I/O failure (fail open). Windows msvcrt LK_NBLCK raises
+# EACCES on contention; POSIX flock LOCK_NB raises EWOULDBLOCK/EAGAIN
+# (BlockingIOError). EDEADLK covers msvcrt's deadlock-detection variant.
+_CONTENTION_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK}
 
 
 def single_flight_enabled() -> bool:
@@ -69,6 +92,9 @@ def single_flight_enabled() -> bool:
 
 
 def foreign_fresh_window_s() -> float:
+    """Freshness window; only finite positive values are accepted
+    (``inf`` would let a foreign stamp block forever, ``nan`` would
+    silently disable the comparison — Codex review 2026-07-14)."""
     raw = os.environ.get("TINYASSETS_IDLE_CYCLE_FOREIGN_FRESH_S", "").strip()
     if not raw:
         return DEFAULT_FOREIGN_FRESH_S
@@ -80,7 +106,12 @@ def foreign_fresh_window_s() -> float:
             "using default %.0fs", raw, DEFAULT_FOREIGN_FRESH_S,
         )
         return DEFAULT_FOREIGN_FRESH_S
-    if value <= 0:
+    if not math.isfinite(value) or value <= 0:
+        logger.warning(
+            "idle_cycle: TINYASSETS_IDLE_CYCLE_FOREIGN_FRESH_S=%r is not a "
+            "finite positive number; using default %.0fs",
+            raw, DEFAULT_FOREIGN_FRESH_S,
+        )
         return DEFAULT_FOREIGN_FRESH_S
     return value
 
@@ -98,42 +129,67 @@ def resolve_worker_identity() -> str:
     return "host"
 
 
-@contextmanager
-def _stamp_lock(universe_path: Path) -> Iterator[None]:
-    """Blocking exclusive lock on the stamp's own sidecar lock file.
+@dataclass
+class IdleCycleSlot:
+    """Result of ``try_acquire_idle_cycle_slot``.
 
-    Deliberately NOT ``branch_tasks._file_lock`` — that sidecar serializes
-    the (busy) claim path; the idle stamp gets its own file so heartbeat
-    coordination never contends with task claims.
+    When ``acquired`` is True the slot HOLDS the run lock: keep the object
+    alive for the duration of the idle cycle and call ``release()`` when
+    the cycle ends (the daemon wires this into ``_cleanup``). Process death
+    releases the OS lock automatically, so a crashed holder never wedges
+    the heartbeat. ``release()`` is idempotent.
     """
-    universe_path.mkdir(parents=True, exist_ok=True)
-    lock_file = universe_path / LOCK_FILENAME
+
+    acquired: bool
+    reason: str
+    _fd: int | None = field(default=None, repr=False)
+
+    def release(self) -> None:
+        fd, self._fd = self._fd, None
+        if fd is None:
+            return
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass  # closing the fd below releases the lock regardless
+        finally:
+            os.close(fd)
+
+
+def _try_lock_nonblocking(lock_file: Path) -> tuple[int | None, str]:
+    """Attempt a nonblocking exclusive lock. Returns ``(fd, "")`` on
+    success, ``(None, reason)`` on contention. Raises OSError only for
+    genuine I/O failures (caller fails open)."""
     fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         if sys.platform == "win32":
             import msvcrt
-            # LK_LOCK blocks up to ~10s per call then raises — loop until
-            # acquired (critical section is a tiny JSON read/write).
-            while True:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-                    break
-                except OSError:
-                    continue
             try:
-                yield
-            finally:
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                if exc.errno in _CONTENTION_ERRNOS:
+                    os.close(fd)
+                    return None, "run lock held (idle cycle already running)"
+                raise
         else:
             import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX)
             try:
-                yield
-            finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno in _CONTENTION_ERRNOS:
+                    os.close(fd)
+                    return None, "run lock held (idle cycle already running)"
+                raise
+    except OSError:
         os.close(fd)
+        raise
+    return fd, ""
 
 
 def _read_stamp(stamp_path: Path) -> dict | None:
@@ -153,6 +209,8 @@ def _read_stamp(stamp_path: Path) -> dict | None:
     started_at = data.get("started_at")
     if not isinstance(worker_id, str) or not isinstance(started_at, (int, float)):
         return None
+    if not math.isfinite(float(started_at)):
+        return None
     return {"worker_id": worker_id, "started_at": float(started_at)}
 
 
@@ -162,17 +220,19 @@ def try_acquire_idle_cycle_slot(
     worker_id: str | None = None,
     foreign_fresh_s: float | None = None,
     now_fn=time.time,
-) -> tuple[bool, str]:
-    """Atomically check-and-set the idle-cycle stamp for *universe_path*.
+) -> IdleCycleSlot:
+    """Try to win the idle-cycle slot for *universe_path*.
 
-    Returns ``(acquired, reason)``. On acquisition the stamp is rewritten
-    to ``{worker_id, started_at=now}`` under the sidecar lock. Skip
-    (``acquired=False``) happens ONLY when a different worker's stamp is
-    fresh; the caller should clean-exit without running the idle cycle.
+    Skip (``acquired=False``) when EITHER another holder is mid-cycle (run
+    lock contention — covers cycles longer than the freshness window) OR a
+    different worker's stamp is fresh (rate limit between cycles). On
+    acquisition the stamp is rewritten and the run lock is HELD — keep the
+    returned slot alive for the cycle and ``release()`` it when done.
 
-    Never raises for coordination failures: lock/stamp I/O errors fail
-    OPEN (acquired=True) so a broken stamp file can degrade to the status
-    quo (duplicate cycles), never to a stalled heartbeat.
+    Never raises for coordination failures: I/O errors fail OPEN
+    (``acquired=True`` with no held lock) so a broken lock/stamp file can
+    degrade to the status quo (duplicate cycles), never to a stalled
+    heartbeat.
     """
     universe_path = Path(universe_path)
     me = (worker_id or resolve_worker_identity()).strip() or "host"
@@ -180,34 +240,56 @@ def try_acquire_idle_cycle_slot(
     stamp_path = universe_path / STAMP_FILENAME
 
     try:
-        with _stamp_lock(universe_path):
-            now = float(now_fn())
-            stamp = _read_stamp(stamp_path)
-            if stamp is not None and stamp["worker_id"] != me:
-                age = now - stamp["started_at"]
-                # A stamp from the far future (clock skew / corruption)
-                # must not block forever: only |age| within the window
-                # counts as fresh.
-                if -window < age < window:
-                    return False, (
-                        f"worker {stamp['worker_id']!r} started an idle "
-                        f"cycle {age:.1f}s ago (< {window:.0f}s window); "
-                        f"skipping as {me!r}"
-                    )
-            payload = json.dumps(
-                {"worker_id": me, "started_at": now}, ensure_ascii=True,
-            )
-            tmp_path = stamp_path.with_suffix(".json.tmp")
-            tmp_path.write_text(payload, encoding="utf-8")
-            os.replace(tmp_path, stamp_path)
-            prior = (
-                "no prior stamp" if stamp is None
-                else f"prior stamp {stamp['worker_id']!r} "
-                     f"age {now - stamp['started_at']:.1f}s"
-            )
-            return True, f"acquired as {me!r} ({prior})"
+        universe_path.mkdir(parents=True, exist_ok=True)
+        fd, contention_reason = _try_lock_nonblocking(universe_path / LOCK_FILENAME)
+        if fd is None:
+            return IdleCycleSlot(False, f"{contention_reason}; skipping as {me!r}")
     except OSError as exc:
         logger.warning(
-            "idle_cycle: stamp coordination failed (%s); failing open", exc,
+            "idle_cycle: run-lock coordination failed (%s); failing open", exc,
         )
-        return True, f"failing open as {me!r}: stamp coordination error ({exc})"
+        return IdleCycleSlot(
+            True, f"failing open as {me!r}: run-lock error ({exc})",
+        )
+
+    # Run lock held from here. The stamp is only ever written under it, so
+    # no separate stamp lock is needed.
+    try:
+        now = float(now_fn())
+        stamp = _read_stamp(stamp_path)
+        if stamp is not None and stamp["worker_id"] != me:
+            age = now - stamp["started_at"]
+            # A stamp from the far future (clock skew / corruption) must
+            # not block forever: only |age| within the window is fresh.
+            if -window < age < window:
+                reason = (
+                    f"worker {stamp['worker_id']!r} started an idle cycle "
+                    f"{age:.1f}s ago (< {window:.0f}s window); "
+                    f"skipping as {me!r}"
+                )
+                slot = IdleCycleSlot(False, reason, _fd=fd)
+                slot.release()
+                return slot
+        payload = json.dumps(
+            {"worker_id": me, "started_at": now}, ensure_ascii=True,
+        )
+        tmp_path = stamp_path.with_suffix(".json.tmp")
+        tmp_path.write_text(payload, encoding="utf-8")
+        os.replace(tmp_path, stamp_path)
+        prior = (
+            "no prior stamp" if stamp is None
+            else f"prior stamp {stamp['worker_id']!r} "
+                 f"age {now - stamp['started_at']:.1f}s"
+        )
+        return IdleCycleSlot(True, f"acquired as {me!r} ({prior})", _fd=fd)
+    except OSError as exc:
+        # Stamp I/O failed while holding the lock: fail open but keep the
+        # run lock held for the cycle — mutual exclusion still works even
+        # when the rate-limit stamp cannot be written.
+        logger.warning(
+            "idle_cycle: stamp write failed (%s); failing open with run "
+            "lock held", exc,
+        )
+        return IdleCycleSlot(
+            True, f"failing open as {me!r}: stamp error ({exc})", _fd=fd,
+        )

@@ -1786,20 +1786,22 @@ class DaemonController:
             # 2026-07-14): with no claimed task, everything below is the
             # per-universe idle heartbeat (soul-loop driver or fantasy
             # cycle). Claims are file-locked but this tail was not, so
-            # every healthy fleet worker duplicated it. Skip only when a
-            # DIFFERENT worker stamped recently — own stamps never block,
-            # so solo tray/droplet cadence is unchanged.
+            # every healthy fleet worker duplicated it. Skip when another
+            # holder is mid-cycle (run lock — covers cycles longer than
+            # the freshness window) or a DIFFERENT worker stamped recently;
+            # own stamps never block, so solo tray/droplet cadence is
+            # unchanged. The winning slot holds an OS lock for the cycle's
+            # lifetime; _cleanup releases it (process death also releases).
             if claimed_task is None and idle_cycle.single_flight_enabled():
-                slot_ok, slot_reason = idle_cycle.try_acquire_idle_cycle_slot(
-                    output_dir,
-                )
-                if not slot_ok:
+                slot = idle_cycle.try_acquire_idle_cycle_slot(output_dir)
+                if not slot.acquired:
                     logger.info(
-                        "idle cycle skipped (single-flight): %s", slot_reason,
+                        "idle cycle skipped (single-flight): %s", slot.reason,
                     )
                     self._cleanup()
                     return
-                logger.info("idle cycle slot: %s", slot_reason)
+                self._idle_cycle_slot = slot
+                logger.info("idle cycle slot: %s", slot.reason)
 
             # No-claim slot: nothing pending to drain this cycle. For a
             # soul-declared universe, run its declared loop branch (the driver)
@@ -2495,6 +2497,14 @@ class DaemonController:
 
     def _cleanup(self) -> None:
         """Release all resources."""
+        # Release the idle-cycle single-flight run lock (held for the
+        # cycle's lifetime so long cycles exclude other workers; process
+        # death would release it too — this handles in-process reuse).
+        slot = getattr(self, "_idle_cycle_slot", None)
+        if slot is not None:
+            self._idle_cycle_slot = None
+            slot.release()
+
         # Final status/progress write so external tools see idle state
         try:
             self._write_status_file()
