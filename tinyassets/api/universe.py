@@ -4790,21 +4790,39 @@ def _action_create_universe(
                 granted_by=founder,
             )
             # Bind this as the founder's home when they don't already have a
-            # LIVING one (no binding, or a stale binding to a removed dir), so
-            # opt-in first-contact resolution returns it. Explicit later
-            # creates by a founder with a living home do NOT reassign home.
+            # LIVING one — no binding, or a binding to a removed/incomplete dir.
+            # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
+            # so a broken home rebinds to this fresh one (Codex 2026-07-15).
+            # Explicit later creates by a founder with a living home do NOT
+            # reassign home.
             from tinyassets.daemon_server import get_founder_home
 
             _home = get_founder_home(base, founder)
-            if not _home or not (base / _home).is_dir():
+            if not _home or not (base / _home / "soul.md").is_file():
                 set_founder_home(base, founder_sub=founder, universe_id=uid)
             result["founder_id"] = founder
         else:
             result["founder_id"] = ""
 
         return json.dumps(result)
-    except OSError as exc:
-        return json.dumps({"error": f"Failed to create universe: {exc}"})
+    except Exception as exc:  # noqa: BLE001 - roll back a partial create
+        # Atomic create: a failure AFTER mkdir (e.g. seed_okf_bundle raising
+        # mid-bundle, or a grant/bind error) must NOT leave a bare/partial
+        # universe dir — it would read as a "living" home (.is_dir()) and
+        # get_status would announce a broken universe (Codex 2026-07-15). We only
+        # reach mkdir when the dir did not pre-exist (guarded above), so the dir
+        # is ours to remove. Preserve prior behavior: OSError → error envelope,
+        # anything else re-raises (after the partial dir is cleaned up).
+        import shutil
+
+        try:
+            if udir.is_dir():
+                shutil.rmtree(udir)
+        except OSError:
+            pass
+        if isinstance(exc, OSError):
+            return json.dumps({"error": f"Failed to create universe: {exc}"})
+        raise
 
 
 # ───────────────────────────────────────────────────────────────────────────

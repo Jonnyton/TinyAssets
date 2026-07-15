@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -70,8 +71,35 @@ from tinyassets.storage import (  # noqa: F401  (re-exports for in-flight R7 spl
 # `tinyassets.storage.<context>`.
 
 
+_AUTHOR_SERVER_INIT_LOCK = threading.Lock()
+_AUTHOR_SERVER_INITIALIZED: set[str] = set()
+
+
 def initialize_author_server(base_path: str | Path) -> Path:
-    """Ensure the host-level daemon-server database exists and is migrated."""
+    """Ensure the host-level daemon-server database exists and is migrated.
+
+    Idempotent AND concurrency-safe. The schema creation + the check-then-ALTER
+    migrations below are not atomic across threads: two concurrent first-contact
+    ``get_status`` calls on a fresh DB otherwise race into ``duplicate column
+    name`` (both pass the ``PRAGMA table_info`` check, then both ``ALTER``) or
+    ``database is locked``. A process-level lock + a per-base "already
+    initialized" guard runs the migration exactly once per base path, so callers
+    on the ASGI worker threads serialize through it before touching any table.
+    (Auto-birth on first connect made this reachable — get_status now hits the DB
+    concurrently on a brand-new install.)
+    """
+    key = str(db_path(base_path))
+    if key in _AUTHOR_SERVER_INITIALIZED:
+        return db_path(base_path)
+    with _AUTHOR_SERVER_INIT_LOCK:
+        if key not in _AUTHOR_SERVER_INITIALIZED:
+            _initialize_author_server_locked(base_path)
+            _AUTHOR_SERVER_INITIALIZED.add(key)
+    return db_path(base_path)
+
+
+def _initialize_author_server_locked(base_path: str | Path) -> Path:
+    """Create the schema + run migrations once. Callers hold the init lock."""
     schema = """
     CREATE TABLE IF NOT EXISTS universes (
         universe_id TEXT PRIMARY KEY,
@@ -4143,6 +4171,44 @@ def get_founder_home(base_path: str | Path, founder_sub: str) -> str:
             (founder,),
         ).fetchone()
     return str(row[0]) if row and row[0] else ""
+
+
+def claim_founder_home(
+    base_path: str | Path,
+    founder_sub: str,
+    candidate_universe_id: str,
+) -> str:
+    """Atomically reserve ``candidate_universe_id`` as the founder's home iff they
+    have none bound yet, and return the WINNING id.
+
+    This serializes concurrent first-contact births (auto-birth on first
+    authenticated connect): the ``INSERT ... ON CONFLICT(founder_sub) DO NOTHING``
+    lets exactly one caller win the binding under SQLite's write lock, even across
+    the ASGI worker threads that run sync MCP tool calls. A caller that loses the
+    race (or finds a pre-existing binding) gets the already-bound id back and must
+    NOT create a second universe. Returns "" for an anonymous/empty founder or an
+    empty candidate (no home to claim).
+    """
+    founder = (founder_sub or "").strip()
+    candidate = (candidate_universe_id or "").strip()
+    if not founder or founder == "anonymous" or not candidate:
+        return ""
+    now = _now()
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO founder_home (founder_sub, universe_id, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(founder_sub) DO NOTHING
+            """,
+            (founder, candidate, now),
+        )
+        row = conn.execute(
+            "SELECT universe_id FROM founder_home WHERE founder_sub = ?",
+            (founder,),
+        ).fetchone()
+    return str(row[0]) if row and row[0] else candidate
 
 
 def revoke_universe_access(

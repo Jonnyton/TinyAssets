@@ -32,17 +32,23 @@ def test_get_status_tool_is_registered() -> None:
     assert "get_status" in names
 
 
-def test_get_status_tool_is_read_only() -> None:
-    """#88 must be advertised as read-only so the chatbot + gateway
-    treat it as safe to call on any turn without consent gates.
+def test_get_status_tool_is_safe_to_call() -> None:
+    """#88: get_status stays safe to call on any turn without consent gates.
+
+    First-contact provisioning (host decision 2026-07-15) means it is no
+    longer strictly read-only — an authenticated founder's first call
+    auto-creates their home universe — so `readOnlyHint` is now False. But it
+    stays idempotent (repeated calls converge to the same home) and
+    non-destructive, so the chatbot/gateway can still call it freely. The
+    pure read-only path is `read_graph target=status`.
     """
     tool = next(t for t in _list_tools() if t.name == "get_status")
     # FastMCP may surface ToolAnnotations via tool.annotations.
     ann = getattr(tool, "annotations", None)
     if ann is not None:
-        # readOnlyHint=True pins the contract.
-        assert getattr(ann, "readOnlyHint", None) is True or \
-            getattr(ann, "read_only_hint", None) is True
+        assert getattr(ann, "readOnlyHint", None) is False
+        assert getattr(ann, "idempotentHint", None) is True
+        assert getattr(ann, "destructiveHint", None) is False
 
 
 def test_get_status_returns_required_shape() -> None:
