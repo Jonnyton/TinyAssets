@@ -4790,13 +4790,15 @@ def _action_create_universe(
                 granted_by=founder,
             )
             # Bind this as the founder's home when they don't already have a
-            # LIVING one (no binding, or a stale binding to a removed dir), so
-            # opt-in first-contact resolution returns it. Explicit later
-            # creates by a founder with a living home do NOT reassign home.
+            # LIVING one — no binding, or a binding to a removed/incomplete dir.
+            # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
+            # so a broken home rebinds to this fresh one (Codex 2026-07-15).
+            # Explicit later creates by a founder with a living home do NOT
+            # reassign home.
             from tinyassets.daemon_server import get_founder_home
 
             _home = get_founder_home(base, founder)
-            if not _home or not (base / _home).is_dir():
+            if not _home or not (base / _home / "soul.md").is_file():
                 set_founder_home(base, founder_sub=founder, universe_id=uid)
             result["founder_id"] = founder
         else:

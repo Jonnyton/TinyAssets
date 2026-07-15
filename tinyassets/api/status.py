@@ -792,6 +792,21 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     with _HOME_MATERIALIZE_LOCK:
         if _home_is_complete(base, winner):
             return winner
+        # The reserved/bound id may already have an INCOMPLETE dir (a birth that
+        # failed without rollback, was interrupted, or was left partial). The
+        # create dispatch refuses an existing dir, which would wedge the founder
+        # in no_universe_yet forever — clear the unusable partial dir so the same
+        # home id can be re-materialized (Codex 2026-07-15). Safe: we hold the
+        # materialize lock and only reach here when the home is NOT complete, so
+        # there is no usable universe (no user content) to lose.
+        wdir = base / winner
+        if wdir.exists():
+            import shutil
+
+            try:
+                shutil.rmtree(wdir)
+            except OSError:
+                pass
         try:
             _universe_impl(action="create_universe", universe_id=winner)
         except Exception:  # noqa: BLE001 - a failed birth must not crash the read

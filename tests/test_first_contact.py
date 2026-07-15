@@ -292,6 +292,29 @@ def test_first_contact_birth_failure_is_graceful(data_dir, monkeypatch):
     assert (data_dir / healed_uid / "soul.md").is_file()
 
 
+def test_bound_incomplete_dir_repairs_on_get_status(data_dir):
+    # A founder bound to an EXISTING but incomplete home dir (no soul.md — a birth
+    # interrupted / not rolled back) must be REPAIRED on the next get_status, not
+    # wedged in no_universe_yet forever because create refuses an existing dir
+    # (Codex 2026-07-15).
+    from tinyassets.api.status import get_status
+    from tinyassets.daemon_server import get_founder_home, set_founder_home
+    from tinyassets.ids import new_universe_id
+
+    _login("founder-1")
+    stuck = new_universe_id()
+    (data_dir / stuck).mkdir()                  # incomplete: dir exists, no soul.md
+    set_founder_home(data_dir, founder_sub="founder-1", universe_id=stuck)
+
+    # First retry repairs it — same bound id, now materialized (not stuck).
+    out = json.loads(get_status())
+    assert out["first_contact"]["event"] == "universe_created"
+    assert out["first_contact"]["universe_id"] == stuck
+    assert get_founder_home(data_dir, "founder-1") == stuck
+    assert (data_dir / stuck / "soul.md").is_file()
+    assert len(_serial_dirs(data_dir)) == 1
+
+
 def test_anonymous_first_contact_births_no_home(data_dir):
     from tinyassets.api.status import get_status
     from tinyassets.daemon_server import get_founder_home
