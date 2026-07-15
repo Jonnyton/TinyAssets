@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from tinyassets import idle_cycle
 from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
 
 # Suppress langchain-core Pydantic V1 deprecation warning on Python 3.14+
@@ -1780,6 +1781,25 @@ class DaemonController:
                 claimed_task = None  # prevent wrapper finalization
                 self._cleanup()
                 return
+
+            # Idle-cycle single-flight (double-logging root cause,
+            # 2026-07-14): with no claimed task, everything below is the
+            # per-universe idle heartbeat (soul-loop driver or fantasy
+            # cycle). Claims are file-locked but this tail was not, so
+            # every healthy fleet worker duplicated it. Skip only when a
+            # DIFFERENT worker stamped recently — own stamps never block,
+            # so solo tray/droplet cadence is unchanged.
+            if claimed_task is None and idle_cycle.single_flight_enabled():
+                slot_ok, slot_reason = idle_cycle.try_acquire_idle_cycle_slot(
+                    output_dir,
+                )
+                if not slot_ok:
+                    logger.info(
+                        "idle cycle skipped (single-flight): %s", slot_reason,
+                    )
+                    self._cleanup()
+                    return
+                logger.info("idle cycle slot: %s", slot_reason)
 
             # No-claim slot: nothing pending to drain this cycle. For a
             # soul-declared universe, run its declared loop branch (the driver)
