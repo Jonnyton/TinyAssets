@@ -59,7 +59,7 @@ S12 foundation hardening before merge.
 _Original spec (for S12):_
 An actor/auth path for the intelligence evaluated **before** user-OAuth scope gating,
 so daemon-scoped actions (and the intelligence's own actions) don't fail
-`auth_scope_required` (Codex-reproduced). 
+`auth_scope_required` (Codex-reproduced).
 - **Files:** `tinyassets/api/universe.py` (`_dispatch_scope_error` ordering / daemon exemption ~:121/:4971), `tinyassets/auth/middleware.py`, tests.
 - **Accept:** `daemon_memory_capture` + an intelligence action succeed for a daemon actor with no founder token; user-OAuth gating unchanged for user actions.
 

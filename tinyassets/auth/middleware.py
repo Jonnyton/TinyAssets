@@ -166,22 +166,51 @@ def anonymous_write_challenge_tools() -> frozenset[str]:
     return frozenset(_ANON_WRITE_CHALLENGE_TOOLS)
 
 
-async def _buffer_request_body(receive: Any) -> tuple[bytes, list[dict], bool]:
-    """Drain the request body, returning (body, raw messages, disconnected).
+# Hard cap on how much of an ANONYMOUS request body the classifier will buffer
+# (Codex review 2026-07-15: unbounded buffering of unauthenticated POSTs on a
+# public endpoint is a memory-DoS vector). Legitimate anonymous traffic is
+# JSON-RPC reads — far below this. Oversized anonymous bodies answer 413;
+# authenticated requests are never buffered here.
+_MAX_ANON_BODY_BYTES = 1_048_576  # 1 MiB
+
+
+async def _buffer_request_body(
+    receive: Any, *, cap: int = _MAX_ANON_BODY_BYTES,
+) -> tuple[bytes, list[dict], bool, bool]:
+    """Drain the request body: (body, raw messages, disconnected, oversized).
 
     The raw messages are replayed to the inner app afterwards so buffering is
-    invisible to it. JSON-RPC request bodies are small; no size cap needed.
+    invisible to it. Stops buffering the moment ``cap`` is exceeded and flags
+    the request oversized (the caller answers 413 without reading the rest).
     """
     messages: list[dict] = []
     chunks: list[bytes] = []
+    total = 0
     while True:
         message = await receive()
         messages.append(message)
         if message.get("type") != "http.request":
-            return b"", messages, True
-        chunks.append(message.get("body", b""))
+            return b"", messages, True, False
+        chunk = message.get("body", b"")
+        total += len(chunk)
+        if total > cap:
+            return b"", messages, False, True
+        chunks.append(chunk)
         if not message.get("more_body"):
-            return b"".join(chunks), messages, False
+            return b"".join(chunks), messages, False, False
+
+
+async def _send_payload_too_large_413(send: Any) -> None:
+    """Reject an oversized anonymous body without buffering the rest of it."""
+    await send({
+        "type": "http.response.start",
+        "status": 413,
+        "headers": [(b"content-type", b"application/json")],
+    })
+    await send({
+        "type": "http.response.body",
+        "body": b'{"error":"request_too_large"}',
+    })
 
 
 def _replay_receive(messages: list[dict], receive: Any) -> Any:
@@ -273,17 +302,21 @@ class AuthContextMiddleware:
                 and scope.get("method", "").upper() == "POST"
                 and _auth_challenge_path(scope.get("path", ""))
                 and _ANON_WRITE_CHALLENGE_TOOLS
-                and (
-                    _get_provider().resolve_always_writes()
-                    or _get_provider().is_auth_required()
-                )
+                and _get_provider().writes_require_identity()
             ):
-                # Resolve-always keeps anonymous reads open, so a missing token
-                # is not challenged at connect — but a WRITE tools/call must
-                # answer HTTP 401 (not tool JSON) or the client never launches
-                # OAuth (STATUS residual 2026-07-01). Classify pre-dispatch:
-                # an SSE response stream cannot be retro-401'd.
-                body, messages, disconnected = await _buffer_request_body(receive)
+                # Write-gating modes keep anonymous reads open, so a missing
+                # token is not challenged at connect — but a WRITE tools/call
+                # must answer HTTP 401 (not tool JSON) or the client never
+                # launches OAuth (STATUS residual 2026-07-01). Classify
+                # pre-dispatch: an SSE response stream cannot be retro-401'd.
+                # The #1441 tool-layer write gate remains the fail-closed
+                # backstop for anything this classifier does not match.
+                body, messages, disconnected, oversized = (
+                    await _buffer_request_body(receive)
+                )
+                if oversized:
+                    await _send_payload_too_large_413(send)
+                    return
                 if not disconnected and _calls_write_tool(body):
                     await _send_auth_challenge_401(send, invalid_token=False)
                     return
@@ -396,3 +429,36 @@ def require_action_scope(
             f"(user={identity.username}, capabilities={identity.capabilities})"
         )
     return identity
+
+
+_WRITE_GATE_GUIDANCE = (
+    "Anonymous writes are disabled on this server; reads stay open. "
+    "To write, connect this MCP server with an authenticated (OAuth) "
+    "connection — re-add the TinyAssets connector and complete the "
+    "sign-in step — then retry. Without signing in you can still "
+    "browse goals, branches, universes, and wiki pages freely."
+)
+
+
+def write_gate_rejection(handle: str) -> str | None:
+    """Server-side anonymous-write gate for mutating MCP handles.
+
+    Returns a rejection envelope (JSON string) when the provider gates
+    writes and the caller is anonymous; ``None`` when the write may
+    proceed. Founder decision 2026-07-13 (production-mcp-sweep P0):
+    reads stay open in every auth mode; writes require a resolved
+    identity whenever the server runs an OAuth-backed mode. Dev mode
+    keeps writes open for local and test flows.
+    """
+    provider = _get_provider()
+    if not provider.writes_require_identity():
+        return None
+    identity = current_identity()
+    if identity.user_id != "anonymous":
+        return None
+    return json.dumps({
+        "status": "rejected",
+        "error": f"{handle}: {_WRITE_GATE_GUIDANCE}",
+        "auth_required": True,
+        "tool": handle,
+    })

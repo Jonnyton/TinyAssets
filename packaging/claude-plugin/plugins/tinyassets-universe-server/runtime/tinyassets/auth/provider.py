@@ -725,6 +725,19 @@ class AuthProvider(ABC):
         """
         return False
 
+    def writes_require_identity(self) -> bool:
+        """Whether mutating MCP handles require a resolved identity.
+
+        Founder decision 2026-07-13 (production-mcp-sweep P0): reads stay
+        open, but OAuth-backed modes reject anonymous writes. Dev mode
+        keeps writes open for local and test flows. Merge note 2026-07-15:
+        resolve-always mode (WorkOS/optional, D0b) is by definition an
+        OAuth-backed write-gating mode, so it is folded in here — one
+        semantic switch for the #1441 tool-layer gate and the pre-dispatch
+        401 write challenge.
+        """
+        return self.is_auth_required() or self.resolve_always_writes()
+
     @abstractmethod
     def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Dynamic Client Registration (RFC 7591).
@@ -1109,6 +1122,8 @@ class OptionalOAuthProvider(OAuthProvider):
         # gate flags are False, `require_action_scope` short-circuits, and an
         # anonymous `write_graph target=universe` (create) slips through — the
         # pre-deploy security gap (STATUS 2026-07-02). Fail closed for writes.
+        # The base class derives writes_require_identity() from this flag, so
+        # the #1441 tool-layer write gate engages in this mode too.
         return True
 
 

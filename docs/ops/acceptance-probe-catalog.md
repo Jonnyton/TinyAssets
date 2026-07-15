@@ -131,9 +131,9 @@ Layer-2 binds to host availability — the persona's CDP profile + browser run o
 
 ---
 
-## PROBE-003 — Wiki write-roundtrip (auto-heal pipeline integrity)
+## PROBE-003 — Wiki gate + read (auto-heal pipeline integrity)
 
-**Validated:** wiki canary script live since 2026-04-22; logs roundtripped probes to `.agents/uptime.log`. Scheduled in CI 2026-04-26 — Layer-1e step in `.github/workflows/uptime-canary.yml` runs every 5 min on the GHA cron alongside the other Layer-1 probes.
+**Validated:** wiki canary script live since 2026-04-22; logs probes to `.agents/uptime.log`. Scheduled in CI 2026-04-26 — Layer-1e step in `.github/workflows/uptime-canary.yml` runs every 5 min on the GHA cron alongside the other Layer-1 probes. **Reworked 2026-07-14** after the server-side anonymous-write gate (#1441): the anonymous write-then-read roundtrip is impossible by design, so the probe now asserts the gate itself plus the open read path.
 **Source script:** `scripts/wiki_canary.py`
 **Persona:** `wiki-canary` (automated; client name `wiki-canary/1.0`)
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -142,40 +142,42 @@ Layer-2 binds to host availability — the persona's CDP profile + browser run o
 
 ```
 python scripts/wiki_canary.py
-python scripts/wiki_canary.py --url http://127.0.0.1:8001/mcp --verbose
+python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
 python scripts/wiki_canary.py --once --format=gha
 ```
+
+Scope: auth-gated deployments only (production runs `UNIVERSE_SERVER_AUTH=optional`). A dev-mode server (`UNIVERSE_SERVER_AUTH=false`) leaves anonymous writes open by design, so the gate step reds with exit 6 there — that means "server is not auth-gated", not "wiki is down".
 
 ### What it exercises
 
 | Layer | What's tested |
 |---|---|
 | System | MCP `initialize` handshake reaches the daemon. |
-| System | `wiki action=write` persists a known content body to `drafts/notes/uptime-probe.md`. |
-| System | `wiki action=read` returns that content verbatim. |
-| User-impact | Auto-heal pipeline integrity — chatbots filing bugs depend on wiki writes succeeding. |
+| System | Anonymous `write_page` is REJECTED with the `status=rejected` / `auth_required=true` envelope (write gate active). |
+| System | `read_page` returns the persisted canary draft `drafts/notes/uptime-probe.md` verbatim (reads stay open; catches wiki-read / storage-mount breakage, e.g. the readonly-volume class). |
+| User-impact | Auth policy integrity — an anonymous write silently persisting is a security regression; wiki reads staying open keeps discovery/remix live. |
 
 ### Green criteria
 
 - Exit code 0.
-- `wiki action=write` succeeds without `isError`.
-- `wiki action=read` returns content matching `_CANARY_CONTENT` byte-for-byte.
+- Anonymous `write_page` returns `status=rejected` with `auth_required=true` (no `isError`).
+- `read_page` returns content matching `_CANARY_CONTENT` byte-for-byte.
 
 ### Red signals
 
 - Exit 2 — MCP handshake failed (initialize or session establishment).
-- Exit 6 — wiki write failed (`isError=true` or network error).
-- Exit 7 — wiki read failed or roundtrip content mismatched.
+- Exit 6 — write-gate probe failed: anonymous write ACCEPTED (gate regression), `isError=true`, unexpected envelope, or network error.
+- Exit 7 — wiki read failed or canary draft content mismatched.
 - Exit 99 — unexpected error.
 
 ### Why this probe earns a catalog slot
 
-BUG-028 demonstrated that a slug-normalization bug could silently break bug filing while the Layer-1 MCP handshake stayed green. PROBE-001 (full-stack smoke) and PROBE-002 (handshake liveness) would not catch this class of regression. Wiki-write failure is P0 per the Forever Rule (24/7 uptime, auto-heal pipeline).
+BUG-028 demonstrated that a slug-normalization bug could silently break bug filing while the Layer-1 MCP handshake stayed green — the read half keeps that class covered. Post-#1441 the write half guards the auth boundary instead: a regression that silently re-opens anonymous writes would otherwise be invisible to every other probe. Known gap: authenticated write-path persistence is NOT exercised — restoring that coverage needs a canary service credential (tracked in `STATUS.md`).
 
 ### When to use
 
 - After any change to wiki write/read tool handlers, slug normalization, or wiki storage backend.
-- After any deploy that touches `_wiki_file_bug` or related tools.
+- After any deploy that touches `_wiki_file_bug`, `write_page`/`read_page` routing, or the auth gate (`writes_require_identity` / `write_gate_rejection`).
 - As a continuous P0 canary alongside PROBE-002.
 
 ---
@@ -250,7 +252,7 @@ Env override: `TINYASSETS_LAST_ACTIVITY_THRESHOLD_MIN` sets the default threshol
 | Layer | What's tested |
 |---|---|
 | System | MCP `initialize` + `notifications/initialized` handshake. |
-| System | `universe action=inspect` returns a `daemon.last_activity_at` timestamp. |
+| System | `read_graph target=graph` (same inspect payload; the deprecated `universe` fat tool refuses anonymous calls since #1441) returns a `daemon.last_activity_at` timestamp. |
 | System | The timestamp is fresh — within `--threshold-min` (default 30) of now. |
 | User-impact | "MCP green but node execution stalled" failure class — exactly the live-2026-04-22 state before the cloud-side worker landed. |
 

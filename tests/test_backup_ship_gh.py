@@ -35,7 +35,9 @@ def _fake_post_fn(responses: list[dict]) -> object:
     return _fn
 
 
-def _make_tarball(tmp_path: Path, name: str = "tinyassets-data-2026-04-20T02-00-00Z.tar.gz") -> Path:
+def _make_tarball(
+    tmp_path: Path, name: str = "tinyassets-data-2026-04-20T02-00-00Z.tar.gz",
+) -> Path:
     p = tmp_path / name
     p.write_bytes(b"\x1f\x8b" + b"\x00" * 100)  # minimal gzip magic bytes
     return p
@@ -161,8 +163,10 @@ def test_upload_asset_uses_gzip_content_type(tmp_path) -> None:
 
 
 def _make_releases(n: int) -> list[dict]:
+    # Prunable (backup-prefixed) tags — prune_releases ignores anything
+    # outside PRUNABLE_TAG_PREFIXES since the 2026-07-15 scoping fix.
     return [
-        {"id": i, "tag_name": f"tag-{i:03d}",
+        {"id": i, "tag_name": f"tinyassets-data-2026-04-{i + 1:02d}T00-00-00Z",
          "created_at": f"2026-04-{i + 1:02d}T00:00:00Z"}
         for i in range(1, n + 1)
     ]
@@ -316,3 +320,99 @@ def test_runbook_mentions_gh_restore() -> None:
         pytest.skip("backup-restore-runbook.md not yet created")
     text = runbook.read_text(encoding="utf-8")
     assert "github" in text.lower() or "gh release" in text.lower()
+
+
+# ── _api empty-body handling (204 DELETE) ─────────────────────────────
+
+
+def test_api_tolerates_empty_body_204(monkeypatch) -> None:
+    """DELETE release (retention prune) returns 204 with an empty body.
+    json.loads("") raised and failed every nightly ship once the repo
+    crossed BACKUP_GH_RETAIN releases — live-hit 2026-07-15 on the first
+    post-rename ship (renamed repo carried 30+ pre-rename releases)."""
+    import contextlib
+    import io
+    import urllib.request
+
+    @contextlib.contextmanager
+    def fake_urlopen(req):
+        yield io.BytesIO(b"")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    result = bsg._api("tok", "DELETE", "https://api.github.invalid/x")
+    assert result == {}
+
+
+# ── prune scoping (non-backup releases are permanent) ─────────────────
+
+
+def test_prune_never_touches_non_backup_releases(monkeypatch) -> None:
+    """Retention prune must only consider backup-prefixed tags; a parked
+    one-off artifact (e.g. the 2026-07-15 volume-audit content archive)
+    is permanent even when it is the oldest release in the repo."""
+    releases = [
+        {"id": 1, "tag_name": "volume-content-archive-workflow-data-2026-07-15",
+         "created_at": "2026-07-15T01:00:00Z"},
+        {"id": 2, "tag_name": "tinyassets-brain-2026-07-16T03-00-00Z",
+         "created_at": "2026-07-16T03:00:00Z"},
+        {"id": 3, "tag_name": "tinyassets-data-2026-07-17T03-00-00Z",
+         "created_at": "2026-07-17T03:00:00Z"},
+        {"id": 4, "tag_name": "workflow-brain-2026-06-01T03-00-00Z",
+         "created_at": "2026-06-01T03:00:00Z"},
+    ]
+    deleted: list[str] = []
+    monkeypatch.setattr(bsg, "list_releases", lambda *a, **kw: list(releases))
+    monkeypatch.setattr(
+        bsg, "delete_release",
+        lambda tok, repo, rid, tag, **kw: deleted.append(tag),
+    )
+    pruned = bsg.prune_releases("tok", "o/r", keep=1)
+    # Three prunable backup releases, keep newest 1 → two deleted; the
+    # archive (id 1, oldest of all) is never a victim.
+    assert pruned == 2
+    assert sorted(deleted) == [
+        "tinyassets-brain-2026-07-16T03-00-00Z",
+        "workflow-brain-2026-06-01T03-00-00Z",
+    ]
+
+
+# ── retention ordering (created_at is the COMMIT date on GitHub) ──────
+
+
+def test_prune_orders_by_published_at_when_created_at_ties(monkeypatch) -> None:
+    """Live shape (Codex review 2026-07-15): all releases in the real
+    backup repo share one created_at (GitHub uses the target commit's
+    date), so ordering must come from published_at — the old sort
+    deleted whichever release the list order put first."""
+    same = "2026-04-21T06:26:57Z"
+    releases = [
+        # Listed newest-first (GitHub's API order) to expose the bug.
+        {"id": 2, "tag_name": "tinyassets-brain-2026-07-15T03-00-00Z",
+         "created_at": same, "published_at": "2026-07-15T03:00:10Z"},
+        {"id": 1, "tag_name": "tinyassets-brain-2026-06-01T03-00-00Z",
+         "created_at": same, "published_at": "2026-06-01T03:00:10Z"},
+    ]
+    deleted: list[int] = []
+    monkeypatch.setattr(bsg, "list_releases", lambda *a, **kw: list(releases))
+    monkeypatch.setattr(
+        bsg, "delete_release", lambda tok, repo, rid, tag, **kw: deleted.append(rid),
+    )
+    assert bsg.prune_releases("tok", "o/r", keep=1) == 1
+    assert deleted == [1]  # the genuinely older one, not list-order-first
+
+
+def test_prune_falls_back_to_tag_timestamp_without_published_at(monkeypatch) -> None:
+    same = "2026-04-21T06:26:57Z"
+    releases = [
+        {"id": 2, "tag_name": "tinyassets-data-2026-07-15T01-22-44Z",
+         "created_at": same},
+        {"id": 1, "tag_name": "workflow-data-2026-06-10T17-22-30Z",
+         "created_at": same},
+    ]
+    deleted: list[int] = []
+    monkeypatch.setattr(bsg, "list_releases", lambda *a, **kw: list(releases))
+    monkeypatch.setattr(
+        bsg, "delete_release", lambda tok, repo, rid, tag, **kw: deleted.append(rid),
+    )
+    assert bsg.prune_releases("tok", "o/r", keep=1) == 1
+    assert deleted == [1]

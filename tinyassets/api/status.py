@@ -376,7 +376,10 @@ def _provider_auth_snapshot() -> dict[str, Any]:
     writers: dict[str, Any] = {}
     known_states: list[str] = []
     for name in _SUBSCRIPTION_WRITERS:
-        health = subscription_auth_health(name)
+        # allow_probe=False: get_status is an MCP request path and must
+        # never block on the codex live-probe subprocess (up to 120s).
+        # Fast paths + cached verdicts only; the worker gate owns probing.
+        health = subscription_auth_health(name, allow_probe=False)
         writers[name] = {"status": health["status"], "detail": health["detail"]}
         if health["status"] in ("ok", "not_logged_in"):
             known_states.append(health["status"])
@@ -793,7 +796,8 @@ def get_status(universe_id: str = "") -> str:
     from tinyassets.providers.base import subscription_auth_health as _auth_health
     claude_authed = (
         _shutil.which("claude")
-        and _auth_health("claude-code")["status"] != "not_logged_in"
+        and _auth_health("claude-code", allow_probe=False)["status"]
+        != "not_logged_in"
     )
     if os.environ.get("OLLAMA_HOST"):
         endpoint_hint = "ollama"

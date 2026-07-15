@@ -29,6 +29,10 @@ containerized deploys don't drift based on where the process was launched from.
 | `UNIVERSE_SERVER_AUTH` | Auth mode. `"true"` / `"1"` enables OAuth-gated MCP. Disabled by default for single-operator dev. | `false`. |
 | `UNIVERSE_SERVER_PORT` | Port used by `workflow.auth.wellknown` when emitting OAuth metadata URLs. | `8001`. |
 | `TINYASSETS_GIT_AUTHOR` | Verbatim override for git commit author (e.g. `"TinyAssets User <user@users.noreply.tinyassets.local>"`). Highest precedence; falls through to `UNIVERSE_SERVER_USER`-derived synthetic. | Unset (synthetic from `UNIVERSE_SERVER_USER`). |
+| `TINYASSETS_AUTH_VIABILITY_PROBE` | Codex refresh-viability ladder in `subscription_auth_health` (presence → `last_refresh` freshness fast path → TTL-cached live `codex exec` probe). Catches present-but-dead tokens that pass presence + `codex login status` yet 401 at call time (2026-06-25 queue-poison class; live-proven 2026-07-14). Falsy = `"0"`/`"false"`/`"off"`/`"no"` reverts to presence-only. | `on`. |
+| `TINYASSETS_CODEX_AUTH_FRESH_S` | Freshness window (seconds) for `auth.json` `last_refresh` (fallback: file mtime) under which codex auth reads viable without any probe subprocess. Finite positive only. | `86400` (24h). |
+| `TINYASSETS_AUTH_PROBE_TTL_S` | Cache TTL (seconds) for live-probe verdicts per `CODEX_HOME` — the supervisor gates every loop tick; the probe must not run per tick. Finite positive only. | `1800`. |
+| `TINYASSETS_AUTH_PROBE_TIMEOUT_S` | Live-probe subprocess timeout (seconds); timeout reads inconclusive → "ok" (only a positive dead signature quarantines). Finite positive only. | `120`. |
 
 ## Feature flags
 
@@ -44,6 +48,8 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | `GATES_ENABLED` | Enables outcome-gate claims (Phase 6). When off, `gates` tool returns placeholder. | `off`. |
 | `TINYASSETS_STORAGE_BACKEND` | Catalog storage backend selection. Values: empty (default), `"git"`, `"sqlite"`. | Empty (auto-select per backend factory). |
 | `TINYASSETS_RUN_MAX_CONCURRENT` | Integer cap on concurrent in-flight branch runs. | Unset = unlimited. |
+| `TINYASSETS_IDLE_CYCLE_SINGLE_FLIGHT` | Dedupe the no-claim idle heartbeat cycle across fleet workers (`tinyassets/idle_cycle.py`): the winner holds a run lock for the cycle's lifetime (long cycles exclude others; released on process death), and a worker skips when a DIFFERENT worker's stamp is fresh; own stamps never block. Falsy = `"0"`/`"false"`/`"off"`/`"no"`. | `on`. |
+| `TINYASSETS_IDLE_CYCLE_FOREIGN_FRESH_S` | Freshness window (seconds) for the idle-cycle stamp; finite positive numbers only (anything else falls back to default). Keep below the supervisor idle respawn period (~322s at backoff ceiling) and above worker phase offset; also the max heartbeat gap after a stamp-holder death. | `240`. |
 
 ## LLM + provider routing
 

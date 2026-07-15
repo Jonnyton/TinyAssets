@@ -7,19 +7,23 @@ is stalled" — which is exactly the state we saw live on 2026-04-22
 before Task #14 landed the cloud-side worker.
 
 This canary asserts the daemon has done *actual work* within N minutes
-by reading ``daemon.last_activity_at`` from the ``universe action=
-inspect`` tool result and comparing against ``now - threshold``.
+by reading ``daemon.last_activity_at`` from the ``read_graph
+target=graph`` tool result and comparing against ``now - threshold``.
 
-Why ``universe inspect`` (not ``get_status``)
----------------------------------------------
+Why ``read_graph target=graph`` (not ``get_status`` or ``universe``)
+--------------------------------------------------------------------
 The task spec said ``get_status.daemon.last_activity_at``, but the
 actual ``get_status`` MCP tool doesn't expose a direct ``daemon``
 block with that field — its surface is oriented toward privacy /
 routing evidence (``active_host``, ``tier_routing_policy``,
-``evidence.activity_log_tail``, etc.). The ``universe action=inspect``
-tool IS the canonical surface for the ``daemon.last_activity_at``
-field (see ``tinyassets/universe_server.py:1690``). This canary reads
-that one.
+``evidence.activity_log_tail``, etc.). This canary originally read
+the ``universe action=inspect`` fat tool, but since the anonymous
+write gate (#1441) the deprecated fat tools refuse ALL anonymous
+calls — reads included — so an unauthenticated canary must use the
+canonical handle. ``read_graph target=graph`` routes to the same
+``_action_inspect_universe`` payload (``tinyassets/universe_server.py``,
+``read_graph`` target dispatch), so the ``daemon.last_activity_at``
+field and every shape assertion below are unchanged.
 
 Exit codes (task #15 spec)
 --------------------------
@@ -158,7 +162,7 @@ def fetch_inspect_result(
     *,
     post_fn=None,
 ) -> dict[str, Any]:
-    """Full MCP handshake + universe inspect call.
+    """Full MCP handshake + read_graph target=graph (universe inspect) call.
 
     Returns the parsed inspect result as a dict (the top-level JSON
     emitted by ``_action_inspect_universe``). ``post_fn`` is an
@@ -187,23 +191,25 @@ def fetch_inspect_result(
     # Notifications/initialized. Protocol-required but response-less.
     post(url, sid, _INITIALIZED_NOTIF, timeout, step_code=4)
 
-    # Step 2: tools/call universe action=inspect. Failure => exit 3
-    # (daemon responded but shape's off).
+    # Step 2: tools/call read_graph target=graph (routes to the same
+    # universe-inspect payload; the deprecated `universe` fat tool refuses
+    # anonymous calls since #1441). Failure => exit 3 (daemon responded
+    # but shape's off).
     call_payload = {
         "jsonrpc": "2.0", "id": 2,
         "method": "tools/call",
-        "params": {"name": "universe", "arguments": {"action": "inspect"}},
+        "params": {"name": "read_graph", "arguments": {"target": "graph"}},
     }
     resp, _ = post(url, sid, call_payload, timeout, step_code=3)
     if resp is None or "result" not in resp:
         raise LastActivityError(
-            3, f"universe inspect returned no result: {resp!r}",
+            3, f"read_graph inspect returned no result: {resp!r}",
         )
     result = resp["result"]
     if result.get("isError"):
         text = _extract_tool_text(result)[:300]
         raise LastActivityError(
-            3, f"universe inspect isError=true: {text!r}",
+            3, f"read_graph inspect isError=true: {text!r}",
         )
     structured = _extract_structured_tool_payload(result)
     if structured is not None:
@@ -211,13 +217,13 @@ def fetch_inspect_result(
     text = _extract_tool_text(result)
     if not text:
         raise LastActivityError(
-            3, f"universe inspect returned no text content: {result!r}",
+            3, f"read_graph inspect returned no text content: {result!r}",
         )
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise LastActivityError(
-            3, f"universe inspect text not JSON: {exc}; preview={text[:200]!r}",
+            3, f"read_graph inspect text not JSON: {exc}; preview={text[:200]!r}",
         ) from exc
 
 

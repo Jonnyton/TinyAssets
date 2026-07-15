@@ -1,5 +1,9 @@
 # Design Notes Index
 
+## 2026-06-30
+
+- [Interpreter-Model Branch Topology — dynamic, universe-steered runs](2026-06-30-interpreter-model-branch-topology-research.md) - **status: research, PARKED (salvage reconstruction).** Move the graph engine from static compiled branches to an interpreter model where the branch shape lives in state (tiny fixed meta-graph runs a program-in-state; Goal-anchored daemon decision node restructures the path at runtime; Goal=invariant, path=variable). Codex opposite-provider verdict: **ADAPT** (concurred on the core) with six conditions before a host design gate. Falsification slice: single linear program, ADVANCE + REWRITE, full freeze round-trip. ⚠️ Reconstructed from the lane HANDOFF after the original worktree was swept with its docs uncommitted — the full finding + Codex gate record are unrecoverable; this preserves the actionable substance only.
+
 ## 2026-05-03
 
 - [Multi-User TinyAssets Operating Model](2026-05-03-multi-user-tinyassets-operating-model.md) - **status: research.** Repository-side preservation of wiki proposal `pages/plans/multi-user-tinyassets-operating-model.md` / Issue #236. Captures isolation, fairness, leases, budgets, typed records, and federation-by-reference invariants for future multi-user specs; not yet canonical `PLAN.md` truth.

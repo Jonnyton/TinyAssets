@@ -131,6 +131,7 @@ class ScriptedPost:
     def __call__(self, url, sid, payload, timeout, *, step_code):
         self.calls.append({
             "method": payload.get("method"), "sid": sid, "step_code": step_code,
+            "payload": payload,
         })
         if not self._responses:
             raise AssertionError(
@@ -199,6 +200,22 @@ def test_run_canary_fresh_returns_zero():
     )
     assert code == 0
     assert "FRESH" in msg
+
+
+def test_inspect_call_uses_canonical_read_graph_not_deprecated_universe():
+    """Anonymous calls to the deprecated `universe` fat tool are refused
+    since #1441 — the probe must stay on the canonical read handle."""
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(),
+        _universe_inspect_resp(last_activity_at="2026-04-22T11:55:00+00:00"),
+    ])
+    lac.run_canary(
+        "https://fake/mcp", 5.0, 30,
+        post_fn=scripted, now=_utc("2026-04-22T12:00:00+00:00"),
+    )
+    params = scripted.calls[2]["payload"]["params"]
+    assert params["name"] == "read_graph"
+    assert params["arguments"] == {"target": "graph"}
 
 
 def test_run_canary_accepts_structured_content_when_text_is_preview():

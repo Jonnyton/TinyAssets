@@ -228,6 +228,48 @@ def test_challenge_header_matches_connect_time_challenge(monkeypatch):
     )
 
 
+def test_oversized_anonymous_body_answers_413():
+    from tinyassets.auth.middleware import _MAX_ANON_BODY_BYTES
+
+    raw = b'{"padding":"' + b"x" * (_MAX_ANON_BODY_BYTES + 1) + b'"}'
+    sent, app_called, _ = _drive(raw, chunks=[raw])
+    assert not app_called
+    assert _status(sent) == 413
+
+
+def test_oversized_chunked_anonymous_body_answers_413():
+    from tinyassets.auth.middleware import _MAX_ANON_BODY_BYTES
+
+    chunk = b"y" * (_MAX_ANON_BODY_BYTES // 2 + 1)
+    sent, app_called, _ = _drive(b"", chunks=[chunk, chunk, chunk])
+    assert not app_called
+    assert _status(sent) == 413
+
+
+def test_oversized_authenticated_body_is_never_buffered_or_rejected():
+    from tinyassets.auth.middleware import _MAX_ANON_BODY_BYTES
+
+    raw = b"z" * (_MAX_ANON_BODY_BYTES + 1)
+    sent, app_called, seen = _drive(raw, token="valid", chunks=[raw])
+    assert app_called
+    assert _status(sent) == 200
+    assert len(seen) == len(raw)                # stream reached the app intact
+
+
+def test_write_call_at_cap_boundary_still_challenged():
+    from tinyassets.auth.middleware import _MAX_ANON_BODY_BYTES
+
+    body = _rpc("tools/call", "write_graph", target="goal")
+    body["params"]["arguments"]["pad"] = "p" * (
+        _MAX_ANON_BODY_BYTES - len(json.dumps(body)) - 20
+    )
+    raw = json.dumps(body).encode()
+    assert len(raw) <= _MAX_ANON_BODY_BYTES
+    sent, app_called, _ = _drive(raw, chunks=[raw])
+    assert not app_called
+    assert _status(sent) == 401
+
+
 def test_canonical_write_handles_are_registered():
     import tinyassets.universe_server  # noqa: F401 - registration side effect
 

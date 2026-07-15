@@ -11,7 +11,7 @@ Follow `LAUNCH_PROMPT.md`. It has the full startup sequence and team roster.
 
 ### Agent Teams [Claude Code only]
 
-This project uses Agent Teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`). When acting as the Claude Code lead, you MUST use the Agent Teams system — say "Create an agent team" to activate it. Do not use the `Agent()` tool to spawn team roles in Claude Code; that creates disposable subagents, not persistent teammates. (Other providers like Cowork and Codex use `Agent()` subagents normally — this restriction is Claude Code lead only.) Teammate definitions live in `.claude/agents/`. The environment variable is set in `.claude/settings.json`.
+This project uses Agent Teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, set in `.claude/settings.json`). When acting as the Claude Code lead, you MUST use the Agent Teams system for team roles. As of Claude Code v2.1.178 the team forms automatically when the first teammate is spawned — the old "Create an agent team" / `TeamCreate` setup step no longer exists (on older builds you may still need to ask to create a team first). Spawn teammates by referencing a role in `.claude/agents/` (e.g. `verifier`, `developer`, `navigator`). Do not drop to a disposable one-shot `Agent()` subagent for a role that should be a persistent, addressable teammate. (Other providers like Cowork and Codex use `Agent()` subagents normally — this restriction is Claude Code lead only.) **Codex is NOT a teammate** — it's a separate model family you offload to *programmatically* (see §"Calling Codex via MCP"). A Claude "Codex liaison" teammate is an anti-pattern: it burns a Claude context (opus, per the model guard) to relay, defeating the point of offloading cross-family work off Claude's budget.
 
 Team-mode caveat from the Claude docs: teammates do not inherit lead chat history, and they start with the lead's permission settings. Subagent role files reliably contribute tools, model, and prompt body; do not assume role `permissionMode`, `skills`, or `mcpServers` frontmatter will enforce team behavior. Put critical constraints in the spawn/task prompt, tool allowlists, and hooks.
 
@@ -60,6 +60,26 @@ self-only for trivial mechanical edits and pure lookups. The
 `codex_dispatch_nudge` hook fires this reflex at qualifying prompts, but the
 obligation stands whether or not the hook fires; treat a missing nudge as
 silence, not permission to skip.
+
+**How to dispatch — offload to Codex's budget, don't spend Claude's.** Routing a
+review to Codex is what saves Claude tokens / rate-limit: Codex does the reasoning
+on its OWN quota (verified: a `codex exec` run bills Codex, not Claude) and you
+only read back a short verdict. Three mechanisms, ranked:
+- **Background `codex exec` (default — async + offload).** Launch
+  `python scripts/codex_review.py --out <file> --prompt "<ask>"` (add
+  `--diff-base origin/main` for a diff review) via a **background** Bash call
+  (`run_in_background: true`). Keep working; the harness re-invokes you when Codex
+  exits; read `<file>` for the verdict. Zero extra Claude context, and you don't
+  block. Token-cheapest and non-blocking — prefer this whenever you have other
+  work to do meanwhile.
+- **Inline `mcp__codex__codex`** — same offload to Codex, but it *blocks your
+  turn* until Codex returns. Use only for a quick gate where you'd wait anyway and
+  have nothing else to do (parallelism can't help when the review is the whole
+  task).
+- **Never a Claude "liaison" teammate.** A teammate is another Claude context
+  (opus, per `latest_model_guard.py`) that burns Claude tokens to relay — it
+  defeats the offload. If you catch yourself proposing one, stop and use the
+  background `codex exec` path instead.
 
 Discipline:
 - Reviews must be substantive — Codex re-checks sources + actual code, never
