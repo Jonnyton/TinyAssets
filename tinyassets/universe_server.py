@@ -524,9 +524,10 @@ def write_graph(
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal, request, branch, or universe (create the
-            founder's universe when they ask to meet/personify it and none
-            exists yet).
+        target: What to write: goal, request, branch, or universe. The founder's
+            home universe is auto-created on first contact; use target=universe
+            to create an additional universe (or the home when a create-scoped
+            sign-in declined auto-birth).
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.

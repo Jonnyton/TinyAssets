@@ -200,6 +200,59 @@ def test_ensure_home_returns_existing_no_double_birth(data_dir):
     assert len(_serial_dirs(data_dir)) == 1
 
 
+def test_concurrent_first_contact_births_single_home(data_dir):
+    # Real thread race: N founders' first-contact get_status calls fire at once on
+    # a FRESH data dir. Must yield exactly one home with zero errors — this guards
+    # both the atomic home claim AND the serialized schema/migration init (a naive
+    # version intermittently raised `duplicate column name` / `database is locked`
+    # from concurrent initialize_author_server; Codex 2026-07-15 finding).
+    import threading
+
+    from tinyassets.api.status import get_status
+    from tinyassets.daemon_server import get_founder_home
+
+    ident = Identity(
+        user_id="founder-race", username="founder-race",
+        capabilities=["read", "write", "costly", "submit_request", "list"],
+    )
+    provider = _StaticAuthProvider(ident)
+    set_provider(provider)
+
+    n = 6
+    barrier = threading.Barrier(n)
+    results: list[dict] = []
+    errors: list[str] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        # Each thread starts with a fresh contextvar context — authenticate it so
+        # current_identity() resolves to the founder inside get_status.
+        set_provider(provider)
+        auth_middleware("ok")
+        try:
+            barrier.wait(timeout=15)          # release all threads together
+            out = json.loads(get_status())
+            with lock:
+                results.append(out)
+        except Exception as exc:              # capture the race, don't swallow it
+            with lock:
+                errors.append(repr(exc))
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []                        # no duplicate-column / db-locked race
+    home = get_founder_home(data_dir, "founder-race")
+    assert is_universe_serial(home)
+    assert len(_serial_dirs(data_dir)) == 1    # exactly ONE universe, never two
+    # Every worker that saw a birth card saw the SAME (single) home id.
+    born = {r["first_contact"]["universe_id"] for r in results if "first_contact" in r}
+    assert born <= {home}
+
+
 def test_anonymous_first_contact_births_no_home(data_dir):
     from tinyassets.api.status import get_status
     from tinyassets.daemon_server import get_founder_home

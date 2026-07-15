@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -70,8 +71,35 @@ from tinyassets.storage import (  # noqa: F401  (re-exports for in-flight R7 spl
 # `tinyassets.storage.<context>`.
 
 
+_AUTHOR_SERVER_INIT_LOCK = threading.Lock()
+_AUTHOR_SERVER_INITIALIZED: set[str] = set()
+
+
 def initialize_author_server(base_path: str | Path) -> Path:
-    """Ensure the host-level daemon-server database exists and is migrated."""
+    """Ensure the host-level daemon-server database exists and is migrated.
+
+    Idempotent AND concurrency-safe. The schema creation + the check-then-ALTER
+    migrations below are not atomic across threads: two concurrent first-contact
+    ``get_status`` calls on a fresh DB otherwise race into ``duplicate column
+    name`` (both pass the ``PRAGMA table_info`` check, then both ``ALTER``) or
+    ``database is locked``. A process-level lock + a per-base "already
+    initialized" guard runs the migration exactly once per base path, so callers
+    on the ASGI worker threads serialize through it before touching any table.
+    (Auto-birth on first connect made this reachable — get_status now hits the DB
+    concurrently on a brand-new install.)
+    """
+    key = str(db_path(base_path))
+    if key in _AUTHOR_SERVER_INITIALIZED:
+        return db_path(base_path)
+    with _AUTHOR_SERVER_INIT_LOCK:
+        if key not in _AUTHOR_SERVER_INITIALIZED:
+            _initialize_author_server_locked(base_path)
+            _AUTHOR_SERVER_INITIALIZED.add(key)
+    return db_path(base_path)
+
+
+def _initialize_author_server_locked(base_path: str | Path) -> Path:
+    """Create the schema + run migrations once. Callers hold the init lock."""
     schema = """
     CREATE TABLE IF NOT EXISTS universes (
         universe_id TEXT PRIMARY KEY,
