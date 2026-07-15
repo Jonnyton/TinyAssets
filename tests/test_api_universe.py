@@ -25,6 +25,64 @@ import json
 import pytest
 
 from tinyassets.api import universe as univ_mod
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+from tinyassets.daemon_server import grant_universe_access
+
+# Coarse effect grants — resolve-always mode matches an action's effect
+# (read/write/costly/admin) across every tool (universe, wiki, extensions, …).
+_FOUNDER_SCOPES = ["read", "write", "costly", "admin"]
+
+
+class _StaticAuthProvider(AuthProvider):
+    """Resolve-always provider (like WorkOS) resolving bearer ``"ok"``."""
+
+    def __init__(self, identity: Identity | None) -> None:
+        self.identity = identity
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self.identity if token == "ok" else None
+
+    def is_auth_required(self) -> bool:
+        return False
+
+    def resolve_always_writes(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict) -> dict:
+        return {"client_id": "t", **metadata}
+
+    def create_authorization(self, *a, **k) -> str:  # noqa: ANN002, ANN003
+        return "c"
+
+    def exchange_code(self, *a, **k):  # noqa: ANN002, ANN003, ANN201
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_provider():
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+    yield
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+def _auth_grant(base, universe_ids, sub: str = "host-test") -> None:
+    """Authenticate a founder + grant admin on each universe.
+
+    The ratified ownership model (permissions.py) removed env-var write
+    authority, so universe-scoped writes now require an authenticated founder
+    holding a write/admin grant.
+    """
+    set_provider(_StaticAuthProvider(
+        Identity(user_id=sub, username=sub, capabilities=list(_FOUNDER_SCOPES)),
+    ))
+    auth_middleware("ok")
+    for uid in universe_ids:
+        grant_universe_access(
+            base, universe_id=uid, actor_id=sub, permission="admin", granted_by=sub,
+        )
 
 # ── module surface ──────────────────────────────────────────────────────────
 
@@ -89,10 +147,15 @@ def test_module_exposes_expected_public_names() -> None:
     )
 
 
-def test_write_actions_table_has_24_entries() -> None:
-    """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes.
-    (set_persona_name retired — identity is learned in the self-model.)"""
-    assert len(univ_mod.WRITE_ACTIONS) == 24
+def test_write_actions_table_has_27_entries() -> None:
+    """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes,
+    the soul.edit learn path, the set_engine founder engine-assignment path, and
+    the offer_engine market-supply path. (set_persona_name retired — identity is
+    learned in the self-model via soul.edit.)"""
+    assert len(univ_mod.WRITE_ACTIONS) == 27
+    assert "soul.edit" in univ_mod.WRITE_ACTIONS
+    assert "set_engine" in univ_mod.WRITE_ACTIONS
+    assert "offer_engine" in univ_mod.WRITE_ACTIONS
 
 
 def test_write_actions_entries_are_extractor_gate_tuples() -> None:
@@ -405,9 +468,10 @@ def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch) -> None:
     universe_dir = tmp_path / "u1"
     universe_dir.mkdir()
     monkeypatch.setattr(univ_mod, "_base_path", lambda: tmp_path)
-    monkeypatch.setattr(univ_mod, "_default_universe", lambda: "u1")
+    monkeypatch.setattr(univ_mod, "_request_universe", lambda uid="": uid or "u1")
     monkeypatch.setattr(univ_mod, "_universe_dir", lambda uid: tmp_path / uid)
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host-test")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _auth_grant(tmp_path, ["u1"])
 
     create_out = json.loads(univ_mod._universe_impl(
         action="daemon_create",
@@ -524,9 +588,10 @@ def test_daemon_control_actions_accept_top_level_daemon_id(
     universe_dir = tmp_path / "u1"
     universe_dir.mkdir()
     monkeypatch.setattr(univ_mod, "_base_path", lambda: tmp_path)
-    monkeypatch.setattr(univ_mod, "_default_universe", lambda: "u1")
+    monkeypatch.setattr(univ_mod, "_request_universe", lambda uid="": uid or "u1")
     monkeypatch.setattr(univ_mod, "_universe_dir", lambda uid: tmp_path / uid)
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host-test")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _auth_grant(tmp_path, ["u1"])
 
     create_out = json.loads(univ_mod._universe_impl(
         action="daemon_create",

@@ -117,11 +117,35 @@ def test_create_universe_without_premise_still_has_thin_soul(us):
         "branch_def_id": "",
         "declared": False,
     }
-    soul_md = (base / "thin-uni" / "soul.md").read_text(encoding="utf-8")
+    udir = base / "thin-uni"
+    soul_md = (udir / "soul.md").read_text(encoding="utf-8")
+    # universe-creation D4/D5: a blank universe gets the OKF soul bundle, not a
+    # premise/loop-populated thin soul. soul.md is OKF-shaped (frontmatter
+    # type) and, with no premise, carries no ## Purpose / loop line.
+    assert soul_md.startswith("---\ntype: Universe Soul")
     assert "# Universe Soul" in soul_md
-    assert "## Purpose" in soul_md
-    assert "- Loop branch: _None recorded._" in soul_md
-    assert not (base / "thin-uni" / "PROGRAM.md").exists()
+    assert "## Purpose" not in soul_md
+    assert "Loop branch:" not in soul_md
+    # The linked OKF baseline exists; the removed junk files do not.
+    assert (udir / "identity.md").is_file()
+    assert (udir / "soul_versions" / "0001.md").is_file()
+    assert not (udir / "notes.json").exists()
+    assert not (udir / "activity.log").exists()
+    assert not (udir / "PROGRAM.md").exists()
+
+
+def test_create_universe_ledger_uses_generated_id():
+    # Regression: a server-generated universe_id must reach the ledger row.
+    # The extractor reads kwargs (no universe_id for a generated create), so it
+    # must fall back to the id in the handler result.
+    from tinyassets.api.universe import _extract_create_universe
+
+    target, summary, payload = _extract_create_universe(
+        {"text": ""},
+        {"universe_id": "u-01generatedserial00000000", "status": "created"},
+    )
+    assert target == "u-01generatedserial00000000"
+    assert "u-01generatedserial00000000" in summary
 
 
 def test_create_universe_records_declared_loop_branch(us):

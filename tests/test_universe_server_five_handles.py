@@ -24,9 +24,10 @@ CANONICAL_HANDLES = {
     "run_graph",
     "read_page",
     "write_page",
+    "converse",  # 2026-07-02 relay reshape: chatbot -> universe intelligence
 }
 
-# The advertised user surface is the five handles plus the get_status read.
+# The advertised user surface is the canonical handles plus the get_status read.
 ADVERTISED = CANONICAL_HANDLES | {"get_status"}
 
 EXPECTED_ANNOTATIONS = {
@@ -35,6 +36,7 @@ EXPECTED_ANNOTATIONS = {
     "run_graph": {"readOnlyHint": False, "openWorldHint": False},
     "read_page": {"readOnlyHint": True, "idempotentHint": True},
     "write_page": {"readOnlyHint": False, "openWorldHint": True},
+    "converse": {"readOnlyHint": False, "openWorldHint": False},
 }
 
 
@@ -48,9 +50,10 @@ def _registered_tools():
     return asyncio.run(mcp.list_tools(run_middleware=False))
 
 
-def test_live_surface_advertises_exactly_five_handles_plus_status() -> None:
+def test_live_surface_advertises_exactly_canonical_handles_plus_status() -> None:
     advertised = {tool.name for tool in _advertised_tools()}
     assert advertised == ADVERTISED
+    assert "converse" in advertised  # the relay handle is user-facing
     # No enumerated legacy fat tool leaks onto the advertised surface.
     assert _DEPRECATED_TOOL_NAMES.isdisjoint(advertised)
 

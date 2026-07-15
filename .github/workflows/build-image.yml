@@ -36,7 +36,10 @@ env:
 jobs:
   build-and-push:
     name: Build and push GHCR image
-    if: github.ref == 'refs/heads/main'
+    # Auto-build on main pushes; allow a manual workflow_dispatch from any ref so
+    # a specific branch image can be built + deployed via deploy-prod (image input)
+    # without first merging the branch to main.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

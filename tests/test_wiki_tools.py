@@ -293,9 +293,17 @@ class TestWikiWrite:
         )
         assert "Updated content." in actual
 
-    def test_write_invalid_category(self, wiki_dir):
+    def test_write_accepts_custom_category(self, wiki_dir):
+        # Organic growth: a non-seed category is allowed (slugified), not rejected.
         result = json.loads(
-            wiki("write", category="invalid", filename="test", content="test")
+            wiki("write", category="lore", filename="test", content="test")
+        )
+        assert "error" not in result
+        assert "lore" in result["path"]
+
+    def test_write_rejects_unsluggable_category(self, wiki_dir):
+        result = json.loads(
+            wiki("write", category="   ", filename="test", content="test")
         )
         assert "error" in result
 
@@ -327,14 +335,15 @@ class TestWikiWrite:
         assert result.get("status") in {"drafted", "updated"}, result
 
     def test_wiki_categories_enum_matches_expanded_taxonomy(self):
-        """Lock-in: the module constant carries all ten categories in
-        the canonical order."""
+        """Lock-in: the module constant carries the seed-default categories in
+        canonical order. These are defaults, not a closed whitelist — custom
+        categories grow organically (see test_wiki_write_accepts_custom_category)."""
         from tinyassets.api.wiki import _WIKI_CATEGORIES
 
         assert _WIKI_CATEGORIES == (
             "projects", "concepts", "people", "research",
             "recipes", "workflows", "notes", "references", "plans",
-            "bugs",
+            "bugs", "feature-requests", "design-proposals", "patch-requests",
         )
 
 

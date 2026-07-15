@@ -41,9 +41,10 @@ from tinyassets.api.helpers import (
 
 # Wiki category taxonomy. Expanded 2026-04-13 to stop user-intent content
 # (recipes, workflows, personal notes) getting dumped into `research/`
-# because the enum didn't offer anything more appropriate. Mirrors the
-# canonical list in `wiki-mcp/server.js` — keep the two in lockstep. The
-# original four come first for back-compat with existing index headers.
+# because the enum didn't offer anything more appropriate. This tuple is the
+# single source of truth for wiki categories (the former wiki-mcp/server.js
+# mirror has been retired). The original four come first for back-compat with
+# existing index headers.
 _WIKI_CATEGORIES = (
     "projects",    # Tracked project pages (auto-discovered or hand-written)
     "concepts",    # Ideas, mental models, definitions
@@ -409,9 +410,10 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
         "references": "## References",
         "plans": "## Plans",
     }
-    hdr = header_map.get(category)
-    if not hdr:
-        return
+    # Custom (organically grown) categories have no fixed header — synthesize
+    # a title-cased section header (e.g. `magic-systems` -> `## Magic Systems`)
+    # so the page is indexed rather than silently dropped.
+    hdr = header_map.get(category) or ("## " + category.replace("-", " ").title())
     entry = f"- [[{slug}]] -- {title or slug}"
     lines = idx.split("\n")
     insert_at = -1
@@ -426,7 +428,12 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
             insert_at = i + 1
     if insert_at > 0:
         lines.insert(insert_at, entry)
-        idx_path.write_text("\n".join(lines), encoding="utf-8")
+    else:
+        # Section not present yet (custom category) — append a new section.
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend([hdr, entry])
+    idx_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def _append_wiki_log(msg: str) -> None:
@@ -444,6 +451,28 @@ def _sanitize_slug(name: str) -> str:
     """Convert a filename into a safe wiki slug."""
     clean = name.removesuffix(".md")
     return re.sub(r"[^a-z0-9-]", "-", clean.lower()).strip("-")
+
+
+def _existing_category_dirs(base: Path) -> tuple[str, ...]:
+    """Category subdir names under a wiki base (drafts/ or pages/).
+
+    Returns the seed defaults in ``_WIKI_CATEGORIES`` unioned with any custom
+    categories a universe has grown organically on disk. Used wherever a caller
+    omits the category so custom-category pages stay discoverable — the OKF
+    organic-growth model: the taxonomy seeds sane defaults but is not a closed
+    whitelist.
+    """
+    # Seed categories FIRST in canonical order so omitted-category
+    # promote/supersede precedence is unchanged; custom categories append
+    # (sorted) after them.
+    ordered = list(_WIKI_CATEGORIES)
+    seen = set(ordered)
+    if base.is_dir():
+        for d in sorted(base.iterdir()):
+            if d.is_dir() and d.name not in seen:
+                ordered.append(d.name)
+                seen.add(d.name)
+    return tuple(ordered)
 
 
 def _wiki_write_slug(category: str, filename: str) -> tuple[str, str | None]:
@@ -773,11 +802,26 @@ def _wiki_write(
 ) -> str:
     if not filename or not content:
         return json.dumps({"error": "filename and content are required."})
-    if category not in _WIKI_CATEGORIES:
+    if not category:
         return json.dumps({
-            "error": f"Invalid category '{category}'.",
-            "valid": list(_WIKI_CATEGORIES),
+            "error": "category is required.",
+            "seed_categories": list(_WIKI_CATEGORIES),
         })
+    if category not in _WIKI_CATEGORIES:
+        # Custom category (OKF organic growth): the seed taxonomy is a set of
+        # sensible defaults, not a closed whitelist. Sanitize to a safe slug so
+        # it can never be a path-traversal vector (it is used directly as a
+        # path component below) and so `Magic Systems` becomes `magic-systems`.
+        safe = _sanitize_slug(category)
+        if not safe:
+            return json.dumps({
+                "error": (
+                    f"Invalid category '{category}': a custom category must "
+                    "contain letters or digits (it becomes a lowercase slug)."
+                ),
+                "seed_categories": list(_WIKI_CATEGORIES),
+            })
+        category = safe
 
     slug, slug_error = _wiki_write_slug(category, filename)
     if slug_error:
@@ -810,7 +854,8 @@ def _wiki_write(
         try:
             promoted_path.write_text(content, encoding="utf-8")
             _append_wiki_log(
-                f"update | {promoted_rel_path.removesuffix('.md')} | {log_entry or 'in-place update'}"
+                f"update | {promoted_rel_path.removesuffix('.md')} | "
+                f"{log_entry or 'in-place update'}"
             )
             return json.dumps({
                 "path": promoted_rel_path,
@@ -1098,6 +1143,10 @@ def _wiki_promote(
         return json.dumps({"error": "filename is required."})
 
     slug = _sanitize_slug(filename)
+    # Sanitize the category too: it is used directly as a path component below
+    # (dest write + draft unlink), so a raw value like "../pages/notes" would be
+    # a traversal vector. Slugify it exactly as writes do.
+    category = _sanitize_slug(category) if category else ""
     draft_path: Path | None = None
     found_category = category
 
@@ -1106,7 +1155,7 @@ def _wiki_promote(
         if p.exists():
             draft_path = p
     else:
-        for cat in _WIKI_CATEGORIES:
+        for cat in _existing_category_dirs(_wiki_drafts_dir()):
             p = _wiki_drafts_dir() / cat / (slug + ".md")
             if p.exists():
                 draft_path = p
@@ -1190,7 +1239,7 @@ def _wiki_supersede(
 
     old_path: Path | None = None
     old_category = ""
-    for cat in _WIKI_CATEGORIES:
+    for cat in _existing_category_dirs(_wiki_pages_dir()):
         p = _wiki_pages_dir() / cat / (old_slug + ".md")
         if p.exists():
             old_path = p
@@ -1200,7 +1249,7 @@ def _wiki_supersede(
         return json.dumps({"error": f"Old page not found in pages/: {old_slug}"})
 
     new_exists = False
-    for cat in _WIKI_CATEGORIES:
+    for cat in _existing_category_dirs(_wiki_drafts_dir()):
         p = _wiki_drafts_dir() / cat / (new_slug + ".md")
         if p.exists():
             new_exists = True
@@ -2310,6 +2359,35 @@ def _wiki_root_for_universe(universe_id: str) -> Path:
     return (_universe_dir(uid) / "wiki").resolve()
 
 
+def write_universe_canon(
+    universe_id: str,
+    *,
+    category: str,
+    filename: str,
+    content: str,
+    log_entry: str = "",
+) -> str:
+    """First-party, in-process canon write into a universe's OWN wiki.
+
+    The universe intelligence is the sole writer of its own private canon (relay
+    reshape, ``docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md``
+    §13/§14). Like :func:`tinyassets.universe_intelligence.converse` and
+    :func:`tinyassets.soul_edit.apply_soul_edit`, this is scoped to the universe
+    by construction and does NOT pass through the :func:`_wiki_impl` MCP ACL gate
+    — that gate authorizes untrusted EXTERNAL callers; the intelligence is
+    first-party for its own universe. Returns the :func:`_wiki_write` JSON string.
+    """
+    wiki_root = _wiki_root_for_universe(universe_id)
+    _ensure_wiki_scaffold(wiki_root)
+    with _scoped_wiki_root(wiki_root):
+        return _wiki_write(
+            category=category,
+            filename=filename,
+            content=content,
+            log_entry=log_entry,
+        )
+
+
 def _stamp_universe_id(payload: str, universe_id: str) -> str:
     if not universe_id:
         return payload
@@ -2405,6 +2483,26 @@ def wiki(
             ),
         })
 
+    # Universe-scoped ACL gate — runs BEFORE scaffolding so a denied call has
+    # NO filesystem side effect (it must not create the target universe's wiki
+    # dir/anchor files). Covers reads (private-universe visibility via
+    # public_read) and writes (ownership). The root wiki (no target universe)
+    # is a shared surface and is not gated here.
+    if target_universe_id:
+        from tinyassets.api.permissions import (
+            universe_access_allows,
+            universe_access_error,
+        )
+
+        _wiki_write = action in WIKI_WRITE_ACTIONS
+        if not universe_access_allows(target_universe_id, write=_wiki_write):
+            return _stamp_universe_id(json.dumps(universe_access_error(
+                universe_id=target_universe_id,
+                write=_wiki_write,
+                action=action,
+                surface="wiki",
+            )), target_universe_id)
+
     # Task #6 — scaffold the tree on first call so fresh deploys
     # (empty /data/wiki) don't error on read/list/search/lint. Idempotent.
     try:
@@ -2441,6 +2539,8 @@ def wiki(
         )
         if scope_error is not None:
             return _stamp_universe_id(scope_error, target_universe_id)
+
+        # (Universe-scoped ACL is enforced earlier, before scaffolding.)
 
         kwargs: dict[str, Any] = {
             "page": page,

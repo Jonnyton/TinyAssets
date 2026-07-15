@@ -59,16 +59,19 @@ _INIT_PAYLOAD = {
     },
 }
 
-# PR-178: the live user-facing surface is exactly these five handles. The
-# canary asserts the deployed tools/list advertises them and nothing beyond
-# them (the get_status read MAY remain). Legacy fat tools are dual-registered
-# but hidden from tools/list, so they must NOT appear here.
+# PR-178 + 2026-07-02 relay reshape: the live user-facing surface is exactly
+# these six handles. The canary asserts the deployed tools/list advertises them
+# and nothing beyond them (the get_status read MAY remain). Legacy fat tools are
+# dual-registered but hidden from tools/list, so they must NOT appear here.
+# `converse` is the relay handle (chatbot -> universe intelligence); the handle
+# shape is provisional pending host ratification of the design-note open-Q.
 CANONICAL_HANDLES = frozenset({
     "read_graph",
     "write_graph",
     "run_graph",
     "read_page",
     "write_page",
+    "converse",
 })
 # get_status MAY remain as a read affordance; everything else is drift.
 _ALLOWED_ADVERTISED = CANONICAL_HANDLES | {"get_status"}

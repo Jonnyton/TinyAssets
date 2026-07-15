@@ -421,19 +421,48 @@ def test_run_branch_resume_from_carries_source_inputs_when_absent(p4_env):
     assert run_record["inputs"] == {"x": "source-input"}
 
 
-def test_run_branch_resume_from_cross_actor_returns_error(p4_env, monkeypatch):
-    us, _ = p4_env
+def test_run_branch_resume_from_cross_actor_returns_error(p4_env):
+    # Run isolation is by owning universe: a branch run's actor is
+    # `universe:<uid>` (permissions.branch_run_actor), so a run created by one
+    # universe must not be resumable by another. The retired UNIVERSE_SERVER_USER
+    # env-actor model no longer distinguishes callers (current_actor_id has no env
+    # fallback), so cross-actor isolation is exercised via two universes.
+    us, base = p4_env
     bid = _build_trivial_branch(us)
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
-    bob_run_id = _run(us, bid, {"x": "bob"})
 
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    result = _call(
-        us,
-        "run_branch",
-        branch_def_id=bid,
-        resume_from=bob_run_id,
-    )
+    from tinyassets.auth.middleware import auth_middleware, set_provider
+    from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+    from tinyassets.daemon_server import grant_universe_access
+
+    class _Founder(AuthProvider):
+        def __init__(self, ident): self.ident = ident
+        def resolve_token(self, t): return self.ident if t == "ok" else None
+        def is_auth_required(self): return False
+        def resolve_always_writes(self): return True
+        def register_client(self, m): return {"client_id": "t", **m}
+        def create_authorization(self, *a, **k): return "c"
+        def exchange_code(self, *a, **k): return None
+
+    set_provider(_Founder(Identity(
+        user_id="founder", username="founder",
+        capabilities=["read", "write", "costly", "admin"],
+    )))
+    auth_middleware("ok")
+    try:
+        for uid in ("uni-a", "uni-b"):
+            grant_universe_access(
+                base, universe_id=uid, actor_id="founder",
+                permission="admin", granted_by="founder",
+            )
+        a_run = _call(us, "run_branch", branch_def_id=bid, universe_id="uni-a",
+                      inputs_json=json.dumps({"x": "a"}))
+        _wait(a_run["run_id"])
+
+        result = _call(us, "run_branch", branch_def_id=bid, universe_id="uni-b",
+                       resume_from=a_run["run_id"])
+    finally:
+        set_provider(DevAuthProvider())
+        auth_middleware(None)
 
     assert "error" in result
     assert "not visible" in result["error"]

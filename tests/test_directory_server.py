@@ -4,6 +4,11 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+from tinyassets.daemon_server import grant_universe_access
 from tinyassets.directory_server import (
     _redact_directory_status,
     directory_mcp,
@@ -12,6 +17,56 @@ from tinyassets.directory_server import (
     write_graph,
     write_page,
 )
+
+# Coarse effect grants — resolve-always mode matches an action's effect
+# (read/write/costly/admin) across every tool (universe, wiki, extensions, …).
+_FOUNDER_SCOPES = ["read", "write", "costly", "admin"]
+
+
+class _StaticAuthProvider(AuthProvider):
+    """Resolve-always provider (like WorkOS) resolving bearer ``"ok"``."""
+
+    def __init__(self, identity: Identity | None) -> None:
+        self.identity = identity
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self.identity if token == "ok" else None
+
+    def is_auth_required(self) -> bool:
+        return False
+
+    def resolve_always_writes(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict) -> dict:
+        return {"client_id": "t", **metadata}
+
+    def create_authorization(self, *a, **k) -> str:  # noqa: ANN002, ANN003
+        return "c"
+
+    def exchange_code(self, *a, **k):  # noqa: ANN002, ANN003, ANN201
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_provider():
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+    yield
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+def _auth_grant(base, universe_ids, sub: str = "directory-test") -> None:
+    """Authenticate a founder + grant admin (env-var write authority was removed)."""
+    set_provider(_StaticAuthProvider(
+        Identity(user_id=sub, username=sub, capabilities=list(_FOUNDER_SCOPES)),
+    ))
+    auth_middleware("ok")
+    for uid in universe_ids:
+        grant_universe_access(
+            base, universe_id=uid, actor_id=sub, permission="admin", granted_by=sub,
+        )
 
 EXPECTED_TOOLS = {
     "read_graph": {
@@ -227,13 +282,20 @@ def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> No
 def test_directory_submit_request_queues_temp_universe_request(monkeypatch, tmp_path) -> None:
     """Guard the reviewed directory request write path without touching prod."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "directory-test")
 
     from tinyassets.catalog import invalidate_backend_cache
 
     invalidate_backend_cache()
     universe_dir = tmp_path / "directory-universe"
     universe_dir.mkdir()
+    # Queuing work needs a soul with a declared Loop branch (souled universes
+    # no longer silently attach the fantasy loop).
+    from tinyassets.universe_bundle import seed_okf_bundle
+
+    seed_okf_bundle(
+        universe_dir, purpose="directory test", loop_branch_def_id="loop-dir-test",
+    )
+    _auth_grant(tmp_path, ["directory-universe"])
 
     try:
         result = json.loads(
@@ -286,6 +348,7 @@ def test_directory_write_page_honors_target_universe(monkeypatch, tmp_path) -> N
     shared_wiki = tmp_path / "shared-wiki"
     monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(shared_wiki))
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _auth_grant(tmp_path, ["splitroot"])
 
     drafted = json.loads(
         write_page(

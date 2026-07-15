@@ -63,11 +63,15 @@ def test_module_exposes_expected_public_names():
 
 
 def test_wiki_categories_canonical_order():
-    """Category enum stays in a stable order — wiki-mcp/server.js mirrors it."""
+    """Category enum stays in a stable, explicit order — this tuple is the
+    single source of truth (the former wiki-mcp/server.js mirror is retired)."""
+    assert _WIKI_CATEGORIES == (
+        "projects", "concepts", "people", "research", "recipes", "workflows",
+        "notes", "references", "plans", "bugs", "feature-requests",
+        "design-proposals", "patch-requests",
+    )
     assert _WIKI_CATEGORIES[0] == "projects"
-    assert _WIKI_CATEGORIES[-1] == "bugs"
     assert _BUGS_CATEGORY in _WIKI_CATEGORIES
-    assert len(_WIKI_CATEGORIES) == 10
 
 
 def test_kind_routing_covers_all_valid_kinds():
@@ -244,7 +248,7 @@ def test_wiki_search_returns_completeness_warning_with_matches(wiki_env):
 
 def test_wiki_since_returns_pages_updated_after_timestamp(wiki_env):
     fresh_dir = wiki_env / "pages" / "patch-requests"
-    fresh_dir.mkdir(parents=True)
+    fresh_dir.mkdir(parents=True, exist_ok=True)  # scaffold already creates this category dir
     fresh = fresh_dir / "fresh-patch.md"
     fresh.write_text(
         "---\n"
@@ -450,12 +454,72 @@ def test_wiki_write_requires_filename_and_content(wiki_env):
     assert "error" in res
 
 
-def test_wiki_write_rejects_invalid_category(wiki_env):
+def test_wiki_write_accepts_custom_category(wiki_env):
+    # OKF organic growth: the seed taxonomy is a set of defaults, not a closed
+    # whitelist. A universe can grow a custom category to match its founder.
     res = json.loads(
-        wiki(action="write", category="bogus", filename="x", content="body")
+        wiki(
+            action="write",
+            category="magic-systems",
+            filename="resonance",
+            content="The Resonance is the world's magic system.",
+        )
+    )
+    assert "error" not in res
+    assert res["status"] == "drafted"
+    assert "magic-systems" in res["path"]
+
+
+def test_wiki_write_sanitizes_custom_category(wiki_env):
+    # A free-form category is slugified (no path-traversal, no spaces/case).
+    res = json.loads(
+        wiki(
+            action="write",
+            category="Magic Systems",
+            filename="resonance",
+            content="body about the resonance magic.",
+        )
+    )
+    assert "error" not in res
+    assert "drafts/magic-systems/resonance.md" == res["path"]
+
+
+def test_wiki_write_rejects_unsluggable_category(wiki_env):
+    # A category with no letters/digits cannot become a safe slug -> rejected.
+    res = json.loads(
+        wiki(action="write", category="!!!", filename="x", content="body")
     )
     assert "error" in res
-    assert "valid" in res
+
+
+def test_wiki_custom_category_promotes_and_indexes(wiki_env):
+    body = (
+        "---\ntitle: The Resonance\ntype: reference\nsources: [canon]\n"
+        "confidence: high\n---\nThe Resonance magic system links [[cells]] and "
+        "[[bonds]] with enough body text to clear the promotion lint floor.\n"
+    )
+    drafted = json.loads(
+        wiki(action="write", category="magic-systems",
+             filename="the-resonance", content=body)
+    )
+    assert drafted["status"] == "drafted"
+    # Promote with the category omitted -> must find the custom-category draft.
+    promoted = json.loads(wiki(action="promote", filename="the-resonance"))
+    assert promoted["status"] == "promoted"
+    assert "magic-systems" in promoted["path"]
+    idx = json.loads(wiki(action="read", page="index"))
+    assert "Magic Systems" in idx.get("content", "")
+
+
+def test_wiki_promote_category_is_traversal_safe(wiki_env):
+    # A crafted category on promote must be slugified, not used as a raw path
+    # component (unsanitized it could unlink a promoted page). It resolves to a
+    # harmless slug -> a benign "draft not found", never a path escape.
+    res = json.loads(
+        wiki(action="promote", category="../pages/notes", filename="whatever")
+    )
+    assert "error" in res
+    assert "not found" in res["error"].lower()
 
 
 def test_wiki_write_drafts_then_promote_roundtrip(wiki_env):

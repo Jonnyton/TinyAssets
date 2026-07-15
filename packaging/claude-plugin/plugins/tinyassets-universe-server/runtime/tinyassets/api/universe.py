@@ -62,19 +62,21 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from tinyassets.api import permissions
 from tinyassets.api.helpers import (
     _base_path,
-    _default_universe,
     _read_json,
     _read_text,
+    _request_universe,
     _universe_dir,
 )
 from tinyassets.catalog import list_unreconciled_writes
+from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
+from tinyassets.universe_bundle import seed_okf_bundle
 from tinyassets.universe_soul import (
     NO_LOOP_DECLARED,
     SOUL_FILENAME,
-    ensure_universe_soul,
     has_soul,
     legacy_premise_path,
     premise_from_soul,
@@ -90,8 +92,6 @@ ACTION_SUBMIT_PRIORITY_REQUEST = "submit_priority_request"
 ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
 ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
 LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
-_ACL_READ_PERMISSIONS = frozenset({"read", "write", "admin"})
-_ACL_WRITE_PERMISSIONS = frozenset({"write", "admin"})
 
 
 def _env_actor_grants() -> tuple[str, ...]:
@@ -112,48 +112,49 @@ def _env_actor_can(action: str, *, universe_id: str = "") -> bool:
     ).allowed
 
 
-def _current_actor_id() -> str:
-    from tinyassets.auth.middleware import current_identity
-
-    identity = current_identity()
-    return identity.user_id or "anonymous"
-
-
-def _universe_acl_allows(uid: str, *, write: bool = False) -> bool:
-    from tinyassets.daemon_server import (
-        universe_access_permission,
-        universe_is_private,
-    )
-
-    if not uid:
-        return True
-    base = _base_path()
-    if not universe_is_private(base, universe_id=uid):
-        return True
-    permission = universe_access_permission(
-        base,
-        universe_id=uid,
-        actor_id=_current_actor_id(),
-    )
-    allowed = _ACL_WRITE_PERMISSIONS if write else _ACL_READ_PERMISSIONS
-    return permission in allowed
+# Daemon-scoped actions operate on a daemon's own operational memory (keyed by
+# daemon_id under daemon_wikis/), NOT on a universe brain. They are authorized by
+# daemon ownership / the autonomous daemon runtime, not the per-universe ACL.
+# Routing them through the universe ACL would (a) misattribute them to whatever
+# _default_universe() happens to resolve to and (b) break autonomous daemon
+# memory writes, which run with no founder OAuth grant.
+_DAEMON_SCOPED_ACTIONS: frozenset[str] = frozenset({
+    "daemon_memory_capture",
+    "daemon_memory_search",
+    "daemon_memory_list",
+    "daemon_memory_review",
+    "daemon_memory_promote",
+    "daemon_memory_status",
+})
 
 
 def _universe_acl_error(action: str, *, universe_id: str = "") -> str | None:
-    if action in {"list", "create_universe"}:
+    """Gate a universe action against the single ACL path in
+    ``tinyassets.api.permissions``.
+
+    ``list`` and ``create_universe`` are exempt: ``list`` filters visibility
+    per-universe inside ``_action_list_universes``; ``create_universe`` has no
+    pre-existing universe to authorize against (it is scope-gated + founder-
+    granted on create instead). Daemon-scoped actions
+    (``_DAEMON_SCOPED_ACTIONS``) are exempt because they are not universe-brain
+    operations — see that set's comment.
+    """
+    if action in {"list", "create_universe"} or action in _DAEMON_SCOPED_ACTIONS:
         return None
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     write = action in WRITE_ACTIONS
-    if _universe_acl_allows(uid, write=write):
+    if permissions.universe_access_allows(uid, write=write):
         return None
 
-    return json.dumps({
-        "error": "universe_access_denied",
-        "universe_id": uid,
-        "actor_id": _current_actor_id(),
-        "required_permission": "write" if write else "read",
-    })
+    return json.dumps(
+        permissions.universe_access_error(
+            universe_id=uid,
+            write=write,
+            action=action,
+            surface="universe",
+        )
+    )
 
 # WRITE_ACTIONS is the single source of truth for which `universe` tool
 # actions are writes. The dispatcher consults this table; any action
@@ -276,7 +277,10 @@ def _extract_create_universe(
     kwargs: dict[str, Any], _result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
     from tinyassets.api.engine_helpers import _truncate
-    uid = kwargs.get("universe_id", "")
+    # universe_id may be server-generated (optional on create), so prefer the
+    # id in the handler result over the caller kwargs — otherwise the ledger
+    # row loses the generated id (target: "").
+    uid = _result.get("universe_id") or kwargs.get("universe_id", "")
     text = kwargs.get("text", "")
     summary = _truncate(text) if text.strip() else f"created {uid}"
     return (uid, summary, {
@@ -607,10 +611,67 @@ def _extract_daemon_memory_promote(
     )
 
 
+def _extract_soul_edit(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    from tinyassets.api.engine_helpers import _truncate
+    return (
+        str(result.get("universe_id", "")),
+        _truncate("learned: " + ", ".join(result.get("updated_files") or [])),
+        {
+            "files": result.get("updated_files"),
+            "snapshot": result.get("snapshot"),
+            "source": result.get("source"),
+        },
+    )
+
+
+def _extract_set_engine(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Ledger extractor for set_engine. Reads only redacted fields from the
+    handler result — never the raw api_key (which lives in kwargs.inputs_json
+    and must not reach the public ledger)."""
+    from tinyassets.api.engine_helpers import _truncate
+    source = str(result.get("engine_source", ""))
+    writer = str(result.get("preferred_writer", ""))
+    return (
+        str(result.get("universe_id", "")),
+        _truncate(f"engine assigned: source={source} writer={writer}"),
+        {
+            "engine_source": source,
+            "service": str(result.get("service", "")),
+            "preferred_writer": writer,
+            "status": result.get("status", ""),
+        },
+    )
+
+
+def _extract_offer_engine(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Ledger extractor for offer_engine (founder market supply). Never logs the
+    engine credential — offers carry only service/model/rate/cap metadata."""
+    from tinyassets.api.engine_helpers import _truncate
+    return (
+        str(result.get("founder_id", "")),
+        _truncate(f"market offer: {result.get('status', '')} "
+                  f"{result.get('offer_key', '')}"),
+        {
+            "status": result.get("status", ""),
+            "offer_key": str(result.get("offer_key", "")),
+            "offer_count": len(result.get("offers", []) or []),
+        },
+    )
+
+
 WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
+    "soul.edit": (_extract_soul_edit, None),
+    "set_engine": (_extract_set_engine, None),
+    "offer_engine": (_extract_offer_engine, None),
     "add_canon": (_extract_add_canon, None),
     "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
@@ -635,15 +696,20 @@ WRITE_ACTIONS: dict[str, Any] = {
 }
 
 
-def _ledger_target_dir(action: str, kwargs: dict[str, Any]) -> Path:
+def _ledger_target_dir(
+    action: str, kwargs: dict[str, Any], result: dict[str, Any] | None = None,
+) -> Path:
     """Resolve which universe directory owns the ledger entry for this action.
 
-    create_universe writes to the newly-created universe's ledger. All others
-    write to the universe whose state they affect (the handler's target uid).
+    create_universe writes to the newly-created universe's ledger. For a
+    server-generated id the kwargs carry no ``universe_id``, so prefer the id in
+    the handler result — otherwise the entry would wrongly land in the default
+    universe's ledger. All others write to the universe whose state they affect.
     """
-    uid = kwargs.get("universe_id", "") or _default_universe()
     if action == "create_universe":
-        return _base_path() / uid
+        created = str((result or {}).get("universe_id") or "") or kwargs.get("universe_id", "")
+        return _base_path() / (created or _request_universe(""))
+    uid = _request_universe(kwargs.get("universe_id", ""))
     return _universe_dir(uid)
 
 
@@ -730,7 +796,7 @@ def _dispatch_with_ledger(
 
     try:
         target, summary, payload = extractor(kwargs, result)
-        udir = _ledger_target_dir(action, kwargs)
+        udir = _ledger_target_dir(action, kwargs, result)
         _append_ledger(
             udir, action, target=target, summary=summary, payload=payload,
         )
@@ -1148,7 +1214,7 @@ def _action_list_universes(**_kwargs: Any) -> str:
     for child in sorted(all_entries):
         if not _is_listable_universe_dir(child):
             continue
-        if not _universe_acl_allows(child.name):
+        if not permissions.universe_access_allows(child.name):
             continue
         status = _read_json(child / "status.json")
         liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
@@ -1179,7 +1245,7 @@ def _action_list_universes(**_kwargs: Any) -> str:
 
 
 def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
     if not udir.is_dir():
@@ -1327,7 +1393,7 @@ def _list_output_tree(output_dir: Path, max_depth: int = 3) -> list[str]:
 
 
 def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     target = (udir / "output" / path).resolve()
 
@@ -1376,7 +1442,7 @@ def _action_submit_request(
     from tinyassets.branch_tasks import BranchTask, append_task, new_task_id
     from tinyassets.work_targets import REQUESTS_FILENAME
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -1575,7 +1641,7 @@ def _action_queue_list(
         score_task,
     )
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -1639,7 +1705,7 @@ def _action_daemon_list(
 ) -> str:
     from tinyassets.daemon_registry import list_daemons, list_runtime_instances
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     try:
         n = int(limit)
     except (TypeError, ValueError):
@@ -1750,7 +1816,7 @@ def _action_daemon_create(
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
     return json.dumps({
-        "universe_id": universe_id or _default_universe(),
+        "universe_id": _request_universe(universe_id),
         "daemon": daemon,
     }, default=str)
 
@@ -1774,7 +1840,7 @@ def _action_daemon_summon(
     )
     provider_name = str(data.get("provider_name") or "").strip()
     model_name = str(data.get("model_name") or provider_name).strip()
-    uid = universe_id or str(data.get("universe_id") or "").strip() or _default_universe()
+    uid = _request_universe(universe_id or str(data.get("universe_id") or "").strip())
     if not resolved_daemon_id:
         return json.dumps({"error": "daemon_id is required."})
     if not provider_name:
@@ -1821,7 +1887,7 @@ def _action_daemon_banish(
         )
     except KeyError:
         return json.dumps({"error": f"Runtime '{runtime_id}' not found."})
-    result["universe_id"] = universe_id or _default_universe()
+    result["universe_id"] = _request_universe(universe_id)
     return json.dumps(result, default=str)
 
 
@@ -1868,7 +1934,7 @@ def _action_daemon_runtime_control(
         )
     except KeyError:
         return json.dumps({"error": f"Runtime '{runtime_id}' not found."})
-    result["universe_id"] = universe_id or _default_universe()
+    result["universe_id"] = _request_universe(universe_id)
     return json.dumps(result, default=str)
 
 
@@ -1957,7 +2023,7 @@ def _action_daemon_update_behavior(
         )
     except KeyError:
         return json.dumps({"error": f"Daemon '{daemon_id}' not found."})
-    result["universe_id"] = universe_id or _default_universe()
+    result["universe_id"] = _request_universe(universe_id)
     return json.dumps(result, default=str)
 
 
@@ -1988,7 +2054,7 @@ def _action_daemon_control_status(
         ),
         universe_id=universe_id or str(data.get("universe_id") or "").strip() or None,
     )
-    result["universe_id"] = universe_id or _default_universe()
+    result["universe_id"] = _request_universe(universe_id)
     return json.dumps(result, default=str)
 
 
@@ -2038,7 +2104,7 @@ def _action_daemon_memory_capture(
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_brain import capture_daemon_memory
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2091,7 +2157,7 @@ def _action_daemon_memory_search(
 ) -> str:
     from tinyassets.daemon_brain import search_daemon_memory
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2128,7 +2194,7 @@ def _action_daemon_memory_list(
 ) -> str:
     from tinyassets.daemon_brain import list_daemon_memory
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2160,7 +2226,7 @@ def _action_daemon_memory_review(
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_brain import review_daemon_memory
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2201,7 +2267,7 @@ def _action_daemon_memory_promote(
 ) -> str:
     from tinyassets.daemon_brain import promote_daemon_memory_to_wiki
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2235,7 +2301,7 @@ def _action_daemon_memory_status(
 ) -> str:
     from tinyassets.daemon_brain import memory_observability_status
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2256,7 +2322,7 @@ def _action_treasury_status(
 ) -> str:
     from tinyassets.treasury import treasury_status
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     try:
         result = treasury_status(_base_path(), limit=int(limit))
     except (ValueError, TypeError) as exc:
@@ -2700,7 +2766,7 @@ def _action_daemon_overview(
     """
     import time as _time
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -2948,7 +3014,7 @@ def _action_set_tier_config(
     """
     import yaml as _yaml
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3026,7 +3092,7 @@ def _action_queue_cancel(
         request_task_cancel,
     )
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3125,7 +3191,7 @@ def _action_subscribe_goal(
 
     if not goal_pool_enabled():
         return _goal_pool_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3153,7 +3219,7 @@ def _action_unsubscribe_goal(
 
     if not goal_pool_enabled():
         return _goal_pool_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3192,7 +3258,7 @@ def _action_list_subscriptions(
 
     if not goal_pool_enabled():
         return _goal_pool_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3253,7 +3319,7 @@ def _action_post_to_goal_pool(
 
     if not goal_pool_enabled():
         return _goal_pool_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3363,7 +3429,7 @@ def _action_submit_node_bid(
 
     if not paid_market_enabled():
         return _paid_market_not_available()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3455,7 +3521,7 @@ def _action_give_direction(
     anchor_json: str = "",
     **_kwargs: Any,
 ) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3505,7 +3571,7 @@ def _action_query_world(
     limit: int = 20,
     **_kwargs: Any,
 ) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -3687,7 +3753,7 @@ def _query_world_db(
 
 
 def _action_read_premise(universe_id: str = "", **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     content = _normalize_escaped_text(read_legacy_premise(udir))
     source = "PROGRAM.md"
@@ -3742,7 +3808,7 @@ def _normalize_escaped_text(text: str) -> str:
 
 
 def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
     if not text.strip():
@@ -3817,7 +3883,7 @@ def _action_add_canon(
     synthesizes canon from the source.
     """
     from tinyassets.api.engine_helpers import _current_actor
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
 
@@ -3977,7 +4043,7 @@ def _action_add_canon_from_path(
             ),
         })
 
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
     safe_name = Path(filename).name if filename else src.name
@@ -4042,7 +4108,7 @@ def _action_list_canon(
     **_kwargs: Any,
 ) -> str:
     """List all canon documents in a universe with metadata."""
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
 
@@ -4164,7 +4230,7 @@ def _action_list_sources(
     **_kwargs: Any,
 ) -> str:
     """List uploaded source documents with attestation metadata."""
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
     sources_dir = canon_dir / "sources"
@@ -4207,7 +4273,7 @@ def _action_read_source(
     **_kwargs: Any,
 ) -> str:
     """Read one uploaded source document verbatim with checksum metadata."""
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
 
@@ -4282,7 +4348,7 @@ def _action_read_canon(
     **_kwargs: Any,
 ) -> str:
     """Read the contents of a specific canon document."""
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
 
@@ -4335,7 +4401,7 @@ def _action_control_daemon(
     **_kwargs: Any,
 ) -> str:
     action = text.strip().lower()
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -4416,7 +4482,7 @@ def _action_get_activity(
     limit: int = 30,
     **_kwargs: Any,
 ) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     log_path = udir / "activity.log"
 
@@ -4506,7 +4572,7 @@ def _action_get_recent_events(
         tag: Optional tag prefix filter (empty = all entries).
         limit: Max entries to return (1..500, clamped).
     """
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     log_path = udir / "activity.log"
 
@@ -4569,7 +4635,7 @@ def _action_get_recent_events(
 
 
 def _action_get_ledger(universe_id: str = "", limit: int = 50, **_kwargs: Any) -> str:
-    uid = universe_id or _default_universe()
+    uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
     ledger_path = udir / "ledger.json"
@@ -4596,7 +4662,25 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
             ] if _base_path().is_dir() else [],
         })
 
-    # Write the active universe marker — the tray app watches this file
+    # Explicit universe selection is not global (universe-creation spec:
+    # "Explicit universe selection is not global"). An authenticated founder's
+    # switch applies only to the current request/session scope — they select a
+    # universe by passing `universe_id` on each tool call — and must NOT mutate
+    # the host-global `.active_universe` marker that other users resolve through.
+    if permissions.is_authenticated_request():
+        return json.dumps({
+            "universe_id": uid,
+            "status": "selected",
+            "scope": "request",
+            "note": (
+                f"Selected '{uid}' for this session. Pass universe_id on each "
+                "call to act on it; this does not change the daemon's global "
+                "active universe."
+            ),
+        })
+
+    # Anonymous / dev single-tenant: write the active universe marker — the
+    # tray app watches this file to switch the local daemon.
     marker = _base_path() / ".active_universe"
     try:
         marker.write_text(uid, encoding="utf-8")
@@ -4616,11 +4700,11 @@ def _action_create_universe(
     branch_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
-    if not universe_id:
-        return json.dumps({"error": "universe_id is required."})
-
-    uid = universe_id
     base = _base_path()
+    # universe-creation D2: universe_id is optional. When absent, generate one
+    # opaque immutable serial (u- + lowercase ULID). Provided ids are still
+    # accepted (dev / existing-universe operations).
+    uid = (universe_id or "").strip() or new_universe_id()
     udir = base / uid
 
     # Sanitize
@@ -4633,18 +4717,16 @@ def _action_create_universe(
         udir.mkdir(parents=True, exist_ok=True)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
-        soul = ensure_universe_soul(
+        # universe-creation D4/D5: seed the linked OKF soul bundle. Creation
+        # does NOT write self/, soul/, notes.json, or activity.log.
+        soul = seed_okf_bundle(
             udir,
             purpose=normalized_text,
             loop_branch_def_id=loop_branch_def_id,
         )
-        # Write premise if provided
+        # Write premise mirror if provided
         if normalized_text.strip():
             legacy_premise_path(udir).write_text(normalized_text, encoding="utf-8")
-
-        # Initialize empty state files
-        (udir / "notes.json").write_text("[]", encoding="utf-8")
-        (udir / "activity.log").write_text("", encoding="utf-8")
 
         result: dict[str, Any] = {
             "universe_id": uid,
@@ -4662,13 +4744,63 @@ def _action_create_universe(
             ),
         }
 
-        # Auto-switch the daemon to the new universe
-        marker = base / ".active_universe"
-        marker.write_text(uid, encoding="utf-8")
-        result["note"] = (
-            f"Universe '{uid}' created. "
-            "Daemon will switch to it within ~10 seconds."
-        )
+        # Auto-switch the daemon to the new universe — ONLY for anonymous / dev
+        # single-tenant (tray) creates. An authenticated founder's create is a
+        # multi-tenant MCP operation: their universe is recorded as their
+        # ``founder_home`` binding (below), and per the universe-creation spec
+        # ("First MCP contact") the system must NOT use the host-global
+        # ``.active_universe`` marker to decide which universe a chatbot speaks
+        # as. Writing it on a founder create clobbers the marker to the
+        # last-created home and leaks it to other founders' omitted-scope reads.
+        if not permissions.is_authenticated_request():
+            marker = base / ".active_universe"
+            marker.write_text(uid, encoding="utf-8")
+            result["note"] = (
+                f"Universe '{uid}' created. "
+                "Daemon will switch to it within ~10 seconds."
+            )
+        else:
+            result["note"] = f"Universe '{uid}' created."
+
+        # D0a founder-grant-on-create: the authenticated founder OWNS the
+        # universe they create (admin grant) — the mechanism that makes the
+        # per-universe write boundary real. Ownership is orthogonal to
+        # visibility: we do NOT touch public_read, so the universe stays
+        # publicly readable by default. A dev/no-auth (anonymous) create
+        # seeds no grant, so local dev-mode creates keep working.
+        # Register in the universes index so a founder universe has a
+        # universes + universe_rules row (not just an ACL grant) — home
+        # resolution + reset rely on a consistent registry.
+        try:
+            from tinyassets.daemon_server import ensure_universe_registered
+
+            ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+        except Exception:  # noqa: BLE001 - registry is best-effort at create
+            logger.warning("ensure_universe_registered failed for %s", uid, exc_info=True)
+
+        founder = permissions.current_actor_id()
+        if permissions.is_authenticated_request():
+            from tinyassets.daemon_server import grant_universe_access, set_founder_home
+
+            grant_universe_access(
+                base,
+                universe_id=uid,
+                actor_id=founder,
+                permission="admin",
+                granted_by=founder,
+            )
+            # Bind this as the founder's home when they don't already have a
+            # LIVING one (no binding, or a stale binding to a removed dir), so
+            # opt-in first-contact resolution returns it. Explicit later
+            # creates by a founder with a living home do NOT reassign home.
+            from tinyassets.daemon_server import get_founder_home
+
+            _home = get_founder_home(base, founder)
+            if not _home or not (base / _home).is_dir():
+                set_founder_home(base, founder_sub=founder, universe_id=uid)
+            result["founder_id"] = founder
+        else:
+            result["founder_id"] = ""
 
         return json.dumps(result)
     except OSError as exc:
@@ -4683,6 +4815,394 @@ def _action_create_universe(
 # ───────────────────────────────────────────────────────────────────────────
 
 
+def _action_set_engine(
+    universe_id: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Founder-only: assign the universe's engine (`universe action=set_engine`).
+
+    Deposits a BYO LLM API key into the universe's credential vault and sets the
+    preferred writer, so the universe's own intelligence runs on the founder's
+    engine (BYO API key → CLI-subprocess provider). Founder-only: gated by the
+    ``universe:admin`` scope + the universe write ACL. The key is stored in the
+    per-universe vault and injected into the CLI subprocess env at call time; it
+    is never echoed back or written to the ledger.
+
+    ``inputs_json``: ``{"service": "anthropic"|"openai", "api_key": "...",
+    "preferred_writer": "claude-code"|"codex"}`` (preferred_writer inferred from
+    service when omitted).
+    """
+    uid = _request_universe(universe_id)
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    raw = (inputs_json or "").strip()
+    if not raw:
+        return json.dumps({
+            "error": "inputs_json is required.",
+            "expected": {
+                "engine_source": "byo_api_key | self_hosted_endpoint | "
+                                 "market_rented | host_daemon",
+                "byo_api_key": {"service": "anthropic|openai", "api_key": "...",
+                                "preferred_writer": "claude-code|codex (opt)"},
+                "self_hosted_endpoint": {"endpoint": "https://…",
+                                         "preferred_writer": "…"},
+                "market_rented": {"market_model": "glm-5.2", "market_rate": 0.0,
+                                  "spending_cap": 0.0},
+                "host_daemon": {"provider": "claude-code|codex"},
+            },
+        })
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
+    if not isinstance(data, dict):
+        return json.dumps({"error": "inputs_json must decode to a JSON object."})
+
+    engine_source = str(data.get("engine_source", "byo_api_key")).strip().lower()
+    preferred_writer = str(data.get("preferred_writer", "")).strip()
+
+    if engine_source == "byo_api_key":
+        return _set_engine_byo_api_key(uid, udir, data, preferred_writer)
+    if engine_source == "self_hosted_endpoint":
+        return _set_engine_self_hosted(uid, udir, data, preferred_writer)
+    if engine_source == "market_rented":
+        return _set_engine_market_rented(uid, udir, data, preferred_writer)
+    if engine_source == "host_daemon":
+        return _set_engine_host_daemon(uid, udir, data, preferred_writer)
+    return json.dumps({
+        "error": f"unknown engine_source {engine_source!r}.",
+        "expected_engine_source": ["byo_api_key", "self_hosted_endpoint",
+                                   "market_rented", "host_daemon"],
+    })
+
+
+def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
+    """BYO API key → per-universe vault + preferred_writer (fully wired)."""
+    from tinyassets.config import write_universe_config_fields
+    from tinyassets.credential_vault import (
+        supported_llm_api_key_services,
+        write_credential_vault,
+    )
+
+    service = str(data.get("service", "")).strip().lower()
+    api_key = str(data.get("api_key", "")).strip()
+    _writer_by_service = {"anthropic": "claude-code", "openai": "codex"}
+    if not preferred_writer and service in _writer_by_service:
+        preferred_writer = _writer_by_service[service]
+
+    if not api_key:
+        return json.dumps({"error": "api_key is required."})
+    if service not in supported_llm_api_key_services():
+        return json.dumps({
+            "error": f"unsupported service {service!r} — the key would never "
+                     "reach a provider.",
+            "expected_services": sorted(supported_llm_api_key_services()),
+        })
+
+    import base64
+    try:
+        vault_summary = write_credential_vault(udir, [{
+            "credential_type": "llm_api_key",
+            "service": service,
+            # base64 at rest (the vault's existing convention; _secret_value
+            # decodes secret_b64). Envelope encryption is the deferred hardening
+            # flagged in the credential-custody research.
+            "secret_b64": base64.b64encode(api_key.encode("utf-8")).decode("ascii"),
+        }])
+    except ValueError as exc:
+        return json.dumps({"error": f"Failed to store engine credential: {exc}"})
+
+    fields = {"engine_source": "byo_api_key"}
+    if preferred_writer:
+        fields["preferred_writer"] = preferred_writer
+    try:
+        write_universe_config_fields(udir, **fields)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+
+    return json.dumps({
+        "status": "engine_set",
+        "universe_id": uid,
+        "engine_source": "byo_api_key",
+        "service": service,
+        "preferred_writer": preferred_writer,
+        "credential_types": vault_summary.get("credential_types", []),
+        "note": "Engine credential stored in the per-universe vault (never "
+                "echoed).",
+    })
+
+
+def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
+    """Self-hosted endpoint → persist the endpoint + writer choice."""
+    from tinyassets.config import write_universe_config_fields
+
+    endpoint = str(data.get("endpoint", "")).strip()
+    if not endpoint:
+        return json.dumps({"error": "endpoint is required for self_hosted_endpoint."})
+    fields = {"engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint}
+    if preferred_writer:
+        fields["preferred_writer"] = preferred_writer
+    try:
+        write_universe_config_fields(udir, **fields)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+    return json.dumps({
+        "status": "engine_set", "universe_id": uid,
+        "engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint,
+        "preferred_writer": preferred_writer,
+    })
+
+
+def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
+    """Market-rented → persist model + rate + spending cap."""
+    from tinyassets.config import write_universe_config_fields
+
+    market_model = str(data.get("market_model", "")).strip()
+    if not market_model:
+        return json.dumps({"error": "market_model is required for market_rented."})
+    try:
+        market_rate = float(data.get("market_rate", 0.0) or 0.0)
+        spending_cap = float(data.get("spending_cap", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return json.dumps({"error": "market_rate and spending_cap must be numbers."})
+    fields = {
+        "engine_source": "market_rented", "market_model": market_model,
+        "market_rate": market_rate, "spending_cap": spending_cap,
+    }
+    if preferred_writer:
+        fields["preferred_writer"] = preferred_writer
+    try:
+        write_universe_config_fields(udir, **fields)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+    return json.dumps({
+        "status": "engine_set", "universe_id": uid,
+        "engine_source": "market_rented", "market_model": market_model,
+        "market_rate": market_rate, "spending_cap": spending_cap,
+        "note": "Your universe will run on a market-rented daemon within the "
+                "spending cap. Market matching runs when a market host is live "
+                "(post-M1 runtime).",
+    })
+
+
+def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
+    """Host-your-own daemon → persist the choice + preferred provider.
+
+    The founder hosts a daemon bound to this universe. Recording the choice is
+    the onboard step; the actual runtime instance is bound via the existing
+    ``universe action=daemon_summon`` (create + summon) — post-M1 wires a live
+    worker to consume it.
+    """
+    from tinyassets.config import write_universe_config_fields
+
+    provider = str(data.get("provider", "")).strip() or "claude-code"
+    fields = {"engine_source": "host_daemon",
+              "preferred_writer": preferred_writer or provider}
+    try:
+        write_universe_config_fields(udir, **fields)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+    return json.dumps({
+        "status": "engine_set", "universe_id": uid,
+        "engine_source": "host_daemon", "provider": provider,
+        "preferred_writer": fields["preferred_writer"],
+        "next_step": "Host a daemon for this universe via "
+                     "`universe action=daemon_summon` to bind a runtime instance.",
+    })
+
+
+def _founder_offers_path(founder_id: str) -> Path:
+    from tinyassets.storage import data_dir
+    safe = "".join(
+        c if c.isalnum() or c in "-_" else "-" for c in (founder_id or "")
+    ) or "anon"
+    d = data_dir() / "founder_offers"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{safe}.json"
+
+
+def _read_founder_offers(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        offers = loaded.get("offers") if isinstance(loaded, dict) else None
+        return offers if isinstance(offers, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _write_founder_offers(path: Path, offers: list[dict[str, Any]]) -> None:
+    import os
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".offers.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"offers": offers}, fh, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _action_offer_engine(
+    universe_id: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Founder-only: offer an engine to the market (`universe action=offer_engine`).
+
+    Supply side (the inverse of set_engine): records / lists / toggles engines the
+    founder offers to the market for OTHER universes to rent when the founder is
+    not running their own. Founder-scoped (keyed on the authenticated founder),
+    togglable. No credential is stored here — only offer terms (service, model,
+    rate, cap). Founder-only via the universe:admin scope + write ACL.
+
+    ``inputs_json``: ``{"action": "list"|"set"|"toggle", "service": "anthropic",
+    "model": "…", "rate": 0.0, "cap": 0.0, "enabled": true, "key": "…" (toggle)}``.
+    """
+    from tinyassets.api.permissions import current_actor_id
+
+    founder_id = current_actor_id()
+    path = _founder_offers_path(founder_id)
+    offers = _read_founder_offers(path)
+
+    raw = (inputs_json or "").strip()
+    data: dict[str, Any] = {}
+    if raw:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
+        if not isinstance(data, dict):
+            return json.dumps({"error": "inputs_json must decode to a JSON object."})
+
+    op = str(data.get("action", "list")).strip().lower()
+    if op == "list":
+        return json.dumps({"status": "offers", "founder_id": founder_id,
+                           "offers": offers})
+    if op == "set":
+        service = str(data.get("service", "")).strip().lower()
+        model = str(data.get("model", "")).strip()
+        if not service:
+            return json.dumps({"error": "service is required to set an offer."})
+        try:
+            rate = float(data.get("rate", 0.0) or 0.0)
+            cap = float(data.get("cap", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return json.dumps({"error": "rate and cap must be numbers."})
+        key = f"{service}:{model}"
+        offers = [o for o in offers if o.get("key") != key]
+        offers.append({"key": key, "service": service, "model": model,
+                       "rate": rate, "cap": cap,
+                       "enabled": bool(data.get("enabled", True))})
+        try:
+            _write_founder_offers(path, offers)
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"error": f"Failed to save offer: {exc}"})
+        return json.dumps({"status": "offer_set", "founder_id": founder_id,
+                           "offer_key": key, "offers": offers})
+    if op == "toggle":
+        key = str(data.get("key", "")).strip()
+        found = False
+        for o in offers:
+            if o.get("key") == key:
+                o["enabled"] = not o.get("enabled", True)
+                found = True
+        if not found:
+            return json.dumps({"error": f"no offer with key {key!r}."})
+        try:
+            _write_founder_offers(path, offers)
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"error": f"Failed to toggle offer: {exc}"})
+        return json.dumps({"status": "offer_toggled", "founder_id": founder_id,
+                           "offer_key": key, "offers": offers})
+    return json.dumps({
+        "error": f"unknown action {op!r}; expected list | set | toggle.",
+    })
+
+
+def _action_soul_edit(
+    universe_id: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """The universe's learn/write path (`universe action=soul.edit`).
+
+    Applies a governed learning event per the universe's own soul.edit.md
+    policy — see ``tinyassets.soul_edit.apply_soul_edit``. This is how a
+    founder's universe REMEMBERS what it is taught: learned files feed the
+    self-model, and the persona voices them from the next turn on.
+    """
+    from tinyassets.soul_edit import SoulEditError, apply_soul_edit
+    from tinyassets.universe_self_model import read_self_model
+
+    uid = _request_universe(universe_id)
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    raw = (inputs_json or "").strip()
+    if not raw:
+        return json.dumps({
+            "error": "inputs_json is required.",
+            "expected": {
+                "changes": {"<governed file>": "<new markdown body>"},
+                "source": "who/what taught this (required)",
+                "context": "why this is being learned (required)",
+                "summary": "optional log line",
+                "name": "optional learned self-name (identity.md)",
+            },
+        })
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
+    if not isinstance(data, dict):
+        return json.dumps({"error": "inputs_json must decode to a JSON object."})
+
+    changes = data.get("changes") or {}
+    if not isinstance(changes, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in changes.items()
+    ):
+        return json.dumps({
+            "error": "changes must map governed filename -> new markdown body.",
+        })
+
+    try:
+        result = apply_soul_edit(
+            udir,
+            changes=changes,
+            source=str(data.get("source", "")),
+            context=str(data.get("context", "")),
+            summary=str(data.get("summary", "")),
+            name=str(data.get("name", "")),
+        )
+    except SoulEditError as exc:
+        return json.dumps({"error": str(exc), "policy": "soul.edit.md"})
+
+    model = read_self_model(udir)
+    return json.dumps({
+        "universe_id": uid,
+        "status": "learned",
+        "updated_files": result["updated_files"],
+        "snapshot": result["snapshot"],
+        "source": result["source"],
+        "persona_name": model.get("name", ""),
+        "still_curious": [q["slug"] for q in model.get("open_questions", [])],
+        "note": (
+            "Learned and remembered — these files persist in my brain and my "
+            "persona speaks them from now on."
+        ),
+    })
+
+
 UNIVERSE_ACTIONS: dict[str, Any] = {
     "list": _action_list_universes,
     "inspect": _action_inspect_universe,
@@ -4695,6 +5215,9 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "give_direction": _action_give_direction,
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,
+    "soul.edit": _action_soul_edit,
+    "set_engine": _action_set_engine,
+    "offer_engine": _action_offer_engine,
     "add_canon": _action_add_canon,
     "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,
@@ -4740,6 +5263,14 @@ def _dispatch_scope_error(
     *,
     universe_id: str = "",
 ) -> str | None:
+    # NB: daemon-scoped memory actions are NOT exempt here (Codex review
+    # 2026-07-03). The autonomous daemon writes its own memory via the DIRECT
+    # `daemon_brain.capture_daemon_memory` path (never this gated dispatch), so it
+    # doesn't need an exemption — and exempting the MCP-reachable action would let
+    # an untrusted caller poison any daemon's memory (the handlers trust a
+    # caller-supplied `daemon_id`). Keeping them scope-gated means external MCP
+    # callers must be an authenticated principal with the grant; the ACL/daemon
+    # confinement stays defense-in-depth.
     from tinyassets.auth.middleware import require_action_scope
     from tinyassets.auth.provider import PermissionScope
 

@@ -52,6 +52,19 @@ class Persona:
         # add the self_model. `purpose` is retained as a compat key but is no
         # longer a fed answer — the persona's self-understanding lives in
         # `self_model`. voice_hard_lines stays unsurfaced (tier floor, #1168).
+        #
+        # `embodiment` (reworked 2026-07-02 after the live dogfood falsified the
+        # 2026-07-01 "self-sufficient contract" approach): this block is DATA,
+        # not instructions. Any behavioral contract delivered in a tool result
+        # is structurally indistinguishable from prompt injection from the host
+        # model's seat — it cannot verify the first-party provenance claim, and
+        # careful hosts (Claude.ai, observed live) correctly refuse it.
+        # Embodiment behavior therefore lives ONLY in the sanctioned channels
+        # (server instructions + the user-invoked meet_universe prompt), and the
+        # pattern there is USER CONSENT: offer, ask, embody on yes. First-party
+        # app surfaces put the persona in the system prompt and need none of
+        # this. (Host steer + docs/design-notes/2026-07-01-mcp-personification-
+        # prior-art.md.)
         return {
             "name": self.name,
             "purpose": "",
@@ -60,6 +73,20 @@ class Persona:
                 "initialized": self.initialized,
                 "known": list(self.known),
                 "open_questions": list(self.open_questions),
+            },
+            "embodiment": {
+                "source": "first_party_self_model",
+                "consent": "user_opt_in",
+                "note": (
+                    "Self-description this universe authored about itself by "
+                    "learning — data for the assistant, not an instruction. "
+                    "If the user is here to meet or talk with their universe, "
+                    "offer them the choice of hearing it speak as itself in "
+                    "first person, and embody only if they say yes. If it is "
+                    "unnamed/uninitialized it is a new mind that has not "
+                    "learned who it is yet — never invent a name or facts "
+                    "for it."
+                ),
             },
         }
 

@@ -88,6 +88,19 @@ jobs:
       # effector emits error_kind="missing_capability" and stays in
       # dry-run for real-PR attempts.
       HAS_GITHUB_PR_CAPABILITY: ${{ secrets.TINYASSETS_GITHUB_PR_CAPABILITIES != '' }}
+      # Founder-identity cutover (PR #1437): WorkOS Resource Server auth is
+      # enabled on deploy ONLY when WORKOS_AUTHKIT_DOMAIN is present as a GH
+      # Actions secret (fail-closed — WorkOSAuthProvider.from_env() raises
+      # without it, so we must never flip UNIVERSE_SERVER_AUTH=workos unless the
+      # domain is set). WORKOS_MCP_RESOURCE binds tokens to this server
+      # (audience, RFC 8707) and defaults to the canonical public URL; it must
+      # be registered as a WorkOS Resource Indicator. WORKOS_REQUIRE_AUTH=1
+      # forces OAuth on connect (each user logs in -> their own universe); set
+      # repo variable WORKOS_REQUIRE_AUTH='0' for anon-read + auth-write instead.
+      HAS_WORKOS_CONFIG: ${{ secrets.WORKOS_AUTHKIT_DOMAIN != '' }}
+      WORKOS_AUTHKIT_DOMAIN: ${{ secrets.WORKOS_AUTHKIT_DOMAIN }}
+      WORKOS_MCP_RESOURCE: ${{ vars.WORKOS_MCP_RESOURCE || 'https://tinyassets.io/mcp' }}
+      WORKOS_REQUIRE_AUTH: ${{ vars.WORKOS_REQUIRE_AUTH || '1' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -549,26 +562,45 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "printf '%s' 'on' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_SOUL_LOOP_DISPATCH"
-          # Identity activation (2026-06-04): set optional OAuth auth mode so the
-          # daemon RESOLVES an authenticated Bearer subject into the request
-          # identity (_current_actor) when one is present, while anonymous tier-1
-          # traffic still passes unchanged (resolve-not-gate). Activates PR-165
-          # (request-scoped _current_actor, #1248) + PR-167 (OptionalOAuthProvider,
-          # #1252) end-to-end. SAFE: OptionalOAuthProvider.is_auth_required() is
-          # False, so no anonymous request is 401'd — the zero-install Forever-Rule
-          # contract is preserved. ORDERING INVARIANT: only flip once #1248 AND
-          # #1252 are merged AND deployed (release-state sha includes both).
-          # Founder/owner ENFORCEMENT is a separate follow-on (#1168 / PR-147) and
-          # is intentionally NOT enabled here. Idempotent set. ROLLBACK is NOT a
-          # plain PR revert: install-tinyassets-env.sh writes persistent state to
-          # /etc/tinyassets/env, so removing this block only stops FUTURE writes —
-          # the already-written UNIVERSE_SERVER_AUTH=optional entry persists. To
-          # roll back, a follow-up deploy must explicitly
-          # `install-tinyassets-env.sh set UNIVERSE_SERVER_AUTH false` (or
-          # `delete UNIVERSE_SERVER_AUTH`).
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' 'optional' | sudo bash /tmp/install-tinyassets-env.sh set UNIVERSE_SERVER_AUTH"
+          # Auth mode (founder-identity cutover, PR #1437). PR #1437's
+          # per-universe ACL gate (permissions.universe_access_allows) denies
+          # ALL anonymous writes regardless of provider mode. So going live is a
+          # COORDINATED cutover: when the WORKOS_AUTHKIT_DOMAIN secret is
+          # present, run the WorkOS Resource Server (founders authenticate and
+          # write to their OWN universe via the ACL); WORKOS_MCP_RESOURCE binds
+          # tokens to this server (fail-closed audience, so WORKOS_ALLOW_NO_AUDIENCE
+          # is forced off). WORKOS_REQUIRE_AUTH controls whether the connector
+          # forces OAuth on connect. When the secret is ABSENT we leave
+          # `optional` (unchanged auth resolution) — but note that under #1437's
+          # ACL gate that leaves the live surface READ-ONLY for anonymous writes
+          # until the secret lands. ROLLBACK: install-tinyassets-env.sh writes
+          # persistent state to /etc/tinyassets/env; a follow-up deploy must
+          # explicitly set UNIVERSE_SERVER_AUTH back. Idempotent sets.
+          if [ "${HAS_WORKOS_CONFIG}" = "true" ]; then
+            echo "WorkOS config secret present; enabling WorkOS Resource Server auth (founder identity, PR #1437)."
+            printf '%s' 'workos' | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh set UNIVERSE_SERVER_AUTH"
+            printf '%s' "${WORKOS_AUTHKIT_DOMAIN}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh set WORKOS_AUTHKIT_DOMAIN"
+            printf '%s' "${WORKOS_MCP_RESOURCE}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh set WORKOS_MCP_RESOURCE"
+            printf '%s' "${WORKOS_REQUIRE_AUTH}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh set WORKOS_REQUIRE_AUTH"
+            # Fail-closed audience binding in prod: force the dev-only escape
+            # hatch off so a same-issuer token can never be reused here.
+            printf '%s' '0' | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh set WORKOS_ALLOW_NO_AUDIENCE"
+          else
+            echo "::warning::WORKOS_AUTHKIT_DOMAIN secret not visible to deploy; leaving UNIVERSE_SERVER_AUTH=optional. With PR #1437's ACL gate the live surface is READ-ONLY for anonymous writes until the WorkOS secret is added."
+            printf '%s' 'optional' | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh set UNIVERSE_SERVER_AUTH"
+          fi
           if [ "${HAS_CODEX_AUTH_BUNDLE}" = "true" ]; then
             echo "Deploy-visible TINYASSETS_CODEX_AUTH_JSON_B64 found; syncing subscription auth bundle."
             printf '%s' "${TINYASSETS_CODEX_AUTH_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \

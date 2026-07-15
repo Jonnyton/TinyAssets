@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import inspect
 import json
+from pathlib import Path
+
+import pytest
 
 from tinyassets.api.auto_ship_actions import (
     _AUTO_SHIP_ACTIONS,
@@ -18,6 +21,82 @@ from tinyassets.api.auto_ship_actions import (
     _action_validate_ship_packet,
 )
 from tinyassets.api.extensions import _extensions_impl
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+from tinyassets.daemon_server import grant_universe_access
+
+
+class _StaticAuthProvider(AuthProvider):
+    def __init__(self, identity: Identity | None) -> None:
+        self.identity = identity
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self.identity if token == "ok" else None
+
+    def is_auth_required(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict) -> dict:
+        return {"client_id": "test-client", **metadata}
+
+    def create_authorization(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        scope: str,
+        state: str,
+        code_challenge: str,
+        code_challenge_method: str,
+    ) -> str:
+        return "test-code"
+
+    def exchange_code(
+        self,
+        code: str,
+        client_id: str,
+        redirect_uri: str,
+        code_verifier: str,
+    ) -> dict | None:
+        return None
+
+
+def _reset_auth() -> None:
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+def _authenticate_owner(
+    base_path: Path,
+    *,
+    universe_id: str,
+    user_id: str = "owner",
+) -> None:
+    grant_universe_access(
+        base_path,
+        universe_id=universe_id,
+        actor_id=user_id,
+        permission="admin",
+        granted_by=user_id,
+    )
+    identity = Identity(
+        user_id=user_id,
+        username=user_id,
+        capabilities=[
+            "tinyassets.extensions.read",
+            "tinyassets.extensions.write",
+            "tinyassets.extensions.costly",
+        ],
+    )
+    set_provider(_StaticAuthProvider(identity))
+    auth_middleware("ok")
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_provider() -> None:
+    _reset_auth()
+    yield
+    _reset_auth()
+
 
 # ── Wrapper layer (handler-level) ──────────────────────────────────────────
 
@@ -150,6 +229,7 @@ class TestDispatchIntegration:
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
         universe = tmp_path / "ledger-uni"
         universe.mkdir(parents=True, exist_ok=True)
+        _authenticate_owner(Path(tmp_path), universe_id="ledger-uni")
         packet = {
             "release_gate_result": "APPROVE_AUTO_SHIP",
             "ship_class": "docs_canary",
@@ -210,6 +290,7 @@ class TestDispatchIntegration:
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
         universe = tmp_path / "wrapper-uni"
         universe.mkdir(parents=True, exist_ok=True)
+        _authenticate_owner(Path(tmp_path), universe_id="wrapper-uni")
         packet = {
             "release_gate_result": "APPROVE_AUTO_SHIP",
             "ship_class": "docs_canary",
@@ -258,6 +339,7 @@ class TestDispatchIntegration:
         monkeypatch.delenv("TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED", raising=False)
         universe = tmp_path / "test-uni"
         universe.mkdir(parents=True, exist_ok=True)
+        _authenticate_owner(Path(tmp_path), universe_id="test-uni")
         record_attempt(universe, ShipAttempt(
             ship_attempt_id="ship_route",
             created_at="2026-05-03T00:00:00+00:00",
@@ -339,11 +421,12 @@ class TestLedgerRecording:
 
     @staticmethod
     def _setup_universe(tmp_path, monkeypatch, name="test-uni"):
-        from pathlib import Path
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", name)
-        (Path(tmp_path) / name).mkdir(parents=True, exist_ok=True)
-        return Path(tmp_path) / name
+        universe = Path(tmp_path) / name
+        universe.mkdir(parents=True, exist_ok=True)
+        _authenticate_owner(Path(tmp_path), universe_id=name)
+        return universe
 
     def test_record_off_response_is_byte_identical_to_pr224(self, tmp_path, monkeypatch):
         self._setup_universe(tmp_path, monkeypatch)
@@ -414,6 +497,7 @@ class TestLedgerRecording:
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
         (Path(tmp_path) / "default-uni").mkdir(parents=True, exist_ok=True)
         (Path(tmp_path) / "other-uni").mkdir(parents=True, exist_ok=True)
+        _authenticate_owner(Path(tmp_path), universe_id="other-uni")
 
         json.loads(_action_validate_ship_packet({
             "body_json": json.dumps(self._packet()),

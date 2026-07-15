@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from tinyassets.exceptions import (
     ProviderError,
@@ -48,6 +49,51 @@ def _resolve_claude_cmd() -> tuple[list[str], bool]:
     return ["claude"], False
 
 
+def _sandbox_cli_args(
+    config: ModelConfig, universe_dir: Path | None
+) -> tuple[list[str], str | None]:
+    """Build tool-policy flags + isolated cwd for a sandboxed subprocess turn.
+
+    Returns ``(extra_cmd_flags, run_cwd)``. This is the P0 isolation seam for the
+    founder-facing universe-intelligence turn (2026-07-03 live-test finding): the
+    universe engine must NOT inherit the daemon's checkout (repo source,
+    ``CLAUDE.md``, other universes) nor keep host tools (Bash → arbitrary host
+    commands / clone / gh). ``--disallowedTools`` is the hard floor that denies
+    shell escape even if a settings file would grant it; ``run_cwd`` pins the
+    subprocess to the universe's own dir. Both are no-ops for host-trusted roles
+    that leave the config fields at their defaults.
+    """
+    flags: list[str] = []
+    if config.sandbox_workspace:
+        # Load ONLY project-tier settings. A universe dir is bare, so this loads
+        # NOTHING — critically it excludes the USER's global settings, which carry
+        # MCP servers and `bypassPermissions`. Without it, the sandboxed engine
+        # still inherits the user's MCP tools (verified 2026-07-03: it saw
+        # `mcp__codex__codex`), so a founder's universe could call e.g. Codex →
+        # arbitrary code execution, fully bypassing the Bash deny. This strips all
+        # ambient MCP + config from the founder-facing turn.
+        flags += ["--setting-sources", "project"]
+    allowed = config.allowed_tools
+    disallowed = config.disallowed_tools
+    # ``--allowedTools``/``--disallowedTools`` are variadic (<tools...>): each
+    # tool is its OWN argv token, not one space-joined string (a joined string is
+    # read as a single bogus tool name and silently matches nothing).
+    if allowed:
+        flags += ["--allowedTools", *allowed]
+    if disallowed:
+        flags += ["--disallowedTools", *disallowed]
+    # Fail-closed (2026-07-03 P0 review, Codex ADAPT): a sandboxed turn with no
+    # universe_dir would inherit the daemon's cwd (the checkout) — the exact leak
+    # this fixes. Refuse rather than silently run un-isolated.
+    if config.sandbox_workspace and universe_dir is None:
+        raise ProviderError(
+            "sandboxed universe turn requires a universe_dir — refusing to run "
+            "un-isolated in the daemon's working directory (fail-closed)."
+        )
+    run_cwd = str(universe_dir) if config.sandbox_workspace else None
+    return flags, run_cwd
+
+
 class ClaudeProvider(BaseProvider):
     """Calls Claude via the ``claude -p`` CLI binary."""
 
@@ -63,12 +109,16 @@ class ClaudeProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
         base_cmd, use_shell = _resolve_claude_cmd()
         cmd = [*base_cmd, "-p"]
         if system:
             cmd.extend(["--system-prompt", system])
-        proc_env = subprocess_env_for_provider(self.name)
+        extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
+        cmd.extend(extra_flags)
+        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
 
         win_kw = _no_window_kwargs()
         if use_shell:
@@ -78,6 +128,7 @@ class ClaudeProvider(BaseProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=proc_env,
+                cwd=run_cwd,
                 **win_kw,
             )
         else:
@@ -87,6 +138,7 @@ class ClaudeProvider(BaseProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=proc_env,
+                cwd=run_cwd,
                 **win_kw,
             )
 
@@ -147,13 +199,17 @@ class ClaudeProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
         """Call with ``--output-format json`` for structured output."""
         base_cmd, use_shell = _resolve_claude_cmd()
         cmd = [*base_cmd, "-p", "--output-format", "json"]
         if system:
             cmd.extend(["--system-prompt", system])
-        proc_env = subprocess_env_for_provider(self.name)
+        extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
+        cmd.extend(extra_flags)
+        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
 
         win_kw = _no_window_kwargs()
         if use_shell:
@@ -163,6 +219,7 @@ class ClaudeProvider(BaseProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=proc_env,
+                cwd=run_cwd,
                 **win_kw,
             )
         else:
@@ -172,6 +229,7 @@ class ClaudeProvider(BaseProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=proc_env,
+                cwd=run_cwd,
                 **win_kw,
             )
 

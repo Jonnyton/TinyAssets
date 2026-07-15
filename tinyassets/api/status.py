@@ -24,7 +24,11 @@ import os
 from pathlib import Path
 from typing import Any
 
-from tinyassets.api.helpers import _base_path, _default_universe, _universe_dir
+from tinyassets.api.helpers import (
+    _base_path,
+    _default_universe,
+    _universe_dir,
+)
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 
 
@@ -675,6 +679,43 @@ def _compute_supervisor_liveness(
     return out
 
 
+def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
+    """Resolve the universe for a status entry. Returns ``(uid, awaiting)``.
+
+    OPT-IN BIRTH (host decision 2026-07-02, supersedes create-on-read): a
+    status read NEVER creates anything — create-on-read guaranteed a
+    side-effect disclosure paragraph in every host model's first reply, and
+    reads must be reads. ``awaiting`` is True for an authenticated founder
+    with no (living) home universe: get_status then returns the compact
+    awaiting-creation card, and the universe is created when the founder asks
+    to meet it (``universe action=create_universe`` — the request is the
+    consent).
+
+    - An explicit ``universe_id`` always wins.
+    - An anonymous / dev caller uses the legacy default resolution
+      (``.active_universe`` / first dir).
+    - An authenticated founder with a bound, living home returns it.
+    """
+    requested = (universe_id or "").strip()
+    if requested:
+        return requested, False
+
+    from tinyassets.api import permissions
+
+    if not permissions.is_authenticated_request():
+        return _default_universe(), False
+
+    base = _base_path()
+    from tinyassets.daemon_server import get_founder_home
+
+    founder = permissions.current_actor_id()
+    home = get_founder_home(base, founder)
+    if home and (base / home).is_dir():
+        return home, False
+    # No home (or a stale binding to a removed dir): awaiting opt-in creation.
+    return "", True
+
+
 def get_status(universe_id: str = "") -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
@@ -682,7 +723,40 @@ def get_status(universe_id: str = "") -> str:
     ``tinyassets.universe_server`` — this implementation is what the
     decorated tool delegates to.
     """
-    uid = universe_id or _default_universe()
+    uid, awaiting = _resolve_entry_universe(universe_id)
+    if awaiting:
+        # Compact awaiting-creation card: a pure read with nothing else to
+        # narrate. `about` answers "what is this"; `next_step_for_user` is
+        # product copy the user can say. No universe exists yet, so there is
+        # no status, persona, or side effect to disclose.
+        return json.dumps({
+            "first_contact": {
+                "event": "no_universe_yet",
+                "note": (
+                    "No universe exists for this account yet. One is created "
+                    "when the founder asks to meet it."
+                ),
+            },
+            "about": (
+                "TinyAssets hosts your own AI universe — a persistent mind "
+                "that starts blank, learns who it is from you, and grows "
+                "into your projects and goals."
+            ),
+            "next_step_for_user": (
+                "Just tell me you'd like to meet your universe and I'll set it "
+                "up and introduce you."
+            ),
+            "schema_version": 1,
+        })
+    # Per-universe read gate: never expose a private universe's status / activity
+    # tail to an anonymous or non-granted caller. Public universes (public_read
+    # default) stay readable; a founder reads their own universe via their grant.
+    from tinyassets.api import permissions
+
+    if not permissions.universe_access_allows(uid, write=False):
+        return json.dumps(permissions.universe_access_error(
+            universe_id=uid, write=False, action="get_status", surface="universe",
+        ))
     udir = _universe_dir(uid)
     universe_exists = udir.is_dir()
     host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")

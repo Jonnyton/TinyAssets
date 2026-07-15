@@ -12,6 +12,7 @@ import concurrent.futures
 import logging
 import os
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
@@ -24,6 +25,7 @@ from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
     ProviderResponse,
+    UniverseContext,
     api_key_providers_enabled,
 )
 from tinyassets.providers.diagnostics import (
@@ -38,18 +40,47 @@ from tinyassets.providers.quota import (
     QuotaTracker,
 )
 
+if TYPE_CHECKING:
+    from tinyassets.config import UniverseConfig
+
 logger = logging.getLogger(__name__)
 
-def _default_config() -> ModelConfig:
-    """Build default ModelConfig from universe config if available."""
+def _resolve_universe_config(
+    universe_context: UniverseContext | None,
+) -> "UniverseConfig | None":
+    """Resolve the effective UniverseConfig for a call.
+
+    An explicit ``universe_context.config`` wins; otherwise fall back to the
+    process-global ``runtime.universe_config`` (preserving today's
+    single-universe-daemon behavior). Returns ``None`` only when neither is
+    available.
+    """
+    if universe_context is not None and universe_context.config is not None:
+        return universe_context.config
     try:
         from tinyassets import runtime_singletons as runtime
 
-        cfg = runtime.universe_config
+        return runtime.universe_config
+    except Exception:
+        return None
+
+
+def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
+    """Build default ModelConfig from the resolved universe config if available.
+
+    ``resolved`` is the config produced by :func:`_resolve_universe_config`.
+    When omitted, falls back to the process-global ``runtime.universe_config``
+    so bare callers keep today's behavior.
+    """
+    try:
+        if resolved is None:
+            from tinyassets import runtime_singletons as runtime
+
+            resolved = runtime.universe_config
         return ModelConfig(
-            temperature=cfg.temperature,
-            timeout=cfg.timeout,
-            max_tokens=cfg.max_tokens,
+            temperature=resolved.temperature,
+            timeout=resolved.timeout,
+            max_tokens=resolved.max_tokens,
         )
     except Exception:
         return ModelConfig()
@@ -172,17 +203,24 @@ class ProviderRouter:
         return [preferred] + [p for p in chain if p != preferred]
 
     @staticmethod
-    def _current_allowlist() -> list[str] | None:
-        """Read the active universe's `allowed_providers` allowlist, or None.
+    def _current_allowlist(
+        resolved: "UniverseConfig | None" = None,
+    ) -> list[str] | None:
+        """Read the resolved universe's `allowed_providers` allowlist, or None.
 
         Q6.3 enforcement primitive — see UniverseConfig.allowed_providers.
-        Returns None when no universe config is bound or the field is unset
-        (full fallback chain preserved, backwards-compatible).
+        ``resolved`` is the config produced by :func:`_resolve_universe_config`
+        (explicit ``universe_context`` wins); when omitted, falls back to the
+        process-global ``runtime.universe_config``. Returns None when no universe
+        config is bound or the field is unset (full fallback chain preserved,
+        backwards-compatible).
         """
         try:
-            from tinyassets import runtime_singletons as runtime
+            if resolved is None:
+                from tinyassets import runtime_singletons as runtime
 
-            return runtime.universe_config.allowed_providers
+                resolved = runtime.universe_config
+            return resolved.allowed_providers
         except Exception:
             return None
 
@@ -242,14 +280,22 @@ class ProviderRouter:
         prompt: str,
         system: str,
         config: ModelConfig | None = None,
+        *,
+        universe_context: UniverseContext | None = None,
     ) -> ProviderResponse:
         """Route a single call through the fallback chain for *role*.
 
         Returns a :class:`ProviderResponse` on success.  For judge role,
         returns a degraded sentinel when all providers are exhausted.
         For other roles, raises :class:`AllProvidersExhaustedError`.
+
+        ``universe_context``, when supplied, resolves this call's engine
+        preference + allowlist + vault-backed auth from an EXPLICIT argument
+        instead of the process globals — the multi-universe seam.
         """
-        cfg = config or _default_config()
+        resolved_config = _resolve_universe_config(universe_context)
+        universe_dir = universe_context.universe_dir if universe_context else None
+        cfg = config or _default_config(resolved_config)
         chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
 
         # Hard pin: TINYASSETS_PIN_WRITER narrows the writer chain to a
@@ -260,21 +306,21 @@ class ProviderRouter:
         if is_pinned_writer:
             chain = [pin_writer]
         else:
-            # Apply per-universe provider preference from config.yaml
+            # Apply per-universe provider preference from the resolved config.
             try:
-                from tinyassets import runtime_singletons as runtime
-                ucfg = runtime.universe_config
-                if role == "writer" and ucfg.preferred_writer:
-                    chain = self._apply_preference(chain, ucfg.preferred_writer)
-                elif role == "judge" and ucfg.preferred_judge:
-                    chain = self._apply_preference(chain, ucfg.preferred_judge)
+                ucfg = resolved_config
+                if ucfg is not None:
+                    if role == "writer" and ucfg.preferred_writer:
+                        chain = self._apply_preference(chain, ucfg.preferred_writer)
+                    elif role == "judge" and ucfg.preferred_judge:
+                        chain = self._apply_preference(chain, ucfg.preferred_judge)
             except Exception:
                 pass
 
         # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
         # narrowed chain to [pin_writer] above; the filter then enforces
         # pin × allowlist composition. None = no-op (backwards-compat).
-        allowlist = self._current_allowlist()
+        allowlist = self._current_allowlist(resolved_config)
         if allowlist is not None:
             filtered = self._apply_allowlist(chain, allowlist)
             if not filtered:
@@ -396,7 +442,9 @@ class ProviderRouter:
 
             logger.info("Trying provider %s for role=%s", provider_name, role)
             try:
-                resp = await provider.complete(prompt, system, cfg)
+                resp = await provider.complete(
+                    prompt, system, cfg, universe_dir=universe_dir,
+                )
                 self._quota.record_success(provider_name)
             except ProviderUnavailableError as exc:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
@@ -543,6 +591,8 @@ class ProviderRouter:
         policy: dict | None,
         config: ModelConfig | None = None,
         difficulty: str = "",
+        *,
+        universe_context: UniverseContext | None = None,
     ) -> tuple[str, str, dict]:
         """Route a call honouring an explicit llm_policy dict.
 
@@ -565,10 +615,14 @@ class ProviderRouter:
         method extracts ``.text`` and returns (text, provider_name, meta). For
         the policy path we track the name explicitly.
         """
-        cfg = config or _default_config()
+        resolved_config = _resolve_universe_config(universe_context)
+        universe_dir = universe_context.universe_dir if universe_context else None
+        cfg = config or _default_config(resolved_config)
 
         if not policy:
-            resp = await self.call(role, prompt, system, cfg)
+            resp = await self.call(
+                role, prompt, system, cfg, universe_context=universe_context,
+            )
             return resp.text, resp.provider, self._call_meta(resp, attempts=1)
 
         # Build ordered attempt list from policy
@@ -606,7 +660,7 @@ class ProviderRouter:
         # rather than attempt and leak. If everything filters out the
         # method falls through to the role-based ``call()`` below, which
         # applies the same allowlist and hard-fails.
-        allowlist = self._current_allowlist()
+        allowlist = self._current_allowlist(resolved_config)
         if allowlist is not None:
             filtered_order = self._apply_allowlist(attempt_order, allowlist)
             if attempt_order and not filtered_order:
@@ -656,7 +710,9 @@ class ProviderRouter:
             )
             tried += 1
             try:
-                resp = await provider.complete(prompt, system, cfg)
+                resp = await provider.complete(
+                    prompt, system, cfg, universe_dir=universe_dir,
+                )
                 self._quota.record_success(provider_name)
                 return resp.text, provider_name, self._call_meta(resp, attempts=tried)
             except ProviderUnavailableError:
@@ -686,7 +742,9 @@ class ProviderRouter:
             "Policy providers exhausted for role=%s; falling through to role chain",
             role,
         )
-        resp = await self.call(role, prompt, system, cfg)
+        resp = await self.call(
+            role, prompt, system, cfg, universe_context=universe_context,
+        )
         return resp.text, resp.provider, self._call_meta(resp, attempts=tried + 1)
 
     def call_with_policy_sync(
@@ -697,17 +755,23 @@ class ProviderRouter:
         policy: dict | None,
         config: ModelConfig | None = None,
         difficulty: str = "",
+        *,
+        universe_context: UniverseContext | None = None,
     ) -> tuple[str, str, dict]:
         """Synchronous wrapper for :meth:`call_with_policy`."""
-        cfg = config or _default_config()
+        cfg = config or _default_config(_resolve_universe_config(universe_context))
         sync_timeout = cfg.timeout + 30
 
+        # Capture universe_context in the closure so it survives the hop into
+        # the ThreadPoolExecutor worker thread (no ContextVar — a ContextVar
+        # set here would NOT propagate to the pool's worker thread).
         def _run() -> tuple[str, str, dict]:
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(
                     self.call_with_policy(
                         role, prompt, system, policy, cfg, difficulty,
+                        universe_context=universe_context,
                     )
                 )
             finally:
@@ -740,14 +804,21 @@ class ProviderRouter:
         prompt: str,
         system: str,
         config: ModelConfig | None = None,
+        *,
+        universe_context: UniverseContext | None = None,
     ) -> ProviderResponse:
         """Synchronous version of :meth:`call` for use from sync code.
 
         Runs the async ``call`` in a dedicated thread with its own event
         loop, avoiding the "loop already running" problem that blocks
         ``loop.run_until_complete`` inside LangGraph nodes.
+
+        ``universe_context`` is captured in the submitted closure so it survives
+        the hop into the ThreadPoolExecutor worker thread — a ContextVar set in
+        the caller's thread would NOT propagate into the pool worker, so the
+        per-universe routing state is threaded EXPLICITLY, not via ContextVar.
         """
-        cfg = config or _default_config()
+        cfg = config or _default_config(_resolve_universe_config(universe_context))
         # Allow the subprocess timeout to fire first (+30s margin for
         # async overhead, fallback attempts, etc.)
         sync_timeout = cfg.timeout + 30
@@ -756,7 +827,10 @@ class ProviderRouter:
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(
-                    self.call(role, prompt, system, cfg)
+                    self.call(
+                        role, prompt, system, cfg,
+                        universe_context=universe_context,
+                    )
                 )
             finally:
                 loop.close()
@@ -782,6 +856,8 @@ class ProviderRouter:
         prompt: str,
         system: str,
         config: ModelConfig | None = None,
+        *,
+        universe_context: UniverseContext | None = None,
     ) -> list[ProviderResponse]:
         """Fan out to ALL available judge providers in parallel.
 
@@ -789,12 +865,14 @@ class ProviderRouter:
         calls the same provider twice.  Returns 1-N responses
         depending on how many providers are healthy.
         """
-        cfg = config or _default_config()
+        resolved_config = _resolve_universe_config(universe_context)
+        universe_dir = universe_context.universe_dir if universe_context else None
+        cfg = config or _default_config(resolved_config)
 
         # Q6.3 — filter judge ensemble by per-universe allowlist (privacy
         # primitive). Empty filter => empty list, matching the existing
         # "no judges available" contract at L484-486.
-        allowlist = self._current_allowlist()
+        allowlist = self._current_allowlist(resolved_config)
         ensemble = self._apply_allowlist(list(_JUDGE_PROVIDERS), allowlist)
         if allowlist is not None and not ensemble:
             logger.warning(
@@ -844,7 +922,9 @@ class ProviderRouter:
             name: str, provider: BaseProvider,
         ) -> ProviderResponse | None:
             try:
-                resp = await provider.complete(prompt, system, cfg)
+                resp = await provider.complete(
+                    prompt, system, cfg, universe_dir=universe_dir,
+                )
                 self._quota.record_success(name)
                 return resp
             except ProviderUnavailableError:

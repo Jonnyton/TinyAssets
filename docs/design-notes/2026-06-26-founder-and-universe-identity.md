@@ -89,7 +89,7 @@ server validates it against WorkOS's JWKS. **`sub` = the founder key.**
 - **Scopes — the taxonomy ALREADY EXISTS (verified 2026-06-26); do NOT rebuild it.**
   `tinyassets/auth/provider.py` `build_action_scope_registry()` already maps every
   `{tool}.{action}` → a read/write/costly/admin effect with
-  `oauth_scope = workflow.{tool}.{effect}`, incl. `_UNIVERSE_COSTLY_ACTIONS`
+  `oauth_scope = tinyassets.{tool}.{effect}`, incl. `_UNIVERSE_COSTLY_ACTIONS`
   (create_universe, post_to_goal_pool, submit_node_bid, daemon_create/summon,
   daemon_memory_promote) and `_UNIVERSE_ADMIN_ACTIONS` (control_daemon, set_tier_config,
   daemon_banish/pause/resume/restart/update_behavior). Slice 2 **consumes** this via
@@ -99,7 +99,7 @@ server validates it against WorkOS's JWKS. **`sub` = the founder key.**
   `set_tier_config` admin, not plain write.) So the genuinely-new work is NOT the
   taxonomy but: **(a)** the anonymous-read consumption policy (reads pass with no/invalid
   token; enforce the existing scope only on write/costly/admin effects), **(b)** making
-  OAuth **grants actually carry** `workflow.universe.write/costly/admin` — the defaults
+  OAuth **grants actually carry** `tinyassets.universe.write/costly/admin` — the defaults
   grant coarse `"read write"`, which is the real gap, and **(c)** the **resolve-always**
   auth mode.
 
@@ -146,7 +146,7 @@ explicitly out of scope for this note's read-side routing.
 |---|---|---|
 | OAuth flow | issues anonymous-subject tokens; routes maybe unmounted | **WorkOS AuthKit = the AS** (upstream Google/GitHub OIDC → real `sub`); our server = Resource Server validating WorkOS JWTs vs JWKS; retire/demote self-issued anon provider |
 | `tinyassets/auth` modes | gated (rejects anon) / optional (enforces nothing) | New mode: resolve-always, anon reads, enforce named scopes on writes/costly/admin |
-| Scopes | coarse `read write` | `workflow.universe.read/write/costly` taxonomy + OAuth grants that match |
+| Scopes | coarse `read write` | `tinyassets.universe.read/write/costly` taxonomy + OAuth grants that match |
 | Universe ACL | only private universes gated | Founder field + founder-only-write policy; public reads stay open |
 | `create_universe` | caller id; no founder; not gated | OAuth-gated; serial id; record `founder = real user_id`; seed blank self-model |
 | Default routing | active marker / env / first subdir | Identity→main-universe map; per-request read/persona routing |
@@ -179,7 +179,7 @@ flag, then founder metadata, then routing.
 2. **New capability mode.** Resolve-always + anonymous-reads + enforce named scopes on
    writes/costly/admin by **consuming the existing `provider.py` registry**
    (`action_scope_for`) — do NOT rebuild the taxonomy (§3.1) — plus make OAuth grants
-   carry `workflow.universe.write/costly/admin`. Behind a flag.
+   carry `tinyassets.universe.write/costly/admin`. Behind a flag.
 3. **Founder metadata + founder-write ACL.** `create_universe` (OAuth-gated) records a
    serial id + `founder`; founder-only writes; migration for founderless universes.
 4. **Identity→main-universe storage** + default routing to it.

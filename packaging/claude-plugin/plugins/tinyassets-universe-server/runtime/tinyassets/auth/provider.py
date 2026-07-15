@@ -384,6 +384,8 @@ _UNIVERSE_COSTLY_ACTIONS = frozenset({
 _UNIVERSE_ADMIN_ACTIONS = frozenset({
     "control_daemon",
     "set_tier_config",
+    "set_engine",
+    "offer_engine",
     "daemon_banish",
     "daemon_pause",
     "daemon_resume",
@@ -496,6 +498,8 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _ESCROW_ACTIONS,
         _GATE_EVENT_ACTIONS,
         _GATES_ACTIONS,
+        _GOAL_ACTIONS,
+        _GOAL_WRITE_ACTIONS,
         _OUTCOME_ACTIONS,
     )
     from tinyassets.api.runs import _RUN_ACTIONS, _RUN_WRITE_ACTIONS
@@ -587,6 +591,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         "define_ladder",
         "claim",
         "claim_from_branch_run",
+        "record_conformance_pack",
         "retract",
         "stake_bonus",
         "unstake_bonus",
@@ -600,6 +605,16 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         write_actions=gates_writes,
         costly_actions=_GATES_COSTLY_ACTIONS,
         admin_actions=_GATES_ADMIN_ACTIONS,
+    )
+
+    _extend_scope_rows(
+        rows,
+        tool="goals",
+        actions=set(_GOAL_ACTIONS),
+        source="tinyassets.api.market._GOAL_ACTIONS",
+        write_actions=set(_GOAL_WRITE_ACTIONS),
+        # run_canonical triggers a branch run; scope it as costly like run_branch.
+        costly_actions=frozenset({"run_canonical"}),
     )
 
     return {row.action_name: row for row in rows}
@@ -685,14 +700,43 @@ class AuthProvider(ABC):
         """Whether this provider requires authentication."""
         ...
 
+    def resolve_always_writes(self) -> bool:
+        """Resolve-always mode (default off).
+
+        When True, anonymous callers may still perform read-effect actions
+        (public reads), but every write/costly/admin action requires an
+        authenticated principal holding the action's grant. This is the WorkOS
+        production model (D0b): the per-universe ACL layer then confines an
+        authenticated founder to their own universe. Providers that leave this
+        False keep their existing gating (dev = fully open; OAuth = all-auth).
+        """
+        return False
+
+    def challenge_unauthenticated(self) -> bool:
+        """Whether a *missing* bearer token on the MCP endpoint should return a
+        401 ``WWW-Authenticate`` challenge (default off).
+
+        Resolve-always keeps anonymous reads working by NOT challenging a missing
+        token — but MCP clients (Claude.ai/ChatGPT) only start OAuth on a 401, so
+        an optional-auth connector never prompts the founder to sign in and
+        first-contact never fires. Providers that want to force the OAuth flow on
+        the founder connector return True here; discovery routes stay public so
+        the client can still find the authorization server.
+        """
+        return False
+
     def writes_require_identity(self) -> bool:
         """Whether mutating MCP handles require a resolved identity.
 
         Founder decision 2026-07-13 (production-mcp-sweep P0): reads stay
         open, but OAuth-backed modes reject anonymous writes. Dev mode
-        keeps writes open for local and test flows.
+        keeps writes open for local and test flows. Merge note 2026-07-15:
+        resolve-always mode (WorkOS/optional, D0b) is by definition an
+        OAuth-backed write-gating mode, so it is folded in here — one
+        semantic switch for the #1441 tool-layer gate and the pre-dispatch
+        401 write challenge.
         """
-        return self.is_auth_required()
+        return self.is_auth_required() or self.resolve_always_writes()
 
     @abstractmethod
     def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -1071,8 +1115,15 @@ class OptionalOAuthProvider(OAuthProvider):
     def is_auth_required(self) -> bool:
         return False
 
-    def writes_require_identity(self) -> bool:
-        # Reads stay anonymous-friendly; writes need a resolved subject.
+    def resolve_always_writes(self) -> bool:
+        # Optional mode IS the resolve-always write model (D0b): anonymous callers
+        # get public reads, but every write/costly/admin action requires an
+        # authenticated principal holding the grant. Without this override both
+        # gate flags are False, `require_action_scope` short-circuits, and an
+        # anonymous `write_graph target=universe` (create) slips through — the
+        # pre-deploy security gap (STATUS 2026-07-02). Fail closed for writes.
+        # The base class derives writes_require_identity() from this flag, so
+        # the #1441 tool-layer write gate engages in this mode too.
         return True
 
 
@@ -1084,6 +1135,14 @@ class OptionalOAuthProvider(OAuthProvider):
 def create_provider() -> AuthProvider:
     """Create the appropriate auth provider based on configuration."""
     auth_mode = os.environ.get("UNIVERSE_SERVER_AUTH", "false").strip().lower()
+    if auth_mode == "workos":
+        # WorkOS AuthKit is the Authorization Server; we are a Resource Server
+        # validating its bearer JWTs. Lazy import so non-WorkOS deployments
+        # don't load PyJWT. See docs/reference/workos-authkit-integration.md.
+        from tinyassets.auth.workos_provider import WorkOSAuthProvider
+
+        logger.info("WorkOS AuthKit auth provider enabled (Resource Server)")
+        return WorkOSAuthProvider.from_env()
     if auth_mode in ("true", "1", "yes", "oauth"):
         logger.info("OAuth auth provider enabled")
         return OAuthProvider()

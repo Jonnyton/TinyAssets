@@ -93,9 +93,23 @@ class CodexProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
         full_input = f"{system}\n\n{prompt}" if system else prompt
 
+        # Fail-closed (2026-07-03 P0 review, Codex ADAPT): Codex cannot enforce
+        # the founder-facing universe sandbox — its `--sandbox read-only` still
+        # reads the whole filesystem and it honors no tool allow/deny policy, so
+        # a founder's universe could read the repo / other universes / host files.
+        # Refuse rather than run a founder-facing turn unconfined; the universe's
+        # assigned engine must be a sandbox-capable one (claude-code).
+        if config.sandbox_workspace:
+            raise ProviderError(
+                "codex cannot enforce the universe sandbox (WebFetch-only + "
+                "filesystem confinement); refusing to run a founder-facing turn "
+                "unconfined. Assign a sandbox-capable engine (claude-code)."
+            )
         base_cmd, use_shell = _resolve_codex_cmd()
         model = _codex_model()
         sandbox_status = get_sandbox_status()
@@ -126,7 +140,7 @@ class CodexProvider(BaseProvider):
             "--skip-git-repo-check",
             "--ephemeral",
         ]
-        proc_env = subprocess_env_for_provider(self.name)
+        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
 
         win_kw = _no_window_kwargs()
         cmd_with_cwd = [*cmd, "-C", _codex_workdir()]

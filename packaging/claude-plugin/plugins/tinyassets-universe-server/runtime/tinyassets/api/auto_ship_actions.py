@@ -47,6 +47,54 @@ def _record_in_ledger_enabled(value: Any) -> bool:
     return bool(value)
 
 
+def _target_universe_id(universe_id: str) -> tuple[str, str | None]:
+    try:
+        from tinyassets.api.helpers import _request_universe
+    except Exception as exc:  # noqa: BLE001
+        return "", f"universe helper import failed: {exc}"
+
+    target_universe = _request_universe(universe_id)
+    if not target_universe:
+        return "", "no universe resolvable"
+    return target_universe, None
+
+
+def _require_universe_write(
+    universe_id: str,
+    *,
+    action: str,
+) -> tuple[str, dict[str, Any] | None]:
+    target_universe, error = _target_universe_id(universe_id)
+    if error:
+        return target_universe, {
+            "error": "universe_resolve_failed",
+            "error_message": error,
+            "surface": "extensions",
+            "action": action,
+        }
+
+    try:
+        from tinyassets.api.helpers import _universe_dir
+
+        _universe_dir(target_universe)
+    except ValueError:
+        return target_universe, None
+
+    from tinyassets.api.permissions import (
+        universe_access_allows,
+        universe_access_error,
+    )
+
+    if not universe_access_allows(target_universe, write=True):
+        return target_universe, universe_access_error(
+            universe_id=target_universe,
+            write=True,
+            action=action,
+            surface="extensions",
+        )
+    return target_universe, None
+
+
 def _maybe_record_attempt(
     *,
     decision: dict[str, Any],
@@ -69,7 +117,7 @@ def _maybe_record_attempt(
     losing the decision payload.
     """
     try:
-        from tinyassets.api.helpers import _default_universe, _universe_dir
+        from tinyassets.api.helpers import _request_universe, _universe_dir
         from tinyassets.auto_ship_ledger import (
             attempt_from_decision,
             record_attempt,
@@ -77,7 +125,7 @@ def _maybe_record_attempt(
     except Exception as exc:  # noqa: BLE001
         return None, f"ledger import failed: {exc}"
 
-    target_universe = (universe_id or "").strip() or _default_universe()
+    target_universe = _request_universe(universe_id)
     if not target_universe:
         return None, "no universe resolvable for ledger write"
     try:
@@ -120,7 +168,7 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
             returned regardless of ledger outcome.
         universe_id (optional): when ``record_in_ledger`` is truthy,
             the universe whose data dir to write to. Defaults to
-            ``_default_universe()``.
+            the shared ``_request_universe()`` resolver.
         request_id, parent_run_id, child_run_id, branch_def_id,
         release_gate_result, ship_class, stable_evidence_handle,
         changed_paths_json (optional): call-site context propagated
@@ -176,6 +224,13 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
     if not _record_in_ledger_enabled(kwargs.get("record_in_ledger")):
         return json.dumps(decision)
 
+    target_universe, access_error = _require_universe_write(
+        str(kwargs.get("universe_id") or ""),
+        action="validate_ship_packet",
+    )
+    if access_error is not None:
+        return json.dumps(access_error)
+
     # Resolve call-site context for the ledger row. All optional with
     # safe defaults so callers who only pass body_json + record_in_ledger
     # still get a well-shaped row (just with empty join keys).
@@ -194,7 +249,7 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
 
     ship_attempt_id, ledger_error = _maybe_record_attempt(
         decision=decision,
-        universe_id=str(kwargs.get("universe_id") or ""),
+        universe_id=target_universe,
         request_id=str(kwargs.get("request_id") or ""),
         parent_run_id=str(kwargs.get("parent_run_id") or ""),
         child_run_id=str(kwargs.get("child_run_id") or ""),
@@ -237,11 +292,11 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
 
 def _resolve_universe_path(universe_id: str) -> tuple[Any | None, str]:
     try:
-        from tinyassets.api.helpers import _default_universe, _universe_dir
+        from tinyassets.api.helpers import _request_universe, _universe_dir
     except Exception as exc:  # noqa: BLE001
         return None, f"universe helper import failed: {exc}"
 
-    target_universe = (universe_id or "").strip() or _default_universe()
+    target_universe = _request_universe(universe_id)
     if not target_universe:
         return None, "no universe resolvable"
     try:
@@ -283,7 +338,14 @@ def _action_open_auto_ship_pr(kwargs: dict[str, Any]) -> str:
             "error_message": "head_branch is required",
         })
 
-    universe_path, error = _resolve_universe_path(str(kwargs.get("universe_id") or ""))
+    target_universe, access_error = _require_universe_write(
+        str(kwargs.get("universe_id") or ""),
+        action="open_auto_ship_pr",
+    )
+    if access_error is not None:
+        return json.dumps(access_error)
+
+    universe_path, error = _resolve_universe_path(target_universe)
     if error:
         return json.dumps({
             "ship_attempt_id": ship_attempt_id,

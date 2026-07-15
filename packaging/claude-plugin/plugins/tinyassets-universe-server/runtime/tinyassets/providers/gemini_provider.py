@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from pathlib import Path
 
 from tinyassets.exceptions import ProviderError, ProviderUnavailableError
 from tinyassets.providers.base import (
@@ -50,6 +51,8 @@ class GeminiProvider(BaseProvider):
         prompt: str,
         system: str,
         config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
     ) -> ProviderResponse:
         from google.genai import types
 

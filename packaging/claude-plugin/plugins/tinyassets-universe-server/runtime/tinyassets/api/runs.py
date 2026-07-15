@@ -41,8 +41,8 @@ from typing import Any
 
 from tinyassets.api.helpers import (
     _base_path,
-    _default_universe,
     _read_text,
+    _request_universe,
     _universe_dir,
 )
 
@@ -65,6 +65,110 @@ def _current_actor_has_capability(action: str) -> bool:
         action=action,
         grants=_current_actor_grants(),
     ).allowed
+
+
+def _run_actor_for_kwargs(kwargs: dict[str, Any]) -> str:
+    from tinyassets.api.permissions import branch_run_actor
+
+    return branch_run_actor(str(kwargs.get("universe_id") or ""))
+
+
+def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
+    if action not in {"run_branch", "run_branch_version"}:
+        return None
+
+    from tinyassets.api.permissions import (
+        current_request_actor_id,
+        universe_access_allows,
+        universe_access_error,
+    )
+
+    uid = str(kwargs.get("universe_id") or "").strip()
+    if not uid:
+        if current_request_actor_id() != "anonymous":
+            return json.dumps({
+                "error": "branch_run_requires_universe",
+                "action": action,
+                "required": "universe_id",
+                "note": (
+                    "Branches are run by universes. Route the run through "
+                    "the founder's own universe."
+                ),
+            })
+        return None
+
+    if not universe_access_allows(uid, write=True):
+        return json.dumps(universe_access_error(
+            universe_id=uid,
+            write=True,
+            action=action,
+            surface="extensions",
+        ))
+    return None
+
+
+def _run_universe_id(record: dict[str, Any]) -> str:
+    """The universe a run is bound to, derived from its actor.
+
+    Branch runs are executed by a universe (actor ``universe:<uid>``), so the
+    actor carries the owning universe. A run with any other actor is not
+    universe-brain data.
+    """
+    actor = str((record or {}).get("actor") or "")
+    prefix = "universe:"
+    return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
+
+
+def _run_read_allowed(record: dict[str, Any]) -> bool:
+    """Whether the current caller may READ a run's data.
+
+    A universe-bound run is gated by that universe's read visibility: public
+    universes stay readable, a private universe (``public_read=false``) requires
+    a grant. Runs with no universe binding are not private-universe data.
+    """
+    uid = _run_universe_id(record)
+    if not uid:
+        return True
+    from tinyassets.api.permissions import universe_access_allows
+
+    return universe_access_allows(uid, write=False)
+
+
+def _run_read_denied_error(record: dict[str, Any], action: str) -> str:
+    from tinyassets.api.permissions import universe_access_error
+
+    return json.dumps(universe_access_error(
+        universe_id=_run_universe_id(record),
+        write=False,
+        action=action,
+        surface="extensions",
+    ))
+
+
+def _run_write_allowed(record: dict[str, Any]) -> bool:
+    """Whether the current caller may MUTATE a run.
+
+    A universe-bound run may only be mutated (cancel/resume/attach/receipt) by a
+    caller with write access to that universe; runs with no universe binding are
+    not universe-brain state.
+    """
+    uid = _run_universe_id(record)
+    if not uid:
+        return True
+    from tinyassets.api.permissions import universe_access_allows
+
+    return universe_access_allows(uid, write=True)
+
+
+def _run_write_denied_error(record: dict[str, Any], action: str) -> str:
+    from tinyassets.api.permissions import universe_access_error
+
+    return json.dumps(universe_access_error(
+        universe_id=_run_universe_id(record),
+        write=True,
+        action=action,
+        surface="extensions",
+    ))
 
 
 _EMPTY_LLM_RESPONSE_ACTION = (
@@ -437,7 +541,6 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     flip back to ``running``.
     """
     from tinyassets.api.branches import _resolve_branch_id
-    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
     from tinyassets.runs import (
@@ -451,7 +554,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     )
 
     _ensure_runs_recovery()
-    actor = _current_actor()
+    actor = _run_actor_for_kwargs(kwargs)
 
     bid = _resolve_branch_id(kwargs.get("branch_def_id", "").strip(), _base_path())
     if not bid:
@@ -761,6 +864,8 @@ def _action_get_run(kwargs: dict[str, Any]) -> str:
     record = _get_run(_base_path(), rid)
     if record is None:
         return json.dumps({"error": f"Run '{rid}' not found."})
+    if not _run_read_allowed(record):
+        return _run_read_denied_error(record, "get_run")
 
     events = list_events(_base_path(), rid)
     return json.dumps(_compose_run_snapshot(record, events), default=str)
@@ -775,6 +880,8 @@ def _action_list_runs(kwargs: dict[str, Any]) -> str:
         status=kwargs.get("status", ""),
         limit=int(kwargs.get("limit", 50) or 50),
     )
+    # Do not expose runs of a private universe the caller cannot read.
+    rows = [r for r in rows if _run_read_allowed(r)]
     summaries = [
         {
             "run_id": r["run_id"],
@@ -825,6 +932,8 @@ def _action_stream_run(kwargs: dict[str, Any]) -> str:
     record = _get_run(_base_path(), rid)
     if record is None:
         return json.dumps({"error": f"Run '{rid}' not found."})
+    if not _run_read_allowed(record):
+        return _run_read_denied_error(record, "stream_run")
 
     since = int(kwargs.get("since_step", -1))
     events = list_events(_base_path(), rid, since_step=since)
@@ -885,6 +994,8 @@ def _action_wait_for_run(kwargs: dict[str, Any]) -> str:
     record = _get_run(_base_path(), rid)
     if record is None:
         return json.dumps({"error": f"Run '{rid}' not found."})
+    if not _run_read_allowed(record):
+        return _run_read_denied_error(record, "wait_for_run")
 
     # Bound max_wait_s to 120s so a broken client can't tie up the
     # server thread forever. Default 60s per spec.
@@ -959,8 +1070,11 @@ def _action_cancel_run(kwargs: dict[str, Any]) -> str:
     rid = kwargs.get("run_id", "").strip()
     if not rid:
         return json.dumps({"error": "run_id is required."})
-    if _get_run(_base_path(), rid) is None:
+    record = _get_run(_base_path(), rid)
+    if record is None:
         return json.dumps({"error": f"Run '{rid}' not found."})
+    if not _run_write_allowed(record):
+        return _run_write_denied_error(record, "cancel_run")
 
     request_cancel(_base_path(), rid)
     note = (
@@ -990,6 +1104,8 @@ def _action_get_run_output(kwargs: dict[str, Any]) -> str:
     record = _get_run(_base_path(), rid)
     if record is None:
         return json.dumps({"error": f"Run '{rid}' not found."})
+    if not _run_read_allowed(record):
+        return _run_read_denied_error(record, "get_run_output")
 
     field = kwargs.get("field_name", "").strip()
     output = record.get("output") or {}
@@ -1040,13 +1156,18 @@ def _action_get_run_output(kwargs: dict[str, Any]) -> str:
 
 def _action_attach_existing_child_run(kwargs: dict[str, Any]) -> str:
     """Attach a completed child run receipt to a waiting parent run."""
-    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.runs import ChildRunAttachmentError, attach_existing_child_run
 
     parent_run_id = kwargs.get("run_id", "").strip()
     child_run_id = kwargs.get("child_run_id", "").strip()
     child_branch_def_id = kwargs.get("child_branch_def_id", "").strip()
     output_digest = kwargs.get("output_digest", "").strip()
+
+    from tinyassets.runs import get_run as _get_run
+
+    parent_record = _get_run(_base_path(), parent_run_id)
+    if parent_record is not None and not _run_write_allowed(parent_record):
+        return _run_write_denied_error(parent_record, "attach_existing_child_run")
 
     try:
         result = attach_existing_child_run(
@@ -1055,7 +1176,7 @@ def _action_attach_existing_child_run(kwargs: dict[str, Any]) -> str:
             child_run_id=child_run_id,
             child_branch_def_id=child_branch_def_id,
             output_digest=output_digest,
-            actor=_current_actor(),
+            actor=_run_actor_for_kwargs(kwargs),
         )
     except ChildRunAttachmentError as exc:
         payload: dict[str, Any] = {
@@ -1095,6 +1216,12 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
     run_id = kwargs.get("run_id", "").strip()
     if not run_id:
         return json.dumps({"error": "run_id is required."})
+
+    from tinyassets.runs import get_run as _get_run
+
+    _resume_record = _get_run(_base_path(), run_id)
+    if _resume_record is not None and not _run_write_allowed(_resume_record):
+        return _run_write_denied_error(_resume_record, "resume_run")
 
     actor = _current_actor()
 
@@ -1297,6 +1424,9 @@ def _action_query_runs(kwargs: dict[str, Any]) -> str:
         select=select,
         aggregate=aggregate,
         limit=limit,
+        # Exclude runs of a private universe the caller cannot read BEFORE
+        # projection/aggregation, so select/aggregate can't leak private data.
+        row_filter=lambda r: _run_read_allowed({"actor": r["actor"]}),
     )
     return json.dumps(result, default=str)
 
@@ -1322,6 +1452,12 @@ def _action_record_run_receipt(kwargs: dict[str, Any]) -> str:
     if not isinstance(payload, dict):
         return json.dumps({"error": "payload_json must decode to a JSON object."})
 
+    from tinyassets.runs import get_run as _get_run
+
+    _receipt_record = _get_run(_base_path(), run_id)
+    if _receipt_record is not None and not _run_write_allowed(_receipt_record):
+        return _run_write_denied_error(_receipt_record, "record_run_receipt")
+
     try:
         receipt = record_run_receipt(
             _base_path(),
@@ -1342,6 +1478,15 @@ def _action_record_run_receipt(kwargs: dict[str, Any]) -> str:
 def _action_list_run_receipts(kwargs: dict[str, Any]) -> str:
     from tinyassets.runs import list_run_receipts
 
+    # When scoped to a specific run, don't expose a private universe's receipts.
+    _lrr_run_id = (kwargs.get("run_id") or "").strip()
+    if _lrr_run_id:
+        from tinyassets.runs import get_run as _get_run
+
+        _lrr_record = _get_run(_base_path(), _lrr_run_id)
+        if _lrr_record is not None and not _run_read_allowed(_lrr_record):
+            return _run_read_denied_error(_lrr_record, "list_run_receipts")
+
     raw_limit = kwargs.get("limit", _DEFAULT_QUERY_LIMIT) or _DEFAULT_QUERY_LIMIT
     try:
         limit = int(raw_limit)
@@ -1358,6 +1503,23 @@ def _action_list_run_receipts(kwargs: dict[str, Any]) -> str:
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
 
+    # Filter out receipts whose run belongs to a private universe the caller
+    # cannot read — covers the no-run_id enumeration mode too. Per-run cache so
+    # many receipts of one run cost one access check.
+    from tinyassets.runs import get_run as _get_run
+
+    _visible: dict[str, bool] = {}
+
+    def _receipt_visible(rc: dict[str, Any]) -> bool:
+        rid = str(rc.get("run_id") or "")
+        if not rid:
+            return True
+        if rid not in _visible:
+            rec = _get_run(_base_path(), rid)
+            _visible[rid] = rec is None or _run_read_allowed(rec)
+        return _visible[rid]
+
+    receipts = [rc for rc in receipts if _receipt_visible(rc)]
     return json.dumps({
         "receipts": receipts,
         "count": len(receipts),
@@ -1385,6 +1547,9 @@ def _action_run_routing_evidence(kwargs: dict[str, Any]) -> str:
         limit = 10
 
     records = list_recent_runs(_base_path(), branch_def_id=bid, limit=limit)
+    # Don't expose routing evidence for runs of a private universe the caller
+    # cannot read.
+    records = [r for r in records if _run_read_allowed(r)]
     return json.dumps({
         "runs": records,
         "count": len(records),
@@ -1428,7 +1593,18 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
     all_tiers = ["universe_id", "goal_id", "branch_id", "user_id"]
     active_tiers = all_tiers if flag_on else ["universe_id"]
 
-    universe_id = (kwargs.get("universe_id") or "").strip() or _default_universe()
+    universe_id = _request_universe(kwargs.get("universe_id") or "")
+    # Don't expose a private universe's activity.log / scope-mismatch warnings.
+    from tinyassets.api.permissions import (
+        universe_access_allows,
+        universe_access_error,
+    )
+
+    if not universe_access_allows(universe_id, write=False):
+        return json.dumps(universe_access_error(
+            universe_id=universe_id, write=False,
+            action="get_memory_scope_status", surface="extensions",
+        ))
     udir = _universe_dir(universe_id)
     log_content = _read_text(udir / "activity.log")
     mismatch_lines: list[str] = []
@@ -1487,7 +1663,6 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     the same async executor pool. Records the ``branch_version_id`` on
     the new ``runs.branch_version_id`` column for attribution.
     """
-    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.runs import (
         SnapshotSchemaDrift,
         execute_branch_version_async,
@@ -1546,7 +1721,7 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             branch_version_id=bvid,
             inputs=inputs,
             run_name=kwargs.get("run_name", ""),
-            actor=_current_actor(),
+            actor=_run_actor_for_kwargs(kwargs),
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
         )
@@ -1747,6 +1922,10 @@ def _dispatch_run_action(
     """
     from tinyassets.api.branches import _append_global_ledger
     from tinyassets.api.engine_helpers import _truncate
+
+    scope_error = _branch_run_scope_error(action, kwargs)
+    if scope_error is not None:
+        return scope_error
 
     result_str = handler(kwargs)
     if action not in _RUN_WRITE_ACTIONS:

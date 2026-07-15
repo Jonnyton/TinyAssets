@@ -45,6 +45,57 @@ def _query(monkeypatch, tmp_path, **kwargs):
     return json.loads(extensions(action="query_runs", **kwargs))
 
 
+# ── Per-universe ACL (private-universe runs must not leak) ──────────────────────
+
+class TestQueryRunsUniverseAcl:
+    """query_runs must exclude a private universe's runs BEFORE projection and
+    aggregation, so select/aggregate can't leak private data (Codex review)."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        _init(tmp_path)
+        from tinyassets.auth import middleware as mw
+        from tinyassets.auth.provider import DevAuthProvider
+        from tinyassets.daemon_server import (
+            ensure_universe_registered,
+            ensure_universe_rules,
+            update_universe_rules,
+        )
+
+        mw.set_provider(DevAuthProvider())
+        mw.auth_middleware(None)  # anonymous caller
+        for uid, public in (("pub", True), ("priv", False)):
+            udir = tmp_path / uid
+            udir.mkdir(parents=True, exist_ok=True)
+            ensure_universe_registered(tmp_path, universe_id=uid, universe_path=udir)
+            ensure_universe_rules(tmp_path, universe_id=uid)
+            if not public:
+                update_universe_rules(
+                    tmp_path, universe_id=uid, updates={"public_read": False},
+                )
+
+    def test_select_excludes_private_universe_rows(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        _seed_run(tmp_path, actor="universe:pub", output={"secret": "OPEN"})
+        _seed_run(tmp_path, actor="universe:priv", output={"secret": "LEAK"})
+        result = _query(monkeypatch, tmp_path, select="secret")
+        secrets = [row["fields"].get("secret") for row in result["rows"]]
+        assert "OPEN" in secrets
+        assert "LEAK" not in secrets
+        assert result["count"] == 1
+
+    def test_aggregate_excludes_private_universe(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        _seed_run(tmp_path, actor="universe:pub")
+        _seed_run(tmp_path, actor="universe:priv")
+        _seed_run(tmp_path, actor="universe:priv")
+        result = _query(
+            monkeypatch, tmp_path, aggregate_json=json.dumps({"fn": "count"}),
+        )
+        total = sum(g["value"] for g in result["aggregated"])
+        assert total == 1  # only the readable public run is counted
+
+
 # ── Basic query shape ─────────────────────────────────────────────────────────
 
 class TestQueryRunsShape:

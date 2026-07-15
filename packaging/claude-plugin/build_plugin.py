@@ -103,6 +103,9 @@ def _probe_import() -> None:
         f"import sys; sys.path.insert(0, {str(RUNTIME_ROOT)!r}); "
         "import tinyassets.universe_server as us; "
         "assert hasattr(us, 'main'), 'tinyassets.universe_server.main missing'; "
+        # WorkOS provider is lazy-imported at runtime; probe it explicitly so a
+        # missing pyjwt[crypto] dependency fails the build, not a live request.
+        "import tinyassets.auth.workos_provider; "
         "print('probe-ok')"
     )
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
