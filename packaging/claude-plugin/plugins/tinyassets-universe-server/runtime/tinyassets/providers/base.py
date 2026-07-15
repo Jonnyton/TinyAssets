@@ -121,10 +121,18 @@ def subprocess_env_for_provider(provider_name: str) -> dict[str, str]:
 # Signatures captured live 2026-07-14 by running `codex exec` against the
 # dead token stranded on the old workflow-data volume (exit code was 0 even
 # on failure, so output text — stdout+stderr — is the only reliable signal).
+# Matched case-insensitively (Codex review: the CLI's casing is not a
+# contract). Additionally the probe mirrors CodexProvider's silent-auth
+# heuristic: EMPTY stdout + a broad auth signal in stderr is also dead —
+# broad signals are only trusted when the model produced no reply, so
+# model text can never false-positive.
 _CODEX_AUTH_FAILURE_PATTERNS: tuple[str, ...] = (
-    "Your access token could not be refreshed",
-    "Please log out and sign in again",
-    "401 Unauthorized",
+    "your access token could not be refreshed",
+    "please log out and sign in again",
+    "401 unauthorized",
+)
+_CODEX_SILENT_AUTH_SIGNALS: tuple[str, ...] = (
+    "401", "unauthorized", "reconnecting", "auth",
 )
 
 _AUTH_PROBE_PROMPT = "Reply with exactly: OK"
@@ -135,16 +143,67 @@ DEFAULT_AUTH_PROBE_TIMEOUT_S = 120.0
 
 _PROBE_FALSY = {"0", "false", "off", "no"}
 
-# Cached live-probe verdicts keyed by str(CODEX_HOME): (checked_at, health).
-# The supervisor calls the gate every loop tick; the probe subprocess must
-# not run per tick. In-memory is enough — the supervisor is long-lived, and
-# a fresh process simply probes once more.
+# Live-probe verdict cache. The supervisor calls the gate every loop tick;
+# the probe subprocess must not run per tick. The AUTHORITATIVE cache is a
+# small JSON file NEXT TO auth.json (shared volume): production runs the
+# daemon and workers as separate containers sharing CODEX_HOME, so an
+# in-memory dict would let a worker quarantine while the daemon's
+# get_status kept reporting "ok" (Codex review 2026-07-14). The in-memory
+# layer below remains as a fallback for read-only CODEX_HOMEs.
+PROBE_CACHE_FILENAME = ".tinyassets_auth_probe.json"
+
 _auth_probe_cache: dict[str, tuple[float, dict[str, str]]] = {}
 
 
 def _reset_auth_probe_cache() -> None:
-    """Test seam."""
+    """Test seam (in-memory layer only; tests isolate the disk layer via
+    per-test CODEX_HOME tmp dirs)."""
     _auth_probe_cache.clear()
+
+
+def _read_probe_cache_file(codex_home: Path) -> tuple[float, dict[str, str]] | None:
+    """Read the cross-process verdict file; any corruption reads as absent."""
+    import json as _json
+    import math
+
+    try:
+        data = _json.loads(
+            (codex_home / PROBE_CACHE_FILENAME).read_text(encoding="utf-8"),
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    checked_at = data.get("checked_at")
+    status = data.get("status")
+    detail = data.get("detail")
+    if not isinstance(checked_at, (int, float)) or not math.isfinite(float(checked_at)):
+        return None
+    if status not in ("ok", "not_logged_in") or not isinstance(detail, str):
+        return None
+    return float(checked_at), {
+        "provider": "codex", "status": status, "detail": detail,
+    }
+
+
+def _write_probe_cache_file(
+    codex_home: Path, checked_at: float, health: dict[str, str],
+) -> None:
+    """Best-effort atomic write of the cross-process verdict file."""
+    import json as _json
+
+    payload = _json.dumps({
+        "checked_at": checked_at,
+        "status": health["status"],
+        "detail": health["detail"],
+    }, ensure_ascii=True)
+    target = codex_home / PROBE_CACHE_FILENAME
+    tmp = target.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, target)
+    except OSError:
+        pass  # read-only home: the in-memory layer still covers this process
 
 
 def _viability_probe_enabled() -> bool:
@@ -171,9 +230,14 @@ def _finite_positive_env_s(var: str, default: float) -> float:
 
 
 def _codex_last_refresh_age_s(codex_home: Path, now: float | None = None) -> float | None:
-    """Age in seconds of the auth.json ``last_refresh`` field, falling back
-    to the file mtime; ``None`` when neither is readable (treated as stale
-    by the caller — suspicion triggers the probe, never a quarantine)."""
+    """Age in seconds of the auth.json ``last_refresh`` field.
+
+    The file-mtime fallback applies ONLY to a VALID JSON object that lacks a
+    usable ``last_refresh`` (e.g. a mid-write `codex login`). An unreadable
+    or corrupt auth.json returns ``None`` — suspicious, so the caller
+    escalates to the live probe instead of trusting mtime (Codex review
+    2026-07-14: a fresh file containing garbage must not read viable and
+    claim-and-poison)."""
     import json as _json
     import math
     import time as _time
@@ -183,8 +247,13 @@ def _codex_last_refresh_age_s(codex_home: Path, now: float | None = None) -> flo
     current = _time.time() if now is None else now
     try:
         data = _json.loads(auth_path.read_text(encoding="utf-8"))
-        raw = data.get("last_refresh") if isinstance(data, dict) else None
-        if isinstance(raw, str) and raw.strip():
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("last_refresh")
+    if isinstance(raw, str) and raw.strip():
+        try:
             text = raw.strip()
             if text.endswith("Z"):
                 text = text[:-1] + "+00:00"
@@ -194,8 +263,10 @@ def _codex_last_refresh_age_s(codex_home: Path, now: float | None = None) -> flo
             age = current - parsed.timestamp()
             if math.isfinite(age):
                 return age
-    except (OSError, ValueError, TypeError):
-        pass
+        except (ValueError, TypeError, OverflowError):
+            # A present-but-unparseable last_refresh is suspicious, not
+            # mtime-fresh.
+            return None
     try:
         return current - auth_path.stat().st_mtime
     except OSError:
@@ -240,20 +311,36 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
         return {"status": "inconclusive",
                 "detail": f"live auth probe could not run: {exc}"}
 
-    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
-    for pattern in _CODEX_AUTH_FAILURE_PATTERNS:
-        if pattern in combined:
-            return {
-                "status": "not_logged_in",
-                "detail": (
-                    f"refresh-viability probe FAILED (matched {pattern!r}); "
-                    "token is dead despite auth.json being present — run a "
-                    "fresh `codex login` for this CODEX_HOME"
-                ),
-            }
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+    combined_lower = f"{stdout}\n{stderr}".lower()
+    matched = next(
+        (p for p in _CODEX_AUTH_FAILURE_PATTERNS if p in combined_lower), None,
+    )
+    # CodexProvider silent-auth mirror: empty stdout + a broad auth signal
+    # in stderr is dead too. Broad signals are only trusted when the model
+    # produced NO reply, so probe/model text can never false-positive.
+    if matched is None and not stdout.strip():
+        matched = next(
+            (s for s in _CODEX_SILENT_AUTH_SIGNALS if s in stderr.lower()),
+            None,
+        )
+    if matched is not None:
+        return {
+            "status": "not_logged_in",
+            "detail": (
+                f"refresh-viability probe FAILED (matched {matched!r}); "
+                "token is dead despite auth.json being present — run a "
+                "fresh `codex login` for this CODEX_HOME"
+            ),
+        }
     if proc.returncode != 0:
         return {"status": "inconclusive",
                 "detail": f"live auth probe exit {proc.returncode} without an "
+                          "auth-failure signature"}
+    if not stdout.strip():
+        return {"status": "inconclusive",
+                "detail": "live auth probe returned empty output without an "
                           "auth-failure signature"}
     return {"status": "ok", "detail": "live auth probe passed (real call ok)"}
 
@@ -295,7 +382,12 @@ def _codex_refresh_viability(
         "TINYASSETS_AUTH_PROBE_TTL_S", DEFAULT_AUTH_PROBE_TTL_S,
     )
     now = _time.time()
-    cached = _auth_probe_cache.get(str(codex_home))
+    # Disk cache first (cross-process/container truth: the worker's probe
+    # verdict must be visible to the daemon's get_status), then the
+    # in-memory layer (covers read-only CODEX_HOMEs).
+    cached = _read_probe_cache_file(codex_home)
+    if cached is None:
+        cached = _auth_probe_cache.get(str(codex_home))
     if cached is not None and 0 <= now - cached[0] < ttl_s:
         return dict(cached[1])
 
@@ -321,6 +413,7 @@ def _codex_refresh_viability(
         health = {"provider": "codex", "status": "ok",
                   "detail": f"auth.json present at {codex_home}; {probe['detail']}"}
     _auth_probe_cache[str(codex_home)] = (now, dict(health))
+    _write_probe_cache_file(codex_home, now, health)
     return health
 
 

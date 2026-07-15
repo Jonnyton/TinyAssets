@@ -178,12 +178,32 @@ def test_probe_reruns_after_ttl_expiry(tmp_path, monkeypatch):
 
     monkeypatch.setattr(base, "_codex_live_auth_probe", counting_probe)
     base.subscription_auth_health("codex")
-    # Force the cached entry into the past instead of sleeping.
+    # Age BOTH cache layers into the past instead of sleeping.
     key = next(iter(base._auth_probe_cache))
     checked_at, verdict = base._auth_probe_cache[key]
     base._auth_probe_cache[key] = (checked_at - 10.0, verdict)
+    base._write_probe_cache_file(tmp_path, checked_at - 10.0, verdict)
     base.subscription_auth_health("codex")
     assert len(calls) == 2
+
+
+def test_dead_verdict_visible_across_processes_via_disk(tmp_path, monkeypatch):
+    """Codex-critical regression: daemon and workers are separate
+    containers sharing CODEX_HOME. A worker's dead verdict must be visible
+    to a FRESH process's non-probing get_status call — simulated here by
+    clearing the in-memory layer after the probing call."""
+    _make_stale(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        base, "_codex_live_auth_probe",
+        lambda timeout_s: {"status": "not_logged_in",
+                           "detail": "refresh-viability probe FAILED"},
+    )
+    assert base.subscription_auth_health("codex")["status"] == "not_logged_in"
+    base._reset_auth_probe_cache()  # "new process": memory gone, disk remains
+    monkeypatch.setattr(base, "_codex_live_auth_probe", _explode_probe)
+    health = base.subscription_auth_health("codex", allow_probe=False)
+    assert health["status"] == "not_logged_in"
+    assert (tmp_path / base.PROBE_CACHE_FILENAME).is_file()
 
 
 # ---- _codex_live_auth_probe output parsing ------------------------------------
@@ -210,6 +230,44 @@ def test_live_probe_detects_each_dead_signature(monkeypatch, signature):
 def test_live_probe_clean_output_is_ok(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(stdout="OK"))
     assert base._codex_live_auth_probe(5.0)["status"] == "ok"
+
+
+def test_live_probe_matches_signatures_case_insensitively(monkeypatch):
+    """Codex review: 'codex login status' casing is not a contract."""
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: _Proc(stdout="x", stderr="401 UNAUTHORIZED", returncode=0),
+    )
+    assert base._codex_live_auth_probe(5.0)["status"] == "not_logged_in"
+
+
+def test_live_probe_silent_auth_mirror_empty_stdout(monkeypatch):
+    """CodexProvider's silent-auth heuristic: empty stdout + broad auth
+    signal in stderr = dead (v0.122+ exits 0 and prints nothing)."""
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: _Proc(stdout="", stderr="Reconnecting to auth...",
+                              returncode=0),
+    )
+    assert base._codex_live_auth_probe(5.0)["status"] == "not_logged_in"
+
+
+def test_live_probe_broad_signals_never_match_model_text(monkeypatch):
+    """Broad signals are only trusted on EMPTY stdout — a model reply that
+    happens to mention auth must not quarantine."""
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: _Proc(stdout="OK (auth systems are fascinating)",
+                              stderr="Reconnecting", returncode=0),
+    )
+    assert base._codex_live_auth_probe(5.0)["status"] == "ok"
+
+
+def test_live_probe_empty_output_without_signal_is_inconclusive(monkeypatch):
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _Proc(stdout="", stderr="", returncode=0),
+    )
+    assert base._codex_live_auth_probe(5.0)["status"] == "inconclusive"
 
 
 def test_live_probe_nonzero_exit_without_signature_is_inconclusive(monkeypatch):
@@ -253,11 +311,40 @@ def test_last_refresh_z_suffix_parses(tmp_path):
     assert 3500 < age < 3700
 
 
-def test_corrupt_auth_json_falls_back_to_mtime(tmp_path):
+@pytest.mark.parametrize("corrupt", ["not json", "[]", '"str"'])
+def test_corrupt_auth_json_is_suspicious_not_mtime_fresh(tmp_path, corrupt):
+    """Codex review: a freshly-written file containing garbage must NOT
+    read viable via mtime — it escalates to the probe instead."""
+    (tmp_path / "auth.json").write_text(corrupt, encoding="utf-8")
+    assert base._codex_last_refresh_age_s(tmp_path) is None
+
+
+def test_corrupt_auth_json_with_dead_probe_quarantines(tmp_path, monkeypatch):
+    """The claim-and-poison closure: corrupt file → probe → dead → gate."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     (tmp_path / "auth.json").write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(
+        base, "_codex_live_auth_probe",
+        lambda timeout_s: {"status": "not_logged_in",
+                           "detail": "refresh-viability probe FAILED"},
+    )
+    assert base.subscription_auth_health("codex")["status"] == "not_logged_in"
+
+
+def test_valid_json_without_last_refresh_uses_mtime(tmp_path):
+    """Only a VALID JSON object missing the field gets the mtime fallback
+    (mid-write `codex login` shape)."""
+    (tmp_path / "auth.json").write_text("{}", encoding="utf-8")
     age = base._codex_last_refresh_age_s(tmp_path)
     assert age is not None
     assert age < 60  # just written
+
+
+def test_unparseable_last_refresh_field_is_suspicious(tmp_path):
+    (tmp_path / "auth.json").write_text(
+        json.dumps({"last_refresh": "not-a-date"}), encoding="utf-8",
+    )
+    assert base._codex_last_refresh_age_s(tmp_path) is None
 
 
 def test_unreadable_auth_json_returns_none(tmp_path):
