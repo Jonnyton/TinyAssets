@@ -51,7 +51,7 @@
 ## 5. Host decisions
 
 - **D3 — deletion: EXECUTED 2026-07-15 ~01:55Z on explicit host directive.** Pre-deletion checks: local archive `gzip -t` OK; offsite GH asset downloaded back and sha256-compared — byte-identical (`0c9a248a…`); zero mounts. `docker volume rm workflow-data` freed ~18 GB (droplet disk 33G→15G used). D1/D2 were deliberately NOT foreclosed: the archive carries the full ledger history and all universe content, so both remain executable from the archive at any time.
-- **D1 — ledger history (still open):** merge old `ledger.json` (Apr-20 → Jun-27 provenance, in the archive) into the live ledger, or leave archive-only? Attribution/royalty design may care about pre-rename provenance.
+- **D1 — ledger history: EXECUTED 2026-07-15 ~01:55Z on host directive.** Old ledger (1,357 entries, Apr-20 → Jun-26) extracted from the archive and merged ahead of the live ledger's entries (disjoint time ranges asserted; atomic tmp+replace with a mid-merge concurrent-write guard; ownership preserved). Live ledger now 1,358 entries; parse re-verified from inside the daemon container. Pre-merge rollback copy: droplet `/root/ledger-merge/live-pre-merge-backup.json`.
 - **D2 — universe revival (still open):** extract any universe content dirs from the archive onto the live volume as dormant universes (browsable/remixable; no checkpoints → fresh runs only)? Candidates by content value: `concordance` (18+ books), `echoes-of-the-cosmos` (59M canon), `workflow-voice`.
 
 ## 6. Side-findings
