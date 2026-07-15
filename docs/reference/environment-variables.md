@@ -44,6 +44,8 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | `GATES_ENABLED` | Enables outcome-gate claims (Phase 6). When off, `gates` tool returns placeholder. | `off`. |
 | `TINYASSETS_STORAGE_BACKEND` | Catalog storage backend selection. Values: empty (default), `"git"`, `"sqlite"`. | Empty (auto-select per backend factory). |
 | `TINYASSETS_RUN_MAX_CONCURRENT` | Integer cap on concurrent in-flight branch runs. | Unset = unlimited. |
+| `TINYASSETS_IDLE_CYCLE_SINGLE_FLIGHT` | Dedupe the no-claim idle heartbeat cycle across fleet workers (`tinyassets/idle_cycle.py`): the winner holds a run lock for the cycle's lifetime (long cycles exclude others; released on process death), and a worker skips when a DIFFERENT worker's stamp is fresh; own stamps never block. Falsy = `"0"`/`"false"`/`"off"`/`"no"`. | `on`. |
+| `TINYASSETS_IDLE_CYCLE_FOREIGN_FRESH_S` | Freshness window (seconds) for the idle-cycle stamp; finite positive numbers only (anything else falls back to default). Keep below the supervisor idle respawn period (~322s at backoff ceiling) and above worker phase offset; also the max heartbeat gap after a stamp-holder death. | `240`. |
 
 ## LLM + provider routing
 
