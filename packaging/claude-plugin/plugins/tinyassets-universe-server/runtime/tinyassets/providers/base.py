@@ -258,9 +258,19 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
     return {"status": "ok", "detail": "live auth probe passed (real call ok)"}
 
 
-def _codex_refresh_viability(codex_home: Path) -> dict[str, str]:
+def _codex_refresh_viability(
+    codex_home: Path, *, allow_probe: bool = True,
+) -> dict[str, str]:
     """Layered viability verdict for a PRESENT auth.json (see the
-    subscription_auth_health docs below for the full ladder)."""
+    subscription_auth_health docs below for the full ladder).
+
+    ``allow_probe=False`` is for latency-sensitive callers (get_status —
+    an MCP request must never block on a probe subprocess): it serves the
+    freshness fast path and any cached verdict, and reports stale creds as
+    "ok" with a probe-deferred detail instead of probing inline. The
+    quarantine decision itself lives in the cloud_worker gate, which always
+    probes.
+    """
     import time as _time
 
     presence_ok = {
@@ -288,6 +298,14 @@ def _codex_refresh_viability(codex_home: Path) -> dict[str, str]:
     cached = _auth_probe_cache.get(str(codex_home))
     if cached is not None and 0 <= now - cached[0] < ttl_s:
         return dict(cached[1])
+
+    if not allow_probe:
+        presence_ok["detail"] = (
+            f"auth.json present at {codex_home}; last_refresh stale "
+            f"(age {'unknown' if age is None else f'{age:.0f}s'}) — live "
+            "probe deferred to the worker gate"
+        )
+        return presence_ok
 
     timeout_s = _finite_positive_env_s(
         "TINYASSETS_AUTH_PROBE_TIMEOUT_S", DEFAULT_AUTH_PROBE_TIMEOUT_S,
@@ -343,15 +361,21 @@ def _codex_refresh_viability(codex_home: Path) -> dict[str, str]:
 # signature quarantines. The probe invokes whatever `codex` is on PATH, so
 # deployments that ship the flock wrapper for the single-use refresh-token
 # chain keep their serialization.
-def subscription_auth_health(provider_name: str) -> dict[str, str]:
-    """Return subscription-auth health for *provider_name*."""
+def subscription_auth_health(
+    provider_name: str, *, allow_probe: bool = True,
+) -> dict[str, str]:
+    """Return subscription-auth health for *provider_name*.
+
+    ``allow_probe=False`` for latency-sensitive callers (get_status): never
+    spawns the live-probe subprocess; serves fast paths + cached verdicts.
+    """
     name = (provider_name or "").strip()
     if name == "codex":
         codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
         if not (codex_home / "auth.json").is_file():
             return {"provider": name, "status": "not_logged_in",
                     "detail": f"no auth.json at {codex_home}"}
-        return _codex_refresh_viability(codex_home)
+        return _codex_refresh_viability(codex_home, allow_probe=allow_probe)
     if name == "claude-code":
         if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
             return {"provider": name, "status": "ok",

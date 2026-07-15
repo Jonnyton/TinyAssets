@@ -121,6 +121,34 @@ def test_probe_disabled_env_reads_presence_only(tmp_path, monkeypatch):
     assert base.subscription_auth_health("codex")["status"] == "ok"
 
 
+# ---- allow_probe=False (get_status latency guard) -----------------------------
+
+
+def test_allow_probe_false_never_spawns_probe_on_stale(tmp_path, monkeypatch):
+    """get_status is an MCP request path: stale creds must NOT block on a
+    probe subprocess — deferred detail instead."""
+    _make_stale(tmp_path, monkeypatch)
+    monkeypatch.setattr(base, "_codex_live_auth_probe", _explode_probe)
+    health = base.subscription_auth_health("codex", allow_probe=False)
+    assert health["status"] == "ok"
+    assert "deferred" in health["detail"]
+
+
+def test_allow_probe_false_still_serves_cached_dead_verdict(tmp_path, monkeypatch):
+    """Once a probing caller (worker gate) cached a dead verdict in this
+    process, non-probing callers see it too."""
+    _make_stale(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        base, "_codex_live_auth_probe",
+        lambda timeout_s: {"status": "not_logged_in",
+                           "detail": "refresh-viability probe FAILED"},
+    )
+    assert base.subscription_auth_health("codex")["status"] == "not_logged_in"
+    monkeypatch.setattr(base, "_codex_live_auth_probe", _explode_probe)
+    cached = base.subscription_auth_health("codex", allow_probe=False)
+    assert cached["status"] == "not_logged_in"
+
+
 # ---- probe verdicts are TTL-cached -------------------------------------------
 
 
