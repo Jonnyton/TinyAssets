@@ -140,14 +140,26 @@ def _structured_return(raw):
     )
 
 
-def _register_structured_tool(fn, *, title, tags, annotations, name=None):
+def _register_structured_tool(
+    fn, *, title, tags, annotations, name=None, anonymous_write_challenge=False,
+):
     """Register an MCP adapter without changing the direct Python API.
 
     ``name`` pins the advertised wire name explicitly. The five canonical
     handles use underscores (``read_graph``, ``write_graph``, …): the
     Anthropic connector API rejects any tool name that does not match
     ``^[a-zA-Z0-9_-]{1,64}$`` (no dots), which rejects the whole connector.
+
+    ``anonymous_write_challenge=True`` marks a PURE-write handle: an anonymous
+    ``tools/call`` on it answers HTTP 401 + ``WWW-Authenticate`` pre-dispatch
+    so MCP clients launch OAuth (tool-JSON rejections never prompt sign-in).
+    Set it only when every call is a write/costly effect — never on mixed
+    read/write dispatch tools, or anonymous public reads break.
     """
+    if anonymous_write_challenge:
+        from tinyassets.auth.middleware import register_anonymous_write_challenge_tool
+
+        register_anonymous_write_challenge_tool(name or fn.__name__)
 
     @wraps(fn)
     def _tool(*args, **kwargs):
@@ -607,6 +619,7 @@ _mcp_write_graph = _register_structured_tool(
     name="write_graph",
     title="Write Graph",
     tags={"graph", "tinyassets", "write"},
+    anonymous_write_challenge=True,
     annotations=ToolAnnotations(
         title="Write Graph",
         readOnlyHint=False,
@@ -648,6 +661,7 @@ _mcp_run_graph = _register_structured_tool(
     name="run_graph",
     title="Run Graph",
     tags={"graph", "tinyassets", "run"},
+    anonymous_write_challenge=True,
     annotations=ToolAnnotations(
         title="Run Graph",
         readOnlyHint=False,
@@ -874,6 +888,7 @@ def write_page(
 _mcp_write_page = _register_structured_tool(
     write_page,
     name="write_page",
+    anonymous_write_challenge=True,
     title="Write Page",
     tags={"page", "wiki", "tinyassets", "write"},
     annotations=ToolAnnotations(
@@ -941,6 +956,7 @@ def converse(message: str = "", graph_id: str = "") -> str:
 _mcp_converse = _register_structured_tool(
     converse,
     name="converse",
+    anonymous_write_challenge=True,
     title="Talk With Your Universe",
     tags={"universe", "tinyassets", "relay"},
     annotations=ToolAnnotations(

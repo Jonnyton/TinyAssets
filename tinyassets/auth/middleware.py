@@ -8,7 +8,9 @@ HTTP transport layer before tool execution.
 
 from __future__ import annotations
 
+import json
 import logging
+from collections import deque
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -144,6 +146,77 @@ async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
     })
 
 
+# MCP tools whose EVERY call is a write/costly effect (the canonical write
+# handles). An anonymous ``tools/call`` on one of these draws the 401 OAuth
+# challenge BEFORE dispatch — tool-JSON rejections never prompt MCP clients to
+# sign in, and an SSE response stream cannot be retro-401'd after dispatch.
+# Mixed read/write dispatch tools (wiki, goals, gates, ...) must NOT be listed:
+# challenging them would break anonymous public reads; their write actions stay
+# gated by `require_action_scope` (fail-closed, tool-JSON envelope).
+_ANON_WRITE_CHALLENGE_TOOLS: set[str] = set()
+
+
+def register_anonymous_write_challenge_tool(name: str) -> None:
+    """Mark one MCP wire-name as pure-write for the anonymous 401 challenge."""
+    _ANON_WRITE_CHALLENGE_TOOLS.add(name)
+
+
+def anonymous_write_challenge_tools() -> frozenset[str]:
+    """The currently registered pure-write tool names (for tests/audit)."""
+    return frozenset(_ANON_WRITE_CHALLENGE_TOOLS)
+
+
+async def _buffer_request_body(receive: Any) -> tuple[bytes, list[dict], bool]:
+    """Drain the request body, returning (body, raw messages, disconnected).
+
+    The raw messages are replayed to the inner app afterwards so buffering is
+    invisible to it. JSON-RPC request bodies are small; no size cap needed.
+    """
+    messages: list[dict] = []
+    chunks: list[bytes] = []
+    while True:
+        message = await receive()
+        messages.append(message)
+        if message.get("type") != "http.request":
+            return b"", messages, True
+        chunks.append(message.get("body", b""))
+        if not message.get("more_body"):
+            return b"".join(chunks), messages, False
+
+
+def _replay_receive(messages: list[dict], receive: Any) -> Any:
+    """A receive callable that replays buffered messages, then delegates."""
+    queue = deque(messages)
+
+    async def _receive() -> dict:
+        if queue:
+            return queue.popleft()
+        return await receive()
+
+    return _receive
+
+
+def _calls_write_tool(body: bytes) -> bool:
+    """True when the JSON-RPC body (single or batch) calls a pure-write tool.
+
+    Malformed bodies return False — the transport layer produces its own
+    protocol error, and the tool-layer scope gate still rejects any write that
+    somehow dispatches.
+    """
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    items = payload if isinstance(payload, list) else [payload]
+    for item in items:
+        if not isinstance(item, dict) or item.get("method") != "tools/call":
+            continue
+        params = item.get("params")
+        if isinstance(params, dict) and params.get("name") in _ANON_WRITE_CHALLENGE_TOOLS:
+            return True
+    return False
+
+
 def current_identity() -> Identity:
     """Get the current request's resolved identity.
 
@@ -195,6 +268,26 @@ class AuthContextMiddleware:
                 # routes are exempt so the client can still find the AS.
                 await _send_auth_challenge_401(send, invalid_token=False)
                 return
+            if (
+                identity is ANONYMOUS
+                and scope.get("method", "").upper() == "POST"
+                and _auth_challenge_path(scope.get("path", ""))
+                and _ANON_WRITE_CHALLENGE_TOOLS
+                and (
+                    _get_provider().resolve_always_writes()
+                    or _get_provider().is_auth_required()
+                )
+            ):
+                # Resolve-always keeps anonymous reads open, so a missing token
+                # is not challenged at connect — but a WRITE tools/call must
+                # answer HTTP 401 (not tool JSON) or the client never launches
+                # OAuth (STATUS residual 2026-07-01). Classify pre-dispatch:
+                # an SSE response stream cannot be retro-401'd.
+                body, messages, disconnected = await _buffer_request_body(receive)
+                if not disconnected and _calls_write_tool(body):
+                    await _send_auth_challenge_401(send, invalid_token=False)
+                    return
+                receive = _replay_receive(messages, receive)
             await self.app(scope, receive, send)
         finally:
             _current_identity.reset(previous)
