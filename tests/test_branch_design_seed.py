@@ -97,6 +97,46 @@ def test_seed_reference_designs_seeds_and_publishes(data_dir):
     assert REFERENCE_TAG in row["tags"]
 
 
+def test_seeded_reference_keeps_full_topology(data_dir):
+    # Codex S1 review critical: the publish step must not drop the graph —
+    # a raw row re-save emptied edges/conditional_edges, leaving a 7-node
+    # graph with no wiring. Assert the seeded branch round-trips complete.
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition, list_branch_definitions
+
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    bdid = list_branch_definitions(data_dir, tag=tag)[0]["branch_def_id"]
+    branch = BranchDefinition.from_dict(
+        get_branch_definition(data_dir, branch_def_id=bdid)
+    )
+    artifact = next(
+        a for a in load_design_artifacts()
+        if a["design_id"] == "patch_loop_reference"
+    )
+    assert len(branch.node_defs) == len(artifact["spec"]["node_defs"])
+    assert len(branch.edges) == len(artifact["spec"]["edges"])
+    assert len(branch.conditional_edges) == len(
+        artifact["spec"]["conditional_edges"]
+    )
+    assert branch.published is True
+
+
+def test_seeded_reference_is_discoverable_in_published_listing(data_dir):
+    # Codex S1 review critical: the published listing filters on published
+    # BRANCH VERSIONS, not the bare flag — the seed must mint one or the
+    # commons listing shows nothing to remix.
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.daemon_server import list_branch_definitions
+
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    bdid = list_branch_definitions(data_dir, tag=tag)[0]["branch_def_id"]
+    listed = json.loads(_ext_branch_list({"scope": "published"}))
+    ids = {b["branch_def_id"] for b in listed["branches"]}
+    assert bdid in ids, listed
+
+
 def test_seed_reference_designs_is_idempotent(data_dir):
     from tinyassets.daemon_server import list_branch_definitions
 

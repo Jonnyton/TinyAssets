@@ -111,12 +111,28 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 continue
 
             # Publish the reference so it is discoverable/remixable commons
-            # content (published=False would hide it from the default listing).
-            branch_def = get_branch_definition(
+            # content. Two steps, mirroring the user patch_branch flow exactly
+            # (Codex S1 review): round-trip through BranchDefinition (a raw
+            # row re-save drops the graph topology), and mint a PUBLISHED
+            # BRANCH VERSION — the published listing filters on versions, not
+            # the bare flag.
+            from tinyassets.branch_versions import publish_branch_version
+            from tinyassets.branches import BranchDefinition
+
+            row = get_branch_definition(
                 base_path, branch_def_id=out["branch_def_id"],
             )
-            branch_def["published"] = True
-            save_branch_definition(base_path, branch_def=branch_def)
+            branch = BranchDefinition.from_dict(row)
+            branch.published = True
+            saved = save_branch_definition(
+                base_path, branch_def=branch.to_dict(),
+            )
+            publish_branch_version(
+                base_path,
+                saved,
+                publisher="reference-designs",
+                notes=f"reference design seed {tag}",
+            )
             results["seeded"].append(tag)
             logger.info(
                 "reference design seeded: %s -> branch_def_id=%s",
