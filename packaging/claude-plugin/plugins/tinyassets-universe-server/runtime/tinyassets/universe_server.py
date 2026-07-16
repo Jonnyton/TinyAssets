@@ -528,10 +528,13 @@ def write_graph(
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal, request, branch, or universe. The founder's
-            home universe is auto-created on first contact; use target=universe
-            to create an additional universe (or the home when a create-scoped
-            sign-in declined auto-birth).
+        target: What to write: goal, request, branch, universe, or engine. The
+            founder's home universe is auto-created on first contact; use
+            target=universe to create an additional universe (or the home when a
+            create-scoped sign-in declined auto-birth). target=engine DECLARES the
+            universe's engine lane (graph_id=universe, changes_json=the non-secret
+            declaration, e.g. {"engine_source":"self_hosted_endpoint",
+            "endpoint":"https://…"}); a raw API key is never accepted here.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -619,8 +622,21 @@ def write_graph(
             branch_def_id=branch_id,
             changes_json=changes_json,
         )
+    if normalized == "engine":
+        # Founder DECLARES the universe's engine lane through a VISIBLE canonical
+        # handle (round-11 #1): the legacy `universe` tool is hidden from
+        # tools/list, so `universe action=set_engine` was a dead end for real
+        # chatbot users. Routes to the existing founder-admin-scoped set_engine
+        # handler; the declaration payload (non-secret) travels in changes_json.
+        # NOTE: this NEVER accepts a raw API key (refused; Phase-2 out-of-chat
+        # deposit) — only non-secret lane declarations.
+        return _universe_impl(
+            action="set_engine",
+            universe_id=graph_id,
+            inputs_json=changes_json,
+        )
     return _unknown_target(
-        "write_graph", target, ("goal", "request", "branch", "universe")
+        "write_graph", target, ("goal", "request", "branch", "universe", "engine")
     )
 
 

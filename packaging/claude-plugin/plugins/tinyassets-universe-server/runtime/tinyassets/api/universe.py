@@ -4944,13 +4944,41 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
 _KNOWN_ENGINE_PROVIDERS: frozenset[str] = frozenset({"claude-code", "codex"})
 
 
-def _validate_engine_endpoint(endpoint: str) -> str | None:
-    """Return an error string for an invalid self-hosted endpoint, else None (F6).
+# A field name that looks secret-bearing — a NON-SECRET declaration must never
+# carry one (a client that sends a raw secret would leak it into the relay, #3).
+_SECRET_FIELD_TOKENS: tuple[str, ...] = (
+    "key", "token", "secret", "password", "passwd", "auth", "credential",
+    "cred", "oauth", "bearer", "session", "cookie", "apikey",
+)
 
-    Policy: must be an ``http(s)`` URL with a host and no embedded credentials;
-    reject the cloud-metadata link-local address (169.254.169.254 / fd00:ec2::254)
-    — the canonical SSRF target. (Deeper egress policy lands with the Phase-2
-    executor that would actually fetch the endpoint.)"""
+
+def _reject_secret_or_unknown_fields(data: dict, allowed: frozenset[str]) -> str | None:
+    """Strict per-lane schema (#3): reject any field not in *allowed*, and reject
+    any field whose NAME looks secret-bearing — a non-secret declaration must
+    never carry a secret over the chat/relay."""
+    for field in data:
+        lname = str(field).lower()
+        if any(tok in lname for tok in _SECRET_FIELD_TOKENS):
+            return (
+                f"field {field!r} looks like a secret — the engine-declaration "
+                "surface never accepts secrets over the chat (raw keys go through "
+                "the Phase-2 out-of-chat deposit)."
+            )
+        if field not in allowed:
+            return (
+                f"unknown field {field!r} for this engine lane; allowed: "
+                f"{sorted(allowed)}."
+            )
+    return None
+
+
+def _validate_engine_endpoint(endpoint: str) -> str | None:
+    """Return an error string for an invalid self-hosted endpoint, else None.
+
+    Policy (#3/F6): ``http(s)`` URL with a host, NO embedded credentials
+    (userinfo), NO query/fragment (an engine base URL needs none, and they are
+    the ``?api_key=…`` credential-smuggling vector), and not the cloud-metadata
+    SSRF address. Deeper egress policy lands with the Phase-2 executor."""
     from urllib.parse import urlparse
 
     try:
@@ -4963,16 +4991,40 @@ def _validate_engine_endpoint(endpoint: str) -> str | None:
         return "endpoint must include a host."
     if parsed.username or parsed.password:
         return "endpoint must not embed credentials (user:pass@)."
+    if parsed.query or parsed.fragment:
+        return (
+            "endpoint must not carry a query string or fragment — an engine base "
+            "URL needs none, and they are a credential-smuggling vector "
+            "(e.g. ?api_key=…)."
+        )
     host = parsed.hostname.strip("[]").lower()
     if host in ("169.254.169.254", "fd00:ec2::254", "metadata.google.internal"):
         return "endpoint points at a cloud-metadata address (SSRF) — rejected."
     return None
 
 
+def _redact_endpoint(endpoint: str) -> str:
+    """Echo only scheme://host[:port] — never the full endpoint (#3)."""
+    from urllib.parse import urlparse
+
+    try:
+        p = urlparse(endpoint)
+        host = p.hostname or ""
+        port = f":{p.port}" if p.port else ""
+        return f"{p.scheme}://{host}{port}" if host else "<redacted>"
+    except ValueError:
+        return "<redacted>"
+
+
 def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
-    """Self-hosted endpoint → persist the endpoint + writer choice."""
+    """Self-hosted endpoint → DECLARE the endpoint (not executable yet)."""
     from tinyassets.config import write_universe_config_fields
 
+    schema_err = _reject_secret_or_unknown_fields(
+        data, frozenset({"engine_source", "endpoint", "preferred_writer"}),
+    )
+    if schema_err:
+        return json.dumps({"error": schema_err})
     endpoint = str(data.get("endpoint", "")).strip()
     if not endpoint:
         return json.dumps({"error": "endpoint is required for self_hosted_endpoint."})
@@ -4987,16 +5039,29 @@ def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
-        "status": "engine_set", "universe_id": uid,
-        "engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint,
+        "status": "engine_declared", "universe_id": uid,
+        "engine_source": "self_hosted_endpoint",
+        "engine_endpoint_redacted": _redact_endpoint(endpoint),  # never echo raw
         "preferred_writer": preferred_writer,
+        "executable": False,
+        "note": "Endpoint DECLARED (not stored/echoed in full). Self-hosted "
+                "execution routing does not exist yet (Phase 2) — run the daemon "
+                "on your own device to use this endpoint now.",
     })
 
 
 def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
-    """Market-rented → persist model + rate + spending cap."""
+    """Market-rented → DECLARE model + rate + cap (not executable yet)."""
     from tinyassets.config import write_universe_config_fields
 
+    schema_err = _reject_secret_or_unknown_fields(
+        data, frozenset({
+            "engine_source", "market_model", "market_rate", "spending_cap",
+            "preferred_writer",
+        }),
+    )
+    if schema_err:
+        return json.dumps({"error": schema_err})
     market_model = str(data.get("market_model", "")).strip()
     if not market_model:
         return json.dumps({"error": "market_model is required for market_rented."})
@@ -5024,25 +5089,25 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
-        "status": "engine_set", "universe_id": uid,
+        "status": "engine_declared", "universe_id": uid,
         "engine_source": "market_rented", "market_model": market_model,
         "market_rate": market_rate, "spending_cap": spending_cap,
-        "note": "Your universe will run on a market-rented daemon within the "
-                "spending cap. Market matching runs when a market host is live "
-                "(post-M1 runtime).",
+        "executable": False,
+        "note": "Market rental DECLARED. It will NOT run yet — market matching + "
+                "a live executor are Phase 2. Run the daemon on your own device "
+                "to power this universe now.",
     })
 
 
 def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
-    """Host-your-own daemon → persist the choice + preferred provider.
-
-    The founder hosts a daemon bound to this universe. Recording the choice is
-    the onboard step; the actual runtime instance is bound via the existing
-    ``universe action=daemon_summon`` (create + summon) — post-M1 wires a live
-    worker to consume it.
-    """
+    """Host-your-own daemon → DECLARE the choice (not executable via platform)."""
     from tinyassets.config import write_universe_config_fields
 
+    schema_err = _reject_secret_or_unknown_fields(
+        data, frozenset({"engine_source", "provider", "preferred_writer"}),
+    )
+    if schema_err:
+        return json.dumps({"error": schema_err})
     provider = str(data.get("provider", "")).strip() or "claude-code"
     if provider not in _KNOWN_ENGINE_PROVIDERS:
         return json.dumps({
@@ -5056,11 +5121,13 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
-        "status": "engine_set", "universe_id": uid,
+        "status": "engine_declared", "universe_id": uid,
         "engine_source": "host_daemon", "provider": provider,
         "preferred_writer": fields["preferred_writer"],
-        "next_step": "Host a daemon for this universe via "
-                     "`universe action=daemon_summon` to bind a runtime instance.",
+        "executable": False,
+        "note": "host_daemon DECLARED. The platform does not run it — run the "
+                "daemon on YOUR OWN device (a real device-executor binding is "
+                "Phase 2). Your subscription tokens never leave your machine.",
     })
 
 

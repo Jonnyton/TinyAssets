@@ -790,7 +790,7 @@ def run_supervisor(
                 logger.error(
                     "cloud_worker: universe %s has a MISCONFIGURED engine "
                     "binding — NOT working it (%s). Fix the binding via "
-                    "universe action=set_engine. (non-ambient gate)",
+                    "write_graph target=engine. (non-ambient gate)",
                     universe, exc,
                 )
                 write_supervisor_heartbeat(
@@ -805,7 +805,7 @@ def run_supervisor(
                 logger.info(
                     "cloud_worker: universe %s has no bound engine capacity — "
                     "idle until an engine is bound (non-ambient gate). Bind one "
-                    "via universe action=set_engine.",
+                    "via write_graph target=engine.",
                     universe,
                 )
                 write_supervisor_heartbeat(

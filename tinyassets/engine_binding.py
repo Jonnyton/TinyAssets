@@ -193,11 +193,15 @@ def _vault_encryption_capability_attested() -> bool:
     The current vault stores keys plaintext-base64 — a truthy env flag alone must
     NEVER unlock deposit+execution of plaintext keys (C4). This returns False
     until real envelope encryption / an external secret manager is implemented
-    AND verified in Phase 2; at that point, swap in the actual capability probe
-    (e.g. confirm a KMS/secret-manager handle is reachable). Tests that need to
-    simulate Phase-2 monkeypatch this to True.
+    AND verified in Phase 2; at that point, swap in the actual capability probe.
+
+    Round-11 #2 contract for the Phase-2 implementation: the attestation must
+    prove the SPECIFIC vault record about to be used is envelope-encrypted — NOT
+    merely that a KMS/secret-manager is globally reachable. (A per-record check;
+    take the universe/record context and verify that record's ciphertext + key
+    reference decrypt.) Tests simulate Phase-2 by monkeypatching this to True.
     """
-    return False  # Phase 2: implement real envelope encryption + attest it here.
+    return False  # Phase 2: implement real per-record envelope encryption here.
 
 
 def byo_execution_enabled() -> bool:
@@ -469,7 +473,7 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             universe_id,
             declared_source or "byo_api_key",
             "a BYO API key is in the vault but is not usable / not "
-            "per-universe-consumable (re-bind via universe action=set_engine)",
+            "per-universe-consumable (re-bind via write_graph target=engine)",
         )
 
     # A DECLARED byo_api_key with no key at all is genuinely broken → fail loud.

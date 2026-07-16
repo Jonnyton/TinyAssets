@@ -1343,16 +1343,16 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                 "detail": exc.detail,
                 "note": (
                     "This universe declares an engine but its capacity is "
-                    "misconfigured — re-bind it via universe action=set_engine."
+                    "misconfigured — re-declare it via write_graph target=engine."
                 ),
             }
             caveats.append(
-                f"engine_binding is MISCONFIGURED: {exc.detail}. Re-bind via "
-                "universe action=set_engine."
+                f"engine_binding is MISCONFIGURED: {exc.detail}. Re-declare via "
+                "write_graph target=engine."
             )
             actionable_next_steps.append(
-                "Re-bind this universe's engine — the declared binding is "
-                "broken: universe action=set_engine."
+                "Re-declare this universe's engine — the declared binding is "
+                "broken: write_graph target=engine."
             )
 
     release_state = _load_release_state()

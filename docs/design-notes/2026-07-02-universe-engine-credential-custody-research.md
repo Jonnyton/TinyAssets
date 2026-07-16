@@ -43,14 +43,19 @@ Anthropic's current Consumer Terms + Usage Policy (re-verify at the §0.1 links)
   API-key-exception + no-credential-sharing conclusion still holds. Freshness:
   re-check before acting.)
 
-**OpenAI (ChatGPT Plus/Pro subscription) — same conclusion.** ChatGPT subscriptions
-are "individual use only"; no credential sharing; no programmatic/automated
-extraction; **no "using ChatGPT to power third-party services."** OpenAI's own Codex
-CI/CD auth guide says plainly: **"The right way to authenticate automation is with
-an API key,"** and characterizes ChatGPT-subscription-auth-in-CI as an *"advanced
-workflow for … trusted **private** automation," "personal account automation only,"
-"single machine or serialized job streams per token,"* explicitly **not for public
-repos or platforms running automation on behalf of other users.**
+**OpenAI (ChatGPT Plus/Pro subscription) — same conclusion.** The "individual use
+only / no credential sharing / no **using ChatGPT to power third-party services**"
+restrictions are stated in OpenAI's **usage policies + Help Center** (help.openai.com)
+and Terms of Use — NOT in the Codex CI/CD guide (F6 provenance correction: the earlier
+draft mis-attributed the "power third-party services" phrase to the Codex auth guide).
+Separately, OpenAI's own **Codex CI/CD auth guide** says plainly: **"The right way to
+authenticate automation is with an API key,"** and, notably, DOES permit ChatGPT-
+subscription-auth-in-CI as an *"advanced workflow for … trusted **private**
+automation," "personal account automation only," "single machine or serialized job
+streams per token,"* explicitly **not for public repos or platforms running automation
+on behalf of other users** — i.e. Codex sanctions trusted *private* account-auth, so
+the blanket "no ChatGPT automation" reading is too strong (see the Enterprise
+access-token narrowing below).
 
 > **Narrowing (Codex review 2026-07-02):** the blanket "no ChatGPT automation" is
 > too broad — OpenAI *does* document **Business/Enterprise Codex access tokens for
@@ -90,11 +95,15 @@ exception + no-credential-sharing conclusion still follows from the terms as a
 whole, but treat it as an inference and get counsel before productionizing any
 subscription-adjacent lane.) Exact current sources:
 
-- **OpenAI — Codex non-interactive mode auth** (the `CODEX_API_KEY` per-run path
-  for headless `codex exec`): <https://learn.chatgpt.com/docs/non-interactive-mode>.
+- **OpenAI — Codex CI/CD auth guide** (the `CODEX_API_KEY` per-run path for headless
+  `codex exec`; the "API key is the right way to authenticate automation" +
+  trusted-private-automation language quoted above): <https://learn.chatgpt.com/docs/auth/ci-cd-auth>.
 - **OpenAI — Codex Enterprise access tokens** (`CODEX_ACCESS_TOKEN`, org-level,
   DISTINCT from a personal ChatGPT subscription AND from an API key):
-  <https://developers.openai.com/codex/enterprise/access-tokens>.
+  <https://learn.chatgpt.com/docs/enterprise/access-tokens>.
+- **OpenAI — usage policies / Help Center** (the "individual use only / no credential
+  sharing / no powering third-party services" restrictions): <https://help.openai.com/>
+  and the Terms of Use link below.
 - **OpenAI — Terms of Use / Business terms** (individual-use, no credential
   sharing, no powering third-party services on a personal plan):
   <https://openai.com/policies/terms-of-use/> and

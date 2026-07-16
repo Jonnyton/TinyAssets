@@ -441,8 +441,16 @@ def _byo_injection_enabled() -> bool:
 def provider_auth_env_overrides(
     universe_dir: str | Path | None,
     provider_name: str,
+    *,
+    byo_enabled: bool | None = None,
 ) -> dict[str, str]:
     """Return subprocess env overrides for a CLI-subprocess provider.
+
+    ``byo_enabled`` is the caller's ONE authoritative attestation snapshot
+    (round-11 #2 TOCTOU fix): when threaded, this function does NOT recompute
+    ``_byo_injection_enabled()`` — so the byo-bound decision and the overlay can
+    never disagree across a mid-call attestation flip. ``None`` recomputes (for
+    standalone callers).
 
     A founder BYO key is injected ONLY when (a) executable BYO is enabled
     (:func:`_byo_injection_enabled`, DARK by default) and (b) the provider is a
@@ -452,13 +460,15 @@ def provider_auth_env_overrides(
     ``subprocess_env_without_api_keys`` strips process-global keys, so a
     per-universe key never leaks across universes.
     """
+    if byo_enabled is None:
+        byo_enabled = _byo_injection_enabled()
     provider = provider_name.strip()
     if provider == "claude-code":
         overrides: dict[str, str] = {}
         # BYO-key lane FIRST — but ONLY when executable BYO is enabled. Return
         # BYO-only; the caller scrubs CLAUDE_CONFIG_DIR / CLAUDE_CODE_OAUTH_TOKEN
         # so it can never fall through to platform auth.
-        if _byo_injection_enabled():
+        if byo_enabled:
             api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
             if api_key:
                 overrides["ANTHROPIC_API_KEY"] = api_key
@@ -507,18 +517,22 @@ def provider_is_byo_bound(
     *,
     env: dict[str, str] | None = None,
     universe_dir: str | Path | None = None,
+    byo_enabled: bool | None = None,
 ) -> bool:
     """Return True iff the resolved universe holds an INJECTABLE BYO key for
     *provider* — i.e. executable BYO is enabled AND *provider* is BYO-executable.
 
-    A BYO-bound spawn must FAIL CLOSED on any materialization error rather than
-    silently fall through to platform-global auth. A broken BYO secret
-    (``resolve_llm_api_key`` raising) still counts as BYO-bound so the caller
-    fails closed."""
+    ``byo_enabled`` is the caller's ONE authoritative attestation snapshot
+    (round-11 #2); ``None`` recomputes. A BYO-bound spawn must FAIL CLOSED on any
+    materialization error rather than silently fall through to platform-global
+    auth. A broken BYO secret (``resolve_llm_api_key`` raising) still counts as
+    BYO-bound so the caller fails closed."""
     env_var = _PROVIDER_BYO_ENV_VAR.get(provider_name.strip())
     if not env_var:
         return False
-    if not _byo_injection_enabled():
+    if byo_enabled is None:
+        byo_enabled = _byo_injection_enabled()
+    if not byo_enabled:
         return False  # BYO dark (C2/C4) — no BYO-bound spawn to fail closed on
     resolved = (
         Path(universe_dir)
@@ -538,15 +552,20 @@ def apply_provider_auth_env(
     provider_name: str,
     *,
     universe_dir: str | Path | None = None,
+    byo_enabled: bool | None = None,
 ) -> dict[str, str]:
     """Overlay per-universe auth settings onto *env*.
+
+    ``byo_enabled`` is the caller's ONE authoritative attestation snapshot
+    (round-11 #2 TOCTOU fix) — threaded straight into
+    :func:`provider_auth_env_overrides` so the byo-bound decision and the overlay
+    can never disagree across a mid-call attestation flip.
 
     When the BYO-key lane is chosen for a CLI-subprocess provider, SCRUB the
     inherited global subscription auth vars first so the child authenticates with
     the BYO key ONLY and can never fall through to the platform subscription
-    (Codex F3). Propagates errors (ValueError malformed vault, RuntimeError
-    isolation failure) so a BYO spawn fails closed instead of running on ambient
-    platform auth.
+    (Codex F3). Propagates errors (ValueError malformed vault) so a BYO spawn
+    fails closed instead of running on ambient platform auth.
     """
     resolved_universe = (
         Path(universe_dir)
@@ -555,7 +574,9 @@ def apply_provider_auth_env(
     )
     if resolved_universe is None:
         return env
-    overrides = provider_auth_env_overrides(resolved_universe, provider_name)
+    overrides = provider_auth_env_overrides(
+        resolved_universe, provider_name, byo_enabled=byo_enabled,
+    )
     provider = provider_name.strip()
     byo_var = _PROVIDER_BYO_ENV_VAR.get(provider)
     if byo_var and byo_var in overrides:

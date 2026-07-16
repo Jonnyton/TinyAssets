@@ -153,18 +153,32 @@ def subprocess_env_for_provider(
     env = subprocess_env_without_api_keys() or os.environ.copy()
     try:
         from tinyassets.credential_vault import (
+            _PROVIDER_BYO_ENV_VAR,
+            _PROVIDER_GLOBAL_AUTH_SCRUB,
+            _byo_injection_enabled,
             apply_provider_auth_env,
             provider_is_byo_bound,
         )
 
-        # A BYO-bound spawn must FAIL CLOSED: if isolation/materialization of the
-        # per-universe key fails, we must NOT silently fall through to the
-        # platform-global subscription auth in the base env (Codex F3).
+        # Round-11 #2 (attestation TOCTOU): take ONE authoritative attestation
+        # snapshot and thread it into BOTH the byo-bound decision and the overlay
+        # so they can never disagree across a mid-call attestation flip.
+        byo_enabled = _byo_injection_enabled()
         byo_bound = provider_is_byo_bound(
             provider_name, env=env, universe_dir=universe_dir,
+            byo_enabled=byo_enabled,
         )
+        provider = provider_name.strip()
+        if byo_bound:
+            # Scrub inherited global subscription auth BEFORE materialization, so
+            # even if the overlay fails the child can NEVER run on ambient auth.
+            for var in _PROVIDER_GLOBAL_AUTH_SCRUB.get(provider, ()):
+                env.pop(var, None)
         try:
-            apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
+            apply_provider_auth_env(
+                env, provider_name, universe_dir=universe_dir,
+                byo_enabled=byo_enabled,
+            )
         except ValueError:
             raise
         except Exception:
@@ -172,6 +186,17 @@ def subprocess_env_for_provider(
                 raise  # never run a BYO spawn on ambient platform auth
             # Non-BYO / no-vault path stays best-effort: provider calls should not
             # crash merely because no universe/vault helper is available here.
+        if byo_bound:
+            # FAIL CLOSED: a BYO-bound spawn that did not produce its expected key
+            # must NOT dispatch (it would run on the now-scrubbed/absent auth).
+            expected = _PROVIDER_BYO_ENV_VAR.get(provider, "")
+            if expected and not env.get(expected):
+                from tinyassets.exceptions import ProviderUnavailableError
+
+                raise ProviderUnavailableError(
+                    f"BYO-bound spawn for {provider} did not produce {expected}; "
+                    "refusing to run on ambient platform auth."
+                )
     except ImportError:
         # credential_vault genuinely unavailable in this import context — no
         # per-universe overlay is possible; the base env stands.

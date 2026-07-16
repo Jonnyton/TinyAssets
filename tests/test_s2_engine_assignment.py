@@ -73,6 +73,46 @@ def test_codex_byo_key_is_never_injected(tmp_path, monkeypatch):
     assert "CODEX_API_KEY" not in overrides
 
 
+def test_attestation_toctou_uses_one_snapshot(tmp_path, monkeypatch):
+    """#2: subprocess_env_for_provider takes ONE attestation snapshot — a mid-call
+    True→False flip cannot leave ambient CLAUDE_CONFIG_DIR + omit the BYO key."""
+    import tinyassets.engine_binding as eb
+
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    # Attestation flips True on the 1st read, then False on every later read —
+    # a race that would fail-open WITHOUT a single-snapshot decision.
+    calls = {"n": 0}
+
+    def _flipping():
+        calls["n"] += 1
+        return calls["n"] == 1
+
+    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", _flipping)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/global/.claude")  # ambient login
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "global-oauth")
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_api_key", "service": "anthropic",
+        "secret_b64": base64.b64encode(b"sk-ant-byo").decode("ascii"),
+    }])
+    env = subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
+    assert env.get("ANTHROPIC_API_KEY") == "sk-ant-byo"
+    assert "CLAUDE_CONFIG_DIR" not in env  # ambient scrubbed, snapshot held True
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+def test_byo_bound_broken_secret_fails_closed_no_ambient(tmp_path, monkeypatch):
+    """#2: a BYO-bound spawn whose key cannot be produced FAILS (no dispatch) and
+    never falls through to the scrubbed ambient auth."""
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/global/.claude")
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_api_key", "service": "anthropic",
+        "secret_b64": "!!not-base64!!",  # decodes → ValueError in the overlay
+    }])
+    with pytest.raises(Exception):  # noqa: B017 — fail-closed, any loud error is fine
+        subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
+
+
 def test_byo_claude_scrubs_global_subscription(tmp_path, monkeypatch):
     """A BYO Anthropic key + a legacy Claude subscription record must NOT fall
     through to platform auth — the child env carries ANTHROPIC_API_KEY and has NO
@@ -161,7 +201,12 @@ def test_set_engine_ledger_extractor_never_leaks(tmp_path, monkeypatch):
             "endpoint": "http://localhost:11434",
         }),
     ))
-    assert out["status"] == "engine_set"
+    # #4: a declaration returns engine_declared + executable:false (not "will run").
+    assert out["status"] == "engine_declared"
+    assert out["executable"] is False
+    # #3: the raw endpoint is never echoed — only a redacted host.
+    assert "engine_endpoint" not in out
+    assert out["engine_endpoint_redacted"] == "http://localhost:11434"
 
 
 def _set_engine(monkeypatch, tmp_path, uid, payload):
@@ -193,7 +238,48 @@ def test_set_engine_self_hosted_accepts_valid_endpoint(tmp_path, monkeypatch):
     out = _set_engine(monkeypatch, tmp_path, "u-goodurl", {
         "engine_source": "self_hosted_endpoint", "endpoint": "https://ollama.example.com:11434",
     })
-    assert out["status"] == "engine_set"
+    assert out["status"] == "engine_declared"
+    assert out["executable"] is False
+
+
+def test_set_engine_self_hosted_rejects_query_secret(tmp_path, monkeypatch):
+    """#3: a ?api_key= credential smuggled in the endpoint URL is rejected + not stored."""
+    out = _set_engine(monkeypatch, tmp_path, "u-qsecret", {
+        "engine_source": "self_hosted_endpoint",
+        "endpoint": "https://engine.example/v1?api_key=SECRET",
+    })
+    assert "error" in out and out.get("status") != "engine_declared"
+    assert "SECRET" not in json.dumps(out)  # never echoed
+
+
+def test_set_engine_self_hosted_rejects_extra_secret_field(tmp_path, monkeypatch):
+    """#3: an extra api_key field on the non-secret lane is rejected + not stored."""
+    out = _set_engine(monkeypatch, tmp_path, "u-extra", {
+        "engine_source": "self_hosted_endpoint",
+        "endpoint": "https://engine.example",
+        "api_key": "SECRET",
+    })
+    assert "error" in out and out.get("status") != "engine_declared"
+    assert "SECRET" not in json.dumps(out)
+
+
+def test_set_engine_market_declares_not_runs(tmp_path, monkeypatch):
+    """#4: market declaration returns executable:false, not "your universe will run"."""
+    out = _set_engine(monkeypatch, tmp_path, "u-market", {
+        "engine_source": "market_rented", "market_model": "glm-5.2",
+        "market_rate": 0.5, "spending_cap": 10.0,
+    })
+    assert out["status"] == "engine_declared" and out["executable"] is False
+    assert "will run" not in json.dumps(out).lower()
+
+
+def test_set_engine_host_daemon_declares_no_summon(tmp_path, monkeypatch):
+    """#4: host_daemon declaration returns executable:false and no daemon_summon instruction."""
+    out = _set_engine(monkeypatch, tmp_path, "u-hd", {
+        "engine_source": "host_daemon", "provider": "claude-code",
+    })
+    assert out["status"] == "engine_declared" and out["executable"] is False
+    assert "daemon_summon" not in json.dumps(out)
 
 
 @pytest.mark.parametrize("field,value", [
@@ -219,15 +305,17 @@ def test_set_engine_host_daemon_rejects_unknown_provider(tmp_path, monkeypatch):
     assert "error" in out and out.get("status") != "engine_set"
 
 
-def test_model_hint_write_surface_rejects_free_form():
-    """F1a: model_hint (which becomes the router role) is whitelisted at the write
-    surface — a free-form value is rejected loud."""
+def test_model_hint_write_surface_accepts_free_form():
+    """Round-11 revert: model_hint is stored FREE-FORM (no authoring whitelist —
+    that was a breaking API change). The security invariant lives at the router
+    boundary (see test_provider_auth_router_quarantine's ALL-dispatch-path tests
+    proving an unknown role is classified as a writer route + enforced)."""
     from tinyassets.api.branches import _coerce_model_hint_update
 
-    val, err = _coerce_model_hint_update("novelist", "model_hint")
-    assert err and val == ""
-    ok, err2 = _coerce_model_hint_update("Writer", "model_hint")  # normalized
-    assert err2 == "" and ok == "writer"
+    val, err = _coerce_model_hint_update("reviewer", "model_hint")
+    assert err == "" and val == "reviewer"  # previously-valid value preserved
+    val2, err2 = _coerce_model_hint_update("checker", "model_hint")
+    assert err2 == "" and val2 == "checker"
 
 
 def test_ledger_extractor_never_leaks_the_key():

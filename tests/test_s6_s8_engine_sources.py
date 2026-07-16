@@ -56,12 +56,15 @@ def test_market_rented_persists_rate_and_cap(tmp_path, monkeypatch):
     assert cfg.spending_cap == 20.0
 
 
-def test_host_daemon_persists_and_points_at_summon(tmp_path, monkeypatch):
+def test_host_daemon_declares_not_executable(tmp_path, monkeypatch):
+    """#4: host_daemon is a DECLARATION — executable:false, no daemon_summon
+    instruction (the platform does not run it; own-device is the path)."""
     uni, udir = _setup(tmp_path, monkeypatch)
     out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
         "engine_source": "host_daemon", "provider": "codex"})))
     assert out["engine_source"] == "host_daemon"
-    assert "daemon_summon" in out["next_step"]
+    assert out["status"] == "engine_declared" and out["executable"] is False
+    assert "daemon_summon" not in json.dumps(out)
     assert load_universe_config(udir).engine_source == "host_daemon"
 
 

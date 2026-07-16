@@ -1826,28 +1826,19 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     return ""
 
 
-# model_hint becomes the router ROLE verbatim (graph_compiler:
-# role = node.model_hint or "writer"). A free-form value would alias to the
-# writer fallback chain and could escape the writer-binding enforcement (F1a), so
-# validate against the known role set at the write surface — fail loud (Rule 8).
-_VALID_MODEL_HINTS: frozenset[str] = frozenset(
-    {"", "writer", "judge", "extract", "embed"}
-)
-
-
+# model_hint is stored FREE-FORM (round-11 revert): an authoring-time whitelist
+# was an unnecessary breaking API change (it rejected previously-valid values like
+# "reviewer"/"checker"). The security invariant lives at the SHARED router
+# boundary — providers.router classifies ANY unknown role as a writer route (see
+# _enforce_writer_binding + its ALL-dispatch-path tests), so an arbitrary stored
+# hint can never route around per-universe writer binding. Do not re-add a
+# write-surface whitelist here.
 def _coerce_model_hint_update(raw: Any, field: str) -> tuple[str, str]:
     if raw is None:
         return "", ""
     if not isinstance(raw, str):
         return "", f"{field} must be a string."
-    value = raw.strip().lower()
-    if value not in _VALID_MODEL_HINTS:
-        return "", (
-            f"{field} must be one of {sorted(_VALID_MODEL_HINTS)!r} — it selects "
-            f"the router role, and a free-form value would alias to the writer "
-            f"chain and bypass per-universe engine binding."
-        )
-    return value, ""
+    return raw, ""
 
 
 def _coerce_llm_policy_update(
