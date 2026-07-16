@@ -440,13 +440,16 @@ def read_graph(
 
     Args:
         target: What to read: status, graphs, graph, goals, goal, runs, run,
-            or branch.
+            branch, designs (list remixable branch designs — public published
+            ones plus your own; other users' private designs are never listed),
+            or design (export one branch as a portable design artifact).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
             Falls back to graph_id when omitted.
         branch_id: Branch definition identifier for target=branch (read a
-            branch's full graph + node configs). Falls back to graph_id.
+            branch's full graph + node configs) or target=design (the branch
+            to export). Falls back to graph_id.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
         author: Optional goal author filter.
@@ -491,10 +494,32 @@ def read_graph(
         # even confirm existence. get_branch was already callable here via the
         # deprecated 'extensions' tool; this only makes it first-class.
         return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
+    if normalized == "designs":
+        # DISCOVER (patch-loop S2): enumerate remixable branch designs. The
+        # listing is PER-VIEWER (list_branches scope=published filters on
+        # published branch VERSIONS; storage filters visibility public-or-
+        # author): you see PUBLIC published designs (the shared commons) PLUS
+        # your OWN published designs even when private. Other users' private
+        # designs are never visible, and unpublished drafts never appear.
+        return _extensions_impl(
+            action="list_branches",
+            scope="published",
+            author=author,
+            limit=limit,
+        )
+    if normalized == "design":
+        # EXPORT (patch-loop S2): serialize one branch as the portable design
+        # artifact (envelope + spec) — the same format the repo seed uses, so
+        # export -> import round-trips. Public branches export for anyone;
+        # private branches are author-gated.
+        return _extensions_impl(
+            action="export_design", branch_def_id=(branch_id or graph_id),
+        )
     return _unknown_target(
         "read_graph",
         target,
-        ("status", "graphs", "graph", "goals", "goal", "runs", "run", "branch"),
+        ("status", "graphs", "graph", "goals", "goal", "runs", "run",
+         "branch", "designs", "design"),
     )
 
 
@@ -524,14 +549,18 @@ def write_graph(
     request_type: str = "general",
     branch_id: str = "",
     changes_json: str = "",
+    artifact_json: str = "",
 ) -> str:
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal, request, branch, or universe. The founder's
-            home universe is auto-created on first contact; use target=universe
-            to create an additional universe (or the home when a create-scoped
-            sign-in declined auto-birth).
+        target: What to write: goal, request, branch, universe, design, or
+            remix. The founder's home universe is auto-created on first contact;
+            use target=universe to create an additional universe (or the home
+            when a create-scoped sign-in declined auto-birth). target=design
+            imports a portable design artifact as a new owned branch;
+            target=remix forks a published design (by branch_id) into an owned
+            copy with provenance recorded.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -543,7 +572,11 @@ def write_graph(
             branch_def_id to patch.
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
-            only the branch's author can edit it.
+            only the branch's author can edit it. BIND a repo-blind design by
+            patching its unbound params (set_state_field_default ops for
+            target_repo / credential_ref / merge_policy).
+        artifact_json: With target=design, the portable design artifact to
+            import — a design envelope OR a raw build_branch spec.
     """
     rejection = write_gate_rejection("write_graph")
     if rejection:
@@ -619,8 +652,24 @@ def write_graph(
             branch_def_id=branch_id,
             changes_json=changes_json,
         )
+    if normalized == "design":
+        # IMPORT (patch-loop S2): a user hands their chatbot a design artifact
+        # (envelope or raw spec) and it becomes a branch they own.
+        return _extensions_impl(
+            action="import_design",
+            artifact_json=artifact_json,
+        )
+    if normalized == "remix":
+        # FORK/REMIX (patch-loop S2): fork a published design (branch_id) into
+        # an owned copy; provenance (fork_from + record_remix edge) is recorded.
+        return _extensions_impl(
+            action="remix_design",
+            branch_def_id=branch_id,
+            name=name,
+        )
     return _unknown_target(
-        "write_graph", target, ("goal", "request", "branch", "universe")
+        "write_graph", target,
+        ("goal", "request", "branch", "universe", "design", "remix"),
     )
 
 
@@ -1267,6 +1316,7 @@ def extensions(
     max_wait_s: int = 60,
     limit: int = 50,
     spec_json: str = "",
+    artifact_json: str = "",
     changes_json: str = "",
     judgment_text: str = "",
     judgment_id: str = "",
@@ -1413,6 +1463,7 @@ def extensions(
         max_wait_s=max_wait_s,
         limit=limit,
         spec_json=spec_json,
+        artifact_json=artifact_json,
         changes_json=changes_json,
         judgment_text=judgment_text,
         judgment_id=judgment_id,
