@@ -38,29 +38,18 @@ def test_status_reports_unbound_universe_idle_until_bound(tmp_path, monkeypatch)
     # Flag OFF (default): ambient work still runs today, so workable stays True.
     assert eb["workable"] is True
     assert eb["non_ambient_gate"] is False
-    # F3/F5: with the BYO-encryption gate OFF (this deploy), hosted engines are
-    # DARK — the guidance says so and points the founder at their own device.
+    # Honest Phase-1 guidance: hosted engines are NOT available yet (out-of-chat
+    # deposit + KMS + executor are Phase 2), and no raw key travels over the chat.
     steps = " ".join(payload["actionable_next_steps"]).lower()
     assert "not available yet" in steps
-    assert "vault encryption hardening" in steps
+    assert "phase 2" in steps
+    assert "chatbot" in steps  # raw key must never travel over the relay
     assert "your own device" in steps
     # Finding 2 regression: with the non-ambient gate OFF the caveat must NOT
     # falsely claim the universe is idle-until-bound (ambient work runs today).
     combined = " ".join(payload["caveats"]).lower()
     assert "idle-until-bound" not in combined
     assert "ambient" in combined and "workable" in combined
-
-
-def test_status_byo_gate_on_offers_byo_bind(tmp_path, monkeypatch):
-    """With the vault-encryption gate ON, the guidance offers the BYO bind + notes
-    codex/hosted lanes are recorded-not-executable."""
-    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
-    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
-    _make_universe(tmp_path, monkeypatch, "u-idle-byo")
-    payload = json.loads(get_status(universe_id="u-idle-byo"))
-    steps = " ".join(payload["actionable_next_steps"]).lower()
-    assert "bind a byo anthropic api key" in steps
-    assert "not executable yet" in steps
 
 
 def test_status_unbound_with_gate_on_is_not_workable(tmp_path, monkeypatch):
@@ -79,6 +68,8 @@ def test_status_unbound_with_gate_on_is_not_workable(tmp_path, monkeypatch):
 def test_status_reports_bound_universe(tmp_path, monkeypatch):
     monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")  # executable BYO on
+    import tinyassets.engine_binding as _eb
+    monkeypatch.setattr(_eb, "_vault_encryption_capability_attested", lambda: True)
     udir = _make_universe(tmp_path, monkeypatch, "u-bound")
     write_credential_vault(udir, [{
         "credential_type": "llm_api_key",
@@ -172,17 +163,19 @@ def test_set_engine_subscription_is_rejected_with_guidance(tmp_path, monkeypatch
     assert "oauth-SECRET-abc" not in guidance
 
 
-def test_set_engine_byo_rejects_non_per_universe_service(tmp_path, monkeypatch):
-    """Finding 2: gemini/groq/xai keys are not per-universe-consumable — the bind
-    is rejected with a clear 'not yet supported' error and stores nothing."""
-    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")  # past the F3 gate
-    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-byo-gemini")
+def test_set_engine_byo_raw_key_refused_through_chat(tmp_path, monkeypatch):
+    """C3: any raw BYO key deposit through the chatbot is refused (no flag unlocks
+    it) and stores nothing — even the encryption gate 'on'."""
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-byo-raw")
     out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
-        "engine_source": "byo_api_key", "service": "gemini", "api_key": "g-key",
+        "engine_source": "byo_api_key", "service": "anthropic",
+        "api_key": "sk-ant-api03-" + "A" * 40,
     })))
     assert "error" in out
     assert out.get("status") != "engine_set"
-    assert "per-universe" in json.dumps(out).lower()
+    err = json.dumps(out).lower()
+    assert "chatbot" in err or "out-of-chat" in err
     from tinyassets.credential_vault import load_credential_vault
     assert load_credential_vault(udir) == []
 

@@ -27,9 +27,13 @@ _VALID_ANTHROPIC_KEY = "sk-ant-api03-" + "A" * 40
 
 @pytest.fixture
 def byo_enabled(monkeypatch):
-    """Enable the executable BYO path (vault-encryption gate on). DEFAULT is OFF —
-    the executable BYO path is DARK until KMS lands (F3)."""
+    """Simulate Phase-2: enable the executable BYO path. This requires BOTH the
+    operator flag AND the code-backed encryption-capability attestation (which is
+    False in this deploy — the flag alone cannot unlock plaintext, C4)."""
+    import tinyassets.engine_binding as eb
+
     monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
+    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda: True)
 
 
 # ---- non_ambient_work_enabled: default OFF -------------------------------
@@ -113,6 +117,21 @@ def test_byo_is_dark_when_encryption_gate_off(tmp_path, monkeypatch):
     binding = resolve_engine_binding(udir)  # must not raise
     assert binding.bound is False
     assert "encryption" in binding.reason.lower() or "not enabled" in binding.reason.lower()
+
+
+def test_flag_alone_cannot_unlock_byo_without_attestation(tmp_path, monkeypatch):
+    """C4: setting TINYASSETS_BYO_VAULT_ENCRYPTED=1 must NOT unlock plaintext
+    execution — a code-backed encryption capability attestation is required, and
+    it is False in this deploy. So the flag alone leaves BYO DARK."""
+    from tinyassets.engine_binding import byo_execution_enabled
+
+    monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")  # flag ON, attestation NOT patched
+    assert byo_execution_enabled() is False
+    udir = tmp_path / "u-byo-flagonly"
+    udir.mkdir()
+    _valid_anthropic_vault(udir)
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is False
 
 
 def test_byo_dead_key_is_not_bound(tmp_path, byo_enabled):

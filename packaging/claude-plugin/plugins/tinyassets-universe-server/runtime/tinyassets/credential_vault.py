@@ -10,11 +10,17 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
 VAULT_FILENAME = ".credential-vault.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
+
+# Per-vault-path locks so a load→merge→write upsert is atomic against concurrent
+# writers in the same process (C5). Keyed by the resolved vault file path.
+_VAULT_LOCKS: dict[str, threading.Lock] = {}
+_VAULT_LOCKS_GUARD = threading.Lock()
 VALID_CREDENTIAL_TYPES = frozenset(
     {"social", "llm_subscription", "llm_api_key", "vcs"}
 )
@@ -73,27 +79,6 @@ def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
     _chmod_best_effort(target.parent, 0o700)
     _chmod_best_effort(target, 0o700)
     return target
-
-
-def _byo_codex_home(universe_dir: str | Path | None) -> Path | None:
-    """Return a key-only CODEX_HOME that isolates a BYO-keyed codex spawn.
-
-    An EMPTY per-universe dir (no ``auth.json``) so ``codex exec`` finds no
-    subscription login there and authenticates with ``CODEX_API_KEY`` instead of
-    the platform's global ``/data/.codex`` login. Best-effort mkdir; returns
-    ``None`` only when no universe is resolvable.
-    """
-    if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    home = universe / CREDENTIAL_ARTIFACT_DIR / "codex-byo"
-    try:
-        home.mkdir(parents=True, exist_ok=True)
-        _chmod_best_effort(home.parent, 0o700)
-        _chmod_best_effort(home, 0o700)
-    except OSError:
-        return None
-    return home
 
 
 def _normalize_record(raw: Any) -> dict[str, Any]:
@@ -198,6 +183,17 @@ def _credential_identity(record: dict[str, Any]) -> tuple[str, str, str]:
     return (ctype, _service(record), dest)
 
 
+def _vault_lock(universe_dir: str | Path) -> threading.Lock:
+    """Return the process-wide lock for *universe_dir*'s vault file."""
+    key = str(credential_vault_path(universe_dir).resolve())
+    with _VAULT_LOCKS_GUARD:
+        lock = _VAULT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _VAULT_LOCKS[key] = lock
+        return lock
+
+
 def upsert_credential(
     universe_dir: str | Path,
     record: dict[str, Any],
@@ -208,16 +204,19 @@ def upsert_credential(
     record WIPES a founder's other credentials (social / vcs). This upsert loads
     the existing vault, replaces only the record with the same
     :func:`_credential_identity`, appends if none matched, and writes the full
-    set back atomically (F2). Propagates :class:`ValueError` on a malformed
-    existing vault so the caller can fail loud rather than clobber.
+    set back (F2). The load→merge→write is held under a per-vault LOCK so two
+    concurrent upserts cannot each read a stale set and clobber the other's write
+    (C5) — both distinct records survive. Propagates :class:`ValueError` on a
+    malformed existing vault so the caller can fail loud rather than clobber.
     """
     universe = Path(universe_dir)
     normalized = _normalize_record(record)
     identity = _credential_identity(normalized)
-    existing = load_credential_vault(universe)  # raises ValueError if malformed
-    merged = [r for r in existing if _credential_identity(r) != identity]
-    merged.append(normalized)
-    return write_credential_vault(universe, merged)
+    with _vault_lock(universe):
+        existing = load_credential_vault(universe)  # raises ValueError if malformed
+        merged = [r for r in existing if _credential_identity(r) != identity]
+        merged.append(normalized)
+        return write_credential_vault(universe, merged)
 
 
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:
@@ -467,64 +466,64 @@ def resolve_llm_api_key(
     return ""
 
 
+def _byo_injection_enabled() -> bool:
+    """True iff a founder BYO key may be injected into a CLI subprocess.
+
+    Gated on the executable-BYO prerequisite (:func:`engine_binding.
+    byo_execution_enabled` — KMS-attested, DEFAULT False). When False (this
+    deploy) NO BYO key is injected — even a LEGACY ``llm_api_key`` row written by
+    the old ungated set_engine — so "BYO path dark" is TRUE for legacy vaults too
+    (C2). Lazy import avoids a credential_vault ↔ engine_binding cycle.
+    """
+    try:
+        from tinyassets.engine_binding import byo_execution_enabled
+
+        return byo_execution_enabled()
+    except Exception:  # noqa: BLE001 — a resolution problem must not enable BYO
+        return False
+
+
 def provider_auth_env_overrides(
     universe_dir: str | Path | None,
     provider_name: str,
 ) -> dict[str, str]:
     """Return subprocess env overrides for a CLI-subprocess provider.
 
-    Composes subscription auth (CODEX_HOME / CLAUDE_CONFIG_DIR) with an optional
-    founder-deposited BYO API key (OPENAI_API_KEY / ANTHROPIC_API_KEY). The key
-    is overlaid here, AFTER ``subprocess_env_without_api_keys`` has stripped the
-    process-global keys, so a per-universe key never leaks across universes and
-    the platform default is not exposed to a BYO-key universe.
+    A founder BYO key is injected ONLY when (a) executable BYO is enabled
+    (:func:`_byo_injection_enabled`, DARK by default) and (b) the provider is a
+    BYO-EXECUTABLE provider — **claude-code only** today (Codex BYO needs unmet
+    sandboxing, so a codex key is NEVER injected; C2). Otherwise the overlay is
+    the platform/legacy first-party subscription path. The key is overlaid AFTER
+    ``subprocess_env_without_api_keys`` strips process-global keys, so a
+    per-universe key never leaks across universes.
     """
     provider = provider_name.strip()
-    if provider == "codex":
-        overrides: dict[str, str] = {}
-        api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
-        if api_key:
-            # Sanctioned BYO-key lane. Non-interactive ``codex exec`` authenticates
-            # via CODEX_API_KEY (OpenAI Codex CI/CD auth), NOT OPENAI_API_KEY — set
-            # it (plus OPENAI_API_KEY for CLI builds that read it). ISOLATE from the
-            # platform subscription login: point CODEX_HOME at a key-only
-            # per-universe dir (no auth.json) so the BYO KEY authenticates the
-            # child, never the global /data/.codex subscription (Hard Rule #8).
-            overrides["CODEX_API_KEY"] = api_key
-            overrides["OPENAI_API_KEY"] = api_key
-            byo_home = _byo_codex_home(universe_dir)
-            if byo_home is None:
-                # FAIL CLOSED: we could not isolate CODEX_HOME, so the child would
-                # inherit the global subscription login. Refuse rather than run a
-                # BYO spawn on platform-global auth (Hard Rule #8).
-                raise RuntimeError(
-                    "cannot isolate CODEX_HOME for a BYO-keyed codex spawn"
-                )
-            overrides["CODEX_HOME"] = str(byo_home)
-            return overrides
-        # No BYO key — fall back to a vault-materialized CODEX_HOME (host / legacy
-        # first-party infra; founder subscription custody is a blocked lane).
-        codex_home = ensure_codex_home_from_vault(universe_dir)
-        if codex_home:
-            overrides["CODEX_HOME"] = str(codex_home)
-        return overrides
     if provider == "claude-code":
-        overrides = {}
-        # BYO-key lane FIRST (before touching any legacy subscription record):
-        # authenticate with the KEY, isolated from any subscription login. Return
+        overrides: dict[str, str] = {}
+        # BYO-key lane FIRST — but ONLY when executable BYO is enabled. Return
         # BYO-only; the caller scrubs CLAUDE_CONFIG_DIR / CLAUDE_CODE_OAUTH_TOKEN
-        # from the child env so it can never fall through to platform auth.
-        api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
-        if api_key:
-            overrides["ANTHROPIC_API_KEY"] = api_key
-            return overrides
-        # No BYO key — legacy / host subscription bundle (first-party infra).
+        # so it can never fall through to platform auth.
+        if _byo_injection_enabled():
+            api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
+            if api_key:
+                overrides["ANTHROPIC_API_KEY"] = api_key
+                return overrides
+        # No executable BYO key — legacy / host subscription bundle.
         claude_config_dir = ensure_claude_config_dir_from_vault(universe_dir)
         if claude_config_dir:
             overrides["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
         oauth_token = resolve_claude_oauth_token(universe_dir)
         if oauth_token:
             overrides["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+        return overrides
+    if provider == "codex":
+        # Codex BYO is NOT executable (C2) — a codex/OpenAI BYO key is NEVER
+        # injected (that would run judge/extract codex calls on the founder's
+        # key). Only the platform/legacy first-party CODEX_HOME subscription.
+        overrides = {}
+        codex_home = ensure_codex_home_from_vault(universe_dir)
+        if codex_home:
+            overrides["CODEX_HOME"] = str(codex_home)
         return overrides
     return {}
 
@@ -536,17 +535,14 @@ def resolve_universe_from_env(env: dict[str, str] | None = None) -> Path | None:
     return Path(value) if value else None
 
 
-#: Per-provider BYO env var + the global subscription auth vars to SCRUB from a
-#: child env when the BYO lane is chosen (so a BYO spawn can never inherit the
-#: platform-global subscription login and fall through to it — Hard Rule #8).
+#: BYO-EXECUTABLE providers → their BYO env var + the global subscription auth
+#: vars to SCRUB from a child env when the BYO lane is chosen (so a BYO spawn can
+#: never inherit the platform-global subscription login — Hard Rule #8). Only
+#: claude-code is BYO-executable (Codex BYO needs unmet sandboxing, C2).
 _PROVIDER_BYO_ENV_VAR: dict[str, str] = {
-    "codex": "OPENAI_API_KEY",
     "claude-code": "ANTHROPIC_API_KEY",
 }
 _PROVIDER_GLOBAL_AUTH_SCRUB: dict[str, tuple[str, ...]] = {
-    # codex's CODEX_HOME is redirected to the isolated dir in overrides, so it is
-    # already scrubbed; nothing extra to remove.
-    "codex": (),
     "claude-code": ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"),
 }
 
@@ -557,15 +553,18 @@ def provider_is_byo_bound(
     env: dict[str, str] | None = None,
     universe_dir: str | Path | None = None,
 ) -> bool:
-    """Return True iff the resolved universe holds a BYO API key for *provider*.
+    """Return True iff the resolved universe holds an INJECTABLE BYO key for
+    *provider* — i.e. executable BYO is enabled AND *provider* is BYO-executable.
 
-    A BYO-bound spawn must FAIL CLOSED on any isolation/materialization error
-    rather than silently fall through to platform-global auth. A broken BYO
-    secret (``resolve_llm_api_key`` raising) still counts as BYO-bound so the
-    caller fails closed."""
+    A BYO-bound spawn must FAIL CLOSED on any materialization error rather than
+    silently fall through to platform-global auth. A broken BYO secret
+    (``resolve_llm_api_key`` raising) still counts as BYO-bound so the caller
+    fails closed."""
     env_var = _PROVIDER_BYO_ENV_VAR.get(provider_name.strip())
     if not env_var:
         return False
+    if not _byo_injection_enabled():
+        return False  # BYO dark (C2/C4) — no BYO-bound spawn to fail closed on
     resolved = (
         Path(universe_dir)
         if universe_dir is not None

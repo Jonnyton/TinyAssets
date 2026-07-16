@@ -30,17 +30,18 @@ The host floated three engine sources with "none privileged." Provider terms do
 privilege them, and the split is sharp:
 
 **Anthropic (Claude Pro/Max/Team subscription) — server-side custody is prohibited.**
-As of the **2026-04-04 enforcement** ("OpenClaw ban"), Anthropic's Consumer Terms:
-- Bar accessing the service "through automated or non-human means … except … using
-  an Anthropic **API Key**."
-- State "**OAuth authentication is intended exclusively for Claude Code and
-  Claude.ai. Using OAuth tokens in any other product, tool, or service is not
-  permitted**" and is a Consumer-Terms violation.
-- Bar sharing "Account login information, Anthropic API key, or Account credentials
-  with anyone else."
-- Explicitly name the sanctioned server path: subscription OAuth on servers is
-  prohibited; **an API key is the appropriate path for server-side access.**
-  (freshness: sources fetched 2026-07-02.)
+Anthropic's current Consumer Terms + Usage Policy (re-verify at the §0.1 links):
+- Bar accessing the service through automated / non-human means EXCEPT via an
+  Anthropic **API Key** (the terms carve out the API key as the sanctioned
+  automated-access path).
+- Bar **sharing** account login information / credentials with anyone else — so
+  the platform holding + driving a founder's *personal* login is prohibited.
+- Net: **an API key is the appropriate path for server-side / automated access.**
+  (C7 correction: an earlier draft quoted a specific "OAuth-tokens-are-for-
+  Claude-Code/Claude.ai-only" sentence verbatim; that exact wording could not be
+  re-verified on the current Consumer Terms page, so it is paraphrased here — the
+  API-key-exception + no-credential-sharing conclusion still holds. Freshness:
+  re-check before acting.)
 
 **OpenAI (ChatGPT Plus/Pro subscription) — same conclusion.** ChatGPT subscriptions
 are "individual use only"; no credential sharing; no programmatic/automated
@@ -131,6 +132,27 @@ own-device daemon). The *only* platform-held subscription is the **host's own
 droplet subscription**, which serves **only the host's own universe(s)** on the
 host's own infra (Option E, process-global) — it is never a per-founder default
 and never flows through the founder vault.
+
+### 0.2 Phase-1 vs Phase-2, and the enforcement scope
+
+**Phase split (host: "build execution first").** Phase-1 S5 ships only the
+**non-ambient GATE + honest declaration + no-fake-capability + no-plaintext-
+through-chat**. The REAL executable onboarding lane — an out-of-chat,
+founder-authenticated secret deposit returning an opaque credential *reference*,
+a real KMS-encrypted per-tenant vault, and a real executor — is **Phase 2**. In
+Phase 1 the executable BYO path is DARK end-to-end: `set_engine` refuses a raw
+key through the chatbot, `resolve_engine_binding` never binds a BYO key, and the
+env overlay injects nothing. The `TINYASSETS_BYO_VAULT_ENCRYPTED` flag is gated
+behind a **code-backed encryption-capability attestation** that returns False
+until Phase-2 lands, so no flag flip can unlock plaintext-key deposit+execution.
+
+**Enforcement scope — writer-role only.** The non-ambient provider-isolation
+guarantee (a BYO-bound universe never borrows platform provider auth) is enforced
+on the **writer** role only. Judge/extract calls may still use platform capacity,
+because the judge/extract fallback chains have no claude-code entry (a claude-only
+BYO universe would have an EMPTY judge chain and could not evaluate at all).
+Per-universe judge/extract routing is Phase-2 work; until then a bound universe's
+judge/extract may run on platform providers by design.
 
 ---
 

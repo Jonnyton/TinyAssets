@@ -21,14 +21,15 @@ def _setup(tmp_path, monkeypatch):
     return uni, udir
 
 
-def test_byo_api_key_still_works_and_records_source(tmp_path, monkeypatch):
-    # F3: BYO deposit requires the vault-encryption gate (DARK by default).
+def test_byo_api_key_raw_deposit_refused_through_chat(tmp_path, monkeypatch):
+    # C3: a raw BYO key can never be deposited through the chatbot — refused.
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     uni, udir = _setup(tmp_path, monkeypatch)
     out = json.loads(uni._action_set_engine(inputs_json=json.dumps(
         {"service": "anthropic", "api_key": "sk-ant-api03-" + "A" * 40})))
-    assert out["engine_source"] == "byo_api_key"  # default source
-    assert load_universe_config(udir).engine_source == "byo_api_key"
+    assert "error" in out and out.get("status") != "engine_set"
+    from tinyassets.credential_vault import load_credential_vault
+    assert load_credential_vault(udir) == []
 
 
 def test_self_hosted_endpoint_persists(tmp_path, monkeypatch):

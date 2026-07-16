@@ -187,40 +187,54 @@ def non_ambient_work_enabled() -> bool:
     return os.environ.get(NON_AMBIENT_WORK_ENV, "").strip().lower() in _TRUTHY
 
 
+def _vault_encryption_capability_attested() -> bool:
+    """Code-backed proof that per-tenant vault encryption is REAL. DEFAULT False.
+
+    The current vault stores keys plaintext-base64 — a truthy env flag alone must
+    NEVER unlock deposit+execution of plaintext keys (C4). This returns False
+    until real envelope encryption / an external secret manager is implemented
+    AND verified in Phase 2; at that point, swap in the actual capability probe
+    (e.g. confirm a KMS/secret-manager handle is reachable). Tests that need to
+    simulate Phase-2 monkeypatch this to True.
+    """
+    return False  # Phase 2: implement real envelope encryption + attest it here.
+
+
 def byo_execution_enabled() -> bool:
     """Return whether the executable BYO-key path is enabled. DEFAULT OFF.
 
-    Reads :data:`BYO_VAULT_ENCRYPTED_ENV`. Gates BOTH the ``set_engine`` BYO
-    deposit and BYO execution/routing behind an explicit vault-encryption
-    prerequisite (KMS / external secret manager), independent of the non-ambient
-    flag (F3). OFF (this deploy) → the executable BYO path is DARK: no deposit,
-    no bound BYO, no direct BYO routing. Flip ON only once envelope encryption is
-    implemented AND verified.
+    Requires BOTH the operator opt-in (:data:`BYO_VAULT_ENCRYPTED_ENV`) AND a
+    code-backed encryption-capability attestation
+    (:func:`_vault_encryption_capability_attested`). Because the attestation is
+    False until Phase-2 envelope encryption lands, **the flag alone cannot unlock
+    plaintext-key deposit+execution** (C4). OFF (this deploy) → the executable BYO
+    path is DARK end-to-end: no deposit, no bound BYO, no direct BYO routing, no
+    BYO env injection.
     """
-    return os.environ.get(BYO_VAULT_ENCRYPTED_ENV, "").strip().lower() in _TRUTHY
+    if os.environ.get(BYO_VAULT_ENCRYPTED_ENV, "").strip().lower() not in _TRUTHY:
+        return False
+    return _vault_encryption_capability_attested()
 
 
 def _byo_key_auth_health(provider_name: str, universe_dir: Path) -> str:
-    """Return provider-specific BYO-key auth health: ``ok`` / ``not_logged_in``.
+    """Return a provider-specific BYO-key FORMAT check: ``ok`` / ``not_logged_in``.
 
-    F4 hook — runs when the vault-encryption gate opens; a syntactically-decodable
-    but implausible key (e.g. ``"x"``) must NEVER read as bound. Today this is a
-    format-level check (better than "non-empty text"): an Anthropic key must
-    carry the ``sk-ant-`` prefix + minimum length. A real network probe (validate
-    the key against the provider) is the documented follow-up — swap it in here;
-    everything downstream already gates ``bound`` on a returned ``ok``.
+    This is a FORMAT check, not a live auth probe — an Anthropic key must carry
+    the ``sk-ant-`` prefix + minimum length, which rejects a decodable-but-junk
+    key (e.g. ``"x"``) so it never reads as bound (F4). A real network auth-health
+    probe (validate the key against the provider) is Phase-2 work and swaps in
+    here; everything downstream already gates ``bound`` on a returned ``ok``.
+    Propagates vault I/O errors (ValueError/OSError) to the caller, which
+    normalizes them into a loud-but-caught misconfiguration (Fable F6).
     """
+    if provider_name.strip() != "claude-code":
+        # Non-executable BYO providers have no auth-health here (codex is idle, F1).
+        return "not_logged_in"
     from tinyassets.credential_vault import resolve_llm_api_key
 
-    if provider_name.strip() == "claude-code":
-        try:
-            key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
-        except ValueError:
-            return "not_logged_in"
-        if key.startswith("sk-ant-") and len(key) >= 24:
-            return "ok"
-        return "not_logged_in"
-    # Non-executable BYO providers have no auth-health here (codex is idle by F1).
+    key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
+    if key.startswith("sk-ant-") and len(key) >= 24:
+        return "ok"
     return "not_logged_in"
 
 
@@ -410,11 +424,20 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             )
         else:
             healthy: set[str] = set()
-            for provider in scan.eligible_providers:
-                if provider not in _EXECUTABLE_BYO_PROVIDERS:
-                    continue  # codex BYO is declared-not-executable (F1)
-                if _byo_key_auth_health(provider, udir) == "ok":
-                    healthy.add(provider)
+            try:
+                for provider in scan.eligible_providers:
+                    if provider not in _EXECUTABLE_BYO_PROVIDERS:
+                        continue  # codex BYO is declared-not-executable (F1)
+                    if _byo_key_auth_health(provider, udir) == "ok":
+                        healthy.add(provider)
+            except (ValueError, OSError) as exc:
+                # Fable F6: the auth-health hook re-reads the vault; a JSON or I/O
+                # error there must be a loud-but-caught misconfiguration too, not
+                # a get_status/supervisor crash.
+                raise EngineMisconfiguredError(
+                    universe_id, declared_source or "byo_api_key",
+                    f"credential vault is unreadable: {exc}",
+                ) from exc
             if healthy:
                 return EngineBinding(
                     bound=True,
@@ -424,12 +447,13 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
                     eligible_providers=frozenset(healthy),
                     vault_providers=frozenset(healthy),
                 )
-            # A syntactically-present BYO key that is not executable/validated:
-            # codex-only (idle by F1) or a claude key that failed auth-health.
+            # A syntactically-present BYO key that is not executable: codex-only
+            # (idle by F1) or a claude key that failed the format check (a real
+            # network auth-health probe is Phase 2).
             reason = (
                 "a BYO API key is present but not executable: Codex BYO needs "
-                "unmet sandboxing, and an Anthropic key must pass auth-health "
-                "(a well-formed, live sk-ant- key) — re-bind a valid key"
+                "unmet sandboxing, and an Anthropic key must be a well-formed "
+                "sk-ant- key (format check; live auth-health is Phase 2) — re-bind"
             )
         return EngineBinding(
             bound=False, engine_source=declared_source,

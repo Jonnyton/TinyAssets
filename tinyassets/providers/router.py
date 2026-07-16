@@ -48,13 +48,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# A provider's SANCTIONED BYO-API-key vault env var (the founder BYO lane). Only
-# these providers can be authenticated from a per-universe vault key; others have
-# no per-universe BYO path. Deliberately BYO-only — a legacy ``llm_subscription``
-# row must NOT re-open the blocked subscription-custody lane through this bypass
-# (2026-07-02 custody research; Codex round-6 F3 / Fable F1).
+# A provider's SANCTIONED, EXECUTABLE BYO-API-key vault env var. claude-code
+# ONLY — Codex BYO is not executable (unmet sandboxing) so a codex key is never
+# injected/bypassed (C2). Deliberately BYO-only — a legacy ``llm_subscription``
+# row must NOT re-open the blocked subscription-custody lane through this bypass.
 _PROVIDER_BYO_ENV_VAR: dict[str, str] = {
-    "codex": "OPENAI_API_KEY",
     "claude-code": "ANTHROPIC_API_KEY",
 }
 
@@ -102,6 +100,68 @@ def _universe_provides_provider_auth(
         return bool(resolve_llm_api_key(resolved, env_var))
     except Exception:  # noqa: BLE001 — vault-auth probe must never break routing
         return False
+
+
+def _enforce_writer_binding(
+    chain: list[str],
+    *,
+    role: str,
+    is_pinned_writer: bool,
+    pin_writer: str,
+    universe_dir: "Path | None",
+) -> list[str]:
+    """C1: a BYO-BOUND universe's WRITER never falls through to a platform-auth
+    provider. The ONE helper applied on EVERY writer route (normal, pinned,
+    policy).
+
+    Covers BOTH identity paths — an explicit ``universe_dir`` AND the
+    process-global ``TINYASSETS_UNIVERSE`` env fallback (mirrors how the
+    auth-health KEEP bypass resolves) — so a cloud-worker child with only
+    ``TINYASSETS_UNIVERSE`` set is still constrained. **FAILS CLOSED:** any
+    binding/resolution error raises ``AllProvidersExhaustedError`` (never
+    swallowed → never leaks to a platform-auth provider).
+
+    Inert unless executable BYO is enabled (DARK by default), because only then
+    can a universe be bound. Non-writer roles are unconstrained (see the design
+    note: the non-ambient guarantee is writer-role only).
+    """
+    if role != "writer":
+        return chain
+    from tinyassets.engine_binding import byo_execution_enabled, resolve_engine_binding
+
+    if not byo_execution_enabled():
+        return chain  # DARK: no BYO is executable/bound; nothing to constrain.
+
+    from tinyassets.credential_vault import resolve_universe_from_env
+
+    resolved = universe_dir if universe_dir is not None else resolve_universe_from_env()
+    if resolved is None:
+        return chain  # no bound-universe context.
+    try:
+        binding = resolve_engine_binding(resolved)
+    except AllProvidersExhaustedError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — FAIL CLOSED, never fall through.
+        raise AllProvidersExhaustedError(
+            "writer routing refused: could not resolve the universe's engine "
+            f"binding ({exc}); refusing to fall through to platform auth."
+        ) from exc
+    if not binding.bound:
+        return chain  # unbound → normal (ambient) routing.
+    eligible = set(binding.eligible_providers)
+    if is_pinned_writer and pin_writer not in eligible:
+        raise AllProvidersExhaustedError(
+            f"Pinned writer {pin_writer!r} is not in the BYO-bound universe's "
+            f"eligible providers {sorted(eligible)!r}. A bound universe never "
+            "borrows platform auth; re-bind or clear the pin."
+        )
+    constrained = [p for p in chain if p in eligible]
+    if not constrained:
+        raise AllProvidersExhaustedError(
+            "BYO-bound universe has no eligible writer provider "
+            f"(eligible={sorted(eligible)!r}); no fallback to platform auth."
+        )
+    return constrained
 
 
 def _resolve_universe_config(
@@ -402,45 +462,17 @@ class ProviderRouter:
             except Exception:
                 pass
 
-        # F1 (S5 round 8): a BYO-BOUND universe's WRITER must NOT fall through to a
-        # platform-auth provider. When BYO execution is gated on and this
-        # universe is bound, constrain the writer chain to its ELIGIBLE providers
-        # ONLY — a bound provider's failure fails the run loudly (never silently
-        # borrows the platform's global CODEX_HOME / subscription). This is the
-        # ambient-platform-auth leak the non-ambient slice exists to prevent.
-        # Inert in this deploy: bound universes require the vault-encryption gate
-        # (byo_execution_enabled), which is OFF by default, so the writer chain is
-        # unchanged unless an operator has enabled BYO execution.
-        if role == "writer" and universe_dir is not None:
-            try:
-                from tinyassets.engine_binding import (
-                    byo_execution_enabled,
-                    resolve_engine_binding,
-                )
-
-                if byo_execution_enabled():
-                    binding = resolve_engine_binding(universe_dir)
-                    if binding.bound:
-                        eligible = set(binding.eligible_providers)
-                        if is_pinned_writer and pin_writer not in eligible:
-                            raise AllProvidersExhaustedError(
-                                f"Pinned writer {pin_writer!r} is not in the "
-                                f"BYO-bound universe's eligible providers "
-                                f"{sorted(eligible)!r}. A bound universe never "
-                                "borrows platform auth; re-bind or clear the pin."
-                            )
-                        constrained = [p for p in chain if p in eligible]
-                        if not constrained:
-                            raise AllProvidersExhaustedError(
-                                "BYO-bound universe has no eligible writer provider "
-                                f"for role=writer (eligible={sorted(eligible)!r}); "
-                                "no fallback to platform auth."
-                            )
-                        chain = constrained
-            except AllProvidersExhaustedError:
-                raise
-            except Exception:  # noqa: BLE001 — binding probe must not break routing
-                logger.debug("F1 eligible-provider constraint skipped", exc_info=True)
+        # C1: a BYO-BOUND universe's WRITER must NEVER fall through to a
+        # platform-auth provider. Centralized in ONE helper applied on EVERY
+        # writer route (normal, pinned, policy) — see call_with_policy too. It
+        # resolves the universe from the explicit dir ELSE TINYASSETS_UNIVERSE,
+        # and FAILS CLOSED on any binding/resolution error. Inert in this deploy:
+        # bound universes require executable BYO (byo_execution_enabled), DARK by
+        # default, so the writer chain is unchanged.
+        chain = _enforce_writer_binding(
+            chain, role=role, is_pinned_writer=is_pinned_writer,
+            pin_writer=pin_writer, universe_dir=universe_dir,
+        )
 
         # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
         # narrowed chain to [pin_writer] above; the filter then enforces
@@ -801,6 +833,15 @@ class ProviderRouter:
                     attempt_order, role,
                 )
             attempt_order = filtered_order
+
+        # C1: apply the SAME centralized writer-binding enforcement to the policy
+        # attempt-order — a BYO-bound universe's policy must not name a
+        # platform-auth provider (e.g. a policy naming codex in a BYO-claude
+        # universe is refused, never routed to platform codex). Fails closed.
+        attempt_order = _enforce_writer_binding(
+            attempt_order, role=role, is_pinned_writer=False, pin_writer="",
+            universe_dir=universe_dir,
+        )
 
         auth_filtered_order = self._apply_api_key_provider_policy(attempt_order)
         if attempt_order and not auth_filtered_order:

@@ -224,196 +224,28 @@ def test_pinned_healthy_writer_runs(isolated_universe_config):
 
 
 # ---------------------------------------------------------------------------
-# S5 round 5: a globally-dead subscription is NOT dead when the call's universe
-# vault supplies per-universe auth — the router must reach provider.complete()
-# with the vault env instead of starving bound BYO-key capacity.
+# BYO-bound universe: the router must reach provider.complete() on the vault
+# key (claude-code ONLY — Codex BYO is not executable) instead of starving it,
+# AND never fall through to a platform-auth provider (C1). BYO execution requires
+# the vault-encryption ATTESTATION (DARK by default — C4).
 # ---------------------------------------------------------------------------
 
 
-def _byo_openai_universe(tmp_path):
-    import base64
+def _enable_byo(monkeypatch):
+    """Simulate Phase-2: executable BYO on (flag + code-backed attestation)."""
+    import tinyassets.engine_binding as eb
 
-    from tinyassets.credential_vault import write_credential_vault
-
-    udir = tmp_path / "u-byo-codex"
-    udir.mkdir()
-    write_credential_vault(udir, [{
-        "credential_type": "llm_api_key",
-        "service": "openai",
-        "secret_b64": base64.b64encode(b"sk-openai-test").decode("ascii"),
-    }])
-    return udir
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda: True)
 
 
-def test_pinned_dead_auth_writer_runs_on_universe_vault_auth(
-    isolated_universe_config, tmp_path,
-):
-    """The Codex repro: pinned codex + global not_logged_in + a per-universe BYO
-    OpenAI key in the vault → provider.complete() IS reached (the vault env is
-    applied at call time), instead of AllProvidersExhaustedError."""
-    from tinyassets.providers.base import UniverseContext
-
-    os.environ["TINYASSETS_BYO_VAULT_ENCRYPTED"] = "1"  # bypass is gated (F3)
-    udir = _byo_openai_universe(tmp_path)
-    os.environ["TINYASSETS_PIN_WRITER"] = "codex"
-    router, providers = _router(dead={"codex"})
-
-    resp = _run(router.call(
-        "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
-    ))
-    assert resp.provider == "codex"
-    assert providers["codex"].call_count == 1
-
-
-def test_pinned_dead_auth_writer_without_vault_still_hard_fails(
-    isolated_universe_config, tmp_path,
-):
-    """Inverse: no per-universe auth + global not_logged_in → still dropped and
-    the pinned writer hard-fails (the gate is only bypassed for vault-backed
-    providers)."""
-    from tinyassets.providers.base import UniverseContext
-
-    udir = tmp_path / "u-novault"
-    udir.mkdir()
-    os.environ["TINYASSETS_PIN_WRITER"] = "codex"
-    router, providers = _router(dead={"codex"})
-
-    with pytest.raises(AllProvidersExhaustedError):
-        _run(router.call(
-            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
-        ))
-    for p in providers.values():
-        assert p.call_count == 0
-
-
-def test_fallback_keeps_dead_auth_provider_with_universe_vault(
-    isolated_universe_config, tmp_path,
-):
-    """Not pinned: codex is globally dead but the universe vault authenticates it
-    → codex stays in the fallback chain and wins (not skipped). claude-code (dead,
-    no vault) is still dropped."""
-    from tinyassets.providers.base import UniverseContext
-
-    os.environ["TINYASSETS_BYO_VAULT_ENCRYPTED"] = "1"  # bypass is gated (F3)
-    udir = _byo_openai_universe(tmp_path)
-    router, providers = _router(dead={"claude-code", "codex"})
-
-    resp = _run(router.call(
-        "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
-    ))
-    assert resp.provider == "codex"
-    assert providers["codex"].call_count == 1
-    assert providers["claude-code"].call_count == 0
-
-
-def test_no_vault_behavior_unchanged_for_default_router(isolated_universe_config):
-    """Flag-OFF / no-vault no-op: with no universe context and no global
-    TINYASSETS_UNIVERSE, the auth-health gate behaves exactly as before —
-    a dead pinned writer hard-fails."""
-    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
-    router, providers = _router(dead={"claude-code"})
-
-    with pytest.raises(AllProvidersExhaustedError):
-        _run(router.call("writer", "p", "s"))
-    for p in providers.values():
-        assert p.call_count == 0
-
-
-def test_legacy_subscription_only_universe_is_still_dropped(
-    isolated_universe_config, tmp_path,
-):
-    """Codex F3 / Fable F1: a universe with ONLY a legacy llm_subscription row
-    (the blocked custody lane) must NOT bypass the health gate — the bypass is
-    BYO-API-key-only. Consistent with resolve_engine_binding=False."""
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.providers.base import UniverseContext
-
-    udir = tmp_path / "u-legacy-sub"
-    udir.mkdir()
-    write_credential_vault(udir, [{
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "oauth_token": "legacy-oauth",
-    }])
-    os.environ["TINYASSETS_PIN_WRITER"] = "codex"
-    router, providers = _router(dead={"codex"})
-
-    with pytest.raises(AllProvidersExhaustedError):
-        _run(router.call(
-            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
-        ))
-    for p in providers.values():
-        assert p.call_count == 0
-
-
-def test_health_bypass_probe_is_side_effect_free(isolated_universe_config, tmp_path):
-    """Fable Finding C: the health probe must NOT materialize credential artifacts
-    (auth.json / config.toml). resolve_llm_api_key is pure — assert no
-    .credentials dir is created by the probe path."""
-    from tinyassets.providers.router import _universe_provides_provider_auth
-
-    os.environ["TINYASSETS_BYO_VAULT_ENCRYPTED"] = "1"  # bypass is gated (F3)
-    udir = _byo_openai_universe(tmp_path)
-    assert _universe_provides_provider_auth("codex", udir) is True
-    # No credential-materialization side effect on a read/health path.
-    assert not (udir / ".credentials").exists()
-
-
-def test_byo_bypass_is_dark_when_encryption_gate_off(
-    isolated_universe_config, tmp_path,
-):
-    """F3: direct BYO routing is DARK until the vault-encryption gate opens — with
-    it OFF (default), even a BYO-keyed universe's dead-login provider is dropped
-    (no bypass), so a pinned dead provider hard-fails."""
-    from tinyassets.providers.base import UniverseContext
-    from tinyassets.providers.router import _universe_provides_provider_auth
-
-    os.environ.pop("TINYASSETS_BYO_VAULT_ENCRYPTED", None)  # encryption gate OFF
-    udir = _byo_openai_universe(tmp_path)
-    assert _universe_provides_provider_auth("codex", udir) is False
-
-    os.environ["TINYASSETS_PIN_WRITER"] = "codex"
-    router, providers = _router(dead={"codex"})
-    with pytest.raises(AllProvidersExhaustedError):
-        _run(router.call(
-            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
-        ))
-    for p in providers.values():
-        assert p.call_count == 0
-
-
-def test_byo_bypass_not_gated_on_non_ambient_flag(
-    isolated_universe_config, tmp_path,
-):
-    """Within the encryption gate, the bypass is NOT further gated on the
-    non-ambient flag: BYO gate ON + non-ambient OFF → the BYO-keyed universe's
-    dead-login provider is KEPT (latent-bug fix)."""
-    from tinyassets.providers.base import UniverseContext
-
-    os.environ["TINYASSETS_BYO_VAULT_ENCRYPTED"] = "1"
-    os.environ.pop("TINYASSETS_NON_AMBIENT_WORK", None)  # non-ambient OFF
-    udir = _byo_openai_universe(tmp_path)
-    router, providers = _router(dead={"claude-code", "codex"})
-
-    resp = _run(router.call(
-        "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
-    ))
-    assert resp.provider == "codex"
-    assert providers["codex"].call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# F1: a BYO-bound universe's WRITER never falls through to a platform provider
-# ---------------------------------------------------------------------------
-
-
-def _claude_bound_universe(tmp_path):
+def _byo_claude_universe(tmp_path):
     import base64
 
     from tinyassets.config import write_universe_config_fields
     from tinyassets.credential_vault import write_credential_vault
 
-    udir = tmp_path / "u-claude-bound"
+    udir = tmp_path / "u-byo-claude"
     udir.mkdir()
     write_credential_vault(udir, [{
         "credential_type": "llm_api_key",
@@ -425,16 +257,180 @@ def _claude_bound_universe(tmp_path):
     return udir
 
 
-def test_f1_byo_bound_universe_rejects_non_eligible_pinned_writer(
-    isolated_universe_config, tmp_path,
+def test_pinned_dead_auth_writer_runs_on_universe_vault_auth(
+    isolated_universe_config, tmp_path, monkeypatch,
 ):
-    """F1: a BYO-bound (Anthropic → claude-code) universe pinned to codex
+    """Pinned claude-code + global not_logged_in + a per-universe BYO Anthropic
+    key → provider.complete() IS reached (the vault key authenticates it),
+    instead of AllProvidersExhaustedError."""
+    from tinyassets.providers.base import UniverseContext
+
+    _enable_byo(monkeypatch)
+    udir = _byo_claude_universe(tmp_path)
+    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
+    router, providers = _router(dead={"claude-code"})
+
+    resp = _run(router.call(
+        "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+    ))
+    assert resp.provider == "claude-code"
+    assert providers["claude-code"].call_count == 1
+
+
+def test_pinned_dead_auth_writer_without_vault_still_hard_fails(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """Inverse: no per-universe auth + global not_logged_in → still dropped and
+    the pinned writer hard-fails (the gate is only bypassed for vault-backed
+    providers)."""
+    from tinyassets.providers.base import UniverseContext
+
+    _enable_byo(monkeypatch)
+    udir = tmp_path / "u-novault"
+    udir.mkdir()
+    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
+    router, providers = _router(dead={"claude-code"})
+
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call(
+            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+        ))
+    for p in providers.values():
+        assert p.call_count == 0
+
+
+def test_no_vault_behavior_unchanged_for_default_router(isolated_universe_config):
+    """No-vault no-op: with no universe context and no global TINYASSETS_UNIVERSE,
+    the auth-health gate behaves exactly as before — a dead pinned writer
+    hard-fails."""
+    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
+    router, providers = _router(dead={"claude-code"})
+
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call("writer", "p", "s"))
+    for p in providers.values():
+        assert p.call_count == 0
+
+
+def test_legacy_subscription_only_universe_is_still_dropped(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """A universe with ONLY a legacy llm_subscription row (the blocked custody
+    lane) must NOT bypass the health gate — the bypass is BYO-API-key-only."""
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.providers.base import UniverseContext
+
+    _enable_byo(monkeypatch)
+    udir = tmp_path / "u-legacy-sub"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_subscription",
+        "service": "claude",
+        "oauth_token": "legacy-oauth",
+    }])
+    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
+    router, providers = _router(dead={"claude-code"})
+
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call(
+            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+        ))
+    for p in providers.values():
+        assert p.call_count == 0
+
+
+def test_codex_byo_is_not_bypassed(isolated_universe_config, tmp_path, monkeypatch):
+    """C2: a Codex/OpenAI BYO key is NOT executable — the router bypass never
+    keeps codex on a BYO key (only claude-code is BYO-executable)."""
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.providers.router import _universe_provides_provider_auth
+
+    _enable_byo(monkeypatch)
+    udir = tmp_path / "u-openai"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key",
+        "service": "openai",
+        "secret_b64": __import__("base64").b64encode(b"sk-openai").decode("ascii"),
+    }])
+    assert _universe_provides_provider_auth("codex", udir) is False
+
+
+def test_health_bypass_probe_is_side_effect_free(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """Fable Finding C: the health probe must NOT materialize credential artifacts
+    (auth.json / config.toml). resolve_llm_api_key is pure — assert no
+    .credentials dir is created by the probe path."""
+    from tinyassets.providers.router import _universe_provides_provider_auth
+
+    _enable_byo(monkeypatch)
+    udir = _byo_claude_universe(tmp_path)
+    assert _universe_provides_provider_auth("claude-code", udir) is True
+    # No credential-materialization side effect on a read/health path.
+    assert not (udir / ".credentials").exists()
+
+
+def test_byo_bypass_is_dark_when_encryption_gate_off(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """C4: direct BYO routing is DARK until the encryption ATTESTATION passes —
+    with the flag alone (no attestation), a BYO-keyed universe's dead-login
+    provider is dropped (no bypass), so a pinned dead provider hard-fails."""
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.router import _universe_provides_provider_auth
+
+    os.environ["TINYASSETS_BYO_VAULT_ENCRYPTED"] = "1"  # flag on, attestation NOT patched
+    udir = _byo_claude_universe(tmp_path)
+    assert _universe_provides_provider_auth("claude-code", udir) is False
+
+    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
+    router, providers = _router(dead={"claude-code"})
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call(
+            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+        ))
+    for p in providers.values():
+        assert p.call_count == 0
+
+
+def test_byo_bypass_not_gated_on_non_ambient_flag(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """Within the encryption gate, the bypass is NOT further gated on the
+    non-ambient flag: BYO on + non-ambient OFF → the BYO-keyed universe's
+    dead-login provider is KEPT (latent-bug fix)."""
+    from tinyassets.providers.base import UniverseContext
+
+    _enable_byo(monkeypatch)
+    os.environ.pop("TINYASSETS_NON_AMBIENT_WORK", None)  # non-ambient OFF
+    udir = _byo_claude_universe(tmp_path)
+    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
+    router, providers = _router(dead={"claude-code"})
+
+    resp = _run(router.call(
+        "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+    ))
+    assert resp.provider == "claude-code"
+    assert providers["claude-code"].call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# C1: a BYO-bound universe's WRITER never falls through to a platform provider —
+# covered on EVERY writer route incl. the env-only (untedhread) identity path.
+# ---------------------------------------------------------------------------
+
+
+def test_f1_byo_bound_universe_rejects_non_eligible_pinned_writer(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """C1: a BYO-bound (Anthropic → claude-code) universe pinned to codex
     hard-fails — a bound universe never borrows the platform's Codex auth, even
     when codex is globally healthy."""
     from tinyassets.providers.base import UniverseContext
 
-    os.environ["TINYASSETS_BYO_VAULT_ENCRYPTED"] = "1"
-    udir = _claude_bound_universe(tmp_path)
+    _enable_byo(monkeypatch)
+    udir = _byo_claude_universe(tmp_path)
     os.environ["TINYASSETS_PIN_WRITER"] = "codex"
     router, providers = _router(dead=set())  # codex is globally healthy
 
@@ -445,16 +441,56 @@ def test_f1_byo_bound_universe_rejects_non_eligible_pinned_writer(
     assert providers["codex"].call_count == 0
 
 
-def test_f1_byo_bound_universe_runs_only_eligible_provider(
-    isolated_universe_config, tmp_path,
+def test_f1_env_only_universe_writer_does_not_reach_codex(
+    isolated_universe_config, tmp_path, monkeypatch,
 ):
-    """F1: a BYO-bound universe runs its eligible provider (claude-code) and does
+    """C1 (Fable repro): the constraint covers the UNTHREADED identity path — a
+    cloud-worker child with only TINYASSETS_UNIVERSE set (no universe_context) and
+    a claude-only BYO binding must NOT let a claude cooldown/fallback reach codex."""
+    _enable_byo(monkeypatch)
+    udir = _byo_claude_universe(tmp_path)
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))  # env-only identity
+    router, providers = _router(dead=set())  # not pinned; codex globally healthy
+
+    # No universe_context threaded — the constraint must resolve via env.
+    resp = _run(router.call("writer", "p", "s"))
+    assert resp.provider == "claude-code"
+    assert providers["codex"].call_count == 0
+    assert providers["ollama-local"].call_count == 0
+
+
+def test_f1_policy_naming_codex_in_byo_bound_universe_is_refused(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """C1: the SAME constraint covers call_with_policy — a policy naming codex in a
+    claude-only BYO-bound universe is REFUSED, never routed to platform codex."""
+    from tinyassets.providers.base import UniverseContext
+
+    _enable_byo(monkeypatch)
+    udir = _byo_claude_universe(tmp_path)
+    router, providers = _router(dead=set())
+    policy = {
+        "preferred": {"provider": "codex"},
+        "fallback_chain": [{"provider": "ollama-local"}],
+    }
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call_with_policy(
+            "writer", "p", "s", policy,
+            universe_context=UniverseContext(universe_dir=udir),
+        ))
+    assert providers["codex"].call_count == 0
+
+
+def test_f1_byo_bound_universe_runs_only_eligible_provider(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """C1: a BYO-bound universe runs its eligible provider (claude-code) and does
     NOT fall through to any other provider even if claude-code's global login is
     dead (the BYO key authenticates it)."""
     from tinyassets.providers.base import UniverseContext
 
-    os.environ["TINYASSETS_BYO_VAULT_ENCRYPTED"] = "1"
-    udir = _claude_bound_universe(tmp_path)
+    _enable_byo(monkeypatch)
+    udir = _byo_claude_universe(tmp_path)
     os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
     router, providers = _router(dead={"claude-code"})  # global login dead
 

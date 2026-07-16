@@ -68,9 +68,13 @@ def _no_pinned_writer(monkeypatch):
     # Keep the pre-existing auth-quarantine gate inert so these tests exercise
     # only the non-ambient gate (no resolvable writer → auth gate returns None).
     monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
-    # Enable the executable BYO path so a bound universe can actually be bound
-    # (default OFF is DARK — see F3). Harmless for unbound-universe tests.
+    # Simulate Phase-2 so a bound universe can actually be bound: the executable
+    # BYO path needs BOTH the flag AND the code-backed encryption attestation
+    # (DARK by default — C4). Harmless for unbound-universe tests.
+    import tinyassets.engine_binding as _eb
+
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    monkeypatch.setattr(_eb, "_vault_encryption_capability_attested", lambda: True)
 
 
 def _unbound_universe(tmp_path):
