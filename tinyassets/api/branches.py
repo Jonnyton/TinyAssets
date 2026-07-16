@@ -666,6 +666,11 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
         "source_code": kwargs.get("source_code", ""),
         "prompt_template": kwargs.get("prompt_template", ""),
         "author": kwargs.get("author") or _current_actor(),
+        # patch-loop S3: carry the sandbox classification on inline add_node.
+        # (For a node_ref copy these stay source-derived — _resolve_node_spec
+        # does not overlay them, so a copy cannot drop the classification.)
+        "requires_sandbox": kwargs.get("requires_sandbox", False),
+        "node_kind": kwargs.get("node_kind", ""),
     }
     if "node_ref" in kwargs:
         raw["node_ref"] = kwargs["node_ref"]
@@ -891,43 +896,54 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
         if _node_source_code_unrunnable(nd)
     ]
 
-    # sandbox-compat warning: list any requires_sandbox=True nodes when
-    # the host's bwrap probe says sandbox is unavailable. Non-fatal.
+    # Sandbox gate at VALIDATE time — MUST match the runtime gate
+    # (providers.base.enforce_os_sandbox) so a user learns here, not via a
+    # fail-closed error at run time (Codex S3 round-2 FINDING 2). A coding /
+    # requires_sandbox node runs a coding agent with real filesystem/shell tools,
+    # which requires the WHOLE server process to run under attested OS isolation
+    # (TINYASSETS_OS_SANDBOX_ATTESTED). Without that attestation the node fails
+    # closed at run time, so the branch is NOT runnable here — surfaced as a
+    # distinct ``sandbox_blocked`` status the authoring UX can act on. Classified
+    # by CAPABILITY (node_kind), not just the raw requires_sandbox flag.
     sandbox_warnings: list[str] = []
+    sandbox_blocked = False
     try:
-        from tinyassets.providers.base import get_sandbox_status
-        sb = get_sandbox_status()
-        if not sb.get("bwrap_available"):
-            # Classify by CAPABILITY: a coding node (node_kind="coding") is
-            # sandbox-required even without requires_sandbox set, so the compat
-            # warning must flag it too (patch-loop S3) — otherwise a coding-node
-            # branch would be told it runs fine, then fail closed at run time.
-            from tinyassets.sandbox_policy import node_requires_sandbox
-            sandbox_nodes = [
-                nd.node_id
-                for nd in branch.node_defs
-                if node_requires_sandbox(nd)
-            ]
-            if sandbox_nodes:
-                reason = sb.get("reason") or "bwrap unavailable"
-                sandbox_warnings.append(
-                    f"This branch contains {len(sandbox_nodes)} node(s) that "
-                    f"require a sandbox ({', '.join(sorted(sandbox_nodes))}) but "
-                    f"the host sandbox probe returned: {reason}. "
-                    f"These nodes will fail at runtime. Options: enable bwrap "
-                    f"on the host, or use a branch variant without "
-                    f"requires_sandbox=true nodes (design-only branch)."
-                )
-    except Exception:  # noqa: BLE001 — best-effort non-blocking warning
+        from tinyassets.providers.base import (
+            get_sandbox_status,
+            os_sandbox_attested,
+        )
+        from tinyassets.sandbox_policy import node_requires_sandbox
+        sandbox_nodes = sorted(
+            nd.node_id for nd in branch.node_defs if node_requires_sandbox(nd)
+        )
+        if sandbox_nodes and not os_sandbox_attested():
+            sandbox_blocked = True
+            sb = get_sandbox_status()
+            bwrap_note = (
+                "" if sb.get("bwrap_available")
+                else f" (host bwrap probe: {sb.get('reason') or 'unavailable'})"
+            )
+            sandbox_warnings.append(
+                f"This branch has {len(sandbox_nodes)} coding/sandbox-required "
+                f"node(s) ({', '.join(sandbox_nodes)}) that run a coding agent "
+                f"with real filesystem/shell tools. They require the server "
+                f"process to run under verified OS isolation "
+                f"(TINYASSETS_OS_SANDBOX_ATTESTED), which is NOT attested on this "
+                f"host{bwrap_note}. These nodes will FAIL CLOSED at run time. Run "
+                f"the daemon inside the attested OS-isolation container, or use a "
+                f"design-only branch with no coding/requires_sandbox nodes."
+            )
+    except Exception:  # noqa: BLE001 — best-effort non-blocking gate
         pass
 
     return json.dumps({
         "branch_def_id": bid,
         "valid": not errors,
         "errors": errors,
-        "runnable": not errors and not unapproved_sc,
+        "runnable": not errors and not unapproved_sc and not sandbox_blocked,
         "unapproved_source_code_nodes": unapproved_sc,
         "sandbox_warnings": sandbox_warnings,
+        "sandbox_blocked": sandbox_blocked,
     })
 
 
@@ -1556,6 +1572,10 @@ def _lookup_node_body(
             "approved_at": hit.get("approved_at", ""),
             "approved_source_hash": hit.get("approved_source_hash", ""),
             "approval_reason": hit.get("approval_reason", ""),
+            # patch-loop S3: carry the sandbox classification through a node-ref
+            # copy so a copied coding node stays sandbox-required.
+            "requires_sandbox": bool(hit.get("requires_sandbox", False)),
+            "node_kind": hit.get("node_kind", "") or "",
         }, ""
 
     # Otherwise treat `source` as a branch_def_id.
@@ -1591,6 +1611,10 @@ def _lookup_node_body(
                 "approved_at": nd.get("approved_at", ""),
                 "approved_source_hash": nd.get("approved_source_hash", ""),
                 "approval_reason": nd.get("approval_reason", ""),
+                # patch-loop S3: carry the sandbox classification through a
+                # node-ref copy so a copied coding node stays sandbox-required.
+                "requires_sandbox": bool(nd.get("requires_sandbox", False)),
+                "node_kind": nd.get("node_kind", "") or "",
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
@@ -1691,6 +1715,20 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         return (
             f"node '{nid}' effects must be a JSON array of strings"
         )
+    # SECURITY (patch-loop S3): thread the sandbox classification fields so an
+    # authored spec with {"requires_sandbox": true, "node_kind": "coding"}
+    # actually persists. Dropping them silently would let a coding node be
+    # stored unclassified, so it would never get the hardened sandbox posture.
+    requires_sandbox_raw = raw.get("requires_sandbox", False)
+    if isinstance(requires_sandbox_raw, bool):
+        requires_sandbox_arg = requires_sandbox_raw
+    else:
+        requires_sandbox_arg, rs_err = _coerce_node_update_bool(
+            requires_sandbox_raw, f"node '{nid}' requires_sandbox",
+        )
+        if rs_err:
+            return rs_err
+    node_kind_arg = str(raw.get("node_kind", "") or "").strip()
     # SECURITY (Codex ADAPT, PR #1349): a node is only approved when the
     # recorded approval hash matches the *effective* source_code being stored.
     # This is the authoring-time half of the provenance gate; the compiler
@@ -1740,6 +1778,8 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
             effects=effects_arg,
+            requires_sandbox=requires_sandbox_arg,
+            node_kind=node_kind_arg,
         )
     except ValueError as exc:
         return str(exc)
@@ -1892,6 +1932,8 @@ _NODE_UPDATE_FIELDS = frozenset({
     "timeout_seconds",
     "retry_policy",
     "enabled",
+    "requires_sandbox",
+    "node_kind",
     "invoke_branch_spec",
     "invoke_branch_version_spec",
     "await_run_spec",
@@ -2075,6 +2117,16 @@ def _apply_node_updates(
         if err:
             return err
         node.enabled = bool(enabled)
+    if "requires_sandbox" in editable_updates:
+        # patch-loop S3: let update_node set/preserve the sandbox classification.
+        rs, err = _coerce_node_update_bool(
+            editable_updates["requires_sandbox"], "requires_sandbox",
+        )
+        if err:
+            return err
+        node.requires_sandbox = bool(rs)
+    if "node_kind" in editable_updates:
+        node.node_kind = str(editable_updates["node_kind"] or "").strip()
     for spec_field in _NODE_UPDATE_SPEC_FIELDS:
         if spec_field in editable_updates:
             val, err = _coerce_node_spec_update(
@@ -2835,6 +2887,7 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "prompt_template", "source_code", "model_hint",
             "input_keys", "output_keys", "tools_allowed",
             "timeout_seconds", "retry_policy", "enabled",
+            "requires_sandbox", "node_kind",
         ):
             if field in kwargs and kwargs.get(field) is not None and kwargs.get(field) != "":
                 updates[field] = kwargs[field]
@@ -3067,6 +3120,9 @@ _PATCH_NODES_FIELDS: dict[str, Any] = {
     "model_hint": str,
     "timeout_seconds": float,
     "enabled": bool,
+    # patch-loop S3: allow bulk-setting the sandbox classification too.
+    "requires_sandbox": bool,
+    "node_kind": str,
 }
 
 

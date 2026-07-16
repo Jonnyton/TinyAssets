@@ -247,41 +247,74 @@ class TestNodeDefinitionRequiresSandbox:
 # ---------------------------------------------------------------------------
 
 class TestExtBranchValidateSandboxWarnings:
-    def _call_validate(self, branch_dict: dict, bwrap_status: dict) -> dict:
+    def _call_validate(
+        self, branch_dict: dict, bwrap_status: dict, *, attested: bool = False,
+    ) -> dict:
+        # patch-loop S3 FINDING 2: the real gate is the whole-process OS-isolation
+        # ATTESTATION, not bwrap-launchability — so tests control the attestation.
+        import os as _os
+
         from tinyassets.api.branches import _ext_branch_validate
 
-        with patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict):
-            with patch("tinyassets.providers.base.get_sandbox_status", return_value=bwrap_status):
-                return json.loads(_ext_branch_validate({"branch_def_id": "b1"}))
+        env = {"TINYASSETS_OS_SANDBOX_ATTESTED": "1"} if attested else {}
+        with (
+            patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
+            patch("tinyassets.providers.base.get_sandbox_status", return_value=bwrap_status),
+            patch.dict("os.environ", env, clear=False),
+        ):
+            if not attested:
+                _os.environ.pop("TINYASSETS_OS_SANDBOX_ATTESTED", None)
+            return json.loads(_ext_branch_validate({"branch_def_id": "b1"}))
 
-    def test_warns_when_sandbox_unavailable_and_sandbox_node(self):
+    def test_warns_and_blocks_when_sandbox_node_and_not_attested(self):
         branch = _make_branch(has_sandbox_node=True)
-        branch_dict = branch.to_dict()
         result = self._call_validate(
-            branch_dict,
+            branch.to_dict(),
             {"bwrap_available": False, "reason": "bwrap not found on PATH"},
         )
-        # sandbox_warnings is non-fatal — it appears alongside whatever validate() says
+        # A coding/sandbox node on an unattested host is NOT runnable (matches the
+        # runtime fail-closed gate), surfaced at validate time.
         assert len(result["sandbox_warnings"]) == 1
         assert "n1" in result["sandbox_warnings"][0]
+        assert result["sandbox_blocked"] is True
+        assert result["runnable"] is False
 
-    def test_no_warnings_for_design_only_branch_when_sandbox_unavailable(self):
+    def test_no_warnings_for_design_only_branch_when_not_attested(self):
+        # (runnable may be False for unrelated structural reasons on this minimal
+        # fixture branch; sandbox_blocked is the precise sandbox-gate signal.)
         branch = _make_branch(has_sandbox_node=False)
-        branch_dict = branch.to_dict()
         result = self._call_validate(
-            branch_dict,
+            branch.to_dict(),
             {"bwrap_available": False, "reason": "bwrap not found on PATH"},
         )
         assert result["sandbox_warnings"] == []
+        assert result["sandbox_blocked"] is False
 
-    def test_no_warnings_when_sandbox_available_even_with_sandbox_node(self):
+    def test_bwrap_available_but_not_attested_still_blocks(self):
+        # THE FINDING 2 fix: a launchable bwrap is NOT sufficient — without the
+        # whole-process attestation the coding node fails closed at runtime, so
+        # validate must block it (previously this reported clean).
         branch = _make_branch(has_sandbox_node=True)
-        branch_dict = branch.to_dict()
         result = self._call_validate(
-            branch_dict,
+            branch.to_dict(),
             {"bwrap_available": True, "reason": None},
         )
+        assert result["sandbox_blocked"] is True
+        assert result["runnable"] is False
+        assert result["sandbox_warnings"]
+
+    def test_no_warnings_when_attested(self):
+        # Attestation clears the sandbox gate; runnable itself may still be gated
+        # by unrelated structural checks on this minimal fixture branch, so assert
+        # the precise signal: no sandbox warning and not sandbox_blocked.
+        branch = _make_branch(has_sandbox_node=True)
+        result = self._call_validate(
+            branch.to_dict(),
+            {"bwrap_available": True, "reason": None},
+            attested=True,
+        )
         assert result["sandbox_warnings"] == []
+        assert result["sandbox_blocked"] is False
 
     def test_missing_branch_returns_error(self):
         from tinyassets.api.branches import _ext_branch_validate
