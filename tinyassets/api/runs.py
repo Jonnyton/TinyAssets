@@ -573,31 +573,24 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             "validation_errors": errors,
         })
 
-    # Binding privacy — the RUN egress choke point (Codex+Fable S2). A public
-    # branch is a remixable TEMPLATE, not a runnable instance of someone else's
-    # bound data: if the caller is NOT the owner AND the branch has binding
-    # fields, refuse before seeding (seed_initial_state would otherwise merge
-    # the owner's bound default_values into this run's state). Ownership uses the
-    # OAuth subject, same as patch_branch's author gate — the run-attribution
-    # actor is universe-scoped, so it can't be used for ownership. A binding-free
-    # branch runs for anyone; the owner runs their own bound branch fine.
-    from tinyassets.api.engine_helpers import _current_actor
+    # UNBOUND designs are INERT (Codex r12 #4) — a fast, honest top-level
+    # refusal that mirrors the shared-core enforcement in _invoke_graph (which
+    # covers sub-branch / version / canonical / scheduled paths too). A design
+    # that declares binding slots has no binding plane in Phase 1 (values are a
+    # Phase-2 engine/vault construct), so it cannot run on ANY path. A
+    # binding-free design runs for anyone.
     from tinyassets.branch_versions import branch_has_bound_fields
 
-    branch_author = (source_dict.get("author") or "").strip()
-    if (
-        branch_author
-        and _current_actor() != branch_author
-        and branch_has_bound_fields(source_dict.get("state_schema", []))
-    ):
+    if branch_has_bound_fields(source_dict.get("state_schema", [])):
         return json.dumps({
             "error": (
-                "This design is bound to its owner's inputs and can't be run by "
-                "another user. Fork it (write_graph target=remix) to get empty "
-                "binding slots, bind your own target_repo / credentials, then "
-                "run your own copy."
+                "This design declares binding slots (e.g. target_repo / "
+                "credentials) and is INERT: binding values require a bound "
+                "engine (Phase 2, the owner's engine-side vault). Phase 1 has no "
+                "binding plane, so it cannot run yet. Remix a binding-free "
+                "variant, or wait for the Phase-2 engine."
             ),
-            "failure_class": "binding_owner_only",
+            "failure_class": "binding_unbound_phase1",
             "actionable_by": "chatbot",
         })
 

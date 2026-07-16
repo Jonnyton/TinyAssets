@@ -2359,31 +2359,24 @@ def _invoke_graph(
         Path(saver_path).parent.mkdir(parents=True, exist_ok=True)
         with SqliteSaver.from_conn_string(saver_path) as checkpointer:
             app = compiled.graph.compile(checkpointer=checkpointer)
-            # BUG-085 M3: seed state_schema defaults UNDER caller inputs so
-            # state_schema-declared fields with defaults are available to
-            # strict-isolation prompt placeholders from step 1.
-            #
-            # Binding fields are OWNER-BOUND (PLAN §4 — the platform never stores
-            # private content; Codex r11 re-scope). Phase 1 has NO value store at
-            # all: binding VALUES are deferred to a bound engine/vault (Phase 2).
-            # So a binding-declared field must NOT be settable at run time via
-            # inputs_json OR a child inputs_mapping — that would let a caller
-            # inject a target_repo / credential the owner never bound. Reject
-            # loudly (top-level AND sub-branch converge here).
-            from tinyassets.branch_versions import is_binding_field
+            # UNBOUND designs are INERT — enforced at the SHARED execution core
+            # (Codex r12 #4), so EVERY path is fail-closed: top-level run_branch,
+            # invoke_branch_spec sub-branch, version-pinned, canonical, and
+            # scheduled all converge on _invoke_graph. A design that declares
+            # binding SLOTS (is_binding) has no way to be bound in Phase 1 (no
+            # binding store exists; values are a Phase-2 engine/vault construct),
+            # so it REFUSES execution — the same fail-closed pattern as S1's
+            # requires_sandbox refusal, and a caller cannot inject values through
+            # empty slots. A binding-free design runs normally.
+            from tinyassets.branch_versions import branch_has_bound_fields
 
-            binding_fields = {
-                (f.get("name") or "")
-                for f in (getattr(branch, "state_schema", None) or [])
-                if is_binding_field(f)
-            }
-            offending = sorted(binding_fields & set(inputs or {}))
-            if offending:
+            if branch_has_bound_fields(getattr(branch, "state_schema", None)):
                 reason = (
-                    "binding fields cannot be set at run time: "
-                    f"{offending}. They are owner-bound — a non-owner run gets "
-                    "empty slots; the owner binds them on their own copy via a "
-                    "bound engine (Phase 2)."
+                    "This design declares binding slots (e.g. target_repo / "
+                    "credentials) and is INERT: binding values require a bound "
+                    "engine (Phase 2, the owner's engine-side vault). Phase 1 "
+                    "has no binding plane, so it cannot run on any path. Remix a "
+                    "binding-free variant, or wait for the Phase-2 engine."
                 )
                 update_run_status(
                     base_path, run_id, status=RUN_STATUS_FAILED,
@@ -2393,6 +2386,9 @@ def _invoke_graph(
                     run_id=run_id, status=RUN_STATUS_FAILED,
                     output={}, error=reason,
                 )
+            # BUG-085 M3: seed state_schema defaults UNDER caller inputs so
+            # state_schema-declared fields with defaults are available to
+            # strict-isolation prompt placeholders from step 1.
             initial_state = seed_initial_state(
                 dict(inputs), getattr(branch, "state_schema", None),
             )

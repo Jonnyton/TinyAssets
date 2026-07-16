@@ -193,6 +193,7 @@ def read_graph(
     run_status: str = "",
     branch_id: str = "",
     limit: int = 30,
+    offset: int = 0,
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
@@ -232,7 +233,7 @@ def read_graph(
         # never listed regardless of UNIVERSE_SERVER_USER.
         return _extensions_impl(
             action="list_branches", scope="published",
-            author=author, limit=limit, public_only=True,
+            author=author, limit=limit, offset=offset, public_only=True,
         )
     if normalized == "design":
         # EXPORT: PUBLIC-ONLY — a private design returns not-found here.

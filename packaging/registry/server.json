@@ -21,7 +21,7 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://tinyassets.io/mcp-directory/catalog/2026-07-15-designs-discovery"
+      "url": "https://tinyassets.io/mcp-directory/catalog/2026-07-15-designs-discovery-paged"
     }
   ]
 }

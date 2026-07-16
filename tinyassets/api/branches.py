@@ -581,41 +581,57 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     except (TypeError, ValueError):
         offset = 0
 
-    # Phase 6.2.2 — visibility-aware listing. Viewer sees public
-    # Branches and any private Branches they authored.
-    rows = list_branch_definitions(
-        _base_path(),
-        domain_id=kwargs.get("domain_id", ""),
-        author=kwargs.get("author", ""),
-        goal_id=kwargs.get("goal_id", ""),
-        viewer=viewer,
-        limit=limit,
-        offset=offset,
-    )
-    # A full page implies more rows may exist -> expose the next-offset cursor.
-    next_offset = offset + len(rows) if len(rows) == limit else None
+    from tinyassets.daemon_server import get_branch_definition
+
+    active_by_bid: dict[str, Any] = {}
+    if scope == "published":
+        # Codex r12 #2: paginate the PUBLISHED surface (active versions) FIRST,
+        # then hydrate — so unpublished drafts can never consume the page and
+        # hide the published designs behind them. Page is a page of PUBLISHED.
+        from tinyassets.branch_versions import (
+            get_newest_active_versions,
+            list_active_published_branch_ids,
+        )
+
+        published_ids = list_active_published_branch_ids(
+            _base_path(), limit=limit, offset=offset,
+        )
+        next_offset = offset + len(published_ids) if len(published_ids) == limit else None
+        active_by_bid = get_newest_active_versions(_base_path(), published_ids)
+        rows = []
+        for bid in published_ids:
+            try:
+                r = get_branch_definition(_base_path(), branch_def_id=bid)
+            except KeyError:
+                continue
+            vis = r.get("visibility", "public") or "public"
+            # Visibility gate: a non-owner (or the public-only directory) never
+            # sees a private published design.
+            if vis == "private" and (public_only or r.get("author", "") != actor):
+                continue
+            rows.append(r)
+    else:
+        # scope=all / mine — visibility-aware DB-boundary pagination.
+        rows = list_branch_definitions(
+            _base_path(),
+            domain_id=kwargs.get("domain_id", ""),
+            author=kwargs.get("author", ""),
+            goal_id=kwargs.get("goal_id", ""),
+            viewer=viewer,
+            limit=limit,
+            offset=offset,
+        )
+        next_offset = offset + len(rows) if len(rows) == limit else None
 
     # requires_sandbox filter: "none" = design-only branches only (no node
     # has requires_sandbox=True); "any" = branches that have at least one
     # sandbox-requiring node. Omit / empty = no filter.
     rs_filter = (kwargs.get("requires_sandbox") or "").strip().lower()
 
-    # Batch the active-version lookup (Codex S2 F4): ONE query for this page's
-    # rows instead of N+1 per-row queries.
-    active_by_bid: dict[str, Any] = {}
-    if scope == "published":
-        from tinyassets.branch_versions import get_newest_active_versions
-
-        active_by_bid = get_newest_active_versions(
-            _base_path(), [r.get("branch_def_id", "") for r in rows],
-        )
-
     summaries = []
     for r in rows:
         published_version_id = None
         if scope == "published":
-            # Newest ACTIVE version only — a rolled-back version must not stay
-            # discoverable (Codex S2 latest-model, finding 3).
             active = active_by_bid.get(r.get("branch_def_id", ""))
             if active is None:
                 continue
@@ -2280,6 +2296,10 @@ def _staged_branch_from_spec(
     from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
 
     errors: list[str] = []
+    # Visibility is set at CONSTRUCTION (Codex r12 #1) so import/remix persist
+    # PRIVATE in the INITIAL save — never a public row flipped afterward (a
+    # crash between saves must not leave a permanently public working copy).
+    _vis_in = (spec.get("visibility") or "public").strip().lower()
     branch = BranchDefinition(
         name=(spec.get("name") or "").strip(),
         description=spec.get("description") or "",
@@ -2289,6 +2309,7 @@ def _staged_branch_from_spec(
         tags=list(spec.get("tags") or []),
         skills=[],
         fork_from=spec.get("fork_from") or None,
+        visibility="private" if _vis_in == "private" else "public",
     )
 
     try:
@@ -3795,11 +3816,14 @@ def _ext_branch_import_design(kwargs: dict[str, Any]) -> str:
         })
 
     # An import is a fresh owned branch: strip identity + lineage so build
-    # does not try to resolve a foreign branch_version_id, and force the
-    # caller as author.
+    # does not try to resolve a foreign branch_version_id, force the caller as
+    # author, and default PRIVATE (Codex r11 #5 / r12 #1) — an imported working
+    # copy is the owner's draft, not commons, exposed only after explicit
+    # publication. Set BEFORE build so the FIRST persist is private (atomic).
     for identity_key in ("branch_def_id", "fork_from"):
         spec.pop(identity_key, None)
     spec["author"] = _current_actor()
+    spec["visibility"] = "private"
 
     out_str = _ext_branch_build({"spec_json": json.dumps(spec)})
     try:
@@ -3808,18 +3832,6 @@ def _ext_branch_import_design(kwargs: dict[str, Any]) -> str:
         return out_str
     if out.get("status") != "built" or not out.get("branch_def_id"):
         return out_str
-
-    # An imported working copy defaults PRIVATE until the owner explicitly
-    # publishes it (Codex r11 #5): it is the caller's own draft, not commons.
-    # Flip at the import boundary (not the global BranchDefinition default).
-    from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
-
-    imported = BranchDefinition.from_dict(
-        get_branch_definition(_base_path(), branch_def_id=out["branch_def_id"]),
-    )
-    imported.visibility = "private"
-    save_branch_definition(_base_path(), branch_def=imported.to_dict())
 
     out["status"] = "imported"
     out["imported_as"] = out["branch_def_id"]
@@ -3855,12 +3867,11 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
     provenance edge is written so lineage is queryable.
     """
     from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branch_versions import branch_has_bound_fields, list_branch_versions
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import (
         delete_branch_definition,
         get_branch_definition,
-        save_branch_definition,
     )
 
     branch, err = _load_owned_or_public_branch(kwargs.get("branch_def_id", ""))
@@ -3897,6 +3908,9 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
         "description": branch.description,
         "fork_from": parent_version_id,
         "author": _current_actor(),
+        # PRIVATE from the INITIAL persist (Codex r12 #1) — a remix is the
+        # caller's own working copy, exposed only after explicit publication.
+        "visibility": "private",
     }
     out_str = _ext_branch_build({"spec_json": json.dumps(spec)})
     try:
@@ -3943,38 +3957,41 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
             ),
         })
 
-    # A remix is the caller's PRIVATE working copy by default (finding 1b): its
-    # bound values must never become discoverable/readable by another user. The
-    # owner explicitly publishes/opens it to share the DESIGN (export redacts
-    # bound values regardless).
+    # Honest next-steps guidance (Codex r12 #3): do NOT instruct users to bind
+    # values — Phase 1 has no binding plane. A design with binding SLOTS is
+    # inert until a Phase-2 engine binds it; a binding-free design runs now.
     child_def = BranchDefinition.from_dict(
         get_branch_definition(_base_path(), branch_def_id=child_id),
     )
-    child_def.visibility = "private"
-    save_branch_definition(_base_path(), branch_def=child_def.to_dict())
-
-    # Honest next-steps guidance: do NOT promise "bind and run" when the design
-    # carries a coding/sandbox-required node. Such a node runs ONLY on an
-    # attested-sandbox host — after the S1->S3->S2 merge the runtime gate fails
-    # it closed without attestation. Derived from node data so it is correct on
-    # this branch and after rebase (Codex S2 adapt round 3, finding 1(i)).
+    has_binding = branch_has_bound_fields(
+        getattr(child_def, "state_schema", None),
+    )
     needs_sandbox = _design_needs_attested_sandbox(child_def.node_defs)
-    if needs_sandbox:
+    head = (
+        f"Remixed '{branch.name}' into your own PRIVATE branch "
+        f"'{child_name}' ({child_id})."
+    )
+    tail = (
+        " Publish it (write_graph target=branch set_visibility=public) to "
+        "share it."
+    )
+    if has_binding:
+        # Honest Phase-1 message (Codex r12 #3) — no false "bind" instruction.
         guidance = (
-            f"Remixed '{branch.name}' into your own branch '{child_name}' "
-            f"({child_id}). Bind it (write_graph target=branch, "
-            "set_state_field_default ops for target_repo / credential_ref / "
-            "merge_policy). NOTE: this design has a coding node that runs "
-            "ONLY on an attested-sandbox host — until it runs on one, that "
-            "step is refused (fails closed) and the loop stays inert. Do not "
-            "expect it to open PRs from an unattested host."
+            head + " This design declares binding slots (e.g. target_repo / "
+            "credentials). Phase 1 carries the design SCHEMA only — binding "
+            "VALUES require a bound engine (Phase 2, the owner's engine-side "
+            "vault), so it is INERT and cannot run yet. You can inspect, remix, "
+            "and export it now." + tail
+        )
+    elif needs_sandbox:
+        guidance = (
+            head + " It has a coding node that runs ONLY on an "
+            "attested-sandbox host — it fails closed (inert) until it runs on "
+            "one." + tail
         )
     else:
-        guidance = (
-            f"Remixed '{branch.name}' into your own branch '{child_name}' "
-            f"({child_id}). Bind it (write_graph target=branch, "
-            "set_state_field_default ops) then run it."
-        )
+        guidance = head + " It has no binding slots — you can run it now (run_graph)." + tail
     return json.dumps({
         "status": "remixed",
         "branch_def_id": child_id,

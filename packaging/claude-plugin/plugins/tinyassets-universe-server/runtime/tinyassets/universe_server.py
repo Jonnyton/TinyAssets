@@ -435,6 +435,7 @@ def read_graph(
     author: str = "",
     run_status: str = "",
     limit: int = 30,
+    offset: int = 0,
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
@@ -495,17 +496,16 @@ def read_graph(
         # deprecated 'extensions' tool; this only makes it first-class.
         return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
     if normalized == "designs":
-        # DISCOVER (patch-loop S2): enumerate remixable branch designs. The
-        # listing is PER-VIEWER (list_branches scope=published filters on
-        # published branch VERSIONS; storage filters visibility public-or-
-        # author): you see PUBLIC published designs (the shared commons) PLUS
-        # your OWN published designs even when private. Other users' private
-        # designs are never visible, and unpublished drafts never appear.
+        # DISCOVER (patch-loop S2): enumerate remixable branch designs — PUBLIC
+        # published designs plus your OWN published designs. Paginates at the DB
+        # over the PUBLISHED surface (drafts never consume the page); pass
+        # ``offset`` (from a prior response's ``next_offset``) to browse further.
         return _extensions_impl(
             action="list_branches",
             scope="published",
             author=author,
             limit=limit,
+            offset=offset,
         )
     if normalized == "design":
         # EXPORT (patch-loop S2): serialize one branch as the portable design

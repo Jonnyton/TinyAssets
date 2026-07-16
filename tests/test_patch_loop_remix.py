@@ -582,7 +582,9 @@ def test_remix_guidance_plain_when_no_sandbox(data_dir):
     out = json.loads(write_graph(target="remix", branch_id=bid))
     assert out["status"] == "remixed"
     assert out.get("requires_attested_sandbox") is False
-    assert "then run it" in out["text"].lower()
+    # Binding-free + sandbox-free -> runnable now; no false bind instruction.
+    assert "run it now" in out["text"].lower()
+    assert "set_state_field_default" not in out["text"]
 
 
 @pytest.mark.skipif(
@@ -765,9 +767,10 @@ def _build_binding_design(data_dir, *, bid: str, author_field: str = "target_rep
     return b
 
 
-def test_binding_field_not_settable_from_inputs_top_level(data_dir):
-    # Item 2: a binding-declared field cannot be SET at run time via inputs_json
-    # — that would inject a value the owner never bound. Reject loudly.
+def test_unbound_design_is_inert_top_level(data_dir):
+    # Codex r12 #4: a design that declares binding slots is INERT in Phase 1 (no
+    # binding plane) — the SHARED core refuses it, so injecting a value via
+    # inputs can't run it either. Even the author's own run is refused.
     from tinyassets.runs import execute_branch
 
     b = _build_binding_design(data_dir, bid="bd-top")
@@ -776,7 +779,8 @@ def test_binding_field_not_settable_from_inputs_top_level(data_dir):
         actor="alice", provider_call=lambda *a, **k: "ok",
     )
     assert out.status == "failed"
-    assert "binding fields cannot be set" in (out.error or "")
+    assert "inert" in (out.error or "").lower()
+    assert "github.com/attacker/x" not in (out.error or "")
 
 
 def test_binding_field_not_settable_via_child_mapping(data_dir):
@@ -895,10 +899,9 @@ def test_directory_surface_designs_is_read_only(data_dir):
     assert json.loads(dir_write(target="remix", branch_id=parent))["error"] == "unknown_target"
 
 
-def test_cross_actor_run_of_bound_branch_is_refused(data_dir, monkeypatch):
-    # A design with binding SLOTS is a template, not a runnable instance of
-    # someone else's config: a NON-OWNER run is refused (fork to run). The owner
-    # runs their own fine. Exercise the MCP run handler directly.
+def test_unbound_design_run_refused_for_everyone(data_dir, monkeypatch):
+    # Codex r12 #4: a design with binding slots is UNBOUND and INERT in Phase 1
+    # (no binding plane) — refused for the AUTHOR and for a non-owner alike.
     from tinyassets.api.branches import _ext_branch_build
     from tinyassets.api.runs import _action_run_branch
 
@@ -912,18 +915,13 @@ def test_cross_actor_run_of_bound_branch_is_refused(data_dir, monkeypatch):
         "state_schema": [{"name": "target_repo", "type": "str", "is_binding": True}],
     })}))["branch_def_id"]
 
-    _actor(monkeypatch, "bob")
-    refused = json.loads(_action_run_branch({
-        "branch_def_id": bid, "inputs_json": json.dumps({}),
-    }))
-    assert refused.get("failure_class") == "binding_owner_only", refused
-    assert "fork" in refused["error"].lower()
-
-    _actor(monkeypatch, "alice")
-    owner = json.loads(_action_run_branch({
-        "branch_def_id": bid, "inputs_json": json.dumps({}),
-    }))
-    assert owner.get("failure_class") != "binding_owner_only", owner
+    for who in ("bob", "alice"):
+        _actor(monkeypatch, who)
+        refused = json.loads(_action_run_branch({
+            "branch_def_id": bid, "inputs_json": json.dumps({}),
+        }))
+        assert refused.get("failure_class") == "binding_unbound_phase1", (who, refused)
+        assert "inert" in refused["error"].lower()
 
 
 def test_designs_listing_paginates_at_db(data_dir):
@@ -1022,8 +1020,92 @@ def test_binding_free_public_branch_runs_for_any_actor(data_dir, monkeypatch):
         "branch_def_id": bid,
         "inputs_json": json.dumps({"x": "1"}),
     }))
-    # Not refused by the binding guard (no bound fields).
-    assert ran.get("failure_class") != "binding_owner_only", ran
+    # Not refused by the binding guard (no binding slots).
+    assert ran.get("failure_class") != "binding_unbound_phase1", ran
+
+
+def test_import_and_remix_never_write_a_public_row(data_dir, monkeypatch):
+    # Codex r12 #1: private-by-default is ATOMIC — no save ever persists a
+    # PUBLIC row for an import/remix, so a crash between saves cannot leave a
+    # permanently public working copy.
+    import tinyassets.daemon_server as ds
+
+    real_save = ds.save_branch_definition
+    seen = []
+
+    def _spy(base_path, *, branch_def):
+        seen.append((branch_def.get("name"), branch_def.get("visibility")))
+        return real_save(base_path, branch_def=branch_def)
+
+    monkeypatch.setattr(ds, "save_branch_definition", _spy)
+
+    # Import.
+    imp = json.loads(write_graph(target="design", artifact_json=json.dumps({
+        "name": "atomic import",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N", "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })))
+    assert imp["status"] == "imported"
+    assert _load(data_dir, imp["branch_def_id"]).visibility == "private"
+
+    # Remix.
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+    rem = json.loads(write_graph(target="remix", branch_id=parent))
+    assert rem["status"] == "remixed"
+    assert _load(data_dir, rem["branch_def_id"]).visibility == "private"
+
+    # NO save for the import/remix working copies was ever public.
+    for name, vis in seen:
+        if name in ("atomic import",) or (name or "").endswith("(remix)"):
+            assert vis == "private", (name, vis)
+
+
+def test_read_graph_designs_shows_published_behind_newer_drafts(data_dir):
+    # Codex r12 #2: a published design behind newer DRAFTS must be reachable —
+    # pagination filters the published surface BEFORE the page. Plus offset browse.
+    from tinyassets.api.branches import _ext_branch_build, _ext_branch_patch
+
+    published = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "older published",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N", "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })}))["branch_def_id"]
+    _ext_branch_patch({
+        "branch_def_id": published,
+        "changes_json": json.dumps([{"op": "set_description", "description": "pub"}]),
+    })
+    # Two NEWER unpublished drafts.
+    for i in range(2):
+        _ext_branch_build({"spec_json": json.dumps({
+            "name": f"newer draft {i}",
+            "entry_point": "n",
+            "node_defs": [{"node_id": "n", "display_name": "N", "prompt_template": "x"}],
+            "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        })})
+
+    # Even with limit=1, the published design is on the page — drafts never
+    # consume it (they have no active version, so aren't on the published surface).
+    page = json.loads(read_graph(target="designs", limit=1))
+    assert published in {b["branch_def_id"] for b in page["branches"]}
+    assert len(page["branches"]) == 1
+    # A second published design + offset browse reaches page 2.
+    second = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "second published",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N", "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })}))["branch_def_id"]
+    _ext_branch_patch({
+        "branch_def_id": second,
+        "changes_json": json.dumps([{"op": "set_description", "description": "pub"}]),
+    })
+    p1 = json.loads(read_graph(target="designs", limit=1, offset=0))
+    p2 = json.loads(read_graph(target="designs", limit=1, offset=p1["next_offset"]))
+    seen = {p1["branches"][0]["branch_def_id"], p2["branches"][0]["branch_def_id"]}
+    assert {published, second} <= seen
 
 
 def test_build_time_binding_slot_stores_no_value(data_dir):
