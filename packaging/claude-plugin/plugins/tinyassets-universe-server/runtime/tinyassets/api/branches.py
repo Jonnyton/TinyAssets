@@ -1972,6 +1972,12 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     if default != "":
         entry["default_value"] = default
         entry["default"] = default
+    # Preserve a declared binding flag from ANY authoring path (build_branch /
+    # add_state_field), so a binding slot pre-filled at build time is still
+    # redacted — not just ones set via the BIND op (Codex+Fable S2 F2). Normalize
+    # the aliases to the canonical is_binding key.
+    if any(raw.get(flag) for flag in ("is_binding", "bound", "sensitive")):
+        entry["is_binding"] = True
     branch.state_schema.append(entry)
     if ftype_raw.lower() not in _VALID_STATE_TYPES:
         return (
@@ -2650,10 +2656,11 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
         # _state_schema_defaults finds the seed value at runtime.
         target_field["default_value"] = default
         target_field["default"] = default
-        # Mark this default as a personal BINDING value (Codex S2 F1a): export
-        # redacts bound values so a user's repo/credential/intake binding never
-        # travels in a portable artifact or a listing others can read.
-        target_field["bound"] = True
+        # Declaratively flag the field's SCHEMA as a personal binding (Codex+
+        # Fable S2): every non-owner consumer (read/export/fork/snapshot/run)
+        # redacts or refuses on this flag, so the owner's repo/credential/intake
+        # value never travels or runs under another user.
+        target_field["is_binding"] = True
         return ""
     if name == "update_node":
         nid = (op.get("node_id") or "").strip()
@@ -3551,16 +3558,18 @@ _STATE_FIELD_VALUE_KEYS = ("default_value", "default")
 def _state_field_to_design_spec(field: dict[str, Any]) -> dict[str, Any]:
     """Serialize a state_schema entry, redacting personal binding VALUES.
 
-    - Design defaults (declared at build time, no ``bound`` marker) travel.
-    - Bound values (set via BIND / set_state_field_default) are REDACTED: the
-      artifact keeps the field slot (name/type/description/reducer) but never
-      the value. The ``bound`` marker itself is owner-only and never travels.
+    Routes through the single ``is_binding_field`` decision: design defaults
+    (no binding flag) travel; a binding slot keeps its name/type/description/
+    reducer but never the value, and the owner-trust flag itself never travels.
     """
+    from tinyassets.branch_versions import _BINDING_FLAG_KEYS, is_binding_field
+
     spec = dict(field)
-    spec.pop("bound", None)
-    if field.get("bound"):
+    if is_binding_field(field):
         for value_key in _STATE_FIELD_VALUE_KEYS:
             spec.pop(value_key, None)
+    for flag in _BINDING_FLAG_KEYS:
+        spec.pop(flag, None)
     return spec
 
 
@@ -3601,11 +3610,14 @@ def _branch_to_design_spec(
     }
     if meta.goal_id:
         spec["goal_id"] = meta.goal_id
-    # Branch-level routing/cost/concurrency knobs must round-trip too, or a
-    # remix silently loses provider routing + concurrency (Codex S2 F2).
-    if getattr(meta, "default_llm_policy", None) is not None:
-        spec["default_llm_policy"] = meta.default_llm_policy
-    concurrency = getattr(meta, "concurrency_budget", None)
+    # Branch-level routing/cost/concurrency knobs come from the TOPOLOGY source
+    # (the immutable active-version snapshot on export), NOT the mutable row, so
+    # a mutate-after-publish can't change what an active-version export returns
+    # (Codex S2 F5). They also round-trip through remix, so routing/concurrency
+    # aren't silently lost (F2). For the unpublished-draft path branch == row.
+    if getattr(branch, "default_llm_policy", None) is not None:
+        spec["default_llm_policy"] = branch.default_llm_policy
+    concurrency = getattr(branch, "concurrency_budget", None)
     if concurrency is not None:
         spec["concurrency_budget"] = concurrency
     # Drop the seed-only tags — an exported/imported copy is not the seeded

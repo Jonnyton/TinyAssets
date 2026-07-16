@@ -573,6 +573,34 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             "validation_errors": errors,
         })
 
+    # Binding privacy — the RUN egress choke point (Codex+Fable S2). A public
+    # branch is a remixable TEMPLATE, not a runnable instance of someone else's
+    # bound data: if the caller is NOT the owner AND the branch has binding
+    # fields, refuse before seeding (seed_initial_state would otherwise merge
+    # the owner's bound default_values into this run's state). Ownership uses the
+    # OAuth subject, same as patch_branch's author gate — the run-attribution
+    # actor is universe-scoped, so it can't be used for ownership. A binding-free
+    # branch runs for anyone; the owner runs their own bound branch fine.
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branch_versions import branch_has_bound_fields
+
+    branch_author = (source_dict.get("author") or "").strip()
+    if (
+        branch_author
+        and _current_actor() != branch_author
+        and branch_has_bound_fields(source_dict.get("state_schema", []))
+    ):
+        return json.dumps({
+            "error": (
+                "This design is bound to its owner's inputs and can't be run by "
+                "another user. Fork it (write_graph target=remix) to get empty "
+                "binding slots, bind your own target_repo / credentials, then "
+                "run your own copy."
+            ),
+            "failure_class": "binding_owner_only",
+            "actionable_by": "chatbot",
+        })
+
     inputs_raw = kwargs.get("inputs_json", "").strip()
     inputs: dict[str, Any] = {}
     if inputs_raw:

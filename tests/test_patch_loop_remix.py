@@ -228,7 +228,7 @@ def test_export_import_round_trips_topology_without_bound_values(data_dir):
     assert {"target_repo", "merge_policy"} <= set(art_fields)
     assert "default_value" not in art_fields["target_repo"]
     assert "default_value" not in art_fields["merge_policy"]
-    assert "bound" not in art_fields["target_repo"]  # owner marker never travels
+    assert "is_binding" not in art_fields["target_repo"]  # flag never travels
 
     # IMPORT the artifact back -> a NEW owned branch.
     imported = json.loads(write_graph(
@@ -680,7 +680,7 @@ def test_bob_cannot_read_or_inherit_bound_value_via_public_or_fork(data_dir, mon
     forked = _load(data_dir, bob_child["branch_def_id"])
     tr = next(f for f in forked.state_schema if f["name"] == "target_repo")
     assert not tr.get("default_value")   # empty — Bob must re-bind
-    assert not tr.get("bound")           # marker not inherited as owner-trust
+    assert not tr.get("is_binding")      # flag not inherited as owner-trust
 
 
 def test_policy_budget_survive_publish_remix_rollback_export(data_dir):
@@ -733,30 +733,155 @@ def test_policy_budget_survive_publish_remix_rollback_export(data_dir):
     assert cf2.concurrency_budget == 3
 
 
-def test_directory_surface_has_designs_parity(data_dir):
-    # F4: the external directory MCP surface must offer the same discover /
-    # import / remix / export design path as the /mcp surface.
+def test_directory_surface_designs_is_read_only(data_dir):
+    # F3 decision: the directory host is the public DISCOVERY surface — discover
+    # + export (READ) parity only. Remix/import (WRITE) is NOT offered here
+    # (authenticated remix/bind lives on the OAuth-gated /mcp universe surface).
     from tinyassets.directory_server import read_graph as dir_read
     from tinyassets.directory_server import write_graph as dir_write
 
     seed_reference_designs(data_dir)
     parent = _reference_bid(data_dir)
 
+    # READ parity: discover + export work on the directory surface.
     listed = json.loads(dir_read(target="designs"))
     assert parent in {b["branch_def_id"] for b in listed["branches"]}
     exported = json.loads(dir_read(target="design", branch_id=parent))
     assert exported["status"] == "exported"
-    imported = json.loads(
-        dir_write(target="design", artifact_json=exported["artifact_json"]),
-    )
-    assert imported["status"] == "imported"
-    remixed = json.loads(dir_write(target="remix", branch_id=parent))
-    assert remixed["status"] == "remixed"
-
     r = json.loads(dir_read(target="bogus"))
     assert {"designs", "design"} <= set(r["allowed_targets"])
+
+    # WRITE is deliberately absent: design/remix are unknown targets here.
     w = json.loads(dir_write(target="bogus"))
-    assert {"design", "remix"} <= set(w["allowed_targets"])
+    assert set(w["allowed_targets"]) == {"goal", "request"}
+    assert json.loads(dir_write(target="remix", branch_id=parent))["error"] == "unknown_target"
+
+
+def test_cross_actor_run_of_bound_branch_is_refused(data_dir, monkeypatch):
+    # THE 4th egress (Codex+Fable): the RUN path. Alice binds + publishes public;
+    # a NON-OWNER run of that bound branch is REFUSED before seeding, so the
+    # owner's bound value never reaches the run state. Ownership is the OAuth
+    # subject (the outer universe-ACL layer is tested separately); exercise the
+    # run handler directly to isolate the binding guard.
+    from tinyassets.api.runs import _action_run_branch
+
+    _actor(monkeypatch, "alice")
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+    child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
+    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+        {"op": "set_state_field_default", "name": "target_repo",
+         "default_value": "github.com/alice/SECRET"},
+    ]))
+    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+        {"op": "set_visibility", "visibility": "public"},
+    ]))
+
+    # Non-owner Bob is refused with actionable guidance; nothing of Alice's seeds.
+    _actor(monkeypatch, "bob")
+    refused = json.loads(_action_run_branch({
+        "branch_def_id": child,
+        "inputs_json": json.dumps({"request_payload": "go"}),
+    }))
+    assert refused.get("failure_class") == "binding_owner_only", refused
+    assert "SECRET" not in json.dumps(refused)
+    assert "fork" in refused["error"].lower()
+
+    # The OWNER runs her own bound branch fine (guard does not fire).
+    _actor(monkeypatch, "alice")
+    owner = json.loads(_action_run_branch({
+        "branch_def_id": child,
+        "inputs_json": json.dumps({"request_payload": "go"}),
+    }))
+    assert owner.get("failure_class") != "binding_owner_only", owner
+
+
+def test_binding_free_public_branch_runs_for_any_actor(data_dir, monkeypatch):
+    # A binding-FREE public branch is a pure TEMPLATE — anyone may run it.
+    from tinyassets.api.branches import _ext_branch_build, _ext_branch_patch
+    from tinyassets.api.runs import _action_run_branch
+
+    _actor(monkeypatch, "carol")
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "free template",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "do {x}"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        "state_schema": [{"name": "x", "type": "str"}],
+    })}))["branch_def_id"]
+    _ext_branch_patch({
+        "branch_def_id": bid,
+        "changes_json": json.dumps([
+            {"op": "set_visibility", "visibility": "public"},
+        ]),
+    })
+
+    _actor(monkeypatch, "dave")
+    ran = json.loads(_action_run_branch({
+        "branch_def_id": bid,
+        "inputs_json": json.dumps({"x": "1"}),
+    }))
+    # Not refused by the binding guard (no bound fields).
+    assert ran.get("failure_class") != "binding_owner_only", ran
+
+
+def test_build_time_binding_flag_is_redacted(data_dir):
+    # F2: a binding slot declared at BUILD time (is_binding + a value, not via
+    # the BIND op) is still redacted on export — the flag is a schema property.
+    from tinyassets.api.branches import _ext_branch_build
+
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "prebound design",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        "state_schema": [{"name": "target_repo", "type": "str",
+                          "default_value": "github.com/author/PREBOUND",
+                          "is_binding": True}],
+    })}))["branch_def_id"]
+    exported = json.loads(read_graph(target="design", branch_id=bid))
+    assert "PREBOUND" not in json.dumps(exported)
+    art_field = next(
+        f for f in exported["artifact"]["spec"]["state_schema"]
+        if f["name"] == "target_repo"
+    )
+    assert "default_value" not in art_field
+    assert "is_binding" not in art_field
+
+
+def test_active_export_uses_immutable_snapshot_policy(data_dir):
+    # F5: publish A/3, then mutate the live row to B/9 -> active-version export
+    # must return the SNAPSHOT (A/3), not the mutated row (B/9).
+    from tinyassets.api.branches import _ext_branch_build
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+
+    policy_a = {"preferred": {"provider": "codex", "model": "a"}}
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "immutable policy",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        "default_llm_policy": policy_a,
+        "concurrency_budget": 3,
+    })}))["branch_def_id"]
+    publish_branch_version(
+        data_dir, get_branch_definition(data_dir, branch_def_id=bid),
+        publisher="alice",
+    )
+    # Mutate the live row AFTER publishing.
+    b = BranchDefinition.from_dict(get_branch_definition(data_dir, branch_def_id=bid))
+    b.default_llm_policy = {"preferred": {"provider": "codex", "model": "b"}}
+    b.concurrency_budget = 9
+    save_branch_definition(data_dir, branch_def=b.to_dict())
+
+    exported = json.loads(read_graph(target="design", branch_id=bid))
+    assert exported["artifact"]["spec"]["default_llm_policy"] == policy_a  # A, not B
+    assert exported["artifact"]["spec"]["concurrency_budget"] == 3          # 3, not 9
 
 
 def test_bound_design_is_private_and_hidden_from_other_users(data_dir, monkeypatch):

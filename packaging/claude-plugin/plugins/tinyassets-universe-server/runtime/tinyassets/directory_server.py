@@ -272,14 +272,16 @@ def write_graph(
     graph_id: str = "",
     request_type: str = "general",
     branch_id: str = "",
-    artifact_json: str = "",
 ) -> str:
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal, request, design (import a portable design
-            artifact as a new owned branch), or remix (fork a published design
-            by branch_id into an owned copy with provenance recorded).
+        target: What to write: goal or request. Design remix/import (write) is
+            deliberately NOT offered here — the directory host is the public
+            DISCOVERY surface (read designs/export only). Authenticated
+            remix/import/bind lives on the /mcp universe connector, which is
+            OAuth-gated (the directory surface is excluded from OAuth challenges,
+            so writes there can't authenticate).
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -287,9 +289,7 @@ def write_graph(
         text: Request text to queue.
         graph_id: Optional target graph/universe identifier.
         request_type: TinyAssets request type.
-        branch_id: Optional target branch identifier (the design to remix).
-        artifact_json: With target=design, the portable design artifact to
-            import — a design envelope OR a raw build_branch spec.
+        branch_id: Optional target branch identifier.
     """
     rejection = write_gate_rejection("write_graph")
     if rejection:
@@ -311,17 +311,7 @@ def write_graph(
             request_type=request_type,
             branch_id=branch_id,
         )
-    if normalized == "design":
-        # IMPORT parity: a design artifact becomes a branch the caller owns.
-        return _extensions_impl(action="import_design", artifact_json=artifact_json)
-    if normalized == "remix":
-        # FORK/REMIX parity: fork a published design into an owned copy.
-        return _extensions_impl(
-            action="remix_design", branch_def_id=branch_id, name=name,
-        )
-    return _unknown_target(
-        "write_graph", target, ("goal", "request", "design", "remix"),
-    )
+    return _unknown_target("write_graph", target, ("goal", "request"))
 
 
 _mcp_write_graph = _register_structured_tool(

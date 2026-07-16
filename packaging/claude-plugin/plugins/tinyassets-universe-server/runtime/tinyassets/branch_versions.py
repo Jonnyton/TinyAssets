@@ -206,15 +206,35 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
         )
 
 
-# A state field carries a personal BINDING value once its owner sets a default
-# via the set_state_field_default op, which stamps the ``bound`` marker. Those
-# values (repo identity, vault/credential refs, intake sources) are owner-private
-# and must NEVER leave the owner (Codex+Fable S2 latest-model). Redacting at the
-# SOURCE — the published version snapshot — closes every downstream egress at
-# once: public reads, remix/fork inheritance, and export all derive from a
-# value-free snapshot. The field SLOT survives so a remixer can re-bind.
-BOUND_FIELD_MARKER = "bound"
+# Declarative binding-privacy contract (Codex+Fable S2 latest-model).
+#
+# A state field is a personal BINDING when its SCHEMA is flagged — the flag is a
+# property of the field, not a per-value runtime marker, so ANY consumer decides
+# "is this field a binding?" from the schema alone regardless of which authoring
+# path set the default. Binding VALUES (repo identity, vault/credential refs,
+# intake sources) are owner-private and must NEVER leave the owner.
+#
+# These are the SINGLE source of that decision: every non-owner consumer — read,
+# export, fork, snapshot, AND the run/seed path — routes through
+# ``is_binding_field`` / ``branch_has_bound_fields`` / ``redact_bound_state_values``.
+# Adding a future consumer means calling one of these, not discovering a new leak.
+# ``is_binding`` is canonical; ``bound`` / ``sensitive`` are accepted as aliases
+# so a flag set by any authoring path is honored.
+BINDING_FLAG = "is_binding"
+_BINDING_FLAG_KEYS = ("is_binding", "bound", "sensitive")
 _BOUND_VALUE_KEYS = ("default_value", "default")
+
+
+def is_binding_field(field: Any) -> bool:
+    """True when a state_schema field is declared a personal binding slot."""
+    return isinstance(field, dict) and any(
+        field.get(flag) for flag in _BINDING_FLAG_KEYS
+    )
+
+
+def branch_has_bound_fields(state_schema: Any) -> bool:
+    """True when any state field is a binding slot (decided from the schema)."""
+    return any(is_binding_field(f) for f in (state_schema or []))
 
 
 def redact_bound_state_values(
@@ -222,11 +242,11 @@ def redact_bound_state_values(
 ) -> list[Any]:
     """Return ``state_schema`` with personal binding VALUES stripped.
 
-    Only fields stamped ``bound`` are affected; design-level defaults (no
-    marker) pass through untouched. The ``bound`` marker itself is kept by
-    default (it documents the binding slot for readers) but dropped when
-    ``drop_marker`` is set — used by fork/remix inheritance so the child gets a
-    fresh unbound slot to re-bind, never the parent's marker as owner-trust.
+    Only binding-flagged fields are affected; design-level defaults pass through
+    untouched. The binding flag itself is kept by default (it documents the slot
+    for readers) but dropped when ``drop_marker`` is set — used by fork/remix
+    inheritance so the child gets a fresh unbound slot to re-bind, never the
+    parent's flag as owner-trust.
     """
     out: list[Any] = []
     for field in state_schema or []:
@@ -234,11 +254,12 @@ def redact_bound_state_values(
             out.append(field)
             continue
         entry = dict(field)
-        if entry.get(BOUND_FIELD_MARKER):
+        if is_binding_field(entry):
             for value_key in _BOUND_VALUE_KEYS:
                 entry.pop(value_key, None)
             if drop_marker:
-                entry.pop(BOUND_FIELD_MARKER, None)
+                for flag in _BINDING_FLAG_KEYS:
+                    entry.pop(flag, None)
         out.append(entry)
     return out
 
