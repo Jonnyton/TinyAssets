@@ -200,7 +200,33 @@ CREATE TABLE IF NOT EXISTS not_before_timers (
 
 CREATE INDEX IF NOT EXISTS idx_not_before_pending
     ON not_before_timers(not_before) WHERE fired_at IS NULL;
+
+-- Durable review suspend/resume (E3): the present node opens + projects the PR
+-- and the RUN SUSPENDS here awaiting the owner's decision. The owner verb
+-- (approve/reshape/reject) from ANY surface resolves the suspension with a
+-- resume directive (merge / re-enter draft_patch / terminal reject). The row is
+-- the durable checkpoint of the pause — it survives a daemon restart because it
+-- is SQLite, so the paused run rehydrates rather than being lost.
+CREATE TABLE IF NOT EXISTS review_suspensions (
+    run_id           TEXT PRIMARY KEY,
+    universe_id      TEXT NOT NULL DEFAULT '',
+    destination      TEXT NOT NULL DEFAULT '',
+    pr_number        INTEGER NOT NULL DEFAULT 0,
+    branch_def_id    TEXT NOT NULL DEFAULT '',
+    head_sha         TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'suspended',
+    resume_decision  TEXT NOT NULL DEFAULT '',
+    resume_directive TEXT NOT NULL DEFAULT '',
+    suspended_at     REAL NOT NULL,
+    resumed_at       REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_suspensions_pr
+    ON review_suspensions(destination, pr_number, status);
 """
+
+SUSPENSION_SUSPENDED = "suspended"
+SUSPENSION_RESUMED = "resumed"
 
 
 def initialize_review_queue_db(universe_dir: str | Path) -> Path:
@@ -808,10 +834,151 @@ def authorize_timer_fire(
     return True, "authorized"
 
 
+# ── Durable review suspend / resume (E3) ─────────────────────────────────────
+
+
+def _suspension_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    directive = d.get("resume_directive") or ""
+    try:
+        d["resume_directive"] = json.loads(directive) if directive else None
+    except (ValueError, TypeError):
+        d["resume_directive"] = None
+    return d
+
+
+def suspend_run_for_review(
+    universe_dir: str | Path,
+    *,
+    run_id: str,
+    destination: str,
+    pr_number: int,
+    branch_def_id: str = "",
+    head_sha: str = "",
+    universe_id: str = "",
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Record that ``run_id`` is SUSPENDED at the present node awaiting the
+    owner's review of ``destination#pr_number``. Idempotent per run: re-calling
+    (e.g. a re-push re-projects) refreshes the head + re-suspends. Raises on an
+    empty ``run_id``."""
+    rid = (run_id or "").strip()
+    if not rid:
+        raise ValueError("suspend_run_for_review requires a non-empty run_id")
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            conn.execute(
+                """
+                INSERT INTO review_suspensions (
+                    run_id, universe_id, destination, pr_number, branch_def_id,
+                    head_sha, status, resume_decision, resume_directive,
+                    suspended_at, resumed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, NULL)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    universe_id = excluded.universe_id,
+                    destination = excluded.destination,
+                    pr_number = excluded.pr_number,
+                    branch_def_id = excluded.branch_def_id,
+                    head_sha = excluded.head_sha,
+                    status = 'suspended',
+                    resume_decision = '',
+                    resume_directive = '',
+                    suspended_at = excluded.suspended_at,
+                    resumed_at = NULL
+                """,
+                (
+                    rid, universe_id, (destination or "").strip(), pr_number,
+                    branch_def_id, (head_sha or "").strip(), SUSPENSION_SUSPENDED, ts,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM review_suspensions WHERE run_id = ?", (rid,)
+            ).fetchone()
+    return _suspension_to_dict(row)
+
+
+def get_suspension(universe_dir: str | Path, *, run_id: str) -> dict[str, Any] | None:
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        row = conn.execute(
+            "SELECT * FROM review_suspensions WHERE run_id = ?",
+            ((run_id or "").strip(),),
+        ).fetchone()
+    return _suspension_to_dict(row) if row is not None else None
+
+
+def list_suspended_runs(universe_dir: str | Path) -> list[dict[str, Any]]:
+    """Every run still SUSPENDED awaiting review — what a daemon rehydrates on
+    restart to know which paused runs are still waiting on the owner."""
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(
+            "SELECT * FROM review_suspensions WHERE status = ? ORDER BY suspended_at",
+            (SUSPENSION_SUSPENDED,),
+        ).fetchall()
+    return [_suspension_to_dict(r) for r in rows]
+
+
+def suspension_for_pr(
+    universe_dir: str | Path, *, destination: str, pr_number: int
+) -> dict[str, Any] | None:
+    """The most-recently-suspended run awaiting review of a PR (owner verbs act
+    by PR, so they resolve the suspension this way)."""
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        row = conn.execute(
+            "SELECT * FROM review_suspensions "
+            "WHERE destination = ? AND pr_number = ? AND status = ? "
+            "ORDER BY suspended_at DESC LIMIT 1",
+            ((destination or "").strip(), pr_number, SUSPENSION_SUSPENDED),
+        ).fetchone()
+    return _suspension_to_dict(row) if row is not None else None
+
+
+def resume_review_run(
+    universe_dir: str | Path,
+    *,
+    run_id: str,
+    decision: str,
+    directive: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Resolve a suspended run: mark it RESUMED with the owner's ``decision`` and
+    the ``directive`` the loop follows next (merge / draft_patch resume /
+    terminal). Returns the updated suspension, or ``None`` if the run is not
+    suspended (already resumed / never suspended). Idempotent-safe: only a
+    ``suspended`` row transitions."""
+    rid = (run_id or "").strip()
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "UPDATE review_suspensions SET status = ?, resume_decision = ?, "
+                "resume_directive = ?, resumed_at = ? "
+                "WHERE run_id = ? AND status = ?",
+                (
+                    SUSPENSION_RESUMED, decision,
+                    json.dumps(directive) if directive else "", ts, rid,
+                    SUSPENSION_SUSPENDED,
+                ),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM review_suspensions WHERE run_id = ?", (rid,)
+            ).fetchone()
+    return _suspension_to_dict(row)
+
+
 __all__ = [
     "VERIFY_PASS",
     "VERIFY_FAIL",
     "VERIFY_UNKNOWN",
+    "SUSPENSION_SUSPENDED",
+    "SUSPENSION_RESUMED",
     "WORKFLOW_OPEN",
     "WORKFLOW_APPROVED",
     "WORKFLOW_RESHAPED",
@@ -839,4 +1006,9 @@ __all__ = [
     "cancel_not_before",
     "cancel_timers_for_branch",
     "authorize_timer_fire",
+    "suspend_run_for_review",
+    "get_suspension",
+    "list_suspended_runs",
+    "suspension_for_pr",
+    "resume_review_run",
 ]

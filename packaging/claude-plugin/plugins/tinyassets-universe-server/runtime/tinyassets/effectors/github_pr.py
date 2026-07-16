@@ -1553,6 +1553,22 @@ def run_github_pr_effector(
                     "workflow_outcome"
                 )
                 evidence["review_queue_preference_bound"] = bound["bound"]
+                # E3: SUSPEND the run at the present node awaiting owner review.
+                # The suspension is the durable checkpoint of the pause (survives
+                # restart); the owner verb resumes it to merge / reshape / reject.
+                if run_id:
+                    suspension = _rq.suspend_run_for_review(
+                        universe_dir,
+                        run_id=run_id,
+                        destination=destination,
+                        pr_number=invocation["pr_number"],
+                        branch_def_id=branch_def_id,
+                        head_sha=str(materialize.get("commit_sha") or ""),
+                        universe_id=universe_id,
+                    )
+                    evidence["review_queue_run_suspended"] = (
+                        suspension.get("status") == _rq.SUSPENSION_SUSPENDED
+                    )
         except Exception as exc:  # noqa: BLE001 — never fail a landed PR open
             evidence["review_queue_enqueue_error"] = str(exc)
 

@@ -98,6 +98,22 @@ def test_present_node_projects_pr_with_resume_identity(monkeypatch, tmp_path):
     assert proj["workflow_outcome"] == "open"
 
 
+def test_present_node_suspends_the_run(monkeypatch, tmp_path):
+    """E3: the present node projects the PR AND suspends the run for owner
+    review — the durable pause the owner verb later resumes."""
+    rq.set_merge_preference_binding(
+        tmp_path, branch_def_id="patch_loop_reference",
+        merge_preference="manual", review_required=True, bound_by="owner",
+    )
+    result = _run(monkeypatch, tmp_path)
+    assert result.get("review_queue_run_suspended") is True
+    susp = rq.get_suspension(tmp_path, run_id="run-9")
+    assert susp is not None
+    assert susp["status"] == "suspended"
+    assert susp["pr_number"] == _PR
+    assert susp["branch_def_id"] == "patch_loop_reference"
+
+
 def test_no_projection_when_review_not_required(monkeypatch, tmp_path):
     """Config-driven: an unbound branch (or review_required False) does not
     project — the loop is opt-in per owner config, not automatic."""

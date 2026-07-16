@@ -147,6 +147,35 @@ def _not_projected(action: str, destination: str, pr_number: int) -> str:
     })
 
 
+def _resume_suspended_run(
+    universe_dir, *, destination: str, pr_number: int, decision: str,
+    directive: dict[str, Any],
+) -> dict[str, Any] | None:
+    """E3: resolve the run the present node SUSPENDED for this PR — mark it
+    resumed with the owner's decision + the directive the loop follows next
+    (merge / draft_patch resume / terminal reject). Returns a compact resume
+    summary, or None when no run is suspended (a fire-and-forget projection)."""
+    from tinyassets.storage.review_queue import resume_review_run, suspension_for_pr
+
+    suspension = suspension_for_pr(
+        universe_dir, destination=destination, pr_number=pr_number
+    )
+    if suspension is None:
+        return None
+    resumed = resume_review_run(
+        universe_dir, run_id=suspension["run_id"], decision=decision,
+        directive=directive,
+    )
+    if resumed is None:
+        return None
+    return {
+        "run_id": resumed["run_id"],
+        "status": resumed["status"],
+        "decision": resumed["resume_decision"],
+        "directive": resumed["resume_directive"],
+    }
+
+
 # ── list ────────────────────────────────────────────────────────────────────
 
 
@@ -231,10 +260,16 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
         })
     if projection is None:
         return _not_projected("review_queue_approve", destination, pr_number)
+    resume = _resume_suspended_run(
+        _universe_dir_for(target_universe), destination=destination,
+        pr_number=pr_number, decision="approve",
+        directive={"action": "merge", "github_call": call.to_dict()},
+    )
     return json.dumps({
         "status": "approved",
         "projection": projection,
         "github_call": call.to_dict(),
+        "resume": resume,
         "note": _PHASE2_NOTE,
     })
 
@@ -300,15 +335,21 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             "failure_class": "storage_error",
             "actionable_by": "host",
         })
+    resume = _resume_suspended_run(
+        universe_dir, destination=destination, pr_number=pr_number,
+        decision="reshape",
+        directive={"action": "draft_patch", "route_back": outbox["route_back"]},
+    )
     return json.dumps({
         "status": "reshaped",
         "projection": projection,
         "route_back": outbox["route_back"],
         "github_call": call.to_dict(),
+        "resume": resume,
         "note": (
             "Reshape recorded a REQUEST_CHANGES review call + a durable "
-            "draft_patch resume row; the loop-side revision consumer that "
-            "re-runs draft_patch lands with Phase 2."
+            "draft_patch resume row; the suspended run resumes into draft_patch "
+            "with the owner's notes."
         ),
     })
 
@@ -355,14 +396,20 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
         })
     if projection is None:
         return _not_projected("review_queue_reject", destination, pr_number)
+    resume = _resume_suspended_run(
+        _universe_dir_for(target_universe), destination=destination,
+        pr_number=pr_number, decision="reject",
+        directive={"action": "terminal_reject"},
+    )
     return json.dumps({
         "status": "rejected",
         "projection": projection,
         "github_call": call.to_dict(),
+        "resume": resume,
         "note": (
             "Reject recorded a REQUEST_CHANGES review + a terminal workflow "
-            "outcome. GitHub has no irreversible reject (a PR can be reopened); "
-            + _PHASE2_NOTE
+            "outcome; the suspended run resumes to a terminal reject. GitHub has "
+            "no irreversible reject (a PR can be reopened); " + _PHASE2_NOTE
         ),
     })
 
