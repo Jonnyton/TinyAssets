@@ -165,7 +165,36 @@ S3, but no remixed loop executes against a real repo until S3 lands.
 - Work runs only on user-bound capacity (G7) — no ambient platform compute to
   abuse.
 
-## 8. Explicitly rejected shapes
+## 8. Acceptance: the clean-slate founder walkthrough (host, 2026-07-15)
+
+When S1–S6 are done, the end-to-end proof is NOT a checklist of slices — it is
+the founder walking the entire journey **as a brand-new user**:
+
+1. **Reset (host-gated production step):** run the clean-slate reset
+   (`tinyassets/reset.py` — already clears universes, daemons, `universe_acl`,
+   `founder_home`; preserves commons/wiki/runs). The founder's WorkOS sign-in
+   stays valid, but the platform holds **zero state for his sub** — he is
+   indistinguishable from a new user.
+2. **Arrive:** connect the chatbot, hit the sign-in flow like any user.
+3. **Auto-birth:** first authenticated contact creates + binds his home
+   universe (welcome card — no magic words).
+4. **Engine setup (G7/S5 flow):** the universe is honestly idle and says so —
+   he MUST hit the "bind an engine/daemon so your universe can run" setup
+   beat, and completes it like any user would (subscription CLI / local / API
+   choice).
+5. **Import the loop:** hand his chatbot the `patch_loop_reference` artifact
+   (or discover it in the commons) and remix it into his universe.
+6. **Bind:** his GitHub repo + vault credential + merge policy
+   (`manual` + founder-OAuth-per-merge).
+7. **Run:** file a patch request (the PR-181 scheduler issue is the natural
+   candidate); the loop produces a ready-to-merge PR; he reviews from his
+   phone; founder-OAuth approves; it merges.
+
+Every stumble in that walkthrough is a product gap: filed, fixed, and the
+walkthrough re-run. The program is done when the walkthrough is smooth — not
+when the slices merge.
+
+## 9. Explicitly rejected shapes
 
 - Env-var-hardwired platform handler (`TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID`
   as the permanent mechanism) — retire fully once the goal-canonical binding
