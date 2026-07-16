@@ -59,8 +59,9 @@ from __future__ import annotations
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 _DB_FILENAME = ".review_queue.db"
 
@@ -68,6 +69,16 @@ _DB_FILENAME = ".review_queue.db"
 VALID_STATUSES: frozenset[str] = frozenset(
     {"pending", "approved", "reshaped", "rejected", "merged"}
 )
+
+#: Statuses from which an owner decision (approve/reshape/reject) is INVALID.
+#: A rejected/reshaped/merged item is terminal for the reviewed head — it can
+#: only re-enter the decision surface via a fresh ``enqueue_pr`` (new head),
+#: which re-pends it. This blocks the "reject then resurrect via approve" bug.
+_TERMINAL_STATUSES: frozenset[str] = frozenset({"reshaped", "rejected", "merged"})
+
+
+class InvalidReviewTransition(ValueError):
+    """Raised when an owner decision is attempted from a terminal status."""
 
 #: Verify verdicts. Only ``"pass"`` is green; everything else blocks merge.
 VERIFY_PASS = "pass"
@@ -80,15 +91,26 @@ def review_queue_db_path(universe_dir: str | Path) -> Path:
     return Path(universe_dir) / _DB_FILENAME
 
 
-def _connect(universe_dir: str | Path) -> sqlite3.Connection:
-    """Open the review-queue DB with WAL + 30s busy timeout (hard rule 1/SQLite)."""
+@contextmanager
+def _connect(universe_dir: str | Path) -> Iterator[sqlite3.Connection]:
+    """Open the review-queue DB with WAL + 30s busy timeout (hard rule 1/SQLite).
+
+    A context manager that ALWAYS closes the handle in ``finally`` — a raw
+    ``sqlite3.Connection`` used as ``with conn`` only commits/rolls back the
+    transaction and leaves the file handle open, which on Windows blocks
+    deleting ``.review_queue.db`` (WinError 32). Callers still commit
+    explicitly; an uncommitted transaction is discarded on close.
+    """
     path = review_queue_db_path(universe_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 _SCHEMA = """
@@ -102,6 +124,7 @@ CREATE TABLE IF NOT EXISTS review_queue (
     verify_verdict TEXT NOT NULL DEFAULT 'unknown',
     status         TEXT NOT NULL,
     notes          TEXT NOT NULL DEFAULT '',
+    merge_commit_sha TEXT NOT NULL DEFAULT '',
     created_at     REAL NOT NULL,
     updated_at     REAL NOT NULL,
     decided_by     TEXT NOT NULL DEFAULT '',
@@ -148,6 +171,7 @@ def _row_to_item(row: sqlite3.Row) -> dict[str, Any]:
         "verify_verdict": row["verify_verdict"],
         "status": row["status"],
         "notes": row["notes"],
+        "merge_commit_sha": row["merge_commit_sha"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "decided_by": row["decided_by"],
@@ -268,6 +292,19 @@ def list_queue(
     return [_row_to_item(row) for row in rows]
 
 
+def _ensure_decidable(item: dict[str, Any], *, verb: str) -> None:
+    """Fail loud (hard rule 8) if an owner decision is attempted on a terminal
+    item. Prevents resurrecting a rejected/reshaped/merged PR via a later
+    approve/reshape/reject (Codex REQUIRED 3)."""
+    status = item.get("status", "")
+    if status in _TERMINAL_STATUSES:
+        raise InvalidReviewTransition(
+            f"cannot {verb} review item {item.get('item_id')!r} in terminal "
+            f"status {status!r}; re-present the PR (fresh enqueue / new head) "
+            "to re-open it for review"
+        )
+
+
 def _decide(
     universe_dir: str | Path,
     *,
@@ -328,6 +365,7 @@ def approve_item(
     item = get_item(universe_dir, item_id=item_id)
     if item is None:
         return None
+    _ensure_decidable(item, verb="approve")
     ts = now if now is not None else time.time()
     approval_id = f"ap-{uuid.uuid4().hex[:16]}"
     with _connect(universe_dir) as conn:
@@ -385,6 +423,7 @@ def reshape_item(
     item = get_item(universe_dir, item_id=item_id)
     if item is None:
         return None
+    _ensure_decidable(item, verb="reshape")
     ts = now if now is not None else time.time()
     # Invalidate any outstanding approvals — the head we approved is being sent
     # back for rework, so no stale token may merge it.
@@ -431,6 +470,7 @@ def reject_item(
     item = get_item(universe_dir, item_id=item_id)
     if item is None:
         return None
+    _ensure_decidable(item, verb="reject")
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
         conn.execute(
@@ -447,6 +487,48 @@ def reject_item(
         notes=notes,
         now=ts,
     )
+
+
+def mark_merged(
+    universe_dir: str | Path,
+    *,
+    item_id: str,
+    merge_commit_sha: str = "",
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Transition a queued item to terminal ``merged`` after the effector
+    confirms the GitHub merge. Records the merge commit SHA and consumes any
+    outstanding approval so the owner surface stops showing the PR as
+    pending/approved (Codex REQUIRED 4).
+
+    Returns the updated item, or None if the item does not exist. Idempotent:
+    marking an already-merged item is a no-op that returns the current row.
+    """
+    item = get_item(universe_dir, item_id=item_id)
+    if item is None:
+        return None
+    if item["status"] == "merged":
+        return item
+    ts = now if now is not None else time.time()
+    with _connect(universe_dir) as conn:
+        conn.execute(
+            "UPDATE merge_approvals SET consumed_at = ? "
+            "WHERE item_id = ? AND consumed_at IS NULL",
+            (ts, item_id),
+        )
+        conn.execute(
+            """
+            UPDATE review_queue
+               SET status = 'merged', merge_commit_sha = ?, updated_at = ?
+             WHERE item_id = ?
+            """,
+            (merge_commit_sha or "", ts, item_id),
+        )
+        conn.commit()
+        updated = conn.execute(
+            "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+        ).fetchone()
+    return _row_to_item(updated) if updated is not None else None
 
 
 def has_fresh_merge_approval(
@@ -529,12 +611,14 @@ __all__ = [
     "VERIFY_PASS",
     "VERIFY_FAIL",
     "VERIFY_UNKNOWN",
+    "InvalidReviewTransition",
     "enqueue_pr",
     "get_item",
     "list_queue",
     "approve_item",
     "reshape_item",
     "reject_item",
+    "mark_merged",
     "has_fresh_merge_approval",
     "consume_merge_approval",
 ]

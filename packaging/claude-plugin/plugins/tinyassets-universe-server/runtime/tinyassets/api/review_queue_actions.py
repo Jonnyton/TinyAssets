@@ -28,7 +28,17 @@ import json
 import logging
 from typing import Any
 
+from tinyassets.storage.review_queue import InvalidReviewTransition
+
 logger = logging.getLogger(__name__)
+
+
+def _invalid_transition(exc: InvalidReviewTransition) -> str:
+    return json.dumps({
+        "error": str(exc),
+        "failure_class": "invalid_transition",
+        "actionable_by": "chatbot",
+    })
 
 
 def _owner_gate(action: str, universe_id: str) -> tuple[str, dict[str, Any] | None]:
@@ -106,6 +116,8 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
             approved_by=_current_actor(),
             notes=notes,
         )
+    except InvalidReviewTransition as exc:
+        return _invalid_transition(exc)
     except Exception as exc:
         logger.exception("review_queue_approve failed")
         return json.dumps({
@@ -153,6 +165,8 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             reshaped_by=_current_actor(),
             notes=notes,
         )
+    except InvalidReviewTransition as exc:
+        return _invalid_transition(exc)
     except Exception as exc:
         logger.exception("review_queue_reshape failed")
         return json.dumps({
@@ -191,6 +205,8 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
             rejected_by=_current_actor(),
             notes=notes,
         )
+    except InvalidReviewTransition as exc:
+        return _invalid_transition(exc)
     except Exception as exc:
         logger.exception("review_queue_reject failed")
         return json.dumps({

@@ -126,6 +126,15 @@ def evaluate_merge_eligibility(
 
     status = (item_status or "").strip().lower()
 
+    # An already-merged item is terminal under EVERY policy — never re-merge it.
+    # (Without this guard, `auto` would re-evaluate a merged item as eligible.)
+    if status == "merged":
+        return _blocked(
+            "already_merged",
+            policy=resolved_policy,
+            item_status=status,
+        )
+
     if resolved_policy == MERGE_POLICY_MANUAL:
         if status != "approved":
             return _blocked(

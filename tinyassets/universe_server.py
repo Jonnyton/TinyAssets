@@ -1368,11 +1368,39 @@ def extensions(
     Behavioral rules live in `control_station`, `extension_guide`, and
     `branch_design_guide`; this description is the I/O contract.
 
-    Core actions include build_branch, patch_branch, list_branches,
-    describe_branch, get_branch, run_branch, get_run, wait_for_run,
-    judge_run, publish_version, schedule_branch, fork_tree, search_nodes,
-    get_action_scope_status, record_run_receipt, and list_run_receipts.
-    Pass `action` plus the matching ids or JSON payload fields.
+    Action groups:
+    - Node registry: register, list, inspect, approve, disable, enable, remove.
+    - Branch authoring: build_branch, create_branch, patch_branch, add_node,
+      update_node, patch_nodes, connect_nodes, set_entry_point, add_state_field,
+      validate_branch, describe_branch, get_branch, list_branches,
+      delete_branch, fork_tree, suggest_node_edit.
+    - Branch versions: publish_version, get_branch_version,
+      list_branch_versions.
+    - Runs: run_branch, run_branch_version, get_run, get_run_output, list_runs,
+      query_runs, stream_run, wait_for_run, cancel_run, resume_run,
+      estimate_run_cost, attach_existing_child_run.
+    - Run receipts: record_run_receipt, list_run_receipts.
+    - Node ops: get_node_output, list_node_versions, rollback_node,
+      rollback_merge, get_rollback_history, approve_source_code, search_nodes.
+    - Evidence: get_routing_evidence, get_memory_scope_status.
+    - Judging: judge_run, list_judgments, compare_runs.
+    - Project memory: project_memory_get, project_memory_set,
+      project_memory_list.
+    - Scheduler: schedule_branch, unschedule_branch, list_schedules,
+      subscribe_branch, unsubscribe_branch, list_scheduler_subscriptions.
+    - Escrow: escrow_balance, escrow_fund, escrow_set_wallet, escrow_withdraw.
+    - Owner review queue: review_queue_list, review_queue_approve,
+      review_queue_reshape, review_queue_reject.
+
+    Owner review-queue verbs (patch-loop S4) let a project owner review the
+    ready-to-merge PRs their loop produced. They reuse existing arg slots:
+    `subject_id` = the review-queue item id, `project_id` = the destination
+    repo, `status` = the list filter, `notes` = the owner's
+    approve/reshape/reject notes. `review_queue_reshape` requires `notes` and
+    routes the PR back to the loop's draft_patch node.
+
+    Pass `action` plus the matching ids or JSON payload fields; the status
+    action `get_action_scope_status` is always available.
     Receipt actions use `run_id`, `receipt_type`, `payload_json`, and optional
     `node_id` / `subject_id` to preserve source acquisition, claim lineage,
     and revision evidence for later gates and runs.

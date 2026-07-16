@@ -26,6 +26,7 @@ from tinyassets.storage.effector_consents import grant_consent
 
 _DEST = "Jonnyton/TinyAssets"
 _HEAD = "a" * 40
+_HEAD2 = "b" * 40
 _PR = 181
 
 
@@ -57,11 +58,11 @@ def _open_pr(head_sha=_HEAD):
     return {"state": "open", "draft": False, "head": {"sha": head_sha}}
 
 
-def _scripted_api(*, allow_merge=True):
+def _scripted_api(*, allow_merge=True, live_head=_HEAD):
     def fake(*, method, path, capability_token, body=None):
         fake.calls.append((method, path))
         if method == "GET":
-            return _open_pr(), None
+            return _open_pr(live_head), None
         if method == "PUT":
             assert allow_merge, f"unexpected merge PUT: {path}"
             return {"merged": True, "sha": "c" * 40, "message": "merged"}, None
@@ -153,12 +154,39 @@ def test_red_verify_blocks_every_policy(monkeypatch, tmp_path, policy):
 
 def test_auto_policy_merges_on_green(monkeypatch, tmp_path):
     _with_capability(monkeypatch)
-    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
+    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
     fake = _scripted_api(allow_merge=True)
     monkeypatch.setattr(github_merge, "_github_api", fake)
     result = _run(tmp_path, _packet(merge_policy="auto"))
     assert result.get("merged") is True
     assert _put_fired(fake)
+    # Codex REQUIRED 4: a confirmed merge transitions the queue item to 'merged'
+    # so owner surfaces stop showing it pending/approved.
+    assert result["review_queue_status"] == "merged"
+    stored = rq.get_item(tmp_path, item_id=item["item_id"])
+    assert stored["status"] == "merged"
+    assert stored["merge_commit_sha"] == "c" * 40
+
+
+def test_head_moved_since_review_refuses_merge(monkeypatch, tmp_path):
+    """Codex CRITICAL 1: the queued verify/approval describe the reviewed head.
+    If the live PR head moved since review, the merge must fail closed even
+    though it matches the packet's expected_head_sha."""
+    _with_capability(monkeypatch)
+    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS, head=_HEAD)
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    # PR head has advanced to _HEAD2 since it was reviewed/approved at _HEAD.
+    fake = _scripted_api(allow_merge=False, live_head=_HEAD2)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    # The packet points at the new live head (passes the branch-protection
+    # expected-head check), but the reviewed head is stale.
+    result = _run(
+        tmp_path, _packet(merge_policy="manual", expected_head_sha=_HEAD2)
+    )
+    assert result["error_kind"] == "review_head_stale"
+    assert result["reviewed_head_sha"] == _HEAD
+    assert result["actual_head_sha"] == _HEAD2
+    assert not _put_fired(fake)
 
 
 def test_policy_merge_requires_pr_in_queue(monkeypatch, tmp_path):
@@ -210,14 +238,15 @@ def test_founder_oauth_fresh_approval_merges_once_then_is_spent(
     assert merged.get("merged") is True
     assert merged["founder_oauth_required"] is True
     assert merged.get("consumed_approval_id")
+    assert merged["review_queue_status"] == "merged"  # R4: item marked merged
     assert _put_fired(fake)
 
-    # A SECOND merge attempt with no fresh re-approval must fail closed.
+    # The queue item is now terminal-merged; a SECOND merge attempt fails closed.
     fake2 = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake2)
     second = _run(
         tmp_path, _packet(merge_policy="manual", founder_oauth_required=True)
     )
     assert second["error_kind"] == "merge_policy_blocked"
-    assert second["policy_reason"] == "founder_oauth_required"
+    assert second["policy_reason"] == "already_merged"
     assert not _put_fired(fake2)

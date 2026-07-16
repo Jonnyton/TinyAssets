@@ -219,6 +219,29 @@ def _evaluate_merge_policy_gate(
             matched_output_key=matched_key,
         ), {}
 
+    # Bind the merge to the REVIEWED head (Codex CRITICAL 1). The queue item's
+    # verify_verdict / approval status describe the exact commit the owner
+    # reviewed (item["head_sha"]). If the live PR head has moved since — even
+    # though it matches the packet's expected_head_sha — those verdicts no
+    # longer apply, so the merge must fail closed rather than merge an
+    # unreviewed head. A re-push re-enqueues (re-pends) the item at the new head.
+    reviewed_head = (item.get("head_sha") or "").strip()
+    if reviewed_head != actual_head_sha:
+        return _error(
+            "review_head_stale",
+            (
+                f"PR #{pr_number} live head {actual_head_sha} does not match the "
+                f"reviewed head {reviewed_head or '(unrecorded)'}; the PR changed "
+                "since review — refusing to merge an unreviewed head"
+            ),
+            destination=destination,
+            pr_number=pr_number,
+            policy=policy,
+            reviewed_head_sha=reviewed_head,
+            actual_head_sha=actual_head_sha,
+            matched_output_key=matched_key,
+        ), {}
+
     fresh_approval_present = rq.has_fresh_merge_approval(
         universe_dir,
         destination=destination,
@@ -535,4 +558,24 @@ def run_github_merge_effector(
         "message": merge_obj.get("message") if isinstance(merge_obj.get("message"), str) else "",
     }
     result.update(gate_info)
+
+    # Codex REQUIRED 4: a confirmed merge must transition the owner review-queue
+    # item to terminal 'merged' so owner surfaces stop showing it as
+    # pending/approved. Best-effort: the merge already landed on GitHub and
+    # cannot be un-done, so a local queue-update failure is surfaced, not raised.
+    review_item_id = gate_info.get("review_queue_item_id")
+    if review_item_id and universe_dir is not None:
+        try:
+            from tinyassets.storage import review_queue as rq
+
+            rq.mark_merged(
+                universe_dir,
+                item_id=review_item_id,
+                merge_commit_sha=merge_commit_sha,
+            )
+            result["review_queue_status"] = "merged"
+        except Exception as exc:  # noqa: BLE001 — never fail a landed merge
+            result["review_queue_status"] = "mark_merged_failed"
+            result["review_queue_error"] = str(exc)
+
     return result

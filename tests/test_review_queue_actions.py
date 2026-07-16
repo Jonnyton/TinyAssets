@@ -118,6 +118,17 @@ def test_approve_unknown_item(owner_env):
     assert out["failure_class"] == "item_not_found"
 
 
+def test_approve_after_reject_surfaces_invalid_transition(owner_env):
+    """R3: a rejected item cannot be resurrected via approve — the handler
+    returns an actionable invalid_transition error, not a host storage error."""
+    item = _seed(owner_env)
+    _call("review_queue_reject", universe_id="u1", item_id=item["item_id"])
+    out = _call("review_queue_approve", universe_id="u1", item_id=item["item_id"])
+    assert out["failure_class"] == "invalid_transition"
+    assert out["actionable_by"] == "chatbot"
+    assert rq.get_item(owner_env, item_id=item["item_id"])["status"] == "rejected"
+
+
 # ── Non-owner is denied on every verb; nothing mutates ──────────────────────
 
 

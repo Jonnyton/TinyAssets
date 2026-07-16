@@ -205,3 +205,102 @@ def test_standing_consent_does_not_satisfy_founder_oauth(tmp_path):
         )
         is None
     )
+
+
+# ── R3: terminal-status transition guard (no resurrecting rejected items) ───
+
+
+def test_reject_then_approve_is_blocked(tmp_path):
+    item = _enqueue(tmp_path)
+    rq.reject_item(tmp_path, item_id=item["item_id"], rejected_by="owner")
+    with pytest.raises(rq.InvalidReviewTransition):
+        rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    # Status is unchanged — the rejected item was NOT resurrected.
+    assert rq.get_item(tmp_path, item_id=item["item_id"])["status"] == "rejected"
+
+
+def test_reshaped_then_approve_is_blocked(tmp_path):
+    item = _enqueue(tmp_path)
+    rq.reshape_item(
+        tmp_path, item_id=item["item_id"], reshaped_by="owner", notes="redo"
+    )
+    with pytest.raises(rq.InvalidReviewTransition):
+        rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+
+
+def test_merged_then_any_decision_is_blocked(tmp_path):
+    item = _enqueue(tmp_path)
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    rq.mark_merged(tmp_path, item_id=item["item_id"], merge_commit_sha="c" * 40)
+    for verb, fn in (
+        ("approve", lambda: rq.approve_item(
+            tmp_path, item_id=item["item_id"], approved_by="owner")),
+        ("reshape", lambda: rq.reshape_item(
+            tmp_path, item_id=item["item_id"], reshaped_by="owner", notes="x")),
+        ("reject", lambda: rq.reject_item(
+            tmp_path, item_id=item["item_id"], rejected_by="owner")),
+    ):
+        with pytest.raises(rq.InvalidReviewTransition):
+            fn()
+
+
+def test_reenqueue_after_reject_reopens_for_decision(tmp_path):
+    """A rejected item can only re-enter review via a fresh enqueue (new head),
+    which re-pends it — then a decision is valid again."""
+    item = _enqueue(tmp_path, head=_HEAD)
+    rq.reject_item(tmp_path, item_id=item["item_id"], rejected_by="owner")
+    # Re-present the PR at a new head (a re-push).
+    reopened = _enqueue(tmp_path, head=_HEAD2)
+    assert reopened["item_id"] == item["item_id"]
+    assert reopened["status"] == "pending"
+    approved = rq.approve_item(
+        tmp_path, item_id=item["item_id"], approved_by="owner"
+    )
+    assert approved["status"] == "approved"
+
+
+# ── R4: successful merge marks the queue item 'merged' ──────────────────────
+
+
+def test_mark_merged_transitions_and_is_idempotent(tmp_path):
+    item = _enqueue(tmp_path)
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    merged = rq.mark_merged(
+        tmp_path, item_id=item["item_id"], merge_commit_sha="c" * 40
+    )
+    assert merged["status"] == "merged"
+    assert merged["merge_commit_sha"] == "c" * 40
+    # Any outstanding approval is consumed when the item merges.
+    assert not rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD
+    )
+    # Idempotent: marking merged again is a no-op returning the current row.
+    again = rq.mark_merged(tmp_path, item_id=item["item_id"])
+    assert again["status"] == "merged"
+    assert again["merge_commit_sha"] == "c" * 40
+
+
+def test_mark_merged_missing_item_returns_none(tmp_path):
+    assert rq.mark_merged(tmp_path, item_id="rq-nope") is None
+
+
+# ── C2: DB connections are closed (no leaked handle blocking file delete) ───
+
+
+def test_db_file_is_deletable_after_operations(tmp_path):
+    """A leaked sqlite handle blocks deleting .review_queue.db on Windows
+    (WinError 32). After a full round of operations every handle must be
+    closed, so the DB file (and WAL sidecars) can be removed."""
+    item = _enqueue(tmp_path)
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    rq.list_queue(tmp_path)
+    rq.mark_merged(tmp_path, item_id=item["item_id"])
+
+    db_path = rq.review_queue_db_path(tmp_path)
+    assert db_path.exists()
+    # Would raise PermissionError on Windows if a handle were still open.
+    for sidecar in ("", "-wal", "-shm"):
+        p = db_path.with_name(db_path.name + sidecar)
+        if p.exists():
+            p.unlink()
+    assert not db_path.exists()

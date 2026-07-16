@@ -46,6 +46,7 @@ from tinyassets.api import market as market_mod
 from tinyassets.api import runs as runs_mod
 from tinyassets.api import runtime_ops as runtime_ops_mod
 from tinyassets.api import universe as universe_mod  # noqa: F401
+from tinyassets.api.review_queue_actions import _REVIEW_QUEUE_ACTIONS
 
 # ---------------------------------------------------------------------------
 # KNOWN_DEBT — pre-existing undocumented dispatch keys.
@@ -156,6 +157,7 @@ def _extensions_dispatch_keys() -> set[str]:
         | set(runtime_ops_mod._SCHEDULER_ACTIONS.keys())
         | set(market_mod._OUTCOME_ACTIONS.keys())
         | set(market_mod._ATTRIBUTION_ACTIONS.keys())
+        | set(_REVIEW_QUEUE_ACTIONS.keys())
     )
 
 
