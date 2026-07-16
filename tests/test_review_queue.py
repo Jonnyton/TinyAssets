@@ -273,18 +273,73 @@ def test_merged_then_any_decision_is_blocked(tmp_path):
 
 
 def test_reenqueue_after_reject_reopens_for_decision(tmp_path):
-    """A rejected item can only re-enter review via a fresh enqueue (new head),
-    which re-pends it — then a decision is valid again."""
+    """A rejected item can only re-enter review via a fresh enqueue with a
+    CHANGED head, which re-pends it — then a decision is valid again."""
     item = _enqueue(tmp_path, head=_HEAD)
     rq.reject_item(tmp_path, item_id=item["item_id"], rejected_by="owner")
-    # Re-present the PR at a new head (a re-push).
+    # Re-present the PR at a NEW head (a re-push) — legit reopen path.
     reopened = _enqueue(tmp_path, head=_HEAD2)
     assert reopened["item_id"] == item["item_id"]
     assert reopened["status"] == "pending"
+    assert not reopened.get("already_decided")
     approved = rq.approve_item(
         tmp_path, item_id=item["item_id"], approved_by="owner"
     )
     assert approved["status"] == "approved"
+
+
+# ── R3 (round 3): same-head re-enqueue must NOT launder a terminal decision ──
+
+
+def test_same_head_reenqueue_does_not_reopen_rejected(tmp_path):
+    """Codex R3 CRITICAL 1: rejecting a head then re-presenting the IDENTICAL
+    head must not reopen it — otherwise the owner's rejection is laundered."""
+    item = _enqueue(tmp_path, head=_HEAD)
+    rq.reject_item(tmp_path, item_id=item["item_id"], rejected_by="owner")
+    # Re-present the SAME head — must stay rejected.
+    re = _enqueue(tmp_path, head=_HEAD)
+    assert re["item_id"] == item["item_id"]
+    assert re["status"] == "rejected"
+    assert re["already_decided"] is True
+    # And a subsequent approve still hits the terminal guard.
+    with pytest.raises(rq.InvalidReviewTransition):
+        rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    assert rq.get_item(tmp_path, item_id=item["item_id"])["status"] == "rejected"
+
+
+def test_same_head_reenqueue_does_not_reopen_merged(tmp_path):
+    item = _enqueue(tmp_path, head=_HEAD)
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    rq.mark_merged(tmp_path, item_id=item["item_id"], merge_commit_sha="c" * 40)
+    re = _enqueue(tmp_path, head=_HEAD)
+    assert re["status"] == "merged"
+    assert re["already_decided"] is True
+    assert re["merge_commit_sha"] == "c" * 40
+
+
+def test_same_head_reenqueue_does_not_reopen_reshaped(tmp_path):
+    item = _enqueue(tmp_path, head=_HEAD)
+    rq.reshape_item(
+        tmp_path, item_id=item["item_id"], reshaped_by="owner", notes="redo"
+    )
+    re = _enqueue(tmp_path, head=_HEAD)
+    assert re["status"] == "reshaped"
+    assert re["already_decided"] is True
+
+
+def test_same_head_reenqueue_of_non_terminal_still_refreshes(tmp_path):
+    """A pending item re-presented at the same head is a normal refresh (not a
+    terminal no-op) — no already_decided flag."""
+    item = _enqueue(tmp_path, head=_HEAD, verdict=rq.VERIFY_FAIL)
+    re = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS,
+    )
+    assert re["item_id"] == item["item_id"]
+    assert re["status"] == "pending"
+    assert re["verify_verdict"] == "pass"
+    assert not re.get("already_decided")
 
 
 # ── R4: successful merge marks the queue item 'merged' ──────────────────────
@@ -327,6 +382,42 @@ def test_db_file_is_deletable_after_operations(tmp_path):
     db_path = rq.review_queue_db_path(tmp_path)
     assert db_path.exists()
     # Would raise PermissionError on Windows if a handle were still open.
+    for sidecar in ("", "-wal", "-shm"):
+        p = db_path.with_name(db_path.name + sidecar)
+        if p.exists():
+            p.unlink()
+    assert not db_path.exists()
+
+
+def test_concurrent_enqueue_yields_single_row(tmp_path):
+    """Codex R3 CRITICAL 2c: N threads hammering enqueue_pr on the same
+    (destination, pr_number) must produce exactly ONE row, leak no
+    OperationalError to callers, and leave the db file deletable on Windows."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    errors: list[Exception] = []
+    n_threads = 24
+
+    def hammer(i: int) -> None:
+        try:
+            rq.enqueue_pr(
+                tmp_path, destination=_DEST, pr_number=999,
+                pr_url=f"https://github.com/{_DEST}/pull/999",
+                head_sha=_HEAD, verify_verdict=rq.VERIFY_PASS,
+            )
+        except Exception as exc:  # noqa: BLE001 — capture for assertion
+            errors.append(exc)
+
+    with ThreadPoolExecutor(max_workers=n_threads) as pool:
+        list(pool.map(hammer, range(n_threads)))
+
+    assert errors == [], f"enqueue raised under concurrency: {errors!r}"
+    rows = rq.list_queue(tmp_path, destination=_DEST)
+    assert len(rows) == 1  # UNIQUE(destination, pr_number) + serialized writes
+    assert rows[0]["pr_number"] == 999
+
+    # No leaked handle — the db file is deletable afterwards (Windows WinError 32).
+    db_path = rq.review_queue_db_path(tmp_path)
     for sidecar in ("", "-wal", "-shm"):
         p = db_path.with_name(db_path.name + sidecar)
         if p.exists():

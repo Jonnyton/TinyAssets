@@ -93,24 +93,55 @@ def review_queue_db_path(universe_dir: str | Path) -> Path:
 
 @contextmanager
 def _connect(universe_dir: str | Path) -> Iterator[sqlite3.Connection]:
-    """Open the review-queue DB with WAL + 30s busy timeout (hard rule 1/SQLite).
+    """Open the review-queue DB with WAL + a 30s busy timeout (hard rule 1).
 
-    A context manager that ALWAYS closes the handle in ``finally`` — a raw
-    ``sqlite3.Connection`` used as ``with conn`` only commits/rolls back the
-    transaction and leaves the file handle open, which on Windows blocks
-    deleting ``.review_queue.db`` (WinError 32). Callers still commit
-    explicitly; an uncommitted transaction is discarded on close.
+    The handle is ALWAYS closed in ``finally`` — a raw ``sqlite3.Connection``
+    used as ``with conn`` only commits/rolls back the transaction and leaves the
+    file handle open, which on Windows blocks deleting ``.review_queue.db``
+    (WinError 32).
+
+    Concurrency-safety (Codex R3 CRITICAL 2):
+
+    * The connection enters the ``try`` block IMMEDIATELY after opening, so a
+      lock error raised by a ``PRAGMA`` (which happens under contention) still
+      closes the handle instead of leaking it.
+    * ``busy_timeout`` is set BEFORE the WAL pragma so the WAL switch itself
+      waits for a competing writer rather than raising ``database is locked``.
+    * ``isolation_level=None`` (autocommit) hands transaction control to the
+      caller via :func:`_write`, which opens ``BEGIN IMMEDIATE`` up front so
+      concurrent SELECT-then-write paths cannot deadlock on lock upgrade.
     """
     path = review_queue_db_path(universe_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 30000")
+    conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
     try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA journal_mode = WAL")
         yield conn
     finally:
         conn.close()
+
+
+@contextmanager
+def _write(conn: sqlite3.Connection) -> Iterator[None]:
+    """Serialize writers with an upfront write lock.
+
+    ``BEGIN IMMEDIATE`` acquires the write lock before any SELECT, so two
+    concurrent enqueues cannot each take a read snapshot and then deadlock
+    trying to upgrade to a write (the ``database is locked`` failure mode under
+    the 64-thread stress). Commits on success, rolls back on any exception.
+    Used with an ``isolation_level=None`` connection (autocommit) so no implicit
+    transaction competes with this explicit one.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
 
 
 _SCHEMA = """
@@ -134,6 +165,11 @@ CREATE TABLE IF NOT EXISTS review_queue (
 
 CREATE INDEX IF NOT EXISTS idx_review_queue_status
     ON review_queue(status);
+
+-- One queue row per (repo, PR): enqueue is upsert-shaped and the UNIQUE index
+-- is defense-in-depth against a racing duplicate INSERT (Codex R3 CRITICAL 2b).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_queue_dest_pr
+    ON review_queue(destination, pr_number);
 
 CREATE TABLE IF NOT EXISTS merge_approvals (
     approval_id  TEXT PRIMARY KEY,
@@ -200,6 +236,13 @@ def enqueue_pr(
     resets the item to ``pending`` so the owner re-reviews the new head, but
     keeps the original ``item_id`` + ``created_at``.
 
+    **Terminal-decision safety (Codex R3 CRITICAL 1):** re-presenting the SAME
+    head of an item the owner already decided (``reshaped`` / ``rejected`` /
+    ``merged``) does NOT reopen it — the existing terminal row is returned
+    unchanged with ``already_decided=True``. Only a CHANGED ``head_sha`` (new
+    work) re-pends a terminal item. This is what stops a rejection from being
+    laundered away by re-presenting the identical head.
+
     ``head_queued_at`` is the per-head clock the timer merge policy counts
     from: it is reset to ``now`` whenever ``head_sha`` changes (initial enqueue
     or a re-push to a new head), so a freshly-pushed head is not instantly
@@ -221,49 +264,65 @@ def enqueue_pr(
 
     initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
+    already_decided = False
     with _connect(universe_dir) as conn:
-        existing = conn.execute(
-            "SELECT item_id, created_at, head_sha, head_queued_at "
-            "FROM review_queue WHERE destination = ? AND pr_number = ?",
-            (dest, pr_number),
-        ).fetchone()
-        if existing is not None:
-            item_id = existing["item_id"]
-            # Reset the timer clock only when the head actually changed; a
-            # same-head re-present keeps the original head_queued_at.
-            head_changed = (existing["head_sha"] or "") != (head_sha or "")
-            head_queued_at = ts if head_changed else existing["head_queued_at"]
-            conn.execute(
-                """
-                UPDATE review_queue
-                   SET pr_url = ?, head_sha = ?, request_ref = ?,
-                       verify_verdict = ?, status = 'pending',
-                       notes = '', head_queued_at = ?, updated_at = ?,
-                       decided_by = '', decided_at = NULL
-                 WHERE item_id = ?
-                """,
-                (url, head_sha, request_ref, verdict, head_queued_at, ts, item_id),
-            )
-        else:
-            item_id = f"rq-{uuid.uuid4().hex[:16]}"
-            conn.execute(
-                """
-                INSERT INTO review_queue (
-                    item_id, destination, pr_number, pr_url, head_sha,
-                    request_ref, verify_verdict, status, notes,
-                    created_at, head_queued_at, updated_at, decided_by, decided_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, ?, '', NULL)
-                """,
-                (
-                    item_id, dest, pr_number, url, head_sha,
-                    request_ref, verdict, ts, ts, ts,
-                ),
-            )
-        conn.commit()
-        row = conn.execute(
-            "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
-        ).fetchone()
-    return _row_to_item(row)
+        with _write(conn):  # BEGIN IMMEDIATE — atomic select-then-write
+            existing = conn.execute(
+                "SELECT item_id, created_at, head_sha, head_queued_at, status "
+                "FROM review_queue WHERE destination = ? AND pr_number = ?",
+                (dest, pr_number),
+            ).fetchone()
+            if existing is not None:
+                item_id = existing["item_id"]
+                head_changed = (existing["head_sha"] or "") != (head_sha or "")
+                # A same-head re-present of a TERMINAL row must NOT reopen it —
+                # the owner already decided this exact head, and silently
+                # re-pending would launder a rejection away (Codex R3 CRITICAL
+                # 1). Only a CHANGED head is new work that re-pends. Non-terminal
+                # same-head re-presents refresh to pending as before.
+                if not head_changed and existing["status"] in _TERMINAL_STATUSES:
+                    already_decided = True
+                else:
+                    # Reset the timer clock only when the head actually changed;
+                    # a same-head refresh keeps the original head_queued_at.
+                    head_queued_at = ts if head_changed else existing["head_queued_at"]
+                    conn.execute(
+                        """
+                        UPDATE review_queue
+                           SET pr_url = ?, head_sha = ?, request_ref = ?,
+                               verify_verdict = ?, status = 'pending',
+                               notes = '', head_queued_at = ?, updated_at = ?,
+                               decided_by = '', decided_at = NULL
+                         WHERE item_id = ?
+                        """,
+                        (url, head_sha, request_ref, verdict,
+                         head_queued_at, ts, item_id),
+                    )
+            else:
+                item_id = f"rq-{uuid.uuid4().hex[:16]}"
+                conn.execute(
+                    """
+                    INSERT INTO review_queue (
+                        item_id, destination, pr_number, pr_url, head_sha,
+                        request_ref, verify_verdict, status, notes,
+                        created_at, head_queued_at, updated_at,
+                        decided_by, decided_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, ?, '', NULL)
+                    """,
+                    (
+                        item_id, dest, pr_number, url, head_sha,
+                        request_ref, verdict, ts, ts, ts,
+                    ),
+                )
+            row = conn.execute(
+                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+            ).fetchone()
+    result = _row_to_item(row)
+    if already_decided:
+        # Surface to the present node that the owner's decision on this exact
+        # head stands — it must open a new head (changed head_sha) to reopen.
+        result["already_decided"] = True
+    return result
 
 
 def get_item(universe_dir: str | Path, *, item_id: str) -> dict[str, Any] | None:
@@ -331,24 +390,24 @@ def _decide(
     initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
-        row = conn.execute(
-            "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        conn.execute(
-            """
-            UPDATE review_queue
-               SET status = ?, notes = ?, decided_by = ?,
-                   decided_at = ?, updated_at = ?
-             WHERE item_id = ?
-            """,
-            (new_status, notes, decided_by, ts, ts, item_id),
-        )
-        conn.commit()
-        updated = conn.execute(
-            "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
-        ).fetchone()
+        with _write(conn):
+            row = conn.execute(
+                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                """
+                UPDATE review_queue
+                   SET status = ?, notes = ?, decided_by = ?,
+                       decided_at = ?, updated_at = ?
+                 WHERE item_id = ?
+                """,
+                (new_status, notes, decided_by, ts, ts, item_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+            ).fetchone()
     return _row_to_item(updated)
 
 
@@ -381,19 +440,19 @@ def approve_item(
     ts = now if now is not None else time.time()
     approval_id = f"ap-{uuid.uuid4().hex[:16]}"
     with _connect(universe_dir) as conn:
-        conn.execute(
-            """
-            INSERT INTO merge_approvals (
-                approval_id, item_id, destination, pr_number, head_sha,
-                approved_by, approved_at, consumed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
-            """,
-            (
-                approval_id, item_id, item["destination"], item["pr_number"],
-                item["head_sha"], approved_by, ts,
-            ),
-        )
-        conn.commit()
+        with _write(conn):
+            conn.execute(
+                """
+                INSERT INTO merge_approvals (
+                    approval_id, item_id, destination, pr_number, head_sha,
+                    approved_by, approved_at, consumed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    approval_id, item_id, item["destination"], item["pr_number"],
+                    item["head_sha"], approved_by, ts,
+                ),
+            )
     updated = _decide(
         universe_dir,
         item_id=item_id,
@@ -440,12 +499,12 @@ def reshape_item(
     # Invalidate any outstanding approvals — the head we approved is being sent
     # back for rework, so no stale token may merge it.
     with _connect(universe_dir) as conn:
-        conn.execute(
-            "UPDATE merge_approvals SET consumed_at = ? "
-            "WHERE item_id = ? AND consumed_at IS NULL",
-            (ts, item_id),
-        )
-        conn.commit()
+        with _write(conn):
+            conn.execute(
+                "UPDATE merge_approvals SET consumed_at = ? "
+                "WHERE item_id = ? AND consumed_at IS NULL",
+                (ts, item_id),
+            )
     updated = _decide(
         universe_dir,
         item_id=item_id,
@@ -485,12 +544,12 @@ def reject_item(
     _ensure_decidable(item, verb="reject")
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
-        conn.execute(
-            "UPDATE merge_approvals SET consumed_at = ? "
-            "WHERE item_id = ? AND consumed_at IS NULL",
-            (ts, item_id),
-        )
-        conn.commit()
+        with _write(conn):
+            conn.execute(
+                "UPDATE merge_approvals SET consumed_at = ? "
+                "WHERE item_id = ? AND consumed_at IS NULL",
+                (ts, item_id),
+            )
     return _decide(
         universe_dir,
         item_id=item_id,
@@ -523,23 +582,23 @@ def mark_merged(
         return item
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
-        conn.execute(
-            "UPDATE merge_approvals SET consumed_at = ? "
-            "WHERE item_id = ? AND consumed_at IS NULL",
-            (ts, item_id),
-        )
-        conn.execute(
-            """
-            UPDATE review_queue
-               SET status = 'merged', merge_commit_sha = ?, updated_at = ?
-             WHERE item_id = ?
-            """,
-            (merge_commit_sha or "", ts, item_id),
-        )
-        conn.commit()
-        updated = conn.execute(
-            "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
-        ).fetchone()
+        with _write(conn):
+            conn.execute(
+                "UPDATE merge_approvals SET consumed_at = ? "
+                "WHERE item_id = ? AND consumed_at IS NULL",
+                (ts, item_id),
+            )
+            conn.execute(
+                """
+                UPDATE review_queue
+                   SET status = 'merged', merge_commit_sha = ?, updated_at = ?
+                 WHERE item_id = ?
+                """,
+                (merge_commit_sha or "", ts, item_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+            ).fetchone()
     return _row_to_item(updated) if updated is not None else None
 
 
@@ -595,24 +654,24 @@ def consume_merge_approval(
     initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
-        row = conn.execute(
-            """
-            SELECT approval_id FROM merge_approvals
-             WHERE destination = ? AND pr_number = ? AND head_sha = ?
-               AND consumed_at IS NULL
-          ORDER BY approved_at ASC
-             LIMIT 1
-            """,
-            (destination, pr_number, head_sha),
-        ).fetchone()
-        if row is None:
-            return None
-        approval_id = row["approval_id"]
-        conn.execute(
-            "UPDATE merge_approvals SET consumed_at = ? WHERE approval_id = ?",
-            (ts, approval_id),
-        )
-        conn.commit()
+        with _write(conn):  # atomic claim — no double-consume under concurrency
+            row = conn.execute(
+                """
+                SELECT approval_id FROM merge_approvals
+                 WHERE destination = ? AND pr_number = ? AND head_sha = ?
+                   AND consumed_at IS NULL
+              ORDER BY approved_at ASC
+                 LIMIT 1
+                """,
+                (destination, pr_number, head_sha),
+            ).fetchone()
+            if row is None:
+                return None
+            approval_id = row["approval_id"]
+            conn.execute(
+                "UPDATE merge_approvals SET consumed_at = ? WHERE approval_id = ?",
+                (ts, approval_id),
+            )
     return approval_id
 
 
