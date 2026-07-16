@@ -37,9 +37,6 @@ from tinyassets.providers.base import (
 from tinyassets.providers.claude_provider import ClaudeProvider
 from tinyassets.providers.codex_provider import CodexProvider, _codex_sandbox_args
 from tinyassets.sandbox_policy import (
-    CODING_NODE_ALLOWED_TOOLS,
-    CODING_NODE_DISALLOWED_TOOLS,
-    coding_node_model_config,
     node_requires_sandbox,
 )
 
@@ -217,7 +214,7 @@ def test_codex_bypass_requires_attestation_for_all_nodes(monkeypatch):
     # attestation, independent of os_sandbox_required.
     monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
 
-    for cfg in (ModelConfig(), coding_node_model_config(timeout=60)):
+    for cfg in (ModelConfig(), ModelConfig(os_sandbox_required=True)):
         # bwrap present -> real per-call sandbox, no bypass (unchanged droplet path)
         assert _codex_sandbox_args(cfg, _BWRAP_ON) == ["--full-auto"]
         # bwrap absent + UNATTESTED -> REFUSE (never the dangerous bypass)
@@ -254,7 +251,7 @@ def test_codex_provider_complete_fails_closed_before_spawning(monkeypatch):
 
     with pytest.raises(SandboxUnavailableError):
         asyncio.run(
-            CodexProvider().complete("prompt", "", coding_node_model_config(timeout=60))
+            CodexProvider().complete("prompt", "", ModelConfig(os_sandbox_required=True))
         )
     assert not spawned
 
@@ -266,11 +263,11 @@ def test_enforce_os_sandbox_requires_whole_process_attestation(monkeypatch):
 
     # Coding config with NO attestation: fail closed.
     with pytest.raises(SandboxUnavailableError):
-        enforce_os_sandbox(coding_node_model_config(timeout=60))
+        enforce_os_sandbox(ModelConfig(os_sandbox_required=True))
 
     # Coding config WITH attestation: allowed.
     monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
-    enforce_os_sandbox(coding_node_model_config(timeout=60))  # must not raise
+    enforce_os_sandbox(ModelConfig(os_sandbox_required=True))  # must not raise
 
 
 def test_launchable_bwrap_alone_does_not_satisfy_the_gate(monkeypatch):
@@ -281,7 +278,7 @@ def test_launchable_bwrap_alone_does_not_satisfy_the_gate(monkeypatch):
     monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
     monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_ON))
     with pytest.raises(SandboxUnavailableError):
-        enforce_os_sandbox(coding_node_model_config(timeout=60))
+        enforce_os_sandbox(ModelConfig(os_sandbox_required=True))
 
 
 def test_claude_coding_node_fails_closed_without_attestation(monkeypatch):
@@ -301,55 +298,9 @@ def test_claude_coding_node_fails_closed_without_attestation(monkeypatch):
     monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
     with pytest.raises(SandboxUnavailableError):
         asyncio.run(
-            ClaudeProvider().complete("prompt", "", coding_node_model_config(timeout=60))
+            ClaudeProvider().complete("prompt", "", ModelConfig(os_sandbox_required=True))
         )
     assert not spawned
-
-
-def test_claude_coding_node_spawns_hardened_argv_under_attestation(monkeypatch, tmp_path):
-    # Under the whole-process attestation the coding node DOES run — and the
-    # ACTUAL spawned argv carries the hardened policy: ambient config stripped
-    # (--setting-sources project), STRICT empty MCP config (FINDING 6), host
-    # connectors denied (--disallowedTools mcp__*), coding tools pre-approved.
-    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
-    _mock_vault(monkeypatch, oauth="VAULT-oauth")  # per-universe vault auth
-    captured: list = []
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
-    mock_proc.returncode = 0
-    mock_proc.kill = AsyncMock()
-    mock_proc.wait = AsyncMock()
-
-    async def _fake_exec(*args, **_kwargs):
-        captured.extend(args)
-        return mock_proc
-
-    with (
-        patch(
-            "tinyassets.providers.claude_provider._resolve_claude_cmd",
-            return_value=(["claude"], False),
-        ),
-        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
-    ):
-        asyncio.run(
-            ClaudeProvider().complete(
-                "prompt", "", coding_node_model_config(timeout=60),
-                universe_dir=tmp_path,
-            )
-        )
-
-    assert "--setting-sources" in captured
-    assert captured[captured.index("--setting-sources") + 1] == "project"
-    # FINDING 6: strict empty MCP config so no user/project/managed MCP loads.
-    assert "--strict-mcp-config" in captured
-    assert "--mcp-config" in captured
-    mcp_arg = captured[captured.index("--mcp-config") + 1]
-    assert "mcpServers" in mcp_arg
-    import json as _json
-    assert _json.loads(mcp_arg) == {"mcpServers": {}}  # empty → nothing loads
-    # belt-and-braces tool policy still present.
-    assert "--disallowedTools" in captured and "mcp__*" in captured
-    assert "--allowedTools" in captured and "Bash" in captured
 
 
 def test_router_preflight_fails_closed_and_never_dispatches(monkeypatch):
@@ -373,7 +324,7 @@ def test_router_preflight_fails_closed_and_never_dispatches(monkeypatch):
     monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
     monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_ON))
     router = ProviderRouter(providers={"claude-code": FakeProvider()})
-    cfg = coding_node_model_config(timeout=60)
+    cfg = ModelConfig(os_sandbox_required=True)
 
     with pytest.raises(SandboxUnavailableError):
         asyncio.run(router.call("writer", "prompt", "", cfg))
@@ -403,7 +354,7 @@ def test_router_preflight_allows_under_attestation(monkeypatch):
     provider = FakeProvider()
     provider.supports_coding_sandbox = True  # capable → not filtered (FINDING 4)
     router = ProviderRouter(providers={"claude-code": provider})
-    cfg = coding_node_model_config(timeout=60)
+    cfg = ModelConfig(os_sandbox_required=True)
 
     resp = asyncio.run(router.call("writer", "prompt", "", cfg))
     assert resp.text == "patched"
@@ -444,12 +395,6 @@ def test_codex_still_refuses_the_universe_conversation_sandbox():
         asyncio.run(CodexProvider().complete("hi", "", cfg, universe_dir=Path("/tmp/u")))
 
 
-def test_coding_node_policy_does_not_overlap_allow_and_deny():
-    # Sanity: a tool is never both pre-approved and denied.
-    overlap = set(CODING_NODE_ALLOWED_TOOLS) & set(CODING_NODE_DISALLOWED_TOOLS)
-    assert not overlap, f"tool listed as both allowed and denied: {overlap}"
-
-
 # --------------------------------------------------------------------------- #
 # (5) sanitized env is VAULT-ONLY + per-job scratch cwd
 #     (Codex round-3 FINDING 1 + latest-model FINDING 2)
@@ -476,44 +421,6 @@ def _seed_decoy_platform_env(monkeypatch):
     monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
 
 
-def test_sanitized_env_never_carries_platform_global_auth(monkeypatch, tmp_path):
-    # FINDING 2: the sanitized env must NOT contain ANY process-global platform
-    # auth or secret — only the owner's per-universe vault auth. With NO vault
-    # mocked, the env carries no provider auth at all (spawn refuses upstream).
-    from tinyassets.providers.base import sanitized_subprocess_env
-
-    _seed_decoy_platform_env(monkeypatch)
-    _mock_vault(monkeypatch)  # vault returns nothing for subscription homes
-
-    for provider in ("claude-code", "codex"):
-        env = sanitized_subprocess_env(provider, universe_dir=tmp_path)
-        assert "PATH" in env  # allowlist essential
-        for leaked in _DECOY_PLATFORM_ENV:
-            assert env.get(leaked) != _DECOY_PLATFORM_ENV[leaked], (
-                f"{leaked} platform value leaked into {provider} coding env"
-            )
-        # And no cross-tenant secret at all.
-        for secret in ("TINYASSETS_SECRET_X", "WORKOS_API_KEY", "GITHUB_TOKEN"):
-            assert secret not in env
-
-
-def test_sanitized_env_uses_vault_auth_not_platform(monkeypatch, tmp_path):
-    # Vault provides the owner's own codex home — the env carries THAT, never the
-    # platform /data/.codex decoy.
-    from tinyassets.providers.base import sanitized_subprocess_env
-
-    _seed_decoy_platform_env(monkeypatch)
-    _mock_vault(monkeypatch, codex_home="/vault/owner/.codex", oauth="VAULT-oauth")
-
-    xe = sanitized_subprocess_env("codex", universe_dir=tmp_path)
-    assert xe.get("CODEX_HOME") == "/vault/owner/.codex"  # vault, not /data/.codex
-    assert xe.get("CODEX_HOME") != "/data/.codex"
-
-    ce = sanitized_subprocess_env("claude-code", universe_dir=tmp_path)
-    assert ce.get("CLAUDE_CODE_OAUTH_TOKEN") == "VAULT-oauth"  # vault, not PLATFORM
-    assert "CODEX_HOME" not in ce  # never the other provider's auth
-
-
 def _mk_proc():
     mock_proc = AsyncMock()
     mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
@@ -521,94 +428,6 @@ def _mk_proc():
     mock_proc.kill = AsyncMock()
     mock_proc.wait = AsyncMock()
     return mock_proc
-
-
-def test_coding_spawn_refused_without_vault_auth(monkeypatch, tmp_path):
-    # FINDING 2 fail-closed: no per-universe vault auth ⇒ refuse (even attested,
-    # even with platform auth in the process env).
-    from tinyassets.providers.base import sandbox_spawn_env_and_dir
-
-    _seed_decoy_platform_env(monkeypatch)
-    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
-    _mock_vault(monkeypatch)  # vault provides nothing
-
-    for provider in ("claude-code", "codex"):
-        with pytest.raises(SandboxUnavailableError):
-            sandbox_spawn_env_and_dir(
-                provider, coding_node_model_config(timeout=60),
-                universe_dir=tmp_path,
-            )
-
-
-def test_claude_coding_node_spawns_with_vault_env_and_scratch_cwd(monkeypatch, tmp_path):
-    _seed_decoy_platform_env(monkeypatch)
-    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
-    _mock_vault(monkeypatch, oauth="VAULT-oauth")
-    captured: dict = {}
-
-    async def _fake_exec(*_args, **kwargs):
-        captured["env"] = kwargs.get("env")
-        captured["cwd"] = kwargs.get("cwd")
-        return _mk_proc()
-
-    with (
-        patch(
-            "tinyassets.providers.claude_provider._resolve_claude_cmd",
-            return_value=(["claude"], False),
-        ),
-        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
-    ):
-        asyncio.run(
-            ClaudeProvider().complete(
-                "p", "", coding_node_model_config(timeout=60), universe_dir=tmp_path,
-            )
-        )
-
-    env = captured["env"]
-    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "VAULT-oauth"  # vault, not platform
-    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") != "PLATFORM-oauth"
-    assert "CODEX_HOME" not in env  # other provider stripped
-    assert "TINYASSETS_SECRET_X" not in env  # tenant secret stripped
-    assert "WORKOS_API_KEY" not in env
-    cwd = captured["cwd"]
-    assert cwd and "tinyassets-sandbox-job-" in cwd  # per-job scratch dir
-    assert "/data" not in cwd  # not /data, not the repo checkout
-
-
-def test_codex_coding_node_spawns_with_vault_env_and_scratch_workdir(monkeypatch, tmp_path):
-    _seed_decoy_platform_env(monkeypatch)
-    _mock_vault(monkeypatch, codex_home="/vault/owner/.codex")
-    captured: dict = {}
-
-    async def _fake_exec(*args, **kwargs):
-        captured["args"] = list(args)
-        captured["env"] = kwargs.get("env")
-        return _mk_proc()
-
-    with (
-        patch(
-            "tinyassets.providers.codex_provider._resolve_codex_cmd",
-            return_value=(["codex"], False),
-        ),
-        patch(
-            "tinyassets.providers.codex_provider.get_sandbox_status",
-            return_value=dict(_BWRAP_ON),
-        ),
-        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
-    ):
-        asyncio.run(
-            CodexProvider().complete(
-                "p", "", coding_node_model_config(timeout=60), universe_dir=tmp_path,
-            )
-        )
-
-    env = captured["env"]
-    assert env.get("CODEX_HOME") == "/vault/owner/.codex"  # vault, not /data/.codex
-    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env  # other provider stripped
-    assert "TINYASSETS_SECRET_X" not in env  # tenant secret stripped
-    args = captured["args"]
-    workdir = args[args.index("-C") + 1]  # codex pins cwd via -C
-    assert "tinyassets-sandbox-job-" in workdir  # per-job scratch, not repo root
 
 
 # --------------------------------------------------------------------------- #
@@ -711,35 +530,6 @@ def test_vault_overlay_gates_api_keys_on_include_flag(monkeypatch):
     assert "ANTHROPIC_API_KEY" not in x
 
 
-def test_sandbox_env_drops_vault_api_key_without_opt_in(monkeypatch, tmp_path):
-    from tinyassets.providers.base import sanitized_subprocess_env
-
-    monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
-    _mock_vault(monkeypatch, oauth="oauth-tok")
-
-    env = sanitized_subprocess_env("claude-code", universe_dir=tmp_path)
-    # Opt-in unset ⇒ the vault OPENAI/ANTHROPIC keys are NOT re-added...
-    assert "ANTHROPIC_API_KEY" not in env
-    assert "OPENAI_API_KEY" not in env
-    # ...but the job's own subscription auth still overlays.
-    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "oauth-tok"
-
-
-def test_sandbox_env_includes_only_own_vault_api_key_with_opt_in(monkeypatch, tmp_path):
-    from tinyassets.providers.base import sanitized_subprocess_env
-
-    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-    _mock_vault(monkeypatch)
-
-    ce = sanitized_subprocess_env("claude-code", universe_dir=tmp_path)
-    assert ce.get("ANTHROPIC_API_KEY") == "VAULT-ANTHROPIC_API_KEY"  # own key
-    assert "OPENAI_API_KEY" not in ce  # never the OTHER provider's key
-
-    xe = sanitized_subprocess_env("codex", universe_dir=tmp_path)
-    assert xe.get("OPENAI_API_KEY") == "VAULT-OPENAI_API_KEY"  # own key
-    assert "ANTHROPIC_API_KEY" not in xe  # never the OTHER provider's key
-
-
 # --------------------------------------------------------------------------- #
 # (8) Codex round-4 FINDING 2 — policy router cannot run a sandbox node un-hardened
 # --------------------------------------------------------------------------- #
@@ -766,7 +556,7 @@ def test_policy_router_refuses_config_less_for_sandbox_node():
         _call_policy_router_with_retry(
             _ConfigLessRouter(),
             role="writer", prompt="p", system="", policy={},
-            config=coding_node_model_config(timeout=60),
+            config=ModelConfig(os_sandbox_required=True),
             needs_sandbox=True,
         )
 
@@ -778,7 +568,7 @@ def test_policy_router_runs_hardened_config_accepting_for_sandbox_node():
     text, provider, _meta = _call_policy_router_with_retry(
         router,
         role="writer", prompt="p", system="", policy={},
-        config=coding_node_model_config(timeout=60),
+        config=ModelConfig(os_sandbox_required=True),
         needs_sandbox=True,
     )
     assert text == "policy-ran"
@@ -882,7 +672,7 @@ def test_sandbox_call_never_dispatches_to_a_text_provider(monkeypatch):
     router = _router_with({"claude-code": capable, "ollama-local": text})
 
     resp = asyncio.run(
-        router.call("writer", "p", "", coding_node_model_config(timeout=60))
+        router.call("writer", "p", "", ModelConfig(os_sandbox_required=True))
     )
     assert resp.text == "real-work"  # served by the capable provider
     assert text.calls == 0  # ollama NEVER invoked for a coding node
@@ -897,7 +687,7 @@ def test_sandbox_call_with_only_text_providers_fails_loud(monkeypatch):
 
     with pytest.raises(AllProvidersExhaustedError):
         asyncio.run(
-            router.call("writer", "p", "", coding_node_model_config(timeout=60))
+            router.call("writer", "p", "", ModelConfig(os_sandbox_required=True))
         )
     assert text.calls == 0  # never a fake 'patched'
 
@@ -1299,3 +1089,31 @@ def test_source_code_repo_node_fails_closed_at_choke_point():
     fn = _build_node(node, provider_call=None, event_sink=None)
     with pytest.raises(SandboxUnavailableError):
         fn({})
+
+
+def test_claude_text_node_spawns_closed_surface_argv(monkeypatch):
+    # The LIVE hardened path: a text node's spawned argv carries the closed tool
+    # surface (--tools "") + strict empty MCP config + stripped ambient config.
+    from tinyassets.sandbox_policy import text_node_model_config
+
+    captured: list = []
+
+    async def _fake_exec(*args, **_k):
+        captured.extend(args)
+        return _mk_proc()
+
+    with (
+        patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
+              return_value=(["claude"], False)),
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+    ):
+        asyncio.run(
+            ClaudeProvider().complete("p", "", text_node_model_config(timeout=60))
+        )
+
+    assert "--tools" in captured
+    assert captured[captured.index("--tools") + 1] == ""  # closed surface
+    assert "--setting-sources" in captured
+    assert captured[captured.index("--setting-sources") + 1] == "project"
+    assert "--strict-mcp-config" in captured
+    assert "--mcp-config" in captured

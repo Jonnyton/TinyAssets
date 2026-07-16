@@ -172,79 +172,14 @@ def subprocess_env_without_api_keys() -> dict[str, str] | None:
     return env
 
 
-# Env vars ALWAYS safe to pass to a sandbox-required coding subprocess. An
-# ALLOWLIST (not a denylist) so the sanitized env is strip-everything-not-listed
-# by construction — a new secret var added later is excluded by default.
-_SANITIZED_ENV_ALLOWLIST: tuple[str, ...] = (
-    # POSIX essentials
-    "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE",
-    "USER", "LOGNAME", "SHELL", "TERM",
-    # Windows essentials (the subprocess cannot even launch without these)
-    "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATHEXT",
-    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
-    "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA",
-    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER",
-)
-
-# Env keys whose PRESENCE means the per-universe vault supplied auth for this
-# provider (used to fail closed when a coding job has no owner-scoped credential).
-_PROVIDER_VAULT_AUTH_KEYS: dict[str, tuple[str, ...]] = {
-    "codex": ("CODEX_HOME", "OPENAI_API_KEY"),
-    "claude-code": (
-        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY",
-    ),
-}
-
-
-def _has_provider_vault_auth(env: dict[str, str], provider_name: str) -> bool:
-    """True if *env* carries per-universe vault auth for *provider_name*."""
-    return any(
-        k in env for k in _PROVIDER_VAULT_AUTH_KEYS.get(provider_name.strip(), ())
-    )
-
-
-def sanitized_subprocess_env(
-    provider_name: str, *, universe_dir: Path | None = None,
-) -> dict[str, str]:
-    """Minimal-allowlist env for a SANDBOX-REQUIRED coding-node subprocess.
-
-    Defense in depth (Codex S3 rounds 3+latest): even under host OS-isolation
-    attestation the child runs with real Bash/Read tools, and a naive full-env
-    copy would let a hostile coding node ``env``-dump the daemon's ENTIRE
-    environment. Two rules:
-
-    1. **Allowlist only** — the env is a tiny non-secret allowlist (PATH/HOME/…);
-       every other var (all ``TINYASSETS_*``/``WORKOS_*``/``GITHUB_*`` secrets,
-       every other provider's auth) is dropped by construction.
-    2. **Per-universe vault auth ONLY** (latest-model FINDING 2) — the auth
-       overlaid is EXCLUSIVELY the universe's own vault credential for this
-       provider; the process-global subscription homes/tokens (the platform's
-       CODEX_HOME / CLAUDE_* on the shared volume) are NEVER passed. So the only
-       credential a hostile node could print is the OWNER'S own; platform
-       credentials are never exposed. (The full scoped-credential broker is the
-       deferred production fix — see the attestation prerequisites.)
-
-    A spawn with no vault auth for the provider is refused upstream in
-    :func:`sandbox_spawn_env_and_dir`. Pair with a per-job scratch cwd.
-    """
-    src = os.environ
-    env: dict[str, str] = {k: src[k] for k in _SANITIZED_ENV_ALLOWLIST if k in src}
-    # Overlay ONLY this provider's per-universe vault auth — never process-global
-    # platform creds, never the other provider's key. The vault BYO API key is
-    # overlaid only under the subscription opt-in (round-4).
-    try:
-        from tinyassets.credential_vault import apply_provider_auth_env
-
-        apply_provider_auth_env(
-            env, provider_name,
-            universe_dir=universe_dir,
-            include_api_keys=api_key_providers_enabled(),
-        )
-    except ValueError:
-        raise
-    except Exception:
-        pass
-    return env
+# NOTE (Codex S3 r9 #4 — dead-stack removal): the sanitized minimal-allowlist +
+# per-universe vault-only env (`sanitized_subprocess_env`, `_has_provider_vault_auth`,
+# the vault-auth refusal) was the ENVIRONMENT materialization for a repo-writing
+# coding subprocess. Repo-touching nodes fail closed at the graph choke point
+# before any provider spawn (no per-job runner), so that plumbing is unreachable
+# and has been REMOVED as dead security surface — git history preserves it as the
+# Phase-2 per-job runner slice's contract. Text nodes use the normal
+# `subprocess_env_for_provider`; their cwd isolation is the per-job scratch below.
 
 
 def new_sandbox_job_dir() -> str:
@@ -270,33 +205,18 @@ def cleanup_sandbox_job_dir(scratch_dir: str | None) -> None:
 
 def sandbox_spawn_env_and_dir(
     provider_name: str,
-    config: "ModelConfig",
+    config: "ModelConfig",  # noqa: ARG001 — kept for call-site stability
     *,
     universe_dir: Path | None = None,
 ) -> tuple[dict[str, str], str | None]:
-    """Return ``(proc_env, scratch_dir)`` for a provider subprocess spawn.
+    """Return ``(proc_env, None)`` for a provider subprocess spawn.
 
-    Sandbox-required (coding) node → a SANITIZED minimal env (per-universe vault
-    auth ONLY) + a fresh per-job scratch dir (caller pins cwd there and removes it
-    after). Otherwise the normal provider env and ``None`` (no behavior change for
-    host-trusted calls).
-
-    Fail closed (latest-model FINDING 2): if the sanitized env carries no
-    per-universe vault auth for the provider, refuse — a coding job must run on
-    the owner's own scoped credential, never fall back to platform-global auth.
+    Returns the normal provider env; the coding-EXECUTION env materialization
+    (sanitized vault-only env + vault-auth refusal) was Phase-2 runner plumbing
+    and has been removed (see the note above) — repo/coding nodes never reach a
+    provider. The per-job scratch cwd for hardened text spawns is created by the
+    provider itself (codex `-C`, claude cwd) via :func:`new_sandbox_job_dir`.
     """
-    if getattr(config, "os_sandbox_required", False):
-        env = sanitized_subprocess_env(provider_name, universe_dir=universe_dir)
-        if not _has_provider_vault_auth(env, provider_name):
-            raise SandboxUnavailableError(
-                f"Sandbox-required coding node has no per-universe vault auth for "
-                f"provider '{provider_name}'. Refusing to run it on the platform's "
-                "process-global subscription credentials (fail closed) — a coding "
-                "job must use the owner's own vault-scoped credential. Deposit the "
-                "provider's auth into the universe vault, or use a design-only "
-                "branch."
-            )
-        return env, new_sandbox_job_dir()
     return (
         subprocess_env_for_provider(provider_name, universe_dir=universe_dir),
         None,

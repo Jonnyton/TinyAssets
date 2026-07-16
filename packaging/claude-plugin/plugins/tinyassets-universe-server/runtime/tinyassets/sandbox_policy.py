@@ -27,47 +27,15 @@ from __future__ import annotations
 
 from typing import Any
 
-# Coding tools a patch-writer legitimately needs. These stay usable — their
-# confinement to the repo is the OS sandbox's job, NOT the denylist's (the claude
-# CLI cannot pin Read/Bash to a directory). Listed as ``allowed_tools`` so the
-# headless run pre-approves them instead of hanging on a permission prompt; an
-# allowlist alone does NOT restrict (unlisted built-ins stay usable), so the
-# denylist below is the real floor.
-CODING_NODE_ALLOWED_TOOLS: tuple[str, ...] = (
-    "Bash", "BashOutput",
-    "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead",
-    "Glob", "Grep", "LS",
-    "TodoWrite",
-)
-
-# Host-escape / connector / side-effect tools denied for a coding node. This is
-# the universe-intelligence denylist MINUS the coding tools above (which a patch
-# writer needs) — everything that could reach OFF the confined repo (host
-# connectors, remote I/O, scheduling, messaging, subagents, background shells)
-# stays denied. ``mcp__*`` wildcards every MCP server tool; unknown names just
-# emit a harmless "no known tool" warning. This list WILL rot as the CLI adds
-# tools — the durable floor is the OS sandbox (``os_sandbox_required``), which
-# confines the WHOLE subprocess regardless of tool names.
-CODING_NODE_DISALLOWED_TOOLS: tuple[str, ...] = (
-    # background-shell / process management beyond the confined coding task
-    "Monitor", "KillShell",
-    # no network egress from a repo-patching turn (exfil / SSRF surface)
-    "WebFetch", "WebSearch",
-    # subagents / skills / plans / deferred-tool loading — could re-expand the
-    # tool surface or reload ambient MCP that --setting-sources project strips
-    "Task", "Agent", "Workflow", "Skill", "ToolSearch", "SlashCommand",
-    "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
-    # scheduling / messaging / remote side-effects (exfil channels)
-    "ScheduleWakeup", "ReportFindings", "PushNotification", "RemoteTrigger",
-    "SendMessage", "CronCreate", "CronDelete", "CronList",
-    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
-    # remote integrations
-    "DesignSync", "DesignSyncTool",
-    # MCP: all server tools (wildcard) + resource readers — the logged-in
-    # account connectors (Google Drive / TinyAssets MCP / codex → code exec)
-    "mcp__*", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
-    "ListMcpResourcesTool",
-)
+# NOTE (Codex S3 r9 #4 — dead-stack removal): the coding tool policy
+# (CODING_NODE_ALLOWED_TOOLS / CODING_NODE_DISALLOWED_TOOLS) and the coding
+# ModelConfig builder lived here to CONFIGURE a repo-writing coding agent's tool
+# surface. Repo-touching nodes fail closed at the graph choke point before any
+# config is built (coding_nodes_runnable() is False — no per-job runner), so that
+# execution config is unreachable. It has been REMOVED as dead security surface;
+# git history preserves it as the contract the Phase-2 per-job runner slice will
+# rebuild. Live Phase-1 surface here = classifier + coding_nodes_runnable +
+# text_node_model_config.
 
 # ── Capability taxonomy (Codex S3 REJECT R5) ─────────────────────────────────
 # A node's declared capability, keyed on the STABLE ``node_kind`` (survives a
@@ -177,30 +145,6 @@ def coding_nodes_runnable() -> "tuple[bool, str]":
     )
 
 
-def coding_node_model_config(
-    *, timeout: float | int, reasoning_effort: str = "",
-) -> "Any":
-    """Build the hardened :class:`ModelConfig` for a coding node.
-
-    Defense-in-depth for WHEN the runner lands: sets ``os_sandbox_required`` (fail
-    closed + no bypass without an OS sandbox) + the coding tool policy. In S3 a
-    coding node fails closed at the node runtime BEFORE any provider call (no
-    runner — see :func:`coding_nodes_runnable`), so this config's provider-level
-    enforcement is a secondary belt-and-braces layer.
-    """
-    from tinyassets.providers.base import ModelConfig
-
-    return ModelConfig(
-        # Floor at 1s so a sub-second node timeout never becomes a 0s provider
-        # timeout (mirrors graph_compiler's own guard).
-        timeout=max(1, int(timeout)),
-        reasoning_effort=(reasoning_effort or "").strip(),
-        os_sandbox_required=True,
-        allowed_tools=CODING_NODE_ALLOWED_TOOLS,
-        disallowed_tools=CODING_NODE_DISALLOWED_TOOLS,
-    )
-
-
 def text_node_model_config(
     *, timeout: float | int, reasoning_effort: str = "",
 ) -> "Any":
@@ -208,10 +152,11 @@ def text_node_model_config(
 
     Uses a CLOSED tool surface (``closed_tool_surface`` → claude ``--tools ""``,
     per Anthropic's docs) so the node has NO built-in tools at all — pure text
-    generation, incapable of repo write/exec/read. Coding tools are reachable
-    ONLY through :func:`coding_node_model_config` (a coding-classified node), so
-    capability is inseparable from classification (Codex S3 FINDING 1). Not
-    ``os_sandbox_required`` — a tool-less text node has nothing to confine.
+    generation, incapable of repo write/exec/read. This is the ONLY runnable-node
+    config: a repo-touching (coding-classified) node fails closed at the graph
+    choke point before any config is built, so capability is inseparable from
+    classification. Not ``os_sandbox_required`` — a tool-less node has nothing to
+    confine.
     """
     from tinyassets.providers.base import ModelConfig
 
@@ -223,8 +168,6 @@ def text_node_model_config(
 
 
 __all__ = [
-    "CODING_NODE_ALLOWED_TOOLS",
-    "CODING_NODE_DISALLOWED_TOOLS",
     "CODING_NODE_KINDS",
     "REPO_EXEC_NODE_KINDS",
     "REPO_READ_NODE_KINDS",
@@ -234,6 +177,5 @@ __all__ = [
     "node_coding_capability",
     "node_requires_sandbox",
     "coding_nodes_runnable",
-    "coding_node_model_config",
     "text_node_model_config",
 ]
