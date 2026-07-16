@@ -2363,20 +2363,20 @@ def _invoke_graph(
             # (Codex r12 #4), so EVERY path is fail-closed: top-level run_branch,
             # invoke_branch_spec sub-branch, version-pinned, canonical, and
             # scheduled all converge on _invoke_graph. A design that declares
-            # binding SLOTS (is_binding) has no way to be bound in Phase 1 (no
-            # binding store exists; values are a Phase-2 engine/vault construct),
-            # so it REFUSES execution — the same fail-closed pattern as S1's
-            # requires_sandbox refusal, and a caller cannot inject values through
-            # empty slots. A binding-free design runs normally.
+            # binding SLOTS (is_binding) whose VALUES are never stored on the
+            # platform — an engine binds them host-side — so it REFUSES execution
+            # until bound; the same fail-closed pattern as S1's requires_sandbox
+            # refusal, and a caller cannot inject values through empty slots. A
+            # binding-free design runs normally.
             from tinyassets.branch_versions import branch_has_bound_fields
 
             if branch_has_bound_fields(getattr(branch, "state_schema", None)):
                 reason = (
                     "This design declares binding slots (e.g. target_repo / "
-                    "credentials) and is INERT: binding values require a bound "
-                    "engine (Phase 2, the owner's engine-side vault). Phase 1 "
-                    "has no binding plane, so it cannot run on any path. Remix a "
-                    "binding-free variant, or wait for the Phase-2 engine."
+                    "credentials) and is INERT: binding values are never stored "
+                    "on the platform — they must be bound host-side by an engine "
+                    "(the credential vault + binding plane is an active lane "
+                    "being built now). Remix a binding-free variant to run now."
                 )
                 update_run_status(
                     base_path, run_id, status=RUN_STATUS_FAILED,

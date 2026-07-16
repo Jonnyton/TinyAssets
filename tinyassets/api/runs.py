@@ -576,19 +576,19 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     # UNBOUND designs are INERT (Codex r12 #4) — a fast, honest top-level
     # refusal that mirrors the shared-core enforcement in _invoke_graph (which
     # covers sub-branch / version / canonical / scheduled paths too). A design
-    # that declares binding slots has no binding plane in Phase 1 (values are a
-    # Phase-2 engine/vault construct), so it cannot run on ANY path. A
-    # binding-free design runs for anyone.
+    # that declares binding slots has no binding VALUES on the platform (they
+    # are never stored platform-side; an engine binds them host-side), so it
+    # cannot run until bound. A binding-free design runs for anyone.
     from tinyassets.branch_versions import branch_has_bound_fields
 
     if branch_has_bound_fields(source_dict.get("state_schema", [])):
         return json.dumps({
             "error": (
                 "This design declares binding slots (e.g. target_repo / "
-                "credentials) and is INERT: binding values require a bound "
-                "engine (Phase 2, the owner's engine-side vault). Phase 1 has no "
-                "binding plane, so it cannot run yet. Remix a binding-free "
-                "variant, or wait for the Phase-2 engine."
+                "credentials) and is INERT: binding values are never stored on "
+                "the platform — they must be bound host-side by an engine "
+                "(the credential vault + binding plane is an active lane being "
+                "built now). Remix a binding-free variant to run immediately."
             ),
             "failure_class": "binding_unbound_phase1",
             "actionable_by": "chatbot",

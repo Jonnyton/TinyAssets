@@ -2328,6 +2328,57 @@ def list_branch_definitions(
     return [_branch_def_from_row(row) for row in rows]
 
 
+def list_visible_published_branch_ids(
+    base_path: str | Path,
+    *,
+    viewer: str = "",
+    limit: int = 0,
+    offset: int = 0,
+) -> list[str]:
+    """Branch_def_ids that are BOTH active-published AND visible to ``viewer``,
+    newest-published first — filtered AND paginated in ONE cross-DB query.
+
+    Codex r13: pagination must apply visibility BEFORE LIMIT/OFFSET, or newer
+    private designs consume the public page and hide older public designs behind
+    a cursor. branch_definitions (visibility) lives in ``.tinyassets.db`` and
+    branch_versions (active status) in ``.runs.db``, so the runs DB is ATTACHed
+    and joined. ``viewer`` empty = strictly public (the directory surface).
+    """
+    from tinyassets.branch_versions import initialize_branch_versions_db
+    from tinyassets.runs import runs_db_path
+
+    # Guarantee the runs DB + branch_versions table exist before ATTACH/JOIN.
+    initialize_branch_versions_db(base_path)
+    runs_db = str(runs_db_path(base_path))
+
+    vis_clause = "(bd.visibility = 'public' OR bd.author = ?)" if viewer else "bd.visibility = 'public'"
+    params: list[Any] = [viewer] if viewer else []
+    page = ""
+    if limit and limit > 0:
+        page = "LIMIT ? OFFSET ?"
+        params += [int(limit), max(0, int(offset))]
+
+    with _connect(base_path) as conn:
+        conn.execute("ATTACH DATABASE ? AS rdb", (runs_db,))
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT bd.branch_def_id AS bid, MAX(v.published_at) AS latest
+                FROM branch_definitions bd
+                JOIN rdb.branch_versions v
+                    ON v.branch_def_id = bd.branch_def_id AND v.status = 'active'
+                WHERE {vis_clause}
+                GROUP BY bd.branch_def_id
+                ORDER BY latest DESC, bd.branch_def_id ASC
+                {page}
+                """,
+                params,
+            ).fetchall()
+        finally:
+            conn.execute("DETACH DATABASE rdb")
+    return [row["bid"] for row in rows]
+
+
 def update_branch_definition(
     base_path: str | Path,
     *,

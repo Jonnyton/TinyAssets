@@ -572,9 +572,14 @@ def write_graph(
             branch_def_id to patch.
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
-            only the branch's author can edit it. BIND a repo-blind design by
-            patching its unbound params (set_state_field_default ops for
-            target_repo / credential_ref / merge_policy).
+            only the branch's author can edit it. You can edit a design's
+            topology and its binding SCHEMA (which slots are `is_binding`), but
+            you cannot set binding VALUES (a target repo, a credential, a merge
+            policy) here — the platform never stores private binding values.
+            A design that declares binding slots is INERT (it refuses to run)
+            until an engine binds those values host-side; the credential vault +
+            binding plane that does this is an ACTIVE LANE being built now, not a
+            "someday". Binding-free designs run immediately with no binding step.
         artifact_json: With target=design, the portable design artifact to
             import — a design envelope OR a raw build_branch spec.
     """
@@ -648,8 +653,9 @@ def write_graph(
         # PR-180 EDIT half: a founder patches their own branch graph via the
         # existing transactional patch_branch handler (author-gated: BUG-081).
         # A set_state_field_default op only DECLARES the binding slot; binding
-        # VALUES are a Phase-2 bound-engine construct (PLAN §4) and the op
-        # refuses a value inline.
+        # VALUES are never stored on the platform (PLAN §4) — they are bound
+        # host-side by the credential-vault + binding-plane engine (an active
+        # lane, not "someday"), so the op refuses a value inline.
         return _extensions_impl(
             action="patch_branch",
             branch_def_id=branch_id,

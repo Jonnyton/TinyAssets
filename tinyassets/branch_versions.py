@@ -440,41 +440,6 @@ def get_newest_active_version(
     return _row_to_version(row)
 
 
-def list_active_published_branch_ids(
-    base_path: str | Path,
-    *,
-    limit: int = 0,
-    offset: int = 0,
-) -> list[str]:
-    """Distinct branch_def_ids with an ACTIVE published version, newest first,
-    paginated AT THE DB.
-
-    Codex r12 #2: discovery must filter for active-published BEFORE the page, or
-    unpublished drafts consume the page and hide the published designs behind
-    them forever. This queries branch_versions (the published surface) directly
-    so a page is a page of PUBLISHED designs, not drafts.
-    """
-    initialize_branch_versions_db(base_path)
-    page = ""
-    params: list[Any] = []
-    if limit and limit > 0:
-        page = "LIMIT ? OFFSET ?"
-        params = [int(limit), max(0, int(offset))]
-    with _connect(base_path) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT branch_def_id, MAX(published_at) AS latest
-            FROM branch_versions
-            WHERE status = 'active'
-            GROUP BY branch_def_id
-            ORDER BY latest DESC, branch_def_id ASC
-            {page}
-            """,
-            params,
-        ).fetchall()
-    return [row["branch_def_id"] for row in rows]
-
-
 def get_newest_active_versions(
     base_path: str | Path,
     branch_def_ids: "list[str]",

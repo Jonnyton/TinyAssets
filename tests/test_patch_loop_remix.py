@@ -144,9 +144,10 @@ def test_remix_refuses_unpublished_source(data_dir):
 
 
 def test_binding_a_value_is_refused_phase1(data_dir, monkeypatch):
-    # Codex r11 re-scope: Phase 1 has no owner-side engine host, so binding a
-    # VALUE is refused (deferred to a Phase-2 bound engine/vault). The design
-    # carries only the binding SCHEMA (is_binding slot, no value).
+    # Codex r11 re-scope / r13: the platform NEVER stores binding VALUES, so a
+    # value-binding attempt is refused — values are bound host-side by an engine
+    # (the credential vault + binding plane, an active lane). The design carries
+    # only the binding SCHEMA (is_binding slot, no value).
     _actor(monkeypatch, "alice")
     seed_reference_designs(data_dir)
     parent = _reference_bid(data_dir)
@@ -160,7 +161,9 @@ def test_binding_a_value_is_refused_phase1(data_dir, monkeypatch):
         ]),
     ))
     assert out["status"] == "rejected"
-    assert "bound engine" in json.dumps(out).lower()
+    lowered = json.dumps(out).lower()
+    assert "not stored on the platform" in lowered
+    assert "engine" in lowered
     # No value landed anywhere in the shared row.
     for field in _load(data_dir, child).state_schema:
         assert not field.get("default_value")
@@ -924,6 +927,43 @@ def test_unbound_design_run_refused_for_everyone(data_dir, monkeypatch):
         assert "inert" in refused["error"].lower()
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "S1 is adding is_binding markers to the reference's binding slots "
+        "(target_repo / merge_policy). Until S1 marks them and S2 re-syncs the "
+        "reference JSON verbatim, the shipped artifact declares no is_binding "
+        "slot so the guard cannot fire — S2 does NOT mark the fields itself "
+        "(Codex r13)."
+    ),
+)
+def test_seeded_reference_binding_slots_are_inert(data_dir, monkeypatch):
+    # Codex r13: the inert guard was only exercised against SYNTHETIC is_binding
+    # branches; the REAL seeded reference bypassed it because the shipped JSON
+    # does not (yet) mark target_repo / merge_policy is_binding. Pin the actual
+    # artifact so the guard is proven against what ships — not only a stand-in.
+    from tinyassets.api.runs import _action_run_branch
+    from tinyassets.branch_versions import branch_has_bound_fields
+
+    seed_reference_designs(data_dir)
+    bid = _reference_bid(data_dir)
+    ref = _load(data_dir, bid)
+
+    # The reference is a REPO-BLIND design: it must declare binding slots, or it
+    # would run unbound against an arbitrary repo. (Fails until S1 marks them.)
+    assert branch_has_bound_fields(ref.state_schema), (
+        "seeded reference declares no is_binding slots — a repo-blind design "
+        "would run unbound; S1 must mark target_repo / merge_policy is_binding"
+    )
+
+    _actor(monkeypatch, "alice")
+    refused = json.loads(_action_run_branch({
+        "branch_def_id": bid, "inputs_json": json.dumps({}),
+    }))
+    assert refused.get("failure_class") == "binding_unbound_phase1", refused
+    assert "inert" in (refused.get("error") or "").lower()
+
+
 def test_designs_listing_paginates_at_db(data_dir):
     # Codex r11 #6: read_graph(target=designs) paginates at the DB boundary —
     # honors limit + exposes a next_offset cursor.
@@ -1237,6 +1277,48 @@ def test_import_rejects_hostile_branch_level_types(data_dir):
     assert out["status"] == "rejected"
     assert "concurrency_budget" in json.dumps(out)
     assert "hostile budget" not in {
+        b.get("name") for b in list_branch_definitions(data_dir)
+    }
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("name", 123),            # r13: .strip() on int -> AttributeError
+        ("description", 5),
+        ("domain_id", 7),
+        ("goal_id", []),
+        ("entry_point", 12),
+        ("tags", 5),              # r13: list(5) -> TypeError
+        ("tags", ["ok", 9]),      # array, but a non-string element
+        ("skills", 3),
+        ("state_schema", [7]),    # r13: 7.get(...) -> AttributeError
+        ("node_defs", [1, 2]),
+        ("edges", "not-a-list"),
+        ("conditional_edges", [42]),
+        ("graph", 9),             # not a JSON object
+    ],
+)
+def test_import_rejects_malformed_top_level_types(data_dir, field, value):
+    # Codex r13 #2: valid JSON whose top-level field is wrong-typed previously
+    # escaped as a raw AttributeError/TypeError (HTTP 500) from staging. It must
+    # now be a STRUCTURED rejection at the public boundary that NAMES the field,
+    # and persist NOTHING — never a partial row.
+    from tinyassets.daemon_server import list_branch_definitions
+
+    spec = {
+        "name": "malformed top-level",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    }
+    spec[field] = value
+    out = json.loads(write_graph(target="design", artifact_json=json.dumps(spec)))
+    assert out["status"] == "rejected", out
+    assert field in json.dumps(out), out
+    # No partial row persisted for the rejected import.
+    assert "malformed top-level" not in {
         b.get("name") for b in list_branch_definitions(data_dir)
     }
 

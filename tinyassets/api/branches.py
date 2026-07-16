@@ -585,31 +585,27 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
 
     active_by_bid: dict[str, Any] = {}
     if scope == "published":
-        # Codex r12 #2: paginate the PUBLISHED surface (active versions) FIRST,
-        # then hydrate — so unpublished drafts can never consume the page and
-        # hide the published designs behind them. Page is a page of PUBLISHED.
-        from tinyassets.branch_versions import (
-            get_newest_active_versions,
-            list_active_published_branch_ids,
-        )
+        # Codex r13: the PUBLISHED page must apply BOTH the active-published
+        # filter AND visibility BEFORE LIMIT/OFFSET (one cross-DB query), or
+        # newer private designs consume the public page and hide older public
+        # designs behind the cursor. public_only (directory) -> strictly public.
+        from tinyassets.branch_versions import get_newest_active_versions
+        from tinyassets.daemon_server import list_visible_published_branch_ids
 
-        published_ids = list_active_published_branch_ids(
-            _base_path(), limit=limit, offset=offset,
+        published_ids = list_visible_published_branch_ids(
+            _base_path(),
+            viewer="" if public_only else actor,
+            limit=limit,
+            offset=offset,
         )
         next_offset = offset + len(published_ids) if len(published_ids) == limit else None
         active_by_bid = get_newest_active_versions(_base_path(), published_ids)
         rows = []
         for bid in published_ids:
             try:
-                r = get_branch_definition(_base_path(), branch_def_id=bid)
+                rows.append(get_branch_definition(_base_path(), branch_def_id=bid))
             except KeyError:
                 continue
-            vis = r.get("visibility", "public") or "public"
-            # Visibility gate: a non-owner (or the public-only directory) never
-            # sees a private published design.
-            if vis == "private" and (public_only or r.get("author", "") != actor):
-                continue
-            rows.append(r)
     else:
         # scope=all / mine — visibility-aware DB-boundary pagination.
         rows = list_branch_definitions(
@@ -2486,6 +2482,116 @@ def _build_branch_text(branch: Any, *, truncated: bool) -> str:
     return "\n".join([head, "", mermaid, "", *state_lines])
 
 
+# Field-type contract for a build_branch spec. Scalars are validated as
+# strings (None/absent allowed — downstream coerces to ""); list fields must
+# be JSON arrays; list-of-dict fields additionally require every element to be
+# a JSON object. Enforced at the PUBLIC boundary (Codex S2 r13 #2) so a
+# malformed import — e.g. `name:123`, `tags:5`, `state_schema:[7]` — returns a
+# STRUCTURED rejection instead of a raw AttributeError/TypeError 500 from
+# `_staged_branch_from_spec`. `default_llm_policy`/`concurrency_budget` are
+# intentionally omitted here — staging already returns structured errors for
+# those without crashing.
+_BUILD_SPEC_STRING_FIELDS = (
+    "name",
+    "description",
+    "domain_id",
+    "goal_id",
+    "author",
+    "entry_point",
+    "fork_from",
+    "visibility",
+)
+_BUILD_SPEC_LIST_OF_DICT_FIELDS = (
+    "node_defs",
+    "nodes",
+    "edges",
+    "conditional_edges",
+    "state_schema",
+)
+
+
+def _validate_list_of_dicts(value: Any, field: str) -> list[str]:
+    """Return type errors if ``value`` is not a JSON array of JSON objects.
+
+    ``None`` (absent) is allowed — the caller treats it as an empty list.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [f"`{field}` must be a JSON array, got {type(value).__name__}."]
+    errs: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            errs.append(
+                f"`{field}[{idx}]` must be a JSON object, "
+                f"got {type(item).__name__}."
+            )
+    return errs
+
+
+def _validate_build_spec_shape(spec: dict[str, Any]) -> list[str]:
+    """Validate every field's TYPE before staging (Codex S2 r13 #2).
+
+    Returns a list of human-readable type errors; empty means the shape is
+    safe to stage. This is the crash boundary: `_staged_branch_from_spec`
+    calls ``.strip()`` on string fields and ``list(...)`` / ``.get()`` on
+    collection fields, so a wrong-typed value raises an uncaught exception
+    (HTTP 500) unless rejected here first.
+    """
+    errors: list[str] = []
+
+    for field in _BUILD_SPEC_STRING_FIELDS:
+        val = spec.get(field)
+        if val is not None and not isinstance(val, str):
+            errors.append(
+                f"`{field}` must be a string, got {type(val).__name__}."
+            )
+
+    tags = spec.get("tags")
+    if tags is not None:
+        if not isinstance(tags, list):
+            errors.append(
+                f"`tags` must be a JSON array of strings, "
+                f"got {type(tags).__name__}."
+            )
+        else:
+            for idx, tag in enumerate(tags):
+                if not isinstance(tag, str):
+                    errors.append(
+                        f"`tags[{idx}]` must be a string, "
+                        f"got {type(tag).__name__}."
+                    )
+
+    skills = spec.get("skills")
+    if skills is not None and not isinstance(skills, list):
+        errors.append(
+            f"`skills` must be a JSON array, got {type(skills).__name__}."
+        )
+
+    for field in _BUILD_SPEC_LIST_OF_DICT_FIELDS:
+        errors.extend(_validate_list_of_dicts(spec.get(field), field))
+
+    graph = spec.get("graph")
+    if graph is not None:
+        if not isinstance(graph, dict):
+            errors.append(
+                f"`graph` must be a JSON object, got {type(graph).__name__}."
+            )
+        else:
+            for field in ("edges", "conditional_edges", "nodes", "node_defs"):
+                errors.extend(
+                    _validate_list_of_dicts(graph.get(field), f"graph.{field}")
+                )
+            g_entry = graph.get("entry_point")
+            if g_entry is not None and not isinstance(g_entry, str):
+                errors.append(
+                    "`graph.entry_point` must be a string, "
+                    f"got {type(g_entry).__name__}."
+                )
+
+    return errors
+
+
 def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     from tinyassets.daemon_server import save_branch_definition
 
@@ -2522,6 +2628,21 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
                 "issue": "Top-level spec is not an object.",
                 "proposed_fix": "Wrap the spec in { ... }.",
             }],
+        })
+
+    # Validate every field's TYPE before staging (Codex S2 r13 #2). Staging
+    # calls `.strip()`/`list(...)`/`.get()` on these, so a wrong-typed value
+    # would otherwise escape as a raw AttributeError/TypeError (HTTP 500).
+    shape_errors = _validate_build_spec_shape(spec)
+    if shape_errors:
+        return json.dumps({
+            "status": "rejected",
+            "error": "spec_json has malformed field types: "
+            + "; ".join(shape_errors),
+            "suggestions": [
+                {"issue": msg, "proposed_fix": "Correct the field type and resend."}
+                for msg in shape_errors
+            ],
         })
 
     top_level_goal_id = (kwargs.get("goal_id") or "").strip()
@@ -2678,12 +2799,12 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
         return ""
     if name == "set_state_field_default":
         # BIND op. Codex r11 re-scope / PLAN §4: the platform NEVER stores
-        # private content, and Phase 1 has no owner-side execution host to hold
-        # binding VALUES (the owner's engine/daemon host is a Phase-2 construct).
-        # So a value-binding attempt is REFUSED here — Phase 1 keeps only the
-        # binding SCHEMA. The field is still DECLARED a binding slot (is_binding)
-        # so remix/import/export carry the empty slot; the VALUE waits for a
-        # bound engine.
+        # private content, so binding VALUES (a repo, a credential, a policy)
+        # are never persisted platform-side — an engine binds them host-side.
+        # A value-binding attempt is REFUSED here; only the binding SCHEMA
+        # lives on the platform. The field is still DECLARED a binding slot
+        # (is_binding) so remix/import/export carry the empty slot; the VALUE
+        # is bound host-side by the engine.
         fname = (op.get("name") or op.get("field_name") or "").strip()
         if not fname:
             return "set_state_field_default requires name"
@@ -2701,10 +2822,11 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
             target_field.pop(value_key, None)
         if any(k in op for k in ("default_value", "default", "value")):
             return (
-                f"binding a VALUE for '{fname}' requires a bound engine "
-                "(Phase 2 — the owner's engine/daemon host holds binding values "
-                "in a per-universe vault). Phase 1 declares the binding SLOT "
-                "only; run/remix/import/export carry the empty slot."
+                f"binding a VALUE for '{fname}' is not stored on the platform "
+                "— it must be bound host-side by an engine (the credential "
+                "vault + binding plane is an active lane being built now). This "
+                "op declares the binding SLOT only; run/remix/import/export "
+                "carry the empty slot."
             )
         return ""
     if name == "update_node":
@@ -3958,8 +4080,8 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
         })
 
     # Honest next-steps guidance (Codex r12 #3): do NOT instruct users to bind
-    # values — Phase 1 has no binding plane. A design with binding SLOTS is
-    # inert until a Phase-2 engine binds it; a binding-free design runs now.
+    # values here — the platform never stores them. A design with binding SLOTS
+    # is inert until an engine binds it host-side; a binding-free design runs now.
     child_def = BranchDefinition.from_dict(
         get_branch_definition(_base_path(), branch_def_id=child_id),
     )
@@ -3979,10 +4101,11 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
         # Honest Phase-1 message (Codex r12 #3) — no false "bind" instruction.
         guidance = (
             head + " This design declares binding slots (e.g. target_repo / "
-            "credentials). Phase 1 carries the design SCHEMA only — binding "
-            "VALUES require a bound engine (Phase 2, the owner's engine-side "
-            "vault), so it is INERT and cannot run yet. You can inspect, remix, "
-            "and export it now." + tail
+            "credentials). The platform carries the design SCHEMA only — binding "
+            "VALUES are never stored on the platform and must be bound host-side "
+            "by an engine (the credential vault + binding plane is an active lane "
+            "being built now), so it is INERT and cannot run yet. You can "
+            "inspect, remix, and export it now." + tail
         )
     elif needs_sandbox:
         guidance = (
